@@ -71,7 +71,7 @@ def get_random_user_agent() -> str:
 def _clean_imgflip_title(raw: str) -> str:
     """
     清洗 Imgflip 搜索结果的标题/alt 文本。
-    原始文本可能是 get_text(separator=' ') 产出的拼接文本，例如
+    原始文本可能是 get_text(separator=' ') 产出的拼接文本, 例如
       '(Daffy Duck Meme) user-captioned meme, 114 views WHAT'S WRONG WITH YOU?'
     或 img.alt 里的
       'WHAT'S WRONG WITH YOU? | image tagged in daffy duck | made w/ Imgflip meme maker'
@@ -243,18 +243,26 @@ class MemeFetcher:
                     continue
                 seen_ids.add(item_id)
                 
-                # 提取标题：优先 img alt → 链接 title → get_text（带空格分隔）
+                # 提取标题：优先 img alt -> 链接 title -> get_text (带空格分隔)
                 img = link.find('img')
                 title = ""
+                used_get_text = False
                 if img and img.get('alt'):
                     title = img.get('alt')
                 if not title:
                     title = link.get('title') or ''
                 if not title:
                     title = link.get_text(separator=' ', strip=True)
+                    used_get_text = True
 
                 if title:
                     title = _clean_imgflip_title(title)
+
+                if not title and not used_get_text:
+                    raw_text = link.get_text(separator=' ', strip=True)
+                    if raw_text:
+                        title = _clean_imgflip_title(raw_text)
+
                 if not title:
                     title = f"{keyword} {item_type}"
 

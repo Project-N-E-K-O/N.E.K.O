@@ -1699,6 +1699,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             let mmdSettingsResult = null;
             if (currentModelType === 'live3d' && currentLive3dSubType === 'mmd') {
                 try {
+                    if (_mmdSettingsLoadPromise) {
+                        await _mmdSettingsLoadPromise;
+                    }
                     const collected = collectMmdSettings();
                     const existing = JSON.parse(localStorage.getItem('mmdSettings') || '{}');
                     if (collected.lighting) existing.lighting = collected.lighting;
@@ -1724,8 +1727,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 : modelName;
             let saveMessage;
             const lightingFailed = (currentModelType === 'live3d') && ambient && main && (!lightingResult || !lightingResult.success);
+            const mmdSettingsFailed = mmdSettingsResult && !mmdSettingsResult.success;
 
-            if (lightingFailed) {
+            if (lightingFailed && mmdSettingsFailed) {
+                saveMessage = t('live2d.modelSavedLightingFailed', `已保存模型设置，光照和MMD设置保存失败`, { name: modelDisplayName });
+            } else if (mmdSettingsFailed) {
+                saveMessage = t('live2d.modelSavedMmdSettingsFailed', `已保存模型设置，MMD设置保存失败`, { name: modelDisplayName });
+            } else if (lightingFailed) {
                 saveMessage = t('live2d.modelSavedLightingFailed', `已保存模型设置，光照设置保存失败`, { name: modelDisplayName });
             } else if ((currentModelType === 'live3d') && ambient && main) {
                 saveMessage = t('live2d.modelSettingsSavedWithLighting', `已保存模型和光照设置`, { name: modelDisplayName });
@@ -1734,8 +1742,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else {
                 saveMessage = t('live2d.modelSettingsSaved', `已保存模型设置`, { name: modelDisplayName });
             }
-            showStatus(saveMessage, 2000);
-            return true;
+            showStatus(saveMessage, mmdSettingsFailed || lightingFailed ? 3000 : 2000);
+            return !mmdSettingsFailed && !lightingFailed;
 
         } catch (error) {
             console.error('保存模型设置失败:', error);

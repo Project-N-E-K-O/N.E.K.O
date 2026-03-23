@@ -250,6 +250,10 @@ MMDManager.prototype.setupFloatingButtons = function() {
     // 此处仅更新内部状态标志。不能在此隐藏按钮容器，否则 app-ui.js 无法读取按钮位置。
     const goodbyeHandler = () => {
         this._isInReturnState = true;
+        if (this._physicsRestoreTimer) {
+            clearTimeout(this._physicsRestoreTimer);
+            this._physicsRestoreTimer = null;
+        }
     };
     this._uiWindowHandlers.push({ event: 'live2d-goodbye-click', handler: goodbyeHandler });
     window.addEventListener('live2d-goodbye-click', goodbyeHandler);
@@ -287,7 +291,10 @@ MMDManager.prototype.setupFloatingButtons = function() {
         }
 
         if (hadPhysics) {
-            setTimeout(() => {
+            if (this._physicsRestoreTimer) clearTimeout(this._physicsRestoreTimer);
+            this._physicsRestoreTimer = setTimeout(() => {
+                this._physicsRestoreTimer = null;
+                if (this._isInReturnState) return;
                 if (this.currentModel && this.currentModel.physics && typeof this.currentModel.physics.reset === 'function') {
                     this.currentModel.physics.reset();
                 }

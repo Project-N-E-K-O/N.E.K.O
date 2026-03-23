@@ -305,18 +305,20 @@ class WebSearchPlugin(NekoPluginBase):
     @plugin_entry(
         id="search",
         name="网络搜索",
-        description="搜索网络内容。自动根据用户地区选择搜索引擎（国内百度/海外DuckDuckGo）。",
+        description="搜索网络内容。自动根据用户地区选择搜索引擎（国内百度/海外DuckDuckGo）。"
+                    "重要：query 应保留用户原始语言（如中文问题就用中文搜索），"
+                    "不要翻译成英文，这样能获得更准确的本地化结果。",
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "搜索关键词",
+                    "description": "搜索关键词（保留用户原始语言，不要翻译）",
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "最大结果数 (默认 8)",
+                    "description": "最大结果数 (默认 8，最少 3)",
                     "default": 8,
                 },
             },
@@ -334,6 +336,7 @@ class WebSearchPlugin(NekoPluginBase):
 
         defs = self._defaults()
         max_r = max_results if max_results > 0 else defs["max_results"]
+        max_r = max(3, max_r)
         timeout = defs["timeout"]
 
         self.logger.info("Searching: query={!r} max={} engine={}", query, max_r, "baidu" if self._is_cn else "duckduckgo")
@@ -356,18 +359,19 @@ class WebSearchPlugin(NekoPluginBase):
     @plugin_entry(
         id="search_summary",
         name="搜索摘要",
-        description="搜索并返回适合 AI 阅读的纯文本摘要格式。",
+        description="搜索并返回适合 AI 阅读的纯文本摘要格式。"
+                    "重要：query 应保留用户原始语言，不要翻译。",
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "搜索关键词",
+                    "description": "搜索关键词（保留用户原始语言，不要翻译）",
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "最大结果数",
+                    "description": "最大结果数（最少 3）",
                     "default": 5,
                 },
             },
@@ -380,6 +384,7 @@ class WebSearchPlugin(NekoPluginBase):
 
         defs = self._defaults()
         max_r = max_results if max_results > 0 else defs["max_results"]
+        max_r = max(3, max_r)
         timeout = defs["timeout"]
 
         try:

@@ -1341,8 +1341,8 @@
                 if (savedGoodbyeRect) {
                     const containerWidth = mmdReturnButtonContainer.offsetWidth || 64;
                     const containerHeight = mmdReturnButtonContainer.offsetHeight || 64;
-                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2 + window.scrollX);
-                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2 + window.scrollY);
+                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2);
+                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2);
                     mmdReturnButtonContainer.style.right = '';
                     mmdReturnButtonContainer.style.bottom = '';
                     mmdReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
@@ -1366,8 +1366,8 @@
                 if (savedGoodbyeRect) {
                     const containerWidth = live2dReturnButtonContainer.offsetWidth || 64;
                     const containerHeight = live2dReturnButtonContainer.offsetHeight || 64;
-                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2 + window.scrollX);
-                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2 + window.scrollY);
+                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2);
+                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2);
                     live2dReturnButtonContainer.style.right = '';
                     live2dReturnButtonContainer.style.bottom = '';
                     live2dReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
@@ -1404,8 +1404,8 @@
                 if (savedGoodbyeRect) {
                     const containerWidth = vrmReturnButtonContainer.offsetWidth || 64;
                     const containerHeight = vrmReturnButtonContainer.offsetHeight || 64;
-                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2 + window.scrollX);
-                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2 + window.scrollY);
+                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2);
+                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2);
                     vrmReturnButtonContainer.style.right = '';
                     vrmReturnButtonContainer.style.bottom = '';
                     vrmReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;

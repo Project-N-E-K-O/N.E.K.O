@@ -766,6 +766,11 @@ const AvatarButtonMixin = {
                 this._returnButtonDragHandlers = null;
             }
 
+            if (this._physicsRestoreTimer) {
+                clearTimeout(this._physicsRestoreTimer);
+                this._physicsRestoreTimer = null;
+            }
+
             // 清理引用
             this._floatingButtons = null;
             this._floatingButtonsContainer = null;
