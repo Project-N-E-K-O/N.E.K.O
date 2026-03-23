@@ -1510,6 +1510,7 @@ async def startup():
         from utils.token_tracker import TokenTracker, install_hooks
         install_hooks()
         TokenTracker.get_instance().start_periodic_save()
+        TokenTracker.get_instance().record_app_start()
     except Exception as e:
         logger.warning(f"[Agent] Token tracker init failed: {e}")
 

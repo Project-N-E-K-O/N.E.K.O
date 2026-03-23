@@ -24,7 +24,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage
+from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
 import httpx
 from cachetools import TTLCache
 
@@ -2018,38 +2018,36 @@ async def proactive_chat(request: Request):
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
             else:
                 m, bu, ak = correction_model, correction_base_url, correction_api_key
-            kwargs = dict(
-                model=m, base_url=bu, api_key=ak,
+            kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_tokens,
                 streaming=True,
             )
-            if disable_thinking:
-                extra_body = get_extra_body(m)
-                if extra_body:
-                    kwargs['model_kwargs'] = {"extra_body": extra_body}
-            return ChatOpenAI(**kwargs)
+            if not disable_thinking:
+                kw["extra_body"] = None  # skip auto-resolved extra_body
+            return create_chat_llm(m, bu, ak, **kw)
         
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,
             temperature: float = 1.0, max_tokens: int = 1024, timeout: float = 16.0,
             use_vision: bool = False, disable_thinking: bool = True,
             image_b64: str = '',
+            dynamic_context: str = '',
         ) -> str:
             """
             带重试的 LLM 调用。image_b64 非空时以多模态方式发送截图。
+            dynamic_context: 动态上下文，注入到 HumanMessage 中使 SystemMessage 可被缓存。
             """
             actual_model = (vision_model_name if use_vision and has_vision_model else correction_model)
-            # [临时调试]
-            print(f"\n{'='*60}\n[PROACTIVE-DEBUG] LLM call: [{label}] | model={actual_model} | temp={temperature} | max_tokens={max_tokens} | vision={use_vision} | img={'yes' if image_b64 else 'no'}\n{'='*60}\n{system_prompt}\n{'='*60}\n")
             begin_text = _loc(BEGIN_GENERATE, proactive_lang)
+            human_text = f"{dynamic_context}\n\n{begin_text}" if dynamic_context else begin_text
             if image_b64:
                 human_content = [
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                    {"type": "text", "text": begin_text},
+                    {"type": "text", "text": human_text},
                 ]
             else:
-                human_content = begin_text
+                human_content = human_text
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_content)]
 
             from utils.token_tracker import set_call_type
@@ -2560,6 +2558,8 @@ async def proactive_chat(request: Request):
             track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
             music_playing_hint = get_proactive_music_playing_hint(track_name, proactive_lang)
 
+        # 静动分离：generate_prompt 作为静态 SystemMessage（可被缓存），
+        # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
         generate_prompt = get_proactive_generate_prompt(
             proactive_lang, music_playing_hint,
             has_music=bool(music_section), has_meme=bool(meme_section),
@@ -2576,23 +2576,20 @@ async def proactive_chat(request: Request):
             source_instruction=source_instruction,
             output_format_section=output_format_section,
         )
+        dynamic_context_for_phase2 = ""
         if music_topic:
-            # 防混淆强调：确保 AI 用 [MUSIC] 而不是 [WEB]/[CHAT]
-            generate_prompt += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
+            dynamic_context_for_phase2 += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
                 proactive_lang,
                 PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
             )
-            # 【核心补齐】如果搜索结果是模糊匹配，注入 failsafe hint
-            # 注意：random 状态（随机推荐）不应触发 failsafe hint，因为这是正常的随机推荐行为
             raw_data = music_content.get('raw_data', {}) if music_content else {}
             if raw_data.get('best_match', {}).get('status') == 'fuzzy':
-                generate_prompt += get_proactive_music_failsafe_hint(proactive_lang)
+                dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(proactive_lang)
 
-        # 【强制约束】放歌时禁止产生任何换歌念头
         if is_playing_music:
-            generate_prompt += get_proactive_music_strict_constraint(proactive_lang)
-        print(f"[{lanlan_name}] Phase 2 完整 prompt 长度: {len(generate_prompt)} 字符")
-        
+            dynamic_context_for_phase2 += get_proactive_music_strict_constraint(proactive_lang)
+        print(f"[{lanlan_name}] Phase 2 prompt 长度: {len(generate_prompt)}, 动态上下文: {len(dynamic_context_for_phase2)} 字符")
+
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
         if not await mgr.prepare_proactive_delivery(min_idle_secs=30.0):
             return JSONResponse({
@@ -2600,23 +2597,24 @@ async def proactive_chat(request: Request):
                 "action": "pass",
                 "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
             })
-        
-        # --- 构建 LLM + messages ---
+
+        # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
-        
+
         begin_text = _loc(BEGIN_GENERATE, proactive_lang)
+        human_text = f"{dynamic_context_for_phase2}\n\n{begin_text}" if dynamic_context_for_phase2 else begin_text
         if phase2_use_vision:
             human_content = [
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64_for_phase2}"}},
-                {"type": "text", "text": begin_text},
+                {"type": "text", "text": human_text},
             ]
         else:
-            human_content = begin_text
+            human_content = human_text
         messages = [SystemMessage(content=generate_prompt), HumanMessage(content=human_content)]
-        
+
         actual_model = (vision_model_name if phase2_use_vision else correction_model)
         print(f"\n{'='*60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: model={actual_model} | vision={phase2_use_vision} | img={'yes' if phase2_use_vision else 'no'}\n{'='*60}\n{generate_prompt}\n{'='*60}\n")
-        
+
         # --- 流式调用 + 在线拦截 ---
         from utils.token_tracker import set_call_type
         set_call_type("proactive")
