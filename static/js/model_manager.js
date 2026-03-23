@@ -1840,6 +1840,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             isMmdAnimationPlaying = false;
             updateMMDAnimationPlayButtonIcon();
+            if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
             if (mmdContainer) {
                 mmdContainer.classList.add('hidden');
                 mmdContainer.style.display = 'none';
@@ -2250,6 +2251,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                     isMmdAnimationPlaying = false;
                     updateMMDAnimationPlayButtonIcon();
+                    if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
                     // 隐藏 MMD 动画选择器
                     const mmdAnimationGroup = document.getElementById('mmd-animation-group');
                     if (mmdAnimationGroup) mmdAnimationGroup.style.display = 'none';
@@ -3488,6 +3490,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (optionExists) {
                 // 动画仍然存在，恢复选择
                 mmdAnimationSelect.value = previousAnimUrl;
+                updateMMDAnimationSelectButtonText();
             } else {
                 // 动画已被删除，确保播放状态完全重置
                 if (!wasCurrentAnimDeleted && window.mmdManager) {
@@ -5472,8 +5475,36 @@ document.addEventListener('DOMContentLoaded', async () => {
                 });
                 const result = await response.json();
                 if (result.success) {
-                    showStatus(t('live2d.mmdAnimation.uploadSuccess', 'VMD动画 {{name}} 上传成功', { name: result.filename || file.name }), 2000);
+                    // 保存当前选择状态
+                    const savedAnimUrl = mmdAnimationSelect ? mmdAnimationSelect.value : '';
+                    const savedIsPlaying = isMmdAnimationPlaying;
+                    
                     await loadMMDAnimations();
+                    
+                    // 恢复选择状态
+                    if (mmdAnimationSelect) {
+                        // 优先选择新上传的动画，否则恢复之前的选择
+                        const newFilename = result.filename || file.name;
+                        const newOption = Array.from(mmdAnimationSelect.options).find(opt => {
+                            const optFilename = opt.getAttribute('data-filename') || opt.textContent;
+                            return optFilename === newFilename;
+                        });
+                        
+                        if (newOption) {
+                            mmdAnimationSelect.value = newOption.value;
+                        } else if (savedAnimUrl) {
+                            const optionExists = Array.from(mmdAnimationSelect.options).some(opt => opt.value === savedAnimUrl);
+                            if (optionExists) {
+                                mmdAnimationSelect.value = savedAnimUrl;
+                            }
+                        }
+                        updateMMDAnimationSelectButtonText();
+                    }
+                    
+                    // 恢复播放状态
+                    isMmdAnimationPlaying = savedIsPlaying;
+                    
+                    showStatus(t('live2d.mmdAnimation.uploadSuccess', 'VMD动画 {{name}} 上传成功', { name: result.filename || file.name }), 2000);
                 } else {
                     showStatus(t('live2d.mmdAnimation.uploadFailed', '上传失败: {{error}}', { error: result.error }), 3000);
                 }
