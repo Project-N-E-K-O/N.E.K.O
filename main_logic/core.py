@@ -2372,6 +2372,14 @@ class LLMSessionManager:
             if not self.session or not self.is_active:
                 # Memory Server 专属冷却检查
                 if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
+                    time_left = int(self._memory_error_retry_after - time.time())
+                    asyncio.create_task(self.send_status(json.dumps({
+                        "code": "MEMORY_SERVER_COOLDOWN",
+                        "details": {"wait_time": time_left}
+                    })))
+                    self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+                    if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                        asyncio.create_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
                     return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
@@ -2406,6 +2414,14 @@ class LLMSessionManager:
         if not self.session or not self.is_active:
             # Memory Server 专属冷却检查
             if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
+                time_left = int(self._memory_error_retry_after - time.time())
+                asyncio.create_task(self.send_status(json.dumps({
+                    "code": "MEMORY_SERVER_COOLDOWN",
+                    "details": {"wait_time": time_left}
+                })))
+                self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+                if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                    asyncio.create_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
                 return
             # 检查失败计数器和冷却时间
             if self.session_start_failure_count >= self.session_start_max_failures:
