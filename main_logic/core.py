@@ -2926,24 +2926,16 @@ class LLMSessionManager:
             logger.error(f"💥 WS Send Response Error: {e}")
 
     async def tts_response_handler(self):
-        """TTS响应处理器：从TTS Worker接收音频数据和状态信号
-
-        q.get 使用 timeout 使线程周期性唤醒，从而允许 asyncio cancel 生效。
-        """
+        import queue as _queue_mod
         q = self.tts_response_queue
         logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
-
-        def _get_with_timeout():
-            import queue as _queue_mod
-            while True:
-                try:
-                    return q.get(timeout=0.5)
-                except _queue_mod.Empty:
-                    continue
-
         while True:
             try:
-                data = await asyncio.get_running_loop().run_in_executor(None, _get_with_timeout)
+                try:
+                    data = q.get_nowait()
+                except _queue_mod.Empty:
+                    await asyncio.sleep(0.01)
+                    continue
 
                 if isinstance(data, tuple) and len(data) == 2:
                     if data[0] == "__ready__":
