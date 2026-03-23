@@ -383,7 +383,7 @@ class OmniOfflineClient:
                             prompt_tokens = usage_data.get('prompt_tokens', 0) or usage_data.get('input_tokens', 0) or 0
                             completion_tokens = usage_data.get('completion_tokens', 0) or usage_data.get('output_tokens', 0) or 0
                             total_tokens = usage_data.get('total_tokens', 0) or 0
-                            cached_tokens = usage_data.get('cached_tokens') or usage_data.get('prompt_tokens_details', {}).get('cached_tokens') or 0
+                            cached_tokens = usage_data.get('cached_tokens') or (usage_data.get('prompt_tokens_details') or {}).get('cached_tokens') or 0
                             if total_tokens > 0:
                                 TokenTracker.get_instance().record(
                                     model=self.model,
