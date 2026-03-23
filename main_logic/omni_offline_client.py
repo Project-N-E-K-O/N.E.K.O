@@ -3,9 +3,8 @@
 import asyncio
 import json
 from typing import Optional, Callable, Dict, Any, Awaitable
-from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage, AIMessage
+from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from config import get_extra_body
 from utils.frontend_utils import calculate_text_similarity, count_words_and_chars
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
@@ -89,14 +88,9 @@ class OmniOfflineClient:
         self.on_response_discarded = on_response_discarded
         
         # Initialize ChatOpenAI client
-        self.llm = ChatOpenAI(
-            model=self.model,
-            base_url=self.base_url,
-            api_key=self.api_key,
-            temperature=1.0,
-            streaming=True,
-            max_retries=0,  # 禁用 openai client 内置重试，由外层 retry loop 处理（内置重试会破坏流式 generator）
-            extra_body=get_extra_body(self.model) or None
+        self.llm = create_chat_llm(
+            self.model, self.base_url, self.api_key,
+            temperature=1.0, streaming=True, max_retries=0,
         )
         
         # State management
@@ -139,19 +133,18 @@ class OmniOfflineClient:
             if self._conversation_history and isinstance(self._conversation_history[0], SystemMessage):
                 self._conversation_history[0] = SystemMessage(content=self._instructions)
     
-    def switch_model(self, new_model: str, use_vision_config: bool = False) -> None:
+    async def switch_model(self, new_model: str, use_vision_config: bool = False) -> None:
         """
         Temporarily switch to a different model (e.g., vision model).
         This allows dynamic model switching for vision tasks.
-        
+
         Args:
             new_model: The model to switch to
             use_vision_config: If True, use vision_base_url and vision_api_key
         """
         if new_model and new_model != self.model:
             logger.info(f"Switching model from {self.model} to {new_model}")
-            self.model = new_model
-            
+
             # 选择使用的 API 配置
             if use_vision_config:
                 base_url = self.vision_base_url
@@ -159,17 +152,19 @@ class OmniOfflineClient:
             else:
                 base_url = self.base_url
                 api_key = self.api_key
-            
-            # Recreate LLM instance with new model and config
-            self.llm = ChatOpenAI(
-                model=self.model,
-                base_url=base_url,
-                api_key=api_key,
-                temperature=1.0,
-                streaming=True,
-                max_retries=0,  # 禁用内置重试
-                extra_body=get_extra_body(self.model) or None
+
+            # 先创建新 client，成功后再原子替换，避免半切换状态
+            new_llm = create_chat_llm(
+                new_model, base_url, api_key,
+                temperature=1.0, streaming=True, max_retries=0,
             )
+            old_llm = self.llm
+            self.llm = new_llm
+            self.model = new_model
+            try:
+                await old_llm.aclose()
+            except Exception as e:
+                logger.warning(f"switch_model: old client aclose failed: {e}")
     
     async def _check_repetition(self, response: str) -> bool:
         """
@@ -243,7 +238,7 @@ class OmniOfflineClient:
             # (cannot switch back because image data remains in conversation history)
             if self.vision_model and self.vision_model != self.model:
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
-                self.switch_model(self.vision_model, use_vision_config=True)
+                await self.switch_model(self.vision_model, use_vision_config=True)
             
             # Multi-modal message: images + text
             content = []
@@ -311,8 +306,15 @@ class OmniOfflineClient:
                         fence_triggered = False  # 围栏是否已触发
                         guard_triggered = False
                         discard_reason = None
-                        
+                        chunk_usage = None
+
                         async for chunk in self.llm.astream(self._conversation_history):
+                            if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
+                                chunk_usage = chunk.usage_metadata
+                                logger.info(f"🔍 [Usage] {chunk_usage}")
+                            if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
+                                if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
+                                    logger.info(f"🔍 [Meta] {chunk.response_metadata}")
                             if not self._is_responding:
                                 break
                             
@@ -379,6 +381,9 @@ class OmniOfflineClient:
                             guard_exhausted = True
                             break
                         
+                        # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
+                        # 此处不再手动调用 TokenTracker.record() 避免双重计数。
+
                         if assistant_message:
                             self._conversation_history.append(AIMessage(content=assistant_message))
                             await self._check_repetition(assistant_message)
@@ -485,11 +490,19 @@ class OmniOfflineClient:
 
         assistant_message = ""
         is_first_chunk = True
+        chunk_usage = None
 
         try:
             self._is_responding = True
             set_call_type("proactive")
             async for chunk in self.llm.astream(messages_to_send):
+                if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
+                    chunk_usage = chunk.usage_metadata
+                    logger.info(f"🔍 [Usage-Proactive] {chunk_usage}")
+                if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
+                    if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
+                        logger.info(f"🔍 [Meta-Proactive] {chunk.response_metadata}")
+
                 if not self._is_responding:
                     break
                 content = chunk.content if hasattr(chunk, "content") else str(chunk)
@@ -507,6 +520,8 @@ class OmniOfflineClient:
             return False
         finally:
             self._is_responding = False
+            # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
+            # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             if assistant_message:
                 self._conversation_history.append(AIMessage(content=assistant_message))
             # Use lightweight proactive-done callback (TTS flush + turn_end only),
@@ -547,4 +562,10 @@ class OmniOfflineClient:
         self._is_responding = False
         self._conversation_history = []
         self._pending_images.clear()
+        if self.llm:
+            try:
+                await self.llm.aclose()
+            except Exception as e:
+                logger.warning(f"OmniOfflineClient.close: aclose failed: {e}")
+            self.llm = None
         logger.info("OmniOfflineClient closed")

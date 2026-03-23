@@ -374,17 +374,25 @@
 
                     // Load MMD model
                     if (window.mmdManager) {
-                        await window.mmdManager.loadModel(newModelPath);
-
-                        // 从后端获取并应用 MMD 设置（光照、渲染、物理、鼠标跟踪）
+                        // 提前获取设置并预置物理开关
+                        let savedSettings = null;
                         try {
                             var settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(nameForConfig) + '/mmd_settings');
                             var settingsData = await settingsRes.json();
                             if (settingsData.success && settingsData.settings) {
-                                window.mmdManager.applySettings(settingsData.settings);
+                                savedSettings = settingsData.settings;
+                                if (savedSettings.physics?.enabled != null) {
+                                    window.mmdManager.enablePhysics = !!savedSettings.physics.enabled;
+                                }
                             }
                         } catch (settingsErr) {
                             console.warn('[Model] 获取MMD设置失败:', settingsErr);
+                        }
+                        await window.mmdManager.loadModel(newModelPath);
+
+                        // 应用完整设置（光照、渲染、物理、鼠标跟踪）
+                        if (savedSettings) {
+                            window.mmdManager.applySettings(savedSettings);
                         }
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');

@@ -16,7 +16,7 @@ import os
 import hashlib
 from collections import OrderedDict
 from typing import Optional, Tuple, List, Any, Dict
-from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage
+from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
@@ -843,12 +843,10 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         source_name = lang_names.get(source_lang, source_lang)
         target_name = lang_names.get(target_lang, target_lang)
         
-        llm = ChatOpenAI(
-            model=emotion_config['model'],
-            base_url=emotion_config['base_url'],
-            api_key=emotion_config['api_key'],
-            temperature=0.3,  # 低temperature保证翻译准确性
-            timeout=10.0
+        llm = create_chat_llm(
+            emotion_config['model'], emotion_config['base_url'],
+            emotion_config['api_key'],
+            temperature=0.3, timeout=10.0,
         )
         
         system_prompt = f"""你是一个专业的翻译助手。请将用户提供的文本从{source_name}翻译成{target_name}。
@@ -931,7 +929,7 @@ class TranslationService:
         self._cache_lock = None  # 懒加载：在首次使用时创建异步锁
         self._cache_lock_init_lock = threading.Lock()  # 用于保护异步锁的创建过程
 
-    def _get_llm_client(self) -> Optional[ChatOpenAI]:
+    def _get_llm_client(self):
         """获取LLM客户端（用于翻译，复用 emotion 模型配置）"""
         try:
             config = self.config_manager.get_model_api_config('emotion')
@@ -943,13 +941,9 @@ class TranslationService:
             if self._llm_client is not None:
                 return self._llm_client
             
-            self._llm_client = ChatOpenAI(
-                model=config['model'],
-                base_url=config['base_url'],
-                api_key=config['api_key'],
-                temperature=0.3,
-                max_completion_tokens=2000,
-                timeout=30.0,
+            self._llm_client = create_chat_llm(
+                config['model'], config['base_url'], config['api_key'],
+                temperature=0.3, max_completion_tokens=2000, timeout=30.0,
             )
             
             return self._llm_client

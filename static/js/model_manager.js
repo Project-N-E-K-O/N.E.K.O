@@ -838,6 +838,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const mmdAnimationSelectBtn = document.getElementById('mmd-animation-select-btn');
     const mmdAnimationSelectText = document.getElementById('mmd-animation-select-text');
     const mmdAnimationDropdown = document.getElementById('mmd-animation-dropdown');
+    const playMmdAnimationBtn = document.getElementById('play-mmd-animation-btn');
+    const uploadMmdAnimationBtn = document.getElementById('upload-mmd-animation-btn');
+    const deleteMmdAnimationBtn = document.getElementById('delete-mmd-animation-btn');
+    const mmdAnimationActionsGroup = document.getElementById('mmd-animation-actions-group');
     const mmdModelGroup = document.getElementById('mmd-model-group');
     const mmdAnimationGroup = document.getElementById('mmd-animation-group');
     const mmdContainer = document.getElementById('mmd-container');
@@ -877,6 +881,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const playVrmAnimationBtn = document.getElementById('play-vrm-animation-btn');
     let isVrmAnimationPlaying = false; // 跟踪VRM动作播放状态
     let isVrmExpressionPlaying = false; // 跟踪VRM表情播放状态
+    let isMmdAnimationPlaying = false; // 跟踪MMD动画播放状态
+    let isMmdAnimationUploading = false; // 防止VMD动画重复上传
 
     // 更新模型类型按钮文字的函数（使用统一管理器）
     function updateModelTypeButtonText() {
@@ -1374,6 +1380,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let animationsLoaded = false; // 标记VRM动作列表是否已加载
     let mmdModels = []; // MMD 模型列表
     let mmdAnimations = []; // MMD 动画列表
+    let _mmdSettingsLoadPromise = null; // 追踪进行中的 MMD 设置加载 Promise
 
     const showStatus = (msg, duration = 0) => {
         // 更新状态文本（保持图标结构）
@@ -1828,13 +1835,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 vrmContainer.classList.add('hidden');
                 vrmContainer.style.display = 'none';
             }
-            // 隐藏 MMD 容器和控件组
+            // 隐藏 MMD 容器和控件组，并停止播放中的动画
+            if (window.mmdManager) {
+                window.mmdManager.stopAnimation();
+            }
+            isMmdAnimationPlaying = false;
+            updateMMDAnimationPlayButtonIcon();
+            if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
             if (mmdContainer) {
                 mmdContainer.classList.add('hidden');
                 mmdContainer.style.display = 'none';
             }
             if (mmdModelGroup) mmdModelGroup.style.display = 'none';
             if (mmdAnimationGroup) mmdAnimationGroup.style.display = 'none';
+            const mmdAnimationActionsGroup = document.getElementById('mmd-animation-actions-group');
+            if (mmdAnimationActionsGroup) mmdAnimationActionsGroup.style.display = 'none';
             // 显示 Live2D 特有的控件
             document.querySelectorAll('.control-group').forEach(group => {
                 if (group.id !== 'live2d-model-group' &&
@@ -1842,7 +1857,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     group.id !== 'vrm-expression-group' &&
                     group.id !== 'vrm-animation-group' &&
                     group.id !== 'mmd-model-group' &&
-                    group.id !== 'mmd-animation-group') {
+                    group.id !== 'mmd-animation-group' &&
+                    group.id !== 'mmd-animation-actions-group') {
                     group.style.display = 'flex';
                 }
             });
@@ -2209,13 +2225,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // MMD 动画选择器显示
                     const mmdAnimationGroup = document.getElementById('mmd-animation-group');
                     if (mmdAnimationGroup) mmdAnimationGroup.style.display = 'flex';
+                    // MMD 动画上传/删除按钮显示
+                    const mmdAnimationActionsGroup = document.getElementById('mmd-animation-actions-group');
+                    if (mmdAnimationActionsGroup) mmdAnimationActionsGroup.style.display = 'flex';
                     try {
                         await loadMMDAnimations();
                     } catch (error) {
                         console.error('加载MMD动画列表失败:', error);
                     }
                     // 从服务器加载MMD设置并应用
-                    loadMmdSettingsFromServer();
+                    await loadMmdSettingsFromServer();
                     // 隐藏 VRM 专属控件
                     const vrmLightingGroup = document.getElementById('vrm-lighting-group');
                     if (vrmLightingGroup) vrmLightingGroup.style.display = 'none';
@@ -2227,9 +2246,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // VRM 子类型：显示 VRM 专属控件，隐藏 MMD 专属控件
                     if (vrmSettingsSection) vrmSettingsSection.style.display = 'block';
                     if (mmdSettingsSection) mmdSettingsSection.style.display = 'none';
+                    // 停止 MMD 动画播放
+                    if (window.mmdManager) {
+                        window.mmdManager.stopAnimation();
+                    }
+                    isMmdAnimationPlaying = false;
+                    updateMMDAnimationPlayButtonIcon();
+                    if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
                     // 隐藏 MMD 动画选择器
                     const mmdAnimationGroup = document.getElementById('mmd-animation-group');
                     if (mmdAnimationGroup) mmdAnimationGroup.style.display = 'none';
+                    // 隐藏 MMD 动画上传/删除按钮
+                    const mmdAnimationActionsGroup = document.getElementById('mmd-animation-actions-group');
+                    if (mmdAnimationActionsGroup) mmdAnimationActionsGroup.style.display = 'none';
                     // 显示 VRM 专属控件（已在上方设置）
                 }
             }
@@ -3324,6 +3353,179 @@ document.addEventListener('DOMContentLoaded', async () => {
         confirmDeleteMMDBtn.addEventListener('click', deleteSelectedMMDModels);
     }
 
+    // ======================== MMD 动画删除 ========================
+
+    const deleteMMDAnimationModal = document.getElementById('delete-mmd-animation-modal');
+    const mmdUserAnimationList = document.getElementById('mmd-user-animation-list');
+    const confirmDeleteMMDAnimationBtn = document.getElementById('confirm-delete-mmd-animation-btn');
+    const cancelDeleteMMDAnimationBtn = document.getElementById('cancel-delete-mmd-animation-btn');
+    const closeDeleteMMDAnimationModal = document.getElementById('close-delete-mmd-animation-modal');
+    let selectedDeleteMMDAnimations = new Set();
+
+    function showDeleteMMDAnimationModal() {
+        if (deleteMMDAnimationModal) {
+            deleteMMDAnimationModal.style.display = 'flex';
+            selectedDeleteMMDAnimations.clear();
+            updateConfirmDeleteMMDAnimationButton();
+            loadMMDUserAnimations();
+        }
+    }
+
+    function hideDeleteMMDAnimationModal() {
+        if (deleteMMDAnimationModal) {
+            deleteMMDAnimationModal.style.display = 'none';
+            selectedDeleteMMDAnimations.clear();
+        }
+    }
+
+    function updateConfirmDeleteMMDAnimationButton() {
+        if (confirmDeleteMMDAnimationBtn) {
+            confirmDeleteMMDAnimationBtn.disabled = selectedDeleteMMDAnimations.size === 0;
+            confirmDeleteMMDAnimationBtn.textContent = selectedDeleteMMDAnimations.size > 0
+                ? t('live2d.mmdAnimation.deleteSelectedCount', '删除选中 ({{count}})', { count: selectedDeleteMMDAnimations.size })
+                : t('live2d.mmdAnimation.deleteSelected', '删除选中');
+        }
+    }
+
+    async function loadMMDUserAnimations() {
+        if (!mmdUserAnimationList) return;
+        mmdUserAnimationList.innerHTML = `<div class="empty-message">${t('common.loading', '加载中...')}</div>`;
+
+        try {
+            const data = await RequestHelper.fetchJson('/api/model/mmd/animations/list');
+            const animations = (data.success && Array.isArray(data.animations)) ? data.animations : [];
+
+            if (animations.length === 0) {
+                mmdUserAnimationList.innerHTML = `<div class="empty-message">${t('live2d.mmdAnimation.noUserAnimations', '暂无可删除的用户VMD动画')}</div>`;
+                return;
+            }
+
+            mmdUserAnimationList.innerHTML = '';
+
+            animations.forEach(anim => {
+                const item = document.createElement('div');
+                item.className = 'model-item';
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.value = anim.url;
+                checkbox.setAttribute('data-name', anim.name);
+
+                checkbox.addEventListener('change', () => {
+                    if (checkbox.checked) {
+                        selectedDeleteMMDAnimations.add(anim.url);
+                    } else {
+                        selectedDeleteMMDAnimations.delete(anim.url);
+                    }
+                    updateConfirmDeleteMMDAnimationButton();
+                });
+
+                const label = document.createElement('label');
+                label.textContent = `${anim.name} (${anim.filename})`;
+
+                item.appendChild(checkbox);
+                item.appendChild(label);
+                mmdUserAnimationList.appendChild(item);
+            });
+        } catch (error) {
+            console.error('加载VMD动画列表失败:', error);
+            mmdUserAnimationList.innerHTML = `<div class="empty-message">${t('common.loadFailed', '加载失败')}</div>`;
+        }
+    }
+
+    async function deleteSelectedMMDAnimations() {
+        if (selectedDeleteMMDAnimations.size === 0) return;
+
+        const confirmDelete = await showConfirm(
+            t('live2d.mmdAnimation.deleteConfirmMessage', '确定要删除选中的 {{count}} 个VMD动画吗？此操作不可恢复。', { count: selectedDeleteMMDAnimations.size }),
+            t('live2d.mmdAnimation.deleteConfirmTitle', '删除VMD动画'),
+            { danger: true }
+        );
+        if (!confirmDelete) return;
+
+        if (confirmDeleteMMDAnimationBtn) {
+            confirmDeleteMMDAnimationBtn.disabled = true;
+            confirmDeleteMMDAnimationBtn.textContent = t('live2d.mmdAnimation.deleting', '删除中...');
+        }
+
+        // 保存当前选择的动画URL，用于删除后恢复或重置
+        const previousAnimUrl = mmdAnimationSelect ? mmdAnimationSelect.value : '';
+        let wasCurrentAnimDeleted = false;
+
+        let successCount = 0;
+        let failCount = 0;
+
+        for (const animUrl of selectedDeleteMMDAnimations) {
+            try {
+                const result = await RequestHelper.fetchJson('/api/model/mmd/animation', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: animUrl })
+                });
+                if (result.success) {
+                    if (window.mmdManager && window.mmdManager.currentAnimationUrl === animUrl) {
+                        window.mmdManager.stopAnimation();
+                        isMmdAnimationPlaying = false;
+                        updateMMDAnimationPlayButtonIcon();
+                        wasCurrentAnimDeleted = true;
+                    }
+                    successCount++;
+                } else {
+                    console.error(`删除 VMD 动画失败: ${animUrl}`, result.error);
+                    failCount++;
+                }
+            } catch (error) {
+                console.error(`删除 VMD 动画出错: ${animUrl}`, error);
+                failCount++;
+            }
+        }
+
+        selectedDeleteMMDAnimations.clear();
+        updateConfirmDeleteMMDAnimationButton();
+        await loadMMDUserAnimations();
+        await loadMMDAnimations();
+
+        // 检查之前选择的动画是否还存在
+        if (mmdAnimationSelect && previousAnimUrl) {
+            const optionExists = Array.from(mmdAnimationSelect.options).some(opt => opt.value === previousAnimUrl);
+            if (optionExists) {
+                // 动画仍然存在，恢复选择
+                mmdAnimationSelect.value = previousAnimUrl;
+                updateMMDAnimationSelectButtonText();
+            } else {
+                // 动画已被删除，确保播放状态完全重置
+                if (!wasCurrentAnimDeleted && window.mmdManager) {
+                    window.mmdManager.stopAnimation();
+                }
+                isMmdAnimationPlaying = false;
+                updateMMDAnimationPlayButtonIcon();
+                if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
+            }
+        }
+
+        if (successCount > 0) {
+            const msg = failCount > 0 
+                ? t('live2d.mmdAnimation.deletePartialSuccess', '成功删除 {{count}} 个VMD动画，{{failed}} 个失败', { count: successCount, failed: failCount })
+                : t('live2d.mmdAnimation.deleteSuccess', '成功删除 {{count}} 个VMD动画', { count: successCount });
+            showStatus(msg, 3000);
+        } else if (failCount > 0) {
+            showStatus(t('live2d.mmdAnimation.deleteFailed', '删除失败: {{count}} 个动画', { count: failCount }), 3000);
+        }
+    }
+
+    if (deleteMmdAnimationBtn) {
+        deleteMmdAnimationBtn.addEventListener('click', showDeleteMMDAnimationModal);
+    }
+    if (cancelDeleteMMDAnimationBtn) {
+        cancelDeleteMMDAnimationBtn.addEventListener('click', hideDeleteMMDAnimationModal);
+    }
+    if (closeDeleteMMDAnimationModal) {
+        closeDeleteMMDAnimationModal.addEventListener('click', hideDeleteMMDAnimationModal);
+    }
+    if (confirmDeleteMMDAnimationBtn) {
+        confirmDeleteMMDAnimationBtn.addEventListener('click', deleteSelectedMMDAnimations);
+    }
+
     // Live3D 合并模型列表：同时加载 VRM 和 MMD 模型到统一的 vrmModelSelect 下拉
     async function loadLive3DModels() {
         try {
@@ -3468,9 +3670,32 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 showStatus('正在加载MMD模型...', 0);
                 if (mmdContainer) mmdContainer.classList.remove('hidden');
+
+                // 在加载新模型前，重置动画播放状态
+                if (window.mmdManager) {
+                    window.mmdManager.stopAnimation();
+                    isMmdAnimationPlaying = false;
+                    updateMMDAnimationPlayButtonIcon();
+                }
+                if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
+
                 if (!window.mmdManager.scene) {
                     await window.mmdManager.init('mmd-canvas', 'mmd-container');
                 }
+                // 预置物理开关，避免 loadModel 时使用默认的 true
+                // 等待进行中的设置加载完成，避免读到过期的 localStorage
+                if (_mmdSettingsLoadPromise) {
+                    await _mmdSettingsLoadPromise;
+                }
+                try {
+                    const savedMmdSettings = localStorage.getItem('mmdSettings');
+                    if (savedMmdSettings) {
+                        const s = JSON.parse(savedMmdSettings);
+                        if (s.physics?.enabled != null) {
+                            window.mmdManager.enablePhysics = !!s.physics.enabled;
+                        }
+                    }
+                } catch (e) { /* ignore */ }
                 await window.mmdManager.loadModel(modelPath);
                 showStatus('MMD模型加载成功', 2000);
             } catch (error) {
@@ -3486,25 +3711,71 @@ document.addEventListener('DOMContentLoaded', async () => {
             const animPath = e.target.value;
             updateMMDAnimationSelectButtonText();
 
-            // 如果选择的是第一个选项（空值），触发文件选择器上传VMD动画
+            // 如果选择的是第一个选项（空值），完全重置播放状态
             if (!animPath) {
-                if (mmdAnimationFileUpload) {
-                    mmdAnimationFileUpload.click();
+                if (window.mmdManager) {
+                    window.mmdManager.stopAnimation();
                 }
-                e.target.value = '';
-                updateMMDAnimationSelectButtonText();
+                isMmdAnimationPlaying = false;
+                updateMMDAnimationPlayButtonIcon();
+                if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
                 return;
             }
 
             if (!window.mmdManager) return;
 
             try {
-                showStatus('正在加载VMD动画...', 0);
+                // 加载新动画前重置播放状态
+                if (isMmdAnimationPlaying) {
+                    window.mmdManager.stopAnimation();
+                    isMmdAnimationPlaying = false;
+                    updateMMDAnimationPlayButtonIcon();
+                }
+                showStatus(t('live2d.mmdAnimation.loading', '正在加载VMD动画...'), 0);
                 await window.mmdManager.loadAnimation(animPath);
-                showStatus('VMD动画加载成功', 2000);
+                showStatus(t('live2d.mmdAnimation.loadSuccess', 'VMD动画加载成功'), 2000);
+                if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
             } catch (error) {
                 console.error('加载VMD动画失败:', error);
-                showStatus(`VMD动画加载失败: ${error.message}`, 3000);
+                showStatus(t('live2d.mmdAnimation.loadFailed', 'VMD动画加载失败: {{error}}', { error: error.message }), 3000);
+                if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
+            }
+        });
+    }
+
+    // 更新MMD动画播放按钮图标
+    function updateMMDAnimationPlayButtonIcon() {
+        if (!playMmdAnimationBtn) return;
+        const icon = playMmdAnimationBtn.querySelector('.mmd-animation-play-icon');
+        if (icon) {
+            if (isMmdAnimationPlaying) {
+                icon.src = '/static/icons/vrm_pause_icon.png?v=1';
+                icon.alt = t('common.pause', '暂停');
+            } else {
+                icon.src = '/static/icons/motion_play_icon.png?v=1';
+                icon.alt = t('common.play', '播放');
+            }
+        }
+    }
+
+    // 播放/停止 MMD 动画
+    if (playMmdAnimationBtn) {
+        playMmdAnimationBtn.addEventListener('click', async () => {
+            if (!window.mmdManager || !mmdAnimationSelect || !mmdAnimationSelect.value) {
+                showStatus(t('live2d.mmdAnimation.selectFirst', '请先选择VMD动画'), 2000);
+                return;
+            }
+
+            if (isMmdAnimationPlaying) {
+                window.mmdManager.stopAnimation();
+                isMmdAnimationPlaying = false;
+                updateMMDAnimationPlayButtonIcon();
+                showStatus(t('live2d.mmdAnimation.stopped', 'VMD动画已停止'), 2000);
+            } else {
+                window.mmdManager.playAnimation();
+                isMmdAnimationPlaying = true;
+                updateMMDAnimationPlayButtonIcon();
+                showStatus(t('live2d.mmdAnimation.playing', 'VMD动画开始播放'), 2000);
             }
         });
     }
@@ -3789,6 +4060,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                     });
                 }
             }
+            // 无色调映射时禁用曝光滑块
+            const isNoToneMapping = value === 0;
+            if (exposureSlider) {
+                exposureSlider.disabled = isNoToneMapping;
+                exposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+            }
+            if (exposureValue) {
+                exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+            }
         });
     }
 
@@ -3978,7 +4258,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 色调映射
         if (mmdTonemappingSelect) {
-            mmdTonemappingSelect.addEventListener('change', () => applyMmdSettings());
+            mmdTonemappingSelect.addEventListener('change', (e) => {
+                applyMmdSettings();
+                // 无色调映射时禁用曝光滑块
+                const value = parseInt(e.target.value);
+                const isNoToneMapping = value === 0;
+                if (mmdExposureSlider) {
+                    mmdExposureSlider.disabled = isNoToneMapping;
+                    mmdExposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+                }
+                const mmdExposureValue = document.getElementById('mmd-exposure-value');
+                if (mmdExposureValue) {
+                    mmdExposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+                }
+            });
         }
 
         // 描边开关
@@ -4110,7 +4403,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
             if (s.rendering) {
-                if (mmdTonemappingSelect && s.rendering.toneMapping != null) mmdTonemappingSelect.value = s.rendering.toneMapping;
+                if (mmdTonemappingSelect && s.rendering.toneMapping != null) {
+                    // 统一使用数值类型，避免字符串和数字混用
+                    const toneMappingValue = Number(s.rendering.toneMapping);
+                    mmdTonemappingSelect.value = toneMappingValue.toString();
+                    // 根据色调映射设置曝光滑块禁用状态
+                    const isNoToneMapping = toneMappingValue === 0;
+                    if (mmdExposureSlider) {
+                        mmdExposureSlider.disabled = isNoToneMapping;
+                        mmdExposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+                    }
+                    const mmdExposureValue = document.getElementById('mmd-exposure-value');
+                    if (mmdExposureValue) {
+                        mmdExposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+                    }
+                }
                 if (mmdExposureSlider && s.rendering.exposure != null) {
                     mmdExposureSlider.value = s.rendering.exposure;
                     const el = document.getElementById('mmd-exposure-value');
@@ -4168,25 +4475,48 @@ document.addEventListener('DOMContentLoaded', async () => {
     /**
      * 从服务器加载MMD设置并应用到UI和场景
      * 在切换到MMD模式时调用
+     * @returns {Promise} 设置加载完成的 Promise
      */
-    async function loadMmdSettingsFromServer() {
-        try {
-            const lanlanName = document.getElementById('lanlan-name')?.textContent?.trim();
-            if (!lanlanName) return;
-            const result = await RequestHelper.fetchJson(
-                `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/mmd_settings`
-            );
-            if (result.success && result.settings) {
-                // 写入 localStorage 并应用到UI
-                localStorage.setItem('mmdSettings', JSON.stringify(result.settings));
-                loadMmdSettingsToUI();
-                // 延迟应用到场景（等待 MMD 模型初始化）
-                setTimeout(() => applyMmdSettings(), 500);
-                console.log('[MMD Settings] 已从服务器加载MMD设置');
-            }
-        } catch (e) {
-            console.warn('[MMD Settings] 从服务器加载MMD设置失败，使用本地缓存:', e);
+    function loadMmdSettingsFromServer() {
+        // 如果已有进行中的加载，返回同一个 Promise，避免重复请求
+        if (_mmdSettingsLoadPromise) {
+            return _mmdSettingsLoadPromise;
         }
+        _mmdSettingsLoadPromise = (async () => {
+            try {
+                // 优先使用 getLanlanName() 获取角色名，fallback 到 DOM
+                let lanlanName = await getLanlanName();
+                if (!lanlanName) {
+                    lanlanName = document.getElementById('lanlan-name')?.textContent?.trim();
+                }
+                // 角色名仍然缺失时，应用本地缓存的设置而非静默返回
+                if (!lanlanName) {
+                    console.warn('[MMD Settings] 角色名缺失，应用本地缓存设置');
+                    loadMmdSettingsToUI();
+                    setTimeout(() => applyMmdSettings(), 100);
+                    return;
+                }
+                const result = await RequestHelper.fetchJson(
+                    `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/mmd_settings`
+                );
+                if (result.success && result.settings) {
+                    // 写入 localStorage 并应用到UI
+                    localStorage.setItem('mmdSettings', JSON.stringify(result.settings));
+                    loadMmdSettingsToUI();
+                    // 延迟应用到场景（等待 MMD 模型初始化）
+                    setTimeout(() => applyMmdSettings(), 500);
+                    console.log('[MMD Settings] 已从服务器加载MMD设置');
+                }
+            } catch (e) {
+                console.warn('[MMD Settings] 从服务器加载MMD设置失败，使用本地缓存:', e);
+                // 服务器加载失败时也尝试应用本地缓存
+                loadMmdSettingsToUI();
+                setTimeout(() => applyMmdSettings(), 100);
+            } finally {
+                _mmdSettingsLoadPromise = null;
+            }
+        })();
+        return _mmdSettingsLoadPromise;
     }
 
 
@@ -4262,9 +4592,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         if (tonemappingSelect && lighting.toneMapping !== undefined) {
-            tonemappingSelect.value = lighting.toneMapping.toString();
+            // 统一使用数值类型，避免字符串和数字混用
+            const toneMappingValue = Number(lighting.toneMapping);
+            tonemappingSelect.value = toneMappingValue.toString();
             if (vrmManager.renderer) {
-                vrmManager.renderer.toneMapping = lighting.toneMapping;
+                vrmManager.renderer.toneMapping = toneMappingValue;
+            }
+            // 根据色调映射设置曝光滑块禁用状态
+            const isNoToneMapping = toneMappingValue === 0;
+            if (exposureSlider) {
+                exposureSlider.disabled = isNoToneMapping;
+                exposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+            }
+            if (exposureValue) {
+                exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
             }
         }
 
@@ -5174,7 +5515,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const result = await response.json();
                 if (result.success) {
                     showStatus(`MMD模型 ${result.filename || file.name} 上传成功`, 2000);
-                    await loadMMDModels();
+                    if (currentModelType === 'live3d') {
+                        // 保存当前选中值，loadLive3DModels 会重建 vrmModelSelect
+                        const prevValue = vrmModelSelect ? vrmModelSelect.value : '';
+                        await loadLive3DModels();
+                        // 恢复之前的选中项（如果仍存在）
+                        if (prevValue && vrmModelSelect) {
+                            const match = Array.from(vrmModelSelect.options).find(opt => opt.value === prevValue);
+                            if (match) {
+                                vrmModelSelect.value = prevValue;
+                                updateVRMModelSelectButtonText();
+                            }
+                        }
+                    } else {
+                        await loadMMDModels();
+                    }
                 } else {
                     showStatus(`上传失败: ${result.error}`, 3000);
                 }
@@ -5194,13 +5549,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             const file = e.target.files[0];
             if (!file) return;
 
-            if (!file.name.toLowerCase().endsWith('.vmd')) {
-                showStatus('请选择 .vmd 文件', 3000);
+            // 防止重复上传
+            if (isMmdAnimationUploading) {
                 mmdAnimationFileUpload.value = '';
                 return;
             }
 
-            showStatus('正在上传VMD动画...', 0);
+            if (!file.name.toLowerCase().endsWith('.vmd')) {
+                showStatus(t('live2d.mmdAnimation.selectVmdFile', '请选择 .vmd 文件'), 3000);
+                mmdAnimationFileUpload.value = '';
+                return;
+            }
+
+            isMmdAnimationUploading = true;
+            if (uploadMmdAnimationBtn) uploadMmdAnimationBtn.disabled = true;
+            showStatus(t('live2d.mmdAnimation.uploading', '正在上传VMD动画...'), 0);
             setControlsDisabled(true);
             try {
                 const formData = new FormData();
@@ -5211,17 +5574,56 @@ document.addEventListener('DOMContentLoaded', async () => {
                 });
                 const result = await response.json();
                 if (result.success) {
-                    showStatus(`VMD动画 ${result.filename || file.name} 上传成功`, 2000);
+                    // 保存当前选择状态
+                    const savedAnimUrl = mmdAnimationSelect ? mmdAnimationSelect.value : '';
+                    const savedIsPlaying = isMmdAnimationPlaying;
+                    
                     await loadMMDAnimations();
+                    
+                    // 恢复选择状态
+                    if (mmdAnimationSelect) {
+                        // 优先选择新上传的动画，否则恢复之前的选择
+                        const newFilename = result.filename || file.name;
+                        const newOption = Array.from(mmdAnimationSelect.options).find(opt => {
+                            const optFilename = opt.getAttribute('data-filename') || opt.textContent;
+                            return optFilename === newFilename;
+                        });
+                        
+                        if (newOption) {
+                            mmdAnimationSelect.value = newOption.value;
+                        } else if (savedAnimUrl) {
+                            const optionExists = Array.from(mmdAnimationSelect.options).some(opt => opt.value === savedAnimUrl);
+                            if (optionExists) {
+                                mmdAnimationSelect.value = savedAnimUrl;
+                            }
+                        }
+                        updateMMDAnimationSelectButtonText();
+                    }
+                    
+                    // 恢复播放状态
+                    isMmdAnimationPlaying = savedIsPlaying;
+                    
+                    showStatus(t('live2d.mmdAnimation.uploadSuccess', 'VMD动画 {{name}} 上传成功', { name: result.filename || file.name }), 2000);
                 } else {
-                    showStatus(`上传失败: ${result.error}`, 3000);
+                    showStatus(t('live2d.mmdAnimation.uploadFailed', '上传失败: {{error}}', { error: result.error }), 3000);
                 }
             } catch (error) {
                 console.error('上传VMD动画失败:', error);
-                showStatus(`上传失败: ${error.message}`, 3000);
+                showStatus(t('live2d.mmdAnimation.uploadFailed', '上传失败: {{error}}', { error: error.message }), 3000);
             } finally {
+                isMmdAnimationUploading = false;
+                if (uploadMmdAnimationBtn) uploadMmdAnimationBtn.disabled = false;
                 setControlsDisabled(false);
                 mmdAnimationFileUpload.value = '';
+            }
+        });
+    }
+
+    // VMD动画上传按钮点击事件
+    if (uploadMmdAnimationBtn) {
+        uploadMmdAnimationBtn.addEventListener('click', () => {
+            if (mmdAnimationFileUpload) {
+                mmdAnimationFileUpload.click();
             }
         });
     }
@@ -5535,10 +5937,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 }
 
-                // 重新加载VRM模型列表
+                // 重新加载模型列表（Live3D 模式下需同时包含 MMD 模型）
                 setTimeout(async () => {
                     try {
-                        await loadVRMModels();
+                        // 保存当前选中值，loadLive3DModels/loadVRMModels 会重建 vrmModelSelect
+                        const prevValue = vrmModelSelect ? vrmModelSelect.value : '';
+                        if (currentModelType === 'live3d') {
+                            await loadLive3DModels();
+                        } else {
+                            await loadVRMModels();
+                        }
                         // 自动选择新上传的模型
                         if (result.model_path && vrmModelSelect) {
                             // 尝试匹配模型路径
@@ -5558,6 +5966,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 vrmModelSelect.value = option.value;
                                 // 触发change事件以加载模型
                                 vrmModelSelect.dispatchEvent(new Event('change'));
+                            } else if (prevValue) {
+                                // 新模型未匹配到，恢复之前的选中项
+                                const restore = Array.from(vrmModelSelect.options).find(opt => opt.value === prevValue);
+                                if (restore) {
+                                    vrmModelSelect.value = prevValue;
+                                    updateVRMModelSelectButtonText();
+                                }
                             } else {
                                 console.warn('无法自动选择上传的模型，请手动选择');
                             }

@@ -3527,14 +3527,26 @@ async function clearLive2DPreview(showModelNotSetMessage = false) {
             placeholder.style.display = 'flex';
             // 根据参数显示不同的提示文本
             const span = placeholder.querySelector('span');
+            const getText = (key, fallback) => {
+                if (!window.t) return fallback;
+                const raw = window.t(key);
+                return (raw && typeof raw === 'string' && raw !== key) ? raw : fallback;
+            };
+            const modelNotSetText = getText('steam.characterModelNotSet', '当前角色未设置模型');
+            const selectCharText = getText('steam.selectCharaToPreview', '请选择角色进行预览');
+            const isModelNotSet = showModelNotSetMessage === true;
             if (span) {
-                if (showModelNotSetMessage) {
-                    span.textContent = window.t ? window.t('steam.characterModelNotSet') : '当前角色未设置模型';
+                if (isModelNotSet) {
+                    span.textContent = modelNotSetText;
                     span.setAttribute('data-i18n', 'steam.characterModelNotSet');
                 } else {
-                    span.textContent = window.t ? window.t('steam.selectCharaToPreview') : '请选择角色进行预览';
+                    span.textContent = selectCharText;
                     span.setAttribute('data-i18n', 'steam.selectCharaToPreview');
                 }
+            }
+            // 同步更新环形文字
+            if (typeof buildPreviewRing === 'function') {
+                buildPreviewRing(isModelNotSet ? modelNotSetText : selectCharText);
             }
         }
 

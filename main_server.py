@@ -884,6 +884,7 @@ async def on_startup():
             from utils.token_tracker import TokenTracker, install_hooks
             install_hooks()
             TokenTracker.get_instance().start_periodic_save()
+            TokenTracker.get_instance().record_app_start()
             logger.info("Token usage tracker initialized")
         except Exception as e:
             logger.warning(f"Token tracker initialization failed (non-critical): {e}")
