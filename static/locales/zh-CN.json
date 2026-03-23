@@ -944,6 +944,7 @@
         "mmdAnimation": {
             "selectAnimation": "选择VMD动画",
             "noAnimation": "无动画",
+            "play": "播放",
             "uploadAnimation": "导入VMD动画",
             "deleteAnimation": "删除VMD动画",
             "deleteAnimationTitle": "删除已导入VMD动画",
@@ -964,7 +965,9 @@
             "uploadSuccess": "VMD动画 {{name}} 上传成功",
             "uploadFailed": "上传失败: {{error}}",
             "deleteSuccess": "成功删除 {{count}} 个VMD动画",
-            "deleteFailed": "删除失败: {{count}} 个动画"
+            "deleteFailed": "删除失败: {{count}} 个动画",
+            "deleteSelectedCount": "删除选中 ({{count}})",
+            "deletePartialSuccess": "成功删除 {{count}} 个VMD动画，{{failed}} 个失败"
         },
         "modelFilesFetchFailed": "无法获取模型文件列表",
         "modelConfigFetchFailed": "无法获取模型配置: {{status}}",

@@ -944,6 +944,7 @@
         "mmdAnimation": {
             "selectAnimation": "Select VMD Animation",
             "noAnimation": "No Animation",
+            "play": "Play",
             "uploadAnimation": "Import VMD Animation",
             "deleteAnimation": "Delete VMD Animation",
             "deleteAnimationTitle": "Delete Imported VMD Animations",
@@ -964,7 +965,9 @@
             "uploadSuccess": "VMD animation {{name}} uploaded successfully",
             "uploadFailed": "Upload failed: {{error}}",
             "deleteSuccess": "Successfully deleted {{count}} VMD animation(s)",
-            "deleteFailed": "Failed to delete: {{count}} animation(s)"
+            "deleteFailed": "Failed to delete: {{count}} animation(s)",
+            "deleteSelectedCount": "Delete Selected ({{count}})",
+            "deletePartialSuccess": "Successfully deleted {{count}} VMD animation(s), {{failed}} failed"
         },
         "modelFilesFetchFailed": "Failed to fetch model files list",
         "modelConfigFetchFailed": "Failed to fetch model config: {{status}}",

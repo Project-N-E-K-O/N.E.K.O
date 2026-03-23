@@ -944,6 +944,7 @@
         "mmdAnimation": {
             "selectAnimation": "VMD 애니메이션 선택",
             "noAnimation": "애니메이션 없음",
+            "play": "재생",
             "uploadAnimation": "VMD 애니메이션 가져오기",
             "deleteAnimation": "VMD 애니메이션 삭제",
             "deleteAnimationTitle": "가져온 VMD 애니메이션 삭제",
@@ -964,7 +965,9 @@
             "uploadSuccess": "VMD 애니메이션 {{name}} 업로드 성공",
             "uploadFailed": "업로드 실패: {{error}}",
             "deleteSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공",
-            "deleteFailed": "삭제 실패: {{count}}개의 애니메이션"
+            "deleteFailed": "삭제 실패: {{count}}개의 애니메이션",
+            "deleteSelectedCount": "선택 삭제 ({{count}})",
+            "deletePartialSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공, {{failed}}개 실패"
         },
         "modelFilesFetchFailed": "모델 파일 목록을 가져오지 못했습니다.",
         "modelConfigFetchFailed": "모델 구성을 가져오지 못했습니다: {{status}}",

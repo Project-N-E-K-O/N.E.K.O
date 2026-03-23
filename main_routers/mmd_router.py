@@ -827,14 +827,15 @@ async def list_mmd_animations_for_delete(request: Request):
         animations = []
 
         if user_anim_dir.exists():
-            for vmd_file in user_anim_dir.glob('*.vmd'):
-                rel_path = vmd_file.relative_to(mmd_dir)
-                animations.append({
-                    "name": vmd_file.stem,
-                    "filename": vmd_file.name,
-                    "url": f"{MMD_USER_PATH}/{rel_path}",
-                    "path": str(rel_path)
-                })
+            for vmd_file in user_anim_dir.iterdir():
+                if vmd_file.is_file() and vmd_file.suffix.lower() == '.vmd':
+                    rel_path = vmd_file.relative_to(mmd_dir)
+                    animations.append({
+                        "name": vmd_file.stem,
+                        "filename": vmd_file.name,
+                        "url": f"{MMD_USER_PATH}/{rel_path.as_posix()}",
+                        "path": rel_path.as_posix()
+                    })
 
         return JSONResponse(content={"success": True, "animations": animations})
     except Exception as e:

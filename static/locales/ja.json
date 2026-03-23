@@ -944,6 +944,7 @@
         "mmdAnimation": {
             "selectAnimation": "VMDアニメーションを選択",
             "noAnimation": "アニメーションなし",
+            "play": "再生",
             "uploadAnimation": "VMDアニメーションをインポート",
             "deleteAnimation": "VMDアニメーションを削除",
             "deleteAnimationTitle": "インポート済みVMDアニメーションを削除",
@@ -964,7 +965,9 @@
             "uploadSuccess": "VMDアニメーション {{name}} のアップロードに成功しました",
             "uploadFailed": "アップロードに失敗しました: {{error}}",
             "deleteSuccess": "{{count}}個のVMDアニメーションを削除しました",
-            "deleteFailed": "削除に失敗しました: {{count}}個のアニメーション"
+            "deleteFailed": "削除に失敗しました: {{count}}個のアニメーション",
+            "deleteSelectedCount": "選択を削除 ({{count}})",
+            "deletePartialSuccess": "{{count}}個のVMDアニメーションを削除、{{failed}}個失敗"
         },
         "modelFilesFetchFailed": "モデルファイルリスト取得失敗",
         "modelConfigFetchFailed": "モデル設定取得失敗: {{status}}",

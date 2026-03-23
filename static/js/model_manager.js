@@ -1840,6 +1840,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             if (mmdModelGroup) mmdModelGroup.style.display = 'none';
             if (mmdAnimationGroup) mmdAnimationGroup.style.display = 'none';
+            const mmdAnimationActionsGroup = document.getElementById('mmd-animation-actions-group');
+            if (mmdAnimationActionsGroup) mmdAnimationActionsGroup.style.display = 'none';
             // 显示 Live2D 特有的控件
             document.querySelectorAll('.control-group').forEach(group => {
                 if (group.id !== 'live2d-model-group' &&
@@ -3364,8 +3366,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (confirmDeleteMMDAnimationBtn) {
             confirmDeleteMMDAnimationBtn.disabled = selectedDeleteMMDAnimations.size === 0;
             confirmDeleteMMDAnimationBtn.textContent = selectedDeleteMMDAnimations.size > 0
-                ? `删除选中 (${selectedDeleteMMDAnimations.size})`
-                : '删除选中';
+                ? t('live2d.mmdAnimation.deleteSelectedCount', '删除选中 ({{count}})', { count: selectedDeleteMMDAnimations.size })
+                : t('live2d.mmdAnimation.deleteSelected', '删除选中');
         }
     }
 
@@ -3441,6 +3443,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     body: JSON.stringify({ url: animUrl })
                 });
                 if (result.success) {
+                    if (window.mmdManager && window.mmdManager.currentAnimationUrl === animUrl) {
+                        window.mmdManager.stopAnimation();
+                        isMmdAnimationPlaying = false;
+                        updateMMDAnimationPlayButtonIcon();
+                    }
                     successCount++;
                 } else {
                     console.error(`删除 VMD 动画失败: ${animUrl}`, result.error);
@@ -3459,7 +3466,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (successCount > 0) {
             const msg = failCount > 0 
-                ? `${t('live2d.mmdAnimation.deleteSuccess', '成功删除 {{count}} 个VMD动画', { count: successCount })}，${failCount} 个失败`
+                ? t('live2d.mmdAnimation.deletePartialSuccess', '成功删除 {{count}} 个VMD动画，{{failed}} 个失败', { count: successCount, failed: failCount })
                 : t('live2d.mmdAnimation.deleteSuccess', '成功删除 {{count}} 个VMD动画', { count: successCount });
             showStatus(msg, 3000);
         } else if (failCount > 0) {
@@ -3651,8 +3658,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             const animPath = e.target.value;
             updateMMDAnimationSelectButtonText();
 
-            // 如果选择的是第一个选项（空值），仅重置状态
+            // 如果选择的是第一个选项（空值），完全重置播放状态
             if (!animPath) {
+                if (window.mmdManager) {
+                    window.mmdManager.stopAnimation();
+                }
+                isMmdAnimationPlaying = false;
+                updateMMDAnimationPlayButtonIcon();
                 if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
                 return;
             }
@@ -3660,6 +3672,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!window.mmdManager) return;
 
             try {
+                // 加载新动画前重置播放状态
+                if (isMmdAnimationPlaying) {
+                    window.mmdManager.stopAnimation();
+                    isMmdAnimationPlaying = false;
+                    updateMMDAnimationPlayButtonIcon();
+                }
                 showStatus(t('live2d.mmdAnimation.loading', '正在加载VMD动画...'), 0);
                 await window.mmdManager.loadAnimation(animPath);
                 showStatus(t('live2d.mmdAnimation.loadSuccess', 'VMD动画加载成功'), 2000);

@@ -944,6 +944,7 @@
         "mmdAnimation": {
             "selectAnimation": "選擇VMD動畫",
             "noAnimation": "無動畫",
+            "play": "播放",
             "uploadAnimation": "導入VMD動畫",
             "deleteAnimation": "刪除VMD動畫",
             "deleteAnimationTitle": "刪除已導入VMD動畫",
@@ -964,7 +965,9 @@
             "uploadSuccess": "VMD動畫 {{name}} 上傳成功",
             "uploadFailed": "上傳失敗: {{error}}",
             "deleteSuccess": "成功刪除 {{count}} 個VMD動畫",
-            "deleteFailed": "刪除失敗: {{count}} 個動畫"
+            "deleteFailed": "刪除失敗: {{count}} 個動畫",
+            "deleteSelectedCount": "刪除選中 ({{count}})",
+            "deletePartialSuccess": "成功刪除 {{count}} 個VMD動畫，{{failed}} 個失敗"
         },
         "modelFilesFetchFailed": "無法獲取模型文件列錶",
         "modelConfigFetchFailed": "無法獲取模型配置: {{status}}",

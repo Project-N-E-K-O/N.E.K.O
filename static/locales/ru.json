@@ -944,6 +944,7 @@
         "mmdAnimation": {
             "selectAnimation": "Выбрать VMD анимацию",
             "noAnimation": "Без анимации",
+            "play": "Воспроизвести",
             "uploadAnimation": "Импортировать VMD анимацию",
             "deleteAnimation": "Удалить VMD анимацию",
             "deleteAnimationTitle": "Удалить импортированные VMD анимации",
@@ -964,7 +965,9 @@
             "uploadSuccess": "VMD анимация {{name}} успешно загружена",
             "uploadFailed": "Ошибка загрузки: {{error}}",
             "deleteSuccess": "Успешно удалено {{count}} VMD анимаций",
-            "deleteFailed": "Ошибка удаления: {{count}} анимаций"
+            "deleteFailed": "Ошибка удаления: {{count}} анимаций",
+            "deleteSelectedCount": "Удалить выбранные ({{count}})",
+            "deletePartialSuccess": "Успешно удалено {{count}} VMD анимаций, {{failed}} с ошибкой"
         },
         "modelFilesFetchFailed": "Не удалось получить список файлов модели",
         "modelConfigFetchFailed": "Не удалось получить конфигурацию модели: {{status}}",
