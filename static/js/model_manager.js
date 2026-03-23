@@ -3681,6 +3681,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (!window.mmdManager.scene) {
                     await window.mmdManager.init('mmd-canvas', 'mmd-container');
                 }
+                // 预置物理开关，避免 loadModel 时使用默认的 true
+                try {
+                    const savedMmdSettings = localStorage.getItem('mmdSettings');
+                    if (savedMmdSettings) {
+                        const s = JSON.parse(savedMmdSettings);
+                        if (s.physics?.enabled != null) {
+                            window.mmdManager.enablePhysics = !!s.physics.enabled;
+                        }
+                    }
+                } catch (e) { /* ignore */ }
                 await window.mmdManager.loadModel(modelPath);
                 showStatus('MMD模型加载成功', 2000);
             } catch (error) {
