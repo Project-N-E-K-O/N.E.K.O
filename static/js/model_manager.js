@@ -4391,7 +4391,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (mmdTonemappingSelect && s.rendering.toneMapping != null) {
                     mmdTonemappingSelect.value = s.rendering.toneMapping;
                     // 根据色调映射设置曝光滑块禁用状态
-                    const isNoToneMapping = s.rendering.toneMapping === 0;
+                    const toneMappingValue = Number(s.rendering.toneMapping);
+                    const isNoToneMapping = toneMappingValue === 0;
                     if (mmdExposureSlider) {
                         mmdExposureSlider.disabled = isNoToneMapping;
                         mmdExposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
@@ -4557,7 +4558,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 vrmManager.renderer.toneMapping = lighting.toneMapping;
             }
             // 根据色调映射设置曝光滑块禁用状态
-            const isNoToneMapping = lighting.toneMapping === 0;
+            const toneMappingValue = Number(lighting.toneMapping);
+            const isNoToneMapping = toneMappingValue === 0;
             if (exposureSlider) {
                 exposureSlider.disabled = isNoToneMapping;
                 exposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
