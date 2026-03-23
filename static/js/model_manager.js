@@ -1380,6 +1380,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let animationsLoaded = false; // 标记VRM动作列表是否已加载
     let mmdModels = []; // MMD 模型列表
     let mmdAnimations = []; // MMD 动画列表
+    let _mmdSettingsLoadPromise = null; // 追踪进行中的 MMD 设置加载 Promise
 
     const showStatus = (msg, duration = 0) => {
         // 更新状态文本（保持图标结构）
@@ -2233,7 +2234,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         console.error('加载MMD动画列表失败:', error);
                     }
                     // 从服务器加载MMD设置并应用
-                    loadMmdSettingsFromServer();
+                    await loadMmdSettingsFromServer();
                     // 隐藏 VRM 专属控件
                     const vrmLightingGroup = document.getElementById('vrm-lighting-group');
                     if (vrmLightingGroup) vrmLightingGroup.style.display = 'none';
@@ -3681,6 +3682,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (!window.mmdManager.scene) {
                     await window.mmdManager.init('mmd-canvas', 'mmd-container');
                 }
+                // 预置物理开关，避免 loadModel 时使用默认的 true
+                // 等待进行中的设置加载完成，避免读到过期的 localStorage
+                if (_mmdSettingsLoadPromise) {
+                    await _mmdSettingsLoadPromise;
+                }
+                try {
+                    const savedMmdSettings = localStorage.getItem('mmdSettings');
+                    if (savedMmdSettings) {
+                        const s = JSON.parse(savedMmdSettings);
+                        if (s.physics?.enabled != null) {
+                            window.mmdManager.enablePhysics = !!s.physics.enabled;
+                        }
+                    }
+                } catch (e) { /* ignore */ }
                 await window.mmdManager.loadModel(modelPath);
                 showStatus('MMD模型加载成功', 2000);
             } catch (error) {
@@ -4045,6 +4060,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                     });
                 }
             }
+            // 无色调映射时禁用曝光滑块
+            const isNoToneMapping = value === 0;
+            if (exposureSlider) {
+                exposureSlider.disabled = isNoToneMapping;
+                exposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+            }
+            if (exposureValue) {
+                exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+            }
         });
     }
 
@@ -4234,7 +4258,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 色调映射
         if (mmdTonemappingSelect) {
-            mmdTonemappingSelect.addEventListener('change', () => applyMmdSettings());
+            mmdTonemappingSelect.addEventListener('change', (e) => {
+                applyMmdSettings();
+                // 无色调映射时禁用曝光滑块
+                const value = parseInt(e.target.value);
+                const isNoToneMapping = value === 0;
+                if (mmdExposureSlider) {
+                    mmdExposureSlider.disabled = isNoToneMapping;
+                    mmdExposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+                }
+                const mmdExposureValue = document.getElementById('mmd-exposure-value');
+                if (mmdExposureValue) {
+                    mmdExposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+                }
+            });
         }
 
         // 描边开关
@@ -4366,7 +4403,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
             if (s.rendering) {
-                if (mmdTonemappingSelect && s.rendering.toneMapping != null) mmdTonemappingSelect.value = s.rendering.toneMapping;
+                if (mmdTonemappingSelect && s.rendering.toneMapping != null) {
+                    // 统一使用数值类型，避免字符串和数字混用
+                    const toneMappingValue = Number(s.rendering.toneMapping);
+                    mmdTonemappingSelect.value = toneMappingValue.toString();
+                    // 根据色调映射设置曝光滑块禁用状态
+                    const isNoToneMapping = toneMappingValue === 0;
+                    if (mmdExposureSlider) {
+                        mmdExposureSlider.disabled = isNoToneMapping;
+                        mmdExposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+                    }
+                    const mmdExposureValue = document.getElementById('mmd-exposure-value');
+                    if (mmdExposureValue) {
+                        mmdExposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+                    }
+                }
                 if (mmdExposureSlider && s.rendering.exposure != null) {
                     mmdExposureSlider.value = s.rendering.exposure;
                     const el = document.getElementById('mmd-exposure-value');
@@ -4424,25 +4475,48 @@ document.addEventListener('DOMContentLoaded', async () => {
     /**
      * 从服务器加载MMD设置并应用到UI和场景
      * 在切换到MMD模式时调用
+     * @returns {Promise} 设置加载完成的 Promise
      */
-    async function loadMmdSettingsFromServer() {
-        try {
-            const lanlanName = document.getElementById('lanlan-name')?.textContent?.trim();
-            if (!lanlanName) return;
-            const result = await RequestHelper.fetchJson(
-                `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/mmd_settings`
-            );
-            if (result.success && result.settings) {
-                // 写入 localStorage 并应用到UI
-                localStorage.setItem('mmdSettings', JSON.stringify(result.settings));
-                loadMmdSettingsToUI();
-                // 延迟应用到场景（等待 MMD 模型初始化）
-                setTimeout(() => applyMmdSettings(), 500);
-                console.log('[MMD Settings] 已从服务器加载MMD设置');
-            }
-        } catch (e) {
-            console.warn('[MMD Settings] 从服务器加载MMD设置失败，使用本地缓存:', e);
+    function loadMmdSettingsFromServer() {
+        // 如果已有进行中的加载，返回同一个 Promise，避免重复请求
+        if (_mmdSettingsLoadPromise) {
+            return _mmdSettingsLoadPromise;
         }
+        _mmdSettingsLoadPromise = (async () => {
+            try {
+                // 优先使用 getLanlanName() 获取角色名，fallback 到 DOM
+                let lanlanName = await getLanlanName();
+                if (!lanlanName) {
+                    lanlanName = document.getElementById('lanlan-name')?.textContent?.trim();
+                }
+                // 角色名仍然缺失时，应用本地缓存的设置而非静默返回
+                if (!lanlanName) {
+                    console.warn('[MMD Settings] 角色名缺失，应用本地缓存设置');
+                    loadMmdSettingsToUI();
+                    setTimeout(() => applyMmdSettings(), 100);
+                    return;
+                }
+                const result = await RequestHelper.fetchJson(
+                    `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/mmd_settings`
+                );
+                if (result.success && result.settings) {
+                    // 写入 localStorage 并应用到UI
+                    localStorage.setItem('mmdSettings', JSON.stringify(result.settings));
+                    loadMmdSettingsToUI();
+                    // 延迟应用到场景（等待 MMD 模型初始化）
+                    setTimeout(() => applyMmdSettings(), 500);
+                    console.log('[MMD Settings] 已从服务器加载MMD设置');
+                }
+            } catch (e) {
+                console.warn('[MMD Settings] 从服务器加载MMD设置失败，使用本地缓存:', e);
+                // 服务器加载失败时也尝试应用本地缓存
+                loadMmdSettingsToUI();
+                setTimeout(() => applyMmdSettings(), 100);
+            } finally {
+                _mmdSettingsLoadPromise = null;
+            }
+        })();
+        return _mmdSettingsLoadPromise;
     }
 
 
@@ -4518,9 +4592,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         if (tonemappingSelect && lighting.toneMapping !== undefined) {
-            tonemappingSelect.value = lighting.toneMapping.toString();
+            // 统一使用数值类型，避免字符串和数字混用
+            const toneMappingValue = Number(lighting.toneMapping);
+            tonemappingSelect.value = toneMappingValue.toString();
             if (vrmManager.renderer) {
-                vrmManager.renderer.toneMapping = lighting.toneMapping;
+                vrmManager.renderer.toneMapping = toneMappingValue;
+            }
+            // 根据色调映射设置曝光滑块禁用状态
+            const isNoToneMapping = toneMappingValue === 0;
+            if (exposureSlider) {
+                exposureSlider.disabled = isNoToneMapping;
+                exposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+            }
+            if (exposureValue) {
+                exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
             }
         }
 

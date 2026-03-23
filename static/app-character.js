@@ -887,18 +887,24 @@
                 if (window.mmdManager) {
                     // 重置 goodbyeClicked 标志
                     window.mmdManager._goodbyeClicked = false;
-                    await window.mmdManager.loadModel(mmdModelUrl);
-                    console.log('[猫娘切换] MMD 模型加载完成');
-
-                    // 从后端获取并应用 MMD 设置（光照、渲染、物理、鼠标跟踪）
+                    // 提前获取设置并预置物理开关
+                    let savedSettings = null;
                     try {
                         const settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(newCatgirl) + '/mmd_settings');
                         const settingsData = await settingsRes.json();
                         if (settingsData.success && settingsData.settings) {
-                            window.mmdManager.applySettings(settingsData.settings);
+                            savedSettings = settingsData.settings;
+                            if (savedSettings.physics?.enabled != null) {
+                                window.mmdManager.enablePhysics = !!savedSettings.physics.enabled;
+                            }
                         }
-                    } catch (settingsErr) {
-                        console.warn('[猫娘切换] 获取MMD设置失败:', settingsErr);
+                    } catch (e) { /* ignore - will use current enablePhysics */ }
+                    await window.mmdManager.loadModel(mmdModelUrl);
+                    console.log('[猫娘切换] MMD 模型加载完成');
+
+                    // 应用完整设置（光照、渲染、物理、鼠标跟踪）
+                    if (savedSettings) {
+                        window.mmdManager.applySettings(savedSettings);
                     }
                 } else {
                     console.error('[猫娘切换] MMD 管理器初始化失败');

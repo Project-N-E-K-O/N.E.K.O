@@ -21,6 +21,23 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Main")
 
 
+def _record_tts_telemetry(model_name: str, text: str):
+    """Record TTS usage telemetry via TokenTracker."""
+    if not text or not text.strip():
+        return
+    try:
+        from utils.token_tracker import TokenTracker
+        TokenTracker.get_instance().record(
+            model=f"tts:{model_name}",
+            prompt_tokens=len(text),
+            completion_tokens=0,
+            total_tokens=len(text),
+            call_type='tts'
+        )
+    except Exception:
+        pass
+
+
 class CustomTTSVoiceFetchError(Exception):
     """Raised when custom TTS voice list cannot be fetched from provider."""
 
@@ -448,12 +465,14 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         
                     except Exception as e:
                         logger.error(f"重新建立连接失败: {e}")
+                        response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+                        await asyncio.sleep(1.0)
                         continue
-                
+
                 # 检查文本有效性
                 if not tts_text or not tts_text.strip():
                     continue
-                
+
                 if not ws or not session_id:
                     continue
                 
@@ -467,6 +486,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         }
                     }
                     await ws.send(json.dumps(text_event))
+                    _record_tts_telemetry("stepfun", tts_text)
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     # 连接已关闭，标记为无效以便下次重连
@@ -740,12 +760,14 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         
                     except Exception as e:
                         logger.error(f"重新建立连接失败: {e}")
+                        response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+                        await asyncio.sleep(1.0)
                         continue
-                
+
                 # 检查文本有效性
                 if not tts_text or not tts_text.strip():
                     continue
-                
+
                 if not ws or not session_ready.is_set():
                     continue
                 
@@ -756,6 +778,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         "event_id": f"event_{int(time.time() * 1000)}",
                         "text": tts_text
                     }))
+                    _record_tts_telemetry("qwen", tts_text)
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     # 连接已关闭，标记为无效以便下次重连
@@ -862,10 +885,14 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             finally:
                 self.reset_bootstrap_state()
                 
-        def on_error(self, message: str): 
+        def on_error(self, message: str):
             if "request timeout after 23 seconds" in message:
                 self.connection_lost = True
                 logger.debug("CosyVoice SDK 内部 WebSocket 空闲超时，标记连接已断开")
+            elif "request timeout" in message:
+                self.connection_lost = True
+                logger.warning(f"CosyVoice 请求超时，标记连接已断开: {message}")
+                self.response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
             else:
                 _enqueue_error(self.response_queue, message)
             
@@ -941,6 +968,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             synthesizer = _create_synthesizer(detected_lang)
             callback.accepted_speech_id = current_speech_id
         synthesizer.streaming_call(char_buffer)
+        _record_tts_telemetry("cosyvoice", char_buffer)
         last_streaming_call_time = time.time()
         char_buffer = ""
 
@@ -1059,6 +1087,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 synthesizer = _create_synthesizer(detected_lang)
                 callback.accepted_speech_id = current_speech_id
                 synthesizer.streaming_call(char_buffer)
+                _record_tts_telemetry("cosyvoice", char_buffer)
                 last_streaming_call_time = time.time()
                 char_buffer = ""
             except Exception as e:
@@ -1092,6 +1121,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     last_streaming_call_time = time.time()
                 except Exception as reconnect_error:
                     logger.error(f"TTS Reconnect Error: {reconnect_error}")
+                    response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+                    time.sleep(1.0)
                     synthesizer = None
                     current_speech_id = None
                     last_streaming_call_time = None
@@ -1174,6 +1205,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                 ) as session:
                                     async with session.post(tts_url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                                         if resp.status == 200:
+                                            _record_tts_telemetry("cogtts", full_text[:1024])
                                             # CogTTS返回SSE格式: data: {...JSON...}
                                             # 使用缓冲区逐块读取，避免 "Chunk too big" 错误
                                             buffer = ""
@@ -1403,6 +1435,7 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                     _enqueue_error(response_queue, f"Gemini TTS失败: {e}")
 
                         if audio_data:
+                            _record_tts_telemetry("gemini", full_text)
                             audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
                             resampled = soxr.resample(audio_array, 24000, 48000, quality='HQ')
                             resampled_int16 = (resampled * 32768.0).clip(-32768, 32767).astype(np.int16)
@@ -1506,6 +1539,7 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                     input=full_text,
                                     response_format="pcm",
                                 ) as response:
+                                    _record_tts_telemetry("gpt-4o-mini-tts", full_text)
                                     # 流式接收音频数据
                                     async for chunk in response.iter_bytes(chunk_size=4096):
                                         if chunk:
@@ -1785,6 +1819,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 if _ws_is_open(ws):
                     try:
                         await ws.send(json.dumps({"cmd": "append", "data": tts_text}))
+                        _record_tts_telemetry("gptsovits", tts_text)
                         logger.debug(f"[GPT-SoVITS v3] append: {tts_text[:30]}...")
                     except Exception as e:
                         logger.error(f"[GPT-SoVITS v3] 发送失败: {e}")
@@ -2212,6 +2247,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             if ws:
                 try:
                     await ws.send(json.dumps({"text": tts_text}))
+                    _record_tts_telemetry("local_cosyvoice", tts_text)
                     logger.debug(f"发送合成片段: {tts_text}")
                 except Exception as e:
                     _enqueue_error(response_queue, f"发送失败: {e}")
