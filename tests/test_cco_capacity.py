@@ -16,100 +16,7 @@ Reference: https://help.aliyun.com/zh/model-studio/user-guide/context-cache
 import sys
 sys.path.insert(0, '.')
 
-
-PROVIDER_CACHE_CONFIG = {
-    "qwen": {
-        "name": "阿里云 DashScope",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "cache_mode": "session",
-        "requires_header": True,
-        "header_name": "x-dashscope-session-cache",
-        "header_value": "enable",
-        "min_cache_tokens": 1024,
-        "auto_cache": True,
-        "cache_price": 0.10,
-        "creation_price": 0.125,
-        "cached_token_field": "prompt_tokens_details.cached_tokens",
-    },
-    "openai": {
-        "name": "OpenAI",
-        "base_url": "https://api.openai.com/v1",
-        "cache_mode": "auto",
-        "requires_header": False,
-        "header_name": None,
-        "header_value": None,
-        "min_cache_tokens": 1024,
-        "auto_cache": True,
-        "cache_price": 0.10,
-        "creation_price": 0.10,
-        "cached_token_field": "prompt_tokens_details.cached_tokens",
-    },
-    "glm": {
-        "name": "智谱 GLM",
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "cache_mode": "auto",
-        "requires_header": False,
-        "header_name": None,
-        "header_value": None,
-        "min_cache_tokens": 1024,
-        "auto_cache": True,
-        "cache_price": 0.10,
-        "creation_price": 0.10,
-        "cached_token_field": "cached_tokens",
-    },
-    "step": {
-        "name": "阶跃星辰 Step",
-        "base_url": "https://api.stepfun.com/v1",
-        "cache_mode": "auto",
-        "requires_header": False,
-        "header_name": None,
-        "header_value": None,
-        "min_cache_tokens": 1024,
-        "auto_cache": True,
-        "cache_price": 0.10,
-        "creation_price": 0.10,
-        "cached_token_field": "cached_tokens",
-    },
-    "silicon": {
-        "name": "硅基流动 Silicon",
-        "base_url": "https://api.siliconflow.cn/v1",
-        "cache_mode": "upstream",
-        "requires_header": False,
-        "header_name": None,
-        "header_value": None,
-        "min_cache_tokens": 1024,
-        "auto_cache": True,
-        "cache_price": 0.10,
-        "creation_price": 0.10,
-        "cached_token_field": "prompt_cache_hit_tokens",
-    },
-    "gemini": {
-        "name": "Google Gemini",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "cache_mode": "auto",
-        "requires_header": False,
-        "header_name": None,
-        "header_value": None,
-        "min_cache_tokens": 2048,
-        "auto_cache": True,
-        "cache_price": 0.10,
-        "creation_price": 0.10,
-        "cached_token_field": "cached_content_token_count",
-    },
-    "kimi": {
-        "name": "Moonshot Kimi",
-        "base_url": "https://api.moonshot.cn/v1",
-        "cache_mode": "auto",
-        "requires_header": False,
-        "header_name": None,
-        "header_value": None,
-        "min_cache_tokens": 1024,
-        "auto_cache": True,
-        "cache_price": 0.10,
-        "creation_price": 0.10,
-        "cached_token_field": "prompt_cache_hit_tokens",
-    },
-}
+from config.providers import CACHE_PROVIDERS as PROVIDER_CACHE_CONFIG
 
 
 def test_all_providers_config():
@@ -234,12 +141,12 @@ def test_provider_compatibility():
     print("测试: 提供商兼容性检查")
     print("="*70)
 
-    from utils.llm_client import get_dashscope_cache_config
+    from config.providers import get_cache_kwargs
 
     results = []
 
     for provider_id, config in PROVIDER_CACHE_CONFIG.items():
-        cache_config = get_dashscope_cache_config(config["base_url"])
+        cache_config = get_cache_kwargs(config["base_url"])
 
         if provider_id == "qwen":
             expected = True
@@ -275,9 +182,9 @@ def test_session_cache_header():
     print("测试: Session Cache Header 配置")
     print("="*70)
 
-    from utils.llm_client import get_dashscope_cache_config
+    from config.providers import get_cache_kwargs
 
-    qwen_config = get_dashscope_cache_config("https://dashscope.aliyuncs.com/compatible-mode/v1")
+    qwen_config = get_cache_kwargs("https://dashscope.aliyuncs.com/compatible-mode/v1")
 
     print(f"\n  qwen (DashScope):")
     print(f"    enable_cache_control: {qwen_config['enable_cache_control']}")

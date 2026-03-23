@@ -1,6 +1,6 @@
 import json
 import asyncio
-from utils.llm_client import ChatOpenAI, get_dashscope_cache_config
+from utils.llm_client import create_chat_llm
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import SETTING_PROPOSER_MODEL, SETTING_VERIFIER_MODEL
 from config import CHARACTER_RESERVED_FIELDS
@@ -20,27 +20,17 @@ class ImportantSettingsManager:
     def _get_proposer(self):
         """动态获取Proposer LLM实例以支持配置热重载"""
         api_config = self._config_manager.get_model_api_config('summary')
-        cache_config = get_dashscope_cache_config(api_config['base_url'])
-        return ChatOpenAI(
-            model=SETTING_PROPOSER_MODEL, 
-            base_url=api_config['base_url'], 
-            api_key=api_config['api_key'], 
-            temperature=0.5,
-            default_headers=cache_config['default_headers'],
-            enable_cache_control=cache_config['enable_cache_control']
+        return create_chat_llm(
+            SETTING_PROPOSER_MODEL, api_config['base_url'],
+            api_config['api_key'], temperature=0.5,
         )
-    
+
     def _get_verifier(self):
         """动态获取Verifier LLM实例以支持配置热重载"""
         api_config = self._config_manager.get_model_api_config('summary')
-        cache_config = get_dashscope_cache_config(api_config['base_url'])
-        return ChatOpenAI(
-            model=SETTING_VERIFIER_MODEL, 
-            base_url=api_config['base_url'], 
-            api_key=api_config['api_key'], 
-            temperature=0.5,
-            default_headers=cache_config['default_headers'],
-            enable_cache_control=cache_config['enable_cache_control']
+        return create_chat_llm(
+            SETTING_VERIFIER_MODEL, api_config['base_url'],
+            api_config['api_key'], temperature=0.5,
         )
 
     def load_settings(self):

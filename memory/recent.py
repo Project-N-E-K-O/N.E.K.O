@@ -1,7 +1,6 @@
-from config import get_extra_body
 from utils.config_manager import get_config_manager
 from utils.token_tracker import set_call_type
-from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage, AIMessage, messages_to_dict, messages_from_dict, get_dashscope_cache_config
+from utils.llm_client import SystemMessage, HumanMessage, AIMessage, messages_to_dict, messages_from_dict, create_chat_llm
 import json
 import os
 import re
@@ -79,29 +78,17 @@ class CompressedRecentHistoryManager:
     def _get_llm(self):
         """动态获取LLM实例以支持配置热重载"""
         api_config = self._config_manager.get_model_api_config('summary')
-        cache_config = get_dashscope_cache_config(api_config['base_url'])
-        return ChatOpenAI(
-            model=api_config['model'],
-            base_url=api_config['base_url'],
-            api_key=api_config['api_key'] if api_config['api_key'] else None,
-            temperature=0.3,
-            extra_body=get_extra_body(api_config['model']) or None,
-            default_headers=cache_config['default_headers'],
-            enable_cache_control=cache_config['enable_cache_control']
+        return create_chat_llm(
+            api_config['model'], api_config['base_url'],
+            api_config['api_key'] or None, temperature=0.3,
         )
-    
+
     def _get_review_llm(self):
         """动态获取审核LLM实例以支持配置热重载"""
         api_config = self._config_manager.get_model_api_config('correction')
-        cache_config = get_dashscope_cache_config(api_config['base_url'])
-        return ChatOpenAI(
-            model=api_config['model'],
-            base_url=api_config['base_url'],
-            api_key=api_config['api_key'] if api_config['api_key'] else None,
-            temperature=0.1,
-            extra_body=get_extra_body(api_config['model']) or None,
-            default_headers=cache_config['default_headers'],
-            enable_cache_control=cache_config['enable_cache_control']
+        return create_chat_llm(
+            api_config['model'], api_config['base_url'],
+            api_config['api_key'] or None, temperature=0.1,
         )
 
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True):

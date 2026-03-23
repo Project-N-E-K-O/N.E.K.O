@@ -24,7 +24,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage, get_dashscope_cache_config
+from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
 import httpx
 from cachetools import TTLCache
 
@@ -2011,20 +2011,14 @@ async def proactive_chat(request: Request):
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
             else:
                 m, bu, ak = correction_model, correction_base_url, correction_api_key
-            cache_config = get_dashscope_cache_config(bu)
-            kwargs = dict(
-                model=m, base_url=bu, api_key=ak,
+            kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_tokens,
                 streaming=True,
-                default_headers=cache_config['default_headers'],
-                enable_cache_control=cache_config['enable_cache_control'],
             )
-            if disable_thinking:
-                extra_body = get_extra_body(m)
-                if extra_body:
-                    kwargs['model_kwargs'] = {"extra_body": extra_body}
-            return ChatOpenAI(**kwargs)
+            if not disable_thinking:
+                kw["extra_body"] = None  # skip auto-resolved extra_body
+            return create_chat_llm(m, bu, ak, **kw)
         
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,
@@ -2041,7 +2035,7 @@ async def proactive_chat(request: Request):
             llm = _make_llm(temperature=temperature, max_tokens=max_tokens,
                             use_vision=use_vision, disable_thinking=disable_thinking)
             begin_text = _loc(BEGIN_GENERATE, proactive_lang)
-            
+
             human_text = f"【系统内部状态更新】\n{dynamic_context}\n\n{begin_text}" if dynamic_context else begin_text
             if image_b64:
                 human_content = [
@@ -2056,21 +2050,24 @@ async def proactive_chat(request: Request):
             set_call_type("proactive")
             max_retries = 3
             retry_delays = [1, 2]
-            for attempt in range(max_retries):
-                try:
-                    response = await asyncio.wait_for(
-                        llm.ainvoke(messages),
-                        timeout=timeout
-                    )
-                    return response.content.strip()
-                except (APIConnectionError, InternalServerError, RateLimitError) as e:
-                    if attempt < max_retries - 1:
-                        logger.warning(f"[{lanlan_name}] LLM [{label}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
-                        await asyncio.sleep(retry_delays[attempt])
-                    else:
-                        logger.error(f"[{lanlan_name}] LLM [{label}] 调用失败，已达最大重试: {e}")
-                        raise
-            raise RuntimeError("Unexpected")
+            try:
+                for attempt in range(max_retries):
+                    try:
+                        response = await asyncio.wait_for(
+                            llm.ainvoke(messages),
+                            timeout=timeout
+                        )
+                        return response.content.strip()
+                    except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"[{lanlan_name}] LLM [{label}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                            await asyncio.sleep(retry_delays[attempt])
+                        else:
+                            logger.error(f"[{lanlan_name}] LLM [{label}] 调用失败，已达最大重试: {e}")
+                            raise
+                raise RuntimeError("Unexpected")
+            finally:
+                await llm.aclose()
         
         # ================================================================
         # Phase 1: 合并 LLM 调用（web 筛选 + music 关键词 + meme 关键词）

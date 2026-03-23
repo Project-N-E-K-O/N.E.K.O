@@ -643,63 +643,16 @@ TIME_ORIGINAL_TABLE_NAME = "time_indexed_original"
 TIME_COMPRESSED_TABLE_NAME = "time_indexed_compressed"
 
 
-# 不同模型供应商需要的 extra_body 格式
-EXTRA_BODY_OPENAI = {"enable_thinking": False}
-EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
-EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
-EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
-
-# Agent 调用统一开关：是否加载 extra_body。
-# 默认开启，配合 MODELS_EXTRA_BODY_MAP 实现默认关闭 thinking。
-AGENT_USE_EXTRA_BODY = True
-
-# 模型到 extra_body 的映射
-MODELS_EXTRA_BODY_MAP = {
-    # Qwen 系列
-    "qwen-flash": EXTRA_BODY_OPENAI,
-    "qwen3-vl-plus-2025-09-23": EXTRA_BODY_OPENAI,
-    "qwen3-vl-plus": EXTRA_BODY_OPENAI,
-    "qwen3-vl-flash": EXTRA_BODY_OPENAI,
-    "qwen3.5-plus": EXTRA_BODY_OPENAI,
-    "qwen-plus": EXTRA_BODY_OPENAI,
-    "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
-    # GLM 系列
-    "glm-4.5-air": EXTRA_BODY_CLAUDE,
-    "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
-    "glm-4.7-flash": EXTRA_BODY_CLAUDE,
-    "glm-4.6v": EXTRA_BODY_CLAUDE,
-    # Silicon (zai-org) - 使用 Qwen 格式
-    "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
-    # "free-model": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
-    "step-2-mini": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
-    # Gemini 系列
-    "gemini-2.5-flash": EXTRA_BODY_GEMINI,  # 禁用 thinking
-    "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,  # 禁用 thinking
-    "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,  # 低级别 thinking
-}
-
-
-def get_extra_body(model: str) -> dict | None:
-    """根据模型名称返回对应的 extra_body 配置。
-
-    Args:
-        model: 模型名称
-
-    Returns:
-        对应的 extra_body dict，如果模型不需要特殊配置则返回 None
-    """
-    if not model:
-        return None
-    if model in MODELS_EXTRA_BODY_MAP:
-        return MODELS_EXTRA_BODY_MAP[model]
-    return {}
-
-
-def get_agent_extra_body(model: str) -> dict | None:
-    """Return extra_body for Agent calls based on a single global switch."""
-    if not AGENT_USE_EXTRA_BODY:
-        return None
-    return get_extra_body(model)
+# Provider 相关配置已统一迁移至 config.providers，此处仅 re-export 保持向后兼容
+from config.providers import (  # noqa: E402, F401
+    EXTRA_BODY_OPENAI,
+    EXTRA_BODY_CLAUDE,
+    EXTRA_BODY_GEMINI,
+    AGENT_USE_EXTRA_BODY,
+    MODELS_EXTRA_BODY_MAP,
+    get_extra_body,
+    get_agent_extra_body,
+)
 
 
 __all__ = [

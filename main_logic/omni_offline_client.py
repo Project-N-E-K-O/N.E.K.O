@@ -3,9 +3,8 @@
 import asyncio
 import json
 from typing import Optional, Callable, Dict, Any, Awaitable
-from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage, AIMessage
+from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from config import get_extra_body
 from utils.frontend_utils import calculate_text_similarity, count_words_and_chars
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
@@ -88,23 +87,10 @@ class OmniOfflineClient:
         self.on_repetition_detected = on_repetition_detected
         self.on_response_discarded = on_response_discarded
         
-        _is_dashscope = "dashscope.aliyuncs.com" in (base_url or "")
-        _cache_headers = {"x-dashscope-session-cache": "enable"} if _is_dashscope else None
-        
-        self.llm = ChatOpenAI(
-            model=self.model,
-            base_url=self.base_url,
-            api_key=self.api_key,
-            temperature=1.0,
-            streaming=True,
-            max_retries=0,
-            extra_body=get_extra_body(self.model) or None,
-            default_headers=_cache_headers,
-            enable_cache_control=_is_dashscope
+        self.llm = create_chat_llm(
+            self.model, self.base_url, self.api_key,
+            temperature=1.0, streaming=True, max_retries=0,
         )
-        
-        if _is_dashscope:
-            logger.info("🚀 DashScope detected: Context Cache enabled (x-dashscope-session-cache + cache_control)")
         
         # State management
         self._is_responding = False
@@ -185,20 +171,13 @@ class OmniOfflineClient:
                 base_url = self.base_url
                 api_key = self.api_key
             
-            # Recreate LLM instance with new model and config
-            _is_dashscope = "dashscope.aliyuncs.com" in (base_url or "")
-            _cache_headers = {"x-dashscope-session-cache": "enable"} if _is_dashscope else None
-            self.llm = ChatOpenAI(
-                model=self.model,
-                base_url=base_url,
-                api_key=api_key,
-                temperature=1.0,
-                streaming=True,
-                max_retries=0,  # 禁用内置重试
-                extra_body=get_extra_body(self.model) or None,
-                default_headers=_cache_headers,
-                enable_cache_control=_is_dashscope
+            # Close old client to prevent httpx FD leaks
+            old_llm = self.llm
+            self.llm = create_chat_llm(
+                self.model, base_url, api_key,
+                temperature=1.0, streaming=True, max_retries=0,
             )
+            old_llm.close()
     
     async def _check_repetition(self, response: str) -> bool:
         """

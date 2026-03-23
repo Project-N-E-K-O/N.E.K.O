@@ -1,11 +1,12 @@
-"""Lightweight replacements for langchain_openai and langchain_core.messages.
+"""Lightweight LLM client layer using the ``openai`` SDK directly.
 
-Provides ChatOpenAI / OpenAIEmbeddings / message-class interfaces using the
-``openai`` SDK directly, eliminating the heavy langchain dependency chain
-(langchain-core, langchain-openai, langchain-community, pydantic v1 compat,
-jsonpatch, tenacity …).
-
-Drop-in compatible: callers only need to change their import path.
+Provides:
+  - Message classes (SystemMessage, HumanMessage, AIMessage) compatible with
+    the old langchain interface
+  - ChatOpenAI wrapper with streaming, invoke, and resource management
+  - ``create_chat_llm()`` factory that auto-resolves provider-specific config
+  - Serialization helpers (messages_to_dict, messages_from_dict, convert_to_messages)
+  - OpenAIEmbeddings / SQLChatMessageHistory for memory subsystem
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from typing import Any, AsyncIterator, Union
 from openai import AsyncOpenAI, OpenAI
 
 # ────────────────────────────────────────────────────────────────
-# Message classes (replace langchain_core.messages)
+# Message classes
 # ────────────────────────────────────────────────────────────────
 
 _TYPE_TO_ROLE = {"human": "user", "ai": "assistant", "system": "system"}
@@ -63,18 +64,18 @@ _ROLE_CLS: dict[str, type[BaseMessage]] = {
 }
 
 # ────────────────────────────────────────────────────────────────
-# Serialization helpers (replace langchain messages_to_dict etc.)
+# Serialization helpers
 # ────────────────────────────────────────────────────────────────
 
 
 def messages_to_dict(messages: list) -> list[dict]:
-    """Serialize message objects to the on-disk format used by langchain.
+    """Serialize message objects to the on-disk format.
 
     Output format per element::
 
         {"type": "human", "data": {"content": "hello"}}
 
-    This is backward-compatible with files written by ``langchain_core.messages.messages_to_dict``.
+    Backward-compatible with files written by the old langchain serializer.
     """
     result: list[dict] = []
     for msg in messages:
@@ -97,7 +98,7 @@ def messages_to_dict(messages: list) -> list[dict]:
 def messages_from_dict(dicts: list[dict]) -> list[BaseMessage]:
     """Deserialize on-disk dicts back to message objects.
 
-    Accepts both langchain format (``type``/``data``) and OpenAI format
+    Accepts both legacy format (``type``/``data``) and OpenAI format
     (``role``/``content``) for robustness.
     """
     result: list[BaseMessage] = []
@@ -118,7 +119,7 @@ def convert_to_messages(data: Any) -> list[BaseMessage]:
     """Convert various serialized formats to message objects.
 
     Handles the OpenAI dict format sent over HTTP from cross_server
-    as well as the langchain on-disk format.
+    as well as the legacy on-disk format.
     """
     if isinstance(data, list):
         return messages_from_dict(data)
@@ -138,6 +139,8 @@ class LLMResponse:
 @dataclass
 class LLMStreamChunk:
     content: str
+    usage_metadata: dict | None = None
+    response_metadata: dict | None = None
 
 
 # ────────────────────────────────────────────────────────────────
@@ -170,33 +173,11 @@ def _normalize_messages(messages: Any) -> list[dict]:
 
 
 # ────────────────────────────────────────────────────────────────
-# DashScope Cache Config helper
-# ────────────────────────────────────────────────────────────────
-
-def get_dashscope_cache_config(base_url: str | None) -> dict:
-    """Return cache configuration for DashScope (阿里云) API.
-    
-    Returns a dict with:
-        - default_headers: dict with cache headers for DashScope
-        - enable_cache_control: bool indicating if cache is enabled
-    """
-    if base_url and "dashscope.aliyuncs.com" in base_url:
-        return {
-            "default_headers": {"x-dashscope-session-cache": "enable"},
-            "enable_cache_control": True
-        }
-    return {
-        "default_headers": {},
-        "enable_cache_control": False
-    }
-
-
-# ────────────────────────────────────────────────────────────────
-# ChatOpenAI replacement (langchain_openai.ChatOpenAI)
+# ChatOpenAI — lightweight OpenAI-compatible LLM client
 # ────────────────────────────────────────────────────────────────
 
 class ChatOpenAI:
-    """Drop-in replacement for ``langchain_openai.ChatOpenAI``."""
+    """OpenAI-compatible chat client with streaming, invoke, and resource management."""
 
     def __init__(
         self,
@@ -276,21 +257,101 @@ class ChatOpenAI:
             content = delta.content if delta and delta.content else ""
             if content:
                 yield LLMStreamChunk(content=content)
+            # Terminal chunk with usage info (stream_options={"include_usage": True})
+            if chunk.usage is not None:
+                usage_dict = chunk.usage.model_dump()
+                yield LLMStreamChunk(
+                    content="",
+                    usage_metadata=usage_dict,
+                    response_metadata={"token_usage": usage_dict},
+                )
+
+    # --- resource management ---
+
+    async def aclose(self) -> None:
+        """Close underlying httpx clients (async path)."""
+        await self._aclient.close()
+        self._client.close()
+
+    def close(self) -> None:
+        """Close underlying httpx clients (sync path)."""
+        self._client.close()
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        await self._aclient.close()
-        self._client.close()
+        await self.aclose()
 
 
 # ────────────────────────────────────────────────────────────────
-# OpenAIEmbeddings replacement (langchain_openai.OpenAIEmbeddings)
+# create_chat_llm — factory with automatic provider config
+# ────────────────────────────────────────────────────────────────
+
+_SENTINEL = object()
+
+
+def create_chat_llm(
+    model: str,
+    base_url: str | None,
+    api_key: str | None,
+    *,
+    temperature: float = 1.0,
+    streaming: bool = False,
+    max_retries: int = 2,
+    max_completion_tokens: int | None = None,
+    max_tokens: int | None = None,
+    timeout: float | None = None,
+    extra_body: Any = _SENTINEL,
+    model_kwargs: dict | None = None,
+    **kw: Any,
+) -> ChatOpenAI:
+    """Create a ChatOpenAI with automatic provider-specific configuration.
+
+    Provider cache headers and extra_body (thinking-disable etc.) are resolved
+    automatically from ``config.providers``.  Pass ``extra_body=None`` to
+    explicitly skip the auto-resolved extra_body (e.g. when thinking should
+    remain enabled).
+
+    Args:
+        model: Model name (e.g. "qwen-flash", "gpt-4.1-mini").
+        base_url: Provider API base URL.
+        api_key: API key.
+        extra_body: Override auto-resolved extra_body.  ``_SENTINEL`` (default)
+            means "auto-resolve from model name"; ``None`` means "no extra_body".
+        **kw: Forwarded to ChatOpenAI.__init__.
+    """
+    from config.providers import get_cache_kwargs, get_extra_body
+
+    cache_kw = get_cache_kwargs(base_url)
+
+    if extra_body is _SENTINEL:
+        resolved = get_extra_body(model)
+        extra_body = resolved or None
+
+    return ChatOpenAI(
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=temperature,
+        streaming=streaming,
+        max_retries=max_retries,
+        max_completion_tokens=max_completion_tokens,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        extra_body=extra_body,
+        model_kwargs=model_kwargs,
+        **cache_kw,
+        **kw,
+    )
+
+
+# ────────────────────────────────────────────────────────────────
+# OpenAIEmbeddings
 # ────────────────────────────────────────────────────────────────
 
 class OpenAIEmbeddings:
-    """Drop-in replacement for ``langchain_openai.OpenAIEmbeddings``."""
+    """Lightweight OpenAI embeddings client."""
 
     def __init__(
         self,
@@ -318,16 +379,13 @@ class OpenAIEmbeddings:
 
 
 # ────────────────────────────────────────────────────────────────
-# SQLChatMessageHistory replacement
-# (langchain_community.chat_message_histories.SQLChatMessageHistory)
+# SQLChatMessageHistory
 # ────────────────────────────────────────────────────────────────
 
 class SQLChatMessageHistory:
-    """Minimal replacement that preserves the table-creation side-effect
-    and the ``add_message`` / ``add_messages`` interface used by
-    ``memory/timeindex.py``.
+    """Minimal SQLite message store for memory/timeindex.py.
 
-    Table schema (matches langchain's default)::
+    Table schema::
 
         id          INTEGER PRIMARY KEY AUTOINCREMENT
         session_id  TEXT

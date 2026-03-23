@@ -1,8 +1,7 @@
 from typing import List, Dict, Any, Tuple
 import asyncio
-from utils.llm_client import ChatOpenAI, get_dashscope_cache_config
+from utils.llm_client import create_chat_llm
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from config import get_extra_body
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
@@ -21,16 +20,9 @@ class TaskDeduper:
     def __init__(self):
         config_manager = get_config_manager()
         api_config = config_manager.get_model_api_config('summary')
-        cache_config = get_dashscope_cache_config(api_config['base_url'])
-        self.llm = ChatOpenAI(
-            model=api_config['model'],
-            base_url=api_config['base_url'],
-            api_key=api_config['api_key'],
-            temperature=0,
-            max_retries=0,
-            extra_body=get_extra_body(api_config['model']) or None,
-            default_headers=cache_config['default_headers'],
-            enable_cache_control=cache_config['enable_cache_control']
+        self.llm = create_chat_llm(
+            api_config['model'], api_config['base_url'],
+            api_config['api_key'], temperature=0, max_retries=0,
         )
 
     def _build_prompt(self, new_task: str, candidates: List[Tuple[str, str]]) -> str:
