@@ -882,6 +882,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let isVrmAnimationPlaying = false; // 跟踪VRM动作播放状态
     let isVrmExpressionPlaying = false; // 跟踪VRM表情播放状态
     let isMmdAnimationPlaying = false; // 跟踪MMD动画播放状态
+    let isMmdAnimationUploading = false; // 防止VMD动画重复上传
 
     // 更新模型类型按钮文字的函数（使用统一管理器）
     function updateModelTypeButtonText() {
@@ -1833,7 +1834,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 vrmContainer.classList.add('hidden');
                 vrmContainer.style.display = 'none';
             }
-            // 隐藏 MMD 容器和控件组
+            // 隐藏 MMD 容器和控件组，并停止播放中的动画
+            if (window.mmdManager) {
+                window.mmdManager.stopAnimation();
+            }
+            isMmdAnimationPlaying = false;
+            updateMMDAnimationPlayButtonIcon();
             if (mmdContainer) {
                 mmdContainer.classList.add('hidden');
                 mmdContainer.style.display = 'none';
@@ -2238,6 +2244,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // VRM 子类型：显示 VRM 专属控件，隐藏 MMD 专属控件
                     if (vrmSettingsSection) vrmSettingsSection.style.display = 'block';
                     if (mmdSettingsSection) mmdSettingsSection.style.display = 'none';
+                    // 停止 MMD 动画播放
+                    if (window.mmdManager) {
+                        window.mmdManager.stopAnimation();
+                    }
+                    isMmdAnimationPlaying = false;
+                    updateMMDAnimationPlayButtonIcon();
                     // 隐藏 MMD 动画选择器
                     const mmdAnimationGroup = document.getElementById('mmd-animation-group');
                     if (mmdAnimationGroup) mmdAnimationGroup.style.display = 'none';
@@ -5413,12 +5425,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             const file = e.target.files[0];
             if (!file) return;
 
+            // 防止重复上传
+            if (isMmdAnimationUploading) {
+                mmdAnimationFileUpload.value = '';
+                return;
+            }
+
             if (!file.name.toLowerCase().endsWith('.vmd')) {
                 showStatus(t('live2d.mmdAnimation.selectVmdFile', '请选择 .vmd 文件'), 3000);
                 mmdAnimationFileUpload.value = '';
                 return;
             }
 
+            isMmdAnimationUploading = true;
+            if (uploadMmdAnimationBtn) uploadMmdAnimationBtn.disabled = true;
             showStatus(t('live2d.mmdAnimation.uploading', '正在上传VMD动画...'), 0);
             setControlsDisabled(true);
             try {
@@ -5439,6 +5459,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.error('上传VMD动画失败:', error);
                 showStatus(t('live2d.mmdAnimation.uploadFailed', '上传失败: {{error}}', { error: error.message }), 3000);
             } finally {
+                isMmdAnimationUploading = false;
+                if (uploadMmdAnimationBtn) uploadMmdAnimationBtn.disabled = false;
                 setControlsDisabled(false);
                 mmdAnimationFileUpload.value = '';
             }
