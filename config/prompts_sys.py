@@ -1431,6 +1431,64 @@ PROACTIVE_SCREEN_PROMPTS = {
     }
 }
 
+PROACTIVE_GENERATE_STATIC = {
+    'zh': """请以你的角色身份，自然地向{master_name}搭话。要求：
+1. 完全符合你的角色性格和说话习惯
+2. 简短自然，像是随口分享或搭话，不超过2-3句话
+3. 要契合当前的对话氛围和主人的近期兴趣
+4. 绝对不要重复"近期搭话记录"中已经说过的内容。重复判定从严：只要核心事件/人物/视频/梗相同，即使换措辞、换语气、换切入点，也算重复，必须放弃
+5. 禁止复读自己的近期主动搭话：不能再次提到同一条新闻、同一个视频、同一个争议点、同一个笑点；若无法确认是否重复，按重复处理并放弃
+6. 只要存在重复风险，宁可回复 [PASS] 也不要硬聊
+7. 如果提供的素材都不适合搭话（太无聊、与近期重复、或找不到自然的切入点），直接回复 [PASS]
+8. 不要生成思考过程
+{music_instruction}
+{meme_instruction}""",
+    'en': """Please talk to {master_name} naturally in your character. Requirements:
+1. Fully match your character's personality and speaking habits
+2. Be brief and natural, like casual sharing or starting a conversation, no more than 2-3 sentences
+3. Fit the current conversation atmosphere and master's recent interests
+4. Absolutely do NOT repeat content from "Recent Chat Records". Repetition is judged strictly: if the core event/person/video/meme is the same, even with different wording, tone, or angle, it's considered repetition and you must give up
+5. Do not repeat your own recent proactive chats: do not mention the same news, video, dispute point, or joke again; if you can't confirm whether it's repetitive, treat it as repetitive and give up
+6. If there's any risk of repetition, prefer replying [PASS] rather than forcing a chat
+7. If the provided materials are all unsuitable for chatting (too boring, repeated recently, or can't find a natural angle), directly reply [PASS]
+8. Do not generate thinking processes
+{music_instruction}
+{meme_instruction}""",
+    'ja': """あなたのキャラクターとして、{master_name}に自然に話しかけてください。要求：
+1. あなたのキャラクターの性格と話し方に完全に一致すること
+2. 簡潔で自然で、まるで何気なく共有したり話しかけたりするような口調で、2〜3文以内
+3. 現在の会話の状況とご主人の最近の興味に一致すること
+4. 「最近のチャット記録」ですでに言った内容を絶対に繰り返さない。繰り返し判定は厳格に：コアなイベント/人物/動画/ミームが同じであれば、言い回しやトーン、切入ればりを変えても、繰り返しとみなして放弃なければならない
+5. 自分の最近の主动搭話を繰り返さない：同じニュース、同じ動画、同じ論点、同じ笑点を再度言及してはならない；重复しているかどうか確認できない場合は、重复として處理し放弃すること
+6. 繰り返しリスクがある場合は、[PASS]と返信する方が硬weetze
+7. 提供された素材がすべて搭話に適していない場合（面白くない、最近重复している、または自然な切入ればりが見つからない）、直接[PASS]と返信してください
+8. 思考プロセスを生成しない
+{music_instruction}
+{meme_instruction}""",
+    'ko': """당신의 캐릭터로서 {master_name}에게 자연스럽게 말을 걸어주세요. 요구사항:
+1. 당신의 캐릭터 성격과 말투에 완전히 부합해야 합니다
+2. 간결하고 자연스러워야 하며, 마치 즉흥적으로 나누거나 말을 거는 것처럼, 2-3문장을 넘지 않아야 합니다
+3. 현재 대화 분위기와 주인의 최근 관심사에 맞아야 합니다
+4. 절대 "최근 채팅 기록"에서 이미 말한 내용을 반복하지 마세요. 반복 판단은 엄격하게: 핵심 이벤트/인물/비디오/밈이 동일하다면, 표현이나 어조, 접근 방식을 바꿔도 반복으로 간주하고 포기해야 합니다
+5. 자신의 최근主动搭話を 반복하지 마세요: 같은 뉴스, 같은 비디오, 같은 논점, 같은 밈을 다시 언급하지 마세요; 반복인지 확인할 수 없으면 반복으로 처리하고 포기하세요
+6. 반복 위험이 있으면 [PASS]로 답변하는 것이 좋습니다
+7. 제공된素材가 모두 부적합하면(지루하거나 최근 반복되거나 자연스러운切入점을 찾을 수 없으면) 직접 [PASS]라고 답하세요
+8. 사고 과정을 생성하지 마세요
+{music_instruction}
+{meme_instruction}""",
+    'ru': """Пожалуйста, общайтесь с {master_name} естественно в своем персонаже. Требования:
+1. Полностью соответствуйте характеру и привычкам вашего персонажа
+2. Будьте кратким и естественным, как непринужденный обмен или начало разговора, не более 2-3 предложений
+3. Соответствуйте текущей атмосфере разговора и недавним интересам хозяина
+4. Ни в коем случае НЕ повторяйте то, что уже было сказано в "Недавних записях чата". Повтор определяется строго: если основное событие/человек/видео/мем одинаковы, даже с другой формулировкой, тоном или подходом, это считается повтором, и вы должны отказаться
+5. Не повторяйте свои недавние主动搭话: не упоминайте одни и те же новости, видео, спорные моменты или шутки; если не можете подтвердить повтор, считайте это повтором и откажитесь
+6. При малейшем риске повтора лучше ответить [PASS], чем продолжать натянутый разговор
+7. Если предоставленные материалы не подходят для разговора (скучные, недавно повторялись, или невозможно найти естественный подход), просто ответьте [PASS]
+8. Не генерируйте процесс мышления
+{music_instruction}
+{meme_instruction}""",
+}
+
 PROACTIVE_GENERATE_PROMPTS = {
     'zh': proactive_generate_zh,
     'en': proactive_generate_en,
@@ -1924,6 +1982,42 @@ Reply strictly in the format below. Each task starts with its tag. Only reply to
 """,
 }
 
+_UNIFIED_P1_HEADER_STATIC = {
+    'zh': """你是一个多任务话题助手。请根据下方提供的素材，完成所有标注的任务。""",
+    'en': """You are a multi-task topic assistant. Based on the material below, complete all listed tasks.""",
+    'ja': """あなたはマルチタスク話題アシアシスタントです。以下の素材に基づき、指示されたすべてのタスクを完了してください。""",
+    'ko': """당신은 멀티태스크 주제 어시스턴트입니다. 아래 자료를 바탕으로 모든 작업을 완료하세요.""",
+    'ru': """Вы — мультизадачный тематический помощник. На основе материалов ниже выполните все указанные задачи.""",
+}
+
+_UNIFIED_P1_FOOTER_STATIC = {
+    'zh': """
+======素材内容======
+{format_instructions}
+======回复格式======
+请严格按照以下格式回复，每个任务用对应标签开头。只回复被要求的任务。""",
+    'en': """
+======Material Content======
+{format_instructions}
+======Reply Format======
+Reply strictly in the format below. Each task starts with its tag. Only reply to the tasks listed.""",
+    'ja': """
+======素材内容======
+{format_instructions}
+======回答形式======
+以下の形式に厳密に従ってください。各タスクは対応するタグで始めてください。指示されたタスクのみ回答してください。""",
+    'ko': """
+======자료 내용======
+{format_instructions}
+======답변 형식======
+아래 형식을 엄격히 따르세요. 각 작업은 해당 태그로 시작합니다. 명시된 작업에만 답변하세요.""",
+    'ru': """
+======Содержание материалов======
+{format_instructions}
+======Формат ответа======
+Строго следуйте формату ниже. Каждая задача начинается со своего тега. Отвечайте только на указанные задачи.""",
+}
+
 
 def build_unified_phase1_prompt(
     lang: str,
@@ -1935,59 +2029,50 @@ def build_unified_phase1_prompt(
     meme_enabled: bool = False,
     lanlan_name: str = '',
     master_name: str = '',
-) -> str:
+) -> tuple[str, str]:
     """
-    动态拼接 Phase 1 合并 prompt。
-    只注入有内容的 section，被权重剔除的 section 不会出现在 prompt 中。
+    动态拼接 Phase 1 合并 prompt（静动分离版本）。
 
-    Args:
-        lang: 语言代码
-        merged_content: web 汇总内容，None 或空字符串表示 web 被剔除
-        memory_context: 对话历史
-        recent_chats_section: 近期搭话记录
-        music_ctx: 音乐上下文 {'lanlan_name': ..., 'master_name': ...}，None 表示禁用
-        meme_enabled: 是否启用 meme 关键词生成
-        lanlan_name: 角色名（用于 music prompt）
-        master_name: 主人名（用于 music prompt）
+    Returns:
+        tuple: (static_system_prompt, dynamic_context)
+        - static_system_prompt: 纯静态的结构和指令模板
+        - dynamic_context: 所有会变化的动态内容
     """
     lang_key = _normalize_prompt_language(lang)
 
     def _get(table: dict, key: str = lang_key) -> str:
         return table.get(key, table.get('en', table['zh']))
 
-    # --- 头部 ---
-    parts = [_get(_UNIFIED_P1_HEADER).format(
-        memory_context=memory_context,
-        recent_chats_section=recent_chats_section,
-    )]
-
-    # --- 收集启用的 section 和对应格式 ---
+    dynamic_parts = []
     format_parts = []
     fmt = _get(_UNIFIED_P1_FORMAT)
 
-    # web section
+    # --- 收集动态内容 ---
+    if memory_context:
+        dynamic_parts.append(f"======以下为对话历史======\n{memory_context}\n======以上为对话历史======")
+    if recent_chats_section:
+        dynamic_parts.append(recent_chats_section)
     if merged_content:
-        parts.append(_get(_UNIFIED_P1_WEB_SECTION).format(merged_content=merged_content))
+        dynamic_parts.append(f"======以下为外部话题======\n{merged_content}\n======以上为外部话题======")
         format_parts.append(fmt['web'])
-
-    # music section
     if music_ctx:
         ln = music_ctx.get('lanlan_name', lanlan_name) or lanlan_name
         mn = music_ctx.get('master_name', master_name) or master_name
-        parts.append(_get(_UNIFIED_P1_MUSIC_SECTION).format(lanlan_name=ln, master_name=mn))
+        dynamic_parts.append(f"======以下为音乐上下文======\n{ln} 正在听音乐，主人是 {mn}。\n======以上为音乐上下文======")
         format_parts.append(fmt['music'])
-
-    # meme section
     if meme_enabled:
-        parts.append(_get(_UNIFIED_P1_MEME_SECTION))
+        dynamic_parts.append("======以下为表情包需求======\n需要生成一个表情包关键词。\n======以上为表情包需求======")
         format_parts.append(fmt['meme'])
 
-    # --- 尾部 ---
+    dynamic_context = "\n".join(dynamic_parts)
+
+    # --- 构建静态系统提示词（不含任何动态值） ---
+    static_parts = [_get(_UNIFIED_P1_HEADER_STATIC)]
     if format_parts:
         format_instructions = "\n\n".join(format_parts)
-        parts.append(_get(_UNIFIED_P1_FOOTER).format(format_instructions=format_instructions))
+        static_parts.append(_get(_UNIFIED_P1_FOOTER_STATIC).format(format_instructions=format_instructions))
 
-    return "\n".join(parts)
+    return "\n".join(static_parts), dynamic_context
 
 
 def get_proactive_screen_prompt(channel: str, lang: str = 'zh') -> str:
@@ -2002,23 +2087,50 @@ def get_proactive_screen_prompt(channel: str, lang: str = 'zh') -> str:
 
 
 def get_proactive_generate_prompt(lang: str = 'zh', music_playing_hint: str = "",
-                                  has_music: bool = False, has_meme: bool = False) -> str:
+                                  has_music: bool = False, has_meme: bool = False) -> tuple[str, str]:
     """
-    获取 Phase 2 生成阶段 prompt。
-    has_music / has_meme 控制是否注入音乐/表情包行为指令，避免无来源时产生幻觉。
+    获取 Phase 2 生成阶段 prompt（静动分离版本）。
+
+    Returns:
+        tuple: (static_system_prompt, dynamic_context_template)
+        - static_system_prompt: 纯静态的角色指令模板（已填充 music/meme 指令）
+        - dynamic_context_template: 动态内容模板，包含 {character_prompt}, {inner_thoughts}, 等占位符
     """
     lang_key = _normalize_prompt_language(lang)
-    prompt = PROACTIVE_GENERATE_PROMPTS.get(lang_key, PROACTIVE_GENERATE_PROMPTS.get('en', PROACTIVE_GENERATE_PROMPTS['zh']))
-
-    # 动态注入音乐/表情包行为指令
+    
+    _get = lambda table: table.get(lang_key, table.get('en', table['zh']))
+    
+    static_prompt = _get(PROACTIVE_GENERATE_STATIC)
+    
     music_instr = _P2_MUSIC_INSTRUCTION.get(lang_key, _P2_MUSIC_INSTRUCTION.get('en', _P2_MUSIC_INSTRUCTION['zh'])) if has_music else ''
     meme_instr = _P2_MEME_INSTRUCTION.get(lang_key, _P2_MEME_INSTRUCTION.get('en', _P2_MEME_INSTRUCTION['zh'])) if has_meme else ''
-    prompt = prompt.replace('{music_instruction}', music_instr).replace('{meme_instruction}', meme_instr)
+    static_prompt = static_prompt.replace('{music_instruction}', music_instr).replace('{meme_instruction}', meme_instr)
+    
+    dynamic_template = """======角色设定======
+{character_prompt}
+======角色设定结束======
 
+======当前状态======
+{inner_thoughts}
+======状态结束======
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+{screen_section}
+{external_section}
+{music_section}
+{meme_section}
+
+{source_instruction}
+{output_format_section}"""
+    
     if music_playing_hint:
-        # 将提示注入到 prompt 末尾，确保 AI 能看到
-        prompt += f"\n\n{music_playing_hint}"
-    return prompt
+        dynamic_template += f"\n\n{music_playing_hint}"
+    
+    return static_prompt, dynamic_template
 
 
 def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bool = False, has_meme: bool = False, lang: str = 'zh') -> tuple:
@@ -2236,11 +2348,11 @@ INNER_THOUGHTS_HEADER = {
 }
 
 INNER_THOUGHTS_BODY = {
-    'zh': '{name}的脑海里经常想着自己和{master}的事情，她记得{settings}\n\n现在时间是{time}。开始聊天前，{name}又在脑海内整理了近期发生的事情。\n',
-    'en': "{name} often thinks about herself and {master}. She remembers: {settings}\n\nThe current time is {time}. Before the conversation begins, {name} is mentally reviewing recent events.\n",
-    'ja': '{name}はいつも自分と{master}のことを考えています。彼女が覚えていること：{settings}\n\n現在の時刻は{time}です。会話を始める前に、{name}は最近の出来事を頭の中で整理しています。\n',
-    'ko': '{name}은 항상 자신과 {master}에 대해 생각합니다. 그녀가 기억하는 것: {settings}\n\n현재 시간은 {time}입니다. 대화를 시작하기 전에 {name}은 최근 있었던 일들을 마음속으로 정리하고 있습니다.\n',
-    'ru': '{name} часто думает о себе и {master}. Она помнит: {settings}\n\nТекущее время: {time}. Перед началом разговора {name} мысленно перебирает последние события.\n',
+    'zh': '{name}的脑海里经常想着自己和{master}的事情，她记得{settings}\n\n开始聊天前，{name}又在脑海内整理了近期发生的事情。当前时间是{time}。\n',
+    'en': "{name} often thinks about herself and {master}. She remembers: {settings}\n\nBefore the conversation begins, {name} is mentally reviewing recent events. The current time is {time}.\n",
+    'ja': '{name}はいつも自分と{master}のことを考えています。彼女が覚えていること：{settings}\n\n会話を始める前に、{name}は最近の出来事を頭の中で整理しています。現在の時刻は{time}です。\n',
+    'ko': '{name}은 항상 자신과 {master}에 대해 생각합니다. 그녀가 기억하는 것: {settings}\n\n대화를 시작하기 전에 {name}은 최근 있었던 일들을 마음속으로 정리하고 있습니다. 현재 시간은 {time}입니다.\n',
+    'ru': '{name} часто думает о себе и {master}. Она помнит: {settings}\n\nПеред началом разговора {name} мысленно перебирает последние события. Текущее время: {time}.\n',
 }
 
 # ---------- Agent 结果解析器 i18n ----------

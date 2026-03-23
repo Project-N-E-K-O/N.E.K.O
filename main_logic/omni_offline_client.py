@@ -88,16 +88,23 @@ class OmniOfflineClient:
         self.on_repetition_detected = on_repetition_detected
         self.on_response_discarded = on_response_discarded
         
-        # Initialize ChatOpenAI client
+        _is_dashscope = "dashscope.aliyuncs.com" in (base_url or "")
+        _cache_headers = {"x-dashscope-session-cache": "enable"} if _is_dashscope else None
+        
         self.llm = ChatOpenAI(
             model=self.model,
             base_url=self.base_url,
             api_key=self.api_key,
             temperature=1.0,
             streaming=True,
-            max_retries=0,  # 禁用 openai client 内置重试，由外层 retry loop 处理（内置重试会破坏流式 generator）
-            extra_body=get_extra_body(self.model) or None
+            max_retries=0,
+            extra_body=get_extra_body(self.model) or None,
+            default_headers=_cache_headers,
+            enable_cache_control=_is_dashscope
         )
+        
+        if _is_dashscope:
+            logger.info("🚀 DashScope detected: Context Cache enabled (x-dashscope-session-cache + cache_control)")
         
         # State management
         self._is_responding = False
@@ -118,14 +125,32 @@ class OmniOfflineClient:
         
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡
         
-    async def connect(self, instructions: str, native_audio=False) -> None:
-        """Initialize the client with system instructions."""
-        self._instructions = instructions
-        # Add system message to conversation history using langchain format
+    async def connect(self, instructions: str, native_audio=False, dynamic_context: str = "") -> None:
+        """Initialize the client with system instructions.
+        
+        Args:
+            instructions: 基础系统指令（静态部分，可被缓存）
+            native_audio: 是否使用原生音频（本客户端不支持，仅兼容接口）
+            dynamic_context: 动态上下文（如当前时间、记忆等，经常变化）
+            
+        优化策略：
+            将静态instructions和动态dynamic_context合并到单个SystemMessage中，
+            避免产生System->User->AI的角色序列，确保符合LLM API的角色交替要求，
+            同时让静态部分可以被Context Cache有效缓存。
+        """
+        # 终极合并：把动态上下文直接塞进唯一的 SystemMessage 中
+        # 这样既能保持角色交替规则（System -> User -> AI），又能缓存静态部分
+        if dynamic_context and dynamic_context.strip():
+            full_instructions = f"{instructions}\n\n【系统内部状态更新】\n{dynamic_context}"
+        else:
+            full_instructions = instructions
+
+        self._instructions = full_instructions
         self._conversation_history = [
-            SystemMessage(content=instructions)
+            SystemMessage(content=full_instructions)
         ]
-        logger.info("OmniOfflineClient initialized with instructions")
+
+        logger.info(f"OmniOfflineClient initialized with merged SystemMessage ({len(full_instructions)} chars)")
     
     async def send_event(self, event) -> None:
         """Compatibility method - not used in text mode"""
@@ -193,11 +218,13 @@ class OmniOfflineClient:
         if high_similarity_count >= 2:
             logger.warning(f"OmniOfflineClient: 检测到连续{high_similarity_count + 1}轮高重复度对话")
             
-            # 清空对话历史（保留系统指令）
+            saved_prefix = []
             if self._conversation_history and isinstance(self._conversation_history[0], SystemMessage):
-                self._conversation_history = [self._conversation_history[0]]
-            else:
-                self._conversation_history = []
+                saved_prefix.append(self._conversation_history[0])
+                if len(self._conversation_history) > 1 and isinstance(self._conversation_history[1], HumanMessage):
+                    if isinstance(self._conversation_history[1].content, str) and "【系统内部状态更新】" in self._conversation_history[1].content:
+                        saved_prefix.append(self._conversation_history[1])
+            self._conversation_history = saved_prefix if saved_prefix else []
             
             # 清空重复检测缓存
             self._recent_responses.clear()
@@ -268,11 +295,14 @@ class OmniOfflineClient:
             
             # Clear pending images after using them
             self._pending_images.clear()
+            self._conversation_history.append(user_message)
         else:
-            # Text-only message
-            user_message = HumanMessage(content=text.strip())
-        
-        self._conversation_history.append(user_message)
+            # 强防断层：自动合并连续的 HumanMessage
+            new_text = text.strip()
+            if self._conversation_history and isinstance(self._conversation_history[-1], HumanMessage) and isinstance(self._conversation_history[-1].content, str):
+                self._conversation_history[-1].content += f"\n\n{new_text}"
+            else:
+                self._conversation_history.append(HumanMessage(content=new_text))
         
         # Callback for user input
         if self.on_input_transcript:
@@ -313,6 +343,14 @@ class OmniOfflineClient:
                         discard_reason = None
                         
                         async for chunk in self.llm.astream(self._conversation_history):
+                            chunk_usage = None
+                            if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
+                                chunk_usage = chunk.usage_metadata
+                                logger.info(f"🔍 [LangChain Usage] {chunk_usage}")
+                            if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
+                                if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
+                                    logger.info(f"🔍 [LangChain Meta] {chunk.response_metadata}")
+                            
                             if not self._is_responding:
                                 break
                             
@@ -378,6 +416,23 @@ class OmniOfflineClient:
                             assistant_message = ""
                             guard_exhausted = True
                             break
+                        
+                        if chunk_usage:
+                            from utils.token_tracker import TokenTracker
+                            usage_data = chunk_usage if isinstance(chunk_usage, dict) else {}
+                            prompt_tokens = usage_data.get('prompt_tokens', 0) or usage_data.get('input_tokens', 0) or 0
+                            completion_tokens = usage_data.get('completion_tokens', 0) or usage_data.get('output_tokens', 0) or 0
+                            total_tokens = usage_data.get('total_tokens', 0) or 0
+                            cached_tokens = usage_data.get('cached_tokens') or usage_data.get('prompt_tokens_details', {}).get('cached_tokens') or 0
+                            if total_tokens > 0:
+                                TokenTracker.get_instance().record(
+                                    model=self.model,
+                                    prompt_tokens=prompt_tokens,
+                                    completion_tokens=completion_tokens,
+                                    total_tokens=total_tokens,
+                                    cached_tokens=cached_tokens,
+                                    call_type='offline'
+                                )
                         
                         if assistant_message:
                             self._conversation_history.append(AIMessage(content=assistant_message))
@@ -447,17 +502,17 @@ class OmniOfflineClient:
         return len(self._pending_images) > 0
     
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
-        """
-        Process a system message or instruction.
-        For compatibility with OmniRealtimeClient interface.
-        """
-        # Extract actual instruction if it starts with "SYSTEM_MESSAGE | "
+        """Process a system message or instruction."""
         if instructions.startswith("SYSTEM_MESSAGE | "):
             instructions = instructions[17:]  # Remove prefix
         
-        # Add as system message using langchain format
         if instructions.strip():
-            self._conversation_history.append(SystemMessage(content=instructions))
+            new_text = f"【对话上下文补充】\n{instructions}"
+            # 强防断层：如果上一条也是 User 消息，直接合并文本，绝对不破坏角色交替
+            if self._conversation_history and isinstance(self._conversation_history[-1], HumanMessage) and isinstance(self._conversation_history[-1].content, str):
+                self._conversation_history[-1].content += f"\n\n{new_text}"
+            else:
+                self._conversation_history.append(HumanMessage(content=new_text))
     
     async def stream_proactive(self, instruction: str) -> bool:
         """Generate and stream a proactive AI response driven by a system instruction.
@@ -485,11 +540,19 @@ class OmniOfflineClient:
 
         assistant_message = ""
         is_first_chunk = True
+        chunk_usage = None
 
         try:
             self._is_responding = True
             set_call_type("proactive")
             async for chunk in self.llm.astream(messages_to_send):
+                if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
+                    chunk_usage = chunk.usage_metadata
+                    logger.info(f"🔍 [LangChain Usage-Proactive] {chunk_usage}")
+                if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
+                    if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
+                        logger.info(f"🔍 [LangChain Meta-Proactive] {chunk.response_metadata}")
+                
                 if not self._is_responding:
                     break
                 content = chunk.content if hasattr(chunk, "content") else str(chunk)
@@ -507,6 +570,22 @@ class OmniOfflineClient:
             return False
         finally:
             self._is_responding = False
+            if chunk_usage:
+                from utils.token_tracker import TokenTracker
+                usage_data = chunk_usage if isinstance(chunk_usage, dict) else {}
+                prompt_tokens = usage_data.get('prompt_tokens', 0) or usage_data.get('input_tokens', 0) or 0
+                completion_tokens = usage_data.get('completion_tokens', 0) or usage_data.get('output_tokens', 0) or 0
+                total_tokens = usage_data.get('total_tokens', 0) or 0
+                cached_tokens = usage_data.get('cached_tokens') or usage_data.get('prompt_tokens_details', {}).get('cached_tokens') or 0
+                if total_tokens > 0:
+                    TokenTracker.get_instance().record(
+                        model=self.model,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        cached_tokens=cached_tokens,
+                        call_type='proactive'
+                    )
             if assistant_message:
                 self._conversation_history.append(AIMessage(content=assistant_message))
             # Use lightweight proactive-done callback (TTS flush + turn_end only),

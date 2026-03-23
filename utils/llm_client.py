@@ -132,6 +132,7 @@ def convert_to_messages(data: Any) -> list[BaseMessage]:
 @dataclass
 class LLMResponse:
     content: str
+    response_metadata: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -169,6 +170,28 @@ def _normalize_messages(messages: Any) -> list[dict]:
 
 
 # ────────────────────────────────────────────────────────────────
+# DashScope Cache Config helper
+# ────────────────────────────────────────────────────────────────
+
+def get_dashscope_cache_config(base_url: str | None) -> dict:
+    """Return cache configuration for DashScope (阿里云) API.
+    
+    Returns a dict with:
+        - default_headers: dict with cache headers for DashScope
+        - enable_cache_control: bool indicating if cache is enabled
+    """
+    if base_url and "dashscope.aliyuncs.com" in base_url:
+        return {
+            "default_headers": {"x-dashscope-session-cache": "enable"},
+            "enable_cache_control": True
+        }
+    return {
+        "default_headers": {},
+        "enable_cache_control": False
+    }
+
+
+# ────────────────────────────────────────────────────────────────
 # ChatOpenAI replacement (langchain_openai.ChatOpenAI)
 # ────────────────────────────────────────────────────────────────
 
@@ -189,6 +212,8 @@ class ChatOpenAI:
         model_kwargs: dict | None = None,
         timeout: float | None = None,
         request_timeout: float | None = None,
+        default_headers: dict | None = None,
+        enable_cache_control: bool = False,
         **_kwargs: Any,
     ):
         self.model = model
@@ -196,6 +221,7 @@ class ChatOpenAI:
         self.extra_body: dict = extra_body or {}
         self.max_completion_tokens = max_completion_tokens
         self.max_tokens = max_tokens
+        self.enable_cache_control = enable_cache_control
 
         if model_kwargs and "extra_body" in model_kwargs:
             self.extra_body = {**self.extra_body, **model_kwargs["extra_body"]}
@@ -205,6 +231,8 @@ class ChatOpenAI:
         client_kw: dict[str, Any] = dict(base_url=base_url, api_key=_api_key, max_retries=max_retries)
         if _timeout is not None:
             client_kw["timeout"] = _timeout
+        if default_headers:
+            client_kw["default_headers"] = default_headers
         self._aclient = AsyncOpenAI(**client_kw)
         self._client = OpenAI(**client_kw)
 
@@ -221,6 +249,8 @@ class ChatOpenAI:
             p["max_tokens"] = self.max_tokens
         if self.extra_body:
             p["extra_body"] = self.extra_body
+        if stream:
+            p["stream_options"] = {"include_usage": True}
         return p
 
     # --- sync / async invoke ---
@@ -228,12 +258,14 @@ class ChatOpenAI:
     async def ainvoke(self, messages: Any) -> LLMResponse:
         resp = await self._aclient.chat.completions.create(**self._params(messages))
         content = resp.choices[0].message.content if resp.choices else ""
-        return LLMResponse(content=content or "")
+        usage_dict = resp.usage.model_dump() if resp.usage else {}
+        return LLMResponse(content=content or "", response_metadata={"token_usage": usage_dict})
 
     def invoke(self, messages: Any) -> LLMResponse:
         resp = self._client.chat.completions.create(**self._params(messages))
         content = resp.choices[0].message.content if resp.choices else ""
-        return LLMResponse(content=content or "")
+        usage_dict = resp.usage.model_dump() if resp.usage else {}
+        return LLMResponse(content=content or "", response_metadata={"token_usage": usage_dict})
 
     # --- async streaming ---
 
@@ -302,12 +334,17 @@ class SQLChatMessageHistory:
         message     TEXT   -- JSON-serialized {"type": ..., "data": {"content": ...}}
     """
 
+    _engine_cache: dict = {}
+
     def __init__(self, connection_string: str, session_id: str, table_name: str = "message_store"):
         from sqlalchemy import Column, Integer, MetaData, String, Table, Text, create_engine
 
         self.session_id = session_id
         self.table_name = table_name
-        self._engine = create_engine(connection_string)
+
+        if connection_string not in self.__class__._engine_cache:
+            self.__class__._engine_cache[connection_string] = create_engine(connection_string)
+        self._engine = self.__class__._engine_cache[connection_string]
 
         metadata = MetaData()
         self._table = Table(

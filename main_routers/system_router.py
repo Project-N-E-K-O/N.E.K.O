@@ -24,7 +24,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage
+from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage, get_dashscope_cache_config
 import httpx
 from cachetools import TTLCache
 
@@ -67,13 +67,6 @@ router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
-
-
-@router.get("/token-usage")
-async def get_token_usage(days: int = 7):
-    """返回最近 N 天的 LLM token 用量统计。"""
-    from utils.token_tracker import TokenTracker
-    return TokenTracker.get_instance().get_stats(days=min(days, 90))
 
 
 @router.get("/pending-notices")
@@ -2018,11 +2011,14 @@ async def proactive_chat(request: Request):
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
             else:
                 m, bu, ak = correction_model, correction_base_url, correction_api_key
+            cache_config = get_dashscope_cache_config(bu)
             kwargs = dict(
                 model=m, base_url=bu, api_key=ak,
                 temperature=temperature,
                 max_completion_tokens=max_tokens,
                 streaming=True,
+                default_headers=cache_config['default_headers'],
+                enable_cache_control=cache_config['enable_cache_control'],
             )
             if disable_thinking:
                 extra_body = get_extra_body(m)
@@ -2035,21 +2031,25 @@ async def proactive_chat(request: Request):
             temperature: float = 1.0, max_tokens: int = 1024, timeout: float = 16.0,
             use_vision: bool = False, disable_thinking: bool = True,
             image_b64: str = '',
+            dynamic_context: str = '',
         ) -> str:
             """
             带重试的 LLM 调用。image_b64 非空时以多模态方式发送截图。
+            dynamic_context: 动态上下文，会被注入到 HumanMessage 的【系统内部状态更新】中。
             """
             actual_model = (vision_model_name if use_vision and has_vision_model else correction_model)
-            # [临时调试]
-            print(f"\n{'='*60}\n[PROACTIVE-DEBUG] LLM call: [{label}] | model={actual_model} | temp={temperature} | max_tokens={max_tokens} | vision={use_vision} | img={'yes' if image_b64 else 'no'}\n{'='*60}\n{system_prompt}\n{'='*60}\n")
+            llm = _make_llm(temperature=temperature, max_tokens=max_tokens,
+                            use_vision=use_vision, disable_thinking=disable_thinking)
             begin_text = _loc(BEGIN_GENERATE, proactive_lang)
+            
+            human_text = f"【系统内部状态更新】\n{dynamic_context}\n\n{begin_text}" if dynamic_context else begin_text
             if image_b64:
                 human_content = [
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                    {"type": "text", "text": begin_text},
+                    {"type": "text", "text": human_text},
                 ]
             else:
-                human_content = begin_text
+                human_content = human_text
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_content)]
 
             from utils.token_tracker import set_call_type
@@ -2058,17 +2058,12 @@ async def proactive_chat(request: Request):
             retry_delays = [1, 2]
             for attempt in range(max_retries):
                 try:
-                    # 使用 async with 确保 ChatOpenAI (AsyncOpenAI) 实例被正确关闭
-                    async with _make_llm(temperature=temperature, max_tokens=max_tokens,
-                                        use_vision=use_vision, disable_thinking=disable_thinking) as llm:
-                        response = await asyncio.wait_for(
-                            llm.ainvoke(messages),
-                            timeout=timeout
-                        )
-                        # [临时调试]
-                        print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:200]}...\n")
-                        return response.content.strip()
-                except (asyncio.TimeoutError, APIConnectionError, InternalServerError, RateLimitError) as e:
+                    response = await asyncio.wait_for(
+                        llm.ainvoke(messages),
+                        timeout=timeout
+                    )
+                    return response.content.strip()
+                except (APIConnectionError, InternalServerError, RateLimitError) as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"[{lanlan_name}] LLM [{label}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                         await asyncio.sleep(retry_delays[attempt])
@@ -2262,7 +2257,7 @@ async def proactive_chat(request: Request):
         if has_web_task or has_music_task or has_meme_task:
             try:
                 from config.prompts_sys import build_unified_phase1_prompt
-                unified_prompt = build_unified_phase1_prompt(
+                static_system_prompt, dynamic_context = build_unified_phase1_prompt(
                     proactive_lang,
                     merged_content=merged_web_content if has_web_task else None,
                     memory_context=memory_context,
@@ -2272,7 +2267,8 @@ async def proactive_chat(request: Request):
                     lanlan_name=lanlan_name,
                     master_name=master_name_current,
                 )
-                unified_result_text = await _llm_call_with_retry(unified_prompt, "unified_phase1")
+                unified_result_text = await _llm_call_with_retry(
+                    static_system_prompt, "unified_phase1", dynamic_context=dynamic_context)
                 print(f"[{lanlan_name}] Phase 1 合并 LLM 结果: {unified_result_text[:200]}")
                 unified_parsed = _parse_unified_phase1_result(unified_result_text)
                 logger.info(f"[{lanlan_name}] Phase 1 解析: web={'有' if unified_parsed.get('web') else '无'}, "
@@ -2560,10 +2556,12 @@ async def proactive_chat(request: Request):
             track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
             music_playing_hint = get_proactive_music_playing_hint(track_name, proactive_lang)
 
-        generate_prompt = get_proactive_generate_prompt(
+        generate_static, generate_dynamic = get_proactive_generate_prompt(
             proactive_lang, music_playing_hint,
             has_music=bool(music_section), has_meme=bool(meme_section),
-        ).format(
+        )
+        
+        dynamic_context_for_phase2 = generate_dynamic.format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
             memory_context=memory_context,
@@ -2576,22 +2574,20 @@ async def proactive_chat(request: Request):
             source_instruction=source_instruction,
             output_format_section=output_format_section,
         )
+        
         if music_topic:
-            # 防混淆强调：确保 AI 用 [MUSIC] 而不是 [WEB]/[CHAT]
-            generate_prompt += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
+            dynamic_context_for_phase2 += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
                 proactive_lang,
                 PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
             )
-            # 【核心补齐】如果搜索结果是模糊匹配，注入 failsafe hint
-            # 注意：random 状态（随机推荐）不应触发 failsafe hint，因为这是正常的随机推荐行为
             raw_data = music_content.get('raw_data', {}) if music_content else {}
             if raw_data.get('best_match', {}).get('status') == 'fuzzy':
-                generate_prompt += get_proactive_music_failsafe_hint(proactive_lang)
+                dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(proactive_lang)
 
-        # 【强制约束】放歌时禁止产生任何换歌念头
         if is_playing_music:
-            generate_prompt += get_proactive_music_strict_constraint(proactive_lang)
-        print(f"[{lanlan_name}] Phase 2 完整 prompt 长度: {len(generate_prompt)} 字符")
+            dynamic_context_for_phase2 += get_proactive_music_strict_constraint(proactive_lang)
+        
+        print(f"[{lanlan_name}] Phase 2 动态上下文长度: {len(dynamic_context_for_phase2)} 字符")
         
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
         if not await mgr.prepare_proactive_delivery(min_idle_secs=30.0):
@@ -2605,17 +2601,17 @@ async def proactive_chat(request: Request):
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
         
         begin_text = _loc(BEGIN_GENERATE, proactive_lang)
+        human_text = f"【系统内部状态更新】\n{dynamic_context_for_phase2}\n\n{begin_text}"
         if phase2_use_vision:
             human_content = [
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64_for_phase2}"}},
-                {"type": "text", "text": begin_text},
+                {"type": "text", "text": human_text},
             ]
         else:
-            human_content = begin_text
-        messages = [SystemMessage(content=generate_prompt), HumanMessage(content=human_content)]
+            human_content = human_text
+        messages = [SystemMessage(content=generate_static), HumanMessage(content=human_content)]
         
         actual_model = (vision_model_name if phase2_use_vision else correction_model)
-        print(f"\n{'='*60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: model={actual_model} | vision={phase2_use_vision} | img={'yes' if phase2_use_vision else 'no'}\n{'='*60}\n{generate_prompt}\n{'='*60}\n")
         
         # --- 流式调用 + 在线拦截 ---
         from utils.token_tracker import set_call_type
@@ -2708,7 +2704,6 @@ async def proactive_chat(request: Request):
                 await mgr.feed_tts_chunk(cleaned)
         
         # --- 结果处理 ---
-        print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")
         if aborted or not full_text.strip():
             await mgr.handle_new_message()
             logger.info(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
@@ -2720,7 +2715,6 @@ async def proactive_chat(request: Request):
         
         response_text = full_text.strip()
         logger.info(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
-        print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
 
         has_music_topic = 'music' in active_channels
 
