@@ -106,9 +106,9 @@ class Constraint {
           if (heap) {
             for (let off = 1200; off < 1400; off++) {
               if (heap[ptrT + off] === 1 && heap[ptrF + off] === 0) {
-                Constraint._heapOffset = off + 1;
-                console.log(`[MMD Physics] useFrameOffset heap detected at offset ${off + 1}, applying fix`);
-                if (heap[ptrT + off + 1] === 1) {
+                Constraint._heapOffset = off;
+                console.log(`[MMD Physics] useFrameOffset heap detected at offset ${off}, applying fix`);
+                if (heap[ptrT + off] === 1) {
                   Constraint._useFrameOffsetDisabled = true;
                 }
                 break;
@@ -992,7 +992,23 @@ class MMDPhysics {
     for (let i = 0; i < cycles; i++) {
       this.update(1 / 60);
     }
+    this.refreshStabilityBaseline();
     return this;
+  }
+  refreshStabilityBaseline() {
+    if (!this._stabilityData) return;
+    for (let i = 0; i < this.bodies.length; i++) {
+      const body = this.bodies[i];
+      const sd = this._stabilityData[i];
+      if (!sd) continue;
+      if (body.bone) {
+        sd.restQuat.copy(body.bone.quaternion);
+        sd.restPos.copy(body.bone.position);
+      }
+      sd.frozen = false;
+      sd.unstableFrames = 0;
+    }
+    this._stabilityFrameCount = 0;
   }
 }
 

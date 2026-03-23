@@ -63,7 +63,7 @@
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const mmdModules = [
-            '/static/mmd-core.js?v=23',
+            '/static/mmd-core.js',
             '/static/mmd-animation.js',
             '/static/mmd-expression.js',
             '/static/mmd-interaction.js',
@@ -76,7 +76,8 @@
         const failedModules = [];
         for (const moduleSrc of mmdModules) {
             const script = document.createElement('script');
-            script.src = `${moduleSrc}?v=${Date.now()}`;
+            const baseSrc = moduleSrc.split('?')[0];
+            script.src = `${baseSrc}?v=${Date.now()}`;
             await new Promise((resolve) => {
                 script.onload = resolve;
                 script.onerror = () => {
@@ -1698,13 +1699,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             let mmdSettingsResult = null;
             if (currentModelType === 'live3d' && currentLive3dSubType === 'mmd') {
                 try {
-                    const mmdSettings = collectMmdSettings();
+                    const collected = collectMmdSettings();
+                    const existing = JSON.parse(localStorage.getItem('mmdSettings') || '{}');
+                    if (collected.lighting) existing.lighting = collected.lighting;
+                    if (collected.rendering) {
+                        existing.rendering = Object.assign(existing.rendering || {}, collected.rendering);
+                    }
                     mmdSettingsResult = await RequestHelper.fetchJson(
                         `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/mmd_settings`,
                         {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(mmdSettings)
+                            body: JSON.stringify(existing)
                         }
                     );
                 } catch (e) {
@@ -2317,14 +2323,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 切换到 Live3D 模式时，在合并列表中查找当前角色配置的模型
             else if (type === 'live3d') {
                 try {
+                    let matched = false;
                     const lanlanName = await getLanlanName();
                     if (lanlanName) {
                         const charactersData = await RequestHelper.fetchJson('/api/characters');
                         const catgirlConfig = charactersData['猫娘']?.[lanlanName];
-                        // 在合并的 vrmModelSelect 中查找匹配项（优先 MMD，然后 VRM）
                         if (vrmModelSelect) {
-                            let matched = false;
-                            // 检查是否有 MMD 模型配置
                             const _mmdPathSwitch = catgirlConfig && catgirlConfig.mmd
                                 ? (typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path)
                                 : '';
@@ -2341,7 +2345,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                                     matched = true;
                                 }
                             }
-                            // 如果没有 MMD 匹配，检查 VRM 配置
                             if (!matched && catgirlConfig && catgirlConfig.vrm) {
                                 const vrmPath = catgirlConfig.vrm;
                                 const vrmFilename = vrmPath.split(/[/\\]/).pop();
@@ -2353,9 +2356,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
                                     vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                                    matched = true;
                                 }
                             }
                         }
+                    }
+                    if (!matched) {
+                        selectDefaultLive3DModel();
                     }
                 } catch (autoLoadError) {
                     console.warn('[模型管理] 切到 Live3D 自动加载模型失败:', autoLoadError);
@@ -3616,6 +3623,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // 自动选择默认 Live3D 模型（sister1.0.vrm），当角色无已配置的 VRM/MMD 模型时使用
+    function selectDefaultLive3DModel() {
+        if (!vrmModelSelect || vrmModelSelect.options.length === 0) return false;
+        const defaultFilename = 'sister1.0.vrm';
+        const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
+            if (!opt.value) return false;
+            const optFilename = opt.getAttribute('data-filename') || '';
+            return optFilename === defaultFilename || opt.value.includes(defaultFilename);
+        });
+        if (matchedOption) {
+            vrmModelSelect.value = matchedOption.value;
+            vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            console.log('[模型管理] 自动加载默认 Live3D 模型:', defaultFilename);
+            return true;
+        }
+        return false;
+    }
+
     // MMD 模型选择事件
     if (mmdModelSelect) {
         mmdModelSelect.addEventListener('change', async (e) => {
@@ -4247,9 +4272,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window.mmdManager.applySettings(settings);
             }
         }
-        // 实时保存到 localStorage（用于即时预览，持久化保存由保存按钮触发）
+        // Merge into existing localStorage to preserve popup-ui fields (physics, pixelRatio, cursorFollow)
         try {
-            localStorage.setItem('mmdSettings', JSON.stringify(settings));
+            const existing = JSON.parse(localStorage.getItem('mmdSettings') || '{}');
+            if (settings.lighting) existing.lighting = settings.lighting;
+            if (settings.rendering) {
+                existing.rendering = Object.assign(existing.rendering || {}, settings.rendering);
+            }
+            localStorage.setItem('mmdSettings', JSON.stringify(existing));
         } catch (e) { /* ignore */ }
     }
 
@@ -6727,13 +6757,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                         vrmModelSelect.value = matchedOption.value;
                         vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
                     } else {
-                        console.warn('[模型管理] 未找到匹配的 VRM 选项:', vrmModelPath);
-                        showStatus(t('live2d.vrmModelNotFound', `未在模型列表中找到 ${vrmModelPath}，请手动选择模型`, { model: vrmModelPath }));
+                        console.warn('[模型管理] 未找到匹配的 VRM 选项:', vrmModelPath, '，尝试加载默认模型');
+                        selectDefaultLive3DModel();
                     }
                 }
             } else if (modelType !== 'live2d') {
-                // 未知类型或 Live3D 但无有效路径 → 不自动加载，等待用户选择
-                console.warn(`[模型管理] 模型类型 ${modelType} 无有效路径，不自动加载`);
+                // Live3D 但无有效路径 → 尝试加载内置默认模型
+                console.warn(`[模型管理] 模型类型 ${modelType} 无有效路径，尝试加载默认模型`);
+                selectDefaultLive3DModel();
             } else {
                 // Live2D 模型
                 // 构建API URL，支持可选的item_id参数

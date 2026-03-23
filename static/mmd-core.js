@@ -686,7 +686,8 @@ class MMDCore {
             // 关键修复：warmup 期间运行 Grant 求解器（付与変換），
             // 确保 kinematic 骨骼在 warmup 时处于与渲染时一致的位置。
             // 大模型（>200 刚体）需要更多 warmup 帧让复杂约束链稳定
-            const bodyCount = mmd.physics && mmd.physics.bodies ? mmd.physics.bodies.length : 0;
+            const bodyCount = mmd.physics && typeof mmd.physics.getPhysics === 'function'
+                ? mmd.physics.getPhysics().bodies.length : 0;
             const warmupFrames = bodyCount > 200 ? 180 : 60;
             const warmupDelta = 1 / 60;
 
@@ -707,6 +708,15 @@ class MMDCore {
             for (let i = 0; i < warmupFrames; i++) {
                 if (warmupGrantSolver) warmupGrantSolver.update();
                 mmd.update(warmupDelta);
+            }
+
+            // Refresh stability baselines after the full warmup so frozen-body
+            // restorations use the settled (post-warmup) pose, not the pre-warmup one.
+            if (typeof mmd.physics.getPhysics === 'function') {
+                const inner = mmd.physics.getPhysics();
+                if (typeof inner.refreshStabilityBaseline === 'function') {
+                    inner.refreshStabilityBaseline();
+                }
             }
             console.log(`[MMD Core] 物理 warmup 完成 (${warmupFrames} 帧, Grant: ${!!warmupGrantSolver})`);
         } catch (error) {
@@ -891,12 +901,24 @@ class MMDCore {
     }
 
     resetModelPose() {
-        if (!this.manager.currentModel || !this.manager.currentModel.mesh) return;
-        const mesh = this.manager.currentModel.mesh;
+        const mmd = this.manager.currentModel;
+        if (!mmd || !mmd.mesh) return;
+
+        const hadPhysics = this.manager.enablePhysics;
+        this.manager.enablePhysics = false;
+
+        const mesh = mmd.mesh;
         mesh.skeleton.bones.forEach(bone => {
             bone.position.copy(bone.userData?.restPosition || bone.position);
             bone.quaternion.copy(bone.userData?.restQuaternion || bone.quaternion);
         });
+
+        if (mmd.physics && typeof mmd.physics.reset === 'function') {
+            mesh.updateMatrixWorld(true);
+            mmd.physics.reset();
+        }
+
+        this.manager.enablePhysics = hadPhysics;
     }
 
     resetModelPosition() {
@@ -1088,6 +1110,7 @@ class MMDCore {
             // 禁用物理：防止位置变更期间渲染循环跑物理导致拉丝
             const hadPhysics = this.manager.enablePhysics;
             this.manager.enablePhysics = false;
+            try {
 
             // 恢复位置
             if (preferences.position) {
@@ -1132,8 +1155,9 @@ class MMDCore {
                 mmd.physics.reset();
             }
 
-            // 恢复物理
-            this.manager.enablePhysics = hadPhysics;
+            } finally {
+                this.manager.enablePhysics = hadPhysics;
+            }
 
             console.log('[MMD Core] 偏好设置已恢复:', {
                 position: preferences.position,

@@ -246,16 +246,10 @@ MMDManager.prototype.setupFloatingButtons = function() {
     });
 
     // 处理"请她离开"事件
+    // 注意：返回按钮的位置、显示、以及浮动按钮的隐藏均由 app-ui.js 统一处理，
+    // 此处仅更新内部状态标志。不能在此隐藏按钮容器，否则 app-ui.js 无法读取按钮位置。
     const goodbyeHandler = () => {
         this._isInReturnState = true;
-        if (this._floatingButtonsContainer) this._floatingButtonsContainer.style.display = 'none';
-        if (this._mmdLockIcon) this._mmdLockIcon.style.display = 'none';
-        if (this._returnButtonContainer) {
-            this._returnButtonContainer.style.left = '50%';
-            this._returnButtonContainer.style.top = '50%';
-            this._returnButtonContainer.style.transform = 'translate(-50%, -50%)';
-            this._returnButtonContainer.style.display = 'flex';
-        }
     };
     this._uiWindowHandlers.push({ event: 'live2d-goodbye-click', handler: goodbyeHandler });
     window.addEventListener('live2d-goodbye-click', goodbyeHandler);
@@ -264,6 +258,13 @@ MMDManager.prototype.setupFloatingButtons = function() {
     const returnHandler = () => {
         this._isInReturnState = false;
         if (this._returnButtonContainer) this._returnButtonContainer.style.display = 'none';
+
+        // 回来时先禁用物理、重置姿态，等渐入动画结束再恢复
+        const hadPhysics = this.enablePhysics;
+        this.enablePhysics = false;
+        if (this.currentModel && this.currentModel.physics && typeof this.currentModel.physics.reset === 'function') {
+            this.currentModel.physics.reset();
+        }
 
         const bc = document.getElementById('mmd-floating-buttons');
         if (!bc) { this.setupFloatingButtons(); return; }
@@ -283,6 +284,15 @@ MMDManager.prototype.setupFloatingButtons = function() {
             this._mmdLockIcon.style.removeProperty('opacity');
             this._mmdLockIcon.style.backgroundImage = 'url(/static/icons/unlocked_icon.png)';
             this._mmdLockIcon.style.display = shouldShowLockIcon() ? 'block' : 'none';
+        }
+
+        if (hadPhysics) {
+            setTimeout(() => {
+                if (this.currentModel && this.currentModel.physics && typeof this.currentModel.physics.reset === 'function') {
+                    this.currentModel.physics.reset();
+                }
+                this.enablePhysics = true;
+            }, 800);
         }
     };
     this._uiWindowHandlers.push({ event: 'mmd-return-click', handler: returnHandler });
@@ -561,4 +571,37 @@ MMDManager.prototype._startUIUpdateLoop = function() {
     };
 
     this._uiUpdateLoopId = requestAnimationFrame(update);
+};
+
+/**
+ * 将屏幕像素偏移量应用到 MMD 模型的世界坐标
+ * 用于"请她回来"按钮被拖拽后，模型跟随出现在新位置
+ */
+MMDManager.prototype.applyScreenDelta = function(screenDx, screenDy) {
+    const mesh = this.currentModel && this.currentModel.mesh;
+    if (!mesh || !this.camera || !this.renderer) return;
+
+    const camera = this.camera;
+
+    // canvas 在 goodbye 状态下被 display:none 隐藏，getBoundingClientRect 全为 0
+    const canvasRect = this.renderer.domElement.getBoundingClientRect();
+    const viewWidth = canvasRect.width > 0 ? canvasRect.width : window.innerWidth;
+    const viewHeight = canvasRect.height > 0 ? canvasRect.height : window.innerHeight;
+    if (viewWidth <= 0 || viewHeight <= 0) return;
+
+    const cameraDistance = camera.position.distanceTo(mesh.position);
+    if (cameraDistance < 0.001) return;
+
+    const fov = camera.fov * (Math.PI / 180);
+    const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
+    const worldWidth = worldHeight * camera.aspect;
+
+    const pixelToWorldX = worldWidth / viewWidth;
+    const pixelToWorldY = worldHeight / viewHeight;
+
+    const right = new window.THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    const up = new window.THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+    mesh.position.add(right.clone().multiplyScalar(screenDx * pixelToWorldX));
+    mesh.position.add(up.clone().multiplyScalar(-screenDy * pixelToWorldY));
 };

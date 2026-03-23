@@ -783,7 +783,7 @@ class VRMManager {
 
         scene.position.set(0, 0, 0);
         scene.rotation.set(0, 0, 0);
-        scene.scale.set(1, 1, 1);
+        this.setModelScaleScalar(1);
 
         // 重新检测朝向并应用
         if (window.VRMOrientationDetector && vrm) {

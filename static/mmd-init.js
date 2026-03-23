@@ -14,7 +14,7 @@
 
         // 核心模块（无相互依赖，可并行）
         const parallelModules = [
-            '/static/mmd-core.js?v=23',
+            '/static/mmd-core.js',
             '/static/mmd-expression.js',
             '/static/mmd-animation.js',
             '/static/mmd-interaction.js',
@@ -44,13 +44,14 @@
         };
 
         const loadScript = (moduleSrc) => {
-            if (document.querySelector(`script[src^="${moduleSrc}"]`)) {
+            const baseSrc = moduleSrc.split('?')[0];
+            if (document.querySelector(`script[src^="${baseSrc}"]`)) {
                 return Promise.resolve();
             }
 
             return new Promise((resolve) => {
                 const script = document.createElement('script');
-                script.src = `${moduleSrc}?v=${MMD_VERSION}`;
+                script.src = `${baseSrc}?v=${MMD_VERSION}`;
                 script.onload = () => {
                     console.log(`[MMD] 模块加载成功: ${moduleSrc}`);
                     resolve();

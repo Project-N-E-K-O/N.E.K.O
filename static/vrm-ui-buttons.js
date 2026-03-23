@@ -296,16 +296,10 @@ VRMManager.prototype.setupFloatingButtons = function() {
     });
 
     // 处理"请她离开"事件
+    // 注意：返回按钮的位置、显示、以及浮动按钮的隐藏均由 app-ui.js 统一处理，
+    // 此处仅更新内部状态标志。不能在此隐藏按钮容器，否则 app-ui.js 无法读取按钮位置。
     const goodbyeHandler = () => {
         this._isInReturnState = true;
-        if (this._floatingButtonsContainer) this._floatingButtonsContainer.style.display = 'none';
-        if (this._vrmLockIcon) this._vrmLockIcon.style.display = 'none';
-        if (this._returnButtonContainer) {
-            this._returnButtonContainer.style.left = '50%';
-            this._returnButtonContainer.style.top = '50%';
-            this._returnButtonContainer.style.transform = 'translate(-50%, -50%)';
-            this._returnButtonContainer.style.display = 'flex';
-        }
     };
     this._uiWindowHandlers.push({ event: 'live2d-goodbye-click', handler: goodbyeHandler });
     window.addEventListener('live2d-goodbye-click', goodbyeHandler);
@@ -619,4 +613,42 @@ VRMManager.prototype._startUIUpdateLoop = function() {
     };
 
     this._uiUpdateLoopId = requestAnimationFrame(update);
+};
+
+/**
+ * 将屏幕像素偏移量应用到 VRM 模型的世界坐标
+ * 用于"请她回来"按钮被拖拽后，模型跟随出现在新位置
+ */
+VRMManager.prototype.applyScreenDelta = function(screenDx, screenDy) {
+    const scene = this.currentModel && this.currentModel.scene;
+    if (!scene || !this.camera || !this.renderer) return;
+
+    const camera = this.camera;
+
+    // canvas 在 goodbye 状态下被 display:none 隐藏，getBoundingClientRect 全为 0
+    const canvasRect = this.renderer.domElement.getBoundingClientRect();
+    const viewWidth = canvasRect.width > 0 ? canvasRect.width : window.innerWidth;
+    const viewHeight = canvasRect.height > 0 ? canvasRect.height : window.innerHeight;
+    if (viewWidth <= 0 || viewHeight <= 0) return;
+
+    const cameraDistance = camera.position.distanceTo(scene.position);
+    if (cameraDistance < 0.001) return;
+
+    const fov = camera.fov * (Math.PI / 180);
+    const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
+    const worldWidth = worldHeight * camera.aspect;
+
+    const pixelToWorldX = worldWidth / viewWidth;
+    const pixelToWorldY = worldHeight / viewHeight;
+
+    const right = new window.THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    const up = new window.THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+    scene.position.add(right.clone().multiplyScalar(screenDx * pixelToWorldX));
+    scene.position.add(up.clone().multiplyScalar(-screenDy * pixelToWorldY));
+
+    if (this.interaction && typeof this.interaction.clampModelPosition === 'function') {
+        const clamped = this.interaction.clampModelPosition(scene.position.clone());
+        if (clamped && clamped.isVector3) scene.position.copy(clamped);
+    }
 };
