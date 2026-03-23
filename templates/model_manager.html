@@ -118,9 +118,9 @@
 
         <!-- MMD动画选择 (Live3D模式) -->
         <div class="control-group" id="mmd-animation-group" style="display:none;">
-            <div class="action-group">
-                <div id="mmd-animation-select-wrapper" style="position: relative; display: flex; flex: 1;">
-                    <button id="mmd-animation-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.mmdAnimation.selectAnimation">
+            <div style="display: flex; gap: 0; align-items: center;">
+                <div id="mmd-animation-select-wrapper" style="position: relative;">
+                    <button id="mmd-animation-select-btn" class="btn btn-primary" type="button" data-i18n-title="live2d.mmdAnimation.selectAnimation">
                         <img src="/static/icons/motion_select_icon.png?v=1" data-i18n-alt="live2d.mmdAnimation.selectAnimation" class="mmd-animation-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
                         <span class="round-stroke-text" id="mmd-animation-select-text" data-i18n="live2d.mmdAnimation.selectAnimation" data-text="选择VMD动画">选择VMD动画</span>
                     </button>
@@ -131,6 +131,22 @@
                         <!-- 下拉菜单项将动态生成 -->
                     </div>
                 </div>
+                <button id="play-mmd-animation-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.mmdAnimation.play" data-i18n-aria-label="live2d.mmdAnimation.play">
+                    <img src="/static/icons/motion_play_icon.png?v=1" data-i18n-alt="live2d.mmdAnimation.play" class="mmd-animation-play-icon" style="height: 40px; width: auto; image-rendering: crisp-edges;">
+                </button>
+            </div>
+        </div>
+
+        <!-- MMD动画上传/删除按钮 (Live3D模式) -->
+        <div class="control-group" id="mmd-animation-actions-group" style="display:none;">
+            <div style="display: flex; gap: 0; align-items: center;">
+                <button id="upload-mmd-animation-btn" type="button" data-i18n-title="live2d.mmdAnimation.uploadAnimation">
+                    <img src="/static/icons/import_model_button_icon.png?v=1" data-i18n-alt="live2d.mmdAnimation.uploadAnimation" class="upload-mmd-animation-icon">
+                    <span class="round-stroke-text" id="upload-mmd-animation-text" data-i18n="live2d.mmdAnimation.uploadAnimation" data-text="导入VMD动画">导入VMD动画</span>
+                </button>
+                <button id="delete-mmd-animation-btn" data-i18n-title="live2d.mmdAnimation.deleteAnimation" data-i18n-aria-label="live2d.mmdAnimation.deleteAnimation">
+                    <img src="/static/icons/delete_model_button.png?v=1" data-i18n-alt="live2d.mmdAnimation.deleteAnimation">
+                </button>
             </div>
         </div>
 
@@ -519,6 +535,25 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" id="cancel-delete-mmd-btn" data-i18n="common.cancel">取消</button>
                 <button class="btn btn-danger" id="confirm-delete-mmd-btn" data-i18n="live2d.mmdModel.deleteSelected" disabled>删除选中</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="delete-mmd-animation-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; justify-content:center; align-items:center;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="live2d.mmdAnimation.deleteAnimationTitle">删除已导入VMD动画</h3>
+                <button class="modal-close" id="close-delete-mmd-animation-modal">&times;</button>
+            </div>
+            <div class="delete-warning" data-i18n="live2d.mmdAnimation.deleteAnimationWarning">
+                以下列出了所有已导入的用户VMD动画文件。选择要删除的动画文件。
+            </div>
+            <div class="model-list-container" id="mmd-user-animation-list">
+                <div class="empty-message" data-i18n="live2d.mmdAnimation.noUserAnimations">暂无可删除的用户VMD动画</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancel-delete-mmd-animation-btn" data-i18n="common.cancel">取消</button>
+                <button class="btn btn-danger" id="confirm-delete-mmd-animation-btn" data-i18n="live2d.mmdAnimation.deleteSelected" disabled>删除选中</button>
             </div>
         </div>
     </div>
