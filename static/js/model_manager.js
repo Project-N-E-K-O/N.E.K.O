@@ -5175,7 +5175,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (result.success) {
                     showStatus(`MMD模型 ${result.filename || file.name} 上传成功`, 2000);
                     if (currentModelType === 'live3d') {
+                        // 保存当前选中值，loadLive3DModels 会重建 vrmModelSelect
+                        const prevValue = vrmModelSelect ? vrmModelSelect.value : '';
                         await loadLive3DModels();
+                        // 恢复之前的选中项（如果仍存在）
+                        if (prevValue && vrmModelSelect) {
+                            const match = Array.from(vrmModelSelect.options).find(opt => opt.value === prevValue);
+                            if (match) {
+                                vrmModelSelect.value = prevValue;
+                                updateVRMModelSelectButtonText();
+                            }
+                        }
                     } else {
                         await loadMMDModels();
                     }
@@ -5542,6 +5552,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 重新加载模型列表（Live3D 模式下需同时包含 MMD 模型）
                 setTimeout(async () => {
                     try {
+                        // 保存当前选中值，loadLive3DModels/loadVRMModels 会重建 vrmModelSelect
+                        const prevValue = vrmModelSelect ? vrmModelSelect.value : '';
                         if (currentModelType === 'live3d') {
                             await loadLive3DModels();
                         } else {
@@ -5566,6 +5578,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 vrmModelSelect.value = option.value;
                                 // 触发change事件以加载模型
                                 vrmModelSelect.dispatchEvent(new Event('change'));
+                            } else if (prevValue) {
+                                // 新模型未匹配到，恢复之前的选中项
+                                const restore = Array.from(vrmModelSelect.options).find(opt => opt.value === prevValue);
+                                if (restore) {
+                                    vrmModelSelect.value = prevValue;
+                                    updateVRMModelSelectButtonText();
+                                }
                             } else {
                                 console.warn('无法自动选择上传的模型，请手动选择');
                             }
