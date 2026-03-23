@@ -2338,6 +2338,7 @@ async def voice_clone(
                     voice_data = {
                         'voice_id': voice_id,
                         'prefix': prefix,
+                        'provider': 'local',
                         'is_local': True,
                         'audio_md5': audio_md5,
                         'ref_language': ref_language,

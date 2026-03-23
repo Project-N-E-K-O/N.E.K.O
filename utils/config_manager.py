@@ -1024,43 +1024,70 @@ class ConfigManager:
         voice_storage = self.load_voice_storage()
         return [k for k in expected if k in voice_storage]
 
+    @staticmethod
+    def _infer_provider_from_storage_key(storage_key: str) -> str:
+        """根据 voice_storage 的分区 key 推断 provider（仅用于兼容旧数据）。"""
+        if storage_key == '__LOCAL_TTS__':
+            return 'local'
+        if storage_key.startswith('__MINIMAX_INTL__'):
+            return 'minimax_intl'
+        if storage_key.startswith('__MINIMAX__'):
+            return 'minimax'
+        return 'cosyvoice'
+
     def get_voices_for_current_api(self):
         """获取当前 TTS 配置对应的所有音色
-        
+
         根据实际使用的 TTS 配置返回音色：
         1. 本地 TTS（ws/wss 协议）→ 返回 __LOCAL_TTS__ 下的音色
         2. 阿里云 TTS（通过 ASSIST_API_KEY_QWEN）→ 返回该 API Key 下的音色
         3. 其他情况 → 返回 AUDIO_API_KEY 下的音色
         结果中同时合并 MiniMax 音色（__MINIMAX__ 下的音色）。
+
+        返回的每个 voice_data 都保证包含 ``provider`` 字段
+        （``local`` / ``minimax`` / ``minimax_intl`` / ``cosyvoice``）。
         """
         voice_storage = self.load_voice_storage()
-        
+
         tts_config = self.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url', '')
         is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
-        
+
         if is_local_tts:
-            all_voices = voice_storage.get('__LOCAL_TTS__', {})
+            storage_key = '__LOCAL_TTS__'
+            all_voices = voice_storage.get(storage_key, {})
             result = {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
         else:
             tts_api_key = tts_config.get('api_key', '')
             if tts_api_key:
-                all_voices = voice_storage.get(tts_api_key, {})
+                storage_key = tts_api_key
+                all_voices = voice_storage.get(storage_key, {})
                 result = {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
             else:
                 core_config = self.get_core_config()
                 audio_api_key = core_config.get('AUDIO_API_KEY', '')
                 if not audio_api_key:
+                    storage_key = ''
                     result = {}
                 else:
-                    all_voices = voice_storage.get(audio_api_key, {})
+                    storage_key = audio_api_key
+                    all_voices = voice_storage.get(storage_key, {})
                     result = {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
 
-        # 合并 MiniMax 音色
-        for storage_key in self._get_minimax_storage_keys():
-            minimax_voices = voice_storage.get(storage_key, {})
+        # 确保主分区音色有 provider 字段
+        default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
+        for vdata in result.values():
+            if isinstance(vdata, dict) and 'provider' not in vdata:
+                vdata['provider'] = default_provider
+
+        # 合并 MiniMax 音色，并确保 provider 字段
+        for mk in self._get_minimax_storage_keys():
+            mm_provider = self._infer_provider_from_storage_key(mk)
+            minimax_voices = voice_storage.get(mk, {})
             for vid, vdata in minimax_voices.items():
                 if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = mm_provider
                     result[vid] = vdata
 
         return result

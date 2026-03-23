@@ -1949,41 +1949,22 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             break
 
 
-def _is_minimax_voice(voice_id: str) -> bool:
-    """检查 voice_id 是否为 MiniMax 克隆音色（在 voice_storage 的 __MINIMAX__ / __MINIMAX_INTL__ 分区中）。"""
+def _get_voice_meta(voice_id: str) -> dict | None:
+    """获取 voice_id 对应的 voice_data 元信息（含 provider 字段）。
+
+    返回 voice_data dict（至少含 ``provider``），找不到时返回 None。
+    """
     if not voice_id:
-        return False
+        return None
     try:
         cm = get_config_manager()
-        voice_storage = cm.load_voice_storage()
-        for key, voices in voice_storage.items():
-            if (key.startswith('__MINIMAX__') or key.startswith('__MINIMAX_INTL__')) and isinstance(voices, dict) and voice_id in voices:
-                return True
+        voices = cm.get_voices_for_current_api()
+        vdata = voices.get(voice_id)
+        if isinstance(vdata, dict):
+            return vdata
     except Exception:
         pass
-    return False
-
-
-def _get_minimax_voice_base_url(voice_id: str) -> str:
-    """获取 MiniMax 音色对应的 API base URL（国服 / 国际服）。"""
-    from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
-    if not voice_id:
-        return MINIMAX_DOMESTIC_BASE_URL
-    try:
-        cm = get_config_manager()
-        voice_storage = cm.load_voice_storage()
-        for key, voices in voice_storage.items():
-            if (key.startswith('__MINIMAX__') or key.startswith('__MINIMAX_INTL__')) and isinstance(voices, dict) and voice_id in voices:
-                vdata = voices[voice_id]
-                if isinstance(vdata, dict) and vdata.get('minimax_base_url'):
-                    return vdata['minimax_base_url']
-                # 根据 storage key 前缀推断
-                if key.startswith('__MINIMAX_INTL__'):
-                    return MINIMAX_INTL_BASE_URL
-                return MINIMAX_DOMESTIC_BASE_URL
-    except Exception:
-        pass
-    return MINIMAX_DOMESTIC_BASE_URL
+    return None
 
 
 def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
@@ -2000,9 +1981,12 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     """
 
     # 优先检查 MiniMax 克隆音色（不受 is_custom 配置影响）
-    if has_custom_voice and voice_id and _is_minimax_voice(voice_id):
-        logger.info("检测到 MiniMax 克隆音色: %s，使用 MiniMax TTS Worker", voice_id)
-        return minimax_tts_worker
+    if has_custom_voice and voice_id:
+        voice_meta = _get_voice_meta(voice_id)
+        if voice_meta and voice_meta.get('provider', '').startswith('minimax'):
+            logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
+                        voice_id, voice_meta['provider'])
+            return minimax_tts_worker
 
     try:
         cm = get_config_manager()
