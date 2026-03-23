@@ -31,7 +31,7 @@ def test_all_providers_config():
     for config in PROVIDER_CACHE_CONFIG.values():
         header = f"{config['header_name']}: {config['header_value']}" if config['requires_header'] else "N/A"
         print(f"{config['name']:<20} {config['cache_mode']:<12} {header:<25} {config['min_cache_tokens']:<10}")
-        assert "name" in config and "cache_mode" in config and "min_cache_tokens" in config
+        assert config.get("name") and config.get("cache_mode") and config.get("min_cache_tokens") is not None
 
 
 def test_token_extraction_all_providers():

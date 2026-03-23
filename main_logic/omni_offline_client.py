@@ -144,7 +144,6 @@ class OmniOfflineClient:
         """
         if new_model and new_model != self.model:
             logger.info(f"Switching model from {self.model} to {new_model}")
-            self.model = new_model
 
             # 选择使用的 API 配置
             if use_vision_config:
@@ -154,13 +153,18 @@ class OmniOfflineClient:
                 base_url = self.base_url
                 api_key = self.api_key
 
-            # Close old client to prevent httpx FD leaks, then recreate
-            old_llm = self.llm
-            self.llm = create_chat_llm(
-                self.model, base_url, api_key,
+            # 先创建新 client，成功后再原子替换，避免半切换状态
+            new_llm = create_chat_llm(
+                new_model, base_url, api_key,
                 temperature=1.0, streaming=True, max_retries=0,
             )
-            await old_llm.aclose()
+            old_llm = self.llm
+            self.llm = new_llm
+            self.model = new_model
+            try:
+                await old_llm.aclose()
+            except Exception as e:
+                logger.warning(f"switch_model: old client aclose failed: {e}")
     
     async def _check_repetition(self, response: str) -> bool:
         """
