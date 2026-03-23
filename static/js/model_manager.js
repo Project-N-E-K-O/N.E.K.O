@@ -5174,7 +5174,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const result = await response.json();
                 if (result.success) {
                     showStatus(`MMD模型 ${result.filename || file.name} 上传成功`, 2000);
-                    await loadMMDModels();
+                    if (currentModelType === 'live3d') {
+                        await loadLive3DModels();
+                    } else {
+                        await loadMMDModels();
+                    }
                 } else {
                     showStatus(`上传失败: ${result.error}`, 3000);
                 }
@@ -5535,10 +5539,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 }
 
-                // 重新加载VRM模型列表
+                // 重新加载模型列表（Live3D 模式下需同时包含 MMD 模型）
                 setTimeout(async () => {
                     try {
-                        await loadVRMModels();
+                        if (currentModelType === 'live3d') {
+                            await loadLive3DModels();
+                        } else {
+                            await loadVRMModels();
+                        }
                         // 自动选择新上传的模型
                         if (result.model_path && vrmModelSelect) {
                             // 尝试匹配模型路径
