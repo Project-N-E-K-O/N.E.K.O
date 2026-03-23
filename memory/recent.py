@@ -243,7 +243,10 @@ class CompressedRecentHistoryManager:
                 # 尝试将响应内容解析为JSON
                 set_call_type("memory_compression")
                 llm = self._get_llm()
-                response_content = (await llm.ainvoke(further_summarize_prompt % initial_summary)).content
+                try:
+                    response_content = (await llm.ainvoke(further_summarize_prompt % initial_summary)).content
+                finally:
+                    await llm.aclose()
                 response_content = str(response_content).strip()
                 match = re.search(r'```(?:json)?\s*([\s\S]*?)```', response_content)
                 if match:

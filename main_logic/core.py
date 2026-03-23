@@ -2956,6 +2956,11 @@ class LLMSessionManager:
                         else:
                             logger.warning("⚠️ 收到TTS未就绪信号，继续缓存文本等待恢复")
                         continue
+                    elif data[0] == "__reconnecting__":
+                        logger.info("🌊 TTS 正在自动重连，发送呼吸感状态到前端")
+                        user_msg = json.dumps({"code": "TTS_RECONNECTING", "level": "info"})
+                        asyncio.create_task(self.send_status(user_msg))
+                        continue
                     elif data[0] == "__error__":
                         error_msg = data[1]
                         error_msg_text = str(error_msg)
