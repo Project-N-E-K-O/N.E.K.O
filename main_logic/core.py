@@ -331,6 +331,7 @@ class LLMSessionManager:
         analyze_request, or agent-callback re-delivery — those belong
         exclusively to user-initiated conversation turns.
         """
+        await self._flush_tts_buffer()
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             try:
                 self.tts_request_queue.put((None, None))
@@ -1302,7 +1303,11 @@ class LLMSessionManager:
             try:
                 async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                     resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
-                    memory_context = resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                    if resp.is_success:
+                        memory_context = resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                    else:
+                        logger.warning(f"[记忆服务] 返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
+                        memory_context = _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                 logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
             except httpx.ConnectError:
                 raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {self.memory_server_port})")
@@ -1780,7 +1785,11 @@ class LLMSessionManager:
             memory_context = ""
             async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
-                memory_context = resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
+                if resp.is_success:
+                    memory_context = resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
+                else:
+                    logger.warning(f"[记忆服务] 热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
+                    memory_context = self._convert_cache_to_str(self.message_cache_for_new_session)
             full_dynamic_context = dynamic_context + memory_context
             print(f"[静态系统提示词]\n{static_system_prompt}\n\n[动态上下文]\n{full_dynamic_context}")
             self._bind_session_lifecycle_callbacks(self.pending_session)
@@ -2029,6 +2038,7 @@ class LLMSessionManager:
             if self.session and hasattr(self.session, '_conversation_history'):
                 self.session._conversation_history.append(_AIMsg(content=full_text))
 
+            await self._flush_tts_buffer()
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
                 try:
                     self.tts_request_queue.put((None, None))

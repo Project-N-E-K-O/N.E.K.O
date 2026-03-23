@@ -943,6 +943,7 @@ def calculate_cache_hit_rate(prompt_tokens: int, cached_tokens: int) -> float:
     """
     if prompt_tokens <= 0:
         return 0.0
+    cached_tokens = max(0, min(cached_tokens, prompt_tokens))
     return cached_tokens / prompt_tokens
 
 

@@ -1098,6 +1098,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 synthesizer = _create_synthesizer(detected_lang)
                 callback.accepted_speech_id = current_speech_id
                 synthesizer.streaming_call(char_buffer)
+                _record_tts_telemetry("cosyvoice", char_buffer)
                 last_streaming_call_time = time.time()
                 char_buffer = ""
             except Exception as e:
@@ -1114,6 +1115,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         else:
             try:
                 synthesizer.streaming_call(tts_text)
+                _record_tts_telemetry("cosyvoice", tts_text)
                 last_streaming_call_time = time.time()
             except Exception:
                 if synthesizer is not None:
@@ -1128,6 +1130,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     synthesizer = _create_synthesizer(detected_lang)
                     callback.accepted_speech_id = current_speech_id
                     synthesizer.streaming_call(tts_text)
+                    _record_tts_telemetry("cosyvoice", tts_text)
                     last_streaming_call_time = time.time()
                 except Exception as reconnect_error:
                     logger.error(f"TTS Reconnect Error: {reconnect_error}")

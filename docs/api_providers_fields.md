@@ -32,12 +32,14 @@
 ```
 
 ### Context Cache 配置
+
 | 字段 | 值 | 说明 |
 |------|-----|------|
 | `default_headers` | `{"x-dashscope-session-cache": "enable"}` | 开启会话级缓存 |
 | `enable_cache_control` | `True` | 启用缓存控制 |
 
 ### 遥测字段 (Token Usage)
+
 | 字段路径 | 类型 | 说明 |
 |----------|------|------|
 | `usage.prompt_tokens` | int | 总提示词 Token 数 |
@@ -68,12 +70,14 @@
 ```
 
 ### Context Cache 配置
+
 | 字段 | 值 | 说明 |
 |------|-----|------|
 | `default_headers` | `{}` | 无需特殊 Header |
 | `enable_cache_control` | `False` | 通过 API 自动管理 |
 
 ### 遥测字段 (Token Usage)
+
 | 字段路径 | 类型 | 说明 |
 |----------|------|------|
 | `usage.prompt_tokens` | int | 总提示词 Token 数 |
@@ -103,12 +107,14 @@
 ```
 
 ### Context Cache 配置
+
 | 字段 | 值 | 说明 |
 |------|-----|------|
 | `default_headers` | `{}` | 无需特殊 Header |
 | `enable_cache_control` | `False` | 通过 API 自动管理 |
 
 ### 遥测字段 (Token Usage)
+
 | 字段路径 | 类型 | 说明 |
 |----------|------|------|
 | `usage.prompt_tokens` | int | 总提示词 Token 数 |
@@ -138,12 +144,14 @@
 ```
 
 ### Context Cache 配置
+
 | 字段 | 值 | 说明 |
 |------|-----|------|
 | `default_headers` | `{}` | 无需特殊 Header |
 | `enable_cache_control` | `False` | 通过 API 自动管理 |
 
 ### 遥测字段 (Token Usage)
+
 | 字段路径 | 类型 | 说明 |
 |----------|------|------|
 | `usage.prompt_tokens` | int | 总提示词 Token 数 |
@@ -173,12 +181,14 @@
 ```
 
 ### Context Cache 配置
+
 | 字段 | 值 | 说明 |
 |------|-----|------|
 | `default_headers` | `{}` | 转发层，依赖上游 |
 | `enable_cache_control` | `False` | 由上游模型决定 |
 
 ### 遥测字段 (Token Usage)
+
 | 字段路径 | 类型 | 说明 |
 |----------|------|------|
 | `usage.prompt_tokens` | int | 总提示词 Token 数 |
@@ -208,12 +218,14 @@
 ```
 
 ### Context Cache 配置
+
 | 字段 | 值 | 说明 |
 |------|-----|------|
 | `default_headers` | `{}` | 通过 SDK 管理 |
 | `enable_cache_control` | `False` | Google 自有缓存机制 |
 
 ### 遥测字段 (Token Usage)
+
 | 字段路径 | 类型 | 说明 |
 |----------|------|------|
 | `usage.prompt_tokens` | int | 总提示词 Token 数 |
@@ -244,12 +256,14 @@
 ```
 
 ### Context Cache 配置
+
 | 字段 | 值 | 说明 |
 |------|-----|------|
 | `default_headers` | `{}` | 无需特殊 Header |
 | `enable_cache_control` | `False` | 通过 API 自动管理 |
 
 ### 遥测字段 (Token Usage)
+
 | 字段路径 | 类型 | 说明 |
 |----------|------|------|
 | `usage.prompt_tokens` | int | 总提示词 Token 数 |

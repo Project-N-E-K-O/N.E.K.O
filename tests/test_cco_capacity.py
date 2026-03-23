@@ -124,8 +124,7 @@ def test_all_providers_config():
     for provider_id, config in PROVIDER_CACHE_CONFIG.items():
         header = f"{config['header_name']}: {config['header_value']}" if config['requires_header'] else "N/A"
         print(f"{config['name']:<20} {config['cache_mode']:<12} {header:<25} {config['min_cache_tokens']:<10}")
-
-    return True
+        assert "name" in config and "cache_mode" in config and "min_cache_tokens" in config
 
 
 def test_token_extraction_all_providers():
@@ -159,16 +158,12 @@ def test_token_extraction_all_providers():
 
     from utils.token_tracker import _extract_cached_tokens
 
-    all_passed = True
     for provider_name, usage_dict in test_cases.items():
         cached = _extract_cached_tokens(usage_dict)
         expected = 9000
         status = "[PASS]" if cached == expected else "[FAIL]"
-        if cached != expected:
-            all_passed = False
         print(f"  {status} {provider_name}: 提取到 {cached} tokens (预期: {expected})")
-
-    return all_passed
+        assert cached == expected, f"{provider_name}: got {cached}, expected {expected}"
 
 
 def test_cost_calculation_all_providers():
@@ -203,8 +198,8 @@ def test_cost_calculation_all_providers():
         savings_pct = (savings / no_cache_cost) * 100
 
         print(f"{config['name']:<25} {total_cost:.6f}    {no_cache_cost:.6f}    {savings_pct:.1f}%")
-
-    return True
+        assert savings >= 0, f"{config['name']}: negative savings {savings}"
+        assert 0 <= savings_pct <= 100, f"{config['name']}: savings_pct {savings_pct}% out of range"
 
 
 def test_cache_hit_rate_scenarios():
@@ -230,8 +225,7 @@ def test_cache_hit_rate_scenarios():
         hit_rate = calculate_cache_hit_rate(prompt, cached)
         savings = hit_rate * 90
         print(f"{desc:<20} {prompt:<10} {cached:<10} {hit_rate*100:.1f}%     {savings:.1f}%")
-
-    return True
+        assert 0.0 <= hit_rate <= 1.0, f"{desc}: hit_rate {hit_rate} out of range"
 
 
 def test_provider_compatibility():
@@ -254,12 +248,9 @@ def test_provider_compatibility():
 
         actual = cache_config["enable_cache_control"]
         passed = actual == expected
-        results.append(passed)
-
-        status = "[PASS]" if passed else "[FAIL]"
+        status = "[PASS]" if (actual == expected) else "[FAIL]"
         print(f"  {status} {config['name']}: 缓存控制 = {actual}")
-
-    return all(results)
+        assert actual == expected, f"{config['name']}: expected {expected}, got {actual}"
 
 
 def test_min_cache_tokens_all_providers():
@@ -273,10 +264,9 @@ def test_min_cache_tokens_all_providers():
 
     for provider_id, config in PROVIDER_CACHE_CONFIG.items():
         min_tokens = config["min_cache_tokens"]
-        behavior = "不可缓存" if min_tokens > 1024 else "可缓存"
+        behavior = "不可缓存" if min_tokens >= 1024 else "可缓存"
         print(f"{config['name']:<25} {min_tokens:<12} {behavior}")
-
-    return True
+        assert isinstance(min_tokens, int) and min_tokens > 0, f"{config['name']}: invalid min_cache_tokens {min_tokens}"
 
 
 def test_session_cache_header():
@@ -298,8 +288,8 @@ def test_session_cache_header():
 
     status = "[PASS]" if passed else "[FAIL]"
     print(f"\n  {status} Session Cache Header 正确配置")
-
-    return passed
+    assert qwen_config["enable_cache_control"] is True, "enable_cache_control should be True"
+    assert qwen_config["default_headers"] == expected_header, f"headers mismatch: {qwen_config['default_headers']}"
 
 
 def main():

@@ -186,6 +186,8 @@ class OmniOfflineClient:
                 api_key = self.api_key
             
             # Recreate LLM instance with new model and config
+            _is_dashscope = "dashscope.aliyuncs.com" in (base_url or "")
+            _cache_headers = {"x-dashscope-session-cache": "enable"} if _is_dashscope else None
             self.llm = ChatOpenAI(
                 model=self.model,
                 base_url=base_url,
@@ -193,7 +195,9 @@ class OmniOfflineClient:
                 temperature=1.0,
                 streaming=True,
                 max_retries=0,  # 禁用内置重试
-                extra_body=get_extra_body(self.model) or None
+                extra_body=get_extra_body(self.model) or None,
+                default_headers=_cache_headers,
+                enable_cache_control=_is_dashscope
             )
     
     async def _check_repetition(self, response: str) -> bool:

@@ -626,10 +626,11 @@ class OmniRealtimeClient:
             logger.info("✅ Gemini Live API connected successfully")
             
             # 静动分离：动态上下文作为单独的 message 注入，不影响缓存
+            # turn_complete=False 避免 Gemini 在启动时立即生成响应
             if dynamic_context and dynamic_context.strip():
                 await self._gemini_session.send_client_content(
                     turns=f"【系统内部状态更新】\n{dynamic_context}",
-                    turn_complete=True
+                    turn_complete=False
                 )
                 logger.info(f"📦 已注入动态上下文 ({len(dynamic_context)} 字符)，静态提示词保持不变以触发缓存")
             
