@@ -640,12 +640,17 @@
             {dur:'4.9s',delay:'2.1s'}, {dur:'5.4s',delay:'0.9s'},
             {dur:'4.6s',delay:'3.2s'},
         ];
+        var lastCustomRingText = null;
+
         function buildPreviewRing(customText) {
             var container = document.getElementById('preview-ring-container');
             if (!container) return;
             var text;
             if (customText && typeof customText === 'string') {
+                lastCustomRingText = customText;
                 text = customText;
+            } else if (lastCustomRingText) {
+                text = lastCustomRingText;
             } else {
                 var key = 'steam.selectCharaToPreview';
                 var raw = (typeof window.t === 'function') ? window.t(key) : null;
