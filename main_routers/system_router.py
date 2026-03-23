@@ -2613,7 +2613,8 @@ async def proactive_chat(request: Request):
         messages = [SystemMessage(content=generate_prompt), HumanMessage(content=human_content)]
 
         actual_model = (vision_model_name if phase2_use_vision else correction_model)
-        
+        print(f"\n{'='*60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: model={actual_model} | vision={phase2_use_vision} | img={'yes' if phase2_use_vision else 'no'}\n{'='*60}\n{generate_prompt}\n{'='*60}\n")
+
         # --- 流式调用 + 在线拦截 ---
         from utils.token_tracker import set_call_type
         set_call_type("proactive")
