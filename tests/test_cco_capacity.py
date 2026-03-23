@@ -87,6 +87,7 @@ def test_cost_calculation_all_providers():
     print(f"{'提供商':<25} {'费用':<12} {'无缓存':<12} {'节省':<10}")
     print("-" * 60)
 
+    miss_tokens = prompt_tokens - cached_tokens
     for config in PROVIDER_CACHE_CONFIG.values():
         cache_price = config["cache_price"]
         creation_price = config["creation_price"]
@@ -94,11 +95,12 @@ def test_cost_calculation_all_providers():
         if config["cache_mode"] == "session":
             cached_cost = (cached_tokens / 1000) * input_price * cache_price
             creation_cost = (cached_tokens / 1000) * input_price * (creation_price - cache_price)
-            total_cost = cached_cost + creation_cost
+            miss_cost = (miss_tokens / 1000) * input_price
+            total_cost = cached_cost + creation_cost + miss_cost
         elif config["cache_mode"] == "upstream":
-            total_cost = (cached_tokens / 1000) * input_price * 0.10 + (1000 / 1000) * input_price
+            total_cost = (cached_tokens / 1000) * input_price * 0.10 + (miss_tokens / 1000) * input_price
         else:
-            total_cost = (cached_tokens / 1000) * input_price * cache_price + (1000 / 1000) * input_price
+            total_cost = (cached_tokens / 1000) * input_price * cache_price + (miss_tokens / 1000) * input_price
 
         no_cache_cost = (prompt_tokens / 1000) * input_price
         savings = no_cache_cost - total_cost

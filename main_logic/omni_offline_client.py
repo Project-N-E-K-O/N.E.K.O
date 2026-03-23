@@ -589,7 +589,7 @@ class OmniOfflineClient:
         if self.llm:
             try:
                 await self.llm.aclose()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"OmniOfflineClient.close: aclose failed: {e}")
             self.llm = None
         logger.info("OmniOfflineClient closed")
