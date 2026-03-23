@@ -961,13 +961,6 @@ html #chat-container {
   color: #4aa3df !important;
 }
 
-/* 辅助API Key 提示框 */
-[data-theme="dark"] #assist-api-key-hint {
-  background: #1a2a3d !important;
-  border-color: #2a4a6e !important;
-  color: #5cb8f0 !important;
-}
-
 /* 自定义API 说明框 */
 [data-theme="dark"] .custom-api-desc {
   background: #1a2e3d !important;
