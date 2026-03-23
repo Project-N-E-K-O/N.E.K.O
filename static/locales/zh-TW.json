@@ -1075,6 +1075,14 @@
     "voice": {
         "title": "音色注冊",
         "alibabaApiRequired": "⚠️ 此功能需要CosyVoice模型，請在API密鑰設置頁中配置阿里輔助API或本地語音服務器",
+        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（國內版），請在API密鑰設定頁中配置MiniMax API Key",
+        "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（國際版），請在API密鑰設定頁中配置MiniMax API Key（國際版）",
+        "providerLabel": "語音複製服務商",
+        "provider": {
+            "cosyvoice": "阿里雲 CosyVoice",
+            "minimax": "MiniMax（國內版）",
+            "minimax_intl": "MiniMax（國際版）"
+        },
         "selectFile": "選擇本地音頻文件（8秒最佳，請勿超過20秒，wav/mp3格式）",
         "customPrefix": "自定義前綴（必填，用於區分音色）",
         "customPrefixNote": "不超過10個字符，隻支持數字和英文字母",

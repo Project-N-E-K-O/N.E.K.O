@@ -1075,6 +1075,14 @@
     "voice": {
         "title": "ボイス登録",
         "alibabaApiRequired": "⚠️ この機能はCosyVoiceモデルが必要です。APIキー設定でAlibaba Assist APIまたはローカル音声サーバーを設定してください",
+        "minimaxApiRequired": "⚠️ この機能にはMiniMaxモデル（国内版）が必要です。APIキー設定でMiniMax APIキーを設定してください",
+        "minimaxIntlApiRequired": "⚠️ この機能にはMiniMaxモデル（国際版）が必要です。APIキー設定でMiniMax APIキー（国際版）を設定してください",
+        "providerLabel": "音声クローンプロバイダー",
+        "provider": {
+            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "minimax": "MiniMax（国内版）",
+            "minimax_intl": "MiniMax（国際版）"
+        },
         "selectFile": "ローカル音声ファイルを選択（8秒推奨、最大20秒、wav/mp3形式）",
         "customPrefix": "カスタムプレフィックス（必須、ボイスの識別用）",
         "customPrefixNote": "最大10文字、数字と英字のみ",

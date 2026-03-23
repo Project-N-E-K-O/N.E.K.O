@@ -1966,7 +1966,7 @@ def _is_minimax_voice(voice_id: str) -> bool:
 
 def _get_minimax_voice_base_url(voice_id: str) -> str:
     """获取 MiniMax 音色对应的 API base URL（国服 / 国际服）。"""
-    from utils.minimax_voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
+    from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
     if not voice_id:
         return MINIMAX_DOMESTIC_BASE_URL
     try:

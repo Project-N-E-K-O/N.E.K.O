@@ -1075,6 +1075,14 @@
     "voice": {
         "title": "Регистрация голоса",
         "alibabaApiRequired": "⚠️ Эта функция требует модель CosyVoice. Настройте Alibaba Assist API или локальный голосовой сервер в настройках API.",
+        "minimaxApiRequired": "⚠️ Для этой функции необходима модель MiniMax (Китай). Настройте ключ API MiniMax в настройках API.",
+        "minimaxIntlApiRequired": "⚠️ Для этой функции необходима модель MiniMax (Международная). Настройте ключ API MiniMax (Международная) в настройках API.",
+        "providerLabel": "Провайдер клонирования голоса",
+        "provider": {
+            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "minimax": "MiniMax (Китай)",
+            "minimax_intl": "MiniMax (Международная)"
+        },
         "selectFile": "Выберите локальный аудиофайл (рекомендуется 15 секунд, макс. 30 секунд, формат wav/mp3)",
         "customPrefix": "Пользовательский префикс (Обязательно, для различения голосов)",
         "customPrefixNote": "Максимум 10 символов, только цифры и латинские буквы",

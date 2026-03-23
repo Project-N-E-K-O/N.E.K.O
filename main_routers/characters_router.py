@@ -16,20 +16,17 @@ import copy
 import base64
 import hashlib
 from datetime import datetime
-import pathlib
-import wave
-
 from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 import httpx
 import dashscope
-from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer
+from dashscope.audio.tts_v2 import SpeechSynthesizer
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.config_manager import get_reserved, set_reserved, flatten_reserved
-from utils.audio import normalize_voice_clone_api_audio
-from utils.minimax_voice_clone import (
+from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
+from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
     minimax_normalize_language,
@@ -37,6 +34,9 @@ from utils.minimax_voice_clone import (
     MINIMAX_INTL_VOICE_STORAGE_KEY,
     get_minimax_base_url,
     get_minimax_storage_prefix,
+    QwenVoiceCloneClient,
+    QwenVoiceCloneError,
+    qwen_language_hints,
 )
 from utils.minimax_api_keys import MINIMAX_API_KEY, MINIMAX_INTL_API_KEY
 from utils.file_utils import atomic_write_json
@@ -2480,12 +2480,13 @@ async def voice_clone(
             }, status_code=500)
 
     # ==================== 阿里云 CosyVoice TTS 注册流程（默认） ====================
-    
-    # MD5 去重：提前获取 api_key 并检查是否有相同音频已注册
+
     tts_config_for_dedup = _config_manager.get_model_api_config('tts_custom')
-    dedup_api_key = tts_config_for_dedup.get('api_key', '')
-    if dedup_api_key:
-        existing = _config_manager.find_voice_by_audio_md5(dedup_api_key, audio_md5, ref_language)
+    audio_api_key = tts_config_for_dedup.get('api_key', '')
+
+    # MD5 去重
+    if audio_api_key:
+        existing = _config_manager.find_voice_by_audio_md5(audio_api_key, audio_md5, ref_language)
         if existing:
             voice_id, voice_data = existing
             logger.info(f"阿里云 TTS 音频 MD5 命中，复用 voice_id: {voice_id}")
@@ -2494,109 +2495,16 @@ async def voice_clone(
                 'message': '已复用现有音色，跳过上传',
                 'reused': True
             })
-    
-    # 根据参考音频语言计算 language_hints（ref_language 已在上方归一化）
-    # 对于中文 (ch)，language_hints 为空列表
-    # 对于其他语言，language_hints 为包含该语言代码的单元素列表
-    language_hints = [] if ref_language == 'ch' else [ref_language]
+
+    if not audio_api_key:
+        logger.error("未配置 AUDIO_API_KEY")
+        return JSONResponse({
+            'error': 'TTS_AUDIO_API_KEY_MISSING',
+            'code': 'TTS_AUDIO_API_KEY_MISSING'
+        }, status_code=400)
+
+    language_hints = qwen_language_hints(ref_language)
     logger.info(f"参考音频语言（阿里云）: {ref_language}, language_hints: {language_hints}")
-
-
-    def validate_audio_file(file_buffer: io.BytesIO, filename: str) -> tuple[str, str]:
-
-        """
-        验证音频文件类型和格式
-        返回: (mime_type, error_message)
-        """
-        try:
-            import av
-        except ImportError:
-            return "", "缺少 av 依赖，无法校验音频文件。请安装 pyav。"
-
-        file_path_obj = pathlib.Path(filename)
-        file_extension = file_path_obj.suffix.lower()
-        
-        # 检查文件扩展名
-        if file_extension not in ['.wav', '.mp3', '.m4a']:
-            return "", f"不支持的文件格式: {file_extension}。仅支持 WAV、MP3 和 M4A 格式。"
-        
-        # 根据扩展名确定MIME类型
-        if file_extension == '.wav':
-            mime_type = "audio/wav"
-            try:
-                file_buffer.seek(0)
-                # 使用 PyAV 验证 WAV 文件
-                with av.open(file_buffer, mode='r') as container:
-                    audio_streams = [s for s in container.streams if s.type == 'audio']
-                    if not audio_streams:
-                        return "", "WAV文件中没有音频流。"
-                    stream = audio_streams[0]
-                    # 验证基本参数可访问
-                    _ = stream.sample_rate
-                    _ = stream.channels
-                file_buffer.seek(0)
-            except Exception as e:
-                return "", f"WAV文件格式错误: {str(e)}。请确认您的文件是合法的WAV文件。"
-                
-        elif file_extension == '.mp3':
-            mime_type = "audio/mpeg"
-            try:
-                file_buffer.seek(0)
-                # 读取更多字节以支持不同的MP3格式
-                header = file_buffer.read(32)
-                file_buffer.seek(0)
-
-                # 检查文件大小是否合理
-                file_size = len(file_buffer.getvalue())
-                if file_size < 1024:  # 至少1KB
-                    return "", "MP3文件太小，可能不是有效的音频文件。"
-                if file_size > 1024 * 1024 * 10:  # 10MB
-                    return "", "MP3文件太大，可能不是有效的音频文件。"
-                
-                # 更宽松的MP3文件头检查
-                # MP3文件通常以ID3标签或帧同步字开头
-                # 检查是否以ID3标签开头 (ID3v2)
-                has_id3_header = header.startswith(b'ID3')
-                # 检查是否有帧同步字 (FF FA, FF FB, FF F2, FF F3, FF E3等)
-                has_frame_sync = False
-                for i in range(len(header) - 1):
-                    if header[i] == 0xFF and (header[i+1] & 0xE0) == 0xE0:
-                        has_frame_sync = True
-                        break
-                
-                # 如果既没有ID3标签也没有帧同步字，则认为文件可能无效
-                # 但这只是一个警告，不应该严格拒绝
-                if not has_id3_header and not has_frame_sync:
-                    return mime_type, f"警告: MP3文件可能格式不标准，文件头: {header[:4].hex()}"
-                        
-            except Exception as e:
-                return "", f"MP3文件读取错误: {str(e)}。请确认您的文件是合法的MP3文件。"
-                
-        elif file_extension == '.m4a':
-            mime_type = "audio/mp4"
-            try:
-                file_buffer.seek(0)
-                # 读取文件头来验证M4A格式
-                header = file_buffer.read(32)
-                file_buffer.seek(0)
-                
-                # M4A文件应该以'ftyp'盒子开始，通常在偏移4字节处
-                # 检查是否包含'ftyp'标识
-                if b'ftyp' not in header:
-                    return "", "M4A文件格式无效或已损坏。请确认您的文件是合法的M4A文件。"
-                
-                # 进一步验证：检查是否包含常见的M4A类型标识
-                # M4A通常包含'mp4a', 'M4A ', 'M4V '等类型
-                valid_types = [b'mp4a', b'M4A ', b'M4V ', b'isom', b'iso2', b'avc1']
-                has_valid_type = any(t in header for t in valid_types)
-                
-                if not has_valid_type:
-                    return mime_type,  "警告: M4A文件格式无效或已损坏。请确认您的文件是合法的M4A文件。"
-                        
-            except Exception as e:
-                return "", f"M4A文件读取错误: {str(e)}。请确认您的文件是合法的M4A文件。"
-        
-        return mime_type, ""
 
     try:
         # 1. 验证音频文件
@@ -2604,6 +2512,7 @@ async def voice_clone(
         if not mime_type:
             return JSONResponse({'error': error_msg}, status_code=400)
 
+        # 2. 规范化音频
         try:
             normalized_buffer, normalized_filename, audio_meta = await asyncio.to_thread(
                 normalize_voice_clone_api_audio,
@@ -2612,200 +2521,88 @@ async def voice_clone(
             )
         except ValueError as e:
             return JSONResponse({'error': str(e)}, status_code=400)
-        mime_type = 'audio/wav'
         logger.info(
-            "语音克隆API参考音频已重采样并重新生成: %sHz/%s声道/%sbyte -> %sHz/%s声道/%sbyte",
+            "语音克隆API参考音频已重采样: %sHz/%s声道 -> %sHz/mono",
             audio_meta['original']['sample_rate'],
             audio_meta['original']['channels'],
-            audio_meta['original']['sample_width'],
             audio_meta['normalized']['sample_rate'],
-            audio_meta['normalized']['channels'],
-            audio_meta['normalized']['sample_width'],
         )
-        
-        # 检查文件大小（tfLink支持最大100MB）
-        file_size = len(normalized_buffer.getvalue())
-        if file_size > 100 * 1024 * 1024:  # 100MB
-            return JSONResponse({'error': '文件大小超过100MB，超过tfLink的限制'}, status_code=400)
-        
-        # 2. 上传到 tfLink - 直接使用内存中的内容
-        normalized_buffer.seek(0)
-        # 根据tfLink API文档，使用multipart/form-data上传文件
-        # 参数名应为'file'
-        files = {'file': (normalized_filename, normalized_buffer, mime_type)}
-        
-        # 添加更多的请求头，确保兼容性
-        headers = {
-            'Accept': 'application/json'
-        }
-        
-        logger.info(f"正在上传文件到tfLink，文件名: {normalized_filename}, 大小: {file_size} bytes, MIME类型: {mime_type}")
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(TFLINK_UPLOAD_URL, files=files, headers=headers)
 
-            # 检查响应状态
-            if resp.status_code != 200:
-                logger.error(f"上传到tfLink失败，状态码: {resp.status_code}, 响应内容: {resp.text}")
-                return JSONResponse({'error': f'上传到tfLink失败，状态码: {resp.status_code}, 详情: {resp.text[:200]}'}, status_code=500)
-            
-            try:
-                # 解析JSON响应
-                data = resp.json()
-                logger.info(f"tfLink原始响应: {data}")
-                
-                # 获取下载链接
-                tmp_url = None
-                possible_keys = ['downloadLink', 'download_link', 'url', 'direct_link', 'link', 'download_url']
-                for key in possible_keys:
-                    if key in data:
-                        tmp_url = data[key]
-                        logger.info(f"找到下载链接键: {key}")
-                        break
-                
-                if not tmp_url:
-                    logger.error(f"无法从响应中提取URL: {data}")
-                    return JSONResponse({'error': '上传成功但无法从响应中提取URL'}, status_code=500)
-                
-                # 确保URL有效
-                if not tmp_url.startswith(('http://', 'https://')):
-                    logger.error(f"无效的URL格式: {tmp_url}")
-                    return JSONResponse({'error': f'无效的URL格式: {tmp_url}'}, status_code=500)
-                    
-                # 测试URL是否可访问
-                test_resp = await client.head(tmp_url, timeout=10)
-                if test_resp.status_code >= 400:
-                    logger.error(f"生成的URL无法访问: {tmp_url}, 状态码: {test_resp.status_code}")
-                    return JSONResponse({'error': '生成的临时URL无法访问，请重试'}, status_code=500)
-                    
-                logger.info(f"成功获取临时URL并验证可访问性: {tmp_url}")
-                
-            except ValueError:
-                raw_text = resp.text
-                logger.error(f"上传成功但响应格式无法解析: {raw_text}")
-                return JSONResponse({'error': f'上传成功但响应格式无法解析: {raw_text[:200]}'}, status_code=500)
-        
-        # 3. 用直链注册音色
-        # 使用 get_model_api_config('tts_custom') 获取正确的 API 配置
-        # tts_custom 会优先使用自定义 TTS API，其次是 Qwen Cosyvoice API（目前唯一支持 voice clone 的服务）
-        _config_manager = get_config_manager()
-        tts_config = _config_manager.get_model_api_config('tts_custom')
-        audio_api_key = tts_config.get('api_key', '')
-        
-        if not audio_api_key:
-            logger.error("未配置 AUDIO_API_KEY")
+        # 3. 调用 QwenVoiceCloneClient 完成上传 + 注册
+        qwen_client = QwenVoiceCloneClient(api_key=audio_api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
+        voice_id, tmp_url, request_id = await qwen_client.clone_voice(
+            audio_buffer=normalized_buffer,
+            filename=normalized_filename,
+            prefix=prefix,
+            language_hints=language_hints,
+        )
+
+        logger.info(f"CosyVoice 音色注册成功，voice_id: {voice_id}")
+
+        voice_data = {
+            'voice_id': voice_id,
+            'prefix': prefix,
+            'file_url': tmp_url,
+            'audio_md5': audio_md5,
+            'ref_language': ref_language,
+            'provider': 'cosyvoice',
+            'created_at': datetime.now().isoformat()
+        }
+
+        try:
+            _config_manager.save_voice_for_api_key(audio_api_key, voice_id, voice_data)
+            logger.info(f"voice_id已保存到音色库: {voice_id}")
+
+            # 验证保存结果
+            await asyncio.sleep(0.1)
+            validation_success = False
+            for validation_attempt in range(3):
+                if _config_manager.validate_voice_id_for_api_key(audio_api_key, voice_id):
+                    validation_success = True
+                    logger.info(f"voice_id保存验证成功: {voice_id} (尝试 {validation_attempt + 1})")
+                    break
+                if validation_attempt < 2:
+                    await asyncio.sleep(0.1)
+
+            if not validation_success:
+                logger.warning(f"voice_id保存后验证失败，但可能已成功保存: {voice_id}")
+
+        except Exception as save_error:
+            logger.error(f"保存voice_id到音色库失败: {save_error}")
             return JSONResponse({
-                'error': 'TTS_AUDIO_API_KEY_MISSING',
-                'code': 'TTS_AUDIO_API_KEY_MISSING'
-            }, status_code=400)
-        
-        dashscope.api_key = audio_api_key
-        service = VoiceEnrollmentService()
-        target_model = "cosyvoice-v3.5-plus"
-        
-        # 重试配置
-        max_retries = 3
-        retry_delay = 3  # 重试前等待的秒数
-        
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"开始音色注册（尝试 {attempt + 1}/{max_retries}），使用URL: {tmp_url}")
-                
-                # 尝试执行音色注册
-                voice_id = service.create_voice(target_model=target_model, prefix=prefix, url=tmp_url, language_hints=language_hints)
-                    
-                logger.info(f"音色注册成功，voice_id: {voice_id}")
-                voice_data = {
-                    'voice_id': voice_id,
-                    'prefix': prefix,
-                    'file_url': tmp_url,
-                    'audio_md5': audio_md5,
-                    'ref_language': ref_language,
-                    'created_at': datetime.now().isoformat()
-                }
-                try:
-                    _config_manager.save_voice_for_api_key(audio_api_key, voice_id, voice_data)
-                    logger.info(f"voice_id已保存到音色库: {voice_id}")
-                    
-                    # 验证voice_id是否能够被正确读取（添加短暂延迟，避免文件系统延迟）
-                    await asyncio.sleep(0.1)  # 等待100ms，确保文件写入完成
-                    
-                    # 最多验证3次，每次间隔100ms
-                    validation_success = False
-                    for validation_attempt in range(3):
-                        if _config_manager.validate_voice_id_for_api_key(audio_api_key, voice_id):
-                            validation_success = True
-                            logger.info(f"voice_id保存验证成功: {voice_id} (尝试 {validation_attempt + 1})")
-                            break
-                        if validation_attempt < 2:
-                            await asyncio.sleep(0.1)
-                    
-                    if not validation_success:
-                        logger.warning(f"voice_id保存后验证失败，但可能已成功保存: {voice_id}")
-                        # 不返回错误，因为保存可能已成功，只是验证失败
-                        # 继续返回成功，让用户尝试使用
-                    
-                except Exception as save_error:
-                    logger.error(f"保存voice_id到音色库失败: {save_error}")
-                    return JSONResponse({
-                        'error': f'音色注册成功但保存到音色库失败: {str(save_error)}',
-                        'voice_id': voice_id,
-                        'file_url': tmp_url
-                    }, status_code=500)
-                    
-                return JSONResponse({
-                    'voice_id': voice_id,
-                    'request_id': service.get_last_request_id(),
-                    'file_url': tmp_url,
-                    'message': '音色注册成功并已保存到音色库'
-                })
-                
-            except Exception as e:
-                logger.error(f"音色注册失败（尝试 {attempt + 1}/{max_retries}）: {str(e)}")
-                error_detail = str(e)
-                
-                # 检查是否是超时错误
-                is_timeout = ("ResponseTimeout" in error_detail or 
-                             "response timeout" in error_detail.lower() or
-                             "timeout" in error_detail.lower())
-                
-                # 检查是否是文件下载失败错误
-                is_download_failed = ("download audio failed" in error_detail or 
-                                     "415" in error_detail)
-                
-                # 如果是超时或下载失败，且还有重试机会，则重试
-                if (is_timeout or is_download_failed) and attempt < max_retries - 1:
-                    logger.warning(f"检测到{'超时' if is_timeout else '文件下载失败'}错误，等待 {retry_delay} 秒后重试...")
-                    await asyncio.sleep(retry_delay)
-                    continue  # 重试
-                
-                # 如果是最后一次尝试或非可重试错误，返回错误
-                if is_timeout:
-                    return JSONResponse({
-                        'error': f'音色注册超时，已尝试{max_retries}次',
-                        'detail': error_detail,
-                        'file_url': tmp_url,
-                        'suggestion': '请检查您的网络连接，或稍后再试。如果问题持续，可能是服务器繁忙。'
-                    }, status_code=408)
-                elif is_download_failed:
-                    return JSONResponse({
-                        'error': f'音色注册失败: 无法下载音频文件，已尝试{max_retries}次',
-                        'detail': error_detail,
-                        'file_url': tmp_url,
-                        'suggestion': '请检查文件URL是否可访问，或稍后重试'
-                    }, status_code=415)
-                else:
-                    # 其他错误直接返回
-                    return JSONResponse({
-                        'error': f'音色注册失败: {error_detail}',
-                        'file_url': tmp_url,
-                        'attempt': attempt + 1,
-                        'max_retries': max_retries
-                    }, status_code=500)
+                'error': f'音色注册成功但保存到音色库失败: {str(save_error)}',
+                'voice_id': voice_id,
+                'file_url': tmp_url
+            }, status_code=500)
+
+        return JSONResponse({
+            'voice_id': voice_id,
+            'request_id': request_id,
+            'file_url': tmp_url,
+            'message': '音色注册成功并已保存到音色库'
+        })
+
+    except QwenVoiceCloneError as e:
+        logger.error(f"CosyVoice 音色注册失败: {e}")
+        error_detail = str(e)
+        tmp_url = getattr(e, 'file_url', '未获取到URL')
+        if '超时' in error_detail:
+            return JSONResponse({
+                'error': error_detail,
+                'suggestion': '请检查您的网络连接，或稍后再试。如果问题持续，可能是服务器繁忙。'
+            }, status_code=408)
+        elif '下载' in error_detail:
+            return JSONResponse({
+                'error': error_detail,
+                'suggestion': '请检查文件URL是否可访问，或稍后重试'
+            }, status_code=415)
+        else:
+            return JSONResponse({'error': f'音色注册失败: {error_detail}'}, status_code=500)
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
     except Exception as e:
-        # 确保tmp_url在出现异常时也有定义
-        tmp_url = locals().get('tmp_url', '未获取到URL')
         logger.error(f"注册音色时发生未预期的错误: {str(e)}")
-        return JSONResponse({'error': f'注册音色时发生错误: {str(e)}', 'file_url': tmp_url}, status_code=500)
+        return JSONResponse({'error': f'注册音色时发生错误: {str(e)}'}, status_code=500)
     
 @router.get('/character-card/list')
 async def get_character_cards():
