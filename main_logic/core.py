@@ -2939,16 +2939,24 @@ class LLMSessionManager:
 
     async def tts_response_handler(self):
         """TTS响应处理器：从TTS Worker接收音频数据和状态信号
-        
-        优化：使用run_in_executor替代busy waiting，降低CPU占用
+
+        优化：使用run_in_executor替代busy waiting，降低CPU占用。
+        q.get 使用 timeout 使线程周期性唤醒，从而允许 asyncio cancel 生效。
         """
         q = self.tts_response_queue
         logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
+
+        def _get_with_timeout():
+            import queue as _queue_mod
+            while True:
+                try:
+                    return q.get(timeout=0.5)
+                except _queue_mod.Empty:
+                    continue
+
         while True:
             try:
-                # 优化：使用run_in_executor将阻塞的queue.get()包装为异步操作
-                # 避免busy waiting导致的CPU空转问题
-                data = await asyncio.get_running_loop().run_in_executor(None, q.get)
+                data = await asyncio.get_running_loop().run_in_executor(None, _get_with_timeout)
 
                 if isinstance(data, tuple) and len(data) == 2:
                     if data[0] == "__ready__":
