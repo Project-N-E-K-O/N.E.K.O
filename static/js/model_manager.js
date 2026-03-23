@@ -1380,6 +1380,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let animationsLoaded = false; // 标记VRM动作列表是否已加载
     let mmdModels = []; // MMD 模型列表
     let mmdAnimations = []; // MMD 动画列表
+    let _mmdSettingsLoadPromise = null; // 追踪进行中的 MMD 设置加载 Promise
 
     const showStatus = (msg, duration = 0) => {
         // 更新状态文本（保持图标结构）
@@ -2233,7 +2234,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         console.error('加载MMD动画列表失败:', error);
                     }
                     // 从服务器加载MMD设置并应用
-                    loadMmdSettingsFromServer();
+                    await loadMmdSettingsFromServer();
                     // 隐藏 VRM 专属控件
                     const vrmLightingGroup = document.getElementById('vrm-lighting-group');
                     if (vrmLightingGroup) vrmLightingGroup.style.display = 'none';
@@ -3682,6 +3683,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     await window.mmdManager.init('mmd-canvas', 'mmd-container');
                 }
                 // 预置物理开关，避免 loadModel 时使用默认的 true
+                // 等待进行中的设置加载完成，避免读到过期的 localStorage
+                if (_mmdSettingsLoadPromise) {
+                    await _mmdSettingsLoadPromise;
+                }
                 try {
                     const savedMmdSettings = localStorage.getItem('mmdSettings');
                     if (savedMmdSettings) {
@@ -4434,25 +4439,35 @@ document.addEventListener('DOMContentLoaded', async () => {
     /**
      * 从服务器加载MMD设置并应用到UI和场景
      * 在切换到MMD模式时调用
+     * @returns {Promise} 设置加载完成的 Promise
      */
-    async function loadMmdSettingsFromServer() {
-        try {
-            const lanlanName = document.getElementById('lanlan-name')?.textContent?.trim();
-            if (!lanlanName) return;
-            const result = await RequestHelper.fetchJson(
-                `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/mmd_settings`
-            );
-            if (result.success && result.settings) {
-                // 写入 localStorage 并应用到UI
-                localStorage.setItem('mmdSettings', JSON.stringify(result.settings));
-                loadMmdSettingsToUI();
-                // 延迟应用到场景（等待 MMD 模型初始化）
-                setTimeout(() => applyMmdSettings(), 500);
-                console.log('[MMD Settings] 已从服务器加载MMD设置');
-            }
-        } catch (e) {
-            console.warn('[MMD Settings] 从服务器加载MMD设置失败，使用本地缓存:', e);
+    function loadMmdSettingsFromServer() {
+        // 如果已有进行中的加载，返回同一个 Promise，避免重复请求
+        if (_mmdSettingsLoadPromise) {
+            return _mmdSettingsLoadPromise;
         }
+        _mmdSettingsLoadPromise = (async () => {
+            try {
+                const lanlanName = document.getElementById('lanlan-name')?.textContent?.trim();
+                if (!lanlanName) return;
+                const result = await RequestHelper.fetchJson(
+                    `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/mmd_settings`
+                );
+                if (result.success && result.settings) {
+                    // 写入 localStorage 并应用到UI
+                    localStorage.setItem('mmdSettings', JSON.stringify(result.settings));
+                    loadMmdSettingsToUI();
+                    // 延迟应用到场景（等待 MMD 模型初始化）
+                    setTimeout(() => applyMmdSettings(), 500);
+                    console.log('[MMD Settings] 已从服务器加载MMD设置');
+                }
+            } catch (e) {
+                console.warn('[MMD Settings] 从服务器加载MMD设置失败，使用本地缓存:', e);
+            } finally {
+                _mmdSettingsLoadPromise = null;
+            }
+        })();
+        return _mmdSettingsLoadPromise;
     }
 
 
