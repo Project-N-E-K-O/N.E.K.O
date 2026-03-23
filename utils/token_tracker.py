@@ -316,11 +316,15 @@ class TokenTracker:
         不覆盖：SIGKILL (kill -9) / 断电 — 此时最多丢 60s 数据
         """
         try:
-            global _TELEMETRY_SERVER_URL
-            _TELEMETRY_SERVER_URL = ""
+            # save() first: persists delta to disk and attempts remote report
+            # (best-effort final push). Then disable remote URL so no further
+            # network calls happen during interpreter teardown.
             self.save()
         except Exception:
             pass
+        finally:
+            global _TELEMETRY_SERVER_URL
+            _TELEMETRY_SERVER_URL = ""
 
     def _load_unsent_queue(self):
         """启动时加载上次未成功上报的远程数据。"""

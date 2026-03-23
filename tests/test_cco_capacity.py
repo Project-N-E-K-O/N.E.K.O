@@ -28,7 +28,7 @@ def test_all_providers_config():
     print(f"\n{'提供商':<20} {'缓存模式':<12} {'Header':<25} {'最小Token':<10}")
     print("-" * 70)
 
-    for provider_id, config in PROVIDER_CACHE_CONFIG.items():
+    for config in PROVIDER_CACHE_CONFIG.values():
         header = f"{config['header_name']}: {config['header_value']}" if config['requires_header'] else "N/A"
         print(f"{config['name']:<20} {config['cache_mode']:<12} {header:<25} {config['min_cache_tokens']:<10}")
         assert "name" in config and "cache_mode" in config and "min_cache_tokens" in config
@@ -87,7 +87,7 @@ def test_cost_calculation_all_providers():
     print(f"{'提供商':<25} {'费用':<12} {'无缓存':<12} {'节省':<10}")
     print("-" * 60)
 
-    for provider_id, config in PROVIDER_CACHE_CONFIG.items():
+    for config in PROVIDER_CACHE_CONFIG.values():
         cache_price = config["cache_price"]
         creation_price = config["creation_price"]
 
@@ -169,7 +169,7 @@ def test_min_cache_tokens_all_providers():
     print(f"\n{'提供商':<25} {'最小缓存':<12} {'<1024行为'}")
     print("-" * 50)
 
-    for provider_id, config in PROVIDER_CACHE_CONFIG.items():
+    for config in PROVIDER_CACHE_CONFIG.values():
         min_tokens = config["min_cache_tokens"]
         behavior = "不可缓存" if min_tokens >= 1024 else "可缓存"
         print(f"{config['name']:<25} {min_tokens:<12} {behavior}")
@@ -186,12 +186,12 @@ def test_session_cache_header():
 
     qwen_config = get_cache_kwargs("https://dashscope.aliyuncs.com/compatible-mode/v1")
 
-    print(f"\n  qwen (DashScope):")
+    print("\n  qwen (DashScope):")
     print(f"    enable_cache_control: {qwen_config['enable_cache_control']}")
     print(f"    default_headers: {qwen_config['default_headers']}")
 
     expected_header = {"x-dashscope-session-cache": "enable"}
-    passed = qwen_config["enable_cache_control"] == True and qwen_config["default_headers"] == expected_header
+    passed = qwen_config["enable_cache_control"] is True and qwen_config["default_headers"] == expected_header
 
     status = "[PASS]" if passed else "[FAIL]"
     print(f"\n  {status} Session Cache Header 正确配置")
@@ -243,7 +243,7 @@ def main():
         print("所有 API 提供商 CCO 测试通过!")
         print("="*70)
         print("\n支持的 API 提供商:")
-        for provider_id, config in PROVIDER_CACHE_CONFIG.items():
+        for config in PROVIDER_CACHE_CONFIG.values():
             print(f"  - {config['name']}: {config['cache_mode']} 模式")
 
     return passed == total

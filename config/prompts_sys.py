@@ -1487,9 +1487,9 @@ PROACTIVE_MUSIC_KEYWORD_PROMPTS = {
 
     'en': """You are {lanlan_name}, and {master_name} might want to listen to some music. Based on your chat history and the current conversation, decide if you should play music for {master_name}.
 
-======以下为对话历史======
+======Chat History======
 {memory_context}
-======以上为对话历史======
+======End of Chat History======
 
 ======Current Conversation======
 {recent_chats_section}
@@ -1507,13 +1507,13 @@ Reply:
 
     'ja': """あなたは{lanlan_name}で、{master_name}が音楽を聴きたがっているかもしれません。会話履歴と現在の会話内容に基づき、{master_name}のために音楽を再生するかどうかを判断してください。
 
-======以下为对话历史======
+======会話履歴======
 {memory_context}
-======以上为对话历史======
+======会話履歴ここまで======
 
 ======現在の会話======
 {recent_chats_section}
-======以上が現在の対話内容となります======
+======現在の会話ここまで======
 
 以下の原則に基づいて、音楽を再生するか、何を再生するかを決定してください：
 1. {master_name}が明確に音楽をリクエストした場合（例：「音楽かけて」、「何か曲を再生して」、「音楽を聴きたい」）、音楽を再生すべきです。
@@ -1527,13 +1527,13 @@ Reply:
 
     'ko': """당신은 {lanlan_name}이고, {master_name}이(가) 음악을 듣고 싶어할 수 있습니다. 대화 기록과 현재 대화를 바탕으로 {master_name}을(를) 위해 음악을 재생할지 판단하세요.
 
-======以下为对话历史======
+======대화 기록======
 {memory_context}
-======以上为对话历史======
+======대화 기록 끝======
 
 ======현재 대화======
 {recent_chats_section}
-======이상======
+======현재 대화 끝======
 
 다음 원칙에 따라 음악을 재생할지, 무엇을 재생할지 결정하세요:
 1. {master_name}이(가) 명시적으로 음악을 요청할 때(예: "음악 틀어줘", "노래 틀어줘", "음악 듣고 싶어") 음악을 재생해야 합니다.
@@ -1547,9 +1547,9 @@ Reply:
 
     'ru': """Вы - {lanlan_name}, и {master_name}, возможно, захочет послушать музыку. На основе истории чата и текущего разговора решите, стоит ли воспроизводить музыку для {master_name}.
 
-======以下为对话历史======
+======История чата======
 {memory_context}
-======以上为对话历史======
+======Конец истории чата======
 
 ======Текущий разговор======
 {recent_chats_section}
@@ -1597,33 +1597,33 @@ _UNIFIED_P1_HEADER = {
 """,
     'en': """You are a multi-task topic assistant. Based on the chat history and material below, complete all listed tasks.
 
-======以下为对话历史======
+======Chat History======
 {memory_context}
-======以上为对话历史======
+======End of Chat History======
 
 {recent_chats_section}
 """,
     'ja': """あなたはマルチタスク話題アシスタントです。以下の会話履歴と素材に基づき、指示されたすべてのタスクを完了してください。
 
-======以下为对话历史======
+======会話履歴======
 {memory_context}
-======以上为对话历史======
+======会話履歴ここまで======
 
 {recent_chats_section}
 """,
     'ko': """당신은 멀티태스크 주제 어시스턴트입니다. 아래의 대화 기록과 자료를 바탕으로 모든 작업을 완료하세요.
 
-======以下为对话历史======
+======대화 기록======
 {memory_context}
-======以上为对话历史======
+======대화 기록 끝======
 
 {recent_chats_section}
 """,
     'ru': """Вы — мультизадачный тематический помощник. На основе истории чата и материалов ниже выполните все указанные задачи.
 
-======以下为对话历史======
+======История чата======
 {memory_context}
-======以上为对话历史======
+======Конец истории чата======
 
 {recent_chats_section}
 """,
@@ -1660,9 +1660,9 @@ Topic preferences (in priority order):
 - Freshness: breaking or trending topics first
 - Conversation starters: easy to casually say "hey, did you see this?"
 
-======以下为汇总内容======
+======Aggregated Content======
 {merged_content}
-======以上为汇总内容======
+======End of Aggregated Content======
 
 Rules:
 1. Do NOT pick anything that overlaps with the chat history or recent proactive chats
