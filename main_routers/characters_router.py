@@ -2272,7 +2272,8 @@ async def voice_clone(
     # 计算参考音频的 MD5，用于去重
     audio_md5 = hashlib.md5(file_content).hexdigest()
     
-    # 提前规范化 ref_language
+    # 提前规范化 provider 和 ref_language
+    provider = provider.lower().strip() if provider else 'cosyvoice'
     valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
     ref_language = ref_language.lower().strip() if ref_language else 'ch'
     if ref_language not in valid_languages:
@@ -2373,7 +2374,7 @@ async def voice_clone(
             }, status_code=500)
     
     # ==================== MiniMax TTS 注册流程（国服 / 国际服） ====================
-    if provider.lower() in ('minimax', 'minimax_intl'):
+    if provider in ('minimax', 'minimax_intl'):
         core_config = _config_manager.get_core_config()
         minimax_api_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
         if not minimax_api_key:
@@ -2449,11 +2450,13 @@ async def voice_clone(
                 logger.info(f"{provider_label} voice_id 已保存到音色库: {voice_id}")
             except Exception as save_error:
                 logger.error(f"保存 {provider_label} voice_id 到音色库失败: {save_error}")
+                # 远程音色已创建成功，返回 200 并附带警告，避免因本地保存失败导致孤儿音色
                 return JSONResponse({
-                    'error': f'音色注册成功但保存到音色库失败: {str(save_error)}',
                     'voice_id': voice_id,
-                    'provider': provider
-                }, status_code=500)
+                    'message': f'{provider_label}音色注册成功，但本地保存失败（音色仍可用）: {str(save_error)}',
+                    'provider': provider,
+                    'local_save_failed': True,
+                })
 
             return JSONResponse({
                 'voice_id': voice_id,

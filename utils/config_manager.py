@@ -1011,9 +1011,18 @@ class ConfigManager:
         )
 
     def _get_minimax_storage_keys(self) -> list[str]:
-        """返回 voice_storage 中所有以 __MINIMAX__ 或 __MINIMAX_INTL__ 开头的 key 列表。"""
+        """返回当前 MiniMax API Key 对应的 voice_storage key 列表。
+
+        只返回与当前 ASSIST_API_KEY_MINIMAX 匹配的 bucket，避免跨账户混用。
+        """
+        core_config = self.get_core_config()
+        minimax_api_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+        if not minimax_api_key:
+            return []
+        suffix = minimax_api_key[-8:] if len(minimax_api_key) >= 8 else minimax_api_key
+        expected = [f'__MINIMAX__{suffix}', f'__MINIMAX_INTL__{suffix}']
         voice_storage = self.load_voice_storage()
-        return [k for k in voice_storage if k.startswith('__MINIMAX__') or k.startswith('__MINIMAX_INTL__')]
+        return [k for k in expected if k in voice_storage]
 
     def get_voices_for_current_api(self):
         """获取当前 TTS 配置对应的所有音色

@@ -827,7 +827,8 @@ class LLMSessionManager:
 
         # MiniMax 音色需要使用 MiniMax API Key
         _minimax_base_url = None
-        if tts_worker.__name__ == 'minimax_tts_worker':
+        _worker_name = getattr(tts_worker, '__name__', None) or getattr(getattr(tts_worker, 'func', None), '__name__', None)
+        if _worker_name == 'minimax_tts_worker':
             minimax_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
             if minimax_key:
                 tts_config = dict(tts_config, api_key=minimax_key)
@@ -1186,7 +1187,8 @@ class LLMSessionManager:
 
                 # MiniMax 音色需要使用 MiniMax API Key
                 _minimax_base_url2 = None
-                if tts_worker.__name__ == 'minimax_tts_worker':
+                _worker_name2 = getattr(tts_worker, '__name__', None) or getattr(getattr(tts_worker, 'func', None), '__name__', None)
+                if _worker_name2 == 'minimax_tts_worker':
                     minimax_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
                     if minimax_key:
                         tts_config = dict(tts_config, api_key=minimax_key)

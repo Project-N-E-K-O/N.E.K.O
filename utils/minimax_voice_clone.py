@@ -94,19 +94,14 @@ class MinimaxVoiceCloneClient:
         files = {'file': (filename, audio_buffer, 'audio/wav')}
         data = {'purpose': 'voice_clone'}
 
-        # DEBUG: 打印请求信息
         headers = self._headers()
-        logger.info("[MiniMax Debug] Upload URL: %s", url)
-        logger.info("[MiniMax Debug] Headers: %s", {k: v[:20] + '...' if k == 'Authorization' else v for k, v in headers.items()})
-        logger.info("[MiniMax Debug] API Key length: %d", len(self.api_key))
+        logger.info("[MiniMax] Upload URL: %s", url)
 
         try:
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.post(url, headers=headers, files=files, data=data)
 
-            # DEBUG: 打印响应
-            logger.info("[MiniMax Debug] Response status: %d", resp.status_code)
-            logger.info("[MiniMax Debug] Response body: %s", resp.text[:500])
+            logger.info("[MiniMax] Upload response status: %d", resp.status_code)
 
             if resp.status_code != 200:
                 raise MinimaxVoiceCloneError(

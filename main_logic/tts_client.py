@@ -1999,6 +1999,11 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         对应的 TTS worker 函数
     """
 
+    # 优先检查 MiniMax 克隆音色（不受 is_custom 配置影响）
+    if has_custom_voice and voice_id and _is_minimax_voice(voice_id):
+        logger.info("检测到 MiniMax 克隆音色: %s，使用 MiniMax TTS Worker", voice_id)
+        return minimax_tts_worker
+
     try:
         cm = get_config_manager()
         tts_config = cm.get_model_api_config('tts_custom')
@@ -2012,11 +2017,6 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             return local_cosyvoice_worker
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
-
-    # 检查是否为 MiniMax 克隆音色 → 使用 MiniMax TTS worker
-    if has_custom_voice and voice_id and _is_minimax_voice(voice_id):
-        logger.info("检测到 MiniMax 克隆音色: %s，使用 MiniMax TTS Worker", voice_id)
-        return minimax_tts_worker
 
     # 如果有自定义音色，使用 CosyVoice（阿里云）
     if has_custom_voice:
