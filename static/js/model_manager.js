@@ -3445,6 +3445,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             confirmDeleteMMDAnimationBtn.textContent = t('live2d.mmdAnimation.deleting', '删除中...');
         }
 
+        // 保存当前选择的动画URL，用于删除后恢复或重置
+        const previousAnimUrl = mmdAnimationSelect ? mmdAnimationSelect.value : '';
+        let wasCurrentAnimDeleted = false;
+
         let successCount = 0;
         let failCount = 0;
 
@@ -3460,6 +3464,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         window.mmdManager.stopAnimation();
                         isMmdAnimationPlaying = false;
                         updateMMDAnimationPlayButtonIcon();
+                        wasCurrentAnimDeleted = true;
                     }
                     successCount++;
                 } else {
@@ -3476,6 +3481,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateConfirmDeleteMMDAnimationButton();
         await loadMMDUserAnimations();
         await loadMMDAnimations();
+
+        // 检查之前选择的动画是否还存在
+        if (mmdAnimationSelect && previousAnimUrl) {
+            const optionExists = Array.from(mmdAnimationSelect.options).some(opt => opt.value === previousAnimUrl);
+            if (optionExists) {
+                // 动画仍然存在，恢复选择
+                mmdAnimationSelect.value = previousAnimUrl;
+            } else {
+                // 动画已被删除，确保播放状态完全重置
+                if (!wasCurrentAnimDeleted && window.mmdManager) {
+                    window.mmdManager.stopAnimation();
+                }
+                isMmdAnimationPlaying = false;
+                updateMMDAnimationPlayButtonIcon();
+                if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
+            }
+        }
 
         if (successCount > 0) {
             const msg = failCount > 0 
