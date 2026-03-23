@@ -117,7 +117,6 @@ class CompressedRecentHistoryManager:
         if lanlan_name not in self.user_histories:
             self.user_histories[lanlan_name] = []
         
-        # 如果文件存在，加载历史记录
         if lanlan_name in self.log_file_path and os.path.exists(self.log_file_path[lanlan_name]):
             self.user_histories[lanlan_name] = self._load_history_from_file(
                 self.log_file_path[lanlan_name],
@@ -128,38 +127,14 @@ class CompressedRecentHistoryManager:
             self.user_histories[lanlan_name].extend(new_messages)
             logger.debug(f"[RecentHistory] {lanlan_name} 添加了 {len(new_messages)} 条新消息，当前共 {len(self.user_histories[lanlan_name])} 条")
 
-            # 确保文件目录存在
-            file_path = self.log_file_path[lanlan_name]
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            
-            atomic_write_json(
-                file_path,
-                messages_to_dict(self.user_histories[lanlan_name]),
-                indent=2,
-                ensure_ascii=False,
-            )  # Save the updated history to file before compressing
-
             if compress and len(self.user_histories[lanlan_name]) > self.max_history_length:
                 to_compress = self.user_histories[lanlan_name][:-self.max_history_length+1]
                 compressed = [(await self.compress_history(to_compress, lanlan_name, detailed))[0]]
                 self.user_histories[lanlan_name] = compressed + self.user_histories[lanlan_name][-self.max_history_length+1:]
         except Exception as e:
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)
-            # 即使出错，也尝试保存当前状态
-            try:
-                file_path = self.log_file_path[lanlan_name]
-                os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                atomic_write_json(
-                    file_path,
-                    messages_to_dict(self.user_histories.get(lanlan_name, [])),
-                    indent=2,
-                    ensure_ascii=False,
-                )
-            except Exception as save_error:
-                logger.error(f"[RecentHistory] 保存历史记录失败: {save_error}", exc_info=True)
-            return
 
-        # 最终保存
+        # 统一保存
         try:
             file_path = self.log_file_path[lanlan_name]
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -171,7 +146,7 @@ class CompressedRecentHistoryManager:
             )
             logger.debug(f"[RecentHistory] {lanlan_name} 历史记录已保存到文件: {file_path}")
         except Exception as e:
-            logger.error(f"[RecentHistory] 最终保存历史记录失败: {e}", exc_info=True)
+            logger.error(f"[RecentHistory] 保存历史记录失败: {e}", exc_info=True)
 
 
     # detailed: 保留尽可能多的细节
