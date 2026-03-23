@@ -1268,20 +1268,17 @@ class LLMSessionManager:
             """
             guard_max_length = self._get_text_guard_max_length()
             _lang = normalize_language_code(self.user_language, format='short')
-
-            # 静动分离：获取静态系统提示词和动态上下文
-            static_system_prompt, dynamic_context = await self._build_initial_prompt()
-
-            # 连接 Memory Server 获取记忆上下文（动态部分）
+            initial_prompt = await self._build_initial_prompt()
+            
+            # 连接 Memory Server 获取记忆上下文
             _mem_start = time.time()
             logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
-            memory_context = ""
             try:
                 async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                     resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                     if not resp.is_success:
                         raise ConnectionError(f"❌ 记忆服务返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
-                    memory_context = resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                    initial_prompt += resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                 logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
             except httpx.ConnectError:
                 raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {self.memory_server_port})")
@@ -1289,9 +1286,6 @@ class LLMSessionManager:
                 raise ConnectionError(f"❌ 记忆服务响应超时！请检查记忆服务是否正常运行 (端口 {self.memory_server_port})")
             except Exception as e:
                 raise ConnectionError(f"❌ 记忆服务连接失败: {e} (端口 {self.memory_server_port})")
-
-            # 合并动态上下文：任务状态 + 记忆 + 历史消息
-            full_dynamic_context = dynamic_context + memory_context
             
             logger.info(f"🤖 开始创建 LLM Session (input_mode={input_mode})")
             logger.info("[语音会话诊断] 开始创建 LLM 连接 (realtime/text)...")
@@ -1348,8 +1342,7 @@ class LLMSessionManager:
             self._bind_session_lifecycle_callbacks(new_session)
 
             try:
-                # 静动分离：静态部分作为 instructions，动态部分单独注入
-                await new_session.connect(static_system_prompt, native_audio=not self.use_tts, dynamic_context=full_dynamic_context)
+                await new_session.connect(initial_prompt, native_audio=not self.use_tts)
             except Exception:
                 try:
                     await new_session.close()
@@ -1363,7 +1356,7 @@ class LLMSessionManager:
                 self.current_speech_id = str(uuid4())
             logger.info("✅ LLM Session 已连接")
             logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
-            print(f"[静态系统提示词]\n{static_system_prompt}\n\n[动态上下文]\n{full_dynamic_context}")
+            print(initial_prompt)  #只在控制台显示，不输出到日志文件
             return True
         
         # 重置状态
@@ -1553,26 +1546,44 @@ class LLMSessionManager:
             res += f"{i['role']} | {i['text']}\n"
         return res
 
-    async def _build_initial_prompt(self) -> tuple:
-        """Build the system prompt with static/dynamic separation for Context Cache optimization.
-
-        Returns:
-            tuple: (static_system_prompt, dynamic_context)
-            - static_system_prompt: 绝对静态的人设和规则，用于触发缓存
-            - dynamic_context: 动态变化的记忆、任务、历史消息
-        """
+    async def _build_initial_prompt(self) -> str:
+        """Build the system prompt and inject active task summary when agent is enabled."""
         _lang = normalize_language_code(self.user_language, format='short')
         if self._is_agent_enabled():
-            static_system_prompt = self.lanlan_prompt + _loc(SESSION_INIT_PROMPT_AGENT, _lang).format(name=self.lanlan_name)
+            # Keep the current wrapper structure but revert prompt semantics:
+            # do not distinguish browser/computer/plugin in the initial capability text.
+            # Historical dynamic capability block kept for rollback:
+            # capability_parts = []
+            # if self.agent_flags.get('computer_use_enabled'):
+            #     capability_parts.append(_loc(AGENT_CAPABILITY_COMPUTER_USE, _lang))
+            # if self.agent_flags.get('browser_use_enabled'):
+            #     capability_parts.append(_loc(AGENT_CAPABILITY_BROWSER_USE, _lang))
+            # if self.agent_flags.get('user_plugin_enabled'):
+            #     capability_parts.append(_loc(AGENT_CAPABILITY_USER_PLUGIN_USE, _lang))
+            # caps_text = (
+            #     _loc(AGENT_CAPABILITY_SEPARATOR, _lang).join(capability_parts)
+            #     if capability_parts else _loc(AGENT_CAPABILITY_GENERIC, _lang)
+            # )
+            # prompt = _loc(SESSION_INIT_PROMPT_AGENT_DYNAMIC, _lang).format(
+            #     name=self.lanlan_name,
+            #     capabilities=caps_text,
+            # ) + self.lanlan_prompt
+            prompt = _loc(SESSION_INIT_PROMPT_AGENT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
         else:
-            static_system_prompt = self.lanlan_prompt + _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name)
-
-        dynamic_context = ""
+            prompt = _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
         if self._is_agent_enabled():
+            # Plugin summary (with plugin ids) is intentionally disabled to avoid
+            # exposing implementation identifiers in the general agent prompt.
+            # Keep method call removed here for deterministic prompt content.
+            # Historical prompt merge kept for rollback:
+            # plugin_prompt, active_tasks_prompt = await asyncio.gather(
+            #     self._fetch_plugin_summary_prompt(),
+            #     self._fetch_active_agent_tasks_prompt(),
+            # )
+            # prompt += plugin_prompt
             active_tasks_prompt = await self._fetch_active_agent_tasks_prompt()
-            dynamic_context += active_tasks_prompt
-
-        return static_system_prompt, dynamic_context
+            prompt += active_tasks_prompt
+        return prompt
 
     def _is_agent_enabled(self):
         try:
@@ -1754,18 +1765,15 @@ class LLMSessionManager:
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
             initial_prompt = await self._build_initial_prompt()
-            static_system_prompt, dynamic_context = initial_prompt
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
-            memory_context = ""
             async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                 if not resp.is_success:
                     raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
-                memory_context = resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
-            full_dynamic_context = dynamic_context + memory_context
-            print(f"[静态系统提示词]\n{static_system_prompt}\n\n[动态上下文]\n{full_dynamic_context}")
+                initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
+            print(initial_prompt)
             self._bind_session_lifecycle_callbacks(self.pending_session)
-            await self.pending_session.connect(static_system_prompt, native_audio = not self.use_tts, dynamic_context=full_dynamic_context)
+            await self.pending_session.connect(initial_prompt, native_audio = not self.use_tts)
 
             if self.pending_session_warmed_up_event:
                 self.pending_session_warmed_up_event.set() 

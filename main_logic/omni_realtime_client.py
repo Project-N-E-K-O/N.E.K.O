@@ -413,18 +413,12 @@ class OmniRealtimeClient:
         await self.send_event(clear_event)
         logger.debug("📤 已发送 input_audio_buffer.clear 事件")
 
-    async def connect(self, instructions: str, native_audio=True, dynamic_context: str = "") -> None:
-        """Establish WebSocket connection with the Realtime API.
-
-        Args:
-            instructions: 静态系统提示词（用于触发 Context Cache）
-            native_audio: 是否使用原生音频
-            dynamic_context: 动态上下文（记忆、任务状态等），单独注入不影响缓存
-        """
-
+    async def connect(self, instructions: str, native_audio=True) -> None:
+        """Establish WebSocket connection with the Realtime API."""
+        
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
-            await self._connect_gemini(instructions, native_audio, dynamic_context)
+            await self._connect_gemini(instructions, native_audio)
             return
 
         # 确保开始新连接时状态完全重置
@@ -441,9 +435,6 @@ class OmniRealtimeClient:
         headers = {
             "Authorization": f"Bearer {self.api_key}"
         }
-        # DashScope 需要 x-dashscope-session-cache header 开启 Context Cache
-        if "dashscope" in self.base_url:
-            headers["x-dashscope-session-cache"] = "enable"
         self.ws = await websockets.connect(url, additional_headers=headers)
         
         # 启动静默检测任务（只在启用时）
@@ -563,23 +554,10 @@ class OmniRealtimeClient:
             else:
                 raise ValueError(f"Invalid model: {self.model}")
             self.instructions = instructions
-
-            # 静动分离：动态上下文作为单独的 message 注入，不影响缓存
-            if dynamic_context and dynamic_context.strip():
-                item_event = {
-                    "type": "conversation.item.create",
-                    "item": {
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": f"【系统内部状态更新】\n{dynamic_context}"}]
-                    }
-                }
-                await self.send_event(item_event)
-                logger.info(f"📦 已注入动态上下文 ({len(dynamic_context)} 字符)，静态提示词保持不变以触发缓存")
         else:
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
     
-    async def _connect_gemini(self, instructions: str, native_audio: bool = True, dynamic_context: str = "") -> None:
+    async def _connect_gemini(self, instructions: str, native_audio: bool = True) -> None:
         """Establish connection with Gemini Live API using google-genai SDK."""
         if not GEMINI_AVAILABLE or genai is None or types is None:
             detail = f": {_GEMINI_IMPORT_ERROR}" if _GEMINI_IMPORT_ERROR else ""
@@ -624,16 +602,7 @@ class OmniRealtimeClient:
             self._last_speech_time = time.time()
             self.instructions = instructions
             logger.info("✅ Gemini Live API connected successfully")
-
-            # 静动分离：动态上下文作为单独的 message 注入，不影响缓存
-            # turn_complete=False 避免 Gemini 在启动时立即生成响应
-            if dynamic_context and dynamic_context.strip():
-                await self._gemini_session.send_client_content(
-                    turns=f"【系统内部状态更新】\n{dynamic_context}",
-                    turn_complete=False
-                )
-                logger.info(f"📦 已注入动态上下文 ({len(dynamic_context)} 字符)，静态提示词保持不变以触发缓存")
-
+            
         except Exception as e:
             error_msg = f"Failed to connect to Gemini Live API: {e}"
             logger.error(error_msg)
@@ -1136,20 +1105,12 @@ class OmniRealtimeClient:
                         resp_data = event.get("response", {})
                         _rt_usage = resp_data.get("usage")
                         if _rt_usage:
-                            _cached = 0
-                            if isinstance(_rt_usage, dict):
-                                _input_details = _rt_usage.get("input_token_details") or _rt_usage.get("prompt_tokens_details") or {}
-                                _cached = _input_details.get("cached_tokens", 0)
-                                if not _cached:
-                                    _cached = _rt_usage.get("cached_tokens", 0)
-
                             from utils.token_tracker import TokenTracker
                             TokenTracker.get_instance().record(
                                 model=resp_data.get("model", self.model or "realtime"),
                                 prompt_tokens=_rt_usage.get("input_tokens", 0),
                                 completion_tokens=_rt_usage.get("output_tokens", 0),
                                 total_tokens=_rt_usage.get("total_tokens", 0),
-                                cached_tokens=_cached,
                                 call_type="conversation_realtime",
                                 source="main_logic/omni_realtime_client",
                             )

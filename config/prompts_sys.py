@@ -1985,7 +1985,7 @@ Reply strictly in the format below. Each task starts with its tag. Only reply to
 _UNIFIED_P1_HEADER_STATIC = {
     'zh': """你是一个多任务话题助手。请根据下方提供的素材，完成所有标注的任务。""",
     'en': """You are a multi-task topic assistant. Based on the material below, complete all listed tasks.""",
-    'ja': """あなたはマルチタスク話題アシアシスタントです。以下の素材に基づき、指示されたすべてのタスクを完了してください。""",
+    'ja': """あなたはマルチタスク話題アシスタントです。以下の素材に基づき、指示されたすべてのタスクを完了してください。""",
     'ko': """당신은 멀티태스크 주제 어시스턴트입니다. 아래 자료를 바탕으로 모든 작업을 완료하세요.""",
     'ru': """Вы — мультизадачный тематический помощник. На основе материалов ниже выполните все указанные задачи.""",
 }

@@ -112,26 +112,14 @@ class OmniOfflineClient:
         
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡
         
-    async def connect(self, instructions: str, native_audio=False, dynamic_context: str = "") -> None:
-        """Initialize the client with system instructions.
-
-        Args:
-            instructions: 基础系统指令（静态部分，可被缓存）
-            native_audio: 是否使用原生音频（本客户端不支持，仅兼容接口）
-            dynamic_context: 动态上下文（如当前时间、记忆等，经常变化）
-        """
+    async def connect(self, instructions: str, native_audio=False) -> None:
+        """Initialize the client with system instructions."""
         self._instructions = instructions
+        # Add system message to conversation history using langchain format
         self._conversation_history = [
             SystemMessage(content=instructions)
         ]
-
-        # 动态上下文作为独立的 HumanMessage 注入，保持静态 SystemMessage 可被缓存
-        if dynamic_context and dynamic_context.strip():
-            self._conversation_history.append(
-                HumanMessage(content=f"【系统内部状态更新】\n{dynamic_context}")
-            )
-
-        logger.info(f"OmniOfflineClient initialized with instructions ({len(instructions)} chars) + dynamic_context ({len(dynamic_context)} chars)")
+        logger.info("OmniOfflineClient initialized with instructions")
     
     async def send_event(self, event) -> None:
         """Compatibility method - not used in text mode"""
@@ -196,13 +184,11 @@ class OmniOfflineClient:
         if high_similarity_count >= 2:
             logger.warning(f"OmniOfflineClient: 检测到连续{high_similarity_count + 1}轮高重复度对话")
             
-            saved_prefix = []
+            # 清空对话历史（保留系统指令）
             if self._conversation_history and isinstance(self._conversation_history[0], SystemMessage):
-                saved_prefix.append(self._conversation_history[0])
-                if len(self._conversation_history) > 1 and isinstance(self._conversation_history[1], HumanMessage):
-                    if isinstance(self._conversation_history[1].content, str) and "【系统内部状态更新】" in self._conversation_history[1].content:
-                        saved_prefix.append(self._conversation_history[1])
-            self._conversation_history = saved_prefix if saved_prefix else []
+                self._conversation_history = [self._conversation_history[0]]
+            else:
+                self._conversation_history = []
             
             # 清空重复检测缓存
             self._recent_responses.clear()
@@ -273,14 +259,11 @@ class OmniOfflineClient:
             
             # Clear pending images after using them
             self._pending_images.clear()
-            self._conversation_history.append(user_message)
         else:
-            # 强防断层：自动合并连续的 HumanMessage
-            new_text = text.strip()
-            if self._conversation_history and isinstance(self._conversation_history[-1], HumanMessage) and isinstance(self._conversation_history[-1].content, str):
-                self._conversation_history[-1].content += f"\n\n{new_text}"
-            else:
-                self._conversation_history.append(HumanMessage(content=new_text))
+            # Text-only message
+            user_message = HumanMessage(content=text.strip())
+        
+        self._conversation_history.append(user_message)
         
         # Callback for user input
         if self.on_input_transcript:
@@ -319,16 +302,15 @@ class OmniOfflineClient:
                         fence_triggered = False  # 围栏是否已触发
                         guard_triggered = False
                         discard_reason = None
-                        
                         chunk_usage = None
+
                         async for chunk in self.llm.astream(self._conversation_history):
                             if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                                 chunk_usage = chunk.usage_metadata
-                                logger.info(f"🔍 [LangChain Usage] {chunk_usage}")
+                                logger.info(f"🔍 [Usage] {chunk_usage}")
                             if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
                                 if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
-                                    logger.info(f"🔍 [LangChain Meta] {chunk.response_metadata}")
-
+                                    logger.info(f"🔍 [Meta] {chunk.response_metadata}")
                             if not self._is_responding:
                                 break
                             
@@ -480,17 +462,17 @@ class OmniOfflineClient:
         return len(self._pending_images) > 0
     
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
-        """Process a system message or instruction."""
+        """
+        Process a system message or instruction.
+        For compatibility with OmniRealtimeClient interface.
+        """
+        # Extract actual instruction if it starts with "SYSTEM_MESSAGE | "
         if instructions.startswith("SYSTEM_MESSAGE | "):
             instructions = instructions[17:]  # Remove prefix
-
+        
+        # Add as system message using langchain format
         if instructions.strip():
-            new_text = f"【对话上下文补充】\n{instructions}"
-            # 强防断层：如果上一条也是 User 消息，直接合并文本，绝对不破坏角色交替
-            if self._conversation_history and isinstance(self._conversation_history[-1], HumanMessage) and isinstance(self._conversation_history[-1].content, str):
-                self._conversation_history[-1].content += f"\n\n{new_text}"
-            else:
-                self._conversation_history.append(HumanMessage(content=new_text))
+            self._conversation_history.append(SystemMessage(content=instructions))
     
     async def stream_proactive(self, instruction: str) -> bool:
         """Generate and stream a proactive AI response driven by a system instruction.
@@ -526,10 +508,10 @@ class OmniOfflineClient:
             async for chunk in self.llm.astream(messages_to_send):
                 if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                     chunk_usage = chunk.usage_metadata
-                    logger.info(f"🔍 [LangChain Usage-Proactive] {chunk_usage}")
+                    logger.info(f"🔍 [Usage-Proactive] {chunk_usage}")
                 if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
                     if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
-                        logger.info(f"🔍 [LangChain Meta-Proactive] {chunk.response_metadata}")
+                        logger.info(f"🔍 [Meta-Proactive] {chunk.response_metadata}")
 
                 if not self._is_responding:
                     break
