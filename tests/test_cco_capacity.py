@@ -218,7 +218,9 @@ def main():
     for name, test_func in tests:
         try:
             result = test_func()
-            results.append((name, result))
+            # assert-based tests return None on success; treat None as passed
+            success = True if result is None or result is True else bool(result)
+            results.append((name, success))
         except Exception as e:
             print(f"\n  [ERROR] {name}: {e}")
             results.append((name, False))

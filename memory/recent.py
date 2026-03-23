@@ -196,7 +196,10 @@ class CompressedRecentHistoryManager:
                 # 尝试将响应内容解析为JSON
                 set_call_type("memory_compression")
                 llm = self._get_llm()
-                response_content = (await llm.ainvoke(prompt)).content
+                try:
+                    response_content = (await llm.ainvoke(prompt)).content
+                finally:
+                    await llm.aclose()
                 response_content = str(response_content).strip()
                 match = re.search(r'```(?:json)?\s*([\s\S]*?)```', response_content)
                 if match:
@@ -364,7 +367,10 @@ class CompressedRecentHistoryManager:
                 set_call_type("memory_review")
                 prompt = history_review_prompt % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
                 review_llm = self._get_review_llm()
-                response_content = (await review_llm.ainvoke(prompt)).content
+                try:
+                    response_content = (await review_llm.ainvoke(prompt)).content
+                finally:
+                    await review_llm.aclose()
                 
                 # 检查是否被取消（LLM调用后）
                 if cancel_event and cancel_event.is_set():

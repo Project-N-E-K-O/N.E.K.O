@@ -145,11 +145,11 @@ class OmniOfflineClient:
             if self._conversation_history and isinstance(self._conversation_history[0], SystemMessage):
                 self._conversation_history[0] = SystemMessage(content=self._instructions)
     
-    def switch_model(self, new_model: str, use_vision_config: bool = False) -> None:
+    async def switch_model(self, new_model: str, use_vision_config: bool = False) -> None:
         """
         Temporarily switch to a different model (e.g., vision model).
         This allows dynamic model switching for vision tasks.
-        
+
         Args:
             new_model: The model to switch to
             use_vision_config: If True, use vision_base_url and vision_api_key
@@ -157,7 +157,7 @@ class OmniOfflineClient:
         if new_model and new_model != self.model:
             logger.info(f"Switching model from {self.model} to {new_model}")
             self.model = new_model
-            
+
             # 选择使用的 API 配置
             if use_vision_config:
                 base_url = self.vision_base_url
@@ -165,14 +165,14 @@ class OmniOfflineClient:
             else:
                 base_url = self.base_url
                 api_key = self.api_key
-            
+
             # Close old client to prevent httpx FD leaks, then recreate
             old_llm = self.llm
             self.llm = create_chat_llm(
                 self.model, base_url, api_key,
                 temperature=1.0, streaming=True, max_retries=0,
             )
-            old_llm.close()
+            await old_llm.aclose()
     
     async def _check_repetition(self, response: str) -> bool:
         """
@@ -248,7 +248,7 @@ class OmniOfflineClient:
             # (cannot switch back because image data remains in conversation history)
             if self.vision_model and self.vision_model != self.model:
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
-                self.switch_model(self.vision_model, use_vision_config=True)
+                await self.switch_model(self.vision_model, use_vision_config=True)
             
             # Multi-modal message: images + text
             content = []
@@ -604,4 +604,10 @@ class OmniOfflineClient:
         self._is_responding = False
         self._conversation_history = []
         self._pending_images.clear()
+        if self.llm:
+            try:
+                await self.llm.aclose()
+            except Exception:
+                pass
+            self.llm = None
         logger.info("OmniOfflineClient closed")

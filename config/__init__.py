@@ -643,7 +643,7 @@ TIME_ORIGINAL_TABLE_NAME = "time_indexed_original"
 TIME_COMPRESSED_TABLE_NAME = "time_indexed_compressed"
 
 
-# Provider 相关配置已统一迁移至 config.providers，此处仅 re-export 保持向后兼容
+# Provider 相关配置已统一迁移至 config.providers, 此处仅 re-export 保持向后兼容
 from config.providers import (  # noqa: E402, F401
     EXTRA_BODY_OPENAI,
     EXTRA_BODY_CLAUDE,
