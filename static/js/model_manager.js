@@ -1849,7 +1849,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     group.id !== 'vrm-expression-group' &&
                     group.id !== 'vrm-animation-group' &&
                     group.id !== 'mmd-model-group' &&
-                    group.id !== 'mmd-animation-group') {
+                    group.id !== 'mmd-animation-group' &&
+                    group.id !== 'mmd-animation-actions-group') {
                     group.style.display = 'flex';
                 }
             });
