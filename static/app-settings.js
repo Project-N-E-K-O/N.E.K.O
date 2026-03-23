@@ -167,6 +167,9 @@
         const currentMusicChat = typeof window.proactiveMusicEnabled !== 'undefined'
             ? window.proactiveMusicEnabled
             : S.proactiveMusicEnabled;
+        const currentMemeChat = typeof window.proactiveMemeEnabled !== 'undefined'
+            ? window.proactiveMemeEnabled
+            : S.proactiveMemeEnabled;
         const currentRenderQuality = typeof window.renderQuality !== 'undefined'
             ? window.renderQuality
             : S.renderQuality;
@@ -189,6 +192,7 @@
             proactiveVideoChatEnabled: currentVideoChat,
             proactivePersonalChatEnabled: currentPersonalChat,
             proactiveMusicEnabled: currentMusicChat,
+            proactiveMemeEnabled: currentMemeChat,
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             proactiveChatInterval: currentProactiveChatInterval,
@@ -216,6 +220,7 @@
         S.proactiveVideoChatEnabled = currentVideoChat;
         S.proactivePersonalChatEnabled = currentPersonalChat;
         S.proactiveMusicEnabled = currentMusicChat;
+        S.proactiveMemeEnabled = currentMemeChat;
         S.mergeMessagesEnabled = currentMerge;
         S.focusModeEnabled = currentFocus;
         S.proactiveChatInterval = currentProactiveChatInterval;
@@ -246,10 +251,11 @@
                 let needsSave = false;
                 if (settings.proactiveChatEnabled === true) {
                     const hasNewFlags = settings.proactiveVisionChatEnabled !== undefined ||
-                        settings.proactiveNewsChatEnabled !== undefined ||
-                        settings.proactiveVideoChatEnabled !== undefined ||
-                        settings.proactivePersonalChatEnabled !== undefined ||
-                        settings.proactiveMusicEnabled !== undefined;
+                    settings.proactiveNewsChatEnabled !== undefined ||
+                    settings.proactiveVideoChatEnabled !== undefined ||
+                    settings.proactivePersonalChatEnabled !== undefined ||
+                    settings.proactiveMusicEnabled !== undefined ||
+                    settings.proactiveMemeEnabled !== undefined;
                     if (!hasNewFlags) {
                         // 根据旧的视觉偏好决定迁移策略
                         if (settings.proactiveVisionEnabled === false) {
@@ -259,6 +265,7 @@
                             settings.proactiveNewsChatEnabled = true;
                             settings.proactivePersonalChatEnabled = false;
                             settings.proactiveMusicEnabled = false;
+                            settings.proactiveMemeEnabled = false;
                             console.log('迁移旧版设置：保留禁用的视觉偏好，已启用新闻搭话');
                         } else {
                             // 视觉偏好为 true 或 undefined，默认启用视觉搭话
@@ -266,6 +273,7 @@
                             settings.proactiveVisionChatEnabled = true;
                             settings.proactivePersonalChatEnabled = false;
                             settings.proactiveMusicEnabled = false;
+                            settings.proactiveMemeEnabled = false;
                             console.log('迁移旧版设置：已启用视觉搭话和自主视觉');
                         }
                         needsSave = true;
@@ -285,6 +293,7 @@
                 S.proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? false;
                 S.proactivePersonalChatEnabled = settings.proactivePersonalChatEnabled ?? false;
                 S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? false;
+                S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? false;
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
@@ -411,6 +420,12 @@
      * 或在 DOMContentLoaded / 入口处调用
      */
     function initProactiveChatScheduler() {
+        // 防止重复初始化
+        if (S._proactiveSchedulerInitialized) {
+            console.log('[主动搭话] 调度器已初始化，跳过重复调用');
+            return;
+        }
+        
         // 加载麦克风设备选择
         if (typeof window.appAudio !== 'undefined' && window.appAudio.loadSelectedMicrophone) {
             window.appAudio.loadSelectedMicrophone();
@@ -433,7 +448,7 @@
         }
 
         // 如果已开启主动搭话且选择了搭话方式，立即启动定时器
-        if (S.proactiveChatEnabled && (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled)) {
+        if (S.proactiveChatEnabled && (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled)) {
             // 主动搭话启动自检
             console.log('========== 主动搭话启动自检 ==========');
             console.log('[自检] proactiveChatEnabled: ' + S.proactiveChatEnabled);
@@ -442,6 +457,7 @@
             console.log('[自检] proactiveVideoChatEnabled: ' + S.proactiveVideoChatEnabled);
             console.log('[自检] proactivePersonalChatEnabled: ' + S.proactivePersonalChatEnabled);
             console.log('[自检] proactiveMusicEnabled: ' + S.proactiveMusicEnabled);
+            console.log('[自检] proactiveMemeEnabled: ' + S.proactiveMemeEnabled);
             console.log('[自检] localStorage设置: ' + (localStorage.getItem('project_neko_settings') ? '已存在' : '不存在'));
 
             // 检查WebSocket连接状态
@@ -459,6 +475,9 @@
             console.log('  - proactiveChatEnabled: ' + S.proactiveChatEnabled);
             console.log('  - 任意搭话模式启用: ' + (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled));
         }
+
+        // 所有步骤完成后，最后才设置初始化成功的标志
+        S._proactiveSchedulerInitialized = true;
     }
 
     // ======================== 导出 ========================
