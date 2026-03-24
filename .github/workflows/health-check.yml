@@ -19,7 +19,7 @@ jobs:
             -X POST "https://lanlan.app/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
-            -d '{"model":"free-model","messages":[{"role":"user","content":"ok"}],"max_completion_tokens":5}' \
+            -d '{"model":"free-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
             2>/dev/null || echo "000")
           BODY=$(cat /tmp/resp_app.json 2>/dev/null || echo "{}")
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
@@ -45,7 +45,7 @@ jobs:
             -X POST "https://lanlan.tech/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
-            -d '{"model":"free-model","messages":[{"role":"user","content":"ok"}],"max_completion_tokens":5}' \
+            -d '{"model":"free-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
             2>/dev/null || echo "000")
           BODY=$(cat /tmp/resp_tech.json 2>/dev/null || echo "{}")
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
