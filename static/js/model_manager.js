@@ -5887,7 +5887,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // 删除模型功能
-    let selectedDeleteModels = new Map();
+    var selectedDeleteModels = new Set();
 
     function showDeleteModelModal() {
         if (deleteModelModal) {
@@ -5919,9 +5919,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 整合所有用户模型到统一列表
             const allUserModels = [];
 
-            // Live2D 模型
+            // Live2D 模型（注意：/api/live2d/user_models 也会返回 VRM 模型，需要过滤掉）
             if (live2dResult.success && Array.isArray(live2dResult.models)) {
                 live2dResult.models.forEach(m => {
+                    // 过滤掉 VRM 和 MMD 模型（它们有自己的 API）
+                    if (m.type === 'vrm' || m.type === 'mmd') return;
                     allUserModels.push({
                         id: 'live2d:' + m.name,
                         name: m.name,
