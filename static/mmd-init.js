@@ -165,6 +165,28 @@ window.addEventListener('mmd-modules-ready', async () => {
                 window.mmdManager.applySettings(nonPhysicsSettings);
             }
 
+            // 播放待机动作
+            if (catgirlName) {
+                try {
+                    const charRes = await fetch('/api/characters/');
+                    if (charRes.ok) {
+                        const charData = await charRes.json();
+                        const mmdIdleAnimation = charData?.['猫娘']?.[catgirlName]?.mmd_idle_animation;
+                        if (mmdIdleAnimation && window.mmdManager) {
+                            try {
+                                await window.mmdManager.loadAnimation(mmdIdleAnimation);
+                                window.mmdManager.playAnimation();
+                                console.log('[MMD Init] 已播放待机动作:', mmdIdleAnimation);
+                            } catch (idleErr) {
+                                console.warn('[MMD Init] 播放待机动作失败:', idleErr);
+                            }
+                        }
+                    }
+                } catch (idleErr) {
+                    console.warn('[MMD Init] 获取角色待机动作失败:', idleErr);
+                }
+            }
+
             console.log('[MMD Init] MMD 模型自动加载完成');
         }
     } catch (e) {

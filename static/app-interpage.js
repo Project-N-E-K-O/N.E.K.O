@@ -394,6 +394,29 @@
                         if (savedSettings) {
                             window.mmdManager.applySettings(savedSettings);
                         }
+
+                        // 播放待机动作
+                        const catgirlName = window.lanlan_config?.lanlan_name;
+                        if (catgirlName) {
+                            try {
+                                const charRes = await fetch('/api/characters/');
+                                if (charRes.ok) {
+                                    const charData = await charRes.json();
+                                    const mmdIdleAnimation = charData?.['猫娘']?.[catgirlName]?.mmd_idle_animation;
+                                    if (mmdIdleAnimation) {
+                                        try {
+                                            await window.mmdManager.loadAnimation(mmdIdleAnimation);
+                                            window.mmdManager.playAnimation();
+                                            console.log('[Model] 已播放待机动作:', mmdIdleAnimation);
+                                        } catch (idleErr) {
+                                            console.warn('[Model] 播放待机动作失败:', idleErr);
+                                        }
+                                    }
+                                }
+                            } catch (idleErr) {
+                                console.warn('[Model] 获取角色待机动作失败:', idleErr);
+                            }
+                        }
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
                         throw new Error('MMD 管理器初始化失败');

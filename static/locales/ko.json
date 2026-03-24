@@ -1599,6 +1599,11 @@
             "headYaw": "좌우 회전 범위",
             "headPitch": "상하 회전 범위",
             "smoothSpeed": "추적 부드러움"
+        },
+        "idleAnimation": {
+            "title": "대기 애니메이션",
+            "changed": "대기 애니메이션이 변경되었습니다",
+            "changeFailed": "대기 애니메이션 변경에 실패했습니다"
         }
     },
     "modelManager": {

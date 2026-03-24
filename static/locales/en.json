@@ -1599,6 +1599,11 @@
             "headYaw": "Yaw Range",
             "headPitch": "Pitch Range",
             "smoothSpeed": "Tracking Smoothness"
+        },
+        "idleAnimation": {
+            "title": "Idle Animation",
+            "changed": "Idle animation changed",
+            "changeFailed": "Failed to change idle animation"
         }
     },
     "modelManager": {

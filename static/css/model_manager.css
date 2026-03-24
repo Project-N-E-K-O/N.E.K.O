@@ -3013,6 +3013,29 @@ body {
     z-index: 1;
 }
 
+/* MMD待机动作面板样式（绿色主题） */
+.mmd-idle-animation-wrapper {
+    position: relative;
+    width: 270px !important;
+    min-width: 270px !important;
+    max-width: 270px !important;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: visible;
+}
+
+.mmd-idle-animation-content {
+    padding: 10px 12px;
+    background: linear-gradient(180deg, rgba(200, 255, 220, 0.65), rgba(180, 250, 200, 0.55));
+    border: 1px solid rgba(100, 230, 150, 0.55);
+    border-radius: 14px;
+    box-shadow: 0 4px 10px rgba(46, 204, 113, 0.12);
+    position: relative;
+    z-index: 1;
+}
+
 /* 隐藏已简化的辅助打光控件 */
 .lighting-control[style*="display: none"],
 .lighting-control.hidden-simplified {
