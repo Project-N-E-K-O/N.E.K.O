@@ -395,14 +395,13 @@
                             window.mmdManager.applySettings(savedSettings);
                         }
 
-                        // 播放待机动作
-                        const catgirlName = window.lanlan_config?.lanlan_name;
-                        if (catgirlName) {
+                        // 播放待机动作（使用已确定的 nameForConfig，确保目标一致）
+                        if (nameForConfig) {
                             try {
                                 const charRes = await fetch('/api/characters/');
                                 if (charRes.ok) {
                                     const charData = await charRes.json();
-                                    const mmdIdleAnimation = charData?.['猫娘']?.[catgirlName]?.mmd_idle_animation;
+                                    const mmdIdleAnimation = charData?.['猫娘']?.[nameForConfig]?.mmd_idle_animation;
                                     if (mmdIdleAnimation) {
                                         try {
                                             await window.mmdManager.loadAnimation(mmdIdleAnimation);

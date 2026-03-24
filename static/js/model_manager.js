@@ -874,7 +874,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const playVrmAnimationBtn = document.getElementById('play-vrm-animation-btn');
     let isVrmAnimationPlaying = false; // 跟踪VRM动作播放状态
     let isVrmExpressionPlaying = false; // 跟踪VRM表情播放状态
-    let isMmdAnimationPlaying = false; // 跟踪MMD动画播放状态
+    let isMmdAnimationPlaying = false; // 跟踪MMD手动预览动画播放状态
+    let isMmdIdlePlaying = false; // 跟踪MMD待机动画播放状态（与手动预览分离）
     let isMmdAnimationUploading = false; // 防止VMD动画重复上传
 
     // 更新模型类型按钮文字的函数（使用统一管理器）
@@ -1849,6 +1850,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window.mmdManager.stopAnimation();
             }
             isMmdAnimationPlaying = false;
+            isMmdIdlePlaying = false;
             updateMMDAnimationPlayButtonIcon();
             if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
             if (mmdContainer) {
@@ -2267,6 +2269,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         window.mmdManager.stopAnimation();
                     }
                     isMmdAnimationPlaying = false;
+                    isMmdIdlePlaying = false;
                     updateMMDAnimationPlayButtonIcon();
                     if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
                     // 隐藏 MMD 动画选择器
@@ -3486,6 +3489,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (window.mmdManager && window.mmdManager.currentAnimationUrl === animUrl) {
                         window.mmdManager.stopAnimation();
                         isMmdAnimationPlaying = false;
+                        isMmdIdlePlaying = false;
                         updateMMDAnimationPlayButtonIcon();
                         wasCurrentAnimDeleted = true;
                     }
@@ -3518,6 +3522,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     window.mmdManager.stopAnimation();
                 }
                 isMmdAnimationPlaying = false;
+                isMmdIdlePlaying = false;
                 updateMMDAnimationPlayButtonIcon();
                 if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
             }
@@ -3713,6 +3718,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (window.mmdManager) {
                     window.mmdManager.stopAnimation();
                     isMmdAnimationPlaying = false;
+                    isMmdIdlePlaying = false;
                     updateMMDAnimationPlayButtonIcon();
                 }
                 if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
@@ -3737,13 +3743,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 await window.mmdManager.loadModel(modelPath);
                 showStatus('MMD模型加载成功', 2000);
 
-                // 加载后播放保存的MMD待机动作
+                // 加载后播放保存的MMD待机动作（使用独立的待机状态）
                 const mmdIdleSel = mmdIdleAnimationSelect || document.getElementById('mmd-idle-animation-select');
                 if (mmdIdleSel && mmdIdleSel.value) {
                     try {
                         await window.mmdManager.loadAnimation(mmdIdleSel.value);
                         window.mmdManager.playAnimation();
-                        isMmdAnimationPlaying = true;
+                        isMmdIdlePlaying = true;
                         updateMMDAnimationPlayButtonIcon();
                         if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
                         console.log('[MMD] 已播放待机动作:', mmdIdleSel.value);
@@ -3796,12 +3802,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // 更新MMD动画播放按钮图标
+    // 更新MMD动画播放按钮图标（检查手动预览和待机两种状态）
     function updateMMDAnimationPlayButtonIcon() {
         if (!playMmdAnimationBtn) return;
         const icon = playMmdAnimationBtn.querySelector('.mmd-animation-play-icon');
         if (icon) {
-            if (isMmdAnimationPlaying) {
+            if (isMmdAnimationPlaying || isMmdIdlePlaying) {
                 icon.src = '/static/icons/vrm_pause_icon.png?v=1';
                 icon.alt = t('common.pause', '暂停');
             } else {
@@ -4221,16 +4227,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    // MMD 待机动作选择器
+    // MMD 待机动作选择器（使用独立的待机状态）
     if (mmdIdleAnimationSelect) {
         mmdIdleAnimationSelect.addEventListener('change', async (e) => {
             const selectedUrl = e.target.value;
             // 实时切换MMD待机动作：停止当前动画，播放新的循环动画
             if (window.mmdManager && window.mmdManager.currentModel) {
                 try {
-                    if (isMmdAnimationPlaying) {
+                    if (isMmdIdlePlaying) {
                         window.mmdManager.stopAnimation();
-                        isMmdAnimationPlaying = false;
+                        isMmdIdlePlaying = false;
                         updateMMDAnimationPlayButtonIcon();
                     }
                     if (!selectedUrl) {
@@ -4240,7 +4246,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                     await window.mmdManager.loadAnimation(selectedUrl);
                     window.mmdManager.playAnimation();
-                    isMmdAnimationPlaying = true;
+                    isMmdIdlePlaying = true;
                     updateMMDAnimationPlayButtonIcon();
                     console.log('[MMD IdleAnimation] Idle animation changed:', e.target.options[e.target.selectedIndex]?.text || selectedUrl);
                     showStatus(t('mmd.idleAnimation.changed', 'Idle animation changed', { name: e.target.options[e.target.selectedIndex]?.text || selectedUrl }), 2000);
@@ -4699,18 +4705,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            // 加载MMD待机动作选项并恢复保存的选择
-            await loadMmdIdleAnimationOptions();
-            const mmdIdleSel = mmdIdleAnimationSelect || document.getElementById('mmd-idle-animation-select');
-            const mmdIdleAnimation = charData?.mmd_idle_animation;
-            if (mmdIdleAnimation && mmdIdleSel) {
-                mmdIdleSel.value = mmdIdleAnimation;
-                if (mmdIdleSel.value === mmdIdleAnimation) {
-                    console.log('[MMD] 已恢复保存的待机动作:', mmdIdleAnimation);
-                    // 触发 change 事件以播放保存的待机动作
-                    mmdIdleSel.dispatchEvent(new Event('change', { bubbles: true }));
-                } else {
-                    console.warn('[MMD] 保存的待机动作不在列表中:', mmdIdleAnimation);
+            // 加载MMD待机动作选项并恢复保存的选择（仅对 MMD 角色生效）
+            const isMmdCharacter = charData?.live3d_sub_type === 'mmd' || !!charData?.mmd;
+            if (isMmdCharacter) {
+                await loadMmdIdleAnimationOptions();
+                const mmdIdleSel = mmdIdleAnimationSelect || document.getElementById('mmd-idle-animation-select');
+                const mmdIdleAnimation = charData?.mmd_idle_animation;
+                if (mmdIdleAnimation && mmdIdleSel) {
+                    mmdIdleSel.value = mmdIdleAnimation;
+                    if (mmdIdleSel.value === mmdIdleAnimation) {
+                        console.log('[MMD] 已恢复保存的待机动作:', mmdIdleAnimation);
+                        // 触发 change 事件以播放保存的待机动作
+                        mmdIdleSel.dispatchEvent(new Event('change', { bubbles: true }));
+                    } else {
+                        console.warn('[MMD] 保存的待机动作不在列表中:', mmdIdleAnimation);
+                    }
                 }
             }
         } catch (error) {
