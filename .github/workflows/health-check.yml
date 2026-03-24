@@ -1,0 +1,128 @@
+name: Server Health Check
+
+on:
+  schedule:
+    # 每 5 分钟运行一次
+    - cron: "*/5 * * * *"
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      # ── 检查 lanlan.app (海外节点) ──
+      - name: Check lanlan.app
+        id: check_app
+        run: |
+          HTTP_CODE=$(curl -s -o /tmp/resp_app.json -w "%{http_code}" \
+            --max-time 15 --connect-timeout 5 \
+            -X POST "https://lanlan.app/text/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer free-access" \
+            -d '{"model":"free-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
+            2>/dev/null || echo "000")
+          BODY=$(cat /tmp/resp_app.json 2>/dev/null || echo "{}")
+          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            # 验证返回了有效的 choices
+            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+            if [ -n "$HAS_CHOICES" ]; then
+              echo "healthy=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "healthy=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 检查 lanlan.tech (国内节点) ──
+      - name: Check lanlan.tech
+        id: check_tech
+        run: |
+          HTTP_CODE=$(curl -s -o /tmp/resp_tech.json -w "%{http_code}" \
+            --max-time 15 --connect-timeout 5 \
+            -X POST "https://lanlan.tech/text/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer free-access" \
+            -d '{"model":"free-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
+            2>/dev/null || echo "000")
+          BODY=$(cat /tmp/resp_tech.json 2>/dev/null || echo "{}")
+          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+            if [ -n "$HAS_CHOICES" ]; then
+              echo "healthy=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "healthy=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 推送结果到 Discord ──
+      - name: Send Discord notification
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_HEALTH_WEBHOOK_URL }}
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          APP_HEALTHY="${{ steps.check_app.outputs.healthy }}"
+          TECH_HEALTHY="${{ steps.check_tech.outputs.healthy }}"
+          APP_CODE="${{ steps.check_app.outputs.http_code }}"
+          TECH_CODE="${{ steps.check_tech.outputs.http_code }}"
+
+          if [ "$APP_HEALTHY" = "true" ] && [ "$TECH_HEALTHY" = "true" ]; then
+            COLOR=3066993  # green
+            TITLE="All Servers Healthy"
+          elif [ "$APP_HEALTHY" = "false" ] && [ "$TECH_HEALTHY" = "false" ]; then
+            COLOR=15158332 # red
+            TITLE="All Servers Down"
+          else
+            COLOR=15105570 # orange
+            TITLE="Partial Outage"
+          fi
+
+          if [ "$APP_HEALTHY" = "true" ]; then
+            APP_STATUS="OK (HTTP $APP_CODE)"
+          else
+            APP_STATUS="DOWN (HTTP $APP_CODE)"
+          fi
+
+          if [ "$TECH_HEALTHY" = "true" ]; then
+            TECH_STATUS="OK (HTTP $TECH_CODE)"
+          else
+            TECH_STATUS="DOWN (HTTP $TECH_CODE)"
+          fi
+
+          # 只在有故障时 @everyone
+          CONTENT=""
+          if [ "$APP_HEALTHY" = "false" ] || [ "$TECH_HEALTHY" = "false" ]; then
+            CONTENT="@everyone Server alert!"
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg content "$CONTENT" \
+            --arg title "$TITLE" \
+            --argjson color "$COLOR" \
+            --arg app_status "$APP_STATUS" \
+            --arg tech_status "$TECH_STATUS" \
+            --arg timestamp "$TIMESTAMP" \
+            '{
+              content: $content,
+              embeds: [{
+                title: $title,
+                color: $color,
+                fields: [
+                  {name: "lanlan.app (overseas)", value: $app_status, inline: true},
+                  {name: "lanlan.tech (mainland)", value: $tech_status, inline: true}
+                ],
+                footer: {text: "N.E.K.O Health Monitor"},
+                timestamp: $timestamp
+              }]
+            }')
+
+          curl -s -X POST "$DISCORD_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"

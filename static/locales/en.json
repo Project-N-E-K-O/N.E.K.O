@@ -1172,7 +1172,7 @@
         "saveSuccess": "Save successful",
         "saveFailed": "Save failed: {{error}}",
         "saveFailedGeneral": "Save failed",
-        "clearedMemory": "Recent memory cleared, not saved",
+        "clearedChatKeptMemo": "Chat messages cleared; memo kept (not saved)",
         "enabled": "Enabled",
         "disabled": "Disabled",
         "autoReviewNote": "When enabled, the system will automatically organize and optimize memory content to improve conversation quality",

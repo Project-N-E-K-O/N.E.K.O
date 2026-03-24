@@ -76,7 +76,8 @@
         const failedModules = [];
         for (const moduleSrc of mmdModules) {
             const script = document.createElement('script');
-            script.src = `${moduleSrc}?v=${Date.now()}`;
+            const baseSrc = moduleSrc.split('?')[0];
+            script.src = `${baseSrc}?v=${Date.now()}`;
             await new Promise((resolve) => {
                 script.onload = resolve;
                 script.onerror = () => {
@@ -848,11 +849,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // VRM/MMD 专属设置区域 DOM 引用
     const vrmSettingsSection = document.getElementById('vrm-settings-section');
     const mmdSettingsSection = document.getElementById('mmd-settings-section');
-    // VRM 鼠标跟踪
-    const vrmCursorFollowPreset = document.getElementById('vrm-cursor-follow-preset');
-    const vrmEyeSensitivitySlider = document.getElementById('vrm-eye-sensitivity-slider');
-    const vrmHeadSensitivitySlider = document.getElementById('vrm-head-sensitivity-slider');
-    const vrmHeadSpeedSlider = document.getElementById('vrm-head-speed-slider');
+    // VRM 鼠标跟踪已移至 popup-ui 统一控制，不在外观管理页单独配置
     // MMD 光照
     const mmdAmbientIntensitySlider = document.getElementById('mmd-ambient-intensity-slider');
     const mmdAmbientColorPicker = document.getElementById('mmd-ambient-color-picker');
@@ -862,14 +859,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const mmdTonemappingSelect = document.getElementById('mmd-tonemapping-select');
     const mmdExposureSlider = document.getElementById('mmd-exposure-slider');
     const mmdOutlineToggle = document.getElementById('mmd-outline-toggle');
-    const mmdPixelRatioSelect = document.getElementById('mmd-pixel-ratio-select');
-    // MMD 物理/跟踪
-    const mmdPhysicsToggle = document.getElementById('mmd-physics-toggle');
-    const mmdPhysicsStrengthSlider = document.getElementById('mmd-physics-strength-slider');
-    const mmdCursorFollowToggle = document.getElementById('mmd-cursor-follow-toggle');
-    const mmdHeadYawSlider = document.getElementById('mmd-head-yaw-slider');
-    const mmdHeadPitchSlider = document.getElementById('mmd-head-pitch-slider');
-    const mmdHeadSmoothSlider = document.getElementById('mmd-head-smooth-slider');
+    // 像素比例、物理模拟、拟真强度、头部跟踪 已移至 popup-ui 统一控制，不在外观管理页单独配置
     const uploadStatus = document.getElementById('upload-status');
     const backToMainBtn = document.getElementById('backToMainBtn');
     const deleteModelBtn = document.getElementById('delete-model-btn');
@@ -1709,13 +1699,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             let mmdSettingsResult = null;
             if (currentModelType === 'live3d' && currentLive3dSubType === 'mmd') {
                 try {
-                    const mmdSettings = collectMmdSettings();
+                    if (_mmdSettingsLoadPromise) {
+                        await _mmdSettingsLoadPromise;
+                    }
+                    const collected = collectMmdSettings();
+                    const existing = JSON.parse(localStorage.getItem('mmdSettings') || '{}');
+                    if (collected.lighting) existing.lighting = collected.lighting;
+                    if (collected.rendering) {
+                        existing.rendering = Object.assign(existing.rendering || {}, collected.rendering);
+                    }
                     mmdSettingsResult = await RequestHelper.fetchJson(
                         `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/mmd_settings`,
                         {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(mmdSettings)
+                            body: JSON.stringify(existing)
                         }
                     );
                 } catch (e) {
@@ -1729,8 +1727,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 : modelName;
             let saveMessage;
             const lightingFailed = (currentModelType === 'live3d') && ambient && main && (!lightingResult || !lightingResult.success);
+            const mmdSettingsFailed = mmdSettingsResult && !mmdSettingsResult.success;
 
-            if (lightingFailed) {
+            if (lightingFailed && mmdSettingsFailed) {
+                saveMessage = t('live2d.modelSavedLightingFailed', `已保存模型设置，光照和MMD设置保存失败`, { name: modelDisplayName });
+            } else if (mmdSettingsFailed) {
+                saveMessage = t('live2d.modelSavedMmdSettingsFailed', `已保存模型设置，MMD设置保存失败`, { name: modelDisplayName });
+            } else if (lightingFailed) {
                 saveMessage = t('live2d.modelSavedLightingFailed', `已保存模型设置，光照设置保存失败`, { name: modelDisplayName });
             } else if ((currentModelType === 'live3d') && ambient && main) {
                 saveMessage = t('live2d.modelSettingsSavedWithLighting', `已保存模型和光照设置`, { name: modelDisplayName });
@@ -1739,8 +1742,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else {
                 saveMessage = t('live2d.modelSettingsSaved', `已保存模型设置`, { name: modelDisplayName });
             }
-            showStatus(saveMessage, 2000);
-            return true;
+            showStatus(saveMessage, mmdSettingsFailed || lightingFailed ? 3000 : 2000);
+            return !mmdSettingsFailed && !lightingFailed;
 
         } catch (error) {
             console.error('保存模型设置失败:', error);
@@ -2328,14 +2331,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 切换到 Live3D 模式时，在合并列表中查找当前角色配置的模型
             else if (type === 'live3d') {
                 try {
+                    let matched = false;
                     const lanlanName = await getLanlanName();
                     if (lanlanName) {
                         const charactersData = await RequestHelper.fetchJson('/api/characters');
                         const catgirlConfig = charactersData['猫娘']?.[lanlanName];
-                        // 在合并的 vrmModelSelect 中查找匹配项（优先 MMD，然后 VRM）
                         if (vrmModelSelect) {
-                            let matched = false;
-                            // 检查是否有 MMD 模型配置
                             const _mmdPathSwitch = catgirlConfig && catgirlConfig.mmd
                                 ? (typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path)
                                 : '';
@@ -2352,7 +2353,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                                     matched = true;
                                 }
                             }
-                            // 如果没有 MMD 匹配，检查 VRM 配置
                             if (!matched && catgirlConfig && catgirlConfig.vrm) {
                                 const vrmPath = catgirlConfig.vrm;
                                 const vrmFilename = vrmPath.split(/[/\\]/).pop();
@@ -2364,9 +2364,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
                                     vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                                    matched = true;
                                 }
                             }
                         }
+                    }
+                    if (!matched) {
+                        selectDefaultLive3DModel();
                     }
                 } catch (autoLoadError) {
                     console.warn('[模型管理] 切到 Live3D 自动加载模型失败:', autoLoadError);
@@ -3627,6 +3631,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // 自动选择默认 Live3D 模型（sister1.0.vrm），当角色无已配置的 VRM/MMD 模型时使用
+    function selectDefaultLive3DModel() {
+        if (!vrmModelSelect || vrmModelSelect.options.length === 0) return false;
+        const defaultFilename = 'sister1.0.vrm';
+        const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
+            if (!opt.value) return false;
+            const optFilename = opt.getAttribute('data-filename') || '';
+            return optFilename === defaultFilename || opt.value.includes(defaultFilename);
+        });
+        if (matchedOption) {
+            vrmModelSelect.value = matchedOption.value;
+            vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            console.log('[模型管理] 自动加载默认 Live3D 模型:', defaultFilename);
+            return true;
+        }
+        return false;
+    }
+
     // MMD 模型选择事件
     if (mmdModelSelect) {
         mmdModelSelect.addEventListener('change', async (e) => {
@@ -4169,59 +4191,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
 
-    // ==================== VRM 鼠标跟踪控件事件绑定 ====================
-    function setupVrmCursorFollowBindings() {
-        // 预设切换
-        if (vrmCursorFollowPreset) {
-            vrmCursorFollowPreset.addEventListener('change', (e) => {
-                const preset = e.target.value;
-                const presets = {
-                    none: { eye: 0, head: 0, speed: 3.0 },
-                    low: { eye: 15, head: 20, speed: 2.0 },
-                    medium: { eye: 25, head: 35, speed: 3.0 },
-                    high: { eye: 30, head: 45, speed: 4.0 }
-                };
-                const p = presets[preset] || presets.high;
-                if (vrmEyeSensitivitySlider) { vrmEyeSensitivitySlider.value = p.eye; document.getElementById('vrm-eye-sensitivity-value').textContent = p.eye + '°'; }
-                if (vrmHeadSensitivitySlider) { vrmHeadSensitivitySlider.value = p.head; document.getElementById('vrm-head-sensitivity-value').textContent = p.head + '°'; }
-                if (vrmHeadSpeedSlider) { vrmHeadSpeedSlider.value = p.speed; document.getElementById('vrm-head-speed-value').textContent = p.speed.toFixed(1); }
-                applyVrmCursorFollowSettings();
-            });
-        }
-        // 单个滑块
-        const vrmCursorSliders = [
-            { el: vrmEyeSensitivitySlider, valId: 'vrm-eye-sensitivity-value', suffix: '°' },
-            { el: vrmHeadSensitivitySlider, valId: 'vrm-head-sensitivity-value', suffix: '°' },
-            { el: vrmHeadSpeedSlider, valId: 'vrm-head-speed-value', suffix: '', fmt: v => v.toFixed(1) }
-        ];
-        vrmCursorSliders.forEach(({ el, valId, suffix, fmt }) => {
-            if (el) {
-                el.addEventListener('input', (e) => {
-                    const v = parseFloat(e.target.value);
-                    const display = fmt ? fmt(v) : v + (suffix || '');
-                    const valEl = document.getElementById(valId);
-                    if (valEl) valEl.textContent = display;
-                });
-                el.addEventListener('change', () => applyVrmCursorFollowSettings());
-            }
-        });
-    }
-
-    function applyVrmCursorFollowSettings() {
-        const cursorFollow = vrmManager?._cursorFollow;
-        if (!cursorFollow) return;
-        const config = {
-            eyeMaxAngle: vrmEyeSensitivitySlider ? parseFloat(vrmEyeSensitivitySlider.value) : 30,
-            headMaxAngle: vrmHeadSensitivitySlider ? parseFloat(vrmHeadSensitivitySlider.value) : 45,
-            smoothSpeed: vrmHeadSpeedSlider ? parseFloat(vrmHeadSpeedSlider.value) : 3.0,
-            enabled: vrmCursorFollowPreset ? vrmCursorFollowPreset.value !== 'none' : true
-        };
-        if (typeof cursorFollow.applyConfig === 'function') {
-            cursorFollow.applyConfig(config);
-        }
-    }
-
-    setupVrmCursorFollowBindings();
+    // VRM 鼠标跟踪已移至 popup-ui 统一控制，不在外观管理页单独配置
 
     // ==================== MMD 控件事件绑定 ====================
     function setupMmdControlBindings() {
@@ -4283,56 +4253,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         }
 
-        // 像素比例
-        if (mmdPixelRatioSelect) {
-            mmdPixelRatioSelect.addEventListener('change', () => applyMmdSettings());
-        }
-
-        // 物理开关
-        if (mmdPhysicsToggle) {
-            mmdPhysicsToggle.addEventListener('change', (e) => {
-                const statusEl = document.getElementById('mmd-physics-status');
-                if (statusEl) statusEl.textContent = e.target.checked ? 'ON' : 'OFF';
-                applyMmdSettings();
-            });
-        }
-
-        // 物理强度滑块
-        if (mmdPhysicsStrengthSlider) {
-            mmdPhysicsStrengthSlider.addEventListener('input', (e) => {
-                const v = parseFloat(e.target.value);
-                const valEl = document.getElementById('mmd-physics-strength-value');
-                if (valEl) valEl.textContent = v.toFixed(1);
-            });
-            mmdPhysicsStrengthSlider.addEventListener('change', () => applyMmdSettings());
-        }
-
-        // 鼠标跟踪开关
-        if (mmdCursorFollowToggle) {
-            mmdCursorFollowToggle.addEventListener('change', (e) => {
-                const statusEl = document.getElementById('mmd-cursor-follow-status');
-                if (statusEl) statusEl.textContent = e.target.checked ? 'ON' : 'OFF';
-                applyMmdSettings();
-            });
-        }
-
-        // MMD 鼠标跟踪滑块
-        const mmdCursorSliders = [
-            { el: mmdHeadYawSlider, valId: 'mmd-head-yaw-value', suffix: '°' },
-            { el: mmdHeadPitchSlider, valId: 'mmd-head-pitch-value', suffix: '°' },
-            { el: mmdHeadSmoothSlider, valId: 'mmd-head-smooth-value', suffix: '', fmt: v => v.toFixed(1) }
-        ];
-        mmdCursorSliders.forEach(({ el, valId, suffix, fmt }) => {
-            if (el) {
-                el.addEventListener('input', (e) => {
-                    const v = parseFloat(e.target.value);
-                    const display = fmt ? fmt(v) : v + (suffix || '');
-                    const valEl = document.getElementById(valId);
-                    if (valEl) valEl.textContent = display;
-                });
-                el.addEventListener('change', () => applyMmdSettings());
-            }
-        });
+        // 像素比例、物理、鼠标跟踪 已移至 popup-ui 统一控制
     }
 
     function collectMmdSettings() {
@@ -4346,19 +4267,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             rendering: {
                 toneMapping: mmdTonemappingSelect ? parseInt(mmdTonemappingSelect.value) : 0,
                 exposure: mmdExposureSlider ? parseFloat(mmdExposureSlider.value) : 1.0,
-                outline: mmdOutlineToggle ? mmdOutlineToggle.checked : true,
-                pixelRatio: mmdPixelRatioSelect ? parseFloat(mmdPixelRatioSelect.value) : 0
-            },
-            physics: {
-                enabled: mmdPhysicsToggle ? mmdPhysicsToggle.checked : true,
-                strength: mmdPhysicsStrengthSlider ? parseFloat(mmdPhysicsStrengthSlider.value) : 1.0
-            },
-            cursorFollow: {
-                enabled: mmdCursorFollowToggle ? mmdCursorFollowToggle.checked : true,
-                headYaw: mmdHeadYawSlider ? parseFloat(mmdHeadYawSlider.value) : 30,
-                headPitch: mmdHeadPitchSlider ? parseFloat(mmdHeadPitchSlider.value) : 20,
-                smoothSpeed: mmdHeadSmoothSlider ? parseFloat(mmdHeadSmoothSlider.value) : 3.0
+                outline: mmdOutlineToggle ? mmdOutlineToggle.checked : true
             }
+            // physics 和 cursorFollow 由 popup-ui 统一控制，不在此收集
         };
     }
 
@@ -4369,9 +4280,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window.mmdManager.applySettings(settings);
             }
         }
-        // 实时保存到 localStorage（用于即时预览，持久化保存由保存按钮触发）
+        // Merge into existing localStorage to preserve popup-ui fields (physics, pixelRatio, cursorFollow)
         try {
-            localStorage.setItem('mmdSettings', JSON.stringify(settings));
+            const existing = JSON.parse(localStorage.getItem('mmdSettings') || '{}');
+            if (settings.lighting) existing.lighting = settings.lighting;
+            if (settings.rendering) {
+                existing.rendering = Object.assign(existing.rendering || {}, settings.rendering);
+            }
+            localStorage.setItem('mmdSettings', JSON.stringify(existing));
         } catch (e) { /* ignore */ }
     }
 
@@ -4428,42 +4344,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const el = document.getElementById('mmd-outline-status');
                     if (el) el.textContent = s.rendering.outline ? 'ON' : 'OFF';
                 }
-                if (mmdPixelRatioSelect && s.rendering.pixelRatio != null) mmdPixelRatioSelect.value = s.rendering.pixelRatio;
             }
-            if (s.physics) {
-                if (mmdPhysicsToggle && s.physics.enabled != null) {
-                    mmdPhysicsToggle.checked = s.physics.enabled;
-                    const el = document.getElementById('mmd-physics-status');
-                    if (el) el.textContent = s.physics.enabled ? 'ON' : 'OFF';
-                }
-                if (mmdPhysicsStrengthSlider && s.physics.strength != null) {
-                    mmdPhysicsStrengthSlider.value = s.physics.strength;
-                    const el = document.getElementById('mmd-physics-strength-value');
-                    if (el) el.textContent = s.physics.strength.toFixed(1);
-                }
-            }
-            if (s.cursorFollow) {
-                if (mmdCursorFollowToggle && s.cursorFollow.enabled != null) {
-                    mmdCursorFollowToggle.checked = s.cursorFollow.enabled;
-                    const el = document.getElementById('mmd-cursor-follow-status');
-                    if (el) el.textContent = s.cursorFollow.enabled ? 'ON' : 'OFF';
-                }
-                if (mmdHeadYawSlider && s.cursorFollow.headYaw != null) {
-                    mmdHeadYawSlider.value = s.cursorFollow.headYaw;
-                    const el = document.getElementById('mmd-head-yaw-value');
-                    if (el) el.textContent = s.cursorFollow.headYaw + '°';
-                }
-                if (mmdHeadPitchSlider && s.cursorFollow.headPitch != null) {
-                    mmdHeadPitchSlider.value = s.cursorFollow.headPitch;
-                    const el = document.getElementById('mmd-head-pitch-value');
-                    if (el) el.textContent = s.cursorFollow.headPitch + '°';
-                }
-                if (mmdHeadSmoothSlider && s.cursorFollow.smoothSpeed != null) {
-                    mmdHeadSmoothSlider.value = s.cursorFollow.smoothSpeed;
-                    const el = document.getElementById('mmd-head-smooth-value');
-                    if (el) el.textContent = s.cursorFollow.smoothSpeed.toFixed(1);
-                }
-            }
+            // physics 和 cursorFollow 由 popup-ui 统一控制，不在此加载
         } catch (e) {
             console.warn('[MMD Settings] 加载UI设置失败:', e);
         }
@@ -6883,13 +6765,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                         vrmModelSelect.value = matchedOption.value;
                         vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
                     } else {
-                        console.warn('[模型管理] 未找到匹配的 VRM 选项:', vrmModelPath);
-                        showStatus(t('live2d.vrmModelNotFound', `未在模型列表中找到 ${vrmModelPath}，请手动选择模型`, { model: vrmModelPath }));
+                        console.warn('[模型管理] 未找到匹配的 VRM 选项:', vrmModelPath, '，尝试加载默认模型');
+                        selectDefaultLive3DModel();
                     }
                 }
             } else if (modelType !== 'live2d') {
-                // 未知类型或 Live3D 但无有效路径 → 不自动加载，等待用户选择
-                console.warn(`[模型管理] 模型类型 ${modelType} 无有效路径，不自动加载`);
+                // Live3D 但无有效路径 → 尝试加载内置默认模型
+                console.warn(`[模型管理] 模型类型 ${modelType} 无有效路径，尝试加载默认模型`);
+                selectDefaultLive3DModel();
             } else {
                 // Live2D 模型
                 // 构建API URL，支持可选的item_id参数

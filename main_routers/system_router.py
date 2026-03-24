@@ -318,9 +318,16 @@ def _parse_unified_phase1_result(text: str) -> dict:
         return result
 
     # --- 解析 web 段 ---
+    # 先尝试提取结构化字段；LLM 经常同时输出话题详情和模板里的
+    # "If nothing is worth sharing: [WEB] [PASS]" 行，导致 [PASS]
+    # 误杀已填好的话题。因此优先以 parse 结果为准。
     web_text = sections.get('web', '')
-    if web_text and '[PASS]' not in web_text.upper():
-        result['web'] = _parse_web_screening_result(web_text)
+    if web_text:
+        parsed_web = _parse_web_screening_result(web_text)
+        if parsed_web:
+            result['web'] = parsed_web
+        elif '[PASS]' in web_text.upper():
+            pass  # 确实是 PASS，web 保持 None
 
     # --- 解析 music 段 ---
     music_text = sections.get('music', '')
@@ -2064,7 +2071,7 @@ async def proactive_chat(request: Request):
                             timeout=timeout
                         )
                         # [临时调试]
-                        print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:200]}...\n")
+                        print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:500]}...\n")
                         return response.content.strip()
                 except (asyncio.TimeoutError, APIConnectionError, InternalServerError, RateLimitError) as e:
                     if attempt < max_retries - 1:
@@ -2271,7 +2278,7 @@ async def proactive_chat(request: Request):
                     master_name=master_name_current,
                 )
                 unified_result_text = await _llm_call_with_retry(unified_prompt, "unified_phase1")
-                print(f"[{lanlan_name}] Phase 1 合并 LLM 结果: {unified_result_text[:200]}")
+                print(f"[{lanlan_name}] Phase 1 合并 LLM 结果: {unified_result_text[:500]}")
                 unified_parsed = _parse_unified_phase1_result(unified_result_text)
                 logger.info(f"[{lanlan_name}] Phase 1 解析: web={'有' if unified_parsed.get('web') else '无'}, "
                            f"music_kw={unified_parsed.get('music_keyword', 'N/A')}, "

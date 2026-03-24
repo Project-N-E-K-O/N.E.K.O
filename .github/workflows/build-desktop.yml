@@ -238,9 +238,6 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=starlette"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=jinja2"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=websockets"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=langchain_community"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=langchain_core"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=langchain_openai"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_server"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory_server"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=agent_server"
@@ -343,9 +340,6 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=starlette
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=jinja2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=websockets
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=langchain_community
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=langchain_core
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=langchain_openai
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_server
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory_server
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=agent_server
