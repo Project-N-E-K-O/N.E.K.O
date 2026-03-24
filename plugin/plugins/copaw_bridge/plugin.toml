@@ -1,0 +1,10 @@
+[plugin]
+id = "copaw_bridge"
+name = "CoPaw Bridge"
+description = "连接 CoPaw 多模态渠道，支持文本和图片消息的发送与接收"
+version = "1.0.0"
+entry = "plugins.copaw_bridge:CoPawBridgePlugin"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.3.0"
+supported = ">=0.1.0,<0.3.0"

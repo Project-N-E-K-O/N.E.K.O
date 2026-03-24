@@ -1,0 +1,230 @@
+"""
+N.E.K.O Channel for CoPaw
+
+CoPaw 自定义渠道，用于接收来自 N.E.K.O 插件的消息。
+
+安装方法：
+1. 将此文件复制到 ~/.copaw/custom_channels/neko_channel.py
+2. 在 ~/.copaw/config.json 中添加配置：
+
+   "channels": {
+     "neko": {
+       "enabled": true,
+       "bot_prefix": "",
+       "host": "0.0.0.0",
+       "port": 8089
+     }
+   }
+
+3. 重启 CoPaw 服务
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any, Dict, List, Optional
+
+from agentscope_runtime.engine.schemas.agent_schemas import (
+    TextContent,
+    ImageContent,
+    VideoContent,
+    AudioContent,
+    FileContent,
+    ContentType,
+)
+from copaw.app.channels.base import BaseChannel
+from copaw.app.channels.schema import ChannelType
+
+try:
+    from aiohttp import web
+    HAS_AIOHTTP = True
+except ImportError:
+    HAS_AIOHTTP = False
+
+
+class NekoChannel(BaseChannel):
+    """N.E.K.O 渠道，通过 HTTP 接收消息"""
+
+    channel: ChannelType = "neko"
+
+    def __init__(
+        self,
+        process,
+        enabled: bool = True,
+        bot_prefix: str = "",
+        host: str = "0.0.0.0",
+        port: int = 8088,
+        **kwargs,
+    ):
+        super().__init__(process, on_reply_sent=kwargs.get("on_reply_sent"))
+        self.enabled = enabled
+        self.bot_prefix = bot_prefix
+        self.host = host
+        self.port = port
+        self._app: Optional[web.Application] = None
+        self._runner: Optional[web.AppRunner] = None
+        self._site: Optional[web.TCPSite] = None
+        self._pending_replies: Dict[str, asyncio.Future] = {}
+
+    @classmethod
+    def from_config(cls, process, config, on_reply_sent=None, show_tool_details=True):
+        return cls(
+            process=process,
+            enabled=getattr(config, "enabled", True),
+            bot_prefix=getattr(config, "bot_prefix", ""),
+            host=getattr(config, "host", "0.0.0.0"),
+            port=getattr(config, "port", 8088),
+            on_reply_sent=on_reply_sent,
+        )
+
+    @classmethod
+    def from_env(cls, process, on_reply_sent=None):
+        import os
+        return cls(
+            process=process,
+            enabled=os.getenv("NEKO_CHANNEL_ENABLED", "true").lower() == "true",
+            host=os.getenv("NEKO_CHANNEL_HOST", "0.0.0.0"),
+            port=int(os.getenv("NEKO_CHANNEL_PORT", "8088")),
+            on_reply_sent=on_reply_sent,
+        )
+
+    def build_agent_request_from_native(self, native_payload):
+        """将 N.E.K.O 消息转换为 AgentRequest"""
+        payload = native_payload if isinstance(native_payload, dict) else {}
+
+        channel_id = payload.get("channel_id") or self.channel
+        sender_id = payload.get("sender_id") or "unknown"
+        meta = payload.get("meta") or {}
+        session_id = payload.get("session_id") or self.resolve_session_id(sender_id, meta)
+
+        content_parts = []
+
+        # 添加文本内容
+        text = payload.get("text", "")
+        if text:
+            content_parts.append(TextContent(type=ContentType.TEXT, text=text))
+
+        # 处理附件
+        for att in payload.get("attachments") or []:
+            att_type = (att.get("type") or "file").lower()
+            url = att.get("url") or ""
+            if not url:
+                continue
+
+            if att_type == "image":
+                content_parts.append(ImageContent(type=ContentType.IMAGE, image_url=url))
+            elif att_type == "video":
+                content_parts.append(VideoContent(type=ContentType.VIDEO, video_url=url))
+            elif att_type == "audio":
+                content_parts.append(AudioContent(type=ContentType.AUDIO, data=url))
+            else:
+                content_parts.append(FileContent(type=ContentType.FILE, file_url=url))
+
+        if not content_parts:
+            content_parts = [TextContent(type=ContentType.TEXT, text="")]
+
+        request = self.build_agent_request_from_user_content(
+            channel_id=channel_id,
+            sender_id=sender_id,
+            session_id=session_id,
+            content_parts=content_parts,
+            channel_meta=meta,
+        )
+        request.channel_meta = meta
+        return request
+
+    async def start(self):
+        """启动 HTTP 服务器"""
+        if not self.enabled:
+            return
+
+        if not HAS_AIOHTTP:
+            raise RuntimeError("aiohttp is required for NekoChannel. Install with: pip install aiohttp")
+
+        self._app = web.Application()
+        self._app.router.add_post("/neko/send", self._handle_send)
+        self._app.router.add_get("/health", self._handle_health)
+
+        self._runner = web.AppRunner(self._app)
+        await self._runner.setup()
+        self._site = web.TCPSite(self._runner, self.host, self.port)
+        await self._site.start()
+
+        print(f"[NekoChannel] HTTP server started on http://{self.host}:{self.port}")
+
+    async def stop(self):
+        """停止 HTTP 服务器"""
+        if self._site:
+            await self._site.stop()
+            self._site = None
+        if self._runner:
+            await self._runner.cleanup()
+            self._runner = None
+        self._app = None
+        print("[NekoChannel] HTTP server stopped")
+
+    async def send(self, to_handle, text, meta=None):
+        """发送回复（存储到 pending replies）"""
+        meta = meta or {}
+        request_id = meta.get("request_id")
+
+        if request_id and request_id in self._pending_replies:
+            future = self._pending_replies[request_id]
+            if not future.done():
+                future.set_result(text)
+
+        # 如果有 webhook URL，可以在这里发送
+        webhook_url = meta.get("webhook_url")
+        if webhook_url:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    await client.post(webhook_url, json={"reply": text})
+            except Exception as e:
+                print(f"[NekoChannel] Webhook failed: {e}")
+
+    async def _handle_health(self, request: web.Request) -> web.Response:
+        """健康检查端点"""
+        return web.json_response({"status": "healthy", "channel": "neko"})
+
+    async def _handle_send(self, request: web.Request) -> web.Response:
+        """处理来自 N.E.K.O 的消息"""
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        # 生成请求 ID 用于追踪回复
+        import uuid
+        request_id = str(uuid.uuid4())[:8]
+
+        # 添加 request_id 到 meta
+        meta = payload.get("meta") or {}
+        meta["request_id"] = request_id
+        payload["meta"] = meta
+
+        # 创建 Future 用于等待回复
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        self._pending_replies[request_id] = future
+
+        try:
+            # 入队处理
+            self._enqueue(payload)
+
+            # 等待回复（最多 60 秒）
+            try:
+                reply = await asyncio.wait_for(future, timeout=60.0)
+            except asyncio.TimeoutError:
+                reply = "[超时：CoPaw 未在规定时间内响应]"
+
+            return web.json_response({
+                "reply": self.bot_prefix + reply if self.bot_prefix else reply,
+                "sender_id": payload.get("sender_id"),
+                "session_id": payload.get("session_id"),
+                "request_id": request_id,
+            })
+
+        finally:
+            self._pending_replies.pop(request_id, None)

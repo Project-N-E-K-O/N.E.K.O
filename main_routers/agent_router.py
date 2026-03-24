@@ -253,6 +253,78 @@ async def proxy_up_availability():
         return JSONResponse({"ready": False, "reasons": [f"proxy error: {e}"]}, status_code=502)
 
 
+# CoPaw（OpenClaw）Channel 配置
+COPAW_CHANNEL_URL = "http://127.0.0.1:8089"
+_copaw_connect_enabled = False
+
+
+@router.get('/copaw/availability')
+async def copaw_availability():
+    """检查 CoPaw Channel 是否可用"""
+    try:
+        client = _get_http_client()
+        r = await client.get(f"{COPAW_CHANNEL_URL}/health", timeout=1.5)
+        if r.is_success:
+            return {"ready": True, "reasons": ["CoPaw channel reachable"]}
+        else:
+            return {"ready": False, "reasons": [f"CoPaw channel responded {r.status_code}"]}
+    except Exception as e:
+        return {"ready": False, "reasons": [f"CoPaw channel unavailable: {e}"]}
+
+
+@router.post('/copaw/connect')
+async def copaw_connect(request: Request):
+    """设置 CoPaw 连接状态"""
+    global _copaw_connect_enabled
+    try:
+        data = await request.json()
+        _copaw_connect_enabled = bool(data.get("enabled", False))
+        return {"success": True, "connected": _copaw_connect_enabled}
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.get('/copaw/status')
+async def copaw_status():
+    """获取 CoPaw 连接状态"""
+    return {"connected": _copaw_connect_enabled}
+
+
+@router.post('/copaw/chat')
+async def copaw_chat(request: Request):
+    """发送消息到 CoPaw 并获取回复"""
+    try:
+        data = await request.json()
+        text = data.get("text", "")
+        sender_id = data.get("sender_id", "neko_user")
+        session_id = data.get("session_id", "neko:copaw_dialog")
+
+        if not text or not text.strip():
+            return JSONResponse({"error": "消息不能为空"}, status_code=400)
+
+        payload = {
+            "channel_id": "neko",
+            "sender_id": sender_id,
+            "session_id": session_id,
+            "text": text,
+            "meta": {}
+        }
+
+        client = _get_http_client()
+        r = await client.post(
+            f"{COPAW_CHANNEL_URL}/neko/send",
+            json=payload,
+            timeout=60.0
+        )
+        if not r.is_success:
+            return JSONResponse({"error": f"CoPaw 返回错误: HTTP {r.status_code}"}, status_code=502)
+
+        result = r.json()
+        return {"reply": result.get("reply", ""), "session_id": session_id}
+    except Exception as e:
+        return JSONResponse({"error": f"CoPaw 通信失败: {str(e)}"}, status_code=500)
+
+
 @router.get('/browser_use/availability')
 async def proxy_browser_availability():
     try:

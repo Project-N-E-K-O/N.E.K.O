@@ -5,6 +5,7 @@
  */
 (function () {
     const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openfang_enabled'];
+    const COPAW_FLAG_KEY = 'copaw_enabled';
 
     const state = {
         snapshot: null,
@@ -17,6 +18,8 @@
         globalBusy: false,
         optimistic: {},
         busyTimer: null,
+        copawAvailable: null,
+        copawEnabled: false,
     };
     
     // 暴露状态供 app.js 等外部脚本使用乐观更新检测
@@ -30,6 +33,7 @@
         browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser'),
         userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin'),
         openfang: getEls('live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang'),
+        copaw: getEls('live2d-agent-copaw', 'vrm-agent-copaw', 'mmd-agent-copaw'),
         status: getEls('live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status'),
     });
     const sync = (cbs) => {
@@ -47,6 +51,7 @@
         };
         return map[key] || key;
     };
+    const getCopawName = () => window.t ? window.t('settings.toggles.copawConnect') : 'OpenClaw';
     const setStatus = (msg) => {
         const { status } = el();
         status.forEach(s => { if (s) s.textContent = msg || ''; });
@@ -90,6 +95,15 @@
         const cap = caps[map[key]];
         return (cap && cap.reason) || '';
     };
+
+    async function refreshCopawState() {
+        try {
+            const r = await fetch('/api/agent/copaw/availability');
+            state.copawAvailable = r.ok ? !!(await r.json()).ready : false;
+        } catch (e) {
+            state.copawAvailable = false;
+        }
+    }
 
     async function fetchSnapshot() {
         const r = await fetch('/api/agent/state');
@@ -148,7 +162,7 @@
     }
 
     function render(source = 'render') {
-        const { master, keyboard, browser, userPlugin, openfang } = el();
+        const { master, keyboard, browser, userPlugin, openfang, copaw } = el();
         if (!master.length) return;
         const snap = state.snapshot;
         if (!snap) {
@@ -244,6 +258,26 @@
             sync(list);
         });
 
+        // Copaw (OpenClaw) rendering — availability checked separately from tool_server snapshot
+        if (copaw.length) {
+            const copawAvail = state.copawAvailable === true;
+            const canUseCopaw = effectiveAnalyzerEnabled && copawAvail;
+            const copawName = getCopawName();
+            const optimisticCopaw = Object.prototype.hasOwnProperty.call(state.optimistic, COPAW_FLAG_KEY)
+                ? !!state.optimistic[COPAW_FLAG_KEY]
+                : !!state.copawEnabled;
+            const disabledByCopaw = state.pending.has(COPAW_FLAG_KEY);
+            copaw.forEach(cb => {
+                cb.checked = optimisticCopaw && canUseCopaw;
+                cb.disabled = !!state.globalBusy || disabledByCopaw || !effectiveAnalyzerEnabled || !copawAvail;
+                cb.title = canUseCopaw ? copawName
+                    : (!effectiveAnalyzerEnabled
+                        ? (window.t ? window.t('settings.toggles.masterRequired', { name: copawName }) : '请先开启Agent总开关')
+                        : (window.t ? window.t('settings.toggles.unavailable', { name: copawName }) : `${copawName}不可用`));
+            });
+            sync(copaw);
+        }
+
         const anyPending = Object.values(snap.capabilities || {}).some(
             c => c && typeof c.reason === 'string' && c.reason.includes('PENDING')
         );
@@ -269,7 +303,7 @@
     }
 
     function bindEvents() {
-        const { master, keyboard, browser, userPlugin, openfang } = el();
+        const { master, keyboard, browser, userPlugin, openfang, copaw } = el();
         if (!master.length) return;
         const clearProcessing = (cbs) => {
             (Array.isArray(cbs) ? cbs : [cbs]).forEach(cb => {
@@ -373,9 +407,59 @@
         bindFlag(userPlugin, 'user_plugin_enabled');
         bindFlag(openfang, 'openfang_enabled');
 
+        // Copaw custom handler: checks availability separately, then opens chat dialog on enable
+        copaw.forEach(cb => {
+            cb.addEventListener('change', async (e) => {
+                if (state.suppressChange) { clearProcessing(copaw); return; }
+                const value = !!e.target.checked;
+                state.pending.add(COPAW_FLAG_KEY);
+                state.optimistic[COPAW_FLAG_KEY] = value;
+                setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...');
+                render('command');
+                try {
+                    if (value) {
+                        await refreshCopawState();
+                        if (!state.copawAvailable) {
+                            const name = getCopawName();
+                            throw new Error(window.t ? window.t('settings.toggles.unavailable', { name }) : `${name}不可用`);
+                        }
+                    }
+                    const r = await fetch('/api/agent/flags', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            lanlan_name: window.lanlan_config?.lanlan_name,
+                            flags: { [COPAW_FLAG_KEY]: value }
+                        })
+                    });
+                    if (!r.ok) throw new Error('flags API failed');
+                    state.copawEnabled = value;
+                    if (value && typeof window.openCopawChatDialog === 'function') {
+                        window.openCopawChatDialog();
+                    }
+                } catch (err) {
+                    state.pending.delete(COPAW_FLAG_KEY);
+                    state.optimistic = {};
+                    setGlobalBusy(false);
+                    render('command');
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(err.message, 2500);
+                    }
+                    return;
+                } finally {
+                    clearProcessing(copaw);
+                }
+                state.pending.delete(COPAW_FLAG_KEY);
+                state.optimistic = {};
+                setGlobalBusy(false);
+                render('command');
+            });
+        });
+
         window.addEventListener('live2d-agent-popup-opening', async () => {
             state.popupOpen = true;
             render('popup');
+            refreshCopawState().then(() => render('copaw'));
             if (!state.snapshot) {
                 await fetchSnapshot().catch(() => render('popup'));
                 return;
