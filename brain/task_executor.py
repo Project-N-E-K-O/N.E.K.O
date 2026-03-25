@@ -528,10 +528,11 @@ Do NOT route to OpenFang:
 {plugins_desc}
 
 INSTRUCTIONS:
-1. Analyze the conversation and determine if any available plugin can handle the user's request.
-2. If yes, you MUST return the plugin id, the entry_id (the specific entry inside that plugin to invoke), and plugin_args matching the entry's schema.
-3. If you cannot determine a specific plugin entry, return has_task=false or can_execute=false and explain why in the 'reason' field.
-4. OUTPUT MUST BE ONLY a single JSON object and NOTHING ELSE. Do NOT include any explanatory text, markdown, or code fences.
+1. Analyze the conversation and determine if any available plugin should be invoked for the user's request.
+2. Focus on the USER's latest message/intent — NOT on whether the AI has already replied. An AI reply in the conversation does NOT mean the plugin is unnecessary; assess whether the user's request can benefit from plugin execution.
+3. If yes, you MUST return the plugin id, the entry_id (the specific entry inside that plugin to invoke), and plugin_args matching the entry's schema.
+4. If you cannot determine a specific plugin entry, return has_task=false or can_execute=false and explain why in the 'reason' field.
+5. OUTPUT MUST BE ONLY a single JSON object and NOTHING ELSE. Do NOT include any explanatory text, markdown, or code fences.
 
 EXAMPLE (must follow this structure exactly):
 {{
@@ -1023,6 +1024,32 @@ Return only the JSON object, nothing else.
         Execute a user plugin via HTTP /runs endpoint.
         This is the single implementation for all plugin execution paths.
         """
+        def _coerce_timeout(value: Any) -> Optional[float]:
+            try:
+                timeout_value = float(value)
+            except (TypeError, ValueError):
+                return None
+            return timeout_value if timeout_value > 0 else None
+
+        def _resolve_entry_timeout(meta: Optional[Dict[str, Any]], entry: Optional[str]) -> float:
+            default_timeout = 300.0
+            if not isinstance(meta, dict):
+                return default_timeout
+            entries = meta.get("entries")
+            if not isinstance(entries, list):
+                return default_timeout
+            target_entry = entry or "run"
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("id") != target_entry:
+                    continue
+                resolved = _coerce_timeout(item.get("timeout"))
+                if resolved is not None:
+                    return resolved
+                break
+            return default_timeout
+
         plugin_args = dict(plugin_args) if isinstance(plugin_args, dict) else {}
         plugin_entry_id = (
             entry_id
@@ -1112,6 +1139,8 @@ Return only the JSON object, nothing else.
         # New run protocol: default path (POST /runs, return accepted immediately)
         try:
             runs_endpoint = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs"
+            entry_timeout = _resolve_entry_timeout(plugin_meta, plugin_entry_id)
+            run_wait_timeout = max(entry_timeout + 15.0, 315.0)
 
             safe_args: Dict[str, Any]
             if isinstance(plugin_args, dict):
@@ -1128,6 +1157,8 @@ Return only the JSON object, nothing else.
                 # 添加 conversation_id，用于关联触发事件和对话上下文
                 if conversation_id:
                     ctx_obj["conversation_id"] = conversation_id
+                if "entry_timeout" not in ctx_obj:
+                    ctx_obj["entry_timeout"] = entry_timeout
                 if ctx_obj:
                     safe_args["_ctx"] = ctx_obj
             except Exception as e:
@@ -1198,7 +1229,7 @@ Return only the JSON object, nothing else.
             # Phase 2: await run completion and fetch actual result
             try:
                 completion = await self._await_run_completion(
-                    run_id, timeout=300.0, on_progress=on_progress,
+                    run_id, timeout=run_wait_timeout, on_progress=on_progress,
                 )
             except Exception as e:
                 logger.warning("[TaskExecutor] _await_run_completion error: %r", e)

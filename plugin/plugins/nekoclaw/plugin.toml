@@ -1,0 +1,10 @@
+[plugin]
+id = "nekoclaw"
+name = "NekoClaw"
+description = "委托 NekoClaw 执行用户的具体任务，并将结果返回给 NEKO 转述给用户。只要用户有明确的任务意图（如搜索、操作、分析等），即应通过此插件调用。支持文本、图片、多模态消息。"
+version = "1.0.0"
+entry = "plugins.nekoclaw:NekoclawPlugin"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.3.0"
+supported = ">=0.1.0,<0.3.0"

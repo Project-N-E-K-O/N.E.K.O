@@ -1,26 +1,26 @@
-# CoPaw Bridge Plugin
+# NekoClaw Plugin
 
-连接 N.E.K.O 与 CoPaw 的多模态桥接插件。
+连接 N.E.K.O 与 NekoClaw 的多模态桥接插件。
 
 ## 功能
 
-- 发送文本消息到 CoPaw
-- 发送图文混合消息到 CoPaw
+- 发送文本消息到 NekoClaw
+- 发送图文混合消息到 NekoClaw
 - 支持多模态消息（图片、视频、音频、文件）
-- 检查 CoPaw 连接状态
+- 检查 NekoClaw 连接状态
 
 ## 安装步骤
 
-### 1. 安装 CoPaw 自定义渠道
+### 1. 安装 NekoClaw 自定义渠道
 
-将 `neko_channel.py` 复制到 CoPaw 的自定义渠道目录：
+将 `neko_channel.py` 复制到运行时的自定义渠道目录：
 
 ```bash
 mkdir -p ~/.copaw/custom_channels
 cp neko_channel.py ~/.copaw/custom_channels/
 ```
 
-### 2. 配置 CoPaw
+### 2. 配置 NekoClaw 运行时
 
 编辑 `~/.copaw/config.json`，在 `channels` 部分添加：
 
@@ -31,11 +31,13 @@ cp neko_channel.py ~/.copaw/custom_channels/
       "enabled": true,
       "bot_prefix": "",
       "host": "0.0.0.0",
-      "port": 8088
+      "port": 8089
     }
   }
 }
 ```
+
+> **说明**：运行时主服务运行在 8088 端口，neko 通信渠道单独运行在 8089 端口。
 
 ### 3. 安装 aiohttp（如果尚未安装）
 
@@ -43,7 +45,7 @@ cp neko_channel.py ~/.copaw/custom_channels/
 pip install aiohttp
 ```
 
-### 4. 重启 CoPaw
+### 4. 重启运行时服务
 
 ```bash
 copaw app
@@ -51,7 +53,7 @@ copaw app
 
 ### 5. N.E.K.O 插件已就位
 
-插件位于 `plugin/plugins/copaw_bridge/`，启动 N.E.K.O 后会自动加载。
+插件位于 `plugin/plugins/nekoclaw/`，启动 N.E.K.O 后会自动加载。
 
 ## 插件入口点
 
@@ -68,8 +70,8 @@ copaw app
 
 ```json
 {
-  "copaw": {
-    "url": "http://127.0.0.1:8088",
+  "nekoclaw": {
+    "url": "http://127.0.0.1:8089",
     "timeout": 60.0,
     "default_sender_id": "neko_user"
   }
@@ -78,7 +80,7 @@ copaw app
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
-| `url` | CoPaw 服务地址 | `http://127.0.0.1:8088` |
+| `url` | NekoClaw neko 渠道地址 | `http://127.0.0.1:8089` |
 | `timeout` | 请求超时（秒） | `60.0` |
 | `default_sender_id` | 默认发送者 ID | `neko_user` |
 
@@ -87,14 +89,14 @@ copaw app
 ### 检查连接
 
 ```bash
-curl http://127.0.0.1:8088/health
+curl http://127.0.0.1:8089/health
 # 期望返回: {"status": "healthy", "channel": "neko"}
 ```
 
 ### 发送消息
 
 ```bash
-curl -X POST http://127.0.0.1:8088/neko/send \
+curl -X POST http://127.0.0.1:8089/neko/send \
   -H "Content-Type: application/json" \
   -d '{
     "text": "你好",

@@ -1483,7 +1483,7 @@
             "enableFailed": "{{name}} 활성화 실패",
             "openfang": "가상 머신",
             "userPluginAdapting": "사용자 플러그인(개발 중)",
-            "moltbotAdapting": "OpenClaw (개발 중)",
+            "moltbotAdapting": "NekoClaw (개발 중)",
             "chatSettings": "채팅 설정",
             "animationSettings": "애니메이션 설정",
             "renderQuality": "화질",

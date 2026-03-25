@@ -5,7 +5,6 @@
  */
 (function () {
     const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openfang_enabled'];
-    const COPAW_FLAG_KEY = 'copaw_enabled';
 
     const state = {
         snapshot: null,
@@ -18,8 +17,6 @@
         globalBusy: false,
         optimistic: {},
         busyTimer: null,
-        copawAvailable: null,
-        copawEnabled: false,
     };
     
     // 暴露状态供 app.js 等外部脚本使用乐观更新检测
@@ -33,7 +30,7 @@
         browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser'),
         userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin'),
         openfang: getEls('live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang'),
-        copaw: getEls('live2d-agent-copaw', 'vrm-agent-copaw', 'mmd-agent-copaw'),
+        nekoclaw: getEls('live2d-agent-nekoclaw', 'vrm-agent-nekoclaw', 'mmd-agent-nekoclaw'),
         status: getEls('live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status'),
     });
     const sync = (cbs) => {
@@ -51,7 +48,6 @@
         };
         return map[key] || key;
     };
-    const getCopawName = () => window.t ? window.t('settings.toggles.copawConnect') : 'OpenClaw';
     const setStatus = (msg) => {
         const { status } = el();
         status.forEach(s => { if (s) s.textContent = msg || ''; });
@@ -96,12 +92,12 @@
         return (cap && cap.reason) || '';
     };
 
-    async function refreshCopawState() {
+    async function refreshNekoclawAvailability() {
         try {
-            const r = await fetch('/api/agent/copaw/availability');
-            state.copawAvailable = r.ok ? !!(await r.json()).ready : false;
+            const r = await fetch('/api/agent/nekoclaw/availability');
+            return r.ok ? !!(await r.json()).ready : false;
         } catch (e) {
-            state.copawAvailable = false;
+            return false;
         }
     }
 
@@ -162,7 +158,7 @@
     }
 
     function render(source = 'render') {
-        const { master, keyboard, browser, userPlugin, openfang, copaw } = el();
+        const { master, keyboard, browser, userPlugin, openfang, nekoclaw } = el();
         if (!master.length) return;
         const snap = state.snapshot;
         if (!snap) {
@@ -258,24 +254,23 @@
             sync(list);
         });
 
-        // Copaw (OpenClaw) rendering — availability checked separately from tool_server snapshot
-        if (copaw.length) {
-            const copawAvail = state.copawAvailable === true;
-            const canUseCopaw = effectiveAnalyzerEnabled && copawAvail;
-            const copawName = getCopawName();
-            const optimisticCopaw = Object.prototype.hasOwnProperty.call(state.optimistic, COPAW_FLAG_KEY)
-                ? !!state.optimistic[COPAW_FLAG_KEY]
-                : !!state.copawEnabled;
-            const disabledByCopaw = state.pending.has(COPAW_FLAG_KEY);
-            copaw.forEach(cb => {
-                cb.checked = optimisticCopaw && canUseCopaw;
-                cb.disabled = !!state.globalBusy || disabledByCopaw || !effectiveAnalyzerEnabled || !copawAvail;
-                cb.title = canUseCopaw ? copawName
+        // NekoClaw toggle mirrors user_plugin_enabled (same underlying flag)
+        if (nekoclaw.length) {
+            const ready = capabilityReady(snap, 'user_plugin_enabled');
+            const canUse = effectiveAnalyzerEnabled && ready;
+            const nekoclawName = window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw';
+            const optimisticVal = Object.prototype.hasOwnProperty.call(state.optimistic, 'user_plugin_enabled')
+                ? !!state.optimistic['user_plugin_enabled']
+                : !!flags['user_plugin_enabled'];
+            nekoclaw.forEach(cb => {
+                cb.checked = optimisticVal && canUse;
+                cb.disabled = !!state.globalBusy || !effectiveAnalyzerEnabled || !ready;
+                cb.title = canUse ? nekoclawName
                     : (!effectiveAnalyzerEnabled
-                        ? (window.t ? window.t('settings.toggles.masterRequired', { name: copawName }) : '请先开启Agent总开关')
-                        : (window.t ? window.t('settings.toggles.unavailable', { name: copawName }) : `${copawName}不可用`));
+                        ? (window.t ? window.t('settings.toggles.masterRequired', { name: nekoclawName }) : '\u8bf7\u5148\u5f00\u542fAgent\u603b\u5f00\u5173')
+                        : (window.t ? window.t('settings.toggles.unavailable', { name: nekoclawName }) : `${nekoclawName}\u4e0d\u53ef\u7528`));
             });
-            sync(copaw);
+            sync(nekoclaw);
         }
 
         const anyPending = Object.values(snap.capabilities || {}).some(
@@ -303,7 +298,7 @@
     }
 
     function bindEvents() {
-        const { master, keyboard, browser, userPlugin, openfang, copaw } = el();
+        const { master, keyboard, browser, userPlugin, openfang, nekoclaw } = el();
         if (!master.length) return;
         const clearProcessing = (cbs) => {
             (Array.isArray(cbs) ? cbs : [cbs]).forEach(cb => {
@@ -407,49 +402,46 @@
         bindFlag(userPlugin, 'user_plugin_enabled');
         bindFlag(openfang, 'openfang_enabled');
 
-        // Copaw custom handler: checks availability separately, then opens chat dialog on enable
-        copaw.forEach(cb => {
+        // NekoClaw: availability check + set user_plugin_enabled via sendCommand
+        nekoclaw.forEach(cb => {
             cb.addEventListener('change', async (e) => {
-                if (state.suppressChange) { clearProcessing(copaw); return; }
+                if (state.suppressChange) { clearProcessing(nekoclaw); return; }
                 const value = !!e.target.checked;
-                state.pending.add(COPAW_FLAG_KEY);
-                state.optimistic[COPAW_FLAG_KEY] = value;
-                setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...');
+                const nekoclawName = window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw';
+                if (value) {
+                    const available = await refreshNekoclawAvailability();
+                    if (!available) {
+                        state.suppressChange = true;
+                        nekoclaw.forEach(c => { c.checked = false; });
+                        state.suppressChange = false;
+                        sync(nekoclaw);
+                        clearProcessing(nekoclaw);
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(window.t ? window.t('settings.toggles.unavailable', { name: nekoclawName }) : `${nekoclawName}\u4e0d\u53ef\u7528`, 2500);
+                        }
+                        return;
+                    }
+                }
+                state.pending.add('user_plugin_enabled');
+                state.optimistic['user_plugin_enabled'] = value;
+                setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '\u5df2\u63a5\u53d7\u64cd\u4f5c\uff0c\u5207\u6362\u4e2d...');
                 render('command');
                 try {
-                    if (value) {
-                        await refreshCopawState();
-                        if (!state.copawAvailable) {
-                            const name = getCopawName();
-                            throw new Error(window.t ? window.t('settings.toggles.unavailable', { name }) : `${name}不可用`);
-                        }
-                    }
-                    const r = await fetch('/api/agent/flags', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            lanlan_name: window.lanlan_config?.lanlan_name,
-                            flags: { [COPAW_FLAG_KEY]: value }
-                        })
-                    });
-                    if (!r.ok) throw new Error('flags API failed');
-                    state.copawEnabled = value;
-                    if (value && typeof window.openCopawChatDialog === 'function') {
-                        window.openCopawChatDialog();
-                    }
+                    await sendCommand('set_flag', { key: 'user_plugin_enabled', value });
+                    await fetchSnapshot().catch(() => {});
                 } catch (err) {
-                    state.pending.delete(COPAW_FLAG_KEY);
+                    state.pending.delete('user_plugin_enabled');
                     state.optimistic = {};
                     setGlobalBusy(false);
-                    render('command');
+                    fetchSnapshot().catch(() => {});
                     if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(err.message, 2500);
+                        window.showStatusToast(`${nekoclawName}\u5207\u6362\u5931\u8d25: ${err.message}`, 2500);
                     }
                     return;
                 } finally {
-                    clearProcessing(copaw);
+                    clearProcessing(nekoclaw);
                 }
-                state.pending.delete(COPAW_FLAG_KEY);
+                state.pending.delete('user_plugin_enabled');
                 state.optimistic = {};
                 setGlobalBusy(false);
                 render('command');
@@ -459,7 +451,8 @@
         window.addEventListener('live2d-agent-popup-opening', async () => {
             state.popupOpen = true;
             render('popup');
-            refreshCopawState().then(() => render('copaw'));
+            // Refresh NekoClaw availability in background to update toggle state
+            refreshNekoclawAvailability().then(() => render('nekoclaw'));
             if (!state.snapshot) {
                 await fetchSnapshot().catch(() => render('popup'));
                 return;

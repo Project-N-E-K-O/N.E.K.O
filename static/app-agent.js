@@ -366,10 +366,9 @@
             computer_use: { url: '/api/agent/computer_use/availability', nameKey: 'keyboardControl' },
             browser_use: { url: '/api/agent/browser_use/availability', nameKey: 'browserUse' },
             user_plugin: { url: '/api/agent/user_plugin/availability', nameKey: 'userPlugin' },
-            copaw: { url: '/api/agent/copaw/availability', nameKey: 'copawConnect' }
+            nekoclaw: { url: '/api/agent/nekoclaw/availability', nameKey: 'nekoclawConnect' },
         };
         const config = apis[kind];
-        if (!config) return false;
 
         try {
             const r = await fetch(config.url);
@@ -397,7 +396,6 @@
         const agentKeyboardCheckbox = getAgentEl('keyboard');
         const agentBrowserCheckbox = getAgentEl('browser');
         const agentUserPluginCheckbox = getAgentEl('user-plugin');
-        const agentCopawCheckbox = getAgentEl('copaw');
 
         if (agentStateMachine.getState() === AgentPopupState.PROCESSING) {
             console.log('[App] \u72b6\u6001\u673a\u5904\u4e8ePROCESSING\u72b6\u6001\uff0c\u8df3\u8fc7\u8f6e\u8be2');
@@ -460,7 +458,7 @@
             { suffix: 'keyboard', capability: 'computer_use', flagKey: 'computer_use_enabled', nameKey: 'keyboardControl' },
             { suffix: 'browser', capability: 'browser_use', flagKey: 'browser_use_enabled', nameKey: 'browserUse' },
             { suffix: 'user-plugin', capability: 'user_plugin', flagKey: 'user_plugin_enabled', nameKey: 'userPlugin' },
-            { suffix: 'copaw', capability: 'copaw', flagKey: 'copaw_enabled', nameKey: 'copawConnect' }
+            { suffix: 'nekoclaw', capability: 'nekoclaw', flagKey: 'user_plugin_enabled', nameKey: 'nekoclawConnect' },
         ];
         for (const { suffix, capability, flagKey, nameKey } of checks) {
             const cb = getAgentEl(suffix);
@@ -567,7 +565,7 @@
                             agentMasterCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
                             agentMasterCheckbox._autoDisabled = false;
                             if (typeof agentMasterCheckbox._updateStyle === 'function') agentMasterCheckbox._updateStyle();
-                            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentCopawCheckbox].forEach(cb => {
+                            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentNekoclawCheckbox].forEach(cb => {
                                 if (cb) {
                                     cb.checked = false;
                                     cb.disabled = true;
@@ -677,7 +675,7 @@
                 agentMasterCheckbox._autoDisabled = false;
                 if (typeof agentMasterCheckbox._updateStyle === 'function') agentMasterCheckbox._updateStyle();
 
-                [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentCopawCheckbox].forEach(cb => {
+                [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentNekoclawCheckbox].forEach(cb => {
                     if (cb) {
                         cb.checked = false;
                         cb.disabled = true;
@@ -734,7 +732,7 @@
         const agentKeyboardCheckbox = getAgentEl('keyboard');
         const agentBrowserCheckbox = getAgentEl('browser');
         const agentUserPluginCheckbox = getAgentEl('user-plugin');
-        const agentCopawCheckbox = getAgentEl('copaw');
+        const agentNekoclawCheckbox = getAgentEl('nekoclaw');
 
         if (!agentMasterCheckbox) {
             console.warn('[App] Agent\u5f00\u5173\u5143\u7d20\u672a\u627e\u5230\uff0c\u8df3\u8fc7\u7ed1\u5b9a');
@@ -746,13 +744,13 @@
         let keyboardOperationSeq = 0;
         let browserOperationSeq = 0;
         let userPluginOperationSeq = 0;
-        let copawOperationSeq = 0;
+        let nekoclawOperationSeq = 0;
 
         agentMasterCheckbox._hasExternalHandler = true;
         if (agentKeyboardCheckbox) agentKeyboardCheckbox._hasExternalHandler = true;
         if (agentBrowserCheckbox) agentBrowserCheckbox._hasExternalHandler = true;
         if (agentUserPluginCheckbox) agentUserPluginCheckbox._hasExternalHandler = true;
-        if (agentCopawCheckbox) agentCopawCheckbox._hasExternalHandler = true;
+        if (agentNekoclawCheckbox) agentNekoclawCheckbox._hasExternalHandler = true;
 
         const syncCheckboxUI = (checkbox) => {
             if (checkbox && typeof checkbox._updateStyle === 'function') {
@@ -833,12 +831,12 @@
                 window.t ? window.t('settings.toggles.userPlugin') : '\u7528\u6237\u63d2\u4ef6'
             );
 
-            const agentCopawCheckbox = getAgentEl('copaw');
+            const agentNekoclawCheckbox = getAgentEl('nekoclaw');
             applySub(
-                agentCopawCheckbox,
-                flags.copaw_enabled,
-                caps.copaw_ready,
-                window.t ? window.t('settings.toggles.copawConnect') : 'OpenClaw'
+                agentNekoclawCheckbox,
+                flags.user_plugin_enabled,
+                caps.user_plugin_ready,
+                window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw'
             );
             setFloatingAgentStatus(window.t ? window.t('agent.status.enabled') : 'Agent\u6a21\u5f0f\u5df2\u5f00\u542f');
         };
@@ -852,10 +850,9 @@
                 'keyboard': window.t ? window.t('settings.toggles.keyboardControl') : '\u952e\u9f20\u63a7\u5236',
                 'browser': window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
                 'user-plugin': window.t ? window.t('settings.toggles.userPlugin') : '\u7528\u6237\u63d2\u4ef6',
-                'copaw': window.t ? window.t('settings.toggles.copawConnect') : 'OpenClaw'
+                'nekoclaw': window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw',
             };
-            const agentCopawCheckbox = getAgentEl('copaw');
-            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentCopawCheckbox].forEach(cb => {
+            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentNekoclawCheckbox].forEach(cb => {
                 if (cb) {
                     cb.disabled = true;
                     cb.checked = false;
@@ -938,12 +935,6 @@
                         syncCheckboxUI(agentUserPluginCheckbox);
                     }
 
-                    if (agentCopawCheckbox) {
-                        agentCopawCheckbox.disabled = true;
-                        agentCopawCheckbox.title = window.t ? window.t('settings.toggles.checking') : '\u68c0\u67e5\u4e2d...';
-                        syncCheckboxUI(agentCopawCheckbox);
-                    }
-
                     // Check capabilities in parallel
                     await Promise.all([
                         (async () => {
@@ -989,17 +980,17 @@
                         })(),
 
                         (async () => {
-                            if (!agentCopawCheckbox) return;
-                            const available = await checkCapability('copaw', false);
+                            if (!agentNekoclawCheckbox) return;
+                            const available = await checkCapability('nekoclaw', false);
                             if (isExpired() || !agentMasterCheckbox.checked) {
-                                agentCopawCheckbox.disabled = true;
-                                agentCopawCheckbox.checked = false;
-                                syncCheckboxUI(agentCopawCheckbox);
+                                agentNekoclawCheckbox.disabled = true;
+                                agentNekoclawCheckbox.checked = false;
+                                syncCheckboxUI(agentNekoclawCheckbox);
                                 return;
                             }
-                            agentCopawCheckbox.disabled = !available;
-                            agentCopawCheckbox.title = available ? (window.t ? window.t('settings.toggles.copawConnect') : 'OpenClaw') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.copawConnect') }) : 'OpenClaw\u4e0d\u53ef\u7528');
-                            syncCheckboxUI(agentCopawCheckbox);
+                            agentNekoclawCheckbox.disabled = !available;
+                            agentNekoclawCheckbox.title = available ? (window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.nekoclawConnect') }) : 'NekoClaw\u4e0d\u53ef\u7528');
+                            syncCheckboxUI(agentNekoclawCheckbox);
                         })()
                     ]);
 
@@ -1223,85 +1214,6 @@
         );
 
         // ----------------------------------------------------------------
-        // Copaw (OpenClaw) checkbox handler — same as generic sub-checkbox
-        // but opens the chat dialog on successful enable
-        // ----------------------------------------------------------------
-        if (agentCopawCheckbox) {
-            agentCopawCheckbox.addEventListener('change', async () => {
-                const currentSeq = ++copawOperationSeq;
-                const isChecked = agentCopawCheckbox.checked;
-                const name = window.t ? window.t('settings.toggles.copawConnect') : 'OpenClaw';
-
-                const isExpired = () => currentSeq !== copawOperationSeq;
-
-                if (agentCopawCheckbox._autoDisabled) return;
-
-                if (!agentMasterCheckbox?.checked) {
-                    agentCopawCheckbox.checked = false;
-                    syncCheckboxUI(agentCopawCheckbox);
-                    agentCopawCheckbox._processing = false;
-                    return;
-                }
-
-                if (!agentCopawCheckbox._processing) agentCopawCheckbox._processing = true;
-
-                try {
-                    if (isChecked) {
-                        const ok = await checkCapability('copaw');
-                        if (isExpired() || !agentMasterCheckbox?.checked) {
-                            agentCopawCheckbox.checked = false;
-                            agentCopawCheckbox.disabled = true;
-                            syncCheckboxUI(agentCopawCheckbox);
-                            return;
-                        }
-                        if (!ok) {
-                            agentCopawCheckbox.checked = false;
-                            syncCheckboxUI(agentCopawCheckbox);
-                            return;
-                        }
-                    }
-
-                    try {
-                        const r = await fetch('/api/agent/flags', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                lanlan_name: window.lanlan_config.lanlan_name,
-                                flags: { copaw_enabled: isChecked }
-                            })
-                        });
-                        if (!r.ok) throw new Error('main_server rejected');
-
-                        if (isExpired() || !agentMasterCheckbox?.checked) {
-                            agentCopawCheckbox.checked = false;
-                            agentCopawCheckbox.disabled = true;
-                            syncCheckboxUI(agentCopawCheckbox);
-                            return;
-                        }
-
-                        if (isChecked) {
-                            setFloatingAgentStatus(window.t ? window.t('settings.toggles.enabled', { name }) : `${name}已开启`);
-                            if (typeof window.openCopawChatDialog === 'function') {
-                                window.openCopawChatDialog();
-                            }
-                        } else {
-                            setFloatingAgentStatus(window.t ? window.t('settings.toggles.disabled', { name }) : `${name}已关闭`);
-                            syncCheckboxUI(agentCopawCheckbox);
-                        }
-                    } catch (e) {
-                        if (!isExpired() && isChecked) {
-                            agentCopawCheckbox.checked = false;
-                            syncCheckboxUI(agentCopawCheckbox);
-                            setFloatingAgentStatus(window.t ? window.t('settings.toggles.enableFailed', { name }) : `${name}开启失败`);
-                        }
-                    }
-                } finally {
-                    agentCopawCheckbox._processing = false;
-                }
-            });
-        }
-
-        // ----------------------------------------------------------------
         // openAgentStatusPopupWhenEnabled
         // ----------------------------------------------------------------
         function openAgentStatusPopupWhenEnabled() {
@@ -1444,7 +1356,7 @@
                 agentMasterCheckbox.title = window.t ? window.t('settings.toggles.checking') : '\u67e5\u8be2\u4e2d...';
                 syncCheckboxUI(agentMasterCheckbox);
             }
-            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentCopawCheckbox].forEach(cb => {
+            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentNekoclawCheckbox].forEach(cb => {
                 if (cb) {
                     cb.disabled = true;
                     cb.title = window.t ? window.t('settings.toggles.checking') : '\u67e5\u8be2\u4e2d...';

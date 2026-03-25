@@ -207,7 +207,7 @@ class PluginCommunicationResourceManager:
             "[CommManager] TRIGGER plugin_id={}, entry_id={}, req_id={}",
             self.plugin_id, entry_id, req_id,
         )
-        msg = {"type": "TRIGGER", "req_id": req_id, "entry_id": entry_id, "args": args}
+        msg = {"type": "TRIGGER", "req_id": req_id, "entry_id": entry_id, "args": args, "timeout": timeout}
         return await self._send_command_and_wait_local(req_id, msg, timeout, f"entry {entry_id}")
 
     async def trigger_custom_event(

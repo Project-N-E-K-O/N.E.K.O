@@ -126,9 +126,9 @@ BLOB_UPLOAD_SESSION_TTL_SECONDS = _get_float_env("NEKO_BLOB_UPLOAD_SESSION_TTL_S
 # ========== 超时 & 轮询配置（秒） ==========
 
 # 单次插件入口执行的最大允许时间
-# Env: NEKO_PLUGIN_EXECUTION_TIMEOUT, default=30.0
+# Env: NEKO_PLUGIN_EXECUTION_TIMEOUT, default=300.0
 # 用于 SDK 层对长时间运行入口的保护（例如 HTTP 触发的入口）。
-PLUGIN_EXECUTION_TIMEOUT = _get_float_env("NEKO_PLUGIN_EXECUTION_TIMEOUT", 30.0)
+PLUGIN_EXECUTION_TIMEOUT = _get_float_env("NEKO_PLUGIN_EXECUTION_TIMEOUT", 300.0)
 
 # Host -> 插件进程 trigger 的等待超时
 # Env: NEKO_PLUGIN_TRIGGER_TIMEOUT, default=10.0

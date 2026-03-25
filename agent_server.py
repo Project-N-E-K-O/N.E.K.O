@@ -105,6 +105,10 @@ TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # 已完成任务保留 5 分钟
 DEFERRED_TASK_TIMEOUT: float = 3600.0  # deferred 任务超时 1 小时
 _task_registry_last_cleanup: float = 0.0
 
+PLUGIN_DISPLAY_NAME_ALIASES: Dict[str, str] = {
+    "nekoclaw": "NekoClaw",
+}
+
 
 def _cleanup_task_registry() -> List[Dict[str, Any]]:
     """清理 task_registry 中超过 5 分钟的已完成/失败/取消任务，防止内存泄漏；同时检查 deferred 任务超时
@@ -209,6 +213,10 @@ def _get_plugin_friendly_name(plugin_id: str) -> str | None:
     并使用缓存减少请求次数。使用线程锁保证多线程安全。
     """
     global _plugin_name_cache, _plugin_name_cache_time
+
+    alias_name = PLUGIN_DISPLAY_NAME_ALIASES.get(plugin_id)
+    if alias_name:
+        return alias_name
 
     # 检查缓存（加锁读取）
     now = time.time()
@@ -670,6 +678,10 @@ def _check_agent_api_gate() -> Dict[str, Any]:
         return {"ready": ok, "reasons": reasons, "is_free_version": cm.is_free_version()}
     except Exception as e:
         return {"ready": False, "reasons": [f"Agent API check failed: {e}"], "is_free_version": False}
+
+
+def _get_plugin_display_id(plugin_id: str) -> str:
+    return _get_plugin_friendly_name(plugin_id) or plugin_id
 
 
 async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payload) -> None:
@@ -1170,12 +1182,14 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 }
                 # Emit task_update (running) so AgentHUD shows a running card
                 try:
-                    await _emit_main_event(
-                        "task_update", lanlan_name,
-                        task={"id": result.task_id, "status": "running", "type": "user_plugin",
-                              "start_time": up_start,
-                              "params": task_params},
-                    )
+                    if plugin_id == "nekoclaw" and not task_params.get("description"):
+                        task_params["description"] = "NekoClaw 处理中..."
+                    _initial_task_payload: Dict[str, Any] = {
+                        "id": result.task_id, "status": "running", "type": "user_plugin",
+                        "start_time": up_start,
+                        "params": task_params,
+                    }
+                    await _emit_main_event("task_update", lanlan_name, task=_initial_task_payload)
                 except Exception as emit_err:
                     logger.debug("[TaskExecutor] emit task_update(running) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
                 async def _on_plugin_progress(
@@ -1252,7 +1266,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
                             if not _suppress_reply:
                                 _lang = _rp_lang(None)
-                                summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
+                                display_id = _get_plugin_display_id(plugin_id)
+                                summary = _rp_phrase('plugin_done_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=display_id)
                                 try:
                                     await _emit_task_result(
                                         lanlan_name,
@@ -1269,7 +1284,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             if not _suppress_reply:
                                 _lang = _rp_lang(None)
                                 try:
-                                    _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
+                                    display_id = _get_plugin_display_id(plugin_id)
+                                    _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=display_id)
                                     await _emit_task_result(
                                         lanlan_name,
                                         channel="user_plugin",
@@ -2078,10 +2094,11 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     if not res.success:
                         info["error"] = (detail or str(res.error or ""))[:500]
                     _lang = _rp_lang(None)
+                    display_id = _get_plugin_display_id(plugin_id)
                     if res.success:
-                        summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
+                        summary = _rp_phrase('plugin_done_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=display_id)
                     else:
-                        summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
+                        summary = _rp_phrase('plugin_failed_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=display_id)
                     await _emit_task_result(
                         lanlan_name,
                         channel="user_plugin",

@@ -1,7 +1,7 @@
 """
-N.E.K.O Channel for CoPaw
+N.E.K.O Channel for NekoClaw
 
-CoPaw 自定义渠道，用于接收来自 N.E.K.O 插件的消息。
+NekoClaw 自定义渠道，用于接收来自 N.E.K.O 插件的消息。
 
 安装方法：
 1. 将此文件复制到 ~/.copaw/custom_channels/neko_channel.py
@@ -16,7 +16,7 @@ CoPaw 自定义渠道，用于接收来自 N.E.K.O 插件的消息。
      }
    }
 
-3. 重启 CoPaw 服务
+3. 重启运行时服务
 """
 
 from __future__ import annotations
@@ -54,7 +54,8 @@ class NekoChannel(BaseChannel):
         enabled: bool = True,
         bot_prefix: str = "",
         host: str = "0.0.0.0",
-        port: int = 8088,
+        port: int = 8089,
+        reply_timeout: float = 300.0,
         **kwargs,
     ):
         super().__init__(process, on_reply_sent=kwargs.get("on_reply_sent"))
@@ -62,6 +63,7 @@ class NekoChannel(BaseChannel):
         self.bot_prefix = bot_prefix
         self.host = host
         self.port = port
+        self.reply_timeout = reply_timeout
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -74,7 +76,8 @@ class NekoChannel(BaseChannel):
             enabled=getattr(config, "enabled", True),
             bot_prefix=getattr(config, "bot_prefix", ""),
             host=getattr(config, "host", "0.0.0.0"),
-            port=getattr(config, "port", 8088),
+            port=getattr(config, "port", 8089),
+            reply_timeout=float(getattr(config, "reply_timeout", 300.0)),
             on_reply_sent=on_reply_sent,
         )
 
@@ -85,7 +88,8 @@ class NekoChannel(BaseChannel):
             process=process,
             enabled=os.getenv("NEKO_CHANNEL_ENABLED", "true").lower() == "true",
             host=os.getenv("NEKO_CHANNEL_HOST", "0.0.0.0"),
-            port=int(os.getenv("NEKO_CHANNEL_PORT", "8088")),
+            port=int(os.getenv("NEKO_CHANNEL_PORT", "8089")),
+            reply_timeout=float(os.getenv("NEKO_CHANNEL_REPLY_TIMEOUT", "300")),
             on_reply_sent=on_reply_sent,
         )
 
@@ -169,20 +173,19 @@ class NekoChannel(BaseChannel):
         meta = meta or {}
         request_id = meta.get("request_id")
 
+        # 优先用 request_id 匹配，其次用 to_handle（sender_id）作为后备
+        key = None
         if request_id and request_id in self._pending_replies:
-            future = self._pending_replies[request_id]
+            key = request_id
+        elif to_handle and to_handle in self._pending_replies:
+            key = to_handle
+
+        if key is not None:
+            future = self._pending_replies[key]
             if not future.done():
                 future.set_result(text)
-
-        # 如果有 webhook URL，可以在这里发送
-        webhook_url = meta.get("webhook_url")
-        if webhook_url:
-            try:
-                import httpx
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    await client.post(webhook_url, json={"reply": text})
-            except Exception as e:
-                print(f"[NekoChannel] Webhook failed: {e}")
+        else:
+            print(f"[NekoChannel] send() called but no matching future: to_handle={to_handle} request_id={request_id} pending_keys={list(self._pending_replies.keys())}")
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         """健康检查端点"""
@@ -195,6 +198,16 @@ class NekoChannel(BaseChannel):
         except json.JSONDecodeError:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
+        reply_timeout = self.reply_timeout
+        try:
+            meta_obj = payload.get("meta") or {}
+            if isinstance(meta_obj, dict):
+                requested_timeout = float(meta_obj.get("reply_timeout", reply_timeout))
+                if requested_timeout > 0:
+                    reply_timeout = requested_timeout
+        except (TypeError, ValueError):
+            pass
+
         # 生成请求 ID 用于追踪回复
         import uuid
         request_id = str(uuid.uuid4())[:8]
@@ -205,19 +218,23 @@ class NekoChannel(BaseChannel):
         payload["meta"] = meta
 
         # 创建 Future 用于等待回复
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future: asyncio.Future[str] = loop.create_future()
+        # 同时用 request_id 和 sender_id 注册，确保 send() 能匹配到
         self._pending_replies[request_id] = future
+        sender_id = payload.get("sender_id")
+        if sender_id:
+            self._pending_replies[sender_id] = future
 
         try:
             # 入队处理
             self._enqueue(payload)
 
-            # 等待回复（最多 60 秒）
+            # 等待回复（默认最多 300 秒，可由请求方通过 meta.reply_timeout 覆盖）
             try:
-                reply = await asyncio.wait_for(future, timeout=60.0)
+                reply = await asyncio.wait_for(future, timeout=reply_timeout)
             except asyncio.TimeoutError:
-                reply = "[超时：CoPaw 未在规定时间内响应]"
+                reply = "[超时：NekoClaw 未在规定时间内响应]"
 
             return web.json_response({
                 "reply": self.bot_prefix + reply if self.bot_prefix else reply,
@@ -228,3 +245,5 @@ class NekoChannel(BaseChannel):
 
         finally:
             self._pending_replies.pop(request_id, None)
+            if sender_id:
+                self._pending_replies.pop(sender_id, None)

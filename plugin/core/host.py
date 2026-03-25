@@ -916,7 +916,12 @@ def _plugin_process_runner(
             finally:
                 wd.cancel()
 
-        def _resolve_timeout(entry_id: str):
+        def _resolve_timeout(entry_id: str, requested_timeout: Any = None):
+            try:
+                explicit_timeout = float(requested_timeout)
+                return None if explicit_timeout <= 0 else explicit_timeout
+            except (TypeError, ValueError):
+                pass
             entry_meta = entry_meta_map.get(entry_id)
             if entry_meta:
                 timeout_value = getattr(entry_meta, "timeout", None)
@@ -1010,7 +1015,7 @@ def _plugin_process_runner(
                     ret["error"] = f"Entry '{entry_id}' must be 'async def'. Sync entries are not supported."
                     return
 
-                timeout_seconds = _resolve_timeout(entry_id)
+                timeout_seconds = _resolve_timeout(entry_id, msg.get("timeout"))
 
                 with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
                     result = await _run_with_watchdog(
@@ -1038,8 +1043,9 @@ def _plugin_process_runner(
             except asyncio.CancelledError:
                 ret["error"] = "Execution cancelled"
             except asyncio.TimeoutError:
-                logger.error("Entry '{}' timed out after {}s", entry_id, _resolve_timeout(entry_id))
-                ret["error"] = f"Execution timed out after {_resolve_timeout(entry_id)}s"
+                resolved_timeout = _resolve_timeout(entry_id, msg.get("timeout"))
+                logger.error("Entry '{}' timed out after {}s", entry_id, resolved_timeout)
+                ret["error"] = f"Execution timed out after {resolved_timeout}s"
             except PluginError as e:
                 logger.warning("Plugin error executing '{}': {}", entry_id, e)
                 ret["error"] = str(e)
