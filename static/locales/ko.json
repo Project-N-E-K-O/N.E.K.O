@@ -1076,9 +1076,9 @@
     },
     "voice": {
         "title": "음성 등록",
-        "alibabaApiRequired": "⚠️ 이 기능을 사용하려면 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Assist API 또는 로컬 음성 서버를 구성하세요.",
-        "minimaxApiRequired": "⚠️ 이 기능에는 MiniMax 모델(중국 내수)이 필요합니다. API 키 설정에서 MiniMax API 키를 구성하세요.",
-        "minimaxIntlApiRequired": "⚠️ 이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax API 키(국제판)를 구성하세요.",
+        "alibabaApiRequired": "⚠️ 이 기능에는 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Bailian API 키를 저장하세요 (Assist API 활성화 불필요). 또는 로컬 음성 서버를 구성하세요.",
+        "minimaxApiRequired": "⚠️ 이 기능에는 MiniMax 모델(중국 내수)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
+        "minimaxIntlApiRequired": "⚠️ 이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",

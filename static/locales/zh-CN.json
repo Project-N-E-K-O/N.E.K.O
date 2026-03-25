@@ -1076,9 +1076,9 @@
     },
     "voice": {
         "title": "音色注册",
-        "alibabaApiRequired": "⚠️ 此功能需要CosyVoice模型，请在API密钥设置页中配置阿里辅助API或本地语音服务器",
-        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（国服），请在API密钥设置页中配置MiniMax API Key",
-        "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（国际服），请在API密钥设置页中配置MiniMax API Key（国际服）",
+        "alibabaApiRequired": "⚠️ 此功能需要阿里CosyVoice模型，请在API密钥设置页中保存阿里百炼API Key（不要求启用辅助API）或配置本地语音服务器",
+        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（国服），请在API密钥设置页中保存MiniMax API Key（不要求启用辅助API）",
+        "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（国际服），请在API密钥设置页中保存MiniMax国际服API Key（不要求启用辅助API）",
         "providerLabel": "语音克隆服务商",
         "provider": {
             "cosyvoice": "阿里云 CosyVoice",

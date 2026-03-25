@@ -243,16 +243,14 @@ if (window.i18n && window.i18n.isInitialized) {
         const span = noticeDiv.querySelector('span');
         if (!span) return;
 
-        if (provider === 'minimax') {
-            span.textContent = window.t ? window.t('voice.minimaxApiRequired') : '⚠️ 此功能需要MiniMax模型，请在API密钥设置页中配置MiniMax API Key';
-            span.setAttribute('data-i18n', 'voice.minimaxApiRequired');
-        } else if (provider === 'minimax_intl') {
-            span.textContent = window.t ? window.t('voice.minimaxIntlApiRequired') : '⚠️ 此功能需要MiniMax国际服模型，请在API密钥设置页中配置MiniMax API Key（国际服）';
-            span.setAttribute('data-i18n', 'voice.minimaxIntlApiRequired');
-        } else {
-            span.textContent = window.t ? window.t('voice.alibabaApiRequired') : '⚠️ 此功能需要CosyVoice模型，请在API密钥设置页中配置阿里辅助API或本地语音服务器';
-            span.setAttribute('data-i18n', 'voice.alibabaApiRequired');
-        }
+        const keyMap = {
+            'minimax': 'voice.minimaxApiRequired',
+            'minimax_intl': 'voice.minimaxIntlApiRequired',
+        };
+        const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
+        const fallback = '⚠️ 此功能只支持特定语音模型，请在API密钥设置页中保存对应API Key（不要求启用辅助API）或配置本地语音服务器';
+        span.textContent = window.t ? window.t(i18nKey) : fallback;
+        span.setAttribute('data-i18n', i18nKey);
     }
 
     providerSelect.addEventListener('change', updateNotice);

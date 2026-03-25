@@ -1076,9 +1076,9 @@
     },
     "voice": {
         "title": "音色注冊",
-        "alibabaApiRequired": "⚠️ 此功能需要CosyVoice模型，請在API密鑰設置頁中配置阿里輔助API或本地語音服務器",
-        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（國內版），請在API密鑰設定頁中配置MiniMax API Key",
-        "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（國際版），請在API密鑰設定頁中配置MiniMax API Key（國際版）",
+        "alibabaApiRequired": "⚠️ 此功能需要阿里CosyVoice模型，請在API密鑰設定頁中保存阿里百煉API Key（不要求啟用輔助API）或配置本地語音伺服器",
+        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（國內版），請在API密鑰設定頁中保存MiniMax API Key（不要求啟用輔助API）",
+        "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（國際版），請在API密鑰設定頁中保存MiniMax國際版API Key（不要求啟用輔助API）",
         "providerLabel": "語音複製服務商",
         "provider": {
             "cosyvoice": "阿里雲 CosyVoice",
