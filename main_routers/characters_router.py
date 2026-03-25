@@ -2257,16 +2257,16 @@ async def voice_clone(
                       注意：这是参考音频的语言，不是目标语音的语言
         provider: 服务商，可选值：cosyvoice (阿里云), minimax (国服), minimax_intl (国际服)
     """
-    # 直接读取到内存
+    # 流式读取上传文件（带大小限制）并增量计算 MD5
     try:
-        file_content = await file.read()
-        file_buffer = io.BytesIO(file_content)
+        file_buffer = await _read_limited_stream(file, MAX_UPLOAD_SIZE)
+    except _UploadTooLargeError as e:
+        return JSONResponse({'error': str(e)}, status_code=413)
     except Exception as e:
         logger.error(f"读取文件到内存失败: {e}")
         return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
-    
-    # 计算参考音频的 MD5，用于去重
-    audio_md5 = hashlib.md5(file_content).hexdigest()
+
+    audio_md5 = hashlib.md5(file_buffer.getvalue()).hexdigest()
     
     # 提前规范化 provider 和 ref_language
     provider = provider.lower().strip() if provider else 'cosyvoice'

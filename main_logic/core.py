@@ -801,7 +801,11 @@ class LLMSessionManager:
 
         根据 voice_id / core_api_type 选择 worker，解析 api_key，
         创建新的 request/response Queue 并启动 daemon 线程。
+        调用前/后 tts_ready 被重置为 False，新 worker 需重新发送 __ready__。
         """
+        # 重置就绪状态，新 worker 需重新握手
+        self.tts_ready = False
+
         has_custom = self._has_custom_tts()
         tts_worker, api_key_override = get_tts_worker(
             core_api_type=self.core_api_type,

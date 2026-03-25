@@ -1878,7 +1878,10 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                     break
 
                 if sid == "__interrupt__":
-                    sid = None
+                    # 打断：丢弃已累积文本，不调用 TTS API
+                    text_buffer = []
+                    current_speech_id = None
+                    continue
 
                 if current_speech_id != sid and sid is not None:
                     current_speech_id = sid
