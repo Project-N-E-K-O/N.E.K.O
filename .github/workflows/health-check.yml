@@ -6,8 +6,12 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch: # 允许手动触发
 
+# 仅在主仓库的 main 分支上运行
+run-name: Health Check
+
 jobs:
   health-check:
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       # ── 检查 lanlan.app (海外节点) ──
@@ -15,17 +19,16 @@ jobs:
         id: check_app
         run: |
           HTTP_CODE=$(curl -s -o /tmp/resp_app.json -w "%{http_code}" \
-            --max-time 15 --connect-timeout 5 \
+            --max-time 30 --connect-timeout 10 \
             -X POST "https://lanlan.app/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
-            -d '{"model":"free-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
+            -d '{"model":"free-model","messages":[{"role":"user","content":"ok"}],"max_tokens":5,"max_completion_tokens":5}' \
             2>/dev/null || echo "000")
           BODY=$(cat /tmp/resp_app.json 2>/dev/null || echo "{}")
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            # 验证返回了有效的 choices
             HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
             if [ -n "$HAS_CHOICES" ]; then
               echo "healthy=true" >> "$GITHUB_OUTPUT"
@@ -41,11 +44,11 @@ jobs:
         id: check_tech
         run: |
           HTTP_CODE=$(curl -s -o /tmp/resp_tech.json -w "%{http_code}" \
-            --max-time 15 --connect-timeout 5 \
+            --max-time 30 --connect-timeout 10 \
             -X POST "https://lanlan.tech/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
-            -d '{"model":"free-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
+            -d '{"model":"free-model","messages":[{"role":"user","content":"ok"}],"max_tokens":5,"max_completion_tokens":5}' \
             2>/dev/null || echo "000")
           BODY=$(cat /tmp/resp_tech.json 2>/dev/null || echo "{}")
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
@@ -61,8 +64,9 @@ jobs:
             echo "healthy=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── 推送结果到 Discord ──
+      # ── 推送结果到 Discord（仅当 secret 存在时） ──
       - name: Send Discord notification
+        if: env.DISCORD_WEBHOOK_URL != ''
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_HEALTH_WEBHOOK_URL }}
         run: |
@@ -85,15 +89,15 @@ jobs:
           fi
 
           if [ "$APP_HEALTHY" = "true" ]; then
-            APP_STATUS="OK (HTTP $APP_CODE)"
+            APP_STATUS="✅ OK (HTTP $APP_CODE)"
           else
-            APP_STATUS="DOWN (HTTP $APP_CODE)"
+            APP_STATUS="❌ DOWN (HTTP $APP_CODE)"
           fi
 
           if [ "$TECH_HEALTHY" = "true" ]; then
-            TECH_STATUS="OK (HTTP $TECH_CODE)"
+            TECH_STATUS="✅ OK (HTTP $TECH_CODE)"
           else
-            TECH_STATUS="DOWN (HTTP $TECH_CODE)"
+            TECH_STATUS="❌ DOWN (HTTP $TECH_CODE)"
           fi
 
           # 只在有故障时 @everyone
