@@ -2374,67 +2374,84 @@ async def voice_clone(
                 'error': f'本地 TTS 注册失败: {str(e)}'
             }, status_code=500)
     
-    # ==================== MiniMax TTS 注册流程（国服 / 国际服） ====================
-    if provider in ('minimax', 'minimax_intl'):
-        core_config = _config_manager.get_core_config()
-        minimax_api_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
-        if not minimax_api_key:
-            minimax_api_key = (MINIMAX_INTL_API_KEY or '').strip() if provider == 'minimax_intl' else (MINIMAX_API_KEY or '').strip()
+    # ==================== 云端语音克隆：按 provider 对偶分支 ====================
 
-        if not minimax_api_key:
-            logger.error("未配置 MiniMax API Key (ASSIST_API_KEY_MINIMAX)")
+    if provider in ('minimax', 'minimax_intl'):
+        # ---------- MiniMax（国服 / 国际服）----------
+        core_config = _config_manager.get_core_config()
+        api_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+        if not api_key:
+            api_key = (MINIMAX_INTL_API_KEY or '').strip() if provider == 'minimax_intl' else (MINIMAX_API_KEY or '').strip()
+        if not api_key:
             return JSONResponse({
                 'error': 'MINIMAX_API_KEY_MISSING',
                 'code': 'MINIMAX_API_KEY_MISSING',
-                'message': '未配置 MiniMax API Key，请先在设置中填写 MiniMax API Key'
+                'message': '未配置 MiniMax API Key，请先在设置中填写'
             }, status_code=400)
-
-        # 根据 provider 决定 base URL 和存储前缀
-        minimax_base_url = get_minimax_base_url(provider)
-        storage_prefix = get_minimax_storage_prefix(provider)
-        minimax_storage_key = f'{storage_prefix}{minimax_api_key[-8:]}'
+        base_url = get_minimax_base_url(provider)
+        storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
         provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
 
-        # MD5 去重
-        existing = _config_manager.find_voice_by_audio_md5(minimax_storage_key, audio_md5, ref_language)
-        if existing:
-            voice_id, voice_data = existing
-            logger.info(f"{provider_label} TTS 音频 MD5 命中，复用 voice_id: {voice_id}")
+    elif provider == 'cosyvoice':
+        # ---------- 阿里云 CosyVoice ----------
+        tts_config_for_dedup = _config_manager.get_model_api_config('tts_custom')
+        api_key = (tts_config_for_dedup.get('api_key') or '').strip()
+        if not api_key:
             return JSONResponse({
-                'voice_id': voice_id,
-                'message': f'已复用现有{provider_label}音色，跳过上传',
-                'reused': True,
-                'provider': provider
-            })
+                'error': 'TTS_AUDIO_API_KEY_MISSING',
+                'code': 'TTS_AUDIO_API_KEY_MISSING'
+            }, status_code=400)
+        base_url = None  # CosyVoice 使用 DashScope SDK，不需要 base_url
+        storage_key = api_key
+        provider_label = '阿里云CosyVoice'
 
-        minimax_lang = minimax_normalize_language(ref_language)
+    else:
+        return JSONResponse({'error': f'不支持的 provider: {provider}'}, status_code=400)
 
-        try:
-            # 规范化音频（复用现有校验与转换）
-            normalized_buffer, normalized_filename, audio_meta = await asyncio.to_thread(
-                normalize_voice_clone_api_audio,
-                file_buffer,
-                file.filename or 'prompt_audio.wav',
-            )
-            logger.info(
-                "%s 语音克隆参考音频已规范化: %sHz/%sch -> %sHz/mono",
-                provider_label,
-                audio_meta['original']['sample_rate'],
-                audio_meta['original']['channels'],
-                audio_meta['normalized']['sample_rate'],
-            )
+    # ---------- 公共流程：MD5 去重 ----------
+    existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+    if existing:
+        voice_id, voice_data = existing
+        logger.info(f"{provider_label} 音频 MD5 命中，复用 voice_id: {voice_id}")
+        return JSONResponse({
+            'voice_id': voice_id,
+            'message': f'已复用现有{provider_label}音色，跳过上传',
+            'reused': True,
+            'provider': provider
+        })
 
-            # 调用 MiniMax 2 步克隆流程: upload → create_voice
-            minimax_client = MinimaxVoiceCloneClient(api_key=minimax_api_key, base_url=minimax_base_url)
-            voice_id = await minimax_client.clone_voice(
+    # ---------- 公共流程：音频规范化 ----------
+    try:
+        if provider == 'cosyvoice':
+            mime_type, error_msg = validate_audio_file(file_buffer, file.filename)
+            if not mime_type:
+                return JSONResponse({'error': error_msg}, status_code=400)
+        normalized_buffer, normalized_filename, audio_meta = await asyncio.to_thread(
+            normalize_voice_clone_api_audio,
+            file_buffer,
+            file.filename or 'prompt_audio.wav',
+        )
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    logger.info(
+        "%s 语音克隆参考音频已规范化: %sHz/%sch -> %sHz/mono",
+        provider_label,
+        audio_meta['original']['sample_rate'],
+        audio_meta['original']['channels'],
+        audio_meta['normalized']['sample_rate'],
+    )
+
+    # ---------- 按 provider 调用对应克隆 API ----------
+    try:
+        if provider in ('minimax', 'minimax_intl'):
+            minimax_lang = minimax_normalize_language(ref_language)
+            client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
+            voice_id = await client.clone_voice(
                 audio_buffer=normalized_buffer,
                 filename=normalized_filename,
                 prefix=prefix,
                 language=minimax_lang,
             )
-
-            logger.info(f"{provider_label} 音色注册成功，voice_id: {voice_id}")
-
             voice_data = {
                 'voice_id': voice_id,
                 'prefix': prefix,
@@ -2442,170 +2459,64 @@ async def voice_clone(
                 'ref_language': ref_language,
                 'minimax_language': minimax_lang,
                 'provider': provider,
-                'minimax_base_url': minimax_base_url,
+                'minimax_base_url': base_url,
                 'created_at': datetime.now().isoformat()
             }
 
-            try:
-                _config_manager.save_voice_for_api_key(minimax_storage_key, voice_id, voice_data)
-                logger.info(f"{provider_label} voice_id 已保存到音色库: {voice_id}")
-            except Exception as save_error:
-                logger.error(f"保存 {provider_label} voice_id 到音色库失败: {save_error}")
-                # 远程音色已创建成功，返回 200 并附带警告，避免因本地保存失败导致孤儿音色
-                return JSONResponse({
-                    'voice_id': voice_id,
-                    'message': f'{provider_label}音色注册成功，但本地保存失败（音色仍可用）: {str(save_error)}',
-                    'provider': provider,
-                    'local_save_failed': True,
-                })
-
-            return JSONResponse({
-                'voice_id': voice_id,
-                'message': f'{provider_label}音色注册成功并已保存到音色库',
-                'provider': provider
-            })
-
-        except MinimaxVoiceCloneError as e:
-            logger.error(f"{provider_label} 音色注册失败: {e}")
-            return JSONResponse({
-                'error': f'{provider_label}音色注册失败: {str(e)}',
-                'provider': provider
-            }, status_code=500)
-        except ValueError as e:
-            return JSONResponse({'error': str(e)}, status_code=400)
-        except Exception as e:
-            logger.error(f"{provider_label} 音色注册时发生错误: {e}")
-            return JSONResponse({
-                'error': f'{provider_label}音色注册失败: {str(e)}',
-                'provider': provider
-            }, status_code=500)
-
-    # ==================== 阿里云 CosyVoice TTS 注册流程（默认） ====================
-
-    tts_config_for_dedup = _config_manager.get_model_api_config('tts_custom')
-    audio_api_key = tts_config_for_dedup.get('api_key', '')
-
-    # MD5 去重
-    if audio_api_key:
-        existing = _config_manager.find_voice_by_audio_md5(audio_api_key, audio_md5, ref_language)
-        if existing:
-            voice_id, voice_data = existing
-            logger.info(f"阿里云 TTS 音频 MD5 命中，复用 voice_id: {voice_id}")
-            return JSONResponse({
-                'voice_id': voice_id,
-                'message': '已复用现有音色，跳过上传',
-                'reused': True
-            })
-
-    if not audio_api_key:
-        logger.error("未配置 AUDIO_API_KEY")
-        return JSONResponse({
-            'error': 'TTS_AUDIO_API_KEY_MISSING',
-            'code': 'TTS_AUDIO_API_KEY_MISSING'
-        }, status_code=400)
-
-    language_hints = qwen_language_hints(ref_language)
-    logger.info(f"参考音频语言（阿里云）: {ref_language}, language_hints: {language_hints}")
-
-    try:
-        # 1. 验证音频文件
-        mime_type, error_msg = validate_audio_file(file_buffer, file.filename)
-        if not mime_type:
-            return JSONResponse({'error': error_msg}, status_code=400)
-
-        # 2. 规范化音频
-        try:
-            normalized_buffer, normalized_filename, audio_meta = await asyncio.to_thread(
-                normalize_voice_clone_api_audio,
-                file_buffer,
-                file.filename or 'prompt_audio.wav',
+        else:  # cosyvoice
+            language_hints = qwen_language_hints(ref_language)
+            client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
+            voice_id, tmp_url, request_id = await client.clone_voice(
+                audio_buffer=normalized_buffer,
+                filename=normalized_filename,
+                prefix=prefix,
+                language_hints=language_hints,
             )
-        except ValueError as e:
-            return JSONResponse({'error': str(e)}, status_code=400)
-        logger.info(
-            "语音克隆API参考音频已重采样: %sHz/%s声道 -> %sHz/mono",
-            audio_meta['original']['sample_rate'],
-            audio_meta['original']['channels'],
-            audio_meta['normalized']['sample_rate'],
-        )
-
-        # 3. 调用 QwenVoiceCloneClient 完成上传 + 注册
-        qwen_client = QwenVoiceCloneClient(api_key=audio_api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
-        voice_id, tmp_url, request_id = await qwen_client.clone_voice(
-            audio_buffer=normalized_buffer,
-            filename=normalized_filename,
-            prefix=prefix,
-            language_hints=language_hints,
-        )
-
-        logger.info(f"CosyVoice 音色注册成功，voice_id: {voice_id}")
-
-        voice_data = {
-            'voice_id': voice_id,
-            'prefix': prefix,
-            'file_url': tmp_url,
-            'audio_md5': audio_md5,
-            'ref_language': ref_language,
-            'provider': 'cosyvoice',
-            'created_at': datetime.now().isoformat()
-        }
-
-        try:
-            _config_manager.save_voice_for_api_key(audio_api_key, voice_id, voice_data)
-            logger.info(f"voice_id已保存到音色库: {voice_id}")
-
-            # 验证保存结果
-            await asyncio.sleep(0.1)
-            validation_success = False
-            for validation_attempt in range(3):
-                if _config_manager.validate_voice_id_for_api_key(audio_api_key, voice_id):
-                    validation_success = True
-                    logger.info(f"voice_id保存验证成功: {voice_id} (尝试 {validation_attempt + 1})")
-                    break
-                if validation_attempt < 2:
-                    await asyncio.sleep(0.1)
-
-            if not validation_success:
-                logger.warning(f"voice_id保存后验证失败，但可能已成功保存: {voice_id}")
-
-        except Exception as save_error:
-            logger.error(f"保存voice_id到音色库失败: {save_error}")
-            return JSONResponse({
-                'message': '音色注册成功，但本地保存失败，请重试保存',
-                'local_save_failed': True,
-                'error': str(save_error),
+            voice_data = {
                 'voice_id': voice_id,
-                'file_url': tmp_url
-            }, status_code=200)
+                'prefix': prefix,
+                'file_url': tmp_url,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'cosyvoice',
+                'created_at': datetime.now().isoformat()
+            }
 
-        return JSONResponse({
-            'voice_id': voice_id,
-            'request_id': request_id,
-            'file_url': tmp_url,
-            'message': '音色注册成功并已保存到音色库'
-        })
+        logger.info(f"{provider_label} 音色注册成功，voice_id: {voice_id}")
 
-    except QwenVoiceCloneError as e:
-        logger.error(f"CosyVoice 音色注册失败: {e}")
+    except (MinimaxVoiceCloneError, QwenVoiceCloneError) as e:
+        logger.error(f"{provider_label} 音色注册失败: {e}")
         error_detail = str(e)
-        tmp_url = getattr(e, 'file_url', '未获取到URL')
         if '超时' in error_detail:
-            return JSONResponse({
-                'error': error_detail,
-                'suggestion': '请检查您的网络连接，或稍后再试。如果问题持续，可能是服务器繁忙。'
-            }, status_code=408)
+            return JSONResponse({'error': error_detail, 'provider': provider}, status_code=408)
         elif '下载' in error_detail:
-            return JSONResponse({
-                'error': error_detail,
-                'suggestion': '请检查文件URL是否可访问，或稍后重试'
-            }, status_code=415)
-        else:
-            return JSONResponse({'error': f'音色注册失败: {error_detail}'}, status_code=500)
+            return JSONResponse({'error': error_detail, 'provider': provider}, status_code=415)
+        return JSONResponse({'error': f'{provider_label}音色注册失败: {error_detail}', 'provider': provider}, status_code=500)
     except ValueError as e:
         return JSONResponse({'error': str(e)}, status_code=400)
     except Exception as e:
-        logger.error(f"注册音色时发生未预期的错误: {str(e)}")
-        return JSONResponse({'error': f'注册音色时发生错误: {str(e)}'}, status_code=500)
+        logger.error(f"{provider_label} 音色注册时发生错误: {e}")
+        return JSONResponse({'error': f'{provider_label}音色注册失败: {str(e)}', 'provider': provider}, status_code=500)
+
+    # ---------- 公共流程：保存到本地音色库 ----------
+    try:
+        _config_manager.save_voice_for_api_key(storage_key, voice_id, voice_data)
+        logger.info(f"{provider_label} voice_id 已保存到音色库: {voice_id}")
+    except Exception as save_error:
+        logger.error(f"保存 {provider_label} voice_id 到音色库失败: {save_error}")
+        return JSONResponse({
+            'voice_id': voice_id,
+            'message': f'{provider_label}音色注册成功，但本地保存失败',
+            'local_save_failed': True,
+            'error': str(save_error),
+            'provider': provider,
+        }, status_code=200)
+
+    return JSONResponse({
+        'voice_id': voice_id,
+        'message': f'{provider_label}音色注册成功并已保存到音色库',
+        'provider': provider,
+    })
     
 @router.get('/character-card/list')
 async def get_character_cards():

@@ -233,7 +233,7 @@ if (window.i18n && window.i18n.isInitialized) {
 })();
 
 // 服务商切换时更新提示横幅
-(function initProviderSwitch() {
+document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     const providerSelect = document.getElementById('voiceProvider');
     const noticeDiv = document.getElementById('provider-notice');
     if (!providerSelect || !noticeDiv) return;
@@ -248,15 +248,16 @@ if (window.i18n && window.i18n.isInitialized) {
             'minimax_intl': 'voice.minimaxIntlApiRequired',
         };
         const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
-        const fallback = '⚠️ 此功能只支持特定语音模型，请在API密钥设置页中保存对应API Key（不要求启用辅助API）或配置本地语音服务器';
-        span.textContent = window.t ? window.t(i18nKey) : fallback;
         span.setAttribute('data-i18n', i18nKey);
+        if (window.t) {
+            span.textContent = window.t(i18nKey);
+        }
+        // 若 window.t 不可用，保留 HTML 中的原始文本，不覆盖
     }
 
     providerSelect.addEventListener('change', updateNotice);
-    // 初始化时也执行一次
     updateNotice();
-})();
+});
 
 function setFormDisabled(disabled) {
     const audioFile = document.getElementById('audioFile');
