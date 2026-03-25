@@ -202,13 +202,19 @@ class NekoChannel(BaseChannel):
         except json.JSONDecodeError:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
-        reply_timeout = self.reply_timeout
+        reply_timeout: float | None = self.reply_timeout
         try:
             meta_obj = payload.get("meta") or {}
             if isinstance(meta_obj, dict):
-                requested_timeout = float(meta_obj.get("reply_timeout", reply_timeout))
-                if requested_timeout > 0:
-                    reply_timeout = requested_timeout
+                requested_timeout_raw = meta_obj.get("reply_timeout", reply_timeout)
+                if requested_timeout_raw is None:
+                    reply_timeout = None
+                else:
+                    requested_timeout = float(requested_timeout_raw)
+                    if requested_timeout <= 0:
+                        reply_timeout = None
+                    else:
+                        reply_timeout = requested_timeout
         except (TypeError, ValueError):
             pass
 

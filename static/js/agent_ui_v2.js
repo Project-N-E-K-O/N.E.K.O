@@ -97,21 +97,19 @@
     async function refreshNekoclawAvailability() {
         try {
             const r = await fetch('/api/agent/nekoclaw/availability');
-            let ready = false;
-            let reason = '';
-            if (r.ok) {
-                const payload = await r.json();
-                ready = !!payload.ready;
-                reason = Array.isArray(payload.reasons) ? String(payload.reasons[0] || '') : '';
-            } else {
-                reason = `status ${r.status}`;
+            if (!r.ok) {
+                state.nekoclawReady = null;
+                state.nekoclawReason = `status ${r.status}`;
+                if (state.snapshot) render('nekoclaw-refresh-error');
+                return false;
             }
-            state.nekoclawReady = ready;
-            state.nekoclawReason = reason;
+            const payload = await r.json();
+            state.nekoclawReady = !!payload.ready;
+            state.nekoclawReason = Array.isArray(payload.reasons) ? String(payload.reasons[0] || '') : '';
             if (state.snapshot) render('nekoclaw-refresh');
-            return ready;
+            return state.nekoclawReady;
         } catch (e) {
-            state.nekoclawReady = false;
+            state.nekoclawReady = null;
             state.nekoclawReason = String(e && e.message ? e.message : e || '');
             if (state.snapshot) render('nekoclaw-refresh-error');
             return false;
@@ -184,7 +182,7 @@
                 m.checked = false;
             });
             sync(master);
-            [keyboard, browser, userPlugin, openfang].forEach(list => {
+            [keyboard, browser, userPlugin, openfang, nekoclaw].forEach(list => {
                 list.forEach(cb => {
                     cb.disabled = true;
                     cb.checked = false;

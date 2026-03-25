@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from plugin.server.runs import trigger_service as module
+from plugin.sdk.shared.core.events import EventMeta
 
 
 class _Host:
@@ -28,7 +29,12 @@ async def test_execute_trigger_treats_metadata_timeout_zero_as_no_timeout(
 ) -> None:
     host = _Host()
     handler = SimpleNamespace(
-        meta=SimpleNamespace(event_type="plugin_entry", id="run", timeout=0),
+        meta=EventMeta(
+            event_type="plugin_entry",
+            id="run",
+            timeout=0,
+            metadata={"timeout": 0},
+        ),
     )
     monkeypatch.setattr(
         module.state,
@@ -55,7 +61,12 @@ async def test_execute_trigger_treats_ctx_timeout_zero_as_no_timeout(
 ) -> None:
     host = _Host()
     handler = SimpleNamespace(
-        meta=SimpleNamespace(event_type="plugin_entry", id="run", timeout=15),
+        meta=EventMeta(
+            event_type="plugin_entry",
+            id="run",
+            timeout=15,
+            metadata={"timeout": 15},
+        ),
     )
     monkeypatch.setattr(
         module.state,

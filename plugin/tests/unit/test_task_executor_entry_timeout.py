@@ -41,6 +41,20 @@ class _FakeAsyncClient:
         )
 
 
+class _AlwaysFailGetClient:
+    def __init__(self, *args, **kwargs) -> None:
+        return None
+
+    async def __aenter__(self) -> "_AlwaysFailGetClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    async def get(self, url: str):
+        raise RuntimeError("connection lost")
+
+
 @pytest.mark.asyncio
 async def test_execute_user_plugin_treats_entry_timeout_zero_as_no_timeout(
     monkeypatch: pytest.MonkeyPatch,
@@ -115,3 +129,17 @@ async def test_execute_user_plugin_honors_ctx_entry_timeout_zero_override(
     assert observed["timeout"] is None
     assert _FakeAsyncClient.last_post_json is not None
     assert _FakeAsyncClient.last_post_json["args"]["_ctx"]["entry_timeout"] == 0
+
+
+@pytest.mark.asyncio
+async def test_await_run_completion_stops_after_consecutive_transport_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = object.__new__(DirectTaskExecutor)
+    monkeypatch.setattr(task_executor_module.httpx, "AsyncClient", _AlwaysFailGetClient)
+
+    result = await executor._await_run_completion("run-err", timeout=None, poll_interval=0)
+
+    assert result["status"] == "failed"
+    assert result["success"] is False
+    assert "consecutive transport errors" in result["error"]

@@ -1389,7 +1389,14 @@ Return only the JSON object, nothing else.
                         if last_status in terminal:
                             break
                 except Exception as e:
-                    logger.debug("[_await_run_completion] poll error: %s", e)
+                    _consecutive_errors += 1
+                    logger.warning(
+                        "[_await_run_completion] poll error for run %s (%d/%d): %s",
+                        run_id, _consecutive_errors, _MAX_CONSECUTIVE_ERRORS, e,
+                    )
+                    if _consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                        return {"status": "failed", "success": False, "data": None,
+                                "error": f"Run {run_id} polling failed ({_consecutive_errors} consecutive transport errors)"}
                 sleep_for = poll_interval if remaining is None else min(poll_interval, remaining)
                 await asyncio.sleep(sleep_for)
 

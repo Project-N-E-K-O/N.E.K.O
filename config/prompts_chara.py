@@ -127,12 +127,18 @@ def _build_lanlan_prompt(lang: str) -> str:
 # ============================================================================
 
 _ALL_DEFAULTS = {lang: _build_lanlan_prompt(lang) for lang in _L10N}
+_DEFAULT_SKILLS_LINES = {
+    line.strip()
+    for prompt_text in _ALL_DEFAULTS.values()
+    for line in prompt_text.splitlines()
+    if line.strip().startswith("- Skills: ")
+}
 
 
 def _strip_optional_skills_line(prompt_text: str) -> str:
     """Backward compatibility for prompts saved before the optional Skills line existed."""
     lines = prompt_text.splitlines()
-    filtered = [line for line in lines if line.strip() != "- Skills: {_skills}" and not line.strip().startswith("- Skills: ")]
+    filtered = [line for line in lines if line.strip() not in _DEFAULT_SKILLS_LINES]
     return "\n".join(filtered).strip()
 
 

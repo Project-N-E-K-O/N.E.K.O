@@ -1240,6 +1240,17 @@
             () => ++userPluginOperationSeq
         );
 
+        // NekoClaw uses its own availability check, but still maps to the
+        // existing user_plugin_enabled backend flag in legacy fallback mode.
+        setupSubCheckbox(
+            agentNekoclawCheckbox,
+            'nekoclaw',
+            'user_plugin_enabled',
+            'nekoclawConnect',
+            () => nekoclawOperationSeq,
+            () => ++nekoclawOperationSeq
+        );
+
         // ----------------------------------------------------------------
         // openAgentStatusPopupWhenEnabled
         // ----------------------------------------------------------------
