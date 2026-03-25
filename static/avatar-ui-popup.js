@@ -473,14 +473,10 @@ function createSidePanelMenuItem(manager, prefix, item) {
         color: 'var(--neko-popup-text, #333)'
     });
 
-    const resolvedLabel = (item.labelKey && typeof window.t === 'function')
-        ? window.t(item.labelKey)
-        : (item.label || '');
-
     if (item.icon) {
         const iconImg = document.createElement('img');
         iconImg.src = item.icon;
-        iconImg.alt = resolvedLabel;
+        iconImg.alt = item.label || '';
         Object.assign(iconImg.style, {
             width: '16px',
             height: '16px',
@@ -491,7 +487,7 @@ function createSidePanelMenuItem(manager, prefix, item) {
     }
 
     const labelText = document.createElement('span');
-    labelText.textContent = resolvedLabel;
+    labelText.textContent = item.label || '';
     if (item.labelKey) {
         labelText.setAttribute('data-i18n', item.labelKey);
     }
