@@ -8,14 +8,15 @@ on:
 
 jobs:
   health-check:
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      # ── 检查 lanlan.app (海外节点) ──
+      # ── 检查 lanlan.app (US) ──
       - name: Check lanlan.app
         id: check_app
         run: |
           HTTP_CODE=$(curl -s -o /tmp/resp_app.json -w "%{http_code}" \
-            --max-time 15 --connect-timeout 5 \
+            --max-time 30 --connect-timeout 10 \
             -X POST "https://lanlan.app/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
@@ -25,7 +26,6 @@ jobs:
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            # 验证返回了有效的 choices
             HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
             if [ -n "$HAS_CHOICES" ]; then
               echo "healthy=true" >> "$GITHUB_OUTPUT"
@@ -36,12 +36,12 @@ jobs:
             echo "healthy=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── 检查 lanlan.tech (国内节点) ──
+      # ── 检查 lanlan.tech (China) ──
       - name: Check lanlan.tech
         id: check_tech
         run: |
           HTTP_CODE=$(curl -s -o /tmp/resp_tech.json -w "%{http_code}" \
-            --max-time 15 --connect-timeout 5 \
+            --max-time 30 --connect-timeout 10 \
             -X POST "https://lanlan.tech/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
@@ -61,10 +61,11 @@ jobs:
             echo "healthy=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── 推送结果到 Discord ──
+      # ── 推送结果到 Discord（仅当 secret 存在时） ──
       - name: Send Discord notification
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_HEALTH_WEBHOOK_URL }}
+        if: env.DISCORD_WEBHOOK_URL != ''
         run: |
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -86,14 +87,18 @@ jobs:
 
           if [ "$APP_HEALTHY" = "true" ]; then
             APP_STATUS="OK (HTTP $APP_CODE)"
+            APP_EMOJI=":white_check_mark:"
           else
             APP_STATUS="DOWN (HTTP $APP_CODE)"
+            APP_EMOJI=":x:"
           fi
 
           if [ "$TECH_HEALTHY" = "true" ]; then
             TECH_STATUS="OK (HTTP $TECH_CODE)"
+            TECH_EMOJI=":white_check_mark:"
           else
             TECH_STATUS="DOWN (HTTP $TECH_CODE)"
+            TECH_EMOJI=":x:"
           fi
 
           # 只在有故障时 @everyone
@@ -106,17 +111,17 @@ jobs:
             --arg content "$CONTENT" \
             --arg title "$TITLE" \
             --argjson color "$COLOR" \
-            --arg app_status "$APP_STATUS" \
-            --arg tech_status "$TECH_STATUS" \
+            --arg app_status "$APP_EMOJI $APP_STATUS" \
+            --arg tech_status "$TECH_EMOJI $TECH_STATUS" \
             --arg timestamp "$TIMESTAMP" \
             '{
-              content: $content,
+              content: (if $content == "" then null else $content end),
               embeds: [{
                 title: $title,
                 color: $color,
                 fields: [
-                  {name: "lanlan.app (overseas)", value: $app_status, inline: true},
-                  {name: "lanlan.tech (mainland)", value: $tech_status, inline: true}
+                  {name: "lanlan.app (US)", value: $app_status, inline: true},
+                  {name: "lanlan.tech (China)", value: $tech_status, inline: true}
                 ],
                 footer: {text: "N.E.K.O Health Monitor"},
                 timestamp: $timestamp
