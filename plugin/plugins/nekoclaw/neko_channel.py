@@ -243,15 +243,12 @@ class NekoChannel(BaseChannel):
         payload["session_id"] = session_id
 
         reply_timeout: float | None = self.reply_timeout
-        try:
-            meta_obj = meta
-            if isinstance(meta_obj, dict):
-                reply_timeout = self.parse_reply_timeout(
-                    meta_obj.get("reply_timeout", reply_timeout),
-                    default=reply_timeout,
-                )
-        except Exception:
-            pass
+        meta_obj = meta
+        if isinstance(meta_obj, dict):
+            reply_timeout = self.parse_reply_timeout(
+                meta_obj.get("reply_timeout", reply_timeout),
+                default=reply_timeout,
+            )
 
         # 生成请求 ID 用于追踪回复
         import uuid
