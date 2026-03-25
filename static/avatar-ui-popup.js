@@ -487,7 +487,7 @@ function createSidePanelMenuItem(manager, prefix, item) {
     }
 
     const labelText = document.createElement('span');
-    labelText.textContent = item.label || '';
+    labelText.textContent = (item.labelKey && window.t) ? window.t(item.labelKey) : (item.label || '');
     if (item.labelKey) {
         labelText.setAttribute('data-i18n', item.labelKey);
     }
@@ -601,7 +601,7 @@ function createSettingsLinkItem(manager, prefix, item, popup) {
     }
 
     const labelSpan = document.createElement('span');
-    labelSpan.textContent = item.label || '';
+    labelSpan.textContent = (item.labelKey && window.t) ? window.t(item.labelKey) : (item.label || '');
     if (item.labelKey) {
         labelSpan.setAttribute('data-i18n', item.labelKey);
     }
@@ -1642,7 +1642,7 @@ const AvatarPopupMixin = {
             }
 
             const labelText = document.createElement('span');
-            labelText.textContent = item.label;
+            labelText.textContent = (item.labelKey && window.t) ? window.t(item.labelKey) : (item.label || '');
             if (item.labelKey) labelText.setAttribute('data-i18n', item.labelKey);
             Object.assign(labelText.style, {
                 display: 'flex',
