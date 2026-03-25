@@ -271,9 +271,11 @@
 
         // NekoClaw toggle mirrors user_plugin_enabled (same underlying flag)
         if (nekoclaw.length) {
-            const ready = typeof state.nekoclawReady === 'boolean'
+            const channelReady = typeof state.nekoclawReady === 'boolean'
                 ? state.nekoclawReady
                 : capabilityReady(snap, 'user_plugin_enabled');
+            const userReady = capabilityReady(snap, 'user_plugin_enabled');
+            const ready = channelReady && userReady;
             const reason = state.nekoclawReason || capabilityReason(snap, 'user_plugin_enabled');
             const canUse = effectiveAnalyzerEnabled && ready;
             const nekoclawName = window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw';
@@ -430,8 +432,9 @@
                 const value = !!e.target.checked;
                 const nekoclawName = window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw';
                 if (value) {
-                    const available = await refreshNekoclawAvailability();
-                    if (!available) {
+                    const channelReady = await refreshNekoclawAvailability();
+                    const userReady = state.snapshot ? capabilityReady(state.snapshot, 'user_plugin_enabled') : true;
+                    if (!(channelReady && userReady)) {
                         state.suppressChange = true;
                         nekoclaw.forEach(c => { c.checked = false; });
                         state.suppressChange = false;

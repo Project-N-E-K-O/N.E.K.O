@@ -128,7 +128,7 @@ async def test_execute_user_plugin_honors_ctx_entry_timeout_zero_override(
     assert result.success is True
     assert observed["timeout"] is None
     assert _FakeAsyncClient.last_post_json is not None
-    assert _FakeAsyncClient.last_post_json["args"]["_ctx"]["entry_timeout"] == 0
+    assert _FakeAsyncClient.last_post_json["args"]["_ctx"]["entry_timeout"] is None
 
 
 @pytest.mark.asyncio

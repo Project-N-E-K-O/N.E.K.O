@@ -42,3 +42,11 @@ def test_get_nekoclaw_channel_url_prefers_plugin_config(monkeypatch) -> None:
 def test_get_nekoclaw_channel_url_falls_back_to_default(monkeypatch) -> None:
     monkeypatch.setattr(agent_router_module, "load_plugin_config", lambda *args, **kwargs: {})
     assert agent_router_module._get_nekoclaw_channel_url() == agent_router_module.DEFAULT_NEKOCLAW_CHANNEL_URL
+
+
+def test_get_nekoclaw_channel_url_handles_load_exception(monkeypatch) -> None:
+    def _boom(*args, **kwargs):
+        raise RuntimeError("load failed")
+
+    monkeypatch.setattr(agent_router_module, "load_plugin_config", _boom)
+    assert agent_router_module._get_nekoclaw_channel_url() == agent_router_module.DEFAULT_NEKOCLAW_CHANNEL_URL

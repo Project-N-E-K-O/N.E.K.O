@@ -49,6 +49,16 @@ class NekoChannel(BaseChannel):
 
     channel: ChannelType = "neko"
 
+    @staticmethod
+    def parse_reply_timeout(value: object, default: float | None = 300.0) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else None
+
     def __init__(
         self,
         process,
@@ -56,7 +66,7 @@ class NekoChannel(BaseChannel):
         bot_prefix: str = "",
         host: str = "127.0.0.1",
         port: int = 8089,
-        reply_timeout: float = 300.0,
+        reply_timeout: float | None = 300.0,
         **kwargs,
     ):
         super().__init__(process, on_reply_sent=kwargs.get("on_reply_sent"))
@@ -79,7 +89,7 @@ class NekoChannel(BaseChannel):
             bot_prefix=getattr(config, "bot_prefix", ""),
             host=getattr(config, "host", "127.0.0.1"),
             port=getattr(config, "port", 8089),
-            reply_timeout=float(getattr(config, "reply_timeout", 300.0)),
+            reply_timeout=cls.parse_reply_timeout(getattr(config, "reply_timeout", 300.0)),
             on_reply_sent=on_reply_sent,
         )
 
@@ -91,7 +101,7 @@ class NekoChannel(BaseChannel):
             enabled=os.getenv("NEKO_CHANNEL_ENABLED", "true").lower() == "true",
             host=os.getenv("NEKO_CHANNEL_HOST", "127.0.0.1"),
             port=int(os.getenv("NEKO_CHANNEL_PORT", "8089")),
-            reply_timeout=float(os.getenv("NEKO_CHANNEL_REPLY_TIMEOUT", "300")),
+            reply_timeout=cls.parse_reply_timeout(os.getenv("NEKO_CHANNEL_REPLY_TIMEOUT", "300")),
             on_reply_sent=on_reply_sent,
         )
 
@@ -201,21 +211,20 @@ class NekoChannel(BaseChannel):
             payload = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "Invalid payload: expected object"}, status=400)
+        if "meta" in payload and payload.get("meta") is not None and not isinstance(payload.get("meta"), dict):
+            return web.json_response({"error": "Invalid meta: expected object"}, status=400)
 
         reply_timeout: float | None = self.reply_timeout
         try:
             meta_obj = payload.get("meta") or {}
             if isinstance(meta_obj, dict):
-                requested_timeout_raw = meta_obj.get("reply_timeout", reply_timeout)
-                if requested_timeout_raw is None:
-                    reply_timeout = None
-                else:
-                    requested_timeout = float(requested_timeout_raw)
-                    if requested_timeout <= 0:
-                        reply_timeout = None
-                    else:
-                        reply_timeout = requested_timeout
-        except (TypeError, ValueError):
+                reply_timeout = self.parse_reply_timeout(
+                    meta_obj.get("reply_timeout", reply_timeout),
+                    default=reply_timeout,
+                )
+        except Exception:
             pass
 
         # 生成请求 ID 用于追踪回复

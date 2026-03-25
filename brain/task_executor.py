@@ -1185,8 +1185,7 @@ Return only the JSON object, nothing else.
                     ctx_obj["conversation_id"] = conversation_id
                 entry_timeout = _resolve_plugin_entry_timeout(plugin_meta, plugin_entry_id)
                 effective_entry_timeout = _resolve_ctx_entry_timeout(ctx_obj, entry_timeout)
-                if "entry_timeout" not in ctx_obj:
-                    ctx_obj["entry_timeout"] = entry_timeout
+                ctx_obj["entry_timeout"] = effective_entry_timeout
                 if ctx_obj:
                     safe_args["_ctx"] = ctx_obj
             except Exception as e:
