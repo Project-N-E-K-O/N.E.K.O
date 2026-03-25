@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>米家插件配置</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 600px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        .qr-area { text-align: center; margin: 20px 0; }
+        .qr-img { max-width: 200px; border: 1px solid #ccc; padding: 10px; background: white; }
+        .status { margin: 10px 0; padding: 10px; border-radius: 4px; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        button { margin-top: 10px; padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button.logout { background: #dc3545; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>米家智能家居配置</h2>
+    <div id="status" class="status info">正在检查登录状态...</div>
+
+    <div id="login-area" style="display: none;">
+        <div class="qr-area">
+            <p>请使用米家APP扫描以下二维码登录：</p>
+            <img id="qr-code" class="qr-img" src="" alt="二维码加载中...">
+            <p id="qr-status"></p>
+        </div>
+        <div>
+            <button id="refresh-qr">刷新二维码</button>
+        </div>
+    </div>
+
+    <div id="logout-area" style="display: none;">
+        <p>当前已登录，用户ID: <span id="user-id"></span></p>
+        <button id="logout-btn" class="logout">登出</button>
+    </div>
+</div>
+
+<script>
+    let pollingInterval = null;
+    let currentLoginUrl = null;
+
+    const statusDiv = document.getElementById('status');
+    const loginArea = document.getElementById('login-area');
+    const logoutArea = document.getElementById('logout-area');
+    const qrImg = document.getElementById('qr-code');
+    const qrStatus = document.getElementById('qr-status');
+    const refreshBtn = document.getElementById('refresh-qr');
+    const logoutBtn = document.getElementById('logout-btn');
+    const userIdSpan = document.getElementById('user-id');
+
+    async function callEntry(entryId, args = {}) {
+        const response = await fetch('/plugin/trigger', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ plugin_id: 'mijia', entry_id: entryId, args: args })
+        });
+        const data = await response.json();
+        if (data.ok) return data.value;
+        throw new Error(data.error?.message || '未知错误');
+    }
+
+    async function checkLoginStatus() {
+        try {
+            const result = await callEntry('list_homes', {});
+            if (result && result.homes !== undefined) {
+                statusDiv.className = 'status success';
+                statusDiv.innerHTML = '✅ 已登录，米家服务可用';
+                loginArea.style.display = 'none';
+                logoutArea.style.display = 'block';
+                userIdSpan.innerText = '已登录';
+                return true;
+            } else {
+                statusDiv.className = 'status error';
+                statusDiv.innerHTML = '❌ 未登录，请扫码登录';
+                loginArea.style.display = 'block';
+                logoutArea.style.display = 'none';
+                return false;
+            }
+        } catch(e) {
+            statusDiv.className = 'status error';
+            statusDiv.innerHTML = `❌ 检查登录状态失败: ${e.message}`;
+            loginArea.style.display = 'block';
+            logoutArea.style.display = 'none';
+            return false;
+        }
+    }
+
+    async function startLogin() {
+        try {
+            qrStatus.innerText = '正在获取二维码...';
+            const result = await callEntry('start_qrcode_login', {});
+            if (result && result.qr_url) {
+                qrImg.src = result.qr_url;
+                currentLoginUrl = result.login_url;
+                qrStatus.innerText = '请使用米家APP扫码';
+                if (pollingInterval) clearInterval(pollingInterval);
+                pollingInterval = setInterval(async () => {
+                    try {
+                        const pollResult = await callEntry('check_login_status', { login_url: currentLoginUrl });
+                        if (pollResult && pollResult.success) {
+                            clearInterval(pollingInterval);
+                            pollingInterval = null;
+                            qrStatus.innerText = '登录成功！';
+                            await checkLoginStatus();
+                        } else if (pollResult && pollResult.message === '登录超时或未扫码') {
+                            // 继续等待
+                        }
+                    } catch(e) {
+                        console.error('轮询出错', e);
+                    }
+                }, 3000);
+            } else {
+                qrStatus.innerText = '获取二维码失败';
+            }
+        } catch(e) {
+            qrStatus.innerText = `错误: ${e.message}`;
+        }
+    }
+
+    async function refreshQR() {
+        if (pollingInterval) clearInterval(pollingInterval);
+        startLogin();
+    }
+
+    async function logout() {
+        if (confirm('确定要登出并删除本地凭据吗？')) {
+            try {
+                await callEntry('logout', {});
+                await checkLoginStatus();
+                alert('已登出');
+            } catch(e) {
+                alert('登出失败: ' + e.message);
+            }
+        }
+    }
+
+    (async () => {
+        const loggedIn = await checkLoginStatus();
+        if (!loggedIn) startLogin();
+        refreshBtn.onclick = refreshQR;
+        logoutBtn.onclick = logout;
+    })();
+</script>
+</body>
+</html>

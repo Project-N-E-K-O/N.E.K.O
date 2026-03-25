@@ -1,8 +1,0 @@
-{
-  "username": "",
-  "password": "",
-  "enableQR": true,
-  "log_level": "DEBUG",
-  "auto_connect": false,
-  "device_cache_ttl": 300
-}

@@ -49,6 +49,7 @@ dependencies = [
   "neteasecloudmusic>=0.1.10",
   "tornado>=6.5.4",
   "jmespath>=1.1.0",
+  "mijiaapi>=3.0.5",
 ]
 
 
