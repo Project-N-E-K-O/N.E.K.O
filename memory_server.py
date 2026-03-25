@@ -49,7 +49,12 @@ def validate_lanlan_name(name: str) -> str:
     name = name.strip()
     if not name or len(name) > 50:
         raise HTTPException(status_code=400, detail="Invalid lanlan_name length")
-    if not re.match(r"^[\w\-\s]+$", name):
+    # 支持：字母、数字、下划线、连字符、空白、中日韩文字、括号
+    # 与 characters_router.py / memory_router.py 的规则保持一致
+    if not re.match(r"^[\w\-\s\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af()（）]+$", name):
+        raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
+    # 禁止路径遍历
+    if '/' in name or '\\' in name or '..' in name:
         raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
     return name
 
