@@ -1190,11 +1190,13 @@ class LLMSessionManager:
 
                 # MiniMax 音色：通过 voice_data 的 provider 字段判断
                 _minimax_base_url2 = None
+                from main_logic.tts_client import _get_voice_meta
                 _voice_meta2 = _get_voice_meta(self.voice_id or '') if self.voice_id else None
                 if _voice_meta2 and _voice_meta2.get('provider', '').startswith('minimax'):
                     minimax_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
                     if minimax_key:
                         tts_config = dict(tts_config, api_key=minimax_key)
+                    from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
                     _minimax_base_url2 = _voice_meta2.get('minimax_base_url') or (
                         MINIMAX_INTL_BASE_URL if _voice_meta2['provider'] == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
                     )

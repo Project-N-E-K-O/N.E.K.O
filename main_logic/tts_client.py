@@ -1922,6 +1922,7 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                                     else:
                                         audio_hex = result.get('data', {}).get('audio', '')
                                         if audio_hex:
+                                            _record_tts_telemetry("minimax", full_text)
                                             import binascii
                                             pcm_bytes = binascii.unhexlify(audio_hex)
                                             # MiniMax 返回 PCM 24kHz 16bit mono → 重采样到 48kHz

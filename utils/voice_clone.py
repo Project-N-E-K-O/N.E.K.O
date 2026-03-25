@@ -370,10 +370,10 @@ class QwenVoiceCloneClient:
 
                 try:
                     data = resp.json()
-                except ValueError:
+                except ValueError as e:
                     raise QwenVoiceCloneError(
                         f'上传成功但响应格式无法解析: {resp.text[:200]}'
-                    )
+                    ) from e
 
                 logger.info("tfLink原始响应: %s", data)
 
