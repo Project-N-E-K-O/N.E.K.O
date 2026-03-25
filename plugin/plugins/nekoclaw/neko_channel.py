@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import deque
 from typing import Any, Dict, List, Optional
 
@@ -33,6 +34,8 @@ from agentscope_runtime.engine.schemas.agent_schemas import (
     AudioContent,
     FileContent,
     ContentType,
+    MessageType,
+    RunStatus,
 )
 from copaw.app.channels.base import BaseChannel
 from copaw.app.channels.schema import ChannelType
@@ -42,6 +45,18 @@ try:
     HAS_AIOHTTP = True
 except ImportError:
     HAS_AIOHTTP = False
+
+
+logger = logging.getLogger(__name__)
+
+_TOOL_MESSAGE_TYPES = {
+    MessageType.FUNCTION_CALL,
+    MessageType.PLUGIN_CALL,
+    MessageType.MCP_TOOL_CALL,
+    MessageType.FUNCTION_CALL_OUTPUT,
+    MessageType.PLUGIN_CALL_OUTPUT,
+    MessageType.MCP_TOOL_CALL_OUTPUT,
+}
 
 
 class NekoChannel(BaseChannel):
@@ -78,9 +93,18 @@ class NekoChannel(BaseChannel):
         host: str = "127.0.0.1",
         port: int = 8089,
         reply_timeout: float | None = 300.0,
+        show_tool_details: bool = True,
+        filter_tool_messages: bool = False,
+        filter_thinking: bool = False,
         **kwargs,
     ):
-        super().__init__(process, on_reply_sent=kwargs.get("on_reply_sent"))
+        super().__init__(
+            process,
+            on_reply_sent=kwargs.get("on_reply_sent"),
+            show_tool_details=show_tool_details,
+            filter_tool_messages=filter_tool_messages,
+            filter_thinking=filter_thinking,
+        )
         self.enabled = enabled
         self.bot_prefix = bot_prefix
         self.host = host
@@ -91,9 +115,19 @@ class NekoChannel(BaseChannel):
         self._site: Optional[web.TCPSite] = None
         self._pending_replies: Dict[str, asyncio.Future] = {}
         self._pending_sender_replies: Dict[str, deque[asyncio.Future]] = {}
+        self._pending_reply_texts: Dict[str, List[tuple[str, str | None]]] = {}
 
     @classmethod
-    def from_config(cls, process, config, on_reply_sent=None, show_tool_details=True):
+    def from_config(
+        cls,
+        process,
+        config,
+        on_reply_sent=None,
+        show_tool_details=True,
+        filter_tool_messages=False,
+        filter_thinking=False,
+        **_,
+    ):
         return cls(
             process=process,
             enabled=getattr(config, "enabled", True),
@@ -101,11 +135,14 @@ class NekoChannel(BaseChannel):
             host=getattr(config, "host", "127.0.0.1"),
             port=getattr(config, "port", 8089),
             reply_timeout=cls.parse_reply_timeout(getattr(config, "reply_timeout", 300.0)),
+            show_tool_details=show_tool_details,
+            filter_tool_messages=filter_tool_messages,
+            filter_thinking=filter_thinking,
             on_reply_sent=on_reply_sent,
         )
 
     @classmethod
-    def from_env(cls, process, on_reply_sent=None):
+    def from_env(cls, process, on_reply_sent=None, **kwargs):
         import os
         return cls(
             process=process,
@@ -113,8 +150,38 @@ class NekoChannel(BaseChannel):
             host=os.getenv("NEKO_CHANNEL_HOST", "127.0.0.1"),
             port=int(os.getenv("NEKO_CHANNEL_PORT", "8089")),
             reply_timeout=cls.parse_reply_timeout(os.getenv("NEKO_CHANNEL_REPLY_TIMEOUT", "300")),
+            show_tool_details=kwargs.get("show_tool_details", True),
+            filter_tool_messages=kwargs.get("filter_tool_messages", False),
+            filter_thinking=kwargs.get("filter_thinking", False),
             on_reply_sent=on_reply_sent,
         )
+
+    def _record_pending_reply(
+        self,
+        request_id: str | None,
+        text: str,
+        message_type: str | None,
+    ) -> None:
+        if not request_id:
+            return
+        normalized = text.strip()
+        if not normalized:
+            return
+        entries = self._pending_reply_texts.setdefault(request_id, [])
+        if entries and entries[-1] == (normalized, message_type):
+            return
+        entries.append((normalized, message_type))
+
+    def _compose_pending_reply(self, request_id: str | None) -> str:
+        if not request_id:
+            return ""
+        entries = self._pending_reply_texts.get(request_id) or []
+        if not entries:
+            return ""
+        for text, message_type in reversed(entries):
+            if message_type not in _TOOL_MESSAGE_TYPES:
+                return text
+        return entries[-1][0]
 
     def build_agent_request_from_native(self, native_payload):
         """将 N.E.K.O 消息转换为 AgentRequest"""
@@ -199,25 +266,84 @@ class NekoChannel(BaseChannel):
         print("[NekoChannel] HTTP server stopped")
 
     async def send(self, to_handle, text, meta=None):
-        """发送回复（存储到 pending replies）"""
+        """缓存回复，等整轮运行结束后再统一返回 HTTP 响应。"""
         meta = meta or {}
         request_id = meta.get("request_id")
-
-        future = None
-        if request_id:
-            future = self._pending_replies.get(request_id)
-        elif to_handle:
+        if not request_id and to_handle:
             queue = self._pending_sender_replies.get(to_handle)
             while queue and queue[0].done():
                 queue.popleft()
-            if queue:
-                future = queue[0]
+        self._record_pending_reply(
+            request_id,
+            text,
+            meta.get("_message_type"),
+        )
 
-        if future is not None:
-            if not future.done():
-                future.set_result(text)
-        else:
-            print(f"[NekoChannel] send() called but no matching future: to_handle={to_handle} request_id={request_id} pending_request_ids={list(self._pending_replies.keys())}")
+    async def on_event_message_completed(
+        self,
+        request,
+        to_handle,
+        event,
+        send_meta,
+    ) -> None:
+        event_meta = dict(send_meta or {})
+        event_meta["_message_type"] = getattr(event, "type", None)
+        await self.send_message_content(to_handle, event, event_meta)
+
+    async def _run_process_loop(
+        self,
+        request,
+        to_handle,
+        send_meta,
+    ) -> None:
+        request_id = (send_meta or {}).get("request_id")
+        last_response = None
+        try:
+            async for event in self._process(request):
+                obj = getattr(event, "object", None)
+                status = getattr(event, "status", None)
+                if obj == "message" and status == RunStatus.Completed:
+                    await self.on_event_message_completed(
+                        request,
+                        to_handle,
+                        event,
+                        send_meta,
+                    )
+                elif obj == "response":
+                    last_response = event
+                    await self.on_event_response(request, event)
+
+            err_msg = self._get_response_error_message(last_response)
+            if err_msg:
+                await self._on_consume_error(
+                    request,
+                    to_handle,
+                    f"Error: {err_msg}",
+                )
+
+            final_reply = self._compose_pending_reply(request_id)
+            if not final_reply:
+                final_reply = "[NekoClaw 已完成，但没有返回可显示的文本结果]"
+            future = self._pending_replies.get(request_id) if request_id else None
+            if future is not None and not future.done():
+                future.set_result(final_reply)
+
+            if self._on_reply_sent:
+                args = self.get_on_reply_sent_args(request, to_handle)
+                self._on_reply_sent(self.channel, *args)
+        except Exception:
+            logger.exception("NekoChannel consume_one failed")
+            await self._on_consume_error(
+                request,
+                to_handle,
+                "An error occurred while processing your request.",
+            )
+            final_reply = self._compose_pending_reply(request_id)
+            if not final_reply:
+                final_reply = "An error occurred while processing your request."
+            future = self._pending_replies.get(request_id) if request_id else None
+            if future is not None and not future.done():
+                future.set_result(final_reply)
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         """健康检查端点"""
@@ -283,6 +409,7 @@ class NekoChannel(BaseChannel):
 
         finally:
             self._pending_replies.pop(request_id, None)
+            self._pending_reply_texts.pop(request_id, None)
             queue = self._pending_sender_replies.get(sender_id)
             if queue:
                 filtered_queue = deque(

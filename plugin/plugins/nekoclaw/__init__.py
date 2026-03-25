@@ -3,6 +3,9 @@ NekoClaw Plugin
 
 N.E.K.O 的 NekoClaw 能力插件。
 负责把用户任务转发给本地或远端 NekoClaw 服务，并将回复结果回传给插件调用方。
+这是一个同步委托插件：只有在收到 NekoClaw 的最终 `reply` 后，本次插件调用才算完成。
+如果判断需要调用本插件，NEKO 不应先向用户宣称“已完成”“已经交给 NekoClaw 处理”或类似中间态结论，
+而应等待插件返回实际结果后，再基于返回内容向用户作答。
 
 使用说明：
 1. 在 N.E.K.O 的插件配置中提供 `nekoclaw` 配置段，例如：
@@ -145,6 +148,20 @@ class NekoclawPlugin(NekoPluginBase):
         except Exception as e:
             raise SdkError(f"NekoClaw 连接失败: {e}")
 
+    def _extract_reply(self, result: Dict[str, Any]) -> str:
+        """
+        从 NekoClaw 返回结果中提取最终回复。
+
+        约束：
+        - 只有包含非空 `reply` 的结果才视为成功完成
+        - 若服务端尚未给出最终文本，则返回错误，避免上层把“已调用插件”误当成“已完成任务”
+        """
+        reply_obj = result.get("reply")
+        reply = reply_obj.strip() if isinstance(reply_obj, str) else ""
+        if reply:
+            return reply
+        raise SdkError("NekoClaw 尚未返回最终结果")
+
     @plugin_entry(
         id="chat",
         name="委托NekoClaw处理任务",
@@ -152,6 +169,9 @@ class NekoclawPlugin(NekoPluginBase):
             "将用户的需求或请求交由 NekoClaw 执行，并将处理结果返回给 NEKO 转述给用户。"
             "适用场景：用户有需要实际执行的任务、需要调用外部工具或服务、希望获取额外能力（如搜索、操作、分析）的请求。"
             "只要用户有具体的任务意图，即应调用此插件。NekoClaw 会自主处理后返回结果，NEKO 再用自己的语气转述给用户。"
+            "这是同步调用：调用后必须等待插件返回 `reply` 才能回答用户。"
+            "不要在调用后立刻告诉用户“已完成”“已经交给 NekoClaw 处理”“正在处理完成中”等中间态结论；"
+            "只有收到插件返回的最终结果后，才能向用户确认执行结果。"
             "支持会话上下文，可指定 sender_id 区分不同用户。"
         ),
         input_schema={
@@ -199,7 +219,7 @@ class NekoclawPlugin(NekoPluginBase):
                 sender_id=sender_id,
                 session_id=session_id,
             )
-            reply = result.get("reply", "")
+            reply = self._extract_reply(result)
             return Ok({
                 "reply": reply,
                 "sender_id": result.get("sender_id"),
@@ -217,6 +237,8 @@ class NekoclawPlugin(NekoPluginBase):
         description=(
             "向 NekoClaw 发送文本和图片消息并获取回复。"
             "图片可通过 URL 或本地文件路径提供。"
+            "这是同步调用：必须等待 NekoClaw 返回最终 `reply` 后，NEKO 才能回答用户。"
+            "禁止把“已经发给 NekoClaw”当成最终答复返回给用户。"
         ),
         input_schema={
             "type": "object",
@@ -293,7 +315,7 @@ class NekoclawPlugin(NekoPluginBase):
                 session_id=session_id,
                 attachments=attachments if attachments else None,
             )
-            reply = result.get("reply", "")
+            reply = self._extract_reply(result)
             return Ok({
                 "reply": reply,
                 "sender_id": result.get("sender_id"),
@@ -312,6 +334,8 @@ class NekoclawPlugin(NekoPluginBase):
         description=(
             "向 NekoClaw 发送包含多种媒体类型的消息。"
             "支持文本、图片、视频、音频、文件附件。"
+            "这是同步调用：NEKO 必须等待插件返回最终 `reply`，不能先向用户宣称任务已经完成。"
+            "只有收到 NekoClaw 的实际结果后，才能向用户反馈执行情况。"
         ),
         input_schema={
             "type": "object",
@@ -396,7 +420,7 @@ class NekoclawPlugin(NekoPluginBase):
                 session_id=session_id,
                 attachments=validated_attachments if validated_attachments else None,
             )
-            reply = result.get("reply", "")
+            reply = self._extract_reply(result)
             return Ok({
                 "reply": reply,
                 "sender_id": result.get("sender_id"),
