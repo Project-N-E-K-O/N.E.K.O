@@ -102,75 +102,14 @@ class MijiaAdapter:
                 error_msg = "Mijia configuration not loaded, please check config file or environment variables"
                 _LOGGER.error(error_msg)
                 raise ValueError(error_msg)
-
-            # 创建登录实例
-            login = LoginAPI()
-
-            auth_data = self._auth_manager.load()
-
-            if auth_data and self._auth_manager.validate(auth_data):
-                self._auth_data = auth_data
-                _LOGGER.info("Successfully loaded and validated authentication data from file")
-            else:
-                if auth_data:
-                    _LOGGER.warning("Cached authentication data is invalid, starting fresh login...")
-                    self._auth_manager.clear()
-                else:
-                    _LOGGER.info("No cached authentication data found, starting login...")
-
-                if self._config.enableQR:
-                    _LOGGER.info("Using QR code login mode")
-                    self._auth_data = login.QRlogin()  # 二维码登录
-                else:
-                    _LOGGER.info(f"Using username/password login: {self._config.username}")
-                    if not self._config.username or not self._config.password:
-                        error_msg = "Username or password is empty, please check configuration"
-                        _LOGGER.error(error_msg)
-                        raise ValueError(error_msg)
-
-                    # 用户名密码登录
-                    self._auth_data = login.login(self._config.username, self._config.password)
-
-                if self._auth_data:
-                    if self._auth_manager.save(self._auth_data):
-                        _LOGGER.info("Login successful, authentication data saved")
-                    else:
-                        _LOGGER.warning("Login successful, but failed to save authentication data")
-                else:
-                    error_msg = "Login failed, authentication data not obtained"
-                    _LOGGER.error(error_msg)
-                    raise RuntimeError(error_msg)
-
-            # 使用认证数据初始化 API - 添加调试信息
-            _LOGGER.info("Initializing Mijia API...")
-            _LOGGER.info(f"Auth data type: {type(self._auth_data)}")
-            if isinstance(self._auth_data, dict):
-                _LOGGER.info(f"Auth data keys: {list(self._auth_data.keys())}")
-
-            # 保存 auth_data 到文件，然后传入文件路径
-            try:
-                if isinstance(self._auth_data, dict):
-                    # 获取认证文件路径
-                    auth_file_path = self._auth_manager.get_file_path()
-                    _LOGGER.info(f"Using auth file: {auth_file_path}")
             
-                    # 确保文件存在（应该已经存在，因为登录时已保存）
-                    if not auth_file_path.exists():
-                        # 如果文件不存在，重新保存
-                        self._auth_manager.save(self._auth_data)
-                        _LOGGER.info(f"Auth file recreated: {auth_file_path}")
-            
-                    # 传入文件路径（字符串）而不是字典
-                    self._api = mijiaAPI(str(auth_file_path))
-                else:
-                    self._api = mijiaAPI(self._auth_data)
-            
-                _LOGGER.info("MijiaAPI initialized successfully with auth file")
-            
-            except Exception as e:
-                _LOGGER.error(f"Failed to initialize mijiaAPI: {e}")
-                _LOGGER.error(f"Auth file path: {self._auth_manager.get_file_path()}")
-                raise
+             # 获取认证文件路径
+            auth_file_path = self._auth_manager.get_file_path()
+            _LOGGER.info(f"Auth file path: {auth_file_path}")
+            self._api = mijiaAPI(str(auth_file_path))
+            _LOGGER.info("Calling login() - will show QR code if needed")
+            self._api.login()
+            _LOGGER.info("Login process completed")
 
             # 检查 API 是否可用
             if self._api.available:

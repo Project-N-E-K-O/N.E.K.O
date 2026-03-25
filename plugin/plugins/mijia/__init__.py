@@ -151,7 +151,7 @@ class MijiaPlugin(NekoPluginBase):
 
     async def _auto_connect(self) -> None:
         """自动连接"""
-        result = await self._connect()
+        result = await self.connect()
         if isinstance(result, Err):
             self.logger.error(f"自动连接失败: {result.error}")
 
@@ -197,11 +197,10 @@ class MijiaPlugin(NekoPluginBase):
         self.report_status({
             "status": "initialized",
             "connected": False,
-            "device_count": 0
+            "device_count": 0,
+            "adapter_ready": True,
+            "timestamp": datetime.now().isoformat()
         })
-
-        if self._config.get("auto_connect", False):
-            await self.auto.connect()
 
         self.push_message(
             source="mijia",
@@ -210,6 +209,9 @@ class MijiaPlugin(NekoPluginBase):
             priority=3,
             content="米家插件已启动"
         )
+            
+        if self._config.get("auto_connect", False):
+            await self.connect()
 
         return Ok({"status": "started"})
 
@@ -793,15 +795,27 @@ class MijiaPlugin(NekoPluginBase):
 
     @timer_interval(
         id="heartbeat",
-        seconds=60,
+        seconds=30,  # 改为 30 秒，更频繁地上报状态
         name="心跳",
         description="定期检查连接状态",
         auto_start=True
     )
     async def heartbeat(self, **_):
         """心跳任务"""
-        if self._connected and self._adapter:
-            try:
+        try:
+            status_data = {
+                "status": "connected" if self._connected else "disconnected",
+                "connected": self._connected,
+                "device_count": len(self._device_cache),
+                "last_discovery": self._last_discovery_time.isoformat() if self._last_discovery_time else None,
+                "adapter_ready": self._adapter is not None,
+                "timestamp": datetime.now().isoformat()
+            }
+
+            self.report_status(status_data)
+            self.logger.debug(f"状态上报: {status_data['status']}, 设备数: {status_data['device_count']}")
+        
+            if self._connected and self._adapter:
                 if hasattr(self._adapter, 'connected') and not self._adapter.connected:
                     self._connected = False
                     self.logger.warning("检测到连接已断开")
@@ -816,9 +830,20 @@ class MijiaPlugin(NekoPluginBase):
 
                     self.report_status({
                         "status": "disconnected",
-                        "connected": False
+                        "connected": False,
+                        "device_count": len(self._device_cache),
+                        "timestamp": datetime.now().isoformat()
                     })
-            except Exception as e:
-                self.logger.error(f"心跳检查失败: {e}")
+        except Exception as e:
+            self.logger.error(f"心跳检查失败: {e}")
+            try:
+                self.report_status({
+                    "status": "error",
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat()
+                })
+            except Exception:
+                pass
 
         return Ok({"checked": True})
+       

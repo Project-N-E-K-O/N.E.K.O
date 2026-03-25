@@ -61,7 +61,6 @@ def load_mijia_config(config_path: Optional[Path] = None) -> MijiaConfig:
             # 默认配置文件位置
             possible_paths = [
                 Path.cwd() / 'config' / 'mijia.json',
-                Path.home() / '.miot-mcp' / 'config.json',
                 Path(__file__).parent.parent / 'config' / 'mijia.json'
             ]
             
