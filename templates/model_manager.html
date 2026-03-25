@@ -118,9 +118,9 @@
 
         <!-- MMD动画选择 (Live3D模式) -->
         <div class="control-group" id="mmd-animation-group" style="display:none;">
-            <div class="action-group">
-                <div id="mmd-animation-select-wrapper" style="position: relative; display: flex; flex: 1;">
-                    <button id="mmd-animation-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.mmdAnimation.selectAnimation">
+            <div style="display: flex; gap: 0; align-items: center;">
+                <div id="mmd-animation-select-wrapper" style="position: relative;">
+                    <button id="mmd-animation-select-btn" class="btn btn-primary" type="button" data-i18n-title="live2d.mmdAnimation.selectAnimation">
                         <img src="/static/icons/motion_select_icon.png?v=1" data-i18n-alt="live2d.mmdAnimation.selectAnimation" class="mmd-animation-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
                         <span class="round-stroke-text" id="mmd-animation-select-text" data-i18n="live2d.mmdAnimation.selectAnimation" data-text="选择VMD动画">选择VMD动画</span>
                     </button>
@@ -131,6 +131,22 @@
                         <!-- 下拉菜单项将动态生成 -->
                     </div>
                 </div>
+                <button id="play-mmd-animation-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.mmdAnimation.play" data-i18n-aria-label="live2d.mmdAnimation.play">
+                    <img src="/static/icons/motion_play_icon.png?v=1" data-i18n-alt="live2d.mmdAnimation.play" class="mmd-animation-play-icon" style="height: 40px; width: auto; image-rendering: crisp-edges;">
+                </button>
+            </div>
+        </div>
+
+        <!-- MMD动画上传/删除按钮 (Live3D模式) -->
+        <div class="control-group" id="mmd-animation-actions-group" style="display:none;">
+            <div style="display: flex; gap: 0; align-items: center;">
+                <button id="upload-mmd-animation-btn" type="button" data-i18n-title="live2d.mmdAnimation.uploadAnimation">
+                    <img src="/static/icons/import_model_button_icon.png?v=1" data-i18n-alt="live2d.mmdAnimation.uploadAnimation" class="upload-mmd-animation-icon">
+                    <span class="round-stroke-text" id="upload-mmd-animation-text" data-i18n="live2d.mmdAnimation.uploadAnimation" data-text="导入VMD动画">导入VMD动画</span>
+                </button>
+                <button id="delete-mmd-animation-btn" data-i18n-title="live2d.mmdAnimation.deleteAnimation" data-i18n-aria-label="live2d.mmdAnimation.deleteAnimation">
+                    <img src="/static/icons/delete_model_button.png?v=1" data-i18n-alt="live2d.mmdAnimation.deleteAnimation">
+                </button>
             </div>
         </div>
 
@@ -367,48 +383,7 @@
         </div>
         </div>
 
-        <!-- VRM 鼠标跟踪设置 -->
-        <div class="control-group" id="vrm-cursor-follow-group">
-            <div class="vrm-lighting-wrapper">
-                <div class="vrm-lighting-header">
-                    <span class="vrm-lighting-header-text" data-i18n="vrm.cursorFollow.title">鼠标跟踪</span>
-                </div>
-                <div class="vrm-lighting-content">
-                    <div class="lighting-control">
-                        <label for="vrm-cursor-follow-preset" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.cursorFollow.preset">跟踪强度</label>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <select id="vrm-cursor-follow-preset" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
-                                <option value="none" data-i18n="vrm.cursorFollow.none">关闭</option>
-                                <option value="low" data-i18n="vrm.cursorFollow.low">低</option>
-                                <option value="medium" data-i18n="vrm.cursorFollow.medium">中</option>
-                                <option value="high" selected data-i18n="vrm.cursorFollow.high">高</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="lighting-control">
-                        <label for="vrm-eye-sensitivity-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.cursorFollow.eyeSensitivity">眼睛灵敏度</label>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <input type="range" id="vrm-eye-sensitivity-slider" min="10" max="50" step="1" value="30" style="flex: 1;">
-                            <span id="vrm-eye-sensitivity-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">30°</span>
-                        </div>
-                    </div>
-                    <div class="lighting-control">
-                        <label for="vrm-head-sensitivity-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.cursorFollow.headSensitivity">头部灵敏度</label>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <input type="range" id="vrm-head-sensitivity-slider" min="15" max="60" step="1" value="45" style="flex: 1;">
-                            <span id="vrm-head-sensitivity-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">45°</span>
-                        </div>
-                    </div>
-                    <div class="lighting-control">
-                        <label for="vrm-head-speed-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.cursorFollow.headSpeed">头部跟踪速度</label>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <input type="range" id="vrm-head-speed-slider" min="1.0" max="8.0" step="0.5" value="3.0" style="flex: 1;">
-                            <span id="vrm-head-speed-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">3.0</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+        <!-- VRM 鼠标跟踪已移至 popup-ui 统一控制 -->
 
         </div><!-- /vrm-settings-section -->
 
@@ -496,90 +471,26 @@
                                 <span id="mmd-outline-status" style="color: #2ecc71; font-size: 14px;">ON</span>
                             </div>
                         </div>
-                        <div class="lighting-control">
-                            <label for="mmd-pixel-ratio-select" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.rendering.pixelRatio">像素比例</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <select id="mmd-pixel-ratio-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #2ecc71;">
-                                    <option value="0" selected style="color: #2ecc71;">Auto (自动)</option>
-                                    <option value="1" style="color: #2ecc71;">1.0x</option>
-                                    <option value="1.5" style="color: #2ecc71;">1.5x</option>
-                                    <option value="2" style="color: #2ecc71;">2.0x</option>
-                                </select>
-                            </div>
-                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- MMD 物理设置 -->
-            <div class="control-group" id="mmd-physics-group">
-                <div class="vrm-lighting-wrapper mmd-lighting-wrapper">
-                    <div class="vrm-lighting-header mmd-lighting-header">
-                        <span class="vrm-lighting-header-text" data-i18n="mmd.physics.title">MMD物理设置</span>
-                    </div>
-                    <div class="vrm-lighting-content">
-                        <div class="lighting-control">
-                            <label style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.physics.enabled">物理模拟</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <label class="toggle-switch">
-                                    <input type="checkbox" id="mmd-physics-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </label>
-                                <span id="mmd-physics-status" style="color: #2ecc71; font-size: 14px;">ON</span>
-                            </div>
-                        </div>
-                        <div class="lighting-control">
-                            <label for="mmd-physics-strength-slider" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.physics.strength">拟真强度</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="mmd-physics-strength-slider" min="0.1" max="2.0" step="0.1" value="1.0" style="flex: 1;">
-                                <span id="mmd-physics-strength-value" style="min-width: 40px; color: #2ecc71; font-size: 14px; font-weight: 500;">1.0</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
 
-            <!-- MMD 鼠标跟踪设置 -->
-            <div class="control-group" id="mmd-cursor-follow-group">
-                <div class="vrm-lighting-wrapper mmd-lighting-wrapper">
-                    <div class="vrm-lighting-header mmd-lighting-header">
-                        <span class="vrm-lighting-header-text" data-i18n="mmd.cursorFollow.title">鼠标跟踪</span>
-                    </div>
-                    <div class="vrm-lighting-content">
-                        <div class="lighting-control">
-                            <label style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.cursorFollow.enabled">头部跟踪</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <label class="toggle-switch">
-                                    <input type="checkbox" id="mmd-cursor-follow-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </label>
-                                <span id="mmd-cursor-follow-status" style="color: #2ecc71; font-size: 14px;">ON</span>
-                            </div>
-                        </div>
-                        <div class="lighting-control">
-                            <label for="mmd-head-yaw-slider" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.cursorFollow.headYaw">左右转角范围</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="mmd-head-yaw-slider" min="10" max="50" step="1" value="30" style="flex: 1;">
-                                <span id="mmd-head-yaw-value" style="min-width: 40px; color: #2ecc71; font-size: 14px; font-weight: 500;">30°</span>
-                            </div>
-                        </div>
-                        <div class="lighting-control">
-                            <label for="mmd-head-pitch-slider" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.cursorFollow.headPitch">上下转角范围</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="mmd-head-pitch-slider" min="5" max="30" step="1" value="20" style="flex: 1;">
-                                <span id="mmd-head-pitch-value" style="min-width: 40px; color: #2ecc71; font-size: 14px; font-weight: 500;">20°</span>
-                            </div>
-                        </div>
-                        <div class="lighting-control">
-                            <label for="mmd-head-smooth-slider" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.cursorFollow.smoothSpeed">跟踪平滑度</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="mmd-head-smooth-slider" min="1.0" max="8.0" step="0.5" value="3.0" style="flex: 1;">
-                                <span id="mmd-head-smooth-value" style="min-width: 40px; color: #2ecc71; font-size: 14px; font-weight: 500;">3.0</span>
-                            </div>
+        <!-- MMD 待机动作选择 -->
+        <div class="control-group" id="mmd-idle-animation-group" style="display:none;">
+            <div class="mmd-idle-animation-wrapper">
+                <div class="mmd-idle-animation-content">
+                    <div class="lighting-control" id="mmd-idle-animation-control">
+                        <label for="mmd-idle-animation-select" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.idleAnimation.title">待机动作</label>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <select id="mmd-idle-animation-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #2ecc71;">
+                                <option value="" style="color: #2ecc71;" data-i18n="common.loading">加载中...</option>
+                            </select>
                         </div>
                     </div>
                 </div>
             </div>
+        </div>
 
         </div><!-- /mmd-settings-section -->
 
@@ -644,6 +555,25 @@
         </div>
     </div>
 
+    <div id="delete-mmd-animation-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; justify-content:center; align-items:center;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="live2d.mmdAnimation.deleteAnimationTitle">删除已导入VMD动画</h3>
+                <button class="modal-close" id="close-delete-mmd-animation-modal">&times;</button>
+            </div>
+            <div class="delete-warning" data-i18n="live2d.mmdAnimation.deleteAnimationWarning">
+                以下列出了所有已导入的用户VMD动画文件。选择要删除的动画文件。
+            </div>
+            <div class="model-list-container" id="mmd-user-animation-list">
+                <div class="empty-message" data-i18n="live2d.mmdAnimation.noUserAnimations">暂无可删除的用户VMD动画</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancel-delete-mmd-animation-btn" data-i18n="common.cancel">取消</button>
+                <button class="btn btn-danger" id="confirm-delete-mmd-animation-btn" data-i18n="live2d.mmdAnimation.deleteSelected" disabled>删除选中</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/libs/live2dcubismcore.min.js"></script>
     <script src="/static/libs/live2d.min.js"></script>
     <script src="/static/libs/pixi.min.js"></script>
@@ -672,7 +602,7 @@
             "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
             "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js",
             "@moeru/three-mmd": "/static/libs/three-mmd.module.js",
-            "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v=8",
+            "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v=23",
             "ammojs-typed": "/static/libs/ammojs-typed.module.js"
         }
     }

@@ -393,7 +393,17 @@ const AvatarButtonMixin = {
                     return;
                 }
                 e.stopPropagation();
-                const event = new CustomEvent(`${prefix}-return-click`);
+                const rect = returnButtonContainer.getBoundingClientRect();
+                const event = new CustomEvent(`${prefix}-return-click`, {
+                    detail: {
+                        returnButtonRect: {
+                            left: rect.left,
+                            top: rect.top,
+                            width: rect.width,
+                            height: rect.height
+                        }
+                    }
+                });
                 window.dispatchEvent(event);
             });
 
@@ -421,6 +431,8 @@ const AvatarButtonMixin = {
                 containerStartX = rect.left;
                 containerStartY = rect.top;
                 container.style.transform = 'none';
+                container.style.right = '';
+                container.style.bottom = '';
                 container.style.left = `${containerStartX}px`;
                 container.style.top = `${containerStartY}px`;
                 container.setAttribute('data-dragging', 'false');
@@ -752,6 +764,11 @@ const AvatarButtonMixin = {
                 document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
                 document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
                 this._returnButtonDragHandlers = null;
+            }
+
+            if (this._physicsRestoreTimer) {
+                clearTimeout(this._physicsRestoreTimer);
+                this._physicsRestoreTimer = null;
             }
 
             // 清理引用

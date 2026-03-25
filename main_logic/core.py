@@ -896,7 +896,7 @@ class LLMSessionManager:
             
             # 检查session类型
             if not isinstance(self.session, OmniRealtimeClient):
-                logger.warning("⚠️ 热切换音频缓存仅适用于语音模式，当前session类型不匹配")
+                logger.debug("热切换音频缓存仅适用于语音模式，当前session类型不匹配，跳过flush")
                 async with self.hot_swap_cache_lock:
                     self.hot_swap_audio_cache.clear()
                 return
@@ -1276,6 +1276,8 @@ class LLMSessionManager:
             try:
                 async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                     resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
+                    if not resp.is_success:
+                        raise ConnectionError(f"❌ 记忆服务返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
                     initial_prompt += resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                 logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
             except httpx.ConnectError:
@@ -1766,6 +1768,8 @@ class LLMSessionManager:
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
             async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
+                if not resp.is_success:
+                    raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
                 initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
             print(initial_prompt)
             self._bind_session_lifecycle_callbacks(self.pending_session)
@@ -2372,6 +2376,14 @@ class LLMSessionManager:
             if not self.session or not self.is_active:
                 # Memory Server 专属冷却检查
                 if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
+                    time_left = int(self._memory_error_retry_after - time.time())
+                    asyncio.create_task(self.send_status(json.dumps({
+                        "code": "MEMORY_SERVER_COOLDOWN",
+                        "details": {"wait_time": time_left}
+                    })))
+                    self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+                    if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                        asyncio.create_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
                     return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
@@ -2406,6 +2418,14 @@ class LLMSessionManager:
         if not self.session or not self.is_active:
             # Memory Server 专属冷却检查
             if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
+                time_left = int(self._memory_error_retry_after - time.time())
+                asyncio.create_task(self.send_status(json.dumps({
+                    "code": "MEMORY_SERVER_COOLDOWN",
+                    "details": {"wait_time": time_left}
+                })))
+                self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+                if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                    asyncio.create_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
                 return
             # 检查失败计数器和冷却时间
             if self.session_start_failure_count >= self.session_start_max_failures:
@@ -2927,6 +2947,11 @@ class LLMSessionManager:
                             await self._flush_tts_pending_chunks()
                         else:
                             logger.warning("⚠️ 收到TTS未就绪信号，继续缓存文本等待恢复")
+                        continue
+                    elif data[0] == "__reconnecting__":
+                        logger.info("🌊 TTS 正在自动重连，发送呼吸感状态到前端")
+                        user_msg = json.dumps({"code": "TTS_RECONNECTING", "level": "info"})
+                        asyncio.create_task(self.send_status(user_msg))
                         continue
                     elif data[0] == "__error__":
                         error_msg = data[1]

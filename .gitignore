@@ -76,9 +76,6 @@ node_modules/
 dist/
 build/
 
-# Plugin frontend exported artifacts
-plugin/frontend/exported/
-
 # Python venvs and wheels
 *.egg-info/
 *.egg

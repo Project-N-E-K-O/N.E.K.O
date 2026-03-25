@@ -33,6 +33,7 @@ class MMDManager {
         // 状态
         this._animationFrameId = null;
         this._shouldRender = false;
+        this.currentAnimationUrl = null;
         this._isDisposed = false;
         this._isModelReadyForInteraction = false;
         this._isInReturnState = false;
@@ -155,6 +156,7 @@ class MMDManager {
     async loadAnimation(vmdPath) {
         if (!this.animationModule) throw new Error('MMDAnimation 未初始化');
         const clip = await this.animationModule.loadAnimation(vmdPath);
+        this.currentAnimationUrl = vmdPath;
         return clip;
     }
 
@@ -178,6 +180,7 @@ class MMDManager {
         if (this.animationModule) {
             this.animationModule.stop();
         }
+        this.currentAnimationUrl = null;
         // 恢复鼠标跟踪
         if (this.cursorFollow) {
             this.cursorFollow.setDisabledByAnimation(false);
@@ -320,6 +323,20 @@ class MMDManager {
             if (typeof this.cursorFollow.applyConfig === 'function') {
                 this.cursorFollow.applyConfig(settings.cursorFollow);
             }
+        }
+    }
+
+    // ═══════════════════ 模型位置/姿态重置 ═══════════════════
+
+    resetModelPosition() {
+        if (this.core && typeof this.core.resetModelPosition === 'function') {
+            this.core.resetModelPosition();
+        }
+    }
+
+    resetModelPose() {
+        if (this.core && typeof this.core.resetModelPose === 'function') {
+            this.core.resetModelPose();
         }
     }
 

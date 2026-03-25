@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import threading
 import time
@@ -137,6 +138,10 @@ class MemoReminderPlugin(NekoPluginBase):
         self._reminders_lock = threading.Lock()
 
     def _store_get_sync(self, key: str, default: Any = None) -> Any:
+        if not self.store.enabled:
+            if key == _STORE_KEY:
+                raise SdkError("PluginStore is disabled — cannot read reminders")
+            return default
         try:
             return self.store._read_value(key, default)
         except Exception as exc:
@@ -146,6 +151,8 @@ class MemoReminderPlugin(NekoPluginBase):
             return default
 
     def _store_set_sync(self, key: str, value: Any) -> None:
+        if not self.store.enabled:
+            raise SdkError(f"PluginStore is disabled — cannot persist key '{key}'")
         try:
             self.store._write_value(key, value)
         except Exception as exc:
@@ -168,7 +175,15 @@ class MemoReminderPlugin(NekoPluginBase):
             self._save_reminders_unlocked(reminders)
 
     def _notify_change(self) -> None:
-        """唤醒 checker 线程，使其立即重新计算下次触发时间。"""
+        """唤醒 checker 线程，使其立即重新计算下次触发时间。若线程已死则重启。"""
+        alive = self._checker_thread.is_alive() if self._checker_thread else False
+        self.logger.info("_notify_change called: checker_alive={} stop={}", alive, self._stop_event.is_set())
+        if self._checker_thread and not alive and not self._stop_event.is_set():
+            self.logger.warning("Checker thread found dead, restarting")
+            self._checker_thread = threading.Thread(
+                target=self._checker_loop, daemon=True, name="memo-checker",
+            )
+            self._checker_thread.start()
         self._wake_event.set()
 
     @lifecycle(id="startup")
@@ -176,6 +191,16 @@ class MemoReminderPlugin(NekoPluginBase):
         cfg = await self.config.dump(timeout=5.0)
         cfg = cfg if isinstance(cfg, dict) else {}
         memo_cfg = cfg.get("memo") if isinstance(cfg.get("memo"), dict) else {}
+
+        if not self.store.enabled:
+            store_cfg = cfg.get("plugin", {})
+            store_cfg = store_cfg.get("store", {}) if isinstance(store_cfg, dict) else {}
+            if isinstance(store_cfg, dict) and store_cfg.get("enabled"):
+                self.store.enabled = True
+                self.logger.info("Store enabled from config (was disabled at init)")
+            else:
+                self.store.enabled = True
+                self.logger.warning("Store force-enabled (config missing plugin.store.enabled)")
 
         tz_name = str(memo_cfg.get("timezone", _DEFAULT_TZ)).strip()
         try:
@@ -225,33 +250,53 @@ class MemoReminderPlugin(NekoPluginBase):
 
     def _checker_loop(self) -> None:
         time.sleep(0.5)
+        self.logger.info("Checker thread started (tid={})", threading.get_ident())
+        _iter = 0
         while not self._stop_event.is_set():
+            _iter += 1
+            self.logger.info("Checker iter={} begin", _iter)
+            wait_sec = 60.0
             try:
                 self._fire_due_reminders()
+                self.logger.info("Checker iter={} fire_done, computing next", _iter)
+                wait_sec_calc = self._next_trigger_seconds()
+                if wait_sec_calc is not None:
+                    wait_sec = max(wait_sec_calc, 0.1)
+                else:
+                    wait_sec = 86400.0
+                self.logger.info("Checker iter={} wait_sec={:.1f}", _iter, wait_sec)
             except Exception:
-                self.logger.exception("Error in reminder checker")
+                self.logger.exception("Error in reminder checker iter={}, retrying in 5s", _iter)
+                wait_sec = 5.0
 
             self._wake_event.clear()
             if self._stop_event.is_set():
                 break
-            wait_sec = self._next_trigger_seconds()
-            if wait_sec is not None:
-                wait_sec = max(wait_sec, 0.1)
-            else:
-                wait_sec = 86400.0
-
             self._wake_event.wait(timeout=wait_sec)
             if self._stop_event.is_set():
                 break
+            self.logger.info("Checker iter={} woke up", _iter)
+        self.logger.info("Checker thread exiting")
 
     def _fire_due_reminders(self) -> None:
+        # Phase 1 — under lock: classify reminders, save snapshot
+        to_push: List[Dict[str, Any]] = []
+        to_retry_cb: List[Dict[str, Any]] = []
+
+        self.logger.info("_fire_due: acquiring lock...")
         with self._reminders_lock:
+            self.logger.info("_fire_due: lock acquired")
             reminders = self._load_reminders_unlocked()
+            self.logger.info(
+                "_fire_due: loaded {} reminders, db={}, tid={}",
+                len(reminders), getattr(self.store, '_db_path', '?'), threading.get_ident(),
+            )
             if not reminders:
                 return
 
             now = _now(_TZ_UTC)
-            fired_ids: List[str] = []
+            if len(reminders) <= 5:
+                self.logger.info("Checker tick: {} reminders, now={}", len(reminders), now.isoformat())
             kept: List[Dict[str, Any]] = []
 
             for r in reminders:
@@ -262,103 +307,96 @@ class MemoReminderPlugin(NekoPluginBase):
                     kept.append(r)
                     continue
 
-                # 检查是否有待重试的回调（消息已发送但回调失败）
                 if r.get("delivered") and r.get("callback_pending"):
-                    # 只重试回调，不重复发送消息
-                    agent_task_id = r.get("agent_task_id")
-                    rid = r.get("id", "?")
-                    if agent_task_id:
-                        try:
-                            import httpx as _httpx
-                            from config import TOOL_SERVER_PORT
-                            with _httpx.Client(timeout=2.0, proxy=None, trust_env=False) as c:
-                                resp = c.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/api/agent/tasks/{agent_task_id}/complete")
-                                if resp.is_success:
-                                    # 回调成功，清除待重试标志
-                                    r["callback_pending"] = False
-                                    r["callback_error"] = None
-                                    self.logger.info("Retry callback succeeded for reminder {}", rid)
-                                    fired_ids.append(rid)
-                                    updated = self._reschedule(r, now)
-                                    if updated:
-                                        kept.append(updated)
-                                    continue
-                                elif resp.status_code == 404:
-                                    # 任务不存在（可能服务重启后丢失），放弃重试
-                                    self.logger.warning("Retry callback abandoned for reminder {}: task not found (404)", rid)
-                                    r["callback_pending"] = False
-                                    r["callback_error"] = "Task not found (404)"
-                                    fired_ids.append(rid)
-                                    updated = self._reschedule(r, now)
-                                    if updated:
-                                        kept.append(updated)
-                                    continue
-                                else:
-                                    self.logger.warning("Retry callback failed for reminder {}: HTTP {}", rid, resp.status_code)
-                        except Exception as e:
-                            self.logger.warning("Retry callback exception for reminder {}: {}", rid, e)
-                        # 回调仍失败（非404），保留提醒以便下次重试（限制重试次数）
-                        retry_count = r.get("callback_retry_count", 0) + 1
-                        if retry_count >= 5:
-                            # 超过重试次数，放弃
-                            self.logger.warning("Retry callback abandoned for reminder {}: max retries exceeded", rid)
-                            r["callback_pending"] = False
-                            r["callback_error"] = "Max retries exceeded"
-                            fired_ids.append(rid)
-                            updated = self._reschedule(r, now)
-                            if updated:
-                                kept.append(updated)
-                            continue
-                        r["callback_retry_count"] = retry_count
-                        kept.append(r)
-                        continue
-                    else:
-                        # 没有 agent_task_id，不需要回调
-                        fired_ids.append(rid)
-                        updated = self._reschedule(r, now)
-                        if updated:
-                            kept.append(updated)
-                        continue
+                    to_retry_cb.append(r)
+                    continue
 
                 if trigger_dt <= now:
-                    # 如果是 deferred 提醒且刚创建（<5秒），等待 bind_task 完成
-                    # 只对有 deferred_bind_pending 标志的提醒应用缓冲（避免影响非 deferred 提醒）
                     if r.get("deferred_bind_pending") and r.get("agent_task_id") is None:
-                        created_at_str = r.get("created_at", "")
                         try:
-                            created_dt = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-                            age = (now - created_dt).total_seconds()
-                            if age < 5.0:  # 5 秒缓冲，等待 bind_task
+                            created_dt = datetime.fromisoformat(
+                                r.get("created_at", "").replace("Z", "+00:00")
+                            )
+                            if (now - created_dt).total_seconds() < 5.0:
                                 kept.append(r)
                                 continue
                         except (ValueError, TypeError):
-                            pass  # 解析失败，正常处理
-
-                    try:
-                        self._push_reminder(r)
-                    except Exception:
-                        self.logger.exception("Failed to push reminder {}", r.get("id", "?"))
-                        kept.append(r)
-                        continue
-
-                    # 检查是否需要保留（回调失败或需要重调度）
-                    if r.get("callback_pending"):
-                        # 回调失败，保留以便重试
-                        kept.append(r)
-                    else:
-                        fired_ids.append(r.get("id", "?"))
-                        updated = self._reschedule(r, now)
-                        if updated:
-                            kept.append(updated)
+                            pass
+                    to_push.append(r)
                 else:
                     kept.append(r)
 
+            self._save_reminders_unlocked(kept + to_push + to_retry_cb)
+
+        if not to_push and not to_retry_cb:
+            return
+
+        # Phase 2 — NO lock: do all I/O (ZMQ push, HTTP callbacks)
+        fired_ids: List[str] = []
+
+        for r in to_push:
+            rid = r.get("id", "?")
+            try:
+                self._push_reminder(r)
+            except Exception:
+                self.logger.exception("Failed to push reminder {}", rid)
+                continue
+            if not r.get("callback_pending"):
+                fired_ids.append(rid)
+
+        for r in to_retry_cb:
+            rid = r.get("id", "?")
+            agent_task_id = r.get("agent_task_id")
+            if not agent_task_id:
+                fired_ids.append(rid)
+                continue
+            try:
+                import httpx as _httpx
+                from config import TOOL_SERVER_PORT
+                with _httpx.Client(timeout=2.0, proxy=None, trust_env=False) as c:
+                    resp = c.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/api/agent/tasks/{agent_task_id}/complete")
+                    if resp.is_success:
+                        r["callback_pending"] = False
+                        r["callback_error"] = None
+                        self.logger.info("Retry callback succeeded for reminder {}", rid)
+                        fired_ids.append(rid)
+                        continue
+                    elif resp.status_code == 404:
+                        r["callback_pending"] = False
+                        r["callback_error"] = "Task not found (404)"
+                        self.logger.warning("Retry callback abandoned for reminder {}: 404", rid)
+                        fired_ids.append(rid)
+                        continue
+                    else:
+                        self.logger.warning("Retry callback failed for reminder {}: HTTP {}", rid, resp.status_code)
+            except Exception as e:
+                self.logger.warning("Retry callback exception for reminder {}: {}", rid, e)
+            retry_count = r.get("callback_retry_count", 0) + 1
+            if retry_count >= 5:
+                self.logger.warning("Retry callback abandoned for reminder {}: max retries", rid)
+                r["callback_pending"] = False
+                r["callback_error"] = "Max retries exceeded"
+                fired_ids.append(rid)
+            else:
+                r["callback_retry_count"] = retry_count
+
+        # Phase 3 — under lock: merge results back (handles concurrent add/delete)
+        with self._reminders_lock:
+            processed_ids = {r.get("id") for r in to_push + to_retry_cb}
+            final: List[Dict[str, Any]] = []
+            for r in to_push + to_retry_cb:
+                rid = r.get("id", "?")
+                if rid in fired_ids:
+                    updated = self._reschedule(r, now)
+                    if updated:
+                        final.append(updated)
+                else:
+                    final.append(r)
+            current = self._load_reminders_unlocked()
+            merged = [r for r in current if r.get("id") not in processed_ids] + final
+            self._save_reminders_unlocked(merged)
             if fired_ids:
-                self._save_reminders_unlocked(kept)
                 self.logger.info("Fired reminders: {}", fired_ids)
-            elif kept:
-                # 即使没有新触发的提醒，也需要保存更新后的状态（如 callback_pending 清除）
-                self._save_reminders_unlocked(kept)
 
     def _push_reminder(self, r: Dict[str, Any]) -> None:
         msg = r.get("message", "提醒时间到了！")
@@ -581,14 +619,9 @@ class MemoReminderPlugin(NekoPluginBase):
             reminder["max_count"] = int(max_count)
             reminder["fire_count"] = 0
 
-        with self._reminders_lock:
-            reminders = self._load_reminders_unlocked()
-            cfg = self._store_get_sync("_memo_cfg", {})
-            max_r = int(cfg.get("max_reminders", 200)) if isinstance(cfg, dict) else 200
-            if len(reminders) >= max_r:
-                return Err(SdkError(f"提醒数量已达上限 ({max_r})"))
-            reminders.append(reminder)
-            self._save_reminders_unlocked(reminders)
+        err = await asyncio.to_thread(self._add_reminder_sync, reminder)
+        if err is not None:
+            return Err(SdkError(err))
         self._notify_change()
 
         local_str = trigger_dt.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
@@ -626,15 +659,10 @@ class MemoReminderPlugin(NekoPluginBase):
     )
     async def bind_task(self, reminder_id: str, agent_task_id: str, **kwargs):
         """将 agent_task_id 写回到对应的提醒记录，供 daemon 触发时回调使用"""
-        with self._reminders_lock:
-            reminders = self._load_reminders_unlocked()
-            for r in reminders:
-                if r.get("id") == reminder_id:
-                    r["agent_task_id"] = agent_task_id
-                    r["deferred_bind_pending"] = False  # 清除标志，表示绑定完成
-                    self._save_reminders_unlocked(reminders)
-                    self.logger.info("Bound agent_task_id={} to reminder={}", agent_task_id, reminder_id)
-                    return Ok({"bound": True})
+        bound = await asyncio.to_thread(self._bind_task_sync, reminder_id, agent_task_id)
+        if bound:
+            self._notify_change()
+            return Ok({"bound": True})
         return Err(SdkError(f"Reminder {reminder_id} not found"))
 
     @plugin_entry(
@@ -644,7 +672,7 @@ class MemoReminderPlugin(NekoPluginBase):
         llm_result_fields=["count"],
     )
     async def list_reminders(self, **_):
-        reminders = self._load_reminders()
+        reminders = await asyncio.to_thread(self._load_reminders)
         reminders_sorted = sorted(reminders, key=lambda r: r.get("trigger_at", ""))
         return Ok({"count": len(reminders_sorted), "reminders": reminders_sorted})
 
@@ -662,16 +690,12 @@ class MemoReminderPlugin(NekoPluginBase):
         },
     )
     async def delete_reminder(self, reminder_id: str, **_):
-        with self._reminders_lock:
-            reminders = self._load_reminders_unlocked()
-            original_len = len(reminders)
-            reminders = [r for r in reminders if r.get("id") != reminder_id]
-            if len(reminders) == original_len:
-                return Err(SdkError(f"未找到提醒: {reminder_id}"))
-            self._save_reminders_unlocked(reminders)
+        remaining = await asyncio.to_thread(self._delete_reminder_sync, reminder_id)
+        if remaining is None:
+            return Err(SdkError(f"未找到提醒: {reminder_id}"))
         self._notify_change()
         self.logger.info("Reminder deleted: {}", reminder_id)
-        return Ok({"deleted": reminder_id, "remaining": len(reminders)})
+        return Ok({"deleted": reminder_id, "remaining": remaining})
 
     @plugin_entry(
         id="clear_reminders",
@@ -680,9 +704,54 @@ class MemoReminderPlugin(NekoPluginBase):
         llm_result_fields=["cleared"],
     )
     async def clear_reminders(self, **_):
-        with self._reminders_lock:
-            count = len(self._load_reminders_unlocked())
-            self._save_reminders_unlocked([])
+        count = await asyncio.to_thread(self._clear_reminders_sync)
         self._notify_change()
         self.logger.info("All {} reminders cleared", count)
         return Ok({"cleared": count})
+
+    # ── sync helpers (run in thread pool, never block the event loop) ──
+
+    def _add_reminder_sync(self, reminder: Dict[str, Any]) -> Optional[str]:
+        """Returns error message string, or None on success."""
+        with self._reminders_lock:
+            reminders = self._load_reminders_unlocked()
+            cfg = self._store_get_sync("_memo_cfg", {})
+            max_r = int(cfg.get("max_reminders", 200)) if isinstance(cfg, dict) else 200
+            if len(reminders) >= max_r:
+                return f"提醒数量已达上限 ({max_r})"
+            reminders.append(reminder)
+            self._save_reminders_unlocked(reminders)
+            verify = self._load_reminders_unlocked()
+            self.logger.info(
+                "_add_reminder_sync: saved {} reminders, verify_read={}, tid={}",
+                len(reminders), len(verify), threading.get_ident(),
+            )
+        return None
+
+    def _bind_task_sync(self, reminder_id: str, agent_task_id: str) -> bool:
+        with self._reminders_lock:
+            reminders = self._load_reminders_unlocked()
+            for r in reminders:
+                if r.get("id") == reminder_id:
+                    r["agent_task_id"] = agent_task_id
+                    r["deferred_bind_pending"] = False
+                    self._save_reminders_unlocked(reminders)
+                    self.logger.info("Bound agent_task_id={} to reminder={}", agent_task_id, reminder_id)
+                    return True
+        return False
+
+    def _delete_reminder_sync(self, reminder_id: str) -> Optional[int]:
+        """Returns remaining count, or None if not found."""
+        with self._reminders_lock:
+            reminders = self._load_reminders_unlocked()
+            filtered = [r for r in reminders if r.get("id") != reminder_id]
+            if len(filtered) == len(reminders):
+                return None
+            self._save_reminders_unlocked(filtered)
+            return len(filtered)
+
+    def _clear_reminders_sync(self) -> int:
+        with self._reminders_lock:
+            count = len(self._load_reminders_unlocked())
+            self._save_reminders_unlocked([])
+            return count

@@ -25,11 +25,11 @@
     const byId = (id) => document.getElementById(id);
     const getEls = (...ids) => ids.map(id => byId(id)).filter(Boolean);
     const el = () => ({
-        master: getEls('live2d-agent-master', 'vrm-agent-master'),
-        keyboard: getEls('live2d-agent-keyboard', 'vrm-agent-keyboard'),
-        browser: getEls('live2d-agent-browser', 'vrm-agent-browser'),
-        userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin'),
-        status: getEls('live2d-agent-status', 'vrm-agent-status'),
+        master: getEls('live2d-agent-master', 'vrm-agent-master', 'mmd-agent-master'),
+        keyboard: getEls('live2d-agent-keyboard', 'vrm-agent-keyboard', 'mmd-agent-keyboard'),
+        browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser'),
+        userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin'),
+        status: getEls('live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status'),
     });
     const sync = (cbs) => {
         if (!cbs) return;

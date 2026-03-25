@@ -791,13 +791,13 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         lanlan_name = event.get("lanlan_name")
         event_id = event.get("event_id")
         logger.info("[AgentAnalyze] analyze_request received: trigger=%s lanlan=%s messages=%d", event.get("trigger"), lanlan_name, len(messages) if isinstance(messages, list) else 0)
-        if not Modules.analyzer_enabled:
-            logger.info("[AgentAnalyze] skip: analyzer disabled (master switch off)")
-            return
         if event_id:
             ack_task = asyncio.create_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
             Modules._background_tasks.add(ack_task)
             ack_task.add_done_callback(Modules._background_tasks.discard)
+        if not Modules.analyzer_enabled:
+            logger.info("[AgentAnalyze] skip: analyzer disabled (master switch off)")
+            return
         if isinstance(messages, list) and messages:
             # Consume only new user turn. Assistant turn_end without new user input should be ignored.
             lanlan_key = _normalize_lanlan_key(lanlan_name)
@@ -1510,6 +1510,7 @@ async def startup():
         from utils.token_tracker import TokenTracker, install_hooks
         install_hooks()
         TokenTracker.get_instance().start_periodic_save()
+        TokenTracker.get_instance().record_app_start()
     except Exception as e:
         logger.warning(f"[Agent] Token tracker init failed: {e}")
 
