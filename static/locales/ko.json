@@ -2030,7 +2030,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ 중요 공지",
-                "desc": "음성 복제에는 Alibaba Cloud API가 필요합니다. API 설정에서 Alibaba Cloud API 키를 구성했는지 확인하세요."
+                "desc": "음성 복제에는 해당 제공업체의 API 키가 필요합니다. API 키 설정에서 필요한 API 키를 저장하세요."
             },
             "step2": {
                 "title": "🌍 참조 오디오 언어 선택",

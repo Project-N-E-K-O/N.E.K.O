@@ -2030,7 +2030,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ 重要提示",
-                "desc": "语音克隆功能需要使用阿里云 API。请确保您已经在 API 设置中配置了阿里云的 API Key。"
+                "desc": "语音克隆功能需要配置对应服务商的 API Key。请在 API 密钥设置页中保存所需的 API Key。"
             },
             "step2": {
                 "title": "🌍 选择参考音频语言",

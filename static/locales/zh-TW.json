@@ -2030,7 +2030,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ 重要提示",
-                "desc": "語音克隆功能需要使用阿里雲 API。請確保妳已經在 API 設置中配置了阿里雲的 API Key。"
+                "desc": "語音克隆功能需要配置對應服務商的 API Key。請在 API 密鑰設定頁中保存所需的 API Key。"
             },
             "step2": {
                 "title": "🌍 選擇參考音頻語言",

@@ -2030,7 +2030,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ Important Notice",
-                "desc": "Voice cloning requires Alibaba Cloud API. Make sure you've configured Alibaba Cloud API Key in API settings."
+                "desc": "Voice cloning requires a configured voice provider API Key. Please save the required API Key in API Keys settings."
             },
             "step2": {
                 "title": "🌍 Select Reference Audio Language",

@@ -2030,7 +2030,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ 重要な通知",
-                "desc": "音声クローニングにはAlibaba Cloud APIが必要です。API設定でAlibaba Cloud APIキーを設定していることを確認してください。"
+                "desc": "音声クローニングには対応するプロバイダーのAPIキーが必要です。APIキー設定で必要なAPIキーを保存してください。"
             },
             "step2": {
                 "title": "🌍 参照音声言語を選択",
