@@ -913,7 +913,7 @@ class LLMSessionManager:
             
             # 检查session类型
             if not isinstance(self.session, OmniRealtimeClient):
-                logger.warning("⚠️ 热切换音频缓存仅适用于语音模式，当前session类型不匹配")
+                logger.debug("热切换音频缓存仅适用于语音模式，当前session类型不匹配，跳过flush")
                 async with self.hot_swap_cache_lock:
                     self.hot_swap_audio_cache.clear()
                 return

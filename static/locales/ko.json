@@ -1180,7 +1180,7 @@
         "saveSuccess": "저장 성공",
         "saveFailed": "저장 실패: {{error}}",
         "saveFailedGeneral": "저장 실패",
-        "clearedMemory": "최근 메모리가 지워졌으나 저장되지 않았습니다.",
+        "clearedChatKeptMemo": "대화 기록만 지웠습니다. 메모는 유지됩니다(저장 안 됨).",
         "enabled": "활성화됨",
         "disabled": "비활성화됨",
         "autoReviewNote": "활성화하면 시스템이 자동으로 메모리 내용을 구성하고 최적화하여 대화 품질을 향상시킵니다.",
@@ -1607,6 +1607,11 @@
             "headYaw": "좌우 회전 범위",
             "headPitch": "상하 회전 범위",
             "smoothSpeed": "추적 부드러움"
+        },
+        "idleAnimation": {
+            "title": "대기 애니메이션",
+            "changed": "대기 애니메이션이 변경되었습니다",
+            "changeFailed": "대기 애니메이션 변경에 실패했습니다"
         }
     },
     "modelManager": {

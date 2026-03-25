@@ -912,11 +912,26 @@
                     mmdContainer.classList.remove('hidden');
                     mmdContainer.style.display = 'block';
                     mmdContainer.style.visibility = 'visible';
+                    mmdContainer.style.removeProperty('pointer-events');
                 }
                 const mmdCanvas = document.getElementById('mmd-canvas');
                 if (mmdCanvas) {
                     mmdCanvas.style.setProperty('visibility', 'visible', 'important');
                     mmdCanvas.style.setProperty('pointer-events', 'auto', 'important');
+                    // 渐入动画
+                    mmdCanvas.style.transition = 'none';
+                    mmdCanvas.style.opacity = '0';
+                    void mmdCanvas.offsetWidth;
+                    mmdCanvas.style.transition = 'opacity 0.5s ease-out';
+                    mmdCanvas.style.opacity = '1';
+                    if (window._mmdCanvasFadeInId) clearTimeout(window._mmdCanvasFadeInId);
+                    window._mmdCanvasFadeInId = setTimeout(() => {
+                        if (mmdCanvas) {
+                            mmdCanvas.style.transition = '';
+                            mmdCanvas.style.opacity = '';
+                        }
+                        window._mmdCanvasFadeInId = null;
+                    }, 600);
                 }
 
                 // 隐藏 VRM
@@ -1088,8 +1103,31 @@
 
         // 睡觉按钮（请她离开）
         window.addEventListener('live2d-goodbye-click', () => {
-            console.log('[App] 请她离开按钮被点击，开始隐藏所有按钮');
-            console.log('[App] 当前 goodbyeClicked 状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
+            // 第零步：在任何状态变更之前立即捕获 goodbye 按钮位置
+            // 其他 handler（VRM/MMD goodbyeHandler）可能先于此处执行并隐藏按钮容器，
+            // 所以必须在最前面读取位置。
+            const _live2dGoodbyeBtn = document.getElementById('live2d-btn-goodbye');
+            const _vrmGoodbyeBtn = document.getElementById('vrm-btn-goodbye');
+            const _mmdGoodbyeBtn = document.getElementById('mmd-btn-goodbye');
+            let savedGoodbyeRect = null;
+            for (const btn of [_mmdGoodbyeBtn, _vrmGoodbyeBtn, _live2dGoodbyeBtn]) {
+                if (!btn) continue;
+                try {
+                    const r = btn.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) {
+                        savedGoodbyeRect = r;
+                        break;
+                    }
+                } catch (_) { /* ignore */ }
+            }
+            console.log('[App] 请她离开按钮被点击，savedGoodbyeRect:', savedGoodbyeRect ? `${Math.round(savedGoodbyeRect.left)},${Math.round(savedGoodbyeRect.top)}` : 'null');
+
+            window._savedGoodbyeRect = savedGoodbyeRect ? {
+                left: savedGoodbyeRect.left,
+                top: savedGoodbyeRect.top,
+                width: savedGoodbyeRect.width,
+                height: savedGoodbyeRect.height
+            } : null;
 
             // 第一步：立即设置标志位
             if (window.live2dManager) {
@@ -1179,13 +1217,25 @@
                 console.log('[App] 已禁用 vrm-canvas 交互');
             }
 
-            // MMD 也先仅禁用交互
+            // MMD：禁用交互 + 立即停物理 + 渐隐动画
             const mmdCanvas = document.getElementById('mmd-canvas');
             if (mmdContainer) {
                 mmdContainer.style.setProperty('pointer-events', 'none', 'important');
             }
             if (mmdCanvas) {
                 mmdCanvas.style.setProperty('pointer-events', 'none', 'important');
+            }
+            if (window._mmdCanvasFadeInId) {
+                clearTimeout(window._mmdCanvasFadeInId);
+                window._mmdCanvasFadeInId = null;
+            }
+            if (isMmdActive && window.mmdManager) {
+                window.mmdManager.enablePhysics = false;
+            }
+            if (isMmdActive && mmdCanvas) {
+                mmdCanvas.style.transition = 'opacity 0.8s ease-out';
+                void mmdCanvas.offsetWidth;
+                mmdCanvas.style.opacity = '0';
             }
 
             // 为 VRM 容器添加 minimized 类
@@ -1229,29 +1279,9 @@
                 }
                 if (mmdCanvas) {
                     mmdCanvas.style.setProperty('visibility', 'hidden', 'important');
+                    mmdCanvas.style.transition = '';
                 }
             }, 1100);
-
-            // 读取 "请她离开" 按钮的位置
-            const live2dGoodbyeButton = document.getElementById('live2d-btn-goodbye');
-            const vrmGoodbyeButton = document.getElementById('vrm-btn-goodbye');
-            let savedGoodbyeRect = null;
-
-            if (vrmGoodbyeButton && vrmGoodbyeButton.offsetParent !== null) {
-                try {
-                    savedGoodbyeRect = vrmGoodbyeButton.getBoundingClientRect();
-                    console.log('[App] 使用VRM按钮位置');
-                } catch (e) {
-                    savedGoodbyeRect = null;
-                }
-            } else if (live2dGoodbyeButton && live2dGoodbyeButton.offsetParent !== null) {
-                try {
-                    savedGoodbyeRect = live2dGoodbyeButton.getBoundingClientRect();
-                    console.log('[App] 使用Live2D按钮位置');
-                } catch (e) {
-                    savedGoodbyeRect = null;
-                }
-            }
 
             // 隐藏所有浮动按钮和锁按钮
             const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
@@ -1311,8 +1341,10 @@
                 if (savedGoodbyeRect) {
                     const containerWidth = mmdReturnButtonContainer.offsetWidth || 64;
                     const containerHeight = mmdReturnButtonContainer.offsetHeight || 64;
-                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2 + window.scrollX);
-                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2 + window.scrollY);
+                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2);
+                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2);
+                    mmdReturnButtonContainer.style.right = '';
+                    mmdReturnButtonContainer.style.bottom = '';
                     mmdReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
                     mmdReturnButtonContainer.style.top = `${Math.max(0, Math.min(top, window.innerHeight - containerHeight))}px`;
                     mmdReturnButtonContainer.style.transform = 'none';
@@ -1334,8 +1366,10 @@
                 if (savedGoodbyeRect) {
                     const containerWidth = live2dReturnButtonContainer.offsetWidth || 64;
                     const containerHeight = live2dReturnButtonContainer.offsetHeight || 64;
-                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2 + window.scrollX);
-                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2 + window.scrollY);
+                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2);
+                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2);
+                    live2dReturnButtonContainer.style.right = '';
+                    live2dReturnButtonContainer.style.bottom = '';
                     live2dReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
                     live2dReturnButtonContainer.style.top = `${Math.max(0, Math.min(top, window.innerHeight - containerHeight))}px`;
                     live2dReturnButtonContainer.style.transform = 'none';
@@ -1370,8 +1404,10 @@
                 if (savedGoodbyeRect) {
                     const containerWidth = vrmReturnButtonContainer.offsetWidth || 64;
                     const containerHeight = vrmReturnButtonContainer.offsetHeight || 64;
-                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2 + window.scrollX);
-                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2 + window.scrollY);
+                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2);
+                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2);
+                    vrmReturnButtonContainer.style.right = '';
+                    vrmReturnButtonContainer.style.bottom = '';
                     vrmReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
                     vrmReturnButtonContainer.style.top = `${Math.max(0, Math.min(top, window.innerHeight - containerHeight))}px`;
                     vrmReturnButtonContainer.style.transform = 'none';
@@ -1463,7 +1499,7 @@
         });
 
         // 请她回来按钮（统一处理函数）
-        const handleReturnClick = async () => {
+        const handleReturnClick = async (event) => {
             console.log('[App] 请她回来按钮被点击，开始恢复所有界面');
 
             // 取消延迟隐藏定时器
@@ -1513,6 +1549,42 @@
                 vrmReturnButtonContainer.style.display = 'none';
                 vrmReturnButtonContainer.style.pointerEvents = 'none';
             }
+            const mmdReturnButtonContainer = document.getElementById('mmd-return-button-container');
+            if (mmdReturnButtonContainer) {
+                mmdReturnButtonContainer.style.display = 'none';
+                mmdReturnButtonContainer.style.pointerEvents = 'none';
+            }
+
+            // 如果返回按钮被拖拽到新位置，先偏移模型再显示，避免闪烁
+            const returnRect = event && event.detail && event.detail.returnButtonRect;
+            const savedRect = window._savedGoodbyeRect;
+            if (returnRect && savedRect) {
+                const returnCenterX = returnRect.left + returnRect.width / 2;
+                const returnCenterY = returnRect.top + returnRect.height / 2;
+                const savedCenterX = savedRect.left + savedRect.width / 2;
+                const savedCenterY = savedRect.top + savedRect.height / 2;
+                const screenDx = returnCenterX - savedCenterX;
+                const screenDy = returnCenterY - savedCenterY;
+
+                if (Math.abs(screenDx) > 5 || Math.abs(screenDy) > 5) {
+                    console.log('[App] 返回按钮被拖拽，应用屏幕偏移:', Math.round(screenDx), Math.round(screenDy));
+                    if (window.vrmManager && typeof window.vrmManager.applyScreenDelta === 'function') {
+                        window.vrmManager.applyScreenDelta(screenDx, screenDy);
+                    }
+                    if (window.mmdManager && typeof window.mmdManager.applyScreenDelta === 'function') {
+                        window.mmdManager.applyScreenDelta(screenDx, screenDy);
+                    }
+                    if (window.live2dManager) {
+                        const liveModel = typeof window.live2dManager.getCurrentModel === 'function'
+                            ? window.live2dManager.getCurrentModel() : null;
+                        if (liveModel && !liveModel.destroyed) {
+                            liveModel.x += screenDx;
+                            liveModel.y += screenDy;
+                        }
+                    }
+                }
+            }
+            window._savedGoodbyeRect = null;
 
             // 使用 showCurrentModel() 做最终裁决
             try {

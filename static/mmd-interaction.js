@@ -271,11 +271,8 @@ class MMDInteraction {
                 totalQuat.multiplyQuaternions(yQuat, xQuat);
 
                 // 绕 bounding box 中心旋转：旋转后调整位置使中心点保持不动
-                // offset = 起始位置 - 轴心（从轴心指向模型原点的向量）
                 const offset = new THREE.Vector3().subVectors(this._orbitStartPos, this._orbitPivot);
-                // 旋转这个偏移
                 const rotatedOffset = offset.clone().applyQuaternion(totalQuat);
-                // 新位置 = 轴心 + 旋转后的偏移
                 mesh.position.copy(this._orbitPivot).add(rotatedOffset);
                 // 从起始状态重新计算旋转（幂等）
                 mesh.quaternion.copy(this._orbitStartQuat).premultiply(totalQuat);

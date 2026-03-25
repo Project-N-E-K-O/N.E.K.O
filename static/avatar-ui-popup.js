@@ -1958,10 +1958,17 @@ const AvatarPopupMixin = {
 
                     items.forEach(source => {
                         const option = document.createElement('div');
+                        option.className = 'screen-source-option';
+                        option.dataset.sourceId = source.id;
+                        const isSelected = window.appState && source.id === window.appState.selectedScreenSourceId;
                         Object.assign(option.style, {
                             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px',
-                            padding: '6px', borderRadius: '6px', cursor: 'pointer', transition: 'background 0.15s ease'
+                            padding: '6px', borderRadius: '6px', cursor: 'pointer',
+                            border: '2px solid ' + (isSelected ? '#4f8cff' : 'transparent'),
+                            background: isSelected ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))' : 'transparent',
+                            transition: 'background 0.15s ease, border-color 0.15s ease'
                         });
+                        if (isSelected) option.classList.add('selected');
 
                         const thumb = document.createElement('img');
                         if (source.thumbnail) {
@@ -1981,8 +1988,16 @@ const AvatarPopupMixin = {
                         option.appendChild(thumb);
                         option.appendChild(name);
 
-                        option.addEventListener('mouseenter', () => { option.style.background = 'rgba(68, 183, 254, 0.1)'; });
-                        option.addEventListener('mouseleave', () => { option.style.background = 'transparent'; });
+                        option.addEventListener('mouseenter', () => {
+                            if (!option.classList.contains('selected')) {
+                                option.style.background = 'rgba(68, 183, 254, 0.1)';
+                            }
+                        });
+                        option.addEventListener('mouseleave', () => {
+                            if (!option.classList.contains('selected')) {
+                                option.style.background = 'transparent';
+                            }
+                        });
                         option.addEventListener('click', (e) => {
                             e.stopPropagation();
                             if (typeof window.selectScreenSource === 'function') {

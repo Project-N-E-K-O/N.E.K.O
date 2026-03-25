@@ -2,6 +2,7 @@ import Ammo from 'ammojs-typed';
 import { Object3D, Matrix4, Vector3, Quaternion, MeshBasicMaterial, Color, Mesh, SphereGeometry, CapsuleGeometry, BoxGeometry, Euler, Bone } from 'three';
 import { PmxObject } from '@moeru/three-mmd';
 
+
 class Constraint {
   bodyA;
   bodyB;
@@ -43,8 +44,20 @@ class Constraint {
     const aul = manager.allocVector3();
     lll.setValue(...params.positionMin);
     lul.setValue(...params.positionMax);
-    all.setValue(...params.rotationMin);
-    aul.setValue(...params.rotationMax);
+    // Angular limit clamping: lock axes with range < 5° to eliminate micro-oscillation sources
+    const angMin = [...params.rotationMin];
+    const angMax = [...params.rotationMax];
+    const CLAMP_THRESHOLD = 0.0872665; // 5° in radians
+    for (let i = 0; i < 3; i++) {
+      const range = angMax[i] - angMin[i];
+      if (range >= 0 && range < CLAMP_THRESHOLD) {
+        const mid = (angMin[i] + angMax[i]) * 0.5;
+        angMin[i] = mid;
+        angMax[i] = mid;
+      }
+    }
+    all.setValue(...angMin);
+    aul.setValue(...angMax);
     constraint.setLinearLowerLimit(lll);
     constraint.setLinearUpperLimit(lul);
     constraint.setAngularLowerLimit(all);
@@ -72,6 +85,55 @@ class Constraint {
       }
     }
     this.world.addConstraint(constraint, true);
+    // MMD 兼容性修复：禁用 m_useOffsetForConstraintFrame
+    if (Constraint._useFrameOffsetDisabled === undefined) {
+      Constraint._useFrameOffsetDisabled = false;
+      Constraint._heapOffset = -1;
+      if (typeof constraint.setUseFrameOffset === 'function') {
+        constraint.setUseFrameOffset(false);
+        Constraint._useFrameOffsetDisabled = true;
+        Constraint._useDirectMethod = true;
+        console.log('[MMD Physics] setUseFrameOffset(false) applied via direct method');
+      } else if (typeof Ammo.getPointer === 'function') {
+        try {
+          const tmpForm = manager.allocTransform();
+          manager.setIdentity(tmpForm);
+          const cTrue = new Ammo.btGeneric6DofSpringConstraint(bodyA.body, bodyB.body, tmpForm, tmpForm, true);
+          const cFalse = new Ammo.btGeneric6DofSpringConstraint(bodyA.body, bodyB.body, tmpForm, tmpForm, false);
+          const ptrT = Ammo.getPointer(cTrue);
+          const ptrF = Ammo.getPointer(cFalse);
+          const heap = Ammo.HEAPU8;
+          if (heap) {
+            for (let off = 1200; off < 1400; off++) {
+              if (heap[ptrT + off] === 1 && heap[ptrF + off] === 0) {
+                Constraint._heapOffset = off;
+                console.log(`[MMD Physics] useFrameOffset heap detected at offset ${off}, applying fix`);
+                if (heap[ptrT + off] === 1) {
+                  Constraint._useFrameOffsetDisabled = true;
+                }
+                break;
+              }
+            }
+            if (!Constraint._useFrameOffsetDisabled) {
+              console.warn('[MMD Physics] useFrameOffset heap offset not found, physics may be unstable');
+            }
+          }
+          Ammo.destroy(cTrue);
+          Ammo.destroy(cFalse);
+          manager.freeTransform(tmpForm);
+        } catch (e) {
+          console.warn('[MMD Physics] useFrameOffset detection failed:', e);
+        }
+      }
+    }
+    if (Constraint._useFrameOffsetDisabled) {
+      if (Constraint._useDirectMethod) {
+        constraint.setUseFrameOffset(false);
+      } else if (Constraint._heapOffset > 0) {
+        const ptr = Ammo.getPointer(constraint);
+        Ammo.HEAPU8[ptr + Constraint._heapOffset] = 0;
+      }
+    }
     this.constraint = constraint;
     manager.freeTransform(form);
     manager.freeTransform(formA);
@@ -539,6 +601,10 @@ class RigidBody {
     const info = new Ammo.btRigidBodyConstructionInfo(weight, state, shape, localInertia);
     info.set_m_friction(this.params.friction);
     info.set_m_restitution(this.params.repulsion);
+    // Enable Bullet's built-in additional damping to reduce micro-oscillations
+    if (typeof info.set_m_additionalDamping === 'function') {
+      info.set_m_additionalDamping(true);
+    }
     const body = new Ammo.btRigidBody(info);
     if (this.params.physicsMode === 0) {
       body.setCollisionFlags(body.getCollisionFlags() | 2);
@@ -693,8 +759,12 @@ class MMDPhysics {
     const cache = new Ammo.btDbvtBroadphase();
     const solver = new Ammo.btSequentialImpulseConstraintSolver();
     const world = new Ammo.btDiscreteDynamicsWorld(dispatcher, cache, solver, config);
-    // Split Impulse: 将穿模位置修正与速度求解分离
-    // 防止堆叠刚体（如缎带上叠加其他物理体）因 ERP 位置修正注入动量而产生振荡
+    const solverInfo = world.getSolverInfo();
+    // 增加求解器迭代：默认 10 次对堆叠刚体不够，增加到 20 减少残差振荡
+    solverInfo.set_m_numIterations(20);
+    // Split Impulse: 将穿模位置修正与速度求解分离，防止堆叠刚体因位置修正注入动量
+    solverInfo.set_m_splitImpulse(true);
+    solverInfo.set_m_splitImpulsePenetrationThreshold(-0.04);
     return world;
   }
   _init(mesh, rigidBodyParams, constraintParams) {
@@ -725,9 +795,30 @@ class MMDPhysics {
     mesh.scale.copy(currentScale);
     mesh.updateMatrixWorld(true);
     this.reset();
+    this._updateRigidBodies();
+    for (let k = 0; k < 30; k++) {
+      this._stepSimulation(1 / 60);
+      this._updateRigidBodies();
+    }
+    for (let i = 0; i < this.bodies.length; i++) {
+      this.bodies[i].updateBone();
+    }
     manager.freeThreeVector3(currentPosition);
     manager.freeThreeQuaternion(currentQuaternion);
     manager.freeThreeVector3(currentScale);
+    // Adaptive stability system: save rest pose after proper settle, freeze unstable bodies
+    this._stabilityData = [];
+    for (let i = 0; i < this.bodies.length; i++) {
+      const body = this.bodies[i];
+      this._stabilityData.push({
+        prevQuat: new Quaternion(),
+        unstableFrames: 0,
+        frozen: false,
+        restQuat: body.bone ? new Quaternion().copy(body.bone.quaternion) : new Quaternion(),
+        restPos: body.bone ? new Vector3().copy(body.bone.position) : new Vector3(),
+      });
+    }
+    this._stabilityFrameCount = 0;
   }
   _initConstraints(constraints) {
     for (let i = 0, il = constraints.length; i < il; i++) {
@@ -765,8 +856,68 @@ class MMDPhysics {
     this.world.stepSimulation(stepTime, maxStepNum, unitStep);
   }
   _updateBones() {
+    this._stabilityFrameCount++;
+    const pastSettle = this._stabilityFrameCount > 60;
     for (let i = 0, il = this.bodies.length; i < il; i++) {
-      this.bodies[i].updateBone();
+      const body = this.bodies[i];
+      const sd = this._stabilityData[i];
+      if (body.params.physicsMode === 0 || body.params.boneIndex === -1) continue;
+      if (sd.frozen) {
+        body.bone.quaternion.copy(sd.restQuat);
+        if (body.params.physicsMode === 1) body.bone.position.copy(sd.restPos);
+        body.bone.updateMatrixWorld(true);
+        continue;
+      }
+      body.updateBone();
+      if (pastSettle) {
+        const q = body.bone.quaternion;
+        const prev = sd.prevQuat;
+        const dot = Math.abs(q.x * prev.x + q.y * prev.y + q.z * prev.z + q.w * prev.w);
+        const delta = 1 - dot;
+        prev.copy(q);
+        if (delta > 0.005) {
+          sd.unstableFrames++;
+        } else {
+          sd.unstableFrames = Math.max(0, sd.unstableFrames - 1);
+        }
+        if (sd.unstableFrames > 15) {
+          sd.frozen = true;
+          body.bone.quaternion.copy(sd.restQuat);
+          body.bone.position.copy(sd.restPos);
+          body.bone.updateMatrixWorld(true);
+          body.reset();
+          console.warn(`[MMD Physics] Froze unstable body [${i}] "${body.bone?.name}"`);
+        }
+      }
+    }
+  }
+  /**
+   * 模拟后速度衰减：对接近平衡态的动态刚体施加速度衰减。
+   * 打断 Sequential Impulse 求解器产生的 "微接触力→速度→位移→新接触力" 振荡循环。
+   * 只衰减速度很小的刚体，不影响正常运动中的物理。
+   */
+  _dampNearRestBodies() {
+    if (!this._dampVec) {
+      this._dampVec = new Ammo.btVector3(0, 0, 0);
+    }
+    const v = this._dampVec;
+    const linThresh = 0.3;  // 线速度阈值 (units/s)
+    const angThresh = 0.3;  // 角速度阈值 (rad/s)
+    const factor = 0.6;     // 衰减因子 (保留 60% 速度)
+    for (let i = 0, il = this.bodies.length; i < il; i++) {
+      const body = this.bodies[i];
+      if (body.params.physicsMode === 0) continue; // 跳过 kinematic
+      const rb = body.body;
+      const lv = rb.getLinearVelocity();
+      const av = rb.getAngularVelocity();
+      const linSpd = Math.sqrt(lv.x() * lv.x() + lv.y() * lv.y() + lv.z() * lv.z());
+      const angSpd = Math.sqrt(av.x() * av.x() + av.y() * av.y() + av.z() * av.z());
+      if (linSpd < linThresh && angSpd < angThresh) {
+        v.setValue(lv.x() * factor, lv.y() * factor, lv.z() * factor);
+        rb.setLinearVelocity(v);
+        v.setValue(av.x() * factor, av.y() * factor, av.z() * factor);
+        rb.setAngularVelocity(v);
+      }
     }
   }
   _updateRigidBodies() {
@@ -822,6 +973,7 @@ class MMDPhysics {
     mesh.updateMatrixWorld(true);
     this._updateRigidBodies();
     this._stepSimulation(delta);
+    this._dampNearRestBodies();
     this._updateBones();
     if (isNonDefaultScale) {
       if (parent != null)
@@ -840,7 +992,23 @@ class MMDPhysics {
     for (let i = 0; i < cycles; i++) {
       this.update(1 / 60);
     }
+    this.refreshStabilityBaseline();
     return this;
+  }
+  refreshStabilityBaseline() {
+    if (!this._stabilityData) return;
+    for (let i = 0; i < this.bodies.length; i++) {
+      const body = this.bodies[i];
+      const sd = this._stabilityData[i];
+      if (!sd) continue;
+      if (body.bone) {
+        sd.restQuat.copy(body.bone.quaternion);
+        sd.restPos.copy(body.bone.position);
+      }
+      sd.frozen = false;
+      sd.unstableFrames = 0;
+    }
+    this._stabilityFrameCount = 0;
   }
 }
 

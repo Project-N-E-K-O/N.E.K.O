@@ -1180,7 +1180,7 @@
         "saveSuccess": "保存成功",
         "saveFailed": "保存失敗: {{error}}",
         "saveFailedGeneral": "保存失敗",
-        "clearedMemory": "最近のメモリがクリアされました。保存されていません",
+        "clearedChatKeptMemo": "会話履歴をクリアしました。メモは残しています（未保存）",
         "enabled": "有効",
         "disabled": "無効",
         "autoReviewNote": "有効にすると、システムはメモリコンテンツを自動的に整理および最適化して、会話品質を向上させます",
@@ -1607,6 +1607,11 @@
             "headYaw": "左右回転範囲",
             "headPitch": "上下回転範囲",
             "smoothSpeed": "追従のなめらかさ"
+        },
+        "idleAnimation": {
+            "title": "待機アニメーション",
+            "changed": "待機アニメーションが変更されました: {{name}}",
+            "changeFailed": "待機アニメーションの変更に失敗しました"
         }
     },
     "modelManager": {

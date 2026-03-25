@@ -1180,7 +1180,7 @@
         "saveSuccess": "保存成功",
         "saveFailed": "保存失敗：{{error}}",
         "saveFailedGeneral": "保存失敗",
-        "clearedMemory": "已清空近期記憶，未保存",
+        "clearedChatKeptMemo": "已清空對話紀錄，備忘錄已保留（未保存）",
         "enabled": "已開啓",
         "disabled": "已關閉",
         "autoReviewNote": "開啓後係統將自動整理和優化記憶內容，提高對話質量",
@@ -1607,6 +1607,11 @@
             "headYaw": "左右轉角範圍",
             "headPitch": "上下轉角範圍",
             "smoothSpeed": "追蹤平滑度"
+        },
+        "idleAnimation": {
+            "title": "待機動作",
+            "changed": "待機動作已切換",
+            "changeFailed": "切換待機動作失敗"
         }
     },
     "modelManager": {

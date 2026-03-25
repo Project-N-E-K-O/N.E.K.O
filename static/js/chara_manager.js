@@ -1561,6 +1561,7 @@ window.unhideCatgirl = function(key) {
     localStorage.setItem('hidden_catgirls', JSON.stringify(newHiddenKeys));
     
     renderCatgirls();
+    updateSwitchButtons();
 }
 
 // 随机颜色函数
@@ -2891,6 +2892,7 @@ function updateSwitchButtons() {
 
             Object.keys(catgirls).forEach(name => {
                 const switchBtn = document.getElementById(`switch-btn-${name}`);
+                const block = switchBtn ? switchBtn.closest('.catgirl-block') : null;
                 if (switchBtn) {
                     if (name === currentCatgirl) {
                         const currentText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/star.png" alt="" class="star-icon"> <span data-i18n="character.currentCatgirl">${window.t('character.currentCatgirl')}</span>` : '<img src="/static/icons/star.png" alt="" class="star-icon"> 当前猫娘';
@@ -2899,12 +2901,14 @@ function updateSwitchButtons() {
                         switchBtn.style.color = '#fff';
                         switchBtn.style.minWidth = '120px';
                         switchBtn.disabled = true;
+                        if (block) block.classList.add('current');
                     } else {
                         const switchText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/star.png" alt="" class="star-icon"> <span data-i18n="character.switchCatgirl">${window.t('character.switchCatgirl')}</span>` : '<img src="/static/icons/star.png" alt="" class="star-icon"> 切换猫娘';
                         switchBtn.innerHTML = switchText;
                         switchBtn.style.background = '#40C5F1';
                         switchBtn.style.minWidth = '120px';
                         switchBtn.disabled = false;
+                        if (block) block.classList.remove('current');
                     }
                 }
             });
