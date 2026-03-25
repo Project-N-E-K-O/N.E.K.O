@@ -2024,18 +2024,23 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     # 优先检查克隆音色 provider（MiniMax / 阿里 CosyVoice）
     if has_custom_voice and voice_id:
         voice_meta = _get_voice_meta(voice_id)
-        if voice_meta:
-            provider = voice_meta.get('provider', '')
-            if provider.startswith('minimax'):
-                logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
-                            voice_id, provider)
-                api_key = cm.get_tts_api_key(provider)
-                from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
-                base_url = voice_meta.get('minimax_base_url') or (
-                    MINIMAX_INTL_BASE_URL if provider == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
-                )
-                worker = partial(minimax_tts_worker, base_url=base_url)
-                return worker, api_key
+        if voice_meta is None:
+            # 本地元数据缺失（可能是远端 clone 成功但本地保存失败），
+            # 无法安全判断 provider，返回 dummy 避免静默错路由
+            logger.error("克隆音色 %s 缺少本地元数据，无法判断 TTS provider，"
+                         "请检查本地保存是否失败并修复", voice_id)
+            return dummy_tts_worker, None
+        provider = voice_meta.get('provider', '')
+        if provider.startswith('minimax'):
+            logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
+                        voice_id, provider)
+            api_key = cm.get_tts_api_key(provider)
+            from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
+            base_url = voice_meta.get('minimax_base_url') or (
+                MINIMAX_INTL_BASE_URL if provider == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
+            )
+            worker = partial(minimax_tts_worker, base_url=base_url)
+            return worker, api_key
 
     try:
         tts_config = cm.get_model_api_config('tts_custom')
