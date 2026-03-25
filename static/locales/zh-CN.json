@@ -1599,6 +1599,11 @@
             "headYaw": "左右转角范围",
             "headPitch": "上下转角范围",
             "smoothSpeed": "跟踪平滑度"
+        },
+        "idleAnimation": {
+            "title": "待机动作",
+            "changed": "待机动作已切换",
+            "changeFailed": "切换待机动作失败"
         }
     },
     "modelManager": {

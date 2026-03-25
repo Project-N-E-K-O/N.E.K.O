@@ -1599,6 +1599,11 @@
             "headYaw": "左右回転範囲",
             "headPitch": "上下回転範囲",
             "smoothSpeed": "追従のなめらかさ"
+        },
+        "idleAnimation": {
+            "title": "待機アニメーション",
+            "changed": "待機アニメーションが変更されました: {{name}}",
+            "changeFailed": "待機アニメーションの変更に失敗しました"
         }
     },
     "modelManager": {
