@@ -1010,6 +1010,27 @@ class ConfigManager:
             voice_id.startswith("cosyvoice-v2") or voice_id.startswith("cosyvoice-v3-")
         )
 
+    def get_tts_api_key(self, provider: str) -> str | None:
+        """根据 provider 统一获取 TTS API Key，返回 None 表示未配置。
+
+        - cosyvoice: tts_custom 配置的 api_key
+        - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
+        - minimax_intl: ASSIST_API_KEY_MINIMAX → MINIMAX_INTL_API_KEY fallback
+        """
+        if provider == 'cosyvoice':
+            tts_config = self.get_model_api_config('tts_custom')
+            key = (tts_config.get('api_key') or '').strip()
+            return key or None
+        if provider in ('minimax', 'minimax_intl'):
+            core_config = self.get_core_config()
+            key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+            if not key:
+                from utils.minimax_api_keys import MINIMAX_API_KEY, MINIMAX_INTL_API_KEY
+                fallback = MINIMAX_INTL_API_KEY if provider == 'minimax_intl' else MINIMAX_API_KEY
+                key = (fallback or '').strip()
+            return key or None
+        return None
+
     def _get_minimax_storage_keys(self) -> list[str]:
         """返回当前 MiniMax API Key 对应的 voice_storage key 列表。
 

@@ -2005,15 +2005,16 @@ def _get_voice_meta(voice_id: str) -> dict | None:
 
 def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     """
-    根据 core_api 类型和是否有自定义音色，返回 (worker_fn, api_key_override, extra_args)。
+    根据 core_api 类型和是否有自定义音色，返回一个 callable。
 
-    core 层只需透传这些参数，不再关心具体 provider 的细节。
+    该 callable 的签名为 (request_queue, response_queue, api_key, voice_id)，
+    所有 provider 特有的参数（如 base_url）已通过 partial 绑定。
+    若某个 provider 需要替换 api_key，返回的第二个值非 None。
 
     Returns:
-        (worker_fn, api_key_override, extra_args)
-        - worker_fn: TTS worker 函数
+        (worker_fn, api_key_override)
+        - worker_fn: 签名统一的 TTS worker callable
         - api_key_override: 若非 None，替换 tts_config['api_key']
-        - extra_args: 额外位置参数元组（如 base_url），追加到 worker 调用
     """
     cm = get_config_manager()
 
@@ -2025,47 +2026,44 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             if provider.startswith('minimax'):
                 logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
                             voice_id, provider)
-                core_config = cm.get_core_config()
-                minimax_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip() or None
+                api_key = cm.get_tts_api_key(provider)
                 from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
                 base_url = voice_meta.get('minimax_base_url') or (
                     MINIMAX_INTL_BASE_URL if provider == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
                 )
-                return minimax_tts_worker, minimax_key, (base_url,)
+                worker = partial(minimax_tts_worker, base_url=base_url)
+                return worker, api_key
 
     try:
         tts_config = cm.get_model_api_config('tts_custom')
-        # 只有当 is_custom=True（即 ENABLE_CUSTOM_API=true 且用户明确配置了自定义 TTS）时才使用本地 worker
         if tts_config.get('is_custom'):
             base_url = tts_config.get('base_url') or ''
-            # GPT-SoVITS v3：配置 http/https URL，worker 内部自动转为 ws:// 连接
-            # local_cosyvoice：配置 ws:// URL，直接使用 WebSocket
             if base_url.startswith('http://') or base_url.startswith('https://'):
-                return gptsovits_tts_worker, None, ()
-            return local_cosyvoice_worker, None, ()
+                return gptsovits_tts_worker, None
+            return local_cosyvoice_worker, None
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 
     # 如果有自定义音色，使用 CosyVoice（阿里云）
     if has_custom_voice:
-        return cosyvoice_vc_tts_worker, None, ()
+        return cosyvoice_vc_tts_worker, None
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type == 'qwen':
-        return qwen_realtime_tts_worker, None, ()
+        return qwen_realtime_tts_worker, None
     if core_api_type == 'free':
-        return partial(step_realtime_tts_worker, free_mode=True), None, ()
+        return partial(step_realtime_tts_worker, free_mode=True), None
     elif core_api_type == 'step':
-        return step_realtime_tts_worker, None, ()
+        return step_realtime_tts_worker, None
     elif core_api_type == 'glm':
-        return cogtts_tts_worker, None, ()
+        return cogtts_tts_worker, None
     elif core_api_type == 'gemini':
-        return gemini_tts_worker, None, ()
+        return gemini_tts_worker, None
     elif core_api_type == 'openai':
-        return openai_tts_worker, None, ()
+        return openai_tts_worker, None
     else:
         logger.error(f"{core_api_type}不支持原生TTS，请使用自定义语音")
-        return dummy_tts_worker, None, ()
+        return dummy_tts_worker, None
 
 
 def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_id):

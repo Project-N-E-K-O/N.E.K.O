@@ -38,7 +38,6 @@ from utils.voice_clone import (
     QwenVoiceCloneError,
     qwen_language_hints,
 )
-from utils.minimax_api_keys import MINIMAX_API_KEY, MINIMAX_INTL_API_KEY
 from utils.file_utils import atomic_write_json
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
@@ -1824,9 +1823,7 @@ async def get_voice_preview(voice_id: str):
         
         text = "喵喵喵～这里是neko～很高兴见到你～"
         if provider in ('minimax', 'minimax_intl'):
-            minimax_api_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
-            if not minimax_api_key:
-                minimax_api_key = (MINIMAX_INTL_API_KEY or '').strip() if provider == 'minimax_intl' else (MINIMAX_API_KEY or '').strip()
+            minimax_api_key = _config_manager.get_tts_api_key(provider)
             if not minimax_api_key:
                 return JSONResponse({
                     'success': False,
@@ -1834,7 +1831,6 @@ async def get_voice_preview(voice_id: str):
                     'code': 'MINIMAX_API_KEY_MISSING'
                 }, status_code=400)
 
-            # 从 voice_data 中读取 base_url，兼容旧数据回退到 provider 推断
             minimax_base_url = (voice_data or {}).get('minimax_base_url') or get_minimax_base_url(provider)
             provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
 
@@ -2376,12 +2372,11 @@ async def voice_clone(
     
     # ==================== 云端语音克隆：按 provider 对偶分支 ====================
 
+    # 统一通过 config_manager 获取 API Key
+    api_key = _config_manager.get_tts_api_key(provider)
+
     if provider in ('minimax', 'minimax_intl'):
         # ---------- MiniMax（国服 / 国际服）----------
-        core_config = _config_manager.get_core_config()
-        api_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
-        if not api_key:
-            api_key = (MINIMAX_INTL_API_KEY or '').strip() if provider == 'minimax_intl' else (MINIMAX_API_KEY or '').strip()
         if not api_key:
             return JSONResponse({
                 'error': 'MINIMAX_API_KEY_MISSING',
@@ -2394,14 +2389,12 @@ async def voice_clone(
 
     elif provider == 'cosyvoice':
         # ---------- 阿里云 CosyVoice ----------
-        tts_config_for_dedup = _config_manager.get_model_api_config('tts_custom')
-        api_key = (tts_config_for_dedup.get('api_key') or '').strip()
         if not api_key:
             return JSONResponse({
                 'error': 'TTS_AUDIO_API_KEY_MISSING',
                 'code': 'TTS_AUDIO_API_KEY_MISSING'
             }, status_code=400)
-        base_url = None  # CosyVoice 使用 DashScope SDK，不需要 base_url
+        base_url = None
         storage_key = api_key
         provider_label = '阿里云CosyVoice'
 

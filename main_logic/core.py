@@ -789,6 +789,40 @@ class LLMSessionManager:
         await self._cleanup_pending_session_resources()  # close()后再置None，避免泄漏
         self.is_hot_swap_imminent = False
 
+    def _has_custom_tts(self) -> bool:
+        """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
+        core_config = self._config_manager.get_core_config()
+        return (bool(self.voice_id) and not self._is_free_preset_voice) or bool(
+            core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_MODEL_URL')
+        )
+
+    def _start_tts_thread(self):
+        """创建并启动 TTS Worker 线程。
+
+        根据 voice_id / core_api_type 选择 worker，解析 api_key，
+        创建新的 request/response Queue 并启动 daemon 线程。
+        """
+        has_custom = self._has_custom_tts()
+        tts_worker, api_key_override = get_tts_worker(
+            core_api_type=self.core_api_type,
+            has_custom_voice=has_custom,
+            voice_id=self.voice_id or '',
+        )
+        tts_config = self._config_manager.get_model_api_config(
+            'tts_custom' if has_custom else 'tts_default'
+        )
+        api_key = api_key_override or tts_config['api_key']
+
+        self.tts_request_queue = Queue()
+        self.tts_response_queue = Queue()
+
+        self.tts_thread = Thread(
+            target=tts_worker,
+            args=(self.tts_request_queue, self.tts_response_queue, api_key, self.voice_id),
+            daemon=True,
+        )
+        self.tts_thread.start()
+
     def _respawn_tts_worker(self):
         """检测 TTS Worker 线程已死亡时重新拉起，不阻塞等待就绪。
 
@@ -798,46 +832,16 @@ class LLMSessionManager:
         限流：12 秒内最多拉起一次，避免服务彻底不可用时风暴式重连。
         """
         if self.tts_thread and self.tts_thread.is_alive():
-            return  # 线程还活着，无需重启
+            return
 
         import time
         now = time.monotonic()
         if now - self._last_tts_respawn_time < 12.0:
-            return  # 冷却中，跳过
+            return
         self._last_tts_respawn_time = now
 
         logger.info("🔄 TTS Worker 已死亡，尝试重新拉起...")
-
-        core_config = self._config_manager.get_core_config()
-        has_custom_tts = (bool(self.voice_id) and not self._is_free_preset_voice) or (
-            core_config.get('ENABLE_CUSTOM_API') and
-            core_config.get('TTS_MODEL_URL')
-        )
-
-        tts_worker, api_key_override, extra_args = get_tts_worker(
-            core_api_type=self.core_api_type,
-            has_custom_voice=has_custom_tts,
-            voice_id=self.voice_id or '',
-        )
-
-        if has_custom_tts:
-            tts_config = self._config_manager.get_model_api_config('tts_custom')
-        else:
-            tts_config = self._config_manager.get_model_api_config('tts_default')
-
-        api_key = api_key_override or tts_config['api_key']
-
-        # 复用现有队列，这样 tts_response_handler 不需要重建
-        self.tts_request_queue = Queue()
-        self.tts_response_queue = Queue()
-
-        _tts_args = (self.tts_request_queue, self.tts_response_queue, api_key, self.voice_id) + extra_args
-        self.tts_thread = Thread(
-            target=tts_worker,
-            args=_tts_args,
-        )
-        self.tts_thread.daemon = True
-        self.tts_thread.start()
+        self._start_tts_thread()
 
         # 重新启动 tts_response_handler 以监听新队列
         if self.tts_handler_task and not self.tts_handler_task.done():
@@ -1152,39 +1156,10 @@ class LLMSessionManager:
             # 启动TTS线程
             tts_ready = False
             if self.tts_thread is None or not self.tts_thread.is_alive():
-                # 判断是否使用自定义 TTS：有 voice_id（但不是免费预设）或 配置了自定义 TTS URL
-                core_config = self._config_manager.get_core_config()
-                has_custom_tts = (bool(self.voice_id) and not self._is_free_preset_voice) or (
-                    core_config.get('ENABLE_CUSTOM_API') and
-                    core_config.get('TTS_MODEL_URL')
-                )
-
-                # 使用工厂函数获取合适的 TTS worker 及其配置
-                tts_worker, api_key_override2, extra_args2 = get_tts_worker(
-                    core_api_type=self.core_api_type,
-                    has_custom_voice=has_custom_tts,
-                    voice_id=self.voice_id or '',
-                )
-
-                self.tts_request_queue = Queue()  # TTS request (线程队列)
-                self.tts_response_queue = Queue()  # TTS response (线程队列)
-                # 根据是否有自定义音色/TTS配置选择 TTS API 配置
-                # 免费预设音色使用 tts_default（走 step/free TTS 通道）
-                if has_custom_tts:
-                    tts_config = self._config_manager.get_model_api_config('tts_custom')
-                else:
-                    tts_config = self._config_manager.get_model_api_config('tts_default')
-
-                api_key2 = api_key_override2 or tts_config['api_key']
-                _tts_args2 = (self.tts_request_queue, self.tts_response_queue, api_key2, self.voice_id) + extra_args2
-                self.tts_thread = Thread(
-                    target=tts_worker,
-                    args=_tts_args2,
-                )
-                self.tts_thread.daemon = True
-                self.tts_thread.start()
+                self._start_tts_thread()
 
                 # 等待TTS进程发送就绪信号（最多等待12秒）
+                has_custom_tts = self._has_custom_tts()
                 tts_type = "free-preset-TTS" if self._is_free_preset_voice else ("custom-TTS" if has_custom_tts else f"{self.core_api_type}-default-TTS")
                 logger.info(f"🎤 TTS进程已启动，等待就绪... (使用: {tts_type})")
                 logger.info("[语音会话诊断] 开始等待 TTS 就绪信号 (超时: 12秒)")
