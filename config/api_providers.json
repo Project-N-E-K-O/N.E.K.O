@@ -136,6 +136,66 @@
       "emotion_model": "kimi-k2-0905-preview",
       "vision_model": "kimi-k2.5",
       "agent_model": "kimi-k2.5"
+    },
+    "deepseek": {
+      "key": "deepseek",
+      "name": "DeepSeek",
+      "description": "性价比极高，推理能力强，不支持自定义语音",
+      "openrouter_url": "https://api.deepseek.com/v1",
+      "conversation_model": "deepseek-chat",
+      "summary_model": "deepseek-chat",
+      "correction_model": "deepseek-chat",
+      "emotion_model": "deepseek-chat",
+      "vision_model": "deepseek-chat",
+      "agent_model": "deepseek-reasoner"
+    },
+    "doubao": {
+      "key": "doubao",
+      "name": "豆包（字节跳动）",
+      "description": "国内可用，价格适中，不支持自定义语音",
+      "openrouter_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "conversation_model": "doubao-1.5-pro-32k",
+      "summary_model": "doubao-1.5-lite-32k",
+      "correction_model": "doubao-1.5-pro-32k",
+      "emotion_model": "doubao-1.5-lite-32k",
+      "vision_model": "doubao-1.5-vision-pro-32k",
+      "agent_model": "doubao-1.5-pro-32k"
+    },
+    "minimax": {
+      "key": "minimax",
+      "name": "MiniMax（国服）",
+      "description": "支持语音克隆（TTS），国服版本",
+      "openrouter_url": "https://api.minimaxi.com/v1",
+      "conversation_model": "MiniMax-Text-01",
+      "summary_model": "MiniMax-Text-01",
+      "correction_model": "MiniMax-Text-01",
+      "emotion_model": "MiniMax-Text-01",
+      "vision_model": "MiniMax-Text-01",
+      "agent_model": "MiniMax-Text-01"
+    },
+    "minimax_intl": {
+      "key": "minimax_intl",
+      "name": "MiniMax（国际服）",
+      "description": "支持语音克隆（TTS），国际服版本",
+      "openrouter_url": "https://api.minimax.chat/v1",
+      "conversation_model": "MiniMax-Text-01",
+      "summary_model": "MiniMax-Text-01",
+      "correction_model": "MiniMax-Text-01",
+      "emotion_model": "MiniMax-Text-01",
+      "vision_model": "MiniMax-Text-01",
+      "agent_model": "MiniMax-Text-01"
+    },
+    "grok": {
+      "key": "grok",
+      "name": "Grok（xAI）",
+      "description": "xAI的强力模型，国内版不支持",
+      "openrouter_url": "https://api.x.ai/v1",
+      "conversation_model": "grok-3-mini-fast",
+      "summary_model": "grok-3-mini-fast",
+      "correction_model": "grok-3-mini-fast",
+      "emotion_model": "grok-3-mini-fast",
+      "vision_model": "grok-2-vision-latest",
+      "agent_model": "grok-3-mini"
     }
   },
   "default_models": {
@@ -159,7 +219,26 @@
     "step": "ASSIST_API_KEY_STEP",
     "silicon": "ASSIST_API_KEY_SILICON",
     "gemini": "ASSIST_API_KEY_GEMINI",
-    "kimi": "ASSIST_API_KEY_KIMI"
+    "kimi": "ASSIST_API_KEY_KIMI",
+    "deepseek": "ASSIST_API_KEY_DEEPSEEK",
+    "doubao": "ASSIST_API_KEY_DOUBAO",
+    "minimax": "ASSIST_API_KEY_MINIMAX",
+    "minimax_intl": "ASSIST_API_KEY_MINIMAX_INTL",
+    "grok": "ASSIST_API_KEY_GROK"
+  },
+  "api_key_registry": {
+    "qwen":         { "config_field": "assistApiKeyQwen",       "restricted": false },
+    "openai":       { "config_field": "assistApiKeyOpenai",     "restricted": true },
+    "deepseek":     { "config_field": "assistApiKeyDeepseek",   "restricted": false },
+    "glm":          { "config_field": "assistApiKeyGlm",        "restricted": false },
+    "step":         { "config_field": "assistApiKeyStep",        "restricted": false },
+    "silicon":      { "config_field": "assistApiKeySilicon",     "restricted": false },
+    "gemini":       { "config_field": "assistApiKeyGemini",      "restricted": true },
+    "kimi":         { "config_field": "assistApiKeyKimi",        "restricted": false },
+    "doubao":       { "config_field": "assistApiKeyDoubao",      "restricted": false },
+    "minimax":      { "config_field": "assistApiKeyMinimax",     "restricted": false },
+    "minimax_intl": { "config_field": "assistApiKeyMinimaxIntl", "restricted": false },
+    "grok":         { "config_field": "assistApiKeyGrok",        "restricted": true }
   },
   "free_voices": {
     "俏皮女孩": "voice-tone-PGLiTXeJCS",

@@ -1015,7 +1015,7 @@ class ConfigManager:
 
         - cosyvoice: tts_custom 配置的 api_key
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
-        - minimax_intl: ASSIST_API_KEY_MINIMAX → MINIMAX_INTL_API_KEY fallback
+        - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
         """
         if provider == 'cosyvoice':
             tts_config = self.get_model_api_config('tts_custom')
@@ -1023,11 +1023,17 @@ class ConfigManager:
             return key or None
         if provider in ('minimax', 'minimax_intl'):
             core_config = self.get_core_config()
-            key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+            if provider == 'minimax_intl':
+                key = (core_config.get('ASSIST_API_KEY_MINIMAX_INTL') or '').strip()
+            else:
+                key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
             if not key:
-                from utils.minimax_api_keys import MINIMAX_API_KEY, MINIMAX_INTL_API_KEY
-                fallback = MINIMAX_INTL_API_KEY if provider == 'minimax_intl' else MINIMAX_API_KEY
-                key = (fallback or '').strip()
+                try:
+                    from utils.minimax_api_keys import MINIMAX_API_KEY, MINIMAX_INTL_API_KEY
+                    fallback = MINIMAX_INTL_API_KEY if provider == 'minimax_intl' else MINIMAX_API_KEY
+                    key = (fallback or '').strip()
+                except ImportError:
+                    pass
             return key or None
         return None
 
@@ -1519,7 +1525,12 @@ class ConfigManager:
             'ASSIST_API_KEY_STEP': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_SILICON': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_GEMINI': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_KIMI': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_DEEPSEEK': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_DOUBAO': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_MINIMAX': '',
+            'ASSIST_API_KEY_MINIMAX_INTL': '',
+            'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
             'IS_FREE_VERSION': False,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
@@ -1572,7 +1583,11 @@ class ConfigManager:
         config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
+        config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
+        config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or config['CORE_API_KEY']
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
