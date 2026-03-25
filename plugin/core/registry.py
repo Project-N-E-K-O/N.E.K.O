@@ -178,34 +178,80 @@ def _collect_plugin_python_requirements(
 
 
 def _find_missing_python_requirements(requirements: List[str]) -> List[str]:
-    """Return missing requirement specs based on installed distributions."""
+    """Return unsatisfied requirement specs based on installed distributions."""
     if not requirements:
         return []
 
-    installed: set[str] = set()
+    installed: dict[str, Optional[str]] = {}
     try:
         for dist in importlib_metadata.distributions():
+            version_text: Optional[str] = None
+            dist_version = getattr(dist, "version", None)
+            if isinstance(dist_version, str) and dist_version.strip():
+                version_text = dist_version.strip()
+            else:
+                meta_version = dist.metadata.get("Version")
+                if isinstance(meta_version, str) and meta_version.strip():
+                    version_text = meta_version.strip()
+
             dist_name = dist.metadata.get("Name")
             if isinstance(dist_name, str) and dist_name.strip():
-                installed.add(_canonicalize_dist_name(dist_name))
-            elif getattr(dist, "name", None):
-                installed.add(_canonicalize_dist_name(str(dist.name)))
+                installed[_canonicalize_dist_name(dist_name)] = version_text
+
+            dist_attr_name = getattr(dist, "name", None)
+            if isinstance(dist_attr_name, str) and dist_attr_name.strip():
+                installed.setdefault(_canonicalize_dist_name(dist_attr_name), version_text)
     except Exception:
         return []
 
     missing: List[str] = []
     seen_missing: set[str] = set()
     for req in requirements:
-        req_name = _parse_requirement_name(req)
+        req_text = str(req or "").strip()
+        if not req_text:
+            continue
+
+        parsed_requirement = None
+        req_name = None
+        if Requirement is not None:
+            try:
+                parsed_requirement = Requirement(req_text)
+                req_name = str(parsed_requirement.name).strip() or None
+                marker = getattr(parsed_requirement, "marker", None)
+                if marker is not None:
+                    try:
+                        if not bool(marker.evaluate()):
+                            continue
+                    except Exception:
+                        pass
+            except Exception:
+                parsed_requirement = None
+
+        if req_name is None:
+            req_name = _parse_requirement_name(req_text)
         if not req_name:
             continue
+
         canon = _canonicalize_dist_name(req_name)
-        if canon in installed:
+        installed_version = installed.get(canon)
+        if installed_version is not None and parsed_requirement is not None and Version is not None:
+            specifier = getattr(parsed_requirement, "specifier", None)
+            if specifier:
+                try:
+                    if Version(installed_version) in specifier:
+                        continue
+                except Exception:
+                    pass
+            else:
+                continue
+        elif canon in installed:
             continue
-        if canon in seen_missing:
+
+        missing_key = req_text.lower()
+        if missing_key in seen_missing:
             continue
-        seen_missing.add(canon)
-        missing.append(req)
+        seen_missing.add(missing_key)
+        missing.append(req_text)
     return missing
 
 
@@ -1770,21 +1816,21 @@ def load_plugins_from_roots(
             )
             continue
 
-        missing_python_requirements = _find_missing_python_requirements(ctx.python_requirements)
-        if missing_python_requirements:
+        unsatisfied_python_requirements = _find_missing_python_requirements(ctx.python_requirements)
+        if unsatisfied_python_requirements:
             logger.error(
-                "Plugin {}: missing Python dependencies: {}. "
+                "Plugin {}: unsatisfied Python dependencies: {}. "
                 "Please install them in current runtime environment "
                 "(declared in plugin.toml [plugin].dependencies and/or plugin requirements.txt).",
                 pid,
-                missing_python_requirements,
+                unsatisfied_python_requirements,
             )
             _register_failed_plugin(
                 ctx,
                 logger,
                 plugin_id=pid,
                 error_type="MissingPythonDependencies",
-                error_message=f"Missing Python dependencies: {missing_python_requirements}",
+                error_message=f"Unsatisfied Python dependencies: {unsatisfied_python_requirements}",
                 error_phase="python_requirements",
             )
             continue
