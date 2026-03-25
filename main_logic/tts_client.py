@@ -2025,13 +2025,11 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     if has_custom_voice and voice_id:
         voice_meta = _get_voice_meta(voice_id)
         if voice_meta is None:
-            # 本地元数据缺失（可能是远端 clone 成功但本地保存失败），
-            # 无法安全判断 provider，返回 dummy 避免静默错路由
-            logger.error("克隆音色 %s 缺少本地元数据，无法判断 TTS provider，"
-                         "请检查本地保存是否失败并修复", voice_id)
-            return dummy_tts_worker, None
-        provider = voice_meta.get('provider', '')
-        if provider.startswith('minimax'):
+            # 本地元数据缺失 — 可能是本地 TTS 音色（GPT-SoVITS / CosyVoice local），
+            # 也可能是远端 clone 成功但本地保存失败。fallthrough 让后续分支处理。
+            logger.debug("克隆音色 %s 无本地元数据，跳过 MiniMax 检测", voice_id)
+        elif voice_meta.get('provider', '').startswith('minimax'):
+            provider = voice_meta['provider']
             logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
                         voice_id, provider)
             api_key = cm.get_tts_api_key(provider)
