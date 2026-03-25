@@ -331,6 +331,20 @@ class PluginLifecycleService:
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             logger.info("removed stale host for plugin_id={} (process no longer alive)", plugin_id)
 
+        existing_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
+        if isinstance(existing_meta, dict):
+            load_state_obj = existing_meta.get("runtime_load_state")
+            if isinstance(load_state_obj, str) and load_state_obj == "failed":
+                err_text_obj = existing_meta.get("runtime_load_error_message")
+                err_text = str(err_text_obj) if isinstance(err_text_obj, str) and err_text_obj else "plugin load failed at startup"
+                raise _to_domain_error(
+                    code="PLUGIN_LOAD_FAILED",
+                    message=f"Plugin '{plugin_id}' is marked as load_failed and cannot be started: {err_text}",
+                    status_code=409,
+                    plugin_id=plugin_id,
+                    error_type="PluginLoadFailed",
+                )
+
         if state.is_plugin_frozen(plugin_id) and not restore_state:
             raise _to_domain_error(
                 code="PLUGIN_FROZEN",

@@ -24,7 +24,7 @@
     <!-- 普通插件操作按钮 -->
     <el-button-group v-else>
       <el-button
-        v-if="status !== 'running' && status !== 'disabled'"
+        v-if="status !== 'running' && status !== 'disabled' && status !== 'load_failed'"
         type="success"
         :icon="VideoPlay"
         @click="handleStart"
@@ -46,7 +46,7 @@
         :icon="Refresh"
         @click="handleReload"
         :loading="loading"
-        :disabled="status === 'disabled'"
+        :disabled="status === 'disabled' || status === 'load_failed'"
       >
         {{ t('plugins.reload') }}
       </el-button>
@@ -78,8 +78,13 @@ const currentPlugin = computed(() => {
 const status = computed(() => currentPlugin.value?.status || 'stopped')
 const isExtension = computed(() => currentPlugin.value?.type === 'extension')
 const isDisabled = computed(() => status.value === 'disabled')
+const isLoadFailed = computed(() => status.value === 'load_failed')
 
 async function handleStart() {
+  if (isLoadFailed.value) {
+    ElMessage.warning(t('messages.pluginLoadFailed'))
+    return
+  }
   if (isDisabled.value) {
     ElMessage.warning(t('messages.pluginDisabled'))
     return
@@ -117,6 +122,10 @@ async function handleStop() {
 }
 
 async function handleReload() {
+  if (isLoadFailed.value) {
+    ElMessage.warning(t('messages.pluginLoadFailed'))
+    return
+  }
   if (isDisabled.value) {
     ElMessage.warning(t('messages.pluginDisabled'))
     return
@@ -173,4 +182,3 @@ async function handleEnableExt() {
   gap: 8px;
 }
 </style>
-

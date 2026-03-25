@@ -44,7 +44,11 @@ export const usePluginStore = defineStore('plugin', () => {
         displayStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.PENDING
       } else {
         const runtimeStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED
-        displayStatus = enabled ? runtimeStatus : StatusEnum.DISABLED
+        if (runtimeStatus === StatusEnum.LOAD_FAILED) {
+          displayStatus = StatusEnum.LOAD_FAILED
+        } else {
+          displayStatus = enabled ? runtimeStatus : StatusEnum.DISABLED
+        }
       }
       
       return {

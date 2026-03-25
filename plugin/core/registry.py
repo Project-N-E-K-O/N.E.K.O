@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import hashlib
 import importlib
 import inspect
@@ -1306,6 +1307,78 @@ def _load_disabled_plugin(
                 state.plugins[resolved_id] = meta
 
 
+def _register_failed_plugin(
+    ctx: PluginContext,
+    logger: Any,
+    *,
+    plugin_id: Optional[str],
+    error_type: str,
+    error_message: str,
+    error_phase: str,
+) -> None:
+    """
+    注册加载失败的插件元数据（仅可见，不可运行）。
+
+    Args:
+        ctx: 插件上下文
+        logger: 日志记录器
+        plugin_id: 注册用插件 ID（允许与 ctx.pid 不同，如冲突重命名后）
+        error_type: 错误类型
+        error_message: 错误信息
+        error_phase: 失败阶段（dependency_check/import/start_process 等）
+    """
+    pid = plugin_id or ctx.pid
+    if _check_plugin_already_registered(pid, ctx.toml_path, logger):
+        return
+
+    entries_preview = _extract_entries_preview(
+        pid,
+        cls=type("FailedPluginStub", (), {}),
+        conf=ctx.conf,
+        pdata=ctx.pdata,
+    )
+
+    plugin_meta = _build_plugin_meta(
+        pid, ctx.pdata,
+        sdk_supported_str=ctx.sdk_supported_str,
+        sdk_recommended_str=ctx.sdk_recommended_str,
+        sdk_untested_str=ctx.sdk_untested_str,
+        sdk_conflicts_list=ctx.sdk_conflicts_list,
+        dependencies=ctx.dependencies,
+    )
+
+    resolved_id = register_plugin(
+        plugin_meta,
+        logger,
+        config_path=ctx.toml_path,
+        entry_point=ctx.entry,
+    )
+    if resolved_id is None:
+        return
+
+    with state.acquire_plugins_write_lock():
+        meta = state.plugins.get(resolved_id)
+        if isinstance(meta, dict):
+            meta["runtime_enabled"] = bool(ctx.enabled)
+            meta["runtime_auto_start"] = bool(ctx.auto_start)
+            meta["runtime_load_state"] = "failed"
+            meta["runtime_load_error_type"] = str(error_type or "LoadFailed")
+            meta["runtime_load_error_message"] = str(error_message or "Unknown load error")
+            meta["runtime_load_error_phase"] = str(error_phase or "unknown")
+            meta["runtime_load_error_time"] = datetime.now(timezone.utc).isoformat()
+            meta["entries_preview"] = entries_preview
+            state.plugins[resolved_id] = meta
+    state.invalidate_snapshot_cache("plugins")
+
+    logger.warning(
+        "Plugin {} registered as load_failed (phase={}, error_type={}): {}",
+        resolved_id,
+        error_phase,
+        error_type,
+        error_message,
+    )
+
+
 def _load_extension_plugin(
     ctx: PluginContext,
     logger: Any,
@@ -1430,9 +1503,25 @@ def _load_adapter_plugin(
         
     except (OSError, RuntimeError) as e:
         logger.error("Failed to start adapter process for {}: {}", pid, e, exc_info=True)
+        _register_failed_plugin(
+            ctx,
+            logger,
+            plugin_id=pid,
+            error_type=type(e).__name__,
+            error_message=str(e),
+            error_phase="start_process",
+        )
         return None
     except Exception:
         logger.exception("Unexpected error starting adapter process for {}", pid)
+        _register_failed_plugin(
+            ctx,
+            logger,
+            plugin_id=pid,
+            error_type="UnexpectedStartProcessError",
+            error_message=f"Unexpected error starting adapter process for {pid}",
+            error_phase="start_process",
+        )
         return None
     
     # 注册插件元数据
@@ -1643,6 +1732,7 @@ def load_plugins_from_roots(
         
         # 依赖检查（可通过配置禁用）
         dependency_check_failed = False
+        dependency_check_error: Optional[str] = None
         if PLUGIN_ENABLE_DEPENDENCY_CHECK and dependencies:
             logger.debug("Plugin {}: checking {} dependency(ies)...", pid, len(dependencies))
             for dep in dependencies:
@@ -1654,6 +1744,7 @@ def load_plugins_from_roots(
                         pid, error_msg
                     )
                     dependency_check_failed = True
+                    dependency_check_error = str(error_msg) if error_msg else "dependency check failed"
                     break
                 logger.debug("Plugin {}: dependency '{}' check passed", pid, getattr(dep, 'id', getattr(dep, 'entry', getattr(dep, 'custom_event', 'unknown'))))
             if not dependency_check_failed:
@@ -1669,6 +1760,14 @@ def load_plugins_from_roots(
         
         if dependency_check_failed:
             logger.debug("Plugin {}: skipping due to failed dependency check", pid)
+            _register_failed_plugin(
+                ctx,
+                logger,
+                plugin_id=pid,
+                error_type="DependencyCheckFailed",
+                error_message=dependency_check_error or "Plugin dependency check failed",
+                error_phase="dependency_check",
+            )
             continue
 
         missing_python_requirements = _find_missing_python_requirements(ctx.python_requirements)
@@ -1679,6 +1778,14 @@ def load_plugins_from_roots(
                 "(declared in plugin.toml [plugin].dependencies and/or plugin requirements.txt).",
                 pid,
                 missing_python_requirements,
+            )
+            _register_failed_plugin(
+                ctx,
+                logger,
+                plugin_id=pid,
+                error_type="MissingPythonDependencies",
+                error_message=f"Missing Python dependencies: {missing_python_requirements}",
+                error_phase="python_requirements",
             )
             continue
 
@@ -1731,12 +1838,36 @@ def load_plugins_from_roots(
             cls: Type[Any] = getattr(mod, class_name)
         except (ImportError, ModuleNotFoundError) as e:
             logger.error("Failed to import module '{}' for plugin {}: {}", module_path, pid, e, exc_info=True)
+            _register_failed_plugin(
+                ctx,
+                logger,
+                plugin_id=pid,
+                error_type=type(e).__name__,
+                error_message=str(e),
+                error_phase="import_module",
+            )
             continue
         except AttributeError as e:
             logger.error("Class '{}' not found in module '{}' for plugin {}: {}", class_name, module_path, pid, e, exc_info=True)
+            _register_failed_plugin(
+                ctx,
+                logger,
+                plugin_id=pid,
+                error_type="AttributeError",
+                error_message=f"Class '{class_name}' not found in module '{module_path}'",
+                error_phase="import_class",
+            )
             continue
         except Exception:
             logger.exception("Unexpected error importing plugin class {} for plugin {}", entry, pid)
+            _register_failed_plugin(
+                ctx,
+                logger,
+                plugin_id=pid,
+                error_type="UnexpectedImportError",
+                error_message=f"Unexpected error importing plugin class {entry}",
+                error_phase="import_module",
+            )
             continue
 
         host = None
@@ -1800,9 +1931,25 @@ def load_plugins_from_roots(
                     continue
             except (OSError, RuntimeError) as e:
                 logger.error("Failed to start process for plugin {}: {}", pid, e, exc_info=True)
+                _register_failed_plugin(
+                    ctx,
+                    logger,
+                    plugin_id=pid,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    error_phase="start_process",
+                )
                 continue
             except Exception:
                 logger.exception("Unexpected error starting process for plugin {}", pid)
+                _register_failed_plugin(
+                    ctx,
+                    logger,
+                    plugin_id=pid,
+                    error_type="UnexpectedStartProcessError",
+                    error_message=f"Unexpected error starting process for plugin {pid}",
+                    error_phase="start_process",
+                )
                 continue
 
         scan_static_metadata(pid, cls, conf, pdata)
