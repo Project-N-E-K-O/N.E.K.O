@@ -77,9 +77,10 @@ class MMDCore {
 
     /**
      * 应用画质设置（模仿 VRM 的画质分级系统）
-     * low:    pixelRatio=0.8, 物理关, 描边关
-     * medium: pixelRatio=1.0, 物理开, 描边关
+     * low:    pixelRatio=0.8, 物理关
+     * medium: pixelRatio=1.0, 物理开
      * high:   pixelRatio=auto, 物理开, 描边开
+     * 注意：描边设置由用户手动控制，画质设置不会覆盖用户的选择
      */
     applyQualitySettings(quality) {
         if (!this.manager.renderer) return;
@@ -89,19 +90,24 @@ class MMDCore {
         if (quality === 'low') {
             this.manager.renderer.setPixelRatio(Math.min(0.8, devicePixelRatio));
             this.manager.enablePhysics = false;
-            this.manager.useOutlineEffect = false;
         } else if (quality === 'medium') {
             this.manager.renderer.setPixelRatio(Math.min(1.0, devicePixelRatio));
             this.manager.enablePhysics = true;
-            this.manager.useOutlineEffect = false;
         } else {
-            // high: 使用性能检测的原始像素比
             this.applyPerformanceSettings();
             this.manager.enablePhysics = true;
-            this.manager.useOutlineEffect = true;
+            if (!this.manager._userForcedOutline) {
+                this.manager.useOutlineEffect = true;
+            }
         }
 
-        console.log(`[MMD] 画质设置: ${quality}, physics=${this.manager.enablePhysics}, outline=${this.manager.useOutlineEffect}`);
+        if (!this.manager._userForcedOutline) {
+            if (quality === 'low' || quality === 'medium') {
+                this.manager.useOutlineEffect = false;
+            }
+        }
+
+        console.log(`[MMD] 画质设置: ${quality}, physics=${this.manager.enablePhysics}, outline=${this.manager.useOutlineEffect}, userForcedOutline=${this.manager._userForcedOutline}`);
     }
 
     // ═══════════════════ 模块动态导入 ═══════════════════
