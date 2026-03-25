@@ -17,6 +17,8 @@
         globalBusy: false,
         optimistic: {},
         busyTimer: null,
+        nekoclawReady: null,
+        nekoclawReason: '',
     };
     
     // 暴露状态供 app.js 等外部脚本使用乐观更新检测
@@ -95,8 +97,23 @@
     async function refreshNekoclawAvailability() {
         try {
             const r = await fetch('/api/agent/nekoclaw/availability');
-            return r.ok ? !!(await r.json()).ready : false;
+            let ready = false;
+            let reason = '';
+            if (r.ok) {
+                const payload = await r.json();
+                ready = !!payload.ready;
+                reason = Array.isArray(payload.reasons) ? String(payload.reasons[0] || '') : '';
+            } else {
+                reason = `status ${r.status}`;
+            }
+            state.nekoclawReady = ready;
+            state.nekoclawReason = reason;
+            if (state.snapshot) render('nekoclaw-refresh');
+            return ready;
         } catch (e) {
+            state.nekoclawReady = false;
+            state.nekoclawReason = String(e && e.message ? e.message : e || '');
+            if (state.snapshot) render('nekoclaw-refresh-error');
             return false;
         }
     }
@@ -194,7 +211,7 @@
                 m.title = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
             });
             sync(master);
-            [keyboard, browser, userPlugin, openfang].forEach(list => {
+            [keyboard, browser, userPlugin, openfang, nekoclaw].forEach(list => {
                 list.forEach(cb => {
                     cb.checked = false;
                     cb.disabled = true;
@@ -256,7 +273,10 @@
 
         // NekoClaw toggle mirrors user_plugin_enabled (same underlying flag)
         if (nekoclaw.length) {
-            const ready = capabilityReady(snap, 'user_plugin_enabled');
+            const ready = typeof state.nekoclawReady === 'boolean'
+                ? state.nekoclawReady
+                : capabilityReady(snap, 'user_plugin_enabled');
+            const reason = state.nekoclawReason || capabilityReason(snap, 'user_plugin_enabled');
             const canUse = effectiveAnalyzerEnabled && ready;
             const nekoclawName = window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw';
             const optimisticVal = Object.prototype.hasOwnProperty.call(state.optimistic, 'user_plugin_enabled')
@@ -265,10 +285,13 @@
             nekoclaw.forEach(cb => {
                 cb.checked = optimisticVal && canUse;
                 cb.disabled = !!state.globalBusy || !effectiveAnalyzerEnabled || !ready;
-                cb.title = canUse ? nekoclawName
-                    : (!effectiveAnalyzerEnabled
-                        ? (window.t ? window.t('settings.toggles.masterRequired', { name: nekoclawName }) : '\u8bf7\u5148\u5f00\u542fAgent\u603b\u5f00\u5173')
-                        : (window.t ? window.t('settings.toggles.unavailable', { name: nekoclawName }) : `${nekoclawName}\u4e0d\u53ef\u7528`));
+                if (canUse) {
+                    cb.title = nekoclawName;
+                } else if (!effectiveAnalyzerEnabled) {
+                    cb.title = window.t ? window.t('settings.toggles.masterRequired', { name: nekoclawName }) : '\u8bf7\u5148\u5f00\u542fAgent\u603b\u5f00\u5173';
+                } else {
+                    cb.title = reason || (window.t ? window.t('settings.toggles.unavailable', { name: nekoclawName }) : `${nekoclawName}\u4e0d\u53ef\u7528`);
+                }
             });
             sync(nekoclaw);
         }
@@ -451,8 +474,7 @@
         window.addEventListener('live2d-agent-popup-opening', async () => {
             state.popupOpen = true;
             render('popup');
-            // Refresh NekoClaw availability in background to update toggle state
-            refreshNekoclawAvailability().then(() => render('nekoclaw'));
+            refreshNekoclawAvailability().catch(() => {});
             if (!state.snapshot) {
                 await fetchSnapshot().catch(() => render('popup'));
                 return;

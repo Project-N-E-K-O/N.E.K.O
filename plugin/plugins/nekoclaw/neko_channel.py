@@ -11,7 +11,7 @@ NekoClaw 自定义渠道，用于接收来自 N.E.K.O 插件的消息。
      "neko": {
        "enabled": true,
        "bot_prefix": "",
-       "host": "0.0.0.0",
+       "host": "127.0.0.1",
        "port": 8089
      }
    }
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import deque
 from typing import Any, Dict, List, Optional
 
 from agentscope_runtime.engine.schemas.agent_schemas import (
@@ -44,7 +45,7 @@ except ImportError:
 
 
 class NekoChannel(BaseChannel):
-    """N.E.K.O 渠道，通过 HTTP 接收消息"""
+    """N.E.K.O 渠道，通过 HTTP 接收消息，默认仅监听本机 `127.0.0.1`。"""
 
     channel: ChannelType = "neko"
 
@@ -53,7 +54,7 @@ class NekoChannel(BaseChannel):
         process,
         enabled: bool = True,
         bot_prefix: str = "",
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         port: int = 8089,
         reply_timeout: float = 300.0,
         **kwargs,
@@ -68,6 +69,7 @@ class NekoChannel(BaseChannel):
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
         self._pending_replies: Dict[str, asyncio.Future] = {}
+        self._pending_sender_replies: Dict[str, deque[asyncio.Future]] = {}
 
     @classmethod
     def from_config(cls, process, config, on_reply_sent=None, show_tool_details=True):
@@ -75,7 +77,7 @@ class NekoChannel(BaseChannel):
             process=process,
             enabled=getattr(config, "enabled", True),
             bot_prefix=getattr(config, "bot_prefix", ""),
-            host=getattr(config, "host", "0.0.0.0"),
+            host=getattr(config, "host", "127.0.0.1"),
             port=getattr(config, "port", 8089),
             reply_timeout=float(getattr(config, "reply_timeout", 300.0)),
             on_reply_sent=on_reply_sent,
@@ -87,7 +89,7 @@ class NekoChannel(BaseChannel):
         return cls(
             process=process,
             enabled=os.getenv("NEKO_CHANNEL_ENABLED", "true").lower() == "true",
-            host=os.getenv("NEKO_CHANNEL_HOST", "0.0.0.0"),
+            host=os.getenv("NEKO_CHANNEL_HOST", "127.0.0.1"),
             port=int(os.getenv("NEKO_CHANNEL_PORT", "8089")),
             reply_timeout=float(os.getenv("NEKO_CHANNEL_REPLY_TIMEOUT", "300")),
             on_reply_sent=on_reply_sent,
@@ -173,19 +175,21 @@ class NekoChannel(BaseChannel):
         meta = meta or {}
         request_id = meta.get("request_id")
 
-        # 优先用 request_id 匹配，其次用 to_handle（sender_id）作为后备
-        key = None
-        if request_id and request_id in self._pending_replies:
-            key = request_id
-        elif to_handle and to_handle in self._pending_replies:
-            key = to_handle
+        future = None
+        if request_id:
+            future = self._pending_replies.get(request_id)
+        elif to_handle:
+            queue = self._pending_sender_replies.get(to_handle)
+            while queue and queue[0].done():
+                queue.popleft()
+            if queue:
+                future = queue[0]
 
-        if key is not None:
-            future = self._pending_replies[key]
+        if future is not None:
             if not future.done():
                 future.set_result(text)
         else:
-            print(f"[NekoChannel] send() called but no matching future: to_handle={to_handle} request_id={request_id} pending_keys={list(self._pending_replies.keys())}")
+            print(f"[NekoChannel] send() called but no matching future: to_handle={to_handle} request_id={request_id} pending_request_ids={list(self._pending_replies.keys())}")
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         """健康检查端点"""
@@ -220,11 +224,10 @@ class NekoChannel(BaseChannel):
         # 创建 Future 用于等待回复
         loop = asyncio.get_running_loop()
         future: asyncio.Future[str] = loop.create_future()
-        # 同时用 request_id 和 sender_id 注册，确保 send() 能匹配到
         self._pending_replies[request_id] = future
         sender_id = payload.get("sender_id")
         if sender_id:
-            self._pending_replies[sender_id] = future
+            self._pending_sender_replies.setdefault(sender_id, deque()).append(future)
 
         try:
             # 入队处理
@@ -246,4 +249,12 @@ class NekoChannel(BaseChannel):
         finally:
             self._pending_replies.pop(request_id, None)
             if sender_id:
-                self._pending_replies.pop(sender_id, None)
+                queue = self._pending_sender_replies.get(sender_id)
+                if queue:
+                    filtered_queue = deque(
+                        pending_future for pending_future in queue if pending_future is not future
+                    )
+                    if filtered_queue:
+                        self._pending_sender_replies[sender_id] = filtered_queue
+                    else:
+                        self._pending_sender_replies.pop(sender_id, None)

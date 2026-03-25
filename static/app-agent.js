@@ -396,6 +396,7 @@
         const agentKeyboardCheckbox = getAgentEl('keyboard');
         const agentBrowserCheckbox = getAgentEl('browser');
         const agentUserPluginCheckbox = getAgentEl('user-plugin');
+        const agentNekoclawCheckbox = getAgentEl('nekoclaw');
 
         if (agentStateMachine.getState() === AgentPopupState.PROCESSING) {
             console.log('[App] \u72b6\u6001\u673a\u5904\u4e8ePROCESSING\u72b6\u6001\uff0c\u8df3\u8fc7\u8f6e\u8be2');
@@ -457,10 +458,10 @@
         const checks = [
             { suffix: 'keyboard', capability: 'computer_use', flagKey: 'computer_use_enabled', nameKey: 'keyboardControl' },
             { suffix: 'browser', capability: 'browser_use', flagKey: 'browser_use_enabled', nameKey: 'browserUse' },
-            { suffix: 'user-plugin', capability: 'user_plugin', flagKey: 'user_plugin_enabled', nameKey: 'userPlugin' },
-            { suffix: 'nekoclaw', capability: 'nekoclaw', flagKey: 'user_plugin_enabled', nameKey: 'nekoclawConnect' },
+            { suffix: 'user-plugin', capability: 'user_plugin', flagKey: 'user_plugin_enabled', disableFlagKey: 'user_plugin_enabled', nameKey: 'userPlugin' },
+            { suffix: 'nekoclaw', capability: 'nekoclaw', flagKey: 'nekoclaw_enabled', disableFlagKey: null, nameKey: 'nekoclawConnect' },
         ];
-        for (const { suffix, capability, flagKey, nameKey } of checks) {
+        for (const { suffix, capability, flagKey, disableFlagKey, nameKey } of checks) {
             const cb = getAgentEl(suffix);
             if (!cb) continue;
 
@@ -494,17 +495,19 @@
                     cb._autoDisabled = true;
                     cb.dispatchEvent(new Event('change', { bubbles: true }));
                     cb._autoDisabled = false;
-                    try {
-                        await fetch('/api/agent/flags', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                lanlan_name: window.lanlan_config.lanlan_name,
-                                flags: { [flagKey]: false }
-                            })
-                        });
-                    } catch (e) {
-                        console.warn(`[App] \u901a\u77e5\u540e\u7aef\u5173\u95ed${name}\u5931\u8d25:`, e);
+                    if (disableFlagKey) {
+                        try {
+                            await fetch('/api/agent/flags', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    lanlan_name: window.lanlan_config.lanlan_name,
+                                    flags: { [disableFlagKey]: false }
+                                })
+                            });
+                        } catch (e) {
+                            console.warn(`[App] \u901a\u77e5\u540e\u7aef\u5173\u95ed${name}\u5931\u8d25:`, e);
+                        }
                     }
                     setFloatingAgentStatus(`${name}\u5df2\u65ad\u5f00`);
                 }
@@ -652,6 +655,30 @@
                                     agentUserPluginCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
                                     agentUserPluginCheckbox._autoDisabled = false;
                                     if (typeof agentUserPluginCheckbox._updateStyle === 'function') agentUserPluginCheckbox._updateStyle();
+                                }
+                            }
+                        }
+
+                        if (agentNekoclawCheckbox && !agentNekoclawCheckbox._processing) {
+                            const flagEnabled = flags.user_plugin_enabled || false;
+                            const isAvailable = capabilityCheckFailed
+                                ? agentNekoclawCheckbox.checked
+                                : (capabilityResults['nekoclaw_enabled'] !== false);
+                            const shouldBeChecked = flagEnabled && isAvailable;
+
+                            if (agentNekoclawCheckbox.checked !== shouldBeChecked) {
+                                if (shouldBeChecked) {
+                                    agentNekoclawCheckbox.checked = true;
+                                    agentNekoclawCheckbox._autoDisabled = true;
+                                    agentNekoclawCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+                                    agentNekoclawCheckbox._autoDisabled = false;
+                                    if (typeof agentNekoclawCheckbox._updateStyle === 'function') agentNekoclawCheckbox._updateStyle();
+                                } else if (!flagEnabled || !isAvailable) {
+                                    agentNekoclawCheckbox.checked = false;
+                                    agentNekoclawCheckbox._autoDisabled = true;
+                                    agentNekoclawCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+                                    agentNekoclawCheckbox._autoDisabled = false;
+                                    if (typeof agentNekoclawCheckbox._updateStyle === 'function') agentNekoclawCheckbox._updateStyle();
                                 }
                             }
                         }

@@ -15,6 +15,7 @@ from utils.logger_config import get_module_logger
 from fastapi import APIRouter, Request, Body
 from fastapi.responses import JSONResponse, RedirectResponse
 import httpx
+from plugin.config import load_plugin_config
 from .shared_state import get_session_manager, get_config_manager
 from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from main_logic.agent_event_bus import publish_session_event
@@ -253,19 +254,33 @@ async def proxy_up_availability():
         return JSONResponse({"ready": False, "reasons": [f"proxy error: {e}"]}, status_code=502)
 
 
-NEKOCLAW_CHANNEL_URL = "http://127.0.0.1:8089"
+DEFAULT_NEKOCLAW_CHANNEL_URL = "http://127.0.0.1:8089"
+
+
+def _get_nekoclaw_channel_url() -> str:
+    try:
+        payload = load_plugin_config("nekoclaw", validate=False)
+        config_obj = payload.get("config") if isinstance(payload, dict) else None
+        nekoclaw_cfg = config_obj.get("nekoclaw") if isinstance(config_obj, dict) else None
+        url = nekoclaw_cfg.get("url") if isinstance(nekoclaw_cfg, dict) else None
+        if isinstance(url, str) and url.strip():
+            return url.rstrip("/")
+    except Exception as exc:
+        logger.debug("[AgentRouter] Failed to load nekoclaw plugin config for availability check: {}", exc)
+    return DEFAULT_NEKOCLAW_CHANNEL_URL
 
 
 @router.get('/nekoclaw/availability')
 async def nekoclaw_availability():
     """检查 NekoClaw Channel 是否可用"""
     try:
+        channel_url = _get_nekoclaw_channel_url()
         client = _get_http_client()
-        r = await client.get(f"{NEKOCLAW_CHANNEL_URL}/health", timeout=1.5)
+        r = await client.get(f"{channel_url}/health", timeout=1.5)
         if r.is_success:
-            return {"ready": True, "reasons": ["NekoClaw channel reachable"]}
+            return {"ready": True, "reasons": [f"NekoClaw channel reachable ({channel_url})"]}
         else:
-            return {"ready": False, "reasons": [f"NekoClaw channel responded {r.status_code}"]}
+            return {"ready": False, "reasons": [f"NekoClaw channel responded {r.status_code} ({channel_url})"]}
     except Exception as e:
         return {"ready": False, "reasons": [f"NekoClaw channel unavailable: {e}"]}
 
@@ -341,5 +356,4 @@ async def proxy_admin_control(payload: dict = Body(...)):
             "success": False,
             "error": f"Failed to execute admin control: {str(e)}"
         }, status_code=500)
-
 

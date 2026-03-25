@@ -1483,6 +1483,7 @@
             "enableFailed": "{{name}} Ошибка включения",
             "openfang": "Виртуальная машина",
             "userPluginAdapting": "Пользовательский плагин (В разработке)",
+            "nekoclawConnect": "NekoClaw (В разработке)",
             "moltbotAdapting": "NekoClaw (В разработке)",
             "animationSettings": "Настройки анимации",
             "chatSettings": "Настройки чата",

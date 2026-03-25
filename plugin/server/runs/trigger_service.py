@@ -13,9 +13,11 @@ from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
 from plugin.core.responses import fail, is_envelope, ok
+from plugin.sdk.shared.core.entry_runtime import resolve_entry_timeout
 from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
 
 logger = get_logger("server.runs.trigger")
+_TIMEOUT_UNSET = object()
 
 
 class TriggerResult(BaseModel):
@@ -27,11 +29,15 @@ class TriggerResult(BaseModel):
     received_at: str = ""
 
 
-def _coerce_positive_timeout(value: object) -> float | None:
+def _normalize_timeout_value(value: object) -> float | None | object:
+    if value is _TIMEOUT_UNSET:
+        return _TIMEOUT_UNSET
+    if value is None:
+        return None
     try:
         timeout = float(value)
     except (TypeError, ValueError):
-        return None
+        return _TIMEOUT_UNSET
     return timeout if timeout > 0 else None
 
 
@@ -45,7 +51,7 @@ class HostHealthContract(Protocol):
 
 @runtime_checkable
 class TriggerHostContract(Protocol):
-    async def trigger(self, entry_id: str, args: dict[str, object], timeout: float) -> object: ...
+    async def trigger(self, entry_id: str, args: dict[str, object], timeout: float | None) -> object: ...
 
     def health_check(self) -> HostHealthContract: ...
 
@@ -212,7 +218,7 @@ async def _execute_trigger(
     args: dict[str, object],
     trace_id: str,
 ) -> object:
-    resolved_timeout = PLUGIN_EXECUTION_TIMEOUT
+    resolved_timeout: float | None = PLUGIN_EXECUTION_TIMEOUT
     try:
         handlers_snapshot = state.get_event_handlers_snapshot_cached(timeout=1.0)
         prefix_dot = f"{plugin_id}."
@@ -227,9 +233,7 @@ async def _execute_trigger(
                 continue
             if getattr(meta, "id", None) != entry_id:
                 continue
-            timeout_value = _coerce_positive_timeout(getattr(meta, "timeout", None))
-            if timeout_value is not None:
-                resolved_timeout = timeout_value
+            resolved_timeout = resolve_entry_timeout(meta, resolved_timeout)
             break
     except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
         logger.debug(
@@ -243,8 +247,10 @@ async def _execute_trigger(
     try:
         ctx_obj = args.get("_ctx")
         if isinstance(ctx_obj, Mapping):
-            requested_timeout = _coerce_positive_timeout(ctx_obj.get("entry_timeout"))
-            if requested_timeout is not None:
+            requested_timeout = _normalize_timeout_value(
+                ctx_obj.get("entry_timeout", _TIMEOUT_UNSET),
+            )
+            if requested_timeout is not _TIMEOUT_UNSET:
                 resolved_timeout = requested_timeout
     except Exception:
         logger.debug("failed to read requested entry timeout from _ctx", exc_info=True)

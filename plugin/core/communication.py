@@ -165,7 +165,7 @@ class PluginCommunicationResourceManager:
         self,
         req_id: str,
         msg: dict,
-        timeout: float,
+        timeout: float | None,
         error_context: str,
     ) -> Any:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -198,10 +198,10 @@ class PluginCommunicationResourceManager:
             ct.add_done_callback(self._background_tasks.discard)
             raise TimeoutError(f"{error_context} execution timed out after {timeout}s") from None
 
-    async def trigger(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:
+    async def trigger(self, entry_id: str, args: dict, timeout: float | None = PLUGIN_TRIGGER_TIMEOUT) -> Any:
         return await self._run_on_owner_loop(self._trigger_local(entry_id, args, timeout))
 
-    async def _trigger_local(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:
+    async def _trigger_local(self, entry_id: str, args: dict, timeout: float | None = PLUGIN_TRIGGER_TIMEOUT) -> Any:
         req_id = str(uuid.uuid4())
         self.logger.debug(
             "[CommManager] TRIGGER plugin_id={}, entry_id={}, req_id={}",

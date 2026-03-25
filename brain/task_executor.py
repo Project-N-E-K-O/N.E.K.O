@@ -19,6 +19,60 @@ from .browser_use_adapter import BrowserUseAdapter
 from .openfang_adapter import OpenFangAdapter
 
 logger = get_module_logger(__name__, "Agent")
+_TIMEOUT_UNSET = object()
+
+
+def _normalize_timeout_value(value: Any) -> float | None | object:
+    """Normalize timeout values.
+
+    Returns:
+        `_TIMEOUT_UNSET` when the value is missing/invalid,
+        `None` for explicit no-timeout (`None` or `<= 0`),
+        or a positive float timeout.
+    """
+    if value is _TIMEOUT_UNSET:
+        return _TIMEOUT_UNSET
+    if value is None:
+        return None
+    try:
+        timeout_value = float(value)
+    except (TypeError, ValueError):
+        return _TIMEOUT_UNSET
+    return timeout_value if timeout_value > 0 else None
+
+
+def _resolve_plugin_entry_timeout(meta: Optional[Dict[str, Any]], entry: Optional[str]) -> float | None:
+    default_timeout = 300.0
+    if not isinstance(meta, dict):
+        return default_timeout
+    entries = meta.get("entries")
+    if not isinstance(entries, list):
+        return default_timeout
+    target_entry = entry or "run"
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        if item.get("id") != target_entry:
+            continue
+        resolved = _normalize_timeout_value(item.get("timeout", _TIMEOUT_UNSET))
+        if resolved is not _TIMEOUT_UNSET:
+            return resolved
+        break
+    return default_timeout
+
+
+def _resolve_ctx_entry_timeout(ctx_obj: Any, fallback_timeout: float | None) -> float | None:
+    if isinstance(ctx_obj, dict):
+        resolved = _normalize_timeout_value(ctx_obj.get("entry_timeout", _TIMEOUT_UNSET))
+        if resolved is not _TIMEOUT_UNSET:
+            return resolved
+    return fallback_timeout
+
+
+def _compute_run_wait_timeout(entry_timeout: float | None) -> float | None:
+    if entry_timeout is None:
+        return None
+    return max(entry_timeout + 15.0, 315.0)
 
 
 @dataclass
@@ -1024,32 +1078,6 @@ Return only the JSON object, nothing else.
         Execute a user plugin via HTTP /runs endpoint.
         This is the single implementation for all plugin execution paths.
         """
-        def _coerce_timeout(value: Any) -> Optional[float]:
-            try:
-                timeout_value = float(value)
-            except (TypeError, ValueError):
-                return None
-            return timeout_value if timeout_value > 0 else None
-
-        def _resolve_entry_timeout(meta: Optional[Dict[str, Any]], entry: Optional[str]) -> float:
-            default_timeout = 300.0
-            if not isinstance(meta, dict):
-                return default_timeout
-            entries = meta.get("entries")
-            if not isinstance(entries, list):
-                return default_timeout
-            target_entry = entry or "run"
-            for item in entries:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("id") != target_entry:
-                    continue
-                resolved = _coerce_timeout(item.get("timeout"))
-                if resolved is not None:
-                    return resolved
-                break
-            return default_timeout
-
         plugin_args = dict(plugin_args) if isinstance(plugin_args, dict) else {}
         plugin_entry_id = (
             entry_id
@@ -1139,8 +1167,6 @@ Return only the JSON object, nothing else.
         # New run protocol: default path (POST /runs, return accepted immediately)
         try:
             runs_endpoint = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs"
-            entry_timeout = _resolve_entry_timeout(plugin_meta, plugin_entry_id)
-            run_wait_timeout = max(entry_timeout + 15.0, 315.0)
 
             safe_args: Dict[str, Any]
             if isinstance(plugin_args, dict):
@@ -1157,6 +1183,8 @@ Return only the JSON object, nothing else.
                 # 添加 conversation_id，用于关联触发事件和对话上下文
                 if conversation_id:
                     ctx_obj["conversation_id"] = conversation_id
+                entry_timeout = _resolve_plugin_entry_timeout(plugin_meta, plugin_entry_id)
+                effective_entry_timeout = _resolve_ctx_entry_timeout(ctx_obj, entry_timeout)
                 if "entry_timeout" not in ctx_obj:
                     ctx_obj["entry_timeout"] = entry_timeout
                 if ctx_obj:
@@ -1166,6 +1194,9 @@ Return only the JSON object, nothing else.
                     "[TaskExecutor] Failed to build _ctx: lanlan=%s conversation_id=%s error=%s",
                     lanlan_name, conversation_id, e
                 )
+                effective_entry_timeout = _resolve_plugin_entry_timeout(plugin_meta, plugin_entry_id)
+
+            run_wait_timeout = _compute_run_wait_timeout(effective_entry_timeout)
 
             run_body: Dict[str, Any] = {
                 "task_id": task_id,
@@ -1287,7 +1318,7 @@ Return only the JSON object, nothing else.
         self,
         run_id: str,
         *,
-        timeout: float = 300.0,
+        timeout: float | None = 300.0,
         poll_interval: float = 0.5,
         on_progress: Optional[Callable[..., Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
@@ -1303,7 +1334,7 @@ Return only the JSON object, nothing else.
         """
         base = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
         terminal = frozenset(("succeeded", "failed", "canceled", "timeout"))
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = None if timeout is None else asyncio.get_event_loop().time() + timeout
         last_status: Optional[str] = None
         # Track last-seen progress fingerprint to avoid redundant callbacks
         _last_progress_key: Optional[tuple] = None
@@ -1313,8 +1344,8 @@ Return only the JSON object, nothing else.
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=2.0), proxy=None, trust_env=False) as client:
             # ── Phase 1: poll until terminal ──
             while True:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
+                remaining = None if deadline is None else deadline - asyncio.get_event_loop().time()
+                if remaining is not None and remaining <= 0:
                     return {"status": "timeout", "success": False, "data": None,
                             "error": f"Timed out waiting for run {run_id} ({timeout}s)"}
                 try:
@@ -1359,7 +1390,8 @@ Return only the JSON object, nothing else.
                             break
                 except Exception as e:
                     logger.debug("[_await_run_completion] poll error: %s", e)
-                await asyncio.sleep(min(poll_interval, remaining))
+                sleep_for = poll_interval if remaining is None else min(poll_interval, remaining)
+                await asyncio.sleep(sleep_for)
 
             # ── Phase 2: fetch export to get plugin_response ──
             plugin_result: Dict[str, Any] = {

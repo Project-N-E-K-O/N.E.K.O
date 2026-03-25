@@ -1483,6 +1483,7 @@
             "enableFailed": "{{name}} Enable Failed",
             "openfang": "Virtual Machine",
             "userPluginAdapting": "User Plugin (Developing)",
+            "nekoclawConnect": "NekoClaw (Developing)",
             "moltbotAdapting": "NekoClaw (Developing)",
             "chatSettings": "Chat Settings",
             "animationSettings": "Animation Settings",

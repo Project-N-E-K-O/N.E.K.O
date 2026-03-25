@@ -127,7 +127,19 @@ def _build_lanlan_prompt(lang: str) -> str:
 # ============================================================================
 
 _ALL_DEFAULTS = {lang: _build_lanlan_prompt(lang) for lang in _L10N}
+
+
+def _strip_optional_skills_line(prompt_text: str) -> str:
+    """Backward compatibility for prompts saved before the optional Skills line existed."""
+    lines = prompt_text.splitlines()
+    filtered = [line for line in lines if line.strip() != "- Skills: {_skills}" and not line.strip().startswith("- Skills: ")]
+    return "\n".join(filtered).strip()
+
+
 _ALL_DEFAULTS_STRIPPED = {v.strip() for v in _ALL_DEFAULTS.values()}
+_ALL_DEFAULTS_COMPAT_STRIPPED = _ALL_DEFAULTS_STRIPPED | {
+    _strip_optional_skills_line(v) for v in _ALL_DEFAULTS.values()
+}
 
 # 向后兼容：lanlan_prompt 始终为中文版本，供 DEFAULT_LANLAN_TEMPLATE 等静态常量使用
 lanlan_prompt = _ALL_DEFAULTS['zh']
@@ -162,4 +174,6 @@ def is_default_prompt(prompt_text: str | None) -> bool:
     if not prompt_text:
         return True
     stripped = prompt_text.strip()
-    return stripped in _ALL_DEFAULTS_STRIPPED
+    if stripped in _ALL_DEFAULTS_COMPAT_STRIPPED:
+        return True
+    return _strip_optional_skills_line(stripped) in _ALL_DEFAULTS_COMPAT_STRIPPED

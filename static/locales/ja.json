@@ -1483,6 +1483,7 @@
             "enableFailed": "{{name}}の有効化に失敗しました",
             "openfang": "仮想マシン",
             "userPluginAdapting": "ユーザープラグイン（開発中）",
+            "nekoclawConnect": "NekoClaw（開発中）",
             "moltbotAdapting": "NekoClaw（開発中）",
             "chatSettings": "チャット設定",
             "animationSettings": "アニメーション設定",
