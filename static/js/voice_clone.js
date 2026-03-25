@@ -232,13 +232,42 @@ if (window.i18n && window.i18n.isInitialized) {
     }
 })();
 
+// 服务商切换时更新提示横幅
+document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
+    const providerSelect = document.getElementById('voiceProvider');
+    const noticeDiv = document.getElementById('provider-notice');
+    if (!providerSelect || !noticeDiv) return;
+
+    function updateNotice() {
+        const provider = providerSelect.value;
+        const span = noticeDiv.querySelector('span');
+        if (!span) return;
+
+        const keyMap = {
+            'minimax': 'voice.minimaxApiRequired',
+            'minimax_intl': 'voice.minimaxIntlApiRequired',
+        };
+        const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
+        span.setAttribute('data-i18n', i18nKey);
+        if (window.t) {
+            span.textContent = window.t(i18nKey);
+        }
+        // 若 window.t 不可用，保留 HTML 中的原始文本，不覆盖
+    }
+
+    providerSelect.addEventListener('change', updateNotice);
+    updateNotice();
+});
+
 function setFormDisabled(disabled) {
     const audioFile = document.getElementById('audioFile');
     const refLanguage = document.getElementById('refLanguage');
     const prefix = document.getElementById('prefix');
+    const voiceProvider = document.getElementById('voiceProvider');
     if (audioFile) audioFile.disabled = disabled;
     if (refLanguage) refLanguage.disabled = disabled;
     if (prefix) prefix.disabled = disabled;
+    if (voiceProvider) voiceProvider.disabled = disabled;
     // 禁用所有按钮
     const buttons = document.querySelectorAll('button');
     if (buttons && buttons.length > 0) {
@@ -266,10 +295,12 @@ function registerVoice() {
     setFormDisabled(true);
     resultDiv.textContent = window.t ? window.t('voice.registering') : '正在注册声音，请稍后！';
     resultDiv.className = 'result';
+    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
     formData.append('ref_language', refLanguage);
     formData.append('prefix', prefix);
+    formData.append('provider', provider);
     fetch('/api/characters/voice_clone', {
         method: 'POST',
         body: formData

@@ -502,6 +502,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyStep": "",
     "assistApiKeySilicon": "",
     "assistApiKeyGemini": "",
+    "assistApiKeyMinimax": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
@@ -629,6 +630,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'silicon': 'ASSIST_API_KEY_SILICON',
     'gemini': 'ASSIST_API_KEY_GEMINI',
     'kimi': 'ASSIST_API_KEY_KIMI',
+    'minimax': 'ASSIST_API_KEY_MINIMAX',
 }
 
 DEFAULT_CONFIG_DATA = {

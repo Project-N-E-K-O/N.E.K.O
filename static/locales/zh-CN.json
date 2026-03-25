@@ -1076,7 +1076,15 @@
     },
     "voice": {
         "title": "音色注册",
-        "alibabaApiRequired": "⚠️ 此功能需要CosyVoice模型，请在API密钥设置页中配置阿里辅助API或本地语音服务器",
+        "alibabaApiRequired": "⚠️ 此功能需要阿里CosyVoice模型，请在API密钥设置页中保存阿里百炼API Key（不要求启用辅助API）或配置本地语音服务器",
+        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（国服），请在API密钥设置页中保存MiniMax API Key（不要求启用辅助API）",
+        "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（国际服），请在API密钥设置页中保存MiniMax国际服API Key（不要求启用辅助API）",
+        "providerLabel": "语音克隆服务商",
+        "provider": {
+            "cosyvoice": "阿里云 CosyVoice",
+            "minimax": "MiniMax（国服）",
+            "minimax_intl": "MiniMax（国际服）"
+        },
         "selectFile": "选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "customPrefix": "自定义前缀（必填，用于区分音色）",
         "customPrefixNote": "不超过10个字符，只支持数字和英文字母",
@@ -2022,7 +2030,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ 重要提示",
-                "desc": "语音克隆功能需要使用阿里云 API。请确保您已经在 API 设置中配置了阿里云的 API Key。"
+                "desc": "语音克隆功能需要配置对应服务商的 API Key。请在 API 密钥设置页中保存所需的 API Key。"
             },
             "step2": {
                 "title": "🌍 选择参考音频语言",

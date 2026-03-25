@@ -1076,7 +1076,15 @@
     },
     "voice": {
         "title": "ボイス登録",
-        "alibabaApiRequired": "⚠️ この機能はCosyVoiceモデルが必要です。APIキー設定でAlibaba Assist APIまたはローカル音声サーバーを設定してください",
+        "alibabaApiRequired": "⚠️ この機能にはCosyVoiceモデルが必要です。APIキー設定でAlibaba Bailian APIキーを保存してください（Assist APIの有効化は不要）。またはローカル音声サーバーを設定してください",
+        "minimaxApiRequired": "⚠️ この機能にはMiniMaxモデル（国内版）が必要です。APIキー設定でMiniMax APIキーを保存してください（Assist APIの有効化は不要）",
+        "minimaxIntlApiRequired": "⚠️ この機能にはMiniMaxモデル（国際版）が必要です。APIキー設定でMiniMax国際版APIキーを保存してください（Assist APIの有効化は不要）",
+        "providerLabel": "音声クローンプロバイダー",
+        "provider": {
+            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "minimax": "MiniMax（国内版）",
+            "minimax_intl": "MiniMax（国際版）"
+        },
         "selectFile": "ローカル音声ファイルを選択（8秒推奨、最大20秒、wav/mp3形式）",
         "customPrefix": "カスタムプレフィックス（必須、ボイスの識別用）",
         "customPrefixNote": "最大10文字、数字と英字のみ",
@@ -2022,7 +2030,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ 重要な通知",
-                "desc": "音声クローニングにはAlibaba Cloud APIが必要です。API設定でAlibaba Cloud APIキーを設定していることを確認してください。"
+                "desc": "音声クローニングには対応するプロバイダーのAPIキーが必要です。APIキー設定で必要なAPIキーを保存してください。"
             },
             "step2": {
                 "title": "🌍 参照音声言語を選択",
