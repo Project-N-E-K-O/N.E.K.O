@@ -2571,10 +2571,12 @@ async def voice_clone(
         except Exception as save_error:
             logger.error(f"保存voice_id到音色库失败: {save_error}")
             return JSONResponse({
-                'error': f'音色注册成功但保存到音色库失败: {str(save_error)}',
+                'message': '音色注册成功，但本地保存失败，请重试保存',
+                'local_save_failed': True,
+                'error': str(save_error),
                 'voice_id': voice_id,
                 'file_url': tmp_url
-            }, status_code=500)
+            }, status_code=200)
 
         return JSONResponse({
             'voice_id': voice_id,

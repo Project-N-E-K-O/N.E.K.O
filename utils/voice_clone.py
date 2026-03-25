@@ -470,7 +470,8 @@ class QwenVoiceCloneClient:
             try:
                 logger.info("开始音色注册（尝试 %d/%d），使用URL: %s",
                             attempt + 1, self.MAX_RETRIES, tmp_url)
-                voice_id, request_id = self.create_voice(
+                voice_id, request_id = await asyncio.to_thread(
+                    self.create_voice,
                     prefix=prefix,
                     url=tmp_url,
                     language_hints=language_hints,

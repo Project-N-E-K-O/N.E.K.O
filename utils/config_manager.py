@@ -1016,7 +1016,11 @@ class ConfigManager:
         只返回与当前 ASSIST_API_KEY_MINIMAX 匹配的 bucket，避免跨账户混用。
         """
         core_config = self.get_core_config()
-        minimax_api_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+        minimax_api_key = (
+            (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+            or (core_config.get('MINIMAX_API_KEY') or '').strip()
+            or (core_config.get('MINIMAX_INTL_API_KEY') or '').strip()
+        )
         if not minimax_api_key:
             return []
         suffix = minimax_api_key[-8:] if len(minimax_api_key) >= 8 else minimax_api_key
