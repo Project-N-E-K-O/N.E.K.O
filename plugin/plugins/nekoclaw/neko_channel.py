@@ -59,6 +59,17 @@ class NekoChannel(BaseChannel):
             return default
         return parsed if parsed > 0 else None
 
+    @staticmethod
+    def _normalize_sender_id(value: object) -> str:
+        if value in (None, ""):
+            return "unknown"
+        return str(value)
+
+    def _normalize_session_id(self, value: object, sender_id: str, meta: dict[str, object]) -> str:
+        if value in (None, ""):
+            return str(self.resolve_session_id(sender_id, meta))
+        return str(value)
+
     def __init__(
         self,
         process,
@@ -110,9 +121,9 @@ class NekoChannel(BaseChannel):
         payload = native_payload if isinstance(native_payload, dict) else {}
 
         channel_id = payload.get("channel_id") or self.channel
-        sender_id = payload.get("sender_id") or "unknown"
-        meta = payload.get("meta") or {}
-        session_id = payload.get("session_id") or self.resolve_session_id(sender_id, meta)
+        meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+        sender_id = self._normalize_sender_id(payload.get("sender_id"))
+        session_id = self._normalize_session_id(payload.get("session_id"), sender_id, meta)
 
         content_parts = []
 
@@ -122,9 +133,16 @@ class NekoChannel(BaseChannel):
             content_parts.append(TextContent(type=ContentType.TEXT, text=text))
 
         # 处理附件
-        for att in payload.get("attachments") or []:
-            att_type = (att.get("type") or "file").lower()
-            url = att.get("url") or ""
+        attachments = payload.get("attachments")
+        if not isinstance(attachments, list):
+            attachments = []
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            raw_type = att.get("type")
+            raw_url = att.get("url")
+            att_type = str(raw_type).lower() if isinstance(raw_type, str) and raw_type else "file"
+            url = str(raw_url) if isinstance(raw_url, str) and raw_url else ""
             if not url:
                 continue
 
@@ -215,10 +233,18 @@ class NekoChannel(BaseChannel):
             return web.json_response({"error": "Invalid payload: expected object"}, status=400)
         if "meta" in payload and payload.get("meta") is not None and not isinstance(payload.get("meta"), dict):
             return web.json_response({"error": "Invalid meta: expected object"}, status=400)
+        if "attachments" in payload and payload.get("attachments") is not None and not isinstance(payload.get("attachments"), list):
+            return web.json_response({"error": "Invalid attachments: expected array"}, status=400)
+
+        meta = payload.get("meta") or {}
+        sender_id = self._normalize_sender_id(payload.get("sender_id"))
+        session_id = self._normalize_session_id(payload.get("session_id"), sender_id, meta)
+        payload["sender_id"] = sender_id
+        payload["session_id"] = session_id
 
         reply_timeout: float | None = self.reply_timeout
         try:
-            meta_obj = payload.get("meta") or {}
+            meta_obj = meta
             if isinstance(meta_obj, dict):
                 reply_timeout = self.parse_reply_timeout(
                     meta_obj.get("reply_timeout", reply_timeout),
@@ -232,7 +258,6 @@ class NekoChannel(BaseChannel):
         request_id = str(uuid.uuid4())[:8]
 
         # 添加 request_id 到 meta
-        meta = payload.get("meta") or {}
         meta["request_id"] = request_id
         payload["meta"] = meta
 
@@ -240,9 +265,7 @@ class NekoChannel(BaseChannel):
         loop = asyncio.get_running_loop()
         future: asyncio.Future[str] = loop.create_future()
         self._pending_replies[request_id] = future
-        sender_id = payload.get("sender_id")
-        if sender_id:
-            self._pending_sender_replies.setdefault(sender_id, deque()).append(future)
+        self._pending_sender_replies.setdefault(sender_id, deque()).append(future)
 
         try:
             # 入队处理
@@ -256,20 +279,19 @@ class NekoChannel(BaseChannel):
 
             return web.json_response({
                 "reply": self.bot_prefix + reply if self.bot_prefix else reply,
-                "sender_id": payload.get("sender_id"),
-                "session_id": payload.get("session_id"),
+                "sender_id": sender_id,
+                "session_id": session_id,
                 "request_id": request_id,
             })
 
         finally:
             self._pending_replies.pop(request_id, None)
-            if sender_id:
-                queue = self._pending_sender_replies.get(sender_id)
-                if queue:
-                    filtered_queue = deque(
-                        pending_future for pending_future in queue if pending_future is not future
-                    )
-                    if filtered_queue:
-                        self._pending_sender_replies[sender_id] = filtered_queue
-                    else:
-                        self._pending_sender_replies.pop(sender_id, None)
+            queue = self._pending_sender_replies.get(sender_id)
+            if queue:
+                filtered_queue = deque(
+                    pending_future for pending_future in queue if pending_future is not future
+                )
+                if filtered_queue:
+                    self._pending_sender_replies[sender_id] = filtered_queue
+                else:
+                    self._pending_sender_replies.pop(sender_id, None)
