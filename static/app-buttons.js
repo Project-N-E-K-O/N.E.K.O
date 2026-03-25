@@ -395,6 +395,7 @@
             });
 
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                S._suppressCharacterLeft = true;
                 S.socket.send(JSON.stringify({ action: 'end_session' }));
             }
             window.stopRecording();

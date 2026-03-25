@@ -106,7 +106,11 @@
                 const s = window._realisticGeminiQueue.shift();
                 if (s && (window._realisticGeminiVersion || 0) === queueVersion) {
                     createGeminiBubble(s);
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                    // 仅在用户已处于底部附近时自动滚动
+                    var _wrap = chatContainer.parentElement;
+                    if (!_wrap || _wrap.scrollHeight - _wrap.scrollTop - _wrap.clientHeight < 60) {
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    }
                     window._lastBubbleTime = Date.now();
                 }
             }
@@ -613,7 +617,11 @@
                 }
             }
         }
-        chatContainer.scrollTop = chatContainer.scrollHeight;
+        // 仅在用户已处于底部附近时自动滚动
+        var _wrap = chatContainer.parentElement;
+        if (!_wrap || _wrap.scrollHeight - _wrap.scrollTop - _wrap.clientHeight < 60) {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
     }
 
     // ======================== 导出 ========================

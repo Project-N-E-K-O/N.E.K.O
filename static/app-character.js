@@ -740,7 +740,7 @@
                 }
 
                 // 加载新模型
-                if (modelData.success && modelData.model_info) {
+                if (modelData.success && modelData.model_info && window.live2dManager) {
                     const modelConfigRes = await fetch(modelData.model_info.path);
                     if (modelConfigRes.ok) {
                         const modelConfig = await modelConfigRes.json();

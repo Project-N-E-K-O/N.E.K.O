@@ -369,6 +369,7 @@ button * {
     overflow-x: hidden;
     overflow-y: auto;
     scroll-behavior: smooth;
+    overflow-anchor: auto;
     transition: opacity 0.2s ease, visibility 0.2s ease;
     opacity: 1;
     visibility: visible;
