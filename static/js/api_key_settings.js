@@ -250,11 +250,13 @@ function toggleKeyBook() {
 }
 
 /**
- * 从 Key Book 读取某个 provider 的 key
+ * 从 Key Book 读取某个 provider 的 key。
+ * 返回 null 表示该 provider 的输入框不存在（如被 restricted 隐藏），
+ * 返回 '' 表示输入框存在但为空。调用方据此区分"不应覆盖"和"应清空"。
  */
 function syncKeyFromBook(providerKey) {
     const input = document.getElementById(`keyBookInput_${providerKey}`);
-    return input ? input.value.trim() : '';
+    return input ? input.value.trim() : null;
 }
 
 /**
@@ -356,31 +358,34 @@ function onCustomModelProviderChange(modelType) {
         }
 
         if (sourceProviderKey && sourceProviderKey !== 'free') {
-            // CRITICAL FIX: For omni model, always use core_url (WebSocket)
-            // even when following assist, because omni needs wss:// not https://
+            // For omni model: always use core provider's data (WebSocket URL + key),
+            // even when dropdown says follow_assist, because omni needs wss://
             if (modelType === 'omni') {
-                // Always use core provider's core_url for omni
                 const coreSelect = document.getElementById('coreApiSelect');
-                const coreProviderKey = coreSelect ? coreSelect.value : sourceProviderKey;
-                const coreProfile = _coreApiProviders[coreProviderKey] || _assistApiProviders[coreProviderKey] || {};
+                const coreProviderKey = coreSelect ? coreSelect.value : '';
+                const coreProfile = _coreApiProviders[coreProviderKey] || {};
                 if (urlInput) {
                     urlInput.value = coreProfile.core_url || '';
                     urlInput.setAttribute('readonly', 'readonly');
                 }
+                // Key also from core provider, not assist
+                const coreBookKey = syncKeyFromBook(coreProviderKey);
+                if (keyInput) {
+                    keyInput.value = coreBookKey || '';
+                    keyInput.setAttribute('readonly', 'readonly');
+                }
             } else {
-                // For non-omni: use the source provider's openrouter_url
+                // For non-omni: use the source provider's openrouter_url + key
                 const pInfo = _assistApiProviders[sourceProviderKey] || _coreApiProviders[sourceProviderKey] || {};
                 if (urlInput) {
                     urlInput.value = pInfo.openrouter_url || pInfo.core_url || '';
                     urlInput.setAttribute('readonly', 'readonly');
                 }
-            }
-
-            // Key from book
-            const bookKey = syncKeyFromBook(sourceProviderKey);
-            if (keyInput) {
-                keyInput.value = bookKey;
-                keyInput.setAttribute('readonly', 'readonly');
+                const bookKey = syncKeyFromBook(sourceProviderKey);
+                if (keyInput) {
+                    keyInput.value = bookKey || '';
+                    keyInput.setAttribute('readonly', 'readonly');
+                }
             }
         } else {
             // free or empty
@@ -409,7 +414,7 @@ function onCustomModelProviderChange(modelType) {
         }
         const bookKey = syncKeyFromBook(provider);
         if (keyInput) {
-            keyInput.value = bookKey;
+            keyInput.value = bookKey || '';
             keyInput.setAttribute('readonly', 'readonly');
         }
     }
@@ -1096,12 +1101,16 @@ async function save_button_down(e) {
         syncKeyToBook(assistApi, assistKeyVal);
     }
 
-    // Collect ALL keys from keyBookInput_* via _apiKeyRegistry (include empty to clear)
+    // Collect keys from keyBookInput_* via _apiKeyRegistry.
+    // syncKeyFromBook returns null when DOM is absent (restricted/hidden provider)
+    // — skip those to avoid overwriting backend values with empty string.
     const allBookKeys = {};
     Object.keys(_apiKeyRegistry).forEach(pk => {
         if (pk === 'free') return;
         const val = syncKeyFromBook(pk);
-        allBookKeys[pk] = val; // include '' so backend can clear
+        if (val !== null) {
+            allBookKeys[pk] = val; // include '' so backend can clear
+        }
     });
 
     // 获取用户自定义API配置
@@ -1186,13 +1195,13 @@ async function save_button_down(e) {
         }
     });
 
-    // Build payload — map book keys to config field names via registry
+    // Build payload — map book keys to config field names via registry.
+    // Only include providers present in allBookKeys (skips restricted/hidden ones).
     const bookPayload = {};
-    Object.keys(_apiKeyRegistry).forEach(pk => {
-        if (pk === 'free') return;
-        const field = _apiKeyRegistry[pk].config_field;
+    Object.keys(allBookKeys).forEach(pk => {
+        const field = (_apiKeyRegistry[pk] || {}).config_field;
         if (field) {
-            bookPayload[field] = allBookKeys[pk] ?? '';
+            bookPayload[field] = allBookKeys[pk];
         }
     });
 
