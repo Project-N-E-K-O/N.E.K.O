@@ -814,7 +814,7 @@ class LLMSessionManager:
             core_config.get('TTS_MODEL_URL')
         )
 
-        tts_worker = get_tts_worker(
+        tts_worker, api_key_override, extra_args = get_tts_worker(
             core_api_type=self.core_api_type,
             has_custom_voice=has_custom_tts,
             voice_id=self.voice_id or '',
@@ -825,26 +825,13 @@ class LLMSessionManager:
         else:
             tts_config = self._config_manager.get_model_api_config('tts_default')
 
-        # MiniMax 音色：通过 voice_data 的 provider 字段判断，替换 API Key 和 base URL
-        _minimax_base_url = None
-        from main_logic.tts_client import _get_voice_meta
-        _voice_meta = _get_voice_meta(self.voice_id or '') if self.voice_id else None
-        if _voice_meta and _voice_meta.get('provider', '').startswith('minimax'):
-            minimax_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
-            if minimax_key:
-                tts_config = dict(tts_config, api_key=minimax_key)
-            from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
-            _minimax_base_url = _voice_meta.get('minimax_base_url') or (
-                MINIMAX_INTL_BASE_URL if _voice_meta['provider'] == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
-            )
+        api_key = api_key_override or tts_config['api_key']
 
         # 复用现有队列，这样 tts_response_handler 不需要重建
         self.tts_request_queue = Queue()
         self.tts_response_queue = Queue()
 
-        _tts_args = (self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
-        if _minimax_base_url is not None:
-            _tts_args = _tts_args + (_minimax_base_url,)
+        _tts_args = (self.tts_request_queue, self.tts_response_queue, api_key, self.voice_id) + extra_args
         self.tts_thread = Thread(
             target=tts_worker,
             args=_tts_args,
@@ -1172,8 +1159,8 @@ class LLMSessionManager:
                     core_config.get('TTS_MODEL_URL')
                 )
 
-                # 使用工厂函数获取合适的 TTS worker
-                tts_worker = get_tts_worker(
+                # 使用工厂函数获取合适的 TTS worker 及其配置
+                tts_worker, api_key_override2, extra_args2 = get_tts_worker(
                     core_api_type=self.core_api_type,
                     has_custom_voice=has_custom_tts,
                     voice_id=self.voice_id or '',
@@ -1188,22 +1175,8 @@ class LLMSessionManager:
                 else:
                     tts_config = self._config_manager.get_model_api_config('tts_default')
 
-                # MiniMax 音色：通过 voice_data 的 provider 字段判断
-                _minimax_base_url2 = None
-                from main_logic.tts_client import _get_voice_meta
-                _voice_meta2 = _get_voice_meta(self.voice_id or '') if self.voice_id else None
-                if _voice_meta2 and _voice_meta2.get('provider', '').startswith('minimax'):
-                    minimax_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
-                    if minimax_key:
-                        tts_config = dict(tts_config, api_key=minimax_key)
-                    from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
-                    _minimax_base_url2 = _voice_meta2.get('minimax_base_url') or (
-                        MINIMAX_INTL_BASE_URL if _voice_meta2['provider'] == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
-                    )
-
-                _tts_args2 = (self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
-                if _minimax_base_url2 is not None:
-                    _tts_args2 = _tts_args2 + (_minimax_base_url2,)
+                api_key2 = api_key_override2 or tts_config['api_key']
+                _tts_args2 = (self.tts_request_queue, self.tts_response_queue, api_key2, self.voice_id) + extra_args2
                 self.tts_thread = Thread(
                     target=tts_worker,
                     args=_tts_args2,
