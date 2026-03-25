@@ -263,7 +263,4 @@ def validate_audio_file(file_buffer: io.BytesIO, filename: str) -> tuple[str, st
         except Exception as e:
             return "", f"M4A文件读取错误: {str(e)}。请确认您的文件是合法的M4A文件。"
 
-    else:
-        return "", f"不支持的文件格式: {file_extension}"
-
     return mime_type, ""
