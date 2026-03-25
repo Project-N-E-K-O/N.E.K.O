@@ -32,29 +32,6 @@ export const usePluginStore = defineStore('plugin', () => {
 
   const pluginsWithStatus = computed(() => {
     return plugins.value.map(plugin => {
-      const statusData = pluginStatuses.value[plugin.id]
-      // statusData 的结构: { plugin_id, status: { status: "running", ... }, updated_at, source }
-      // 需要从 statusData.status.status 中提取状态字符串
-      let statusValue: string = StatusEnum.STOPPED
-      
-      if (statusData) {
-        const statusObj = statusData.status
-        if (statusObj) {
-          if (typeof statusObj === 'string') {
-            statusValue = statusObj
-          } else if (typeof statusObj === 'object' && statusObj !== null) {
-            const nestedStatus = (statusObj as any).status
-            if (typeof nestedStatus === 'string') {
-              statusValue = nestedStatus
-            } else {
-              statusValue = StatusEnum.STOPPED
-            }
-          }
-        }
-      }
-      
-      const finalStatus = typeof statusValue === 'string' ? statusValue : StatusEnum.STOPPED
-
       const enabled = plugin.runtime_enabled !== false
       const autoStart = plugin.runtime_auto_start !== false
       const isExtension = plugin.type === 'extension'
@@ -66,7 +43,8 @@ export const usePluginStore = defineStore('plugin', () => {
       if (isExtension) {
         displayStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.PENDING
       } else {
-        displayStatus = enabled ? finalStatus : StatusEnum.DISABLED
+        const runtimeStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED
+        displayStatus = enabled ? runtimeStatus : StatusEnum.DISABLED
       }
       
       return {
@@ -258,4 +236,3 @@ export const usePluginStore = defineStore('plugin', () => {
     setSelectedPlugin
   }
 })
-

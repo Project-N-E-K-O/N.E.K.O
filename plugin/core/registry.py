@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import importlib
 import inspect
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Callable, Type, Optional, Iterable, cast
@@ -25,6 +26,11 @@ try:
     import tomllib  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
+
+try:
+    from importlib import metadata as importlib_metadata
+except ImportError:  # pragma: no cover
+    import importlib_metadata  # type: ignore[no-redef]
 
 from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
 from plugin._types.version import SDK_VERSION
@@ -49,11 +55,13 @@ from plugin.core.dependency import (
 try:
     from packaging.version import Version, InvalidVersion
     from packaging.specifiers import SpecifierSet, InvalidSpecifier
+    from packaging.requirements import Requirement
 except ImportError:  # pragma: no cover
     Version = None  # type: ignore
     InvalidVersion = Exception  # type: ignore
     SpecifierSet = None  # type: ignore
     InvalidSpecifier = Exception  # type: ignore
+    Requirement = None  # type: ignore
 
 
 # SimpleEntryMeta 已删除，统一使用 sdk/events.py 中的 EventMeta
@@ -74,6 +82,7 @@ class PluginContext:
     sdk_conflicts_list: List[str]
     enabled: bool
     auto_start: bool
+    python_requirements: List[str] = field(default_factory=list)
 
 
 # Mapping from (plugin_id, entry_id) -> actual python method name on the instance.
@@ -81,6 +90,122 @@ plugin_entry_method_map: Dict[tuple, str] = {}
 
 
 # _parse_specifier, _version_matches 已移动到 dependency.py
+
+_REQ_NAME_SPLIT_RE = re.compile(r"[<>=!~;\[\s]")
+
+
+def _canonicalize_dist_name(name: str) -> str:
+    """Canonicalize package/distribution names per PEP 503."""
+    return re.sub(r"[-_.]+", "-", name).lower().strip()
+
+
+def _parse_requirement_name(requirement: str) -> Optional[str]:
+    """Parse distribution name from requirement spec."""
+    text = str(requirement or "").strip()
+    if not text:
+        return None
+    if Requirement is not None:
+        try:
+            parsed = Requirement(text)
+            return str(parsed.name).strip() or None
+        except Exception:
+            pass
+    # fallback parser for loose specs when packaging is unavailable
+    head = _REQ_NAME_SPLIT_RE.split(text, maxsplit=1)[0].strip()
+    return head or None
+
+
+def _collect_plugin_python_requirements(
+    conf: Dict[str, Any],
+    toml_path: Path,
+    logger: Any,
+    plugin_id: str,
+) -> List[str]:
+    """Collect plugin Python dependencies from plugin.toml and requirements.txt."""
+    collected: List[str] = []
+    seen: set[str] = set()
+
+    def _add_req(item: Any, source: str) -> None:
+        if not isinstance(item, str):
+            logger.warning(
+                "Plugin {}: python dependency in {} must be string, got {}; skipping",
+                plugin_id,
+                source,
+                type(item).__name__,
+            )
+            return
+        req_text = item.strip()
+        if not req_text or req_text.startswith("#"):
+            return
+        key = req_text.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        collected.append(req_text)
+
+    plugin_section = conf.get("plugin")
+    if isinstance(plugin_section, dict):
+        deps = plugin_section.get("dependencies")
+        if deps is not None:
+            if not isinstance(deps, list):
+                logger.warning(
+                    "Plugin {}: [plugin].dependencies should be a list of strings; got {}",
+                    plugin_id,
+                    type(deps).__name__,
+                )
+            else:
+                for dep in deps:
+                    _add_req(dep, "[plugin].dependencies")
+
+    req_file = toml_path.parent / "requirements.txt"
+    if req_file.exists():
+        try:
+            for raw_line in req_file.read_text(encoding="utf-8").splitlines():
+                line = raw_line.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                _add_req(line, "requirements.txt")
+        except OSError as exc:
+            logger.warning(
+                "Plugin {}: failed to read {}: {}",
+                plugin_id,
+                req_file,
+                exc,
+            )
+
+    return collected
+
+
+def _find_missing_python_requirements(requirements: List[str]) -> List[str]:
+    """Return missing requirement specs based on installed distributions."""
+    if not requirements:
+        return []
+
+    installed: set[str] = set()
+    try:
+        for dist in importlib_metadata.distributions():
+            dist_name = dist.metadata.get("Name")
+            if isinstance(dist_name, str) and dist_name.strip():
+                installed.add(_canonicalize_dist_name(dist_name))
+            elif getattr(dist, "name", None):
+                installed.add(_canonicalize_dist_name(str(dist.name)))
+    except Exception:
+        return []
+
+    missing: List[str] = []
+    seen_missing: set[str] = set()
+    for req in requirements:
+        req_name = _parse_requirement_name(req)
+        if not req_name:
+            continue
+        canon = _canonicalize_dist_name(req_name)
+        if canon in installed:
+            continue
+        if canon in seen_missing:
+            continue
+        seen_missing.add(canon)
+        missing.append(req)
+    return missing
 
 
 
@@ -848,8 +973,10 @@ def _parse_single_plugin_config(
     if not is_compatible:
         return None
     
-    # 解析依赖
+    # 解析插件间依赖
     dependencies = _parse_plugin_dependencies(conf, logger, pid)
+    # 解析 Python 运行时依赖（第三方包）
+    python_requirements = _collect_plugin_python_requirements(conf, toml_path, logger, pid)
     
     return PluginContext(
         pid=pid,
@@ -864,6 +991,7 @@ def _parse_single_plugin_config(
         sdk_conflicts_list=sdk_conflicts_list,
         enabled=enabled_val,
         auto_start=auto_start_val,
+        python_requirements=python_requirements,
     )
 
 
@@ -1541,6 +1669,17 @@ def load_plugins_from_roots(
         
         if dependency_check_failed:
             logger.debug("Plugin {}: skipping due to failed dependency check", pid)
+            continue
+
+        missing_python_requirements = _find_missing_python_requirements(ctx.python_requirements)
+        if missing_python_requirements:
+            logger.error(
+                "Plugin {}: missing Python dependencies: {}. "
+                "Please install them in current runtime environment "
+                "(declared in plugin.toml [plugin].dependencies and/or plugin requirements.txt).",
+                pid,
+                missing_python_requirements,
+            )
             continue
 
         # 检查插件是否已经加载
