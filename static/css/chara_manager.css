@@ -875,6 +875,20 @@ body .container-header {
     box-shadow: 0 8px 20px rgba(64, 197, 241, 0.3);
 }
 
+/* 当前猫娘卡片 - 青绿色背景区分 */
+.catgirl-block.current {
+    border-color: #00CED1;
+    background: #E0FFFF;
+}
+
+.catgirl-block.current .catgirl-header {
+    background: #E0FFFF;
+}
+
+.catgirl-block.current .catgirl-details {
+    background: #E0FFFF;
+}
+
 .catgirl-header {
     background: #f0f8ff;
     color: #40C5F1;

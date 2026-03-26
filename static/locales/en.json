@@ -1076,7 +1076,15 @@
     },
     "voice": {
         "title": "Voice Registration",
-        "alibabaApiRequired": "⚠️ This feature requires CosyVoice model. Please configure Alibaba Assist API or local voice server in API Keys settings.",
+        "alibabaApiRequired": "⚠️ This feature requires the CosyVoice model. Please save the Alibaba Bailian API Key in API Keys settings (enabling Assist API is not required), or configure a local voice server.",
+        "minimaxApiRequired": "⚠️ This feature requires the MiniMax model (Domestic). Please save the MiniMax API Key in API Keys settings (enabling Assist API is not required).",
+        "minimaxIntlApiRequired": "⚠️ This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
+        "providerLabel": "Voice Clone Provider",
+        "provider": {
+            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "minimax": "MiniMax (Domestic)",
+            "minimax_intl": "MiniMax (International)"
+        },
         "selectFile": "Select local audio file (8 seconds recommended, max 20 seconds, wav/mp3 format)",
         "customPrefix": "Custom Prefix (Required, used to distinguish different voices)",
         "customPrefixNote": "Maximum 10 characters, numbers and English letters only",
@@ -1599,6 +1607,11 @@
             "headYaw": "Yaw Range",
             "headPitch": "Pitch Range",
             "smoothSpeed": "Tracking Smoothness"
+        },
+        "idleAnimation": {
+            "title": "Idle Animation",
+            "changed": "Idle animation changed",
+            "changeFailed": "Failed to change idle animation"
         }
     },
     "modelManager": {
@@ -2017,7 +2030,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ Important Notice",
-                "desc": "Voice cloning requires Alibaba Cloud API. Make sure you've configured Alibaba Cloud API Key in API settings."
+                "desc": "Voice cloning requires a configured voice provider API Key. Please save the required API Key in API Keys settings."
             },
             "step2": {
                 "title": "🌍 Select Reference Audio Language",

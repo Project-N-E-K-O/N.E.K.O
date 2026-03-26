@@ -1076,7 +1076,15 @@
     },
     "voice": {
         "title": "Регистрация голоса",
-        "alibabaApiRequired": "⚠️ Эта функция требует модель CosyVoice. Настройте Alibaba Assist API или локальный голосовой сервер в настройках API.",
+        "alibabaApiRequired": "⚠️ Для этой функции нужна модель CosyVoice. Сохраните API-ключ Alibaba Bailian в настройках API (включение Assist API не требуется) или настройте локальный голосовой сервер.",
+        "minimaxApiRequired": "⚠️ Для этой функции необходима модель MiniMax (Китай). Сохраните ключ API MiniMax в настройках API (включение Assist API не требуется).",
+        "minimaxIntlApiRequired": "⚠️ Для этой функции необходима модель MiniMax (Международная). Сохраните ключ API MiniMax (Международная) в настройках API (включение Assist API не требуется).",
+        "providerLabel": "Провайдер клонирования голоса",
+        "provider": {
+            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "minimax": "MiniMax (Китай)",
+            "minimax_intl": "MiniMax (Международная)"
+        },
         "selectFile": "Выберите локальный аудиофайл (рекомендуется 15 секунд, макс. 30 секунд, формат wav/mp3)",
         "customPrefix": "Пользовательский префикс (Обязательно, для различения голосов)",
         "customPrefixNote": "Максимум 10 символов, только цифры и латинские буквы",
@@ -1599,6 +1607,11 @@
             "headYaw": "Диапазон поворота",
             "headPitch": "Диапазон наклона",
             "smoothSpeed": "Плавность отслеживания"
+        },
+        "idleAnimation": {
+            "title": "Анимация ожидания",
+            "changed": "Анимация ожидания изменена",
+            "changeFailed": "Не удалось изменить анимацию ожидания"
         }
     },
     "modelManager": {
@@ -2017,7 +2030,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ Important Notice",
-                "desc": "Voice cloning requires Alibaba Cloud API. Make sure you've configured Alibaba Cloud API Key in API settings."
+                "desc": "Клонирование голоса требует настроенного API-ключа провайдера. Сохраните необходимый API-ключ в настройках API."
             },
             "step2": {
                 "title": "🌍 Select Reference Audio Language",

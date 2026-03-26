@@ -2990,8 +2990,10 @@ body {
     z-index: 1;
 }
 
-/* VRM待机动作面板样式（独立于打光，复用相同视觉风格） */
-.vrm-idle-animation-wrapper {
+/* 共享待机动作面板基础样式 */
+.idle-animation-wrapper,
+.vrm-idle-animation-wrapper,
+.mmd-idle-animation-wrapper {
     position: relative;
     width: 270px !important;
     min-width: 270px !important;
@@ -3003,14 +3005,27 @@ body {
     overflow: visible;
 }
 
-.vrm-idle-animation-content {
+.idle-animation-content,
+.vrm-idle-animation-content,
+.mmd-idle-animation-content {
     padding: 10px 12px;
-    background: linear-gradient(180deg, rgba(214, 245, 255, 0.65), rgba(196, 238, 255, 0.55));
-    border: 1px solid rgba(150, 232, 255, 0.55);
     border-radius: 14px;
-    box-shadow: 0 4px 10px rgba(64, 197, 241, 0.12);
     position: relative;
     z-index: 1;
+}
+
+/* VRM待机动作面板样式（覆盖颜色相关属性） */
+.vrm-idle-animation-content {
+    background: linear-gradient(180deg, rgba(214, 245, 255, 0.65), rgba(196, 238, 255, 0.55));
+    border: 1px solid rgba(150, 232, 255, 0.55);
+    box-shadow: 0 4px 10px rgba(64, 197, 241, 0.12);
+}
+
+/* MMD待机动作面板样式（绿色主题） */
+.mmd-idle-animation-content {
+    background: linear-gradient(180deg, rgba(200, 255, 220, 0.65), rgba(180, 250, 200, 0.55));
+    border: 1px solid rgba(100, 230, 150, 0.55);
+    box-shadow: 0 4px 10px rgba(46, 204, 113, 0.12);
 }
 
 /* 隐藏已简化的辅助打光控件 */

@@ -165,7 +165,7 @@ def _file_lock(lock_path: Path, timeout: float = 10.0):
 # ---------------------------------------------------------------------------
 
 # ★ 发版前修改：遥测服务器地址。为空则不上报。
-_TELEMETRY_SERVER_URL = "http://project-neko.cn:8099"
+_TELEMETRY_SERVER_URL = "http://118.31.122.91:8099"
 
 if _TELEMETRY_SERVER_URL and not _TELEMETRY_SERVER_URL.startswith(("http://", "https://")):
     logger.warning("Token tracker: invalid telemetry URL scheme, disabling remote reporting")
@@ -184,10 +184,9 @@ _DO_NOT_TRACK = any(
 # 节流设计：
 #   record() → 即时写入内存（零 I/O）
 #   save()   → 每 60s 本地落盘，然后调用 _report_to_server()
-#   _report_to_server() → 仅当距上次上报 ≥ 180s 时才真正发 HTTP
-#   所以每个进程最多每 3 分钟发一次请求。3 个 server 进程 = 60 req/h/device。
-#   20k DAU × 60 × 8h = 9.6M req/day ≈ 110 req/s peak → SQLite WAL (~500 w/s) 仍够用
-_TELEMETRY_REPORT_INTERVAL = 180
+#   _report_to_server() → 仅当距上次上报 ≥ 60s 时才真正发 HTTP
+#   所以每个进程最多每 1 分钟发一次请求。3 个 server 进程 = 180 req/h/device。
+_TELEMETRY_REPORT_INTERVAL = 60
 
 # 上报超时
 _TELEMETRY_TIMEOUT = 10  # 秒

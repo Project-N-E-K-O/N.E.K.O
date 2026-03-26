@@ -19,6 +19,9 @@ venv
 env
 ENV
 
+# Node
+node_modules
+
 # IDE
 .vscode
 .idea

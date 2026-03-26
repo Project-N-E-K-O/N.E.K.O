@@ -177,3 +177,90 @@ def normalize_voice_clone_api_audio(
 
     except Exception as err:
         raise ValueError(f'无法解析或处理上传音频文件: {err}') from err
+
+
+def validate_audio_file(file_buffer: io.BytesIO, filename: str) -> tuple[str, str]:
+    """验证音频文件类型和格式。
+
+    Args:
+        file_buffer: 音频文件的内存缓冲区
+        filename: 原始文件名（用于判断扩展名）
+
+    Returns:
+        (mime_type, error_message) — mime_type 为空表示验证失败，
+        error_message 为空表示无错误（或仅为警告）。
+    """
+    try:
+        import av
+    except ImportError:
+        return "", "缺少 av 依赖，无法校验音频文件。请安装 pyav。"
+
+    file_path_obj = pathlib.Path(filename)
+    file_extension = file_path_obj.suffix.lower()
+
+    # 检查文件扩展名
+    if file_extension not in ['.wav', '.mp3', '.m4a']:
+        return "", f"不支持的文件格式: {file_extension}。仅支持 WAV、MP3 和 M4A 格式。"
+
+    # 根据扩展名确定MIME类型
+    if file_extension == '.wav':
+        mime_type = "audio/wav"
+        try:
+            file_buffer.seek(0)
+            with av.open(file_buffer, mode='r') as container:
+                audio_streams = [s for s in container.streams if s.type == 'audio']
+                if not audio_streams:
+                    return "", "WAV文件中没有音频流。"
+                stream = audio_streams[0]
+                _ = stream.sample_rate
+                _ = stream.channels
+            file_buffer.seek(0)
+        except Exception as e:
+            return "", f"WAV文件格式错误: {str(e)}。请确认您的文件是合法的WAV文件。"
+
+    elif file_extension == '.mp3':
+        mime_type = "audio/mpeg"
+        try:
+            file_buffer.seek(0)
+            header = file_buffer.read(32)
+            file_buffer.seek(0)
+
+            file_size = len(file_buffer.getvalue())
+            if file_size < 1024:
+                return "", "MP3文件太小，可能不是有效的音频文件。"
+            if file_size > 1024 * 1024 * 10:
+                return "", "MP3文件太大，可能不是有效的音频文件。"
+
+            has_id3_header = header.startswith(b'ID3')
+            has_frame_sync = False
+            for i in range(len(header) - 1):
+                if header[i] == 0xFF and (header[i + 1] & 0xE0) == 0xE0:
+                    has_frame_sync = True
+                    break
+
+            if not has_id3_header and not has_frame_sync:
+                return mime_type, f"警告: MP3文件可能格式不标准，文件头: {header[:4].hex()}"
+
+        except Exception as e:
+            return "", f"MP3文件读取错误: {str(e)}。请确认您的文件是合法的MP3文件。"
+
+    elif file_extension == '.m4a':
+        mime_type = "audio/mp4"
+        try:
+            file_buffer.seek(0)
+            header = file_buffer.read(32)
+            file_buffer.seek(0)
+
+            if b'ftyp' not in header:
+                return "", "M4A文件格式无效或已损坏。请确认您的文件是合法的M4A文件。"
+
+            valid_types = [b'mp4a', b'M4A ', b'M4V ', b'isom', b'iso2', b'avc1']
+            has_valid_type = any(t in header for t in valid_types)
+
+            if not has_valid_type:
+                return mime_type, "警告: M4A文件格式无效或已损坏。请确认您的文件是合法的M4A文件。"
+
+        except Exception as e:
+            return "", f"M4A文件读取错误: {str(e)}。请确认您的文件是合法的M4A文件。"
+
+    return mime_type, ""
