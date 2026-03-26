@@ -1374,7 +1374,31 @@ def _register_failed_plugin(
         error_phase: 失败阶段（dependency_check/import/start_process 等）
     """
     pid = plugin_id or ctx.pid
-    if _check_plugin_already_registered(pid, ctx.toml_path, logger):
+    existing_meta: Optional[Dict[str, Any]] = None
+    with state.acquire_plugins_read_lock():
+        raw_meta = state.plugins.get(pid)
+        if isinstance(raw_meta, dict):
+            existing_meta = dict(raw_meta)
+
+    same_config_registered = False
+    if existing_meta is not None:
+        existing_config_path = existing_meta.get("config_path")
+        if isinstance(existing_config_path, str) and existing_config_path:
+            try:
+                same_config_registered = Path(existing_config_path).resolve() == ctx.toml_path.resolve()
+            except (OSError, RuntimeError):
+                same_config_registered = existing_config_path == str(ctx.toml_path)
+
+    if same_config_registered:
+        with state.acquire_plugin_hosts_read_lock():
+            existing_host = state.plugin_hosts.get(pid)
+        if existing_host is not None and hasattr(existing_host, "is_alive") and existing_host.is_alive():
+            logger.info(
+                "Plugin {} from {} is already registered and running, skipping duplicate failed registration",
+                pid, ctx.toml_path,
+            )
+            return
+    elif _check_plugin_already_registered(pid, ctx.toml_path, logger):
         return
 
     entries_preview = _extract_entries_preview(
@@ -1504,11 +1528,28 @@ def _load_adapter_plugin(
     adapter_conf = ctx.conf.get("adapter", {})
     adapter_mode = adapter_conf.get("mode", "hybrid")
     entries_preview: List[Dict[str, Any]] = []
+    scanned_metadata_registered = False
+    scanned_class_name: Optional[str] = None
+    module_path: Optional[str] = None
+    class_name: Optional[str] = None
     
     logger.info(
         "Loading adapter '{}' (mode={})",
         pid, adapter_mode,
     )
+
+    def _rollback_scanned_metadata() -> None:
+        nonlocal scanned_metadata_registered
+        if not scanned_metadata_registered:
+            return
+        logger.debug(
+            "Adapter {}: removing scanned static metadata for entry='{}' class='{}'",
+            pid,
+            entry,
+            scanned_class_name or class_name or "unknown",
+        )
+        _remove_scanned_metadata(pid)
+        scanned_metadata_registered = False
 
     try:
         module_path, class_name = entry.split(":", 1)
@@ -1517,6 +1558,8 @@ def _load_adapter_plugin(
         if isinstance(cls, type):
             entries_preview = _extract_entries_preview(pid, cls, conf, pdata)
             scan_static_metadata(pid, cls, conf, pdata)
+            scanned_metadata_registered = True
+            scanned_class_name = cls.__name__
     except Exception:
         logger.debug("Adapter {}: failed to extract entries preview", pid, exc_info=True)
     
@@ -1549,6 +1592,7 @@ def _load_adapter_plugin(
         
     except (OSError, RuntimeError) as e:
         logger.error("Failed to start adapter process for {}: {}", pid, e, exc_info=True)
+        _rollback_scanned_metadata()
         _register_failed_plugin(
             ctx,
             logger,
@@ -1560,6 +1604,7 @@ def _load_adapter_plugin(
         return None
     except Exception:
         logger.exception("Unexpected error starting adapter process for {}", pid)
+        _rollback_scanned_metadata()
         _register_failed_plugin(
             ctx,
             logger,
