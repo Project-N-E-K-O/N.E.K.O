@@ -1009,6 +1009,11 @@ class VRMManager {
             this.setupFloatingButtons();
         }
 
+        // 应用保存的局部跟踪设置
+        if (window.humanoidLocalTrackingEnabled === true && this._cursorFollow) {
+            this._cursorFollow.setLocalTrackingEnabled(true);
+        }
+
         // 同时等待场景稳定和待机动画加载完成，确保模型不以 T-pose 显示
         this._loadState = 'settling';
         const stabilityPromise = (result && result.vrm && result.vrm.scene && this._isLoadTokenActive(loadToken))
@@ -1348,6 +1353,64 @@ class VRMManager {
      */
     isMouseTrackingEnabled() {
         return this._mouseTrackingEnabled !== false;
+    }
+
+    /**
+     * 获取 VRM 模型在屏幕上的边界（用于局部跟踪）
+     * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
+     */
+    getModelScreenBounds() {
+        if (!this.currentModel || !this.camera || !this.renderer) {
+            return null;
+        }
+
+        const canvasRect = this.renderer.domElement.getBoundingClientRect();
+        const canvasWidth = canvasRect.width;
+        const canvasHeight = canvasRect.height;
+
+        const box = new window.THREE.Box3().setFromObject(this.currentModel.scene);
+        const corners = [
+            new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
+            new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
+            new window.THREE.Vector3(box.min.x, box.max.y, box.min.z),
+            new window.THREE.Vector3(box.min.x, box.max.y, box.max.z),
+            new window.THREE.Vector3(box.max.x, box.min.y, box.min.z),
+            new window.THREE.Vector3(box.max.x, box.min.y, box.max.z),
+            new window.THREE.Vector3(box.max.x, box.max.y, box.min.z),
+            new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
+        ];
+
+        let screenLeft = Infinity, screenRight = -Infinity;
+        let screenTop = Infinity, screenBottom = -Infinity;
+
+        for (const corner of corners) {
+            corner.project(this.camera);
+            const sx = canvasRect.left + (corner.x * 0.5 + 0.5) * canvasWidth;
+            const sy = canvasRect.top + (-corner.y * 0.5 + 0.5) * canvasHeight;
+            screenLeft = Math.min(screenLeft, sx);
+            screenRight = Math.max(screenRight, sx);
+            screenTop = Math.min(screenTop, sy);
+            screenBottom = Math.max(screenBottom, sy);
+        }
+
+        if (!Number.isFinite(screenLeft) || !Number.isFinite(screenRight) ||
+            !Number.isFinite(screenTop) || !Number.isFinite(screenBottom)) {
+            return null;
+        }
+
+        const width = screenRight - screenLeft;
+        const height = screenBottom - screenTop;
+
+        return {
+            left: screenLeft,
+            right: screenRight,
+            top: screenTop,
+            bottom: screenBottom,
+            width: width,
+            height: height,
+            centerX: (screenLeft + screenRight) / 2,
+            centerY: (screenTop + screenBottom) / 2
+        };
     }
 }
 

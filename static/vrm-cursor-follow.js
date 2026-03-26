@@ -236,6 +236,10 @@ class CursorFollowController {
         this._performanceLevel = 'high';
         this._perfRuntime = { ...CURSOR_FOLLOW_PERF_PRESETS.high };
         this._onPerfLevelChanged = null;
+
+        // ── 局部跟踪 ──
+        this._localTrackingEnabled = window.humanoidLocalTrackingEnabled === true;
+        this._localTrackingMargin = 50; // 局部跟踪边界扩展（像素）
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -365,6 +369,24 @@ class CursorFollowController {
 
     getPerformanceLevel() {
         return this._performanceLevel;
+    }
+
+    /**
+     * 设置局部跟踪是否启用
+     * @param {boolean} enabled - 是否启用局部跟踪
+     */
+    setLocalTrackingEnabled(enabled) {
+        this._localTrackingEnabled = enabled;
+        window.humanoidLocalTrackingEnabled = enabled;
+        console.log(`[VRM CursorFollow] 局部跟踪已${enabled ? '开启' : '关闭'}`);
+    }
+
+    /**
+     * 获取局部跟踪是否启用
+     * @returns {boolean}
+     */
+    isLocalTrackingEnabled() {
+        return this._localTrackingEnabled === true;
     }
 
     /**
@@ -519,19 +541,54 @@ class CursorFollowController {
         const pointerIdle = (now - this._lastPointerMoveAt) >= perf.pointerIdleMs;
         const targetSolveIntervalMs = pointerIdle ? perf.idleTargetSolveIntervalMs : perf.activeTargetSolveIntervalMs;
         const shouldSolveByMovement = !perf.solveTargetOnMoveOnly || !pointerIdle;
-        const shouldSolveTarget = shouldSolveByMovement && (now - this._lastTargetSolveAt) >= targetSolveIntervalMs;
 
         // ③ 屏幕坐标 → NDC
         const rect = this._getCanvasRect(canvas);
         if (!rect.width || !rect.height) return;
 
-        const rawNdcX = ((this._rawMouseX - rect.left) / rect.width) * 2 - 1;
-        const rawNdcY = -((this._rawMouseY - rect.top) / rect.height) * 2 + 1;
+        let isWithinLocalBounds = false;
+        let localNdcX = null;
+        let localNdcY = null;
+
+        // 局部跟踪：只在鼠标在模型边界范围内时跟随
+        if (this._localTrackingEnabled && this.manager) {
+            const bounds = this.manager.getModelScreenBounds();
+            if (bounds) {
+                const margin = this._localTrackingMargin;
+                const clampedLeft = bounds.left - margin;
+                const clampedRight = bounds.right + margin;
+                const clampedTop = bounds.top - margin;
+                const clampedBottom = bounds.bottom + margin;
+
+                // 检查鼠标是否在边界范围内
+                isWithinLocalBounds = this._rawMouseX >= clampedLeft &&
+                                      this._rawMouseX <= clampedRight &&
+                                      this._rawMouseY >= clampedTop &&
+                                      this._rawMouseY <= clampedBottom;
+
+                if (isWithinLocalBounds) {
+                    localNdcX = ((this._rawMouseX - rect.left) / rect.width) * 2 - 1;
+                    localNdcY = -((this._rawMouseY - rect.top) / rect.height) * 2 + 1;
+                }
+            }
+        }
+
+        // 保存局部跟踪状态供 applyHead 使用
+        this._isWithinLocalBounds = isWithinLocalBounds;
+
+        // 局部跟踪时，如果鼠标不在边界范围内，跳过目标更新（保持当前朝向）
+        // 但仍然执行平滑插值，让眼睛保持当前朝向而不是回正
+        const shouldSolveTargetInLocalMode = shouldSolveByMovement && (!this._localTrackingEnabled || isWithinLocalBounds);
+
+        // 如果未启用局部跟踪，或鼠标在边界外，使用原始坐标
+        const rawNdcX = localNdcX !== null ? localNdcX : ((this._rawMouseX - rect.left) / rect.width) * 2 - 1;
+        const rawNdcY = localNdcY !== null ? localNdcY : -((this._rawMouseY - rect.top) / rect.height) * 2 + 1;
 
         // ④ One-Euro 滤波 NDC
         const filteredX = this._eyeFilterX.filter(rawNdcX, this._elapsedTime);
         const filteredY = this._eyeFilterY.filter(rawNdcY, this._elapsedTime);
 
+        const shouldSolveTarget = shouldSolveTargetInLocalMode && (now - this._lastTargetSolveAt) >= targetSolveIntervalMs;
         if (shouldSolveTarget) {
             // ② 获取头部世界坐标（仅在需要求解时执行）
             const headPos = this._getHeadWorldPos();
@@ -593,7 +650,7 @@ class CursorFollowController {
                 const eyeCenterDeadzoneRad = D.eyeCenterDeadzoneDeg * (Math.PI / 180);
                 const stableYaw = Math.abs(clampedYaw) < eyeCenterDeadzoneRad ? 0 : clampedYaw;
 
-                // 低频只更新眼睛“目标角度”，每帧用阻尼插值到当前角度，避免瞬移
+                // 低频只更新眼睛"目标角度"，每帧用阻尼插值到当前角度，避免瞬移
                 this._targetEyeYaw = stableYaw;
                 this._targetEyePitch = clampedPitch;
             }
@@ -666,7 +723,9 @@ class CursorFollowController {
         vrm.scene.getWorldQuaternion(this._tempQuat);
 
         // 低频求解目标角度，高频插值应用，避免阶梯感抽动
-        if (shouldSolveHead) {
+        // 局部跟踪时，如果鼠标不在边界范围内，跳过目标更新（保持当前朝向）
+        const shouldSolveHeadInLocalMode = shouldSolveHead && (!this._localTrackingEnabled || this._isWithinLocalBounds);
+        if (shouldSolveHeadInLocalMode) {
             // ── 参考位置 ──
             const refBone = headBone || neckBone;
             refBone.getWorldPosition(this._headWorldPos);
@@ -717,6 +776,8 @@ class CursorFollowController {
             }
             this._lastHeadSolveAt = now;
         }
+
+        // 局部跟踪时，如果鼠标不在边界范围内，跳过头部更新（保持当前朝向）
 
         // ── 指数阻尼平滑（每帧） ──
         const headAlpha = 1 - Math.exp(-delta * this.headSmoothSpeed);

@@ -1461,7 +1461,9 @@
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
             "frameRateHigh": "60fps",
-            "mouseTracking": "Mouse Tracking"
+            "mouseTracking": "Mouse Tracking",
+            "fullscreenTracking": "Fullscreen Tracking",
+            "localTracking": "Local Tracking"
         }
     },
     "subtitle": {

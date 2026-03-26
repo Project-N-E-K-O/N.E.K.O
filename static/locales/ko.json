@@ -1461,7 +1461,9 @@
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
             "frameRateHigh": "60fps",
-            "mouseTracking": "마우스 추적"
+            "mouseTracking": "마우스 추적",
+            "fullscreenTracking": "전체 화면 추적",
+            "localTracking": "로컬 추적"
         }
     },
     "subtitle": {

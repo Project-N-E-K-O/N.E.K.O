@@ -1461,7 +1461,9 @@
             "renderQualityHigh": "Высокое",
             "renderQualityLow": "Низкое",
             "renderQualityMedium": "Среднее",
-            "mouseTracking": "Отслеживание мыши"
+            "mouseTracking": "Отслеживание мыши",
+            "fullscreenTracking": "Полноэкранное отслеживание",
+            "localTracking": "Локальное отслеживание"
         }
     },
     "subtitle": {

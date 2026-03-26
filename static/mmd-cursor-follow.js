@@ -67,6 +67,10 @@ class MMDCursorFollow {
 
         // 事件去重（Electron 透明窗口同时注入 pointermove + mousemove）
         this._ignoreMouseMoveUntil = 0;
+
+        // 局部跟踪
+        this._localTrackingEnabled = window.humanoidLocalTrackingEnabled === true;
+        this._localTrackingMargin = 50; // 局部跟踪边界扩展（像素）
     }
 
     // ═══════════════════ 初始化 ═══════════════════
@@ -212,64 +216,100 @@ class MMDCursorFollow {
         const rect = this._getCanvasRect();
         if (!rect || !rect.width || !rect.height) return;
 
-        const ndcX = ((this._rawMouseX - rect.left) / rect.width) * 2 - 1;
-        const ndcY = -((this._rawMouseY - rect.top) / rect.height) * 2 + 1;
+        let localMouseX = this._rawMouseX;
+        let localMouseY = this._rawMouseY;
+        let isWithinLocalBounds = false;
 
-        // ── 射线-球面求交：计算鼠标在头骨球面上的投影点 ──
-        this._ndcVec.set(ndcX, ndcY);
-        this._raycaster.setFromCamera(this._ndcVec, camera);
+        // 局部跟踪：只在鼠标在模型边界范围内时跟随
+        if (this._localTrackingEnabled && this.manager) {
+            const bounds = this.manager.getModelScreenBounds();
+            if (bounds) {
+                const margin = this._localTrackingMargin;
+                const clampedLeft = bounds.left - margin;
+                const clampedRight = bounds.right + margin;
+                const clampedTop = bounds.top - margin;
+                const clampedBottom = bounds.bottom + margin;
 
-        const headPos = this._getHeadWorldPos();
-        const ray = this._raycaster.ray;
-        const R = this.lookAtDistance;
+                // 检查鼠标是否在边界范围内
+                isWithinLocalBounds = this._rawMouseX >= clampedLeft &&
+                                      this._rawMouseX <= clampedRight &&
+                                      this._rawMouseY >= clampedTop &&
+                                      this._rawMouseY <= clampedBottom;
 
-        // 射线-球面交点（优先使用远交点避免视线角度压缩）
-        const oc = this._tempVec3C.subVectors(ray.origin, headPos);
-        const b = oc.dot(ray.direction);
-        const c = oc.lengthSq() - R * R;
-        const h = b * b - c;
+                if (isWithinLocalBounds) {
+                    localMouseX = this._rawMouseX;
+                    localMouseY = this._rawMouseY;
+                }
+            }
+        }
 
-        if (h >= 0) {
-            const s = Math.sqrt(h);
-            const tNear = -b - s;
-            const tFar = -b + s;
-            let t = tFar;
-            if (t < 0 && tNear >= 0) t = tNear;
-            if (t >= 0) {
-                this._tempVec3A.copy(ray.origin).addScaledVector(ray.direction, t);
+        // 如果未启用局部跟踪，或鼠标在边界外，使用原始坐标但跳过跟踪更新
+        this._isWithinLocalBounds = isWithinLocalBounds;
+
+        // 局部跟踪时，如果鼠标不在边界范围内，跳过目标更新（保持当前朝向）
+        if (this._localTrackingEnabled && !isWithinLocalBounds) {
+            // 跳过目标计算，但继续执行平滑插值和应用
+            // 让骨骼保持当前朝向，不被动画系统覆盖
+        } else {
+            const ndcX = ((localMouseX - rect.left) / rect.width) * 2 - 1;
+            const ndcY = -((localMouseY - rect.top) / rect.height) * 2 + 1;
+
+            // ── 射线-球面求交：计算鼠标在头骨球面上的投影点 ──
+            this._ndcVec.set(ndcX, ndcY);
+            this._raycaster.setFromCamera(this._ndcVec, camera);
+
+            const headPos = this._getHeadWorldPos();
+            const ray = this._raycaster.ray;
+            const R = this.lookAtDistance;
+
+            // 射线-球面交点（优先使用远交点避免视线角度压缩）
+            const oc = this._tempVec3C.subVectors(ray.origin, headPos);
+            const b = oc.dot(ray.direction);
+            const c = oc.lengthSq() - R * R;
+            const h = b * b - c;
+
+            if (h >= 0) {
+                const s = Math.sqrt(h);
+                const tNear = -b - s;
+                const tFar = -b + s;
+                let t = tFar;
+                if (t < 0 && tNear >= 0) t = tNear;
+                if (t >= 0) {
+                    this._tempVec3A.copy(ray.origin).addScaledVector(ray.direction, t);
+                } else {
+                    ray.closestPointToPoint(headPos, this._tempVec3A);
+                }
             } else {
                 ray.closestPointToPoint(headPos, this._tempVec3A);
             }
-        } else {
-            ray.closestPointToPoint(headPos, this._tempVec3A);
-        }
 
-        // ── 方向分解：使用相机坐标轴，保证左右/上下与屏幕一致 ──
-        const dirWorld = this._tempVec3B.subVectors(this._tempVec3A, headPos);
-        if (dirWorld.lengthSq() < 1e-8) {
-            dirWorld.subVectors(camera.position, headPos);
-        }
-        if (dirWorld.lengthSq() >= 1e-8) {
-            dirWorld.normalize();
+            // ── 方向分解：使用相机坐标轴，保证左右/上下与屏幕一致 ──
+            const dirWorld = this._tempVec3B.subVectors(this._tempVec3A, headPos);
+            if (dirWorld.lengthSq() < 1e-8) {
+                dirWorld.subVectors(camera.position, headPos);
+            }
+            if (dirWorld.lengthSq() >= 1e-8) {
+                dirWorld.normalize();
 
-            const baseRight = this._tempVec3A.set(1, 0, 0).applyQuaternion(camera.quaternion).normalize();
-            const baseUp = this._tempVec3D.set(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
-            const baseForward = this._tempVec3C.set(0, 0, -1).applyQuaternion(camera.quaternion).normalize().negate();
+                const baseRight = this._tempVec3A.set(1, 0, 0).applyQuaternion(camera.quaternion).normalize();
+                const baseUp = this._tempVec3D.set(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
+                const baseForward = this._tempVec3C.set(0, 0, -1).applyQuaternion(camera.quaternion).normalize().negate();
 
-            const dx = dirWorld.dot(baseRight);
-            const dy = dirWorld.dot(baseUp);
-            const dz = dirWorld.dot(baseForward);
+                const dx = dirWorld.dot(baseRight);
+                const dy = dirWorld.dot(baseUp);
+                const dz = dirWorld.dot(baseForward);
 
-            const rawYaw = Math.atan2(dx, dz);
-            const horizLen = Math.sqrt(dx * dx + dz * dz);
-            const rawPitch = Math.atan2(-dy, Math.max(horizLen, 1e-8));
+                const rawYaw = Math.atan2(dx, dz);
+                const horizLen = Math.sqrt(dx * dx + dz * dz);
+                const rawPitch = Math.atan2(-dy, Math.max(horizLen, 1e-8));
 
-            const maxYaw = this.maxYawDeg * (Math.PI / 180);
-            const maxPitchUp = this.maxPitchUpDeg * (Math.PI / 180);
-            const maxPitchDown = this.maxPitchDownDeg * (Math.PI / 180);
+                const maxYaw = this.maxYawDeg * (Math.PI / 180);
+                const maxPitchUp = this.maxPitchUpDeg * (Math.PI / 180);
+                const maxPitchDown = this.maxPitchDownDeg * (Math.PI / 180);
 
-            this._targetYaw = THREE.MathUtils.clamp(rawYaw, -maxYaw, maxYaw);
-            this._targetPitch = THREE.MathUtils.clamp(rawPitch, -maxPitchDown, maxPitchUp);
+                this._targetYaw = THREE.MathUtils.clamp(rawYaw, -maxYaw, maxYaw);
+                this._targetPitch = THREE.MathUtils.clamp(rawPitch, -maxPitchDown, maxPitchUp);
+            }
         }
 
         // 平滑插值
@@ -324,6 +364,24 @@ class MMDCursorFollow {
         if (disabled) {
             this._restoreAndReset();
         }
+    }
+
+    /**
+     * 设置局部跟踪是否启用
+     * @param {boolean} enabled - 是否启用局部跟踪
+     */
+    setLocalTrackingEnabled(enabled) {
+        this._localTrackingEnabled = enabled;
+        window.humanoidLocalTrackingEnabled = enabled;
+        console.log(`[MMD CursorFollow] 局部跟踪已${enabled ? '开启' : '关闭'}`);
+    }
+
+    /**
+     * 获取局部跟踪是否启用
+     * @returns {boolean}
+     */
+    isLocalTrackingEnabled() {
+        return this._localTrackingEnabled === true;
     }
 
     /**

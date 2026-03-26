@@ -1461,7 +1461,9 @@
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
             "frameRateHigh": "60fps",
-            "mouseTracking": "マウス追跡"
+            "mouseTracking": "マウス追跡",
+            "fullscreenTracking": "フルスクリーン追跡",
+            "localTracking": "ローカル追跡"
         }
     },
     "subtitle": {

@@ -86,6 +86,7 @@ class Live2DManager {
         this._shouldApplySavedParams = false; // 是否应该应用保存的参数
         this._savedParamsTimer = null; // 保存参数应用的定时器
         this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false; // 鼠标跟踪启用状态
+        this._fullscreenTrackingEnabled = window.live2dFullscreenTrackingEnabled === true; // 全屏跟踪启用状态
         
         // 模型加载锁，防止并发加载导致重复模型叠加
         this._isLoadingModel = false;
@@ -738,6 +739,24 @@ class Live2DManager {
      */
     isMouseTrackingEnabled() {
         return this._mouseTrackingEnabled !== false;
+    }
+
+    /**
+     * 设置全屏跟踪是否启用
+     * @param {boolean} enabled - 是否启用全屏跟踪
+     */
+    setFullscreenTrackingEnabled(enabled) {
+        this._fullscreenTrackingEnabled = enabled;
+        window.live2dFullscreenTrackingEnabled = enabled;
+        console.log(`[Live2D] 全屏跟踪已${enabled ? '开启' : '关闭'}`);
+    }
+
+    /**
+     * 获取全屏跟踪是否启用
+     * @returns {boolean}
+     */
+    isFullscreenTrackingEnabled() {
+        return this._fullscreenTrackingEnabled === true;
     }
 }
 

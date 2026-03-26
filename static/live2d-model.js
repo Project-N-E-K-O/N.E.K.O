@@ -519,6 +519,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
 
     // 设置浮动按钮系统（在模型完全就绪后再绑定ticker回调）
     this.setupFloatingButtons(model);
+
+    // 应用保存的全屏跟踪设置
+    if (window.live2dFullscreenTrackingEnabled === true) {
+        this.setFullscreenTrackingEnabled(true);
+    }
     
     // 设置原来的锁按钮
     this.setupHTMLLockIcon(model);
