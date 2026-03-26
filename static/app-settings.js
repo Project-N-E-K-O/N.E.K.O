@@ -292,8 +292,8 @@
                 S.proactiveNewsChatEnabled = settings.proactiveNewsChatEnabled ?? false;
                 S.proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? false;
                 S.proactivePersonalChatEnabled = settings.proactivePersonalChatEnabled ?? false;
-                S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? false;
-                S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? false;
+                S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? true;
+                S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? true;
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
