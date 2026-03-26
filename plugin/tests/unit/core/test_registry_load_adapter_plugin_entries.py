@@ -227,10 +227,13 @@ def test_load_adapter_plugin_rolls_back_scanned_handlers_when_process_start_fail
         try:
             module.importlib.import_module = lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin)
 
+            def failing_process_host_factory(*args, **kwargs):
+                raise RuntimeError("boom")
+
             host = module._load_adapter_plugin(
                 ctx,
                 logger=module._DEFAULT_LOGGER,
-                process_host_factory=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+                process_host_factory=failing_process_host_factory,
             )
         finally:
             module.importlib.import_module = original_import_module

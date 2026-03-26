@@ -110,7 +110,10 @@ def _parse_requirement_name(requirement: str) -> Optional[str]:
             parsed = Requirement(text)
             return str(parsed.name).strip() or None
         except Exception:
-            pass
+            logger.opt(exception=True).debug(
+                "Failed to parse requirement '{}' with packaging.Requirement; falling back to loose parser",
+                text,
+            )
     # fallback parser for loose specs when packaging is unavailable
     head = _REQ_NAME_SPLIT_RE.split(text, maxsplit=1)[0].strip()
     return head or None
@@ -2116,6 +2119,7 @@ def load_plugins_from_roots(
                     existing_host = state.plugin_hosts.pop(pid)
             if existing_host is not None:
                 _shutdown_host_safely(existing_host, logger, pid)
+            _remove_scanned_metadata(pid)
             logger.debug("Plugin {} removed from plugin_hosts due to duplicate detection", pid)
             continue
         
