@@ -240,6 +240,8 @@ class CursorFollowController {
         // ── 局部跟踪 ──
         this._localTrackingEnabled = window.humanoidLocalTrackingEnabled === true;
         this._localTrackingMargin = 50; // 局部跟踪边界扩展（像素）
+        this._isWithinLocalBounds = false; // 鼠标是否在局部跟踪范围内
+        this._boundsAvailable = false; // 边界是否可用
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -576,7 +578,11 @@ class CursorFollowController {
         }
 
         // 保存局部跟踪状态供 applyHead 使用
-        this._isWithinLocalBounds = isWithinLocalBounds;
+        // 只有在 bounds 可用时才更新 _isWithinLocalBounds，避免 bounds 不可用时错误地阻止求解
+        this._boundsAvailable = boundsAvailable;
+        if (boundsAvailable) {
+            this._isWithinLocalBounds = isWithinLocalBounds;
+        }
 
         // 局部跟踪时，只有在 bounds 可用且鼠标在边界外才跳过目标更新
         // 如果 bounds 不可用，视为"不可判定"并允许全局跟踪
@@ -726,8 +732,9 @@ class CursorFollowController {
         vrm.scene.getWorldQuaternion(this._tempQuat);
 
         // 低频求解目标角度，高频插值应用，避免阶梯感抽动
-        // 局部跟踪时，如果鼠标不在边界范围内，跳过目标更新（保持当前朝向）
-        const shouldSolveHeadInLocalMode = shouldSolveHead && (!this._localTrackingEnabled || this._isWithinLocalBounds);
+        // 局部跟踪时，只有在 bounds 可用且鼠标在边界外才跳过求解
+        // 如果 bounds 不可用，视为"不可判定"并允许全局跟踪
+        const shouldSolveHeadInLocalMode = shouldSolveHead && (!this._localTrackingEnabled || !this._boundsAvailable || this._isWithinLocalBounds);
         if (shouldSolveHeadInLocalMode) {
             // ── 参考位置 ──
             const refBone = headBone || neckBone;
