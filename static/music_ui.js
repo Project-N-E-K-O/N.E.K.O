@@ -21,6 +21,7 @@
         primaryColor: '#667eea',
         secondaryColor: '#764ba2',
         defaultVolume: 0.5,
+        volumeStep: 0.05,
         // 自动销毁时长配置 (ms)
         timeouts: {
             ended: 21000,  // 自然播放结束
@@ -294,6 +295,15 @@
                     <div class="music-bar-artist"></div>
                 </div>
                 <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
+                <div class="music-bar-volume-container">
+                    <button type="button" class="music-bar-volume-btn" aria-label="Volume" title="Volume">🔊</button>
+                    <div class="music-bar-volume-slider-wrapper">
+                        <div class="music-bar-volume-slider">
+                            <div class="music-bar-volume-slider-fill"></div>
+                            <div class="music-bar-volume-slider-handle"></div>
+                        </div>
+                    </div>
+                </div>
                 <button type="button" class="music-bar-close" aria-label="Close" title="Close">✕</button>
                 <div class="aplayer-internal-container" style="display: none;"></div>
             `;
@@ -445,6 +455,86 @@
                     if (boundPlayer.audio.ended) boundPlayer.seek(0);
                     boundPlayer.toggle();
                 };
+
+                // --- 音量控制逻辑 ---
+                const volumeContainer = musicBar.querySelector('.music-bar-volume-container');
+                const volumeBtn = musicBar.querySelector('.music-bar-volume-btn');
+                const volumeSliderWrapper = musicBar.querySelector('.music-bar-volume-slider-wrapper');
+                const volumeFill = musicBar.querySelector('.music-bar-volume-slider-fill');
+                const volumeHandle = musicBar.querySelector('.music-bar-volume-slider-handle');
+
+                const updateVolumeUI = (vol) => {
+                    const percent = vol * 100;
+                    volumeFill.style.height = percent + '%';
+                    volumeHandle.style.bottom = percent + '%';
+                    
+                    if (vol === 0) volumeBtn.textContent = '🔇';
+                    else if (vol < 0.5) volumeBtn.textContent = '🔉';
+                    else volumeBtn.textContent = '🔊';
+                    
+                    const volText = window.t ? window.t('music.volume', { defaultValue: '音量: ' }) + Math.round(percent) + '%' : '音量: ' + Math.round(percent) + '%';
+                    volumeBtn.setAttribute('title', volText);
+                };
+
+                // 初始化音量 UI
+                updateVolumeUI(boundPlayer.volume());
+
+                volumeBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    volumeContainer.classList.toggle('expanded');
+                };
+
+                let isDraggingVolume = false;
+                const adjustVolume = (e) => {
+                    const rect = volumeSliderWrapper.getBoundingClientRect();
+                    const clientY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
+                    let y = rect.bottom - clientY;
+                    let per = Math.max(0, Math.min(y, rect.height)) / rect.height;
+                    
+                    boundPlayer.volume(per);
+                    updateVolumeUI(per);
+                };
+
+                const stopVolumeDrag = (e) => {
+                    if (!isDraggingVolume) return;
+                    isDraggingVolume = false;
+                    window.removeEventListener('mousemove', adjustVolume);
+                    window.removeEventListener('mouseup', stopVolumeDrag);
+                    window.removeEventListener('touchmove', adjustVolume);
+                    window.removeEventListener('touchend', stopVolumeDrag);
+                };
+
+                volumeSliderWrapper.onmousedown = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    isDraggingVolume = true;
+                    adjustVolume(e);
+                    window.addEventListener('mousemove', adjustVolume);
+                    window.addEventListener('mouseup', stopVolumeDrag);
+                };
+
+                volumeSliderWrapper.ontouchstart = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    isDraggingVolume = true;
+                    adjustVolume(e);
+                    window.addEventListener('touchmove', adjustVolume);
+                    window.addEventListener('touchend', stopVolumeDrag);
+                };
+
+                // 点击外部收起音量
+                const closeVolumeOnOutsideClick = (e) => {
+                    if (volumeContainer.classList.contains('expanded') && !volumeContainer.contains(e.target)) {
+                        volumeContainer.classList.remove('expanded');
+                    }
+                };
+                window.addEventListener('mousedown', closeVolumeOnOutsideClick);
+                
+                // 同步 APlayer 的音量变化
+                boundPlayer.on('volumechange', () => {
+                    updateVolumeUI(boundPlayer.volume());
+                });
 
                 // 进度更新与拖拽 (保持原有逻辑)
                 let isDragging = false;
