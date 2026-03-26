@@ -384,6 +384,8 @@ if (toggleBtn) {
                     iconImg.src = '/static/icons/expand_icon_off.png';
                     iconImg.alt = window.t ? window.t('common.expand') : '展开';
                     toggleBtn.title = window.t ? window.t('common.expand') : '展开';
+                    // 折叠后执行回弹，避免位置越界
+                    triggerExpandSnap();
                 } else {
                     iconImg.src = '/static/icons/expand_icon_off.png';
                     iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
@@ -481,6 +483,8 @@ if (toggleBtn) {
                 toggleBtn.title = window.t ? window.t('common.expand') : '展开';
                 iconImg.style.width = '100%';
                 iconImg.style.height = '100%';
+                // 折叠后执行回弹，避免位置越界
+                triggerExpandSnap();
             } else {
                 // 刚刚还原展开，显示最小化图标（减号）
                 iconImg.src = '/static/icons/expand_icon_off.png';
@@ -896,6 +900,16 @@ if (toggleBtn) {
     // 屏幕切换后，确保对话框回弹到新屏幕内侧
     window.addEventListener('electron-display-changed', () => {
         snapChatContainerIntoScreen({ animate: true });
+    });
+
+    // 窗口大小改变后，确保对话框回弹到屏幕内侧（包括折叠状态）
+    let resizeSnapTimer = null;
+    window.addEventListener('resize', () => {
+        if (resizeSnapTimer) clearTimeout(resizeSnapTimer);
+        resizeSnapTimer = setTimeout(() => {
+            resizeSnapTimer = null;
+            snapChatContainerIntoScreen({ animate: true });
+        }, 200);
     });
 })();
 

@@ -53,6 +53,11 @@
             transform: translate(-50%, -50%) !important;
             overflow: visible !important;
         }
+        /* 折叠态禁用原生拖拽，改用 JS 手动拖拽 + 点击展开 */
+        #chat-container.minimized,
+        #chat-container.minimized * {
+            -webkit-app-region: no-drag !important;
+        }
         #chat-container.minimized::before {
             border-radius: 50% !important;
             background: rgba(68, 183, 254, 0.15) !important;
@@ -292,14 +297,13 @@
         if (tooltip) setTimeout(function(){ tooltip.classList.add('hidden'); }, 5000);
 
         // ===================== resize handle（右下角拖拽调整大小）=====================
-        // 预缓冲策略：mousedown 时一次性扩大窗口 +BUFFER，
+        // 预缓冲策略：mousedown 时将窗口扩展到工作区最大可用空间，
         // 拖拽期间仅更新 CSS 变量（零 IPC），mouseup 时一次 setBounds 裁剪至最终尺寸。
         var _pendingBounds = null;
         var _expandMax = null;
         var _cleanupTimer = 0;
         var anchorSX = 0, anchorSY = 0;
         var snapBounds = null;
-        var BUFFER = 400;                // 预扩展像素
 
         if (rh) rh.addEventListener('mousedown', function(e) {
             if (collapsed || animating) return;
@@ -326,7 +330,7 @@
 
             if (_cleanupTimer) { clearTimeout(_cleanupTimer); _cleanupTimer = 0; }
 
-            // 异步获取工作区，计算最大可用空间并预扩展窗口
+            // 异步获取工作区，预扩展窗口至工作区最大可用空间
             _expandMax = null;
             W.getWorkArea().then(function(wa) {
                 if (!wa || !resizing) return;
@@ -334,12 +338,9 @@
                     w: wa.x + wa.width - snapBounds.x,
                     h: wa.y + wa.height - snapBounds.y
                 };
-                // 预扩展窗口：给 CSS 变量腾出增长空间（窗口透明，扩展区域不可见）
-                var bufW = Math.min(snapBounds.w + BUFFER, _expandMax.w);
-                var bufH = Math.min(snapBounds.h + BUFFER, _expandMax.h);
-                if (bufW > snapBounds.w || bufH > snapBounds.h) {
-                    W.setBounds(snapBounds.x, snapBounds.y, bufW, bufH);
-                }
+                // 预扩展到工作区最大尺寸（窗口透明，扩展区域不可见）
+                // 这样无论用户拖多快，CSS 变量都不会超出 viewport
+                W.setBounds(snapBounds.x, snapBounds.y, _expandMax.w, _expandMax.h);
             });
         });
 
@@ -405,11 +406,45 @@
         if (btn) btn.addEventListener('click', function(e) {
             e.stopPropagation();
             if (animating) return;
+            // 展开态 btn 仍触发折叠
+            if (!collapsed) collapseChat();
+        });
 
-            if (collapsed) {
+        // ===================== 折叠态手动拖拽 + 点击展开 =====================
+        // 拖拽由主进程 DRAG_START/DRAG_STOP 驱动（用 screen.getCursorScreenPoint 轮询），
+        // 避免 Chromium 合成 mousemove 时 screenX 偏移导致的反馈环漂移。
+        var _ballDragging = false, _ballMoved = false;
+        var _ballSX = 0, _ballSY = 0;
+        var CLICK_THRESH = 5;
+
+        box.addEventListener('mousedown', function(e) {
+            if (!collapsed || animating) return;
+            e.preventDefault();
+            _ballDragging = true;
+            _ballMoved = false;
+            _ballSX = e.screenX;
+            _ballSY = e.screenY;
+            // 将 mousedown 时刻的精确 screen 坐标传给主进程，消除 IPC 延迟偏差
+            W.dragStart(e.screenX, e.screenY);
+        });
+
+        document.addEventListener('mousemove', function(e) {
+            if (!_ballDragging) return;
+            // 注意：Chromium 在 SetWindowPos 后合成的 mousemove 的 screenX 不可靠，
+            // 但仅用于阈值判断（是点击还是拖拽），不用于计算窗口位置，所以可接受。
+            var dx = e.screenX - _ballSX;
+            var dy = e.screenY - _ballSY;
+            if (Math.abs(dx) > CLICK_THRESH || Math.abs(dy) > CLICK_THRESH) {
+                _ballMoved = true;
+            }
+        });
+
+        document.addEventListener('mouseup', function() {
+            if (!_ballDragging) return;
+            _ballDragging = false;
+            W.dragStop();
+            if (!_ballMoved && collapsed && !animating) {
                 expandChat();
-            } else {
-                collapseChat();
             }
         });
 
@@ -537,6 +572,88 @@
             animating = false;
             scrollToBottom(false);
         }
+
+        // ===================== 边界检测与回弹 =====================
+        var _bounceAnim = null;
+        var _bouncing = false;
+
+        function checkBoundsAndSnap() {
+            if (animating || resizing || _bouncing) return;
+            var bx = window.screenX, by = window.screenY;
+            var bw = window.outerWidth, bh = window.outerHeight;
+
+            W.getWorkArea().then(function(wa) {
+                if (!wa || animating || resizing || _bouncing) return;
+
+                // 钳位：窗口完全在工作区内
+                var tx = Math.max(wa.x, Math.min(wa.x + wa.width - bw, bx));
+                var ty = Math.max(wa.y, Math.min(wa.y + wa.height - bh, by));
+
+                if (tx === bx && ty === by) return;
+
+                // 取消正在进行的回弹动画
+                if (_bounceAnim) { cancelAnimationFrame(_bounceAnim); _bounceAnim = null; }
+
+                _bouncing = true;
+                var startX = bx, startY = by;
+                var startTime = performance.now();
+                var DURATION = 220;
+
+                function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+                function step(now) {
+                    var elapsed = now - startTime;
+                    var progress = Math.min(elapsed / DURATION, 1);
+                    var ease = easeOutCubic(progress);
+                    var cx = Math.round(startX + (tx - startX) * ease);
+                    var cy = Math.round(startY + (ty - startY) * ease);
+                    // 用 setBounds 替代 setPosition —— Windows 上 transparent 窗口
+                    // setPosition 会导致尺寸漂移（DWM 重新计算非客户区）
+                    W.setBounds(cx, cy, bw, bh);
+
+                    if (progress < 1) {
+                        _bounceAnim = requestAnimationFrame(step);
+                    } else {
+                        _bounceAnim = null;
+                        _bouncing = false;
+                    }
+                }
+                _bounceAnim = requestAnimationFrame(step);
+            });
+        }
+
+        // 拖拽结束检测：轮询 screenX/screenY，位置稳定后触发边界检查
+        (function() {
+            var lastX = window.screenX, lastY = window.screenY;
+            var wasMoving = false;
+            var stableFrames = 0;
+
+            setInterval(function() {
+                // 回弹动画 / 呼吸球拖拽期间跟踪位置但不检测
+                if (_bouncing || animating || resizing || _ballDragging) {
+                    lastX = window.screenX;
+                    lastY = window.screenY;
+                    wasMoving = false;
+                    stableFrames = 0;
+                    return;
+                }
+
+                var cx = window.screenX, cy = window.screenY;
+                if (cx !== lastX || cy !== lastY) {
+                    wasMoving = true;
+                    stableFrames = 0;
+                    lastX = cx;
+                    lastY = cy;
+                } else if (wasMoving) {
+                    stableFrames++;
+                    if (stableFrames >= 3) {
+                        wasMoving = false;
+                        stableFrames = 0;
+                        checkBoundsAndSnap();
+                    }
+                }
+            }, 60);
+        })();
 
         console.log('[Chat Standalone] ready');
     })();
