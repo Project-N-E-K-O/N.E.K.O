@@ -233,23 +233,41 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="logout",
         name="登出",
-        description="清除保存的凭据",
+        description="清除保存的凭据并清空本地数据",
         kind="action"
     )
     async def logout(self, **_):
-        """清除本地凭据"""
+        """清除本地凭据和数据"""
+        # 删除凭据文件
         if self.credential_path and self.credential_path.exists():
             self.credential_path.unlink()
+        
+        # 清空 data 文件夹
+        data_dir = self.data_path()
+        if data_dir and data_dir.exists():
+            import shutil
+            deleted = 0
+            for item in data_dir.iterdir():
+                try:
+                    if item.is_file():
+                        item.unlink()
+                        deleted += 1
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                        deleted += 1
+                except Exception as e:
+                    self.logger.warning(f"删除数据文件失败 {item}: {e}")
+        
         self.api = None
-        self.logger.info("已登出，凭据已删除")
-        return Ok({"success": True})
+        self.logger.info("已登出，凭据和数据已删除")
+        return Ok({"success": True, "message": "✅ 已登出，所有本地数据已清除"})
 
     # ========== 核心功能入口 ==========
     @plugin_entry(
         id="list_homes",
         name="获取家庭列表",
         description="获取用户的所有家庭",
-        llm_result_fields=["homes"]
+        llm_result_fields=["message"]
     )
     async def list_homes(self, **_):
         """获取家庭列表"""
@@ -261,7 +279,14 @@ class MijiaPlugin(NekoPluginBase):
             result = [{"id": h.id, "name": h.name} for h in homes if h.id]
             if not result:
                 self.logger.warning(f"获取到 {len(homes)} 个家庭，但都没有有效ID")
-            return Ok({"homes": result})
+            
+            # 构建友好消息
+            lines = [f"🏠 共有 {len(result)} 个家庭:"]
+            for h in result:
+                lines.append(f"  • {h.get('name')} (ID: {h.get('id')})")
+            message = "\n".join(lines)
+            
+            return Ok({"success": True, "message": message, "homes": result, "count": len(result)})
         except TokenExpiredError:
             return Err(SdkError("凭据已过期，请重新登录"))
         except Exception as e:
@@ -368,7 +393,14 @@ class MijiaPlugin(NekoPluginBase):
             except Exception as e:
                 self.logger.warning(f"保存缓存失败: {e}")
             
-            return Ok({"devices": result, "from_cache": False})
+            # 构建友好消息
+            lines = [f"📱 共有 {len(result)} 个设备:"]
+            for d in result:
+                status = "🟢" if d.get("is_online") else "🔴"
+                lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
+            message = "\n".join(lines)
+            
+            return Ok({"success": True, "message": message, "devices": result, "from_cache": False, "count": len(result)})
         except TokenExpiredError:
             return Err(SdkError("凭据已过期，请重新登录"))
         except Exception as e:
@@ -386,7 +418,7 @@ class MijiaPlugin(NekoPluginBase):
             },
             "required": []
         },
-        llm_result_fields=["devices"]
+        llm_result_fields=["message"]
     )
     async def get_cached_devices(self, refresh: bool = False, **_):
         """获取缓存的设备列表"""
@@ -398,7 +430,15 @@ class MijiaPlugin(NekoPluginBase):
                     cached = json.load(f)
                 devices = cached.get('devices', [])
                 self.logger.info(f"AI 从缓存读取设备列表: {len(devices)} 个设备")
-                return Ok({"devices": devices, "from_cache": True})
+                
+                # 构建友好消息
+                lines = [f"📱 共有 {len(devices)} 个设备:"]
+                for d in devices:
+                    status = "🟢" if d.get("is_online") else "🔴"
+                    lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
+                message = "\n".join(lines)
+                
+                return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
             except Exception as e:
                 self.logger.warning(f"读取缓存失败: {e}")
         
@@ -416,7 +456,7 @@ class MijiaPlugin(NekoPluginBase):
             },
             "required": ["name"]
         },
-        llm_result_fields=["devices"]
+        llm_result_fields=["message"]
     )
     async def find_device_by_name(self, name: str, **_):
         """根据名称查找设备"""
@@ -425,7 +465,7 @@ class MijiaPlugin(NekoPluginBase):
         if not cache_path.exists():
             # 缓存不存在，先获取设备列表
             result = await self.list_devices()
-            if result.is_err:
+            if result.is_err():
                 return result
             devices = result.value.get('devices', [])
         else:
@@ -446,7 +486,123 @@ class MijiaPlugin(NekoPluginBase):
         if not matched:
             return Err(SdkError(f"未找到名称包含 '{name}' 的设备"))
         
-        return Ok({"devices": matched, "count": len(matched)})
+        # 构建友好消息
+        lines = [f"🔍 找到 {len(matched)} 个匹配 '{name}' 的设备:"]
+        for d in matched:
+            status = "🟢 在线" if d.get("is_online") else "🔴 离线"
+            lines.append(f"  • {d.get('name')} ({status})")
+            lines.append(f"    型号: {d.get('model')}")
+            lines.append(f"    DID: {d.get('did')}")
+            if d.get("properties"):
+                lines.append(f"    属性数: {len(d.get('properties', []))}")
+        message = "\n".join(lines)
+        
+        return Ok({"success": True, "message": message, "devices": matched, "count": len(matched)})
+
+    @plugin_entry(
+        id="smart_control",
+        name="智能控制设备",
+        description="一句话控制设备，如'打开插座'、'关闭灯'。自动搜索设备并执行",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "命令，如'打开插座'、'关闭灯'"}
+            },
+            "required": ["command"]
+        },
+        llm_result_fields=["message"]
+    )
+    async def smart_control(self, command: str, **_):
+        """智能控制：用户说'打开插座'，自动完成搜索+控制"""
+        if not self.api:
+            return Err(SdkError("未登录"))
+        
+        self.logger.info(f"智能控制命令: {command}")
+        
+        cmd = command.lower().strip()
+        
+        # 判断开关
+        turn_on = None
+        if any(k in cmd for k in ["打开", "开启", "开"]):
+            turn_on = True
+        elif any(k in cmd for k in ["关闭", "关掉", "关"]):
+            turn_on = False
+        else:
+            return Err(SdkError("请说'打开'或'关闭'"))
+        
+        # 提取设备名
+        device_name = cmd
+        for k in ["打开", "开启", "开", "关闭", "关掉", "关"]:
+            device_name = device_name.replace(k, "")
+        device_name = device_name.strip()
+        
+        if not device_name:
+            return Err(SdkError("请指定设备名，如'打开插座'"))
+        
+        self.logger.info(f"解析结果: 设备='{device_name}', 操作={'开' if turn_on else '关'}")
+        
+        # 查找设备
+        result = await self.find_device_by_name(name=device_name)
+        if result.is_err():
+            self.logger.error(f"查找设备失败")
+            return result
+        
+        devices = result.value.get("devices", [])
+        count = result.value.get("count", len(devices))
+        self.logger.info(f"找到 {count} 个设备, devices列表长度={len(devices)}")
+        
+        if not devices:
+            return Err(SdkError(f"未找到'{device_name}'"))
+        
+        device = devices[0]
+        self.logger.info(f"设备数据: {device}")
+        
+        did = device.get("did")
+        name = device.get("name", device_name)
+        props = device.get("properties", [])
+        
+        self.logger.info(f"使用设备: name={name}, did={did}, 属性数={len(props)}")
+        
+        # 找开关属性
+        switch = None
+        for p in props:
+            pname = p.get("name", "").lower()
+            if any(k in pname for k in ["开关", "电源", "power", "switch"]):
+                if p.get("access") in ["write", "read_write"]:
+                    switch = p
+                    self.logger.info(f"找到开关属性: {p}")
+                    break
+        
+        if not switch:
+            # 找第一个可写的bool
+            for p in props:
+                if p.get("access") in ["write", "read_write"] and p.get("type") == "bool":
+                    switch = p
+                    self.logger.info(f"找到bool属性: {p}")
+                    break
+        
+        if not switch:
+            self.logger.error(f"设备 '{name}' 没有可控制的开关属性")
+            return Err(SdkError(f"'{name}'没有可控制的开关"))
+        
+        siid = switch.get("siid")
+        piid = switch.get("piid")
+        self.logger.info(f"准备控制: did={did}, siid={siid}, piid={piid}, value={turn_on}")
+        
+        # 执行控制
+        try:
+            success = await self.api.control_device(did, siid, piid, turn_on)
+            action = "打开" if turn_on else "关闭"
+            self.logger.info(f"控制结果: success={success}")
+            if success:
+                message = f"✅ 已{action}'{name}'"
+                return Ok({"success": True, "message": message, "device": name, "action": action})
+            else:
+                message = f"❌ {action}'{name}'失败"
+                return Ok({"success": False, "message": message})
+        except Exception as e:
+            self.logger.exception("控制失败")
+            return Err(SdkError(f"控制失败: {e}"))
 
     @plugin_entry(
         id="control_device",
@@ -462,7 +618,7 @@ class MijiaPlugin(NekoPluginBase):
             },
             "required": ["device_id", "siid", "piid", "value"]
         },
-        llm_result_fields=["success"]
+        llm_result_fields=["message"]
     )
     async def control_device(self, device_id: str, siid: int, piid: int, value: Any, **_):
         """控制设备"""
@@ -470,7 +626,12 @@ class MijiaPlugin(NekoPluginBase):
             return Err(SdkError("未登录"))
         try:
             success = await self.api.control_device(device_id, siid, piid, value)
-            return Ok({"success": success})
+            if success:
+                message = f"✅ 设备控制成功 (did={device_id}, siid={siid}, piid={piid}, value={value})"
+                return Ok({"success": True, "message": message, "device_id": device_id, "value": value})
+            else:
+                message = f"❌ 设备控制失败 (did={device_id})"
+                return Ok({"success": False, "message": message})
         except DeviceNotFoundError:
             return Err(SdkError("设备不存在"))
         except DeviceOfflineError:
@@ -495,14 +656,15 @@ class MijiaPlugin(NekoPluginBase):
             },
             "required": ["device_id", "siid", "aiid"]
         },
-        llm_result_fields=["result"]
+        llm_result_fields=["message"]
     )
     async def call_device_action(self, device_id: str, siid: int, aiid: int, params: Optional[dict] = None, **_):
         if not self.api:
             return Err(SdkError("未登录"))
         try:
             result = await self.api.call_device_action(device_id, siid, aiid, params)
-            return Ok({"result": result})
+            message = f"✅ 操作执行成功 (siid={siid}, aiid={aiid})"
+            return Ok({"success": True, "message": message, "result": result})
         except TokenExpiredError:
             return Err(SdkError("凭据已过期，请重新登录"))
         except Exception as e:
@@ -520,14 +682,19 @@ class MijiaPlugin(NekoPluginBase):
             },
             "required": ["scene_id"]
         },
-        llm_result_fields=["success"]
+        llm_result_fields=["message"]
     )
     async def execute_scene(self, scene_id: str, **_):
         if not self.api:
             return Err(SdkError("未登录"))
         try:
             success = await self.api.execute_scene(scene_id)
-            return Ok({"success": success})
+            if success:
+                message = f"✅ 场景执行成功 (ID: {scene_id})"
+                return Ok({"success": True, "message": message})
+            else:
+                message = f"❌ 场景执行失败 (ID: {scene_id})"
+                return Ok({"success": False, "message": message})
         except TokenExpiredError:
             return Err(SdkError("凭据已过期，请重新登录"))
         except Exception as e:
@@ -537,28 +704,33 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="get_device_status",
         name="获取设备属性值",
-        description="获取设备的某个属性值",
+        description="获取设备的某个属性值。使用步骤：1. 先用 find_device_by_name 或 get_cached_devices 获取设备信息 2. 从 properties 中找到要查询的属性，获取 siid 和 piid 3. 调用此方法查询",
         input_schema={
             "type": "object",
             "properties": {
-                "device_id": {"type": "string", "description": "设备ID"},
+                "device_id": {"type": "string", "description": "设备ID（did）"},
                 "siid": {"type": "integer", "description": "服务ID"},
                 "piid": {"type": "integer", "description": "属性ID"}
             },
             "required": ["device_id", "siid", "piid"]
         },
-        llm_result_fields=["value"]
+        llm_result_fields=["message"]
     )
     async def get_device_status(self, device_id: str, siid: int, piid: int, **_):
+        """获取设备单个属性值"""
         if not self.api:
             return Err(SdkError("未登录"))
         try:
-            # 注意：mijiaAPI_V2 可能没有直接的get_property方法，但有批量获取
-            # 使用 get_device_properties 单个请求
             requests = [{"did": device_id, "siid": siid, "piid": piid}]
             results = await self.api.get_device_properties(requests)
             if results and len(results) > 0:
-                return Ok({"value": results[0].get("value")})
+                value = results[0].get("value")
+                code = results[0].get("code", 0)
+                if code == 0:
+                    message = f"📊 属性值: {value} (siid={siid}, piid={piid})"
+                    return Ok({"success": True, "value": value, "message": message, "device_id": device_id})
+                else:
+                    return Err(SdkError(f"查询失败，错误码: {code}"))
             else:
                 return Err(SdkError("未获取到属性值"))
         except TokenExpiredError:
@@ -568,6 +740,112 @@ class MijiaPlugin(NekoPluginBase):
             return Err(SdkError(f"获取设备状态失败: {e}"))
 
     # ========== 辅助功能：获取设备规格（可选） ==========
+    @plugin_entry(
+        id="query_device_state",
+        name="查询设备状态",
+        description="根据设备名称查询设备当前状态。自动查找设备并获取其所有可读属性的当前值。适用于：'查询插座状态'、'看看灯的状态'等",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "设备名称或部分名称，如 '插座'、'灯'"}
+            },
+            "required": ["name"]
+        },
+        llm_result_fields=["message"]
+    )
+    async def query_device_state(self, name: str, **_):
+        """根据设备名称查询设备状态"""
+        if not self.api:
+            return Err(SdkError("未登录"))
+        
+        # 查找设备
+        result = await self.find_device_by_name(name=name)
+        if result.is_err():
+            return result
+        
+        devices = result.value.get("devices", [])
+        if not devices:
+            return Err(SdkError(f"未找到'{name}'"))
+        
+        device = devices[0]
+        did = device.get("did")
+        device_name = device.get("name", name)
+        props = device.get("properties", [])
+        
+        if not props:
+            return Ok({
+                "success": True,
+                "message": f"📱 设备 '{device_name}' 没有可查询的属性",
+                "device": device_name,
+                "states": []
+            })
+        
+        # 构建查询请求（所有可读属性）
+        requests = []
+        readable_props = []
+        for p in props:
+            access = p.get("access", "")
+            if access in ["read", "read_write", "notify_read", "notify_read_write"]:
+                requests.append({
+                    "did": did,
+                    "siid": p.get("siid"),
+                    "piid": p.get("piid")
+                })
+                readable_props.append(p)
+        
+        if not requests:
+            return Ok({
+                "success": True,
+                "message": f"📱 设备 '{device_name}' 没有可读属性",
+                "device": device_name,
+                "states": []
+            })
+        
+        try:
+            results = await self.api.get_device_properties(requests)
+            
+            # 整理状态信息
+            states = []
+            lines = [f"📱 设备 '{device_name}' 当前状态："]
+            lines.append("")
+            
+            for i, res in enumerate(results):
+                if i < len(readable_props):
+                    prop = readable_props[i]
+                    prop_name = prop.get("name", f"属性{prop.get('piid')}")
+                    value = res.get("value")
+                    code = res.get("code", -1)
+                    
+                    if code == 0:
+                        # 格式化值
+                        if isinstance(value, bool):
+                            value_str = "✅ 开启" if value else "❌ 关闭"
+                        else:
+                            value_str = str(value)
+                        
+                        states.append({
+                            "name": prop_name,
+                            "value": value,
+                            "siid": prop.get("siid"),
+                            "piid": prop.get("piid")
+                        })
+                        lines.append(f"  • {prop_name}: {value_str}")
+            
+            if not states:
+                lines.append("  （暂无可用状态数据）")
+            
+            message = "\n".join(lines)
+            return Ok({
+                "success": True,
+                "message": message,
+                "device": device_name,
+                "states": states
+            })
+            
+        except Exception as e:
+            self.logger.exception("查询设备状态失败")
+            return Err(SdkError(f"查询设备状态失败: {e}"))
+
     @plugin_entry(
         id="get_device_spec",
         name="获取设备规格",
@@ -579,7 +857,7 @@ class MijiaPlugin(NekoPluginBase):
             },
             "required": ["model"]
         },
-        llm_result_fields=["properties", "actions"]
+        llm_result_fields=["message"]
     )
     async def get_device_spec(self, model: str = None, **_):
         if not self.api:
@@ -622,7 +900,24 @@ class MijiaPlugin(NekoPluginBase):
                     }
                     actions.append(action)
                 
+                # 构建友好的消息
+                lines = [f"📋 设备规格: {spec.name} ({model})", ""]
+                
+                lines.append(f"【属性】共 {len(properties)} 个:")
+                for p in properties:
+                    access_icon = "🔘" if "write" in p.get("access", "") else "👁"
+                    lines.append(f"  {access_icon} {p.get('name')} (siid={p.get('siid')}, piid={p.get('piid')}, type={p.get('type')})")
+                
+                lines.append("")
+                lines.append(f"【操作】共 {len(actions)} 个:")
+                for a in actions:
+                    lines.append(f"  ▶ {a.get('name')} (siid={a.get('siid')}, aiid={a.get('aiid')})")
+                
+                message = "\n".join(lines)
+                
                 return Ok({
+                    "success": True,
+                    "message": message,
                     "model": spec.model,
                     "name": spec.name,
                     "properties": properties,
