@@ -521,9 +521,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     this.setupFloatingButtons(model);
 
     // 应用保存的全屏跟踪设置
-    if (window.live2dFullscreenTrackingEnabled === true) {
-        this.setFullscreenTrackingEnabled(true);
-    }
+    this.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
     
     // 设置原来的锁按钮
     this.setupHTMLLockIcon(model);

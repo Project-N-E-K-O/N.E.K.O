@@ -219,11 +219,13 @@ class MMDCursorFollow {
         let localMouseX = this._rawMouseX;
         let localMouseY = this._rawMouseY;
         let isWithinLocalBounds = false;
+        let boundsAvailable = false;
 
         // 局部跟踪：只在鼠标在模型边界范围内时跟随
         if (this._localTrackingEnabled && this.manager) {
             const bounds = this.manager.getModelScreenBounds();
             if (bounds) {
+                boundsAvailable = true;
                 const margin = this._localTrackingMargin;
                 const clampedLeft = bounds.left - margin;
                 const clampedRight = bounds.right + margin;
@@ -243,11 +245,12 @@ class MMDCursorFollow {
             }
         }
 
-        // 如果未启用局部跟踪，或鼠标在边界外，使用原始坐标但跳过跟踪更新
+        // 如果未启用局部跟踪，或 bounds 无法获取（视为不可判定），使用原始坐标
+        // 只有在确实取得到 bounds 并且鼠标位于 bounds 之外时才跳过跟踪
         this._isWithinLocalBounds = isWithinLocalBounds;
 
-        // 局部跟踪时，如果鼠标不在边界范围内，跳过目标更新（保持当前朝向）
-        if (this._localTrackingEnabled && !isWithinLocalBounds) {
+        // 局部跟踪时，只有在 bounds 可用且鼠标在边界外才跳过目标更新
+        if (this._localTrackingEnabled && boundsAvailable && !isWithinLocalBounds) {
             // 跳过目标计算，但继续执行平滑插值和应用
             // 让骨骼保持当前朝向，不被动画系统覆盖
         } else {

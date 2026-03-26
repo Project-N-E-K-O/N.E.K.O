@@ -1010,8 +1010,8 @@ class VRMManager {
         }
 
         // 应用保存的局部跟踪设置
-        if (window.humanoidLocalTrackingEnabled === true && this._cursorFollow) {
-            this._cursorFollow.setLocalTrackingEnabled(true);
+        if (this._cursorFollow) {
+            this._cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
         }
 
         // 同时等待场景稳定和待机动画加载完成，确保模型不以 T-pose 显示
@@ -1368,7 +1368,10 @@ class VRMManager {
         const canvasWidth = canvasRect.width;
         const canvasHeight = canvasRect.height;
 
-        const box = new window.THREE.Box3().setFromObject(this.currentModel.scene);
+        const scene = this.currentModel.vrm?.scene ?? this.currentModel.scene;
+        if (!scene) return null;
+
+        const box = new window.THREE.Box3().setFromObject(scene);
         const corners = [
             new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
             new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),

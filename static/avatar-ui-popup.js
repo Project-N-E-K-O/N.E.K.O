@@ -889,6 +889,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         const isEnabled = checkbox.checked;
         trackingModeToggle.style.opacity = isEnabled ? '1' : '0.4';
         trackingModeToggle.style.pointerEvents = isEnabled ? 'auto' : 'none';
+        trackingModeToggle.tabIndex = isEnabled ? 0 : -1;
         if (!isEnabled) {
             trackingModeToggle.setAttribute('aria-disabled', 'true');
         } else {
@@ -937,6 +938,9 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     Object.assign(trackingModeToggle.style, { cursor: 'pointer' });
 
     const handleModeChange = () => {
+        if (checkbox.checked !== true) {
+            return;
+        }
         const enabled = !modeCheckbox.checked;
         modeCheckbox.checked = enabled;
         updateModeRowStyle();
@@ -947,7 +951,6 @@ function createAnimationSettingsSidePanel(manager, prefix) {
                 window.live2dManager.setFullscreenTrackingEnabled(enabled);
             }
         } else if (prefix === 'vrm' || prefix === 'mmd') {
-            // VRM 和 MMD 共用同一个局部跟踪设置
             window.humanoidLocalTrackingEnabled = enabled;
             if (prefix === 'vrm' && window.vrmManager && window.vrmManager._cursorFollow && typeof window.vrmManager._cursorFollow.setLocalTrackingEnabled === 'function') {
                 window.vrmManager._cursorFollow.setLocalTrackingEnabled(enabled);
@@ -969,13 +972,14 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 
     trackingModeToggle.setAttribute('role', 'switch');
     trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
-    trackingModeToggle.tabIndex = 0;
     trackingModeToggle.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             e.stopPropagation();
-            handleModeChange();
-            trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
+            if (checkbox.checked === true) {
+                handleModeChange();
+                trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
+            }
         }
     });
 

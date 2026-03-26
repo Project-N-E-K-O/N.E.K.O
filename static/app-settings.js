@@ -333,6 +333,17 @@
                     window.humanoidLocalTrackingEnabled = settings.humanoidLocalTrackingEnabled === 'true';
                 }
 
+                // 同步到运行中的实例
+                if (typeof window.live2dManager !== 'undefined' && window.live2dManager && typeof window.live2dManager.setFullscreenTrackingEnabled === 'function') {
+                    window.live2dManager.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
+                }
+                if (typeof window.vrmManager !== 'undefined' && window.vrmManager && window.vrmManager._cursorFollow && typeof window.vrmManager._cursorFollow.setLocalTrackingEnabled === 'function') {
+                    window.vrmManager._cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
+                }
+                if (typeof window.mmdManager !== 'undefined' && window.mmdManager && window.mmdManager.cursorFollow && typeof window.mmdManager.cursorFollow.setLocalTrackingEnabled === 'function') {
+                    window.mmdManager.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
+                }
+
                 console.log('已加载设置:', {
                     proactiveChatEnabled: S.proactiveChatEnabled,
                     proactiveVisionEnabled: S.proactiveVisionEnabled,

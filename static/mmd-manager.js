@@ -94,6 +94,7 @@ class MMDManager {
         // 初始化鼠标跟踪
         if (this.cursorFollow) {
             this.cursorFollow.init();
+            this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
         }
 
         // 设置浮动按钮
@@ -141,8 +142,8 @@ class MMDManager {
             this._isModelReadyForInteraction = true;
 
             // 应用保存的局部跟踪设置
-            if (window.humanoidLocalTrackingEnabled === true && this.cursorFollow) {
-                this.cursorFollow.setLocalTrackingEnabled(true);
+            if (this.cursorFollow) {
+                this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
             }
 
             // 派发模型加载完成事件

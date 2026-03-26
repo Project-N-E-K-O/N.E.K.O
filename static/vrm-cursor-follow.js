@@ -549,11 +549,13 @@ class CursorFollowController {
         let isWithinLocalBounds = false;
         let localNdcX = null;
         let localNdcY = null;
+        let boundsAvailable = false;
 
         // 局部跟踪：只在鼠标在模型边界范围内时跟随
         if (this._localTrackingEnabled && this.manager) {
             const bounds = this.manager.getModelScreenBounds();
             if (bounds) {
+                boundsAvailable = true;
                 const margin = this._localTrackingMargin;
                 const clampedLeft = bounds.left - margin;
                 const clampedRight = bounds.right + margin;
@@ -576,11 +578,12 @@ class CursorFollowController {
         // 保存局部跟踪状态供 applyHead 使用
         this._isWithinLocalBounds = isWithinLocalBounds;
 
-        // 局部跟踪时，如果鼠标不在边界范围内，跳过目标更新（保持当前朝向）
+        // 局部跟踪时，只有在 bounds 可用且鼠标在边界外才跳过目标更新
+        // 如果 bounds 不可用，视为"不可判定"并允许全局跟踪
         // 但仍然执行平滑插值，让眼睛保持当前朝向而不是回正
-        const shouldSolveTargetInLocalMode = shouldSolveByMovement && (!this._localTrackingEnabled || isWithinLocalBounds);
+        const shouldSolveTargetInLocalMode = shouldSolveByMovement && (!this._localTrackingEnabled || !boundsAvailable || isWithinLocalBounds);
 
-        // 如果未启用局部跟踪，或鼠标在边界外，使用原始坐标
+        // 如果未启用局部跟踪，或 bounds 不可用，或鼠标在边界外，使用原始坐标
         const rawNdcX = localNdcX !== null ? localNdcX : ((this._rawMouseX - rect.left) / rect.width) * 2 - 1;
         const rawNdcY = localNdcY !== null ? localNdcY : -((this._rawMouseY - rect.top) / rect.height) * 2 + 1;
 
