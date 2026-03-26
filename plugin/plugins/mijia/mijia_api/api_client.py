@@ -672,6 +672,48 @@ class AsyncMijiaAPI:
             self._statistics_service.get_device_statistics, home_id, self._credential
         )
 
+    async def get_device_spec(self, model: str) -> Optional[Any]:
+        """异步获取设备规格
+
+        Args:
+            model: 设备型号
+
+        Returns:
+            设备规格对象，不存在返回None
+        """
+        if not model:
+            return None
+        import asyncio
+
+        def _get_spec():
+            try:
+                return self._device_service._spec_repo.get_spec(model)
+            except Exception:
+                return None
+
+        return await asyncio.to_thread(_get_spec)
+
+    async def get_device_properties(self, requests: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """异步批量获取设备属性
+
+        Args:
+            requests: 请求列表，每个请求包含did、siid、piid
+
+        Returns:
+            结果列表，每个结果包含code、siid、piid、value
+
+        Example:
+            >>> requests = [
+            >>>     {"did": "device_123", "siid": 2, "piid": 1},
+            >>>     {"did": "device_123", "siid": 2, "piid": 2},
+            >>> ]
+            >>> results = await api.get_device_properties(requests)
+        """
+        import asyncio
+        return await asyncio.to_thread(
+            self._device_service._device_repo.batch_get_properties, requests, self._credential
+        )
+
     def update_credential(self, credential: Credential) -> None:
         """更新凭据
 

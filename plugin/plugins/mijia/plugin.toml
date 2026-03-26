@@ -9,7 +9,5 @@ entry = "plugins.mijia:MijiaPlugin"
 recommended = ">=0.1.0,<0.2.0"
 supported = ">=0.1.0,<0.3.0"
 
-[plugin.dependencies]
-# 这些依赖由 N.E.K.O 主环境提供，无需额外安装
-# 插件启动时会检查
-required = ["httpx", "pydantic", "qrcode", "tenacity", "cachetools"]
+# 运行时依赖（由 N.E.K.O 主环境提供，无需额外安装）：
+# httpx, pydantic, qrcode, tenacity, cachetools

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import webbrowser
 from pathlib import Path
 from typing import Any, Optional
 
@@ -53,18 +54,30 @@ class MijiaPlugin(NekoPluginBase):
             self.logger.info("米家插件启动成功，已加载已有凭据")
         else:
             self.logger.warning("未找到有效凭据，请在Web UI中登录")
-
+            asyncio.create_task(self._auto_open_config_page())
         # 注册静态UI
-        static_dir = self.config_dir / "static"
-        if static_dir.exists():
-            self.register_static_ui(
-                directory=static_dir,
-                index_file="config.html",
-                cache_control="no-cache"
+        # register_static_ui 接受相对目录名，内部会拼接 self.config_dir / directory
+        # static/ 目录下的入口文件为 config.html
+        if (self.config_dir / "static").exists():
+            ok = self.register_static_ui(
+                "static",
+                index_file="index.html",
+                cache_control="no-cache, no-store, must-revalidate"
             )
-            self.logger.info("已注册米家配置页面")
+            if ok:
+                self.logger.info("已注册米家配置页面，访问路径: /plugin/mijia/ui/")
+            else:
+                self.logger.warning("注册静态UI失败，请检查 static/config.html 是否存在")
 
         return Ok({"status": "ready"})
+    
+    async def _auto_open_config_page(self):
+        """延迟打开浏览器配置页面"""
+        await asyncio.sleep(2)  # 等待主服务器完全启动
+        # 插件 UI 服务器运行在 agent_server 内，默认端口 48916（USER_PLUGIN_SERVER_PORT）
+        url = "http://localhost:48916/plugin/mijia/ui/"
+        webbrowser.open(url)
+        self.logger.info(f"已自动打开配置页面: {url}")
 
     @lifecycle(id="shutdown")
     async def on_shutdown(self, **_):
@@ -88,7 +101,11 @@ class MijiaPlugin(NekoPluginBase):
         if not self.credential_path or not self.credential_path.exists():
             return None
         try:
-            data = json.loads(self.credential_path.read_text())
+            text = self.credential_path.read_text().strip()
+            if not text:
+                # 文件存在但内容为空，视同未登录
+                return None
+            data = json.loads(text)
             credential = Credential.model_validate(data)
             if credential.is_expired():
                 self.logger.warning("凭据已过期，需要刷新")
@@ -112,6 +129,22 @@ class MijiaPlugin(NekoPluginBase):
     async def _refresh_credential(self, credential: Credential) -> Optional[Credential]:
         if not self.auth_service:
             return None
+    def _parse_xiaomi_response(self, text: str) -> dict:
+        """解析小米登录返回的 &&&START&&&{...} 格式"""
+        marker = "&&&START&&&"
+        idx = text.find(marker)
+        if idx == -1:
+            # 尝试直接解析 JSON
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {}
+        json_str = text[idx + len(marker):]
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            return {}
+
     @plugin_entry(
         id="start_qrcode_login",
         name="开始二维码登录",
@@ -122,7 +155,14 @@ class MijiaPlugin(NekoPluginBase):
         if not self.auth_service:
             return Err(SdkError("认证服务未初始化"))
         try:
-            qr_url, login_url = await self.auth_service.async_get_qrcode()
+            raw_qr_data, login_url = await self.auth_service.async_get_qrcode()
+            # 解析小米原始响应格式 &&&START&&&{...}
+            qr_data = self._parse_xiaomi_response(raw_qr_data)
+            qr_url = qr_data.get("qr", raw_qr_data)  # 如果解析失败，返回原始数据
+            # login_url 也可能是原始格式，尝试解析
+            if login_url.startswith("&&&START&&&"):
+                login_data = self._parse_xiaomi_response(login_url)
+                login_url = login_data.get("loginUrl", login_url)
             return Ok({"qr_url": qr_url, "login_url": login_url})
         except Exception as e:
             return Err(SdkError(f"生成二维码失败: {e}"))
@@ -150,8 +190,9 @@ class MijiaPlugin(NekoPluginBase):
     async def _init_api(self, credential: Credential):
         """使用凭据初始化API客户端"""
         try:
-            self.api = await create_async_api_client(credential)
-            # 可选：测试连接
+            # create_async_api_client 是同步工厂函数，返回 AsyncMijiaAPI 实例
+            self.api = create_async_api_client(credential)
+            # 测试连接（异步方法）
             await self.api.get_homes()
             self.logger.info("API客户端初始化成功")
         except Exception as e:
@@ -216,8 +257,10 @@ class MijiaPlugin(NekoPluginBase):
             return Err(SdkError("未登录或凭据无效，请先登录"))
         try:
             homes = await self.api.get_homes()
-            # 转换为简单字典供AI使用
-            result = [{"id": h.id, "name": h.name} for h in homes]
+            # 转换为简单字典供AI使用，过滤掉没有id的家庭
+            result = [{"id": h.id, "name": h.name} for h in homes if h.id]
+            if not result:
+                self.logger.warning(f"获取到 {len(homes)} 个家庭，但都没有有效ID")
             return Ok({"homes": result})
         except TokenExpiredError:
             return Err(SdkError("凭据已过期，请重新登录"))
@@ -228,32 +271,104 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="list_devices",
         name="获取设备列表",
-        description="获取指定家庭下的设备列表",
+        description="获取指定家庭下的设备列表，并缓存到本地。如果不提供 home_id，将自动使用第一个可用家庭",
         input_schema={
             "type": "object",
             "properties": {
-                "home_id": {"type": "string", "description": "家庭ID"}
+                "home_id": {"type": "string", "description": "家庭ID（可选，不提供则使用默认家庭）"},
+                "refresh": {"type": "boolean", "description": "是否强制刷新缓存（默认false）"}
             },
-            "required": ["home_id"]
+            "required": []
         },
         llm_result_fields=["devices"]
     )
-    async def list_devices(self, home_id: str, **_):
-        """获取设备列表"""
+    async def list_devices(self, home_id: str = None, refresh: bool = False, **_):
+        """获取设备列表并缓存"""
+        cache_path = self.data_path("devices_cache.json")
+        
+        # 如果不强制刷新，尝试从缓存读取
+        if not refresh and cache_path.exists():
+            try:
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    cached = json.load(f)
+                self.logger.info(f"从缓存读取设备列表: {len(cached.get('devices', []))} 个设备")
+                return Ok({"devices": cached.get('devices', []), "from_cache": True})
+            except Exception as e:
+                self.logger.warning(f"读取缓存失败: {e}")
+        
         if not self.api:
             return Err(SdkError("未登录"))
+        
+        # 如果 home_id 为空，尝试获取第一个家庭
+        if not home_id:
+            try:
+                homes = await self.api.get_homes()
+                valid_homes = [h for h in homes if h.id]
+                if not valid_homes:
+                    return Err(SdkError("没有可用的家庭，请先创建家庭或检查登录状态"))
+                home_id = valid_homes[0].id
+            except Exception as e:
+                return Err(SdkError(f"无法获取默认家庭: {e}"))
+        
         try:
             devices = await self.api.get_devices(home_id)
             result = []
             for d in devices:
-                result.append({
+                device_info = {
                     "did": d.did,
                     "name": d.name,
                     "model": d.model,
                     "is_online": d.is_online(),
                     "room_id": d.room_id
-                })
-            return Ok({"devices": result})
+                }
+                
+                # 获取设备规格并缓存关键信息（siid, piid, aiid）
+                if d.model:
+                    try:
+                        spec = await self.api.get_device_spec(d.model)
+                        if spec:
+                            # 缓存属性信息（包含 siid, piid）
+                            properties = []
+                            for p in spec.properties:
+                                prop = {
+                                    "siid": p.siid,
+                                    "piid": p.piid,
+                                    "name": p.name,
+                                    "type": p.type.value if hasattr(p.type, 'value') else str(p.type),
+                                    "access": p.access.value if hasattr(p.access, 'value') else str(p.access)
+                                }
+                                if p.value_range:
+                                    prop["value_range"] = p.value_range
+                                if p.value_list:
+                                    prop["value_list"] = p.value_list
+                                properties.append(prop)
+                            
+                            # 缓存操作信息（包含 siid, aiid）
+                            actions = []
+                            for a in spec.actions:
+                                action = {
+                                    "siid": a.siid,
+                                    "aiid": a.aiid,
+                                    "name": a.name
+                                }
+                                actions.append(action)
+                            
+                            device_info["properties"] = properties
+                            device_info["actions"] = actions
+                    except Exception as e:
+                        self.logger.debug(f"获取设备 {d.name}({d.model}) 规格失败: {e}")
+                
+                result.append(device_info)
+            
+            # 保存到缓存
+            try:
+                with open(cache_path, 'w', encoding='utf-8') as f:
+                    json.dump({"devices": result, "home_id": home_id}, f, ensure_ascii=False, indent=2)
+                self.logger.info(f"设备列表已缓存: {len(result)} 个设备")
+            except Exception as e:
+                self.logger.warning(f"保存缓存失败: {e}")
+            
+            return Ok({"devices": result, "from_cache": False})
         except TokenExpiredError:
             return Err(SdkError("凭据已过期，请重新登录"))
         except Exception as e:
@@ -261,15 +376,88 @@ class MijiaPlugin(NekoPluginBase):
             return Err(SdkError(f"获取设备列表失败: {e}"))
 
     @plugin_entry(
-        id="control_device",
-        name="控制设备属性",
-        description="设置设备的属性值（如开关、亮度等）",
+        id="get_cached_devices",
+        name="获取缓存的设备列表",
+        description="从本地缓存获取设备列表，无需网络请求。如果缓存不存在，会自动调用 list_devices 获取。返回的 devices 列表中，每个设备包含: did(设备ID，用于control_device), name(设备名称), model(设备型号), is_online(是否在线), room_id(房间ID), properties(属性列表，含siid/piid), actions(操作列表，含siid/aiid)",
         input_schema={
             "type": "object",
             "properties": {
-                "device_id": {"type": "string", "description": "设备ID"},
-                "siid": {"type": "integer", "description": "服务ID"},
-                "piid": {"type": "integer", "description": "属性ID"},
+                "refresh": {"type": "boolean", "description": "是否强制刷新缓存（默认false）"}
+            },
+            "required": []
+        },
+        llm_result_fields=["devices"]
+    )
+    async def get_cached_devices(self, refresh: bool = False, **_):
+        """获取缓存的设备列表"""
+        cache_path = self.data_path("devices_cache.json")
+        
+        if not refresh and cache_path.exists():
+            try:
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    cached = json.load(f)
+                devices = cached.get('devices', [])
+                self.logger.info(f"AI 从缓存读取设备列表: {len(devices)} 个设备")
+                return Ok({"devices": devices, "from_cache": True})
+            except Exception as e:
+                self.logger.warning(f"读取缓存失败: {e}")
+        
+        # 缓存不存在或刷新，调用 list_devices
+        return await self.list_devices(refresh=refresh)
+
+    @plugin_entry(
+        id="find_device_by_name",
+        name="根据名称查找设备",
+        description="根据设备名称（或部分名称）从缓存中查找设备信息。返回的 devices 列表中，每个设备包含: did(设备ID，用于control_device的device_id参数), name(设备名称), model(设备型号), is_online(是否在线), properties(属性列表，含siid/piid), actions(操作列表，含siid/aiid)。注意：控制设备时需要使用 did 作为 device_id",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "设备名称或部分名称，如 '插座'、'灯'"}
+            },
+            "required": ["name"]
+        },
+        llm_result_fields=["devices"]
+    )
+    async def find_device_by_name(self, name: str, **_):
+        """根据名称查找设备"""
+        cache_path = self.data_path("devices_cache.json")
+        
+        if not cache_path.exists():
+            # 缓存不存在，先获取设备列表
+            result = await self.list_devices()
+            if result.is_err:
+                return result
+            devices = result.value.get('devices', [])
+        else:
+            try:
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    cached = json.load(f)
+                devices = cached.get('devices', [])
+            except Exception as e:
+                return Err(SdkError(f"读取缓存失败: {e}"))
+        
+        # 模糊匹配设备名称
+        name_lower = name.lower()
+        matched = []
+        for d in devices:
+            if name_lower in d.get('name', '').lower():
+                matched.append(d)
+        
+        if not matched:
+            return Err(SdkError(f"未找到名称包含 '{name}' 的设备"))
+        
+        return Ok({"devices": matched, "count": len(matched)})
+
+    @plugin_entry(
+        id="control_device",
+        name="控制设备属性",
+        description="设置设备的属性值（如开关、亮度等）。使用步骤：1. 先用 find_device_by_name 或 get_cached_devices 获取设备信息 2. 从返回的设备信息中获取 did 作为 device_id，从 properties 中获取 siid 和 piid 3. 调用此方法控制设备",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "device_id": {"type": "string", "description": "设备ID（从 find_device_by_name 或 get_cached_devices 返回的设备信息中获取 did 字段）"},
+                "siid": {"type": "integer", "description": "服务ID（从设备信息的 properties 中获取）"},
+                "piid": {"type": "integer", "description": "属性ID（从设备信息的 properties 中获取）"},
                 "value": {"description": "属性值"}
             },
             "required": ["device_id", "siid", "piid", "value"]
@@ -383,47 +571,63 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="get_device_spec",
         name="获取设备规格",
-        description="获取设备的详细规格（属性和操作列表），用于发现可控制的功能",
+        description="获取设备的详细规格（属性和操作列表），用于发现可控制的功能。使用步骤：1. 先调用 get_cached_devices 获取设备列表 2. 从设备信息中获取 model 字段 3. 调用此方法传入 model",
         input_schema={
             "type": "object",
             "properties": {
-                "model": {"type": "string", "description": "设备型号"}
+                "model": {"type": "string", "description": "设备型号（从 get_cached_devices 返回的设备信息中获取）"}
             },
             "required": ["model"]
         },
-        llm_result_fields=["services"]
+        llm_result_fields=["properties", "actions"]
     )
-    async def get_device_spec(self, model: str, **_):
+    async def get_device_spec(self, model: str = None, **_):
         if not self.api:
             return Err(SdkError("未登录"))
+        if not model:
+            return Err(SdkError("设备型号(model)不能为空"))
         try:
             spec = await self.api.get_device_spec(model)
             if spec:
-                # 简化返回，只提取服务、属性、操作的关键信息
-                services = []
-                for s in spec.services:
-                    svc = {
-                        "siid": s.siid,
-                        "type": s.type,
-                        "description": s.description,
-                        "properties": [],
-                        "actions": []
+                # 简化返回，只提取属性、操作的关键信息
+                properties = []
+                actions = []
+                
+                for p in spec.properties:
+                    prop = {
+                        "siid": p.siid,
+                        "piid": p.piid,
+                        "name": p.name,
+                        "type": p.type.value if hasattr(p.type, 'value') else str(p.type),
+                        "access": p.access.value if hasattr(p.access, 'value') else str(p.access)
                     }
-                    for p in s.properties:
-                        svc["properties"].append({
-                            "piid": p.piid,
-                            "name": p.name,
-                            "type": p.type,
-                            "access": p.access
-                        })
-                    for a in s.actions:
-                        svc["actions"].append({
-                            "aiid": a.aiid,
-                            "name": a.name,
-                            "description": a.description
-                        })
-                    services.append(svc)
-                return Ok({"services": services})
+                    if p.value_range:
+                        prop["value_range"] = p.value_range
+                    if p.value_list:
+                        prop["value_list"] = p.value_list
+                    properties.append(prop)
+                
+                for a in spec.actions:
+                    action = {
+                        "siid": a.siid,
+                        "aiid": a.aiid,
+                        "name": a.name,
+                        "parameters": [
+                            {
+                                "name": param.name,
+                                "type": param.type.value if hasattr(param.type, 'value') else str(param.type)
+                            }
+                            for param in a.parameters
+                        ]
+                    }
+                    actions.append(action)
+                
+                return Ok({
+                    "model": spec.model,
+                    "name": spec.name,
+                    "properties": properties,
+                    "actions": actions
+                })
             else:
                 return Err(SdkError("未找到规格"))
         except TokenExpiredError:
