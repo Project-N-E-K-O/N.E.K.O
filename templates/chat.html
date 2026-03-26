@@ -266,6 +266,7 @@
         var rh  = document.getElementById('neko-resize-handle');
         if (!box) return;
 
+        // BALL: 折叠态呼吸球的窗口总尺寸（CSS .minimized 50px 内容 + 32px Electron 窗口边框/阴影余量）
         var BALL = 82;
         var MIN_W = 300, MIN_H = 200;
         var collapsed = false;
