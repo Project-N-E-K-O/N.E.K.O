@@ -332,6 +332,10 @@
                     console.log('首次启动：检测到中国地区用户，已自动开启自主视觉');
                 }
 
+                // 首次启动默认开启音乐/meme搭话
+                S.proactiveMusicEnabled = true;
+                S.proactiveMemeEnabled = true;
+
                 console.log('未找到保存的设置，使用默认值');
                 window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
                 window.mouseTrackingEnabled = true;
