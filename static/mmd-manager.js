@@ -14,6 +14,7 @@ class MMDManager {
         this.controls = null;
         this.effect = null; // OutlineEffect
         this.useOutlineEffect = true;
+        this._userForcedOutline = false; // 用户是否手动设置过描边
         this.enablePhysics = true;
         this.physicsStrength = 1.0;
         this._baseGravityY = -98;  // Ammo.js 默认重力 Y 分量
@@ -298,6 +299,7 @@ class MMDManager {
             }
             if (r.outline != null) {
                 this.useOutlineEffect = r.outline;
+                this._userForcedOutline = true; // 用户手动设置描边
             }
         }
         // 物理

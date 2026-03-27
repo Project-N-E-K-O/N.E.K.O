@@ -317,6 +317,7 @@ function applyMMDDebugSetting(key, value) {
             break;
         case 'useOutlineEffect':
             manager.useOutlineEffect = value;
+            manager._userForcedOutline = true;
             break;
         case 'pixelRatio':
             if (manager.renderer) {

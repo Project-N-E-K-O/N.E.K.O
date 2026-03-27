@@ -1076,7 +1076,15 @@
     },
     "voice": {
         "title": "音色注冊",
-        "alibabaApiRequired": "⚠️ 此功能需要CosyVoice模型，請在API密鑰設置頁中配置阿里輔助API或本地語音服務器",
+        "alibabaApiRequired": "⚠️ 此功能需要阿里CosyVoice模型，請在API密鑰設定頁中保存阿里百煉API Key（不要求啟用輔助API）或配置本地語音伺服器",
+        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（國內版），請在API密鑰設定頁中保存MiniMax API Key（不要求啟用輔助API）",
+        "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（國際版），請在API密鑰設定頁中保存MiniMax國際版API Key（不要求啟用輔助API）",
+        "providerLabel": "語音克隆服務商",
+        "provider": {
+            "cosyvoice": "阿里雲 CosyVoice",
+            "minimax": "MiniMax（國內版）",
+            "minimax_intl": "MiniMax（國際版）"
+        },
         "selectFile": "選擇本地音頻文件（8秒最佳，請勿超過20秒，wav/mp3格式）",
         "customPrefix": "自定義前綴（必填，用於區分音色）",
         "customPrefixNote": "不超過10個字符，隻支持數字和英文字母",
@@ -1599,6 +1607,11 @@
             "headYaw": "左右轉角範圍",
             "headPitch": "上下轉角範圍",
             "smoothSpeed": "追蹤平滑度"
+        },
+        "idleAnimation": {
+            "title": "待機動作",
+            "changed": "待機動作已切換",
+            "changeFailed": "切換待機動作失敗"
         }
     },
     "modelManager": {
@@ -2017,7 +2030,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ 重要提示",
-                "desc": "語音克隆功能需要使用阿里雲 API。請確保妳已經在 API 設置中配置了阿里雲的 API Key。"
+                "desc": "語音克隆功能需要配置對應服務商的 API Key。請在 API 密鑰設定頁中保存所需的 API Key。"
             },
             "step2": {
                 "title": "🌍 選擇參考音頻語言",

@@ -906,6 +906,18 @@
                     if (savedSettings) {
                         window.mmdManager.applySettings(savedSettings);
                     }
+
+                    // 播放待机动作（使用已获取的 catgirlConfig，无需重复请求）
+                    const mmdIdleAnimation = catgirlConfig?.mmd_idle_animation;
+                    if (mmdIdleAnimation) {
+                        try {
+                            await window.mmdManager.loadAnimation(mmdIdleAnimation);
+                            window.mmdManager.playAnimation();
+                            console.log('[猫娘切换] 已播放待机动作:', mmdIdleAnimation);
+                        } catch (idleErr) {
+                            console.warn('[猫娘切换] 播放待机动作失败:', idleErr);
+                        }
+                    }
                 } else {
                     console.error('[猫娘切换] MMD 管理器初始化失败');
                 }

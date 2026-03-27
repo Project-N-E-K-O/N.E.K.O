@@ -190,6 +190,20 @@ jobs:
             Write-Warning "Playwright Chromium install failed; will download on first run."
           }
 
+      - name: Set up Node.js for plugin frontend
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: plugin/frontend/vue-project/package-lock.json
+
+      - name: Build plugin manager frontend
+        shell: bash
+        run: |
+          cd plugin/frontend/vue-project
+          npm ci
+          npm run build-only
+
       # --- Build with Nuitka ---
       - name: Build with Nuitka (Unix)
         if: runner.os != 'Windows'
@@ -217,10 +231,11 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=templates=templates"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
-          # Plugin runtime assets/configs: include exported frontend and bundled plugins
-          # explicitly, even when they are gitignored locally.
-          if [ -d "plugin/frontend/exported" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/frontend/exported=plugin/frontend/exported"
+          # Plugin manager UI (vite dist; gitignored)
+          if [ -d "plugin/frontend/vue-project/dist" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/frontend/vue-project/dist=plugin/frontend/vue-project/dist"
+          else
+            echo "[WARNING] plugin/frontend/vue-project/dist missing; /ui will be empty in bundle."
           fi
           if [ -d "plugin/plugins" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/plugins=plugin/plugins"
@@ -331,7 +346,8 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=assets=assets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=templates=templates
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/browser_use_prompts=data/browser_use_prompts
-          if exist "plugin\frontend\exported" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/frontend/exported=plugin/frontend/exported
+          if not exist "plugin\frontend\vue-project\dist" echo [WARNING] plugin\frontend\vue-project\dist missing; /ui will be empty in bundle.
+          if exist "plugin\frontend\vue-project\dist" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/frontend/vue-project/dist=plugin/frontend/vue-project/dist
           if exist "plugin\plugins" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/plugins=plugin/plugins
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=playwright_browsers=playwright_browsers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=static=static
@@ -633,6 +649,11 @@ jobs:
           ## Nightly Build ${DATE} (${VERSION})
 
           > ⚠️ This is an **unsigned** nightly build for testing purposes.
+          >
+          > 🍎 **macOS users:** If you see *"N.E.K.O is damaged and can't be opened"*, run this in Terminal:
+          > \`\`\`bash
+          > xattr -cr /path-to/N.E.K.O.app
+          > \`\`\`
 
           ### Desktop App (Electron + Python backend)
           | Platform | File |

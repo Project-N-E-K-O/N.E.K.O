@@ -21,8 +21,16 @@
             </button>
         </div>
         <div class="container-content">
-            <div class="alibaba-api-notice" style="background: linear-gradient(135deg, #ff6b6b 0%, #ffa500 100%); color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-weight: bold; text-align: center; box-shadow: 0 2px 8px rgba(255, 107, 107, 0.3);">
-                <span data-i18n="voice.alibabaApiRequired">⚠️ 此功能需要使用阿里云API</span>
+            <div class="field-row" style="margin-bottom: 16px;">
+                <label data-i18n="voice.providerLabel">语音克隆服务商</label>
+                <select id="voiceProvider" style="max-width: 600px;">
+                    <option value="cosyvoice" data-i18n="voice.provider.cosyvoice">阿里云 CosyVoice</option>
+                    <option value="minimax" data-i18n="voice.provider.minimax">MiniMax（国服）</option>
+                    <option value="minimax_intl" data-i18n="voice.provider.minimax_intl">MiniMax（国际服）</option>
+                </select>
+            </div>
+            <div id="provider-notice" class="alibaba-api-notice" style="background: linear-gradient(135deg, #ff6b6b 0%, #ffa500 100%); color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-weight: bold; text-align: center; box-shadow: 0 2px 8px rgba(255, 107, 107, 0.3);">
+                <span data-i18n="voice.alibabaApiRequired">⚠️ 此功能只支持特定语音模型，请在API密钥设置页中保存对应API Key（不要求启用辅助API）或配置本地语音服务器</span>
             </div>
             <label style="display: flex; align-items: center; gap: 8px;">
                 <img src="/static/icons/exclamation.png" alt="" style="width: 48px; height: 48px; flex-shrink: 0;">
@@ -52,7 +60,7 @@
             </div>
 
             <div class="field-row">
-                <label data-i18n="voice.customPrefix">自定义前缀（阿里云需要）</label>
+                <label data-i18n="voice.customPrefix">自定义前缀（必填，用于区分音色）</label>
                 <input type="text" id="prefix" data-i18n-placeholder="voice.voiceIdPlaceholder"
                     placeholder="Maximum 10 characters, numbers and English letters only" required style="max-width: 600px;">
             </div>

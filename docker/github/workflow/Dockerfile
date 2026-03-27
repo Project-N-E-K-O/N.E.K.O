@@ -1,7 +1,16 @@
+# --- Stage 1: Build plugin manager frontend ---
+FROM node:20-slim AS frontend-builder
+WORKDIR /src
+COPY plugin/frontend/vue-project/package.json plugin/frontend/vue-project/package-lock.json ./
+RUN npm ci
+COPY plugin/frontend/vue-project/ ./
+RUN npm run build-only
+
+# --- Stage 2: Runtime ---
 # 使用多架构支持的 Debian bookworm 作为基础镜像
 FROM debian:bookworm
 
-# 声明多架构构建参数[4,6](@ref)
+# 声明多架构构建参数
 ARG TARGETARCH
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
@@ -77,19 +86,22 @@ RUN mkdir -p /root/.config/uv && \
 # 6. 复制项目代码到容器
 COPY . /app
 
-# 7. 设置环境变量
+# 7. 复制前端构建产物
+COPY --from=frontend-builder /src/dist /app/plugin/frontend/vue-project/dist
+
+# 8. 设置环境变量
 ENV PATH="/root/.cargo/bin:/usr/bin:/usr/local/bin:$PATH"
 ENV PYTHONPATH="/app:$PYTHONPATH"
 
-# 8. 复制 entrypoint 脚本
+# 9. 复制 entrypoint 脚本
 COPY ./docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# 9. 创建数据持久化目录
+# 10. 创建数据持久化目录
 VOLUME ["/data"]
 
-# 10. 显示构建信息
+# 11. 显示构建信息
 RUN cat /build-info.txt
 
-# 11. 设置入口点
+# 12. 设置入口点
 ENTRYPOINT ["/entrypoint.sh"]
