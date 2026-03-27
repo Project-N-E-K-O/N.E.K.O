@@ -80,11 +80,11 @@ class NekoclawPlugin(NekoPluginBase):
         cfg = cfg if isinstance(cfg, dict) else {}
         self._cfg = cfg.get("nekoclaw") if isinstance(cfg.get("nekoclaw"), dict) else {}
 
-        # Safely parse URL: handle None or empty string
+        # Safely parse URL: handle None, empty string, or non-string types
         raw_url = self._cfg.get("url")
-        if raw_url is None or (isinstance(raw_url, str) and not raw_url.strip()):
+        if not isinstance(raw_url, str) or not raw_url.strip():
             raw_url = "http://127.0.0.1:8089"
-        self._url = raw_url.rstrip("/")
+        self._url = raw_url.strip().rstrip("/")
 
         # Safely parse timeout: handle None or invalid values
         raw_timeout = self._cfg.get("timeout", 300.0)
@@ -128,7 +128,20 @@ class NekoclawPlugin(NekoPluginBase):
         - `meta`：透传给服务端的额外元信息。
         """
         sender_id = sender_id or self._default_sender_id
-        session_id = session_id or "neko_session"
+
+        # Resolve session_id with fallback chain:
+        # 1. Explicit session_id parameter
+        # 2. meta["conversation_id"]
+        # 3. Per-sender default to avoid cross-session mixing
+        if not session_id:
+            # Try meta first
+            if meta and isinstance(meta, dict):
+                conv_id = meta.get("conversation_id")
+                if isinstance(conv_id, str) and conv_id:
+                    session_id = conv_id
+            # Fallback to per-sender session
+            if not session_id:
+                session_id = f"neko_session_{sender_id}"
 
         payload_meta = dict(meta or {})
         payload_meta.setdefault("reply_timeout", self._timeout)
@@ -427,8 +440,16 @@ class NekoclawPlugin(NekoPluginBase):
         validated_attachments = []
         if attachments:
             for att in attachments:
-                att_type = att.get("type", "file").lower()
+                # Validate attachment structure
+                if not isinstance(att, dict):
+                    return Err(SdkError(f"附件格式错误：期望字典，收到 {type(att).__name__}"))
+                raw_type = att.get("type")
+                if not isinstance(raw_type, str):
+                    return Err(SdkError(f"附件类型错误：期望字符串，收到 {type(raw_type).__name__}"))
+                att_type = raw_type.lower()
                 att_url = att.get("url", "")
+                if not isinstance(att_url, str):
+                    return Err(SdkError(f"附件 URL 错误：期望字符串，收到 {type(att_url).__name__}"))
                 if not att_url:
                     continue
                 if att_type not in ("image", "video", "audio", "file"):
