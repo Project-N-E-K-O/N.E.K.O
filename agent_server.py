@@ -549,6 +549,8 @@ def _set_capability(name: str, ready: bool, reason: str = "") -> None:
             return "AGENT_NO_PLUGINS_FOUND"
         if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
             return "AGENT_PLUGIN_SERVER_ERROR"
+        if "openfang" in lower or "daemon" in lower:
+            return "AGENT_OPENFANG_DAEMON_UNREACHABLE"
         if "unreachable" in lower or "连接失败" in text or "connectivity" in lower:
             return "AGENT_LLM_UNREACHABLE"
         return "AGENT_LLM_UNREACHABLE"
@@ -2428,9 +2430,9 @@ def _patch_malformed_tool_calls(data: dict) -> None:
             choice["finish_reason"] = "stop"
             print("[LLM Proxy] Converted malformed_function_call to text intent")
 
-        # 确保 message.content 存在（有些 API 返回 null）
-        if "content" not in msg:
-            msg["content"] = None
+        # 确保 message.content 为非 null 字符串（有些 API 返回 null 或缺失该字段）
+        if "content" not in msg or msg["content"] is None:
+            msg["content"] = ""
 
 
 def _extract_tool_intent_as_text(refusal_text: str) -> str:
@@ -2511,20 +2513,33 @@ async def openfang_run(payload: Dict[str, Any]):
 
     task_id = f"of_{uuid.uuid4().hex[:12]}"
 
+    _lanlan = payload.get("lanlan_name")
+
     async def _run():
         try:
             Modules.task_registry[task_id] = {
                 "id": task_id, "type": "openfang", "status": "running",
                 "instruction": instruction, "start_time": datetime.now(timezone.utc).isoformat(),
             }
+            # Emit initial running event with full task object
+            try:
+                await _emit_main_event(
+                    "task_update", _lanlan,
+                    task_id=task_id, channel="openfang",
+                    task=Modules.task_registry[task_id],
+                )
+            except Exception:
+                logger.debug("[OpenFang] initial task_update emit failed", exc_info=True)
 
             def _on_progress(info):
                 try:
+                    reg = Modules.task_registry.get(task_id, {})
+                    reg["status"] = info.get("status", reg.get("status", "running"))
+                    reg["elapsed"] = info.get("elapsed", 0)
                     asyncio.create_task(_emit_main_event(
-                        "task_update", payload.get("lanlan_name"),
-                        task_id=task_id,
-                        status=info.get("status"), channel="openfang",
-                        elapsed=info.get("elapsed", 0),
+                        "task_update", _lanlan,
+                        task_id=task_id, channel="openfang",
+                        task=reg,
                     ))
                 except Exception as e:
                     logger.debug("[OpenFang] _on_progress emit failed: %s", e)
@@ -2534,23 +2549,35 @@ async def openfang_run(payload: Dict[str, Any]):
                 session_id=payload.get("conversation_id"),
                 on_progress=_on_progress,
             )
-            Modules.task_registry[task_id]["status"] = "completed" if result.get("success") else "failed"
+            final_status = "completed" if result.get("success") else "failed"
+            Modules.task_registry[task_id]["status"] = final_status
             Modules.task_registry[task_id]["result"] = result
             Modules.task_registry[task_id]["end_time"] = datetime.now(timezone.utc).isoformat()
 
-            await _emit_main_event(
-                "task_result", payload.get("lanlan_name"),
-                task_id=task_id,
-                status=Modules.task_registry[task_id]["status"],
+            await _emit_task_result(
+                _lanlan,
                 channel="openfang",
+                task_id=task_id,
+                success=result.get("success", False),
                 summary=result.get("result", "")[:500],
                 detail=result.get("result", ""),
-                error_message=result.get("error"),
+                error_message=result.get("error", ""),
             )
         except Exception as e:
             logger.error("[OpenFang] Task %s failed: %s", task_id, e)
             Modules.task_registry[task_id]["status"] = "failed"
             Modules.task_registry[task_id]["error"] = str(e)
+            try:
+                await _emit_task_result(
+                    _lanlan,
+                    channel="openfang",
+                    task_id=task_id,
+                    success=False,
+                    summary="",
+                    error_message=str(e),
+                )
+            except Exception:
+                logger.debug("[OpenFang] terminal task_result emit failed", exc_info=True)
 
     bg = asyncio.create_task(_run())
     Modules.task_async_handles[task_id] = bg

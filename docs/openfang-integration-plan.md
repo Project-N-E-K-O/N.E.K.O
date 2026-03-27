@@ -334,7 +334,7 @@ Python 侧 `config/__init__.py` 已有读取 port_config.json 的逻辑，新增
 
 ```python
 # config/__init__.py 新增
-OPENFANG_PORT = _read_port("OPENFANG_PORT", 50051)
+OPENFANG_PORT = _read_port_env("OPENFANG_PORT", 50051)
 OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
 ```
 
@@ -1040,7 +1040,7 @@ OpenFang 运行时更新，无需重启
 # config/__init__.py
 
 # OpenFang 端口 (由 Electron 写入 port_config.json)
-OPENFANG_PORT = _read_port("OPENFANG_PORT", 50051)
+OPENFANG_PORT = _read_port_env("OPENFANG_PORT", 50051)
 OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
 ```
 
@@ -1127,7 +1127,7 @@ temperature = 0.1
 [capabilities]
 file_read = ["/tmp/neko-workspace/*"]
 file_write = ["/tmp/neko-workspace/*"]
-net_connect = ["*"]
+net_connect = ["api.openai.com", "generativelanguage.googleapis.com", "dashscope.aliyuncs.com"]  # 最小权限; 开发环境可设 ["*"]
 shell_exec = true               # 在 WASM 沙箱中执行
 ```
 
