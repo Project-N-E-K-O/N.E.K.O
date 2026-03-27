@@ -384,9 +384,7 @@ Rules:
         if not self.openfang or not self.openfang.init_ok:
             return OpenFangDecision(has_task=False, can_execute=False, reason="OpenFang not available")
 
-        if not available_tools:
-            return OpenFangDecision(has_task=False, can_execute=False, reason="No tools available from OpenFang, cannot assess capabilities")
-        tools_str = ", ".join(available_tools[:30])
+        tools_str = ", ".join(available_tools[:30]) if available_tools else "web_search, code_exec, file_ops, data_processing, messaging"
         system_prompt = f"""You are a automation assessment agent, assess if the user's latest request should be handled by OpenFang multi-agent autonomous system.
 Return strict JSON:
 {{
