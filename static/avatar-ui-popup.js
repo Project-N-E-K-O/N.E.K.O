@@ -846,6 +846,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         const enabled = !checkbox.checked;
         checkbox.checked = enabled;
         updateRowStyle();
+        updateTrackingModeToggleState();
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
         if (typeof manager._onMouseTrackingToggle === 'function') {
             manager._onMouseTrackingToggle(enabled);
@@ -871,6 +872,118 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     });
 
     container.appendChild(trackingRow);
+
+    // Live2D 全屏跟踪 / VRM/MMD 局部跟踪切换
+    const trackingModeToggle = document.createElement('div');
+    Object.assign(trackingModeToggle.style, { display: 'flex', alignItems: 'center', gap: '8px', width: '100%', marginTop: '4px' });
+
+    const modeCheckbox = document.createElement('input');
+    modeCheckbox.type = 'checkbox';
+    modeCheckbox.style.display = 'none';
+
+    const { indicator: modeIndicator, updateStyle: updateModeIndicatorStyle } = manager._createCheckIndicator();
+    Object.assign(modeIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
+
+    // 鼠标跟踪切换时更新跟踪模式按钮状态
+    const updateTrackingModeToggleState = () => {
+        const isEnabled = checkbox.checked;
+        trackingModeToggle.style.opacity = isEnabled ? '1' : '0.4';
+        trackingModeToggle.style.pointerEvents = isEnabled ? 'auto' : 'none';
+        trackingModeToggle.tabIndex = isEnabled ? 0 : -1;
+        if (!isEnabled) {
+            trackingModeToggle.setAttribute('aria-disabled', 'true');
+        } else {
+            trackingModeToggle.removeAttribute('aria-disabled');
+        }
+    };
+
+    const updateModeRowStyle = () => {
+        updateModeIndicatorStyle(modeCheckbox.checked);
+        trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
+    };
+
+    // 根据模型类型设置复选框状态（从 window 变量读取，保持同类型模型切换时状态不变）
+    const getTrackingModeState = () => {
+        if (prefix === 'live2d') {
+            return window.live2dFullscreenTrackingEnabled === true;
+        } else if (prefix === 'vrm' || prefix === 'mmd') {
+            // VRM 和 MMD 共用同一个局部跟踪设置
+            return window.humanoidLocalTrackingEnabled === true;
+        }
+        return false;
+    };
+    modeCheckbox.checked = getTrackingModeState();
+
+    modeCheckbox.updateStyle = updateModeRowStyle;
+    updateModeRowStyle();
+
+    // 初始化跟踪模式按钮状态（根据鼠标跟踪按钮的状态）
+    updateTrackingModeToggleState();
+
+    checkbox.addEventListener('change', updateModeRowStyle);
+
+    const modeLabel = document.createElement('span');
+    if (prefix === 'live2d') {
+        modeLabel.textContent = window.t ? window.t('settings.toggles.fullscreenTracking') : '全屏跟踪';
+        modeLabel.setAttribute('data-i18n', 'settings.toggles.fullscreenTracking');
+    } else if (prefix === 'vrm' || prefix === 'mmd') {
+        modeLabel.textContent = window.t ? window.t('settings.toggles.localTracking') : '局部跟踪';
+        modeLabel.setAttribute('data-i18n', 'settings.toggles.localTracking');
+    }
+    Object.assign(modeLabel.style, { userSelect: 'none', fontSize: '12px', flex: '1' });
+
+    trackingModeToggle.appendChild(modeCheckbox);
+    trackingModeToggle.appendChild(modeIndicator);
+    trackingModeToggle.appendChild(modeLabel);
+    Object.assign(trackingModeToggle.style, { cursor: 'pointer' });
+
+    const handleModeChange = () => {
+        if (checkbox.checked !== true) {
+            return;
+        }
+        const enabled = !modeCheckbox.checked;
+        modeCheckbox.checked = enabled;
+        updateModeRowStyle();
+
+        if (prefix === 'live2d') {
+            window.live2dFullscreenTrackingEnabled = enabled;
+            if (window.live2dManager && typeof window.live2dManager.setFullscreenTrackingEnabled === 'function') {
+                window.live2dManager.setFullscreenTrackingEnabled(enabled);
+            }
+        } else if (prefix === 'vrm' || prefix === 'mmd') {
+            window.humanoidLocalTrackingEnabled = enabled;
+            if (prefix === 'vrm' && window.vrmManager && window.vrmManager._cursorFollow && typeof window.vrmManager._cursorFollow.setLocalTrackingEnabled === 'function') {
+                window.vrmManager._cursorFollow.setLocalTrackingEnabled(enabled);
+            } else if (prefix === 'mmd' && window.mmdManager && window.mmdManager.cursorFollow && typeof window.mmdManager.cursorFollow.setLocalTrackingEnabled === 'function') {
+                window.mmdManager.cursorFollow.setLocalTrackingEnabled(enabled);
+            }
+        }
+
+        if (typeof window.saveNEKOSettings === 'function') {
+            window.saveNEKOSettings();
+        }
+    };
+
+    trackingModeToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleModeChange();
+        trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
+    });
+
+    trackingModeToggle.setAttribute('role', 'switch');
+    trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
+    trackingModeToggle.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            if (checkbox.checked === true) {
+                handleModeChange();
+                trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
+            }
+        }
+    });
+
+    container.appendChild(trackingModeToggle);
 
     document.body.appendChild(container);
     return container;
@@ -1358,6 +1471,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
         checkbox.checked = window.proactiveVisionEnabled;
+    } else if (toggle.id === 'fullscreen-tracking' && typeof window.live2dFullscreenTrackingEnabled !== 'undefined') {
+        checkbox.checked = window.live2dFullscreenTrackingEnabled;
     }
 
     const indicator = document.createElement('div');
@@ -1477,6 +1592,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
                 if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
                     window.stopProactiveVisionDuringSpeech();
                 }
+            }
+        } else if (toggle.id === 'fullscreen-tracking') {
+            window.live2dFullscreenTrackingEnabled = isChecked;
+            if (window.live2dManager && typeof window.live2dManager.setFullscreenTrackingEnabled === 'function') {
+                window.live2dManager.setFullscreenTrackingEnabled(isChecked);
+            }
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
             }
         }
     };

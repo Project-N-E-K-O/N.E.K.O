@@ -14,6 +14,7 @@ export enum PluginStatus {
   RUNNING = 'running',
   STOPPED = 'stopped',
   CRASHED = 'crashed',
+  LOAD_FAILED = 'load_failed',
   LOADING = 'loading',
   DISABLED = 'disabled',
   INJECTED = 'injected',
@@ -42,6 +43,7 @@ export const STATUS_COLORS = {
   [PluginStatus.RUNNING]: '#67C23A',
   [PluginStatus.STOPPED]: '#909399',
   [PluginStatus.CRASHED]: '#F56C6C',
+  [PluginStatus.LOAD_FAILED]: '#F56C6C',
   [PluginStatus.LOADING]: '#409EFF',
   [PluginStatus.DISABLED]: '#909399',
   [PluginStatus.INJECTED]: '#67C23A',
@@ -53,6 +55,7 @@ export const STATUS_TEXT_KEYS = {
   [PluginStatus.RUNNING]: 'status.running',
   [PluginStatus.STOPPED]: 'status.stopped',
   [PluginStatus.CRASHED]: 'status.crashed',
+  [PluginStatus.LOAD_FAILED]: 'status.loadFailed',
   [PluginStatus.LOADING]: 'status.loading',
   [PluginStatus.DISABLED]: 'status.disabled',
   [PluginStatus.INJECTED]: 'status.injected',
@@ -79,4 +82,3 @@ export const METRICS_REFRESH_INTERVAL = 5000
 
 // 日志刷新间隔（毫秒）
 export const LOGS_REFRESH_INTERVAL = 3000
-
