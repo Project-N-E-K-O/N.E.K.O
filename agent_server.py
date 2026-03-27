@@ -2284,6 +2284,10 @@ async def openfang_llm_proxy(request: Request, path: str):
     if real_base_url.rstrip("/").endswith("/v1") and path.startswith("v1/"):
         path = path[3:]  # 去掉 "v1/"
     target_url = f"{real_base_url}/{path}"
+    # 保留原始请求的 query string
+    qs = request.url.query
+    if qs:
+        target_url = f"{target_url}?{qs}"
 
     print(f"[LLM Proxy] path={path}, real_base_url={real_base_url}, target_url={target_url}")
 
@@ -2578,17 +2582,21 @@ async def openfang_run(payload: Dict[str, Any]):
             reg["status"] = final_status
             reg["result"] = result
             reg["end_time"] = datetime.now(timezone.utc).isoformat()
-            if not result.get("success"):
-                reg["error"] = result.get("error", "")
+            _r = result if isinstance(result, dict) else {}
+            _success = _r.get("success", False)
+            _result_text = _r.get("result", "") or ""
+            _error_text = _r.get("error", "") or ""
+            if not _success:
+                reg["error"] = _error_text
 
             await _emit_task_result(
                 _lanlan,
                 channel="openfang",
                 task_id=task_id,
-                success=result.get("success", False),
-                summary=result.get("result", "")[:500],
-                detail=result.get("result", ""),
-                error_message=result.get("error", ""),
+                success=_success,
+                summary=_result_text[:500],
+                detail=_result_text,
+                error_message=_error_text,
             )
             # Terminal task_update so HUD transitions out of running
             try:

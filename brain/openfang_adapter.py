@@ -525,10 +525,10 @@ class OpenFangAdapter:
                     provider, needs_proxy, model, base_url)
 
         ok = False
+        key_pushed = False
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # (1) Push API key — 尝试推送到检测到的 provider
-                key_pushed = False
                 provider_key_url = f"{self.base_url}/api/providers/{provider}/key"
                 for payload in [
                     {"key": api_key},
