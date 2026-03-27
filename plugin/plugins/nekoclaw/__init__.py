@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import imghdr
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -79,8 +80,18 @@ class NekoclawPlugin(NekoPluginBase):
         cfg = cfg if isinstance(cfg, dict) else {}
         self._cfg = cfg.get("nekoclaw") if isinstance(cfg.get("nekoclaw"), dict) else {}
 
-        self._url = self._cfg.get("url", "http://127.0.0.1:8089").rstrip("/")
-        self._timeout = float(self._cfg.get("timeout", 300.0))
+        # Safely parse URL: handle None or empty string
+        raw_url = self._cfg.get("url")
+        if raw_url is None or (isinstance(raw_url, str) and not raw_url.strip()):
+            raw_url = "http://127.0.0.1:8089"
+        self._url = raw_url.rstrip("/")
+
+        # Safely parse timeout: handle None or invalid values
+        raw_timeout = self._cfg.get("timeout", 300.0)
+        try:
+            self._timeout = float(raw_timeout) if raw_timeout is not None else 300.0
+        except (TypeError, ValueError):
+            self._timeout = 300.0
         self._http_timeout = max(self._timeout + 15.0, self._timeout)
         self._default_sender_id = self._cfg.get("default_sender_id", "neko_user")
 
@@ -298,12 +309,22 @@ class NekoclawPlugin(NekoPluginBase):
             path = Path(image_path).expanduser()
             if not path.exists():
                 return Err(SdkError(f"图片文件不存在: {image_path}"))
+            # Security: enforce max file size (20MB)
+            MAX_IMAGE_SIZE = 20 * 1024 * 1024
+            try:
+                if path.stat().st_size > MAX_IMAGE_SIZE:
+                    return Err(SdkError(f"图片文件过大，最大支持 20MB: {image_path}"))
+            except OSError as e:
+                return Err(SdkError(f"无法读取文件信息: {e}"))
             try:
                 image_data = path.read_bytes()
+                # Security: validate actual image type using imghdr
+                detected_type = imghdr.what(None, h=image_data)
+                if detected_type not in ("jpeg", "png", "gif", "webp", "bmp"):
+                    return Err(SdkError(f"不支持的图片格式或文件不是有效图片: {image_path}"))
+                mime_map = {"jpeg": "jpeg", "jpg": "jpeg", "png": "png", "gif": "gif", "webp": "webp", "bmp": "bmp"}
+                mime = f"image/{mime_map.get(detected_type, 'png')}"
                 b64_data = base64.b64encode(image_data).decode("utf-8")
-                ext = path.suffix.lower().lstrip(".") or "png"
-                mime_map = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "gif": "gif", "webp": "webp"}
-                mime = f"image/{mime_map.get(ext, 'png')}"
                 data_url = f"data:{mime};base64,{b64_data}"
                 attachments.append({"type": "image", "url": data_url})
             except Exception as e:

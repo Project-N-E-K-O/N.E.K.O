@@ -224,7 +224,8 @@ def _select_fallback_session_manager():
 async def _broadcast_to_all_connected(event_payload: dict) -> int:
     """Broadcast an event to all connected WebSocket sessions asynchronously."""
     delivered_count = 0
-    for name, mgr in session_manager.items():
+    # Take a snapshot to avoid RuntimeError from concurrent dict mutation
+    for name, mgr in list(session_manager.items()):
         if not mgr:
             continue
         ws = getattr(mgr, "websocket", None)
