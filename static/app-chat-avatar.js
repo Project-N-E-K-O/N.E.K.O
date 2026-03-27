@@ -10,6 +10,9 @@
 
     let isCapturing = false;
     let activeCaptureToken = 0;
+    let cachedPreview = null;
+    let autoCaptureTimer = null;
+    let lastScheduledCacheKey = '';
 
     function translateLabel(key, fallback) {
         if (typeof window.safeT === 'function') {
@@ -91,6 +94,74 @@
         return window.getComputedStyle(textInputArea).display !== 'none';
     }
 
+    function getCurrentModelType() {
+        const modelType = String(window.lanlan_config?.model_type || '').toLowerCase();
+        if (modelType === 'live3d') {
+            const subType = String(window.lanlan_config?.live3d_sub_type || '').toLowerCase();
+            if (subType === 'mmd') return 'mmd';
+            if (subType === 'vrm') return 'vrm';
+        }
+        if (modelType === 'vrm' || window.vrmManager?.currentModel?.url) return 'vrm';
+        if (modelType === 'mmd' || window.mmdManager?.currentModel?.url) return 'mmd';
+        return 'live2d';
+    }
+
+    function getCurrentModelCacheKey() {
+        const modelType = getCurrentModelType();
+        if (modelType === 'vrm') {
+            return 'vrm:' + String(
+                window.vrmManager?.currentModel?.url ||
+                window.lanlan_config?.vrm ||
+                ''
+            );
+        }
+        if (modelType === 'mmd') {
+            return 'mmd:' + String(
+                window.mmdManager?.currentModel?.url ||
+                window.mmdModel ||
+                window.lanlan_config?.mmd ||
+                ''
+            );
+        }
+        return 'live2d:' + String(
+            window.live2dManager?._lastLoadedModelPath ||
+            window.cubism4Model ||
+            ''
+        );
+    }
+
+    function hasUsableCachedPreview() {
+        return !!(
+            cachedPreview &&
+            cachedPreview.dataUrl &&
+            cachedPreview.cacheKey &&
+            cachedPreview.cacheKey === getCurrentModelCacheKey()
+        );
+    }
+
+    function applyPreviewResult(result, cacheKey) {
+        cachedPreview = {
+            cacheKey,
+            dataUrl: result.dataUrl,
+            modelType: result.modelType || getCurrentModelType(),
+            capturedAt: Date.now()
+        };
+
+        setPreviewImage(cachedPreview.dataUrl);
+        setPreviewStatus(
+            translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
+        );
+        setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
+    }
+
+    function clearCachedPreview() {
+        cachedPreview = null;
+        lastScheduledCacheKey = '';
+        setPreviewImage('');
+        setPreviewStatus(translateLabel('chat.avatarPreviewWaiting', '等待当前模型头像缓存生成'));
+        setPreviewNote(translateLabel('chat.avatarPreviewHint', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
+    }
+
     async function captureAvatarPreview() {
         if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
             throw new Error(translateLabel('chat.avatarPreviewUnavailable', '头像预览功能尚未就绪。'));
@@ -107,9 +178,14 @@
         });
     }
 
-    async function renderAvatarPreview() {
+    async function renderAvatarPreview(options = {}) {
+        const forceRefresh = options.forceRefresh === true;
+        const showCard = options.showCard !== false;
+        const skipInputCheck = options.skipInputCheck === true;
+        const silent = options.silent === true;
+
         if (isCapturing) return;
-        if (!isInlinePreviewAvailable()) {
+        if (!skipInputCheck && !isInlinePreviewAvailable()) {
             if (typeof window.showStatusToast === 'function') {
                 window.showStatusToast(
                     translateLabel('chat.avatarPreviewInputHidden', '当前输入区已隐藏，请回到文字聊天界面后再查看头像。'),
@@ -119,29 +195,44 @@
             return;
         }
 
+        if (!forceRefresh && hasUsableCachedPreview()) {
+            if (showCard) {
+                setPreviewVisible(true);
+            }
+            setPreviewImage(cachedPreview.dataUrl);
+            setPreviewStatus(
+                translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
+            );
+            setPreviewNote(translateLabel('chat.avatarPreviewCachedHint', '已显示当前模型的缓存头像，点击刷新可重新生成。'));
+            return;
+        }
+
         isCapturing = true;
         const token = ++activeCaptureToken;
-        setPreviewVisible(true);
+        const cacheKey = getCurrentModelCacheKey();
+        if (showCard) {
+            setPreviewVisible(true);
+        }
         setLoadingState(true);
-        setPreviewStatus(translateLabel('chat.avatarPreviewGenerating', '正在生成当前头像...'));
+        setPreviewStatus(forceRefresh
+            ? translateLabel('chat.avatarPreviewRefreshing', '正在刷新当前头像...')
+            : translateLabel('chat.avatarPreviewGenerating', '正在生成当前头像...'));
         setPreviewNote(translateLabel('chat.avatarPreviewHint', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
 
         try {
             const result = await captureAvatarPreview();
             if (token !== activeCaptureToken) return;
 
-            setPreviewImage(result.dataUrl);
-            setPreviewStatus(
-                translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(result.modelType)
-            );
-            setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
+            applyPreviewResult(result, cacheKey);
         } catch (error) {
             if (token !== activeCaptureToken) return;
 
-            setPreviewImage('');
-            setPreviewStatus(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
-            setPreviewNote(getErrorMessage(error));
-            if (typeof window.showStatusToast === 'function') {
+            if (showCard) {
+                setPreviewImage('');
+                setPreviewStatus(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
+                setPreviewNote(getErrorMessage(error));
+            }
+            if (!silent && typeof window.showStatusToast === 'function') {
                 window.showStatusToast(
                     translateLabel('chat.avatarPreviewFailed', '生成头像失败') + ': ' + getErrorMessage(error),
                     4500
@@ -153,6 +244,67 @@
                 setLoadingState(false);
             }
         }
+    }
+
+    function scheduleAutoCapture(reason) {
+        const cacheKey = getCurrentModelCacheKey();
+        if (!cacheKey || cacheKey.endsWith(':')) {
+            return;
+        }
+        if (hasUsableCachedPreview()) {
+            return;
+        }
+        if (lastScheduledCacheKey === cacheKey && isCapturing) {
+            return;
+        }
+
+        lastScheduledCacheKey = cacheKey;
+        if (autoCaptureTimer) {
+            clearTimeout(autoCaptureTimer);
+        }
+
+        autoCaptureTimer = setTimeout(function () {
+            autoCaptureTimer = null;
+            window.requestAnimationFrame(function () {
+                window.requestAnimationFrame(function () {
+                    renderAvatarPreview({
+                        forceRefresh: true,
+                        silent: true,
+                        showCard: false,
+                        skipInputCheck: true,
+                        reason: reason || 'model-loaded'
+                    }).catch(function (error) {
+                        console.warn('[app-chat-avatar] 自动缓存头像失败:', error);
+                    });
+                });
+            });
+        }, 180);
+    }
+
+    function bindModelLoadListeners() {
+        const previousOnModelLoaded = window.live2dManager && typeof window.live2dManager.onModelLoaded === 'function'
+            ? window.live2dManager.onModelLoaded
+            : null;
+
+        if (window.live2dManager) {
+            window.live2dManager.onModelLoaded = function (model, modelPath) {
+                if (previousOnModelLoaded) {
+                    previousOnModelLoaded.call(window.live2dManager, model, modelPath);
+                }
+                clearCachedPreview();
+                scheduleAutoCapture('live2d-model-loaded');
+            };
+        }
+
+        window.addEventListener('vrm-model-loaded', function () {
+            clearCachedPreview();
+            scheduleAutoCapture('vrm-model-loaded');
+        });
+
+        window.addEventListener('mmd-model-loaded', function () {
+            clearCachedPreview();
+            scheduleAutoCapture('mmd-model-loaded');
+        });
     }
 
     function handleOutsidePointer(event) {
@@ -189,7 +341,7 @@
         });
 
         refreshButton.addEventListener('click', function () {
-            renderAvatarPreview();
+            renderAvatarPreview({ forceRefresh: true });
         });
 
         closeButton.addEventListener('click', function () {
@@ -197,6 +349,9 @@
         });
 
         document.addEventListener('pointerdown', handleOutsidePointer, true);
+        clearCachedPreview();
+        bindModelLoadListeners();
+        scheduleAutoCapture('init');
     };
 
     window.appChatAvatar = mod;
