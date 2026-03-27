@@ -208,7 +208,6 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
     let dragStartY = 0;
     let containerStartX = 0;
     let containerStartY = 0;
-    let isClick = false; // 标记是否为点击操作
     let cachedContainerWidth = 64;
     let cachedContainerHeight = 64;
     let dragRAFId = null;
@@ -218,7 +217,6 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
     // 拖拽开始的公共逻辑
     function handleDragStart(clientX, clientY) {
         isDragging = true;
-        isClick = true;
         dragStartX = clientX;
         dragStartY = clientY;
 
@@ -254,7 +252,6 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
         const deltaY = pendingClientY - dragStartY;
 
         if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
-            isClick = false;
             returnButtonContainer.setAttribute('data-dragging', 'true');
         }
 
@@ -299,7 +296,6 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
         }, 10);
 
         isDragging = false;
-        isClick = false;
         returnButtonContainer.style.cursor = 'grab';
 
         // 清除全局拖拽标志

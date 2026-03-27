@@ -798,6 +798,12 @@ class LLMSessionManager:
         if self.tts_thread and self.tts_thread.is_alive():
             return  # 线程还活着，无需重启
 
+        # 取消可能仍在等待的延迟重试任务，既然已经在直接 respawn 了
+        if self._tts_respawn_task and not self._tts_respawn_task.done():
+            self._tts_respawn_task.cancel()
+            self._tts_respawn_task = None
+        self._last_tts_error_code = ''
+
         import time
         now = time.monotonic()
         if now - self._last_tts_respawn_time < 12.0:
