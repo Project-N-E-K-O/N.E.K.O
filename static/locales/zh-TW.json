@@ -1449,6 +1449,7 @@
             "enabled": "{{name}}已開啓",
             "disabled": "{{name}}已關閉",
             "enableFailed": "{{name}}開啓失敗",
+            "openfang": "虛擬機",
             "userPluginAdapting": "用戶插件（開發中）",
             "moltbotAdapting": "OpenClaw（開發中）",
             "chatSettings": "對話設定",

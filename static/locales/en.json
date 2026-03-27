@@ -1449,6 +1449,7 @@
             "enabled": "{{name}} Enabled",
             "disabled": "{{name}} Disabled",
             "enableFailed": "{{name}} Enable Failed",
+            "openfang": "Virtual Machine",
             "userPluginAdapting": "User Plugin (Developing)",
             "moltbotAdapting": "OpenClaw (Developing)",
             "chatSettings": "Chat Settings",
