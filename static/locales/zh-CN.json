@@ -523,7 +523,9 @@
         "clearAll": "清空全部",
         "screenshotAlt": "截图 {{index}}",
         "screenshotTitle": "点击查看截图 {{index}}",
-        "removeScreenshot": "移除此截图"
+        "removeScreenshot": "移除此截图",
+        "avatarPreview": "显示当前头像",
+        "avatarPreviewLabel": "当前头像"
     },
     "voiceControl": {
         "startVoice": "开始语音",

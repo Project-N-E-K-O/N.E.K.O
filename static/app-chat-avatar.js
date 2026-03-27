@@ -95,14 +95,17 @@
     }
 
     function getCurrentModelType() {
+        if (typeof window.avatarPortrait?.normalizeModelType === 'function') {
+            return window.avatarPortrait.normalizeModelType();
+        }
         const modelType = String(window.lanlan_config?.model_type || '').toLowerCase();
         if (modelType === 'live3d') {
             const subType = String(window.lanlan_config?.live3d_sub_type || '').toLowerCase();
             if (subType === 'mmd') return 'mmd';
             if (subType === 'vrm') return 'vrm';
         }
-        if (modelType === 'vrm' || window.vrmManager?.currentModel?.url) return 'vrm';
-        if (modelType === 'mmd' || window.mmdManager?.currentModel?.url) return 'mmd';
+        if (modelType === 'vrm') return 'vrm';
+        if (modelType === 'mmd') return 'mmd';
         return 'live2d';
     }
 
