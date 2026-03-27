@@ -237,6 +237,143 @@
         };
     }
 
+    function estimateHeadSizeFromRect(headRect) {
+        if (!headRect) return 0;
+        return Math.max(
+            finiteOr(headRect.height, 0),
+            finiteOr(headRect.width, 0) * 1.02
+        );
+    }
+
+    function lerp(start, end, t) {
+        return start + (end - start) * t;
+    }
+
+    function expandRectToAspectFromAnchor(rect, anchor, aspect, bias = 0.5) {
+        let nextRect = { ...rect };
+        const currentAspect = Math.max(0.1, nextRect.width / Math.max(nextRect.height, 1));
+
+        if (currentAspect < aspect) {
+            const nextWidth = nextRect.height * aspect;
+            const halfLeft = (anchor.x - nextRect.x);
+            const halfRight = (nextRect.x + nextRect.width - anchor.x);
+            const widthGrow = nextWidth - nextRect.width;
+            const leftGrow = widthGrow * 0.5;
+            const rightGrow = widthGrow - leftGrow;
+            nextRect.x -= Math.max(leftGrow, widthGrow * 0.5 - halfLeft * 0.15);
+            nextRect.width = nextWidth;
+            if ((nextRect.x + nextRect.width) < anchor.x + halfRight) {
+                nextRect.x = anchor.x + halfRight - nextRect.width;
+            }
+            return nextRect;
+        }
+
+        const nextHeight = nextRect.width / aspect;
+        const heightGrow = nextHeight - nextRect.height;
+        const topGrow = heightGrow * clamp(bias, 0, 1);
+        nextRect.y -= topGrow;
+        nextRect.height = nextHeight;
+        return nextRect;
+    }
+
+    function buildAdaptiveHeadshotRect(anchor, headSize, subjectRect, options, config = {}) {
+        const safeHeadSize = Math.max(
+            finiteOr(headSize, 0),
+            Math.max(subjectRect.width, 1) * finiteOr(config.subjectWidthFactor, 0.16),
+            Math.max(subjectRect.height, 1) * finiteOr(config.subjectHeightFactor, 0.12),
+            1
+        );
+
+        const subjectHeight = Math.max(finiteOr(subjectRect.height, 0), 1);
+        const headToBodyRatio = clamp(safeHeadSize / subjectHeight, 0.12, 0.42);
+        const scaleT = clamp((headToBodyRatio - finiteOr(config.dynamicScaleStartRatio, 0.2)) / finiteOr(config.dynamicScaleRange, 0.16), 0, 1);
+        const aspect = Math.max(0.1, options.width / options.height);
+        const clampedAnchor = {
+            x: clamp(
+                finiteOr(anchor?.x, subjectRect.x + subjectRect.width / 2),
+                subjectRect.x - safeHeadSize * 0.25,
+                subjectRect.x + subjectRect.width + safeHeadSize * 0.25
+            ),
+            y: clamp(
+                finiteOr(anchor?.y, subjectRect.y + subjectRect.height * 0.22),
+                subjectRect.y - safeHeadSize * 0.2,
+                subjectRect.y + subjectRect.height * 0.72
+            )
+        };
+
+        const sideHeads = finiteOr(config.sideHeads, 0.92) + finiteOr(config.dynamicSideHeadsGain, 0.24) * scaleT;
+        const topHeads = finiteOr(config.topHeads, 1.08) + finiteOr(config.dynamicTopHeadsGain, 0.34) * scaleT;
+        const bottomHeads = finiteOr(config.bottomHeads, 0.9) + finiteOr(config.dynamicBottomHeadsGain, 0.2) * scaleT;
+
+        let rect = {
+            x: clampedAnchor.x - safeHeadSize * sideHeads,
+            y: clampedAnchor.y - safeHeadSize * topHeads,
+            width: safeHeadSize * sideHeads * 2,
+            height: safeHeadSize * (topHeads + bottomHeads)
+        };
+
+        rect = expandRectToAspectFromAnchor(rect, clampedAnchor, aspect, finiteOr(config.aspectTopBias, 0.72));
+
+        const minWidth = Math.max(
+            safeHeadSize * finiteOr(config.minWidthInHeads, 1.7),
+            subjectRect.width * finiteOr(config.minSubjectWidthRatio, 0.22)
+        );
+        const minHeight = Math.max(
+            safeHeadSize * finiteOr(config.minHeightInHeads, 1.92),
+            subjectRect.height * finiteOr(config.minSubjectHeightRatio, 0.18)
+        );
+        if (rect.width < minWidth) {
+            rect.x -= (minWidth - rect.width) / 2;
+            rect.width = minWidth;
+        }
+        if (rect.height < minHeight) {
+            const grow = minHeight - rect.height;
+            rect.y -= grow * finiteOr(config.minHeightTopBias, 0.72);
+            rect.height = minHeight;
+        }
+
+        const subjectLeftGuard = subjectRect.x - safeHeadSize * finiteOr(config.subjectLeftGuardHeads, 0.32);
+        const subjectRightGuard = subjectRect.x + subjectRect.width + safeHeadSize * finiteOr(config.subjectRightGuardHeads, 0.32);
+        const subjectTopGuard = subjectRect.y - safeHeadSize * finiteOr(config.subjectTopGuardHeads, 0.54);
+        const subjectBottomGuard = subjectRect.y + subjectRect.height * finiteOr(config.subjectBottomGuardRatio, 0.5);
+
+        if (rect.x > clampedAnchor.x - safeHeadSize * 0.7) {
+            rect.x = clampedAnchor.x - safeHeadSize * 0.7;
+        }
+        if (rect.y > clampedAnchor.y - safeHeadSize * 0.95) {
+            rect.y = clampedAnchor.y - safeHeadSize * 0.95;
+        }
+        if ((rect.x + rect.width) < clampedAnchor.x + safeHeadSize * 0.7) {
+            rect.width = (clampedAnchor.x + safeHeadSize * 0.7) - rect.x;
+        }
+        if ((rect.y + rect.height) < clampedAnchor.y + safeHeadSize * 0.8) {
+            rect.height = (clampedAnchor.y + safeHeadSize * 0.8) - rect.y;
+        }
+
+        const currentRight = rect.x + rect.width;
+        if (rect.x > subjectLeftGuard) {
+            rect.width += rect.x - subjectLeftGuard;
+            rect.x = subjectLeftGuard;
+        }
+        if (currentRight < subjectRightGuard) {
+            rect.width = subjectRightGuard - rect.x;
+        }
+        if (rect.y > subjectTopGuard) {
+            rect.height += rect.y - subjectTopGuard;
+            rect.y = subjectTopGuard;
+        }
+        if ((rect.y + rect.height) < subjectBottomGuard) {
+            rect.height = subjectBottomGuard - rect.y;
+        }
+
+        return {
+            x: rect.x,
+            y: rect.y,
+            width: Math.max(1, rect.width),
+            height: Math.max(1, rect.height)
+        };
+    }
+
     function makeUpperBodyRect(subjectRect, options, biasY) {
         const aspect = Math.max(0.1, options.width / options.height);
         const portraitWidth = Math.max(subjectRect.width * 1.04, subjectRect.height * 0.58 * aspect);
@@ -293,6 +430,77 @@
             width: Math.max(1, Math.round(rect.width * metrics.pixelRatioX)),
             height: Math.max(1, Math.round(rect.height * metrics.pixelRatioY))
         };
+    }
+
+    function hasVisiblePixelsInCrop(canvas, rect) {
+        if (!canvas || !rect) return false;
+        const width = Math.max(1, Math.min(canvas.width, Math.round(rect.width)));
+        const height = Math.max(1, Math.min(canvas.height, Math.round(rect.height)));
+        const x = clamp(Math.round(rect.x), 0, Math.max(0, canvas.width - 1));
+        const y = clamp(Math.round(rect.y), 0, Math.max(0, canvas.height - 1));
+        const safeWidth = Math.max(1, Math.min(width, canvas.width - x));
+        const safeHeight = Math.max(1, Math.min(height, canvas.height - y));
+
+        const analysisCanvas = document.createElement('canvas');
+        analysisCanvas.width = safeWidth;
+        analysisCanvas.height = safeHeight;
+
+        let ctx = null;
+        try {
+            ctx = analysisCanvas.getContext('2d', { willReadFrequently: true });
+        } catch (_) {
+            ctx = analysisCanvas.getContext('2d');
+        }
+        if (!ctx) return true;
+
+        let imageData = null;
+        try {
+            ctx.drawImage(
+                canvas,
+                x,
+                y,
+                safeWidth,
+                safeHeight,
+                0,
+                0,
+                safeWidth,
+                safeHeight
+            );
+            imageData = ctx.getImageData(0, 0, safeWidth, safeHeight).data;
+        } catch (_) {
+            return true;
+        }
+
+        const stepX = Math.max(1, Math.floor(safeWidth / 18));
+        const stepY = Math.max(1, Math.floor(safeHeight / 18));
+        let visibleCount = 0;
+        let sampleCount = 0;
+
+        for (let py = 0; py < safeHeight; py += stepY) {
+            for (let px = 0; px < safeWidth; px += stepX) {
+                const idx = (py * safeWidth + px) * 4;
+                const alpha = imageData[idx + 3];
+                const r = imageData[idx];
+                const g = imageData[idx + 1];
+                const b = imageData[idx + 2];
+                sampleCount += 1;
+                if (alpha > 8 && (r < 250 || g < 250 || b < 250 || alpha > 24)) {
+                    visibleCount += 1;
+                }
+            }
+        }
+
+        return sampleCount > 0 && (visibleCount / sampleCount) >= 0.03;
+    }
+
+    function hasVisiblePixelsInCanvas(canvas) {
+        if (!canvas) return false;
+        return hasVisiblePixelsInCrop(canvas, {
+            x: 0,
+            y: 0,
+            width: canvas.width,
+            height: canvas.height
+        });
     }
 
     function createOutputCanvas(width, height) {
@@ -490,29 +698,172 @@
         return rect;
     }
 
+    function getLive2dHeadRectInfo(model, metrics) {
+        const internalModel = model?.internalModel;
+        const rawHitAreas = internalModel?.hitAreas;
+        if (!rawHitAreas || typeof rawHitAreas !== 'object') {
+            return null;
+        }
+
+        const entries = Object.keys(rawHitAreas)
+            .map((key) => rawHitAreas[key])
+            .filter((item) => item && Number.isInteger(item.index));
+
+        if (entries.length === 0) {
+            return null;
+        }
+
+        let preferredEntry = null;
+        let mode = 'face';
+
+        preferredEntry = entries.find((entry) => /(^|[^a-z])head([^a-z]|$)|hitareahead|頭/i.test(String(entry.name || entry.id || '')));
+        if (preferredEntry) {
+            mode = 'head';
+        } else {
+            preferredEntry = entries.find((entry) => /(^|[^a-z])face([^a-z]|$)|hitareaface|顔|脸/i.test(String(entry.name || entry.id || '')));
+            mode = 'face';
+        }
+
+        if (!preferredEntry) {
+            return null;
+        }
+
+        const logicalHeadRect = getLive2dDrawableLogicalRect(internalModel, preferredEntry.index);
+        const logicalModelRect = getLive2dModelLogicalRect(model);
+        const modelBoundsCss = sanitizeCssRect(model.getBounds(), metrics);
+        const rect = mapLive2dLogicalRectToCss(logicalHeadRect, logicalModelRect, modelBoundsCss, metrics);
+        if (!logicalHeadRect || !logicalModelRect || !rect) {
+            return null;
+        }
+
+        return {
+            rect,
+            mode,
+            name: String(preferredEntry.name || preferredEntry.id || '')
+        };
+    }
+
     function buildLive2dHeadshotRect(model, metrics, options) {
         const bounds = sanitizeCssRect(model.getBounds(), metrics);
-        const headRect = getLive2dHeadRect(model, metrics);
+        const headInfo = getLive2dHeadRectInfo(model, metrics);
 
-        if (headRect) {
-            const headSize = Math.max(headRect.height, headRect.width * 1.06);
-            return makeHeadshotRectFromAnchor({
-                x: headRect.x + headRect.width / 2,
-                y: headRect.y + headRect.height * 0.42
+        if (headInfo && headInfo.rect) {
+            const headRect = headInfo.rect;
+            const headSize = estimateHeadSizeFromRect(headRect);
+            const headToBodyRatio = clamp(headSize / Math.max(bounds.height, 1), 0.16, 0.5);
+            const scaleT = clamp((headToBodyRatio - 0.24) / 0.16, 0, 1);
+            const centerX = headRect.x + headRect.width / 2;
+
+            if (headInfo.mode === 'head') {
+                const centerY = headRect.y + headRect.height * lerp(0.46, 0.4, scaleT);
+                let rect = makeHeadshotRectFromAnchor({
+                    x: centerX,
+                    y: centerY
+                }, headSize, options, {
+                    widthInHeads: lerp(1.56, 1.92, scaleT),
+                    heightInHeads: lerp(1.88, 2.24, scaleT),
+                    yOffsetInHeads: lerp(0.1, 0.02, scaleT)
+                });
+
+                const minTop = headRect.y - headSize * lerp(0.22, 0.44, scaleT);
+                const minBottom = centerY + headSize * lerp(0.84, 0.98, scaleT);
+                const minLeft = centerX - headSize * lerp(0.88, 1.04, scaleT);
+                const minRight = centerX + headSize * lerp(0.88, 1.04, scaleT);
+
+                if (rect.y > minTop) {
+                    const delta = rect.y - minTop;
+                    rect.y -= delta;
+                    rect.height += delta;
+                }
+                if (rect.x > minLeft) {
+                    const delta = rect.x - minLeft;
+                    rect.x -= delta;
+                    rect.width += delta;
+                }
+                if ((rect.x + rect.width) < minRight) {
+                    rect.width = minRight - rect.x;
+                }
+                if ((rect.y + rect.height) < minBottom) {
+                    rect.height = minBottom - rect.y;
+                }
+
+                return rect;
+            }
+
+            const faceCenterY = headRect.y + headRect.height * lerp(0.44, 0.38, scaleT);
+            let rect = makeHeadshotRectFromAnchor({
+                x: centerX,
+                y: faceCenterY
             }, headSize, options, {
-                widthInHeads: 1.46,
-                heightInHeads: 1.68,
-                yOffsetInHeads: 0.18
+                widthInHeads: lerp(1.7, 2.08, scaleT),
+                heightInHeads: lerp(2.06, 2.48, scaleT),
+                yOffsetInHeads: lerp(0.08, -0.02, scaleT)
             });
+
+            const hairTop = headRect.y - headSize * lerp(0.62, 0.96, scaleT);
+            const hairLeft = centerX - headSize * lerp(1.0, 1.18, scaleT);
+            const hairRight = centerX + headSize * lerp(1.0, 1.18, scaleT);
+            const chinBottom = faceCenterY + headSize * lerp(0.86, 1.02, scaleT);
+
+            if (rect.y > hairTop) {
+                const delta = rect.y - hairTop;
+                rect.y -= delta;
+                rect.height += delta;
+            }
+            if (rect.x > hairLeft) {
+                const delta = rect.x - hairLeft;
+                rect.x -= delta;
+                rect.width += delta;
+            }
+            if ((rect.x + rect.width) < hairRight) {
+                rect.width = hairRight - rect.x;
+            }
+            if ((rect.y + rect.height) < chinBottom) {
+                rect.height = chinBottom - rect.y;
+            }
+
+            const boundedLeft = bounds.x - headSize * 0.16;
+            const boundedRight = bounds.x + bounds.width + headSize * 0.16;
+            const boundedTop = bounds.y - headSize * lerp(0.28, 0.46, scaleT);
+            const boundedBottom = bounds.y + Math.max(bounds.height * 0.42, headSize * 1.08);
+
+            if (rect.x > boundedLeft) {
+                rect.width += rect.x - boundedLeft;
+                rect.x = boundedLeft;
+            }
+            if ((rect.x + rect.width) < boundedRight) {
+                rect.width = boundedRight - rect.x;
+            }
+            if (rect.y > boundedTop) {
+                rect.height += rect.y - boundedTop;
+                rect.y = boundedTop;
+            }
+            if ((rect.y + rect.height) < boundedBottom) {
+                rect.height = boundedBottom - rect.y;
+            }
+
+            return rect;
         }
 
         return makeSubjectFallbackHeadshotRect(bounds, options, {
-            widthFactor: 0.3,
-            heightFactor: 0.2,
-            anchorY: 0.15,
-            widthInHeads: 1.52,
-            heightInHeads: 1.74,
-            yOffsetInHeads: 0.2
+            widthFactor: 0.32,
+            heightFactor: 0.24,
+            anchorY: 0.14,
+            widthInHeads: 1.86,
+            heightInHeads: 2.12,
+            yOffsetInHeads: 0.1
+        });
+    }
+
+    function buildLive2dFallbackUpperRect(model, metrics, options) {
+        const bounds = sanitizeCssRect(model.getBounds(), metrics);
+        return makeSubjectFallbackHeadshotRect(bounds, options, {
+            widthFactor: 0.34,
+            heightFactor: 0.25,
+            anchorY: 0.135,
+            widthInHeads: 1.94,
+            heightInHeads: 2.22,
+            yOffsetInHeads: 0.08
         });
     }
 
@@ -603,17 +954,41 @@
             });
 
             const extractedCanvas = getPixiExtractCanvas(renderer, renderTexture);
-            const cropRectCss = clampRectToCanvas(
+            if (!hasVisiblePixelsInCanvas(extractedCanvas)) {
+                console.warn('[avatar-portrait] Live2D 离屏提取结果为空，回退到屏幕画布裁剪');
+                return null;
+            }
+            let cropRectCss = clampRectToCanvas(
                 applyPadding(buildLive2dHeadshotRect(model, viewportMetrics, options), options),
                 viewportMetrics
             );
-            const cropRectPixels = cssRectToPixelRect(cropRectCss, {
+            let cropRectPixels = cssRectToPixelRect(cropRectCss, {
                 ...viewportMetrics,
                 pixelWidth: extractedCanvas.width,
                 pixelHeight: extractedCanvas.height,
                 pixelRatioX: extractedCanvas.width / viewportWidth,
                 pixelRatioY: extractedCanvas.height / viewportHeight
             });
+
+            if (!hasVisiblePixelsInCrop(extractedCanvas, cropRectPixels)) {
+                const fallbackCropRectCss = clampRectToCanvas(
+                    applyPadding(buildLive2dFallbackUpperRect(model, viewportMetrics, options), options),
+                    viewportMetrics
+                );
+                const fallbackCropRectPixels = cssRectToPixelRect(fallbackCropRectCss, {
+                    ...viewportMetrics,
+                    pixelWidth: extractedCanvas.width,
+                    pixelHeight: extractedCanvas.height,
+                    pixelRatioX: extractedCanvas.width / viewportWidth,
+                    pixelRatioY: extractedCanvas.height / viewportHeight
+                });
+
+                if (hasVisiblePixelsInCrop(extractedCanvas, fallbackCropRectPixels)) {
+                    cropRectCss = fallbackCropRectCss;
+                    cropRectPixels = fallbackCropRectPixels;
+                }
+            }
+
             return {
                 canvas: extractedCanvas,
                 cropRectCss,
@@ -745,13 +1120,25 @@
                         subjectRect.height * 0.15,
                         subjectRect.width * 0.14
                     );
-                    portraitRect = makeHeadshotRectFromAnchor({
+                    portraitRect = buildAdaptiveHeadshotRect({
                         x: headAnchor.x,
                         y: headAnchor.y
-                    }, normalizedHeadHeight, options, {
-                        widthInHeads: 1.68,
-                        heightInHeads: 1.92,
-                        yOffsetInHeads: 0.24
+                    }, normalizedHeadHeight, subjectRect, options, {
+                        sideHeads: 0.94,
+                        topHeads: 1.12,
+                        bottomHeads: 0.96,
+                        dynamicSideHeadsGain: 0.16,
+                        dynamicTopHeadsGain: 0.24,
+                        dynamicBottomHeadsGain: 0.14,
+                        subjectTopGuardHeads: 0.42,
+                        subjectLeftGuardHeads: 0.2,
+                        subjectRightGuardHeads: 0.2,
+                        subjectBottomGuardRatio: 0.52,
+                        minSubjectWidthRatio: 0.22,
+                        minSubjectHeightRatio: 0.18,
+                        minWidthInHeads: 1.84,
+                        minHeightInHeads: 2.02,
+                        aspectTopBias: 0.74
                     });
                 } else {
                     portraitRect = makeSubjectFallbackHeadshotRect(subjectRect, options, {
@@ -867,13 +1254,25 @@
                         subjectRect.height * 0.14,
                         subjectRect.width * 0.13
                     );
-                    portraitRect = makeHeadshotRectFromAnchor({
+                    portraitRect = buildAdaptiveHeadshotRect({
                         x: headAnchor.x,
                         y: headAnchor.y
-                    }, normalizedHeadHeight, options, {
-                        widthInHeads: 1.7,
-                        heightInHeads: 1.96,
-                        yOffsetInHeads: 0.26
+                    }, normalizedHeadHeight, subjectRect, options, {
+                        sideHeads: 0.95,
+                        topHeads: 1.14,
+                        bottomHeads: 0.98,
+                        dynamicSideHeadsGain: 0.16,
+                        dynamicTopHeadsGain: 0.24,
+                        dynamicBottomHeadsGain: 0.14,
+                        subjectTopGuardHeads: 0.42,
+                        subjectLeftGuardHeads: 0.18,
+                        subjectRightGuardHeads: 0.18,
+                        subjectBottomGuardRatio: 0.52,
+                        minSubjectWidthRatio: 0.2,
+                        minSubjectHeightRatio: 0.18,
+                        minWidthInHeads: 1.84,
+                        minHeightInHeads: 2.04,
+                        aspectTopBias: 0.74
                     });
                 } else {
                     portraitRect = makeSubjectFallbackHeadshotRect(subjectRect, options, {
