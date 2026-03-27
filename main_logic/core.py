@@ -542,16 +542,20 @@ class LLMSessionManager:
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
-    async def send_lanlan_response(self, text: str, is_first_chunk: bool = False):
-        """Qwen输出转录回调：可用于前端显示/缓存/同步。"""
+    async def send_lanlan_response(self, text: str, is_first_chunk: bool = False, turn_id: str | None = None):
+        """Qwen输出转录回调: 可用于前端显示/缓存/同步。"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 text = self.emotion_pattern.sub('', text)
 
+                # 优先使用传入的 turn_id, 兜底使用当前会话记录的 speech_id (即 turn id)
+                effective_turn_id = turn_id or self.current_speech_id
+
                 message = {
                     "type": "gemini_response",
                     "text": text,
-                    "isNewMessage": is_first_chunk
+                    "isNewMessage": is_first_chunk,
+                    "turn_id": effective_turn_id
                 }
                 await self.websocket.send_json(message)
                 if is_first_chunk:
@@ -787,6 +791,44 @@ class LLMSessionManager:
         await self._cleanup_pending_session_resources()  # close()后再置None，避免泄漏
         self.is_hot_swap_imminent = False
 
+    def _has_custom_tts(self) -> bool:
+        """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
+        core_config = self._config_manager.get_core_config()
+        return (bool(self.voice_id) and not self._is_free_preset_voice) or bool(
+            core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_MODEL_URL')
+        )
+
+    def _start_tts_thread(self):
+        """创建并启动 TTS Worker 线程。
+
+        根据 voice_id / core_api_type 选择 worker，解析 api_key，
+        创建新的 request/response Queue 并启动 daemon 线程。
+        调用前/后 tts_ready 被重置为 False，新 worker 需重新发送 __ready__。
+        """
+        # 重置就绪状态，新 worker 需重新握手
+        self.tts_ready = False
+
+        has_custom = self._has_custom_tts()
+        tts_worker, api_key_override = get_tts_worker(
+            core_api_type=self.core_api_type,
+            has_custom_voice=has_custom,
+            voice_id=self.voice_id or '',
+        )
+        tts_config = self._config_manager.get_model_api_config(
+            'tts_custom' if has_custom else 'tts_default'
+        )
+        api_key = api_key_override or tts_config['api_key']
+
+        self.tts_request_queue = Queue()
+        self.tts_response_queue = Queue()
+
+        self.tts_thread = Thread(
+            target=tts_worker,
+            args=(self.tts_request_queue, self.tts_response_queue, api_key, self.voice_id),
+            daemon=True,
+        )
+        self.tts_thread.start()
+
     def _respawn_tts_worker(self):
         """检测 TTS Worker 线程已死亡时重新拉起，不阻塞等待就绪。
 
@@ -796,7 +838,7 @@ class LLMSessionManager:
         限流：12 秒内最多拉起一次，避免服务彻底不可用时风暴式重连。
         """
         if self.tts_thread and self.tts_thread.is_alive():
-            return  # 线程还活着，无需重启
+            return
 
         # 如果上次错误属于不应自动重试的类型，直接跳过 respawn
         _no_retry_codes = {'API_ARREARS', 'API_QUOTA_TIME', 'ERROR_1007_ARREARS'}
@@ -816,33 +858,7 @@ class LLMSessionManager:
         self._last_tts_respawn_time = now
 
         logger.info("🔄 TTS Worker 已死亡，尝试重新拉起...")
-
-        core_config = self._config_manager.get_core_config()
-        has_custom_tts = (bool(self.voice_id) and not self._is_free_preset_voice) or (
-            core_config.get('ENABLE_CUSTOM_API') and
-            core_config.get('TTS_MODEL_URL')
-        )
-
-        tts_worker = get_tts_worker(
-            core_api_type=self.core_api_type,
-            has_custom_voice=has_custom_tts
-        )
-
-        if has_custom_tts:
-            tts_config = self._config_manager.get_model_api_config('tts_custom')
-        else:
-            tts_config = self._config_manager.get_model_api_config('tts_default')
-
-        # 复用现有队列，这样 tts_response_handler 不需要重建
-        self.tts_request_queue = Queue()
-        self.tts_response_queue = Queue()
-
-        self.tts_thread = Thread(
-            target=tts_worker,
-            args=(self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
-        )
-        self.tts_thread.daemon = True
-        self.tts_thread.start()
+        self._start_tts_thread()
 
         # 重新启动 tts_response_handler 以监听新队列
         if self.tts_handler_task and not self.tts_handler_task.done():
@@ -905,7 +921,7 @@ class LLMSessionManager:
             
             # 检查session类型
             if not isinstance(self.session, OmniRealtimeClient):
-                logger.warning("⚠️ 热切换音频缓存仅适用于语音模式，当前session类型不匹配")
+                logger.debug("热切换音频缓存仅适用于语音模式，当前session类型不匹配，跳过flush")
                 async with self.hot_swap_cache_lock:
                     self.hot_swap_audio_cache.clear()
                 return
@@ -1157,36 +1173,10 @@ class LLMSessionManager:
             # 启动TTS线程
             tts_ready = False
             if self.tts_thread is None or not self.tts_thread.is_alive():
-                # 判断是否使用自定义 TTS：有 voice_id（但不是免费预设）或 配置了自定义 TTS URL
-                core_config = self._config_manager.get_core_config()
-                has_custom_tts = (bool(self.voice_id) and not self._is_free_preset_voice) or (
-                    core_config.get('ENABLE_CUSTOM_API') and
-                    core_config.get('TTS_MODEL_URL')
-                )
-
-                # 使用工厂函数获取合适的 TTS worker
-                tts_worker = get_tts_worker(
-                    core_api_type=self.core_api_type,
-                    has_custom_voice=has_custom_tts
-                )
-
-                self.tts_request_queue = Queue()  # TTS request (线程队列)
-                self.tts_response_queue = Queue()  # TTS response (线程队列)
-                # 根据是否有自定义音色/TTS配置选择 TTS API 配置
-                # 免费预设音色使用 tts_default（走 step/free TTS 通道）
-                if has_custom_tts:
-                    tts_config = self._config_manager.get_model_api_config('tts_custom')
-                else:
-                    tts_config = self._config_manager.get_model_api_config('tts_default')
-
-                self.tts_thread = Thread(
-                    target=tts_worker,
-                    args=(self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
-                )
-                self.tts_thread.daemon = True
-                self.tts_thread.start()
+                self._start_tts_thread()
 
                 # 等待TTS进程发送就绪信号（最多等待12秒）
+                has_custom_tts = self._has_custom_tts()
                 tts_type = "free-preset-TTS" if self._is_free_preset_voice else ("custom-TTS" if has_custom_tts else f"{self.core_api_type}-default-TTS")
                 logger.info(f"🎤 TTS进程已启动，等待就绪... (使用: {tts_type})")
                 logger.info("[语音会话诊断] 开始等待 TTS 就绪信号 (超时: 12秒)")
@@ -1285,6 +1275,8 @@ class LLMSessionManager:
             try:
                 async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                     resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
+                    if not resp.is_success:
+                        raise ConnectionError(f"❌ 记忆服务返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
                     initial_prompt += resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                 logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
             except httpx.ConnectError:
@@ -1775,6 +1767,8 @@ class LLMSessionManager:
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
             async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
+                if not resp.is_success:
+                    raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
                 initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
             print(initial_prompt)
             self._bind_session_lifecycle_callbacks(self.pending_session)
@@ -2381,6 +2375,14 @@ class LLMSessionManager:
             if not self.session or not self.is_active:
                 # Memory Server 专属冷却检查
                 if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
+                    time_left = int(self._memory_error_retry_after - time.time())
+                    asyncio.create_task(self.send_status(json.dumps({
+                        "code": "MEMORY_SERVER_COOLDOWN",
+                        "details": {"wait_time": time_left}
+                    })))
+                    self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+                    if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                        asyncio.create_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
                     return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
@@ -2415,6 +2417,14 @@ class LLMSessionManager:
         if not self.session or not self.is_active:
             # Memory Server 专属冷却检查
             if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
+                time_left = int(self._memory_error_retry_after - time.time())
+                asyncio.create_task(self.send_status(json.dumps({
+                    "code": "MEMORY_SERVER_COOLDOWN",
+                    "details": {"wait_time": time_left}
+                })))
+                self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+                if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                    asyncio.create_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
                 return
             # 检查失败计数器和冷却时间
             if self.session_start_failure_count >= self.session_start_max_failures:
@@ -2964,6 +2974,11 @@ class LLMSessionManager:
                                     logger.info("🔄 TTS 延迟重试：尝试重新拉起 Worker...")
                                     self._respawn_tts_worker()
                                 self._tts_respawn_task = asyncio.ensure_future(_delayed_respawn())
+                        continue
+                    elif data[0] == "__reconnecting__":
+                        logger.info("🌊 TTS 正在自动重连，发送呼吸感状态到前端")
+                        user_msg = json.dumps({"code": "TTS_RECONNECTING", "level": "info"})
+                        asyncio.create_task(self.send_status(user_msg))
                         continue
                     elif data[0] == "__error__":
                         error_msg = data[1]

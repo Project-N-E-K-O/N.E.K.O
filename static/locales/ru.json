@@ -452,6 +452,7 @@
         "API_UNKNOWN_ERROR": "💥 Ошибка API: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 Сервер памяти не запущен! Сначала запустите memory_server.py.",
         "MEMORY_SERVER_CRASHED": "🧠 Сервер памяти (порт {{port}}) аварийно завершился. Перезапустите memory_server.py.",
+        "MEMORY_SERVER_COOLDOWN": "🧠 Служба памяти восстанавливается, подождите {{wait_time}} сек.",
         "CONNECTION_REFUSED": "💥 Подключение к серверу отклонено. Проверьте API Key и сетевое подключение.",
         "API_KEY_REJECTED": "💥 API Key отклонён сервером. Убедитесь, что API Key соответствует выбранной модели.",
         "API_RATE_LIMIT_SESSION": "💥 Слишком частые запросы API. Повторите попытку позже.",
@@ -496,6 +497,7 @@
         "AGENT_CU_AUTO_CLOSED": "Модуль Computer Use не загружен, автоматически отключён",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use недоступен: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "Ошибка подключения к TTS-сервису: {{msg}}",
+        "TTS_RECONNECTING": "🔄 Служба TTS автоматически переподключается, подождите...",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "URL GPT-SoVITS API не настроен. Включите и настройте пользовательский TTS в настройках API.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "URL GPT-SoVITS API должен быть localhost",
         "TTS_AUDIO_API_KEY_MISSING": "Аудио API-ключ (AUDIO_API_KEY) не настроен",
@@ -933,6 +935,42 @@
             "loop": "Цикл",
             "speed": "Скорость:"
         },
+        "mmdModel": {
+            "selectModel": "Выбрать MMD модель",
+            "deleteModel": "Удалить импортированные MMD модели",
+            "deleteModelTitle": "Удалить импортированные MMD модели",
+            "deleteWarning": "Ниже перечислены все импортированные пользовательские MMD модели. Выберите модели для удаления (папка модели и текстуры будут удалены).",
+            "noUserModels": "Нет пользовательских MMD моделей для удаления",
+            "deleteSelected": "Удалить выбранные"
+        },
+        "mmdAnimation": {
+            "selectAnimation": "Выбрать VMD анимацию",
+            "noAnimation": "Без анимации",
+            "play": "Воспроизвести",
+            "uploadAnimation": "Импортировать VMD анимацию",
+            "deleteAnimation": "Удалить VMD анимацию",
+            "deleteAnimationTitle": "Удалить импортированные VMD анимации",
+            "deleteAnimationWarning": "Ниже перечислены все импортированные пользовательские файлы VMD анимации. Выберите анимации для удаления.",
+            "noUserAnimations": "Нет пользовательских VMD анимаций для удаления",
+            "deleteSelected": "Удалить выбранные",
+            "deleteConfirmTitle": "Удалить VMD анимацию",
+            "deleteConfirmMessage": "Вы уверены, что хотите удалить {{count}} выбранных VMD анимаций? Это действие нельзя отменить.",
+            "deleting": "Удаление...",
+            "loading": "Загрузка VMD анимации...",
+            "loadSuccess": "VMD анимация загружена успешно",
+            "loadFailed": "Ошибка загрузки VMD анимации: {{error}}",
+            "selectFirst": "Сначала выберите VMD анимацию",
+            "stopped": "VMD анимация остановлена",
+            "playing": "Воспроизведение VMD анимации",
+            "selectVmdFile": "Выберите файл .vmd",
+            "uploading": "Загрузка VMD анимации...",
+            "uploadSuccess": "VMD анимация {{name}} успешно загружена",
+            "uploadFailed": "Ошибка загрузки: {{error}}",
+            "deleteSuccess": "Успешно удалено {{count}} VMD анимаций",
+            "deleteFailed": "Ошибка удаления: {{count}} анимаций",
+            "deleteSelectedCount": "Удалить выбранные ({{count}})",
+            "deletePartialSuccess": "Успешно удалено {{count}} VMD анимаций, {{failed}} с ошибкой"
+        },
         "modelFilesFetchFailed": "Не удалось получить список файлов модели",
         "modelConfigFetchFailed": "Не удалось получить конфигурацию модели: {{status}}",
         "updatedPersistentExpression": "Постоянное выражение обновлено",
@@ -1038,7 +1076,15 @@
     },
     "voice": {
         "title": "Регистрация голоса",
-        "alibabaApiRequired": "⚠️ Эта функция требует модель CosyVoice. Настройте Alibaba Assist API или локальный голосовой сервер в настройках API.",
+        "alibabaApiRequired": "⚠️ Для этой функции нужна модель CosyVoice. Сохраните API-ключ Alibaba Bailian в настройках API (включение Assist API не требуется) или настройте локальный голосовой сервер.",
+        "minimaxApiRequired": "⚠️ Для этой функции необходима модель MiniMax (Китай). Сохраните ключ API MiniMax в настройках API (включение Assist API не требуется).",
+        "minimaxIntlApiRequired": "⚠️ Для этой функции необходима модель MiniMax (Международная). Сохраните ключ API MiniMax (Международная) в настройках API (включение Assist API не требуется).",
+        "providerLabel": "Провайдер клонирования голоса",
+        "provider": {
+            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "minimax": "MiniMax (Китай)",
+            "minimax_intl": "MiniMax (Международная)"
+        },
         "selectFile": "Выберите локальный аудиофайл (рекомендуется 15 секунд, макс. 30 секунд, формат wav/mp3)",
         "customPrefix": "Пользовательский префикс (Обязательно, для различения голосов)",
         "customPrefixNote": "Максимум 10 символов, только цифры и латинские буквы",
@@ -1134,7 +1180,7 @@
         "saveSuccess": "Сохранено успешно",
         "saveFailed": "Ошибка сохранения: {{error}}",
         "saveFailedGeneral": "Ошибка сохранения",
-        "clearedMemory": "Недавняя память очищена, не сохранена",
+        "clearedChatKeptMemo": "Реплики очищены; блок заметок не удалён (изменения не записаны на диск)",
         "enabled": "Включено",
         "disabled": "Отключено",
         "autoReviewNote": "При включении система автоматически организует и оптимизирует память для улучшения качества разговоров",
@@ -1248,7 +1294,10 @@
         "renameError": "Ошибка переименования: {{error}}",
         "renameMasterTitle": "Переименовать хозяина",
         "renameSuccess": "Переименование выполнено",
-        "saveMasterError": "Ошибка сохранения настроек хозяина"
+        "autoSaveError": "Ошибка сохранения настроек",
+        "saveMasterError": "Ошибка сохранения настроек хозяина",
+        "autoSaved": "Настройки автосохранены",
+        "autoSaveFailed": "Автосохранение не удалось, сохраните вручную перед закрытием"
     },
     "app": {
         "welcomeBack": "{{name}} вернулась!",
@@ -1261,6 +1310,8 @@
         "autoMuteTimeout": "Нет голосового ввода долгое время, микрофон выключен автоматически",
         "deviceSelected": "Выбрано {{device}}",
         "micAccessDenied": "Нет доступа к микрофону",
+        "micMuted": "Микрофон отключен",
+        "micUnmuted": "Микрофон включен",
         "speaking": "Говорит...",
         "standby": "{{name}} в режиме ожидания...",
         "micRequired": "Включите микрофон!",
@@ -1331,7 +1382,9 @@
         "agentTools": "Лапка Неко",
         "settings": "Настройки",
         "leave": "Уйти",
-        "return": "Вернуться"
+        "return": "Вернуться",
+        "micMute": "Отключить микрофон",
+        "micUnmute": "Включить микрофон"
     },
     "settings": {
         "menu": {
@@ -1378,6 +1431,8 @@
             "proactivePersonalChatTooltip": "Использовать личные обновления из подключённых платформ для проактивного чата",
             "proactiveMusicChat": "Музыкальные рекомендации",
             "proactiveMusicChatTooltip": "Использовать рекомендуемую музыку для проактивного чата",
+            "proactiveMemeChat": "Мемы",
+            "proactiveMemeChatTooltip": "Делиться смешными мемами для проактивного чата",
             "agentMaster": "Главный переключатель Лапки Неко",
             "keyboardControl": "Управление клавиатурой/мышью",
             "userPlugin": "Пользовательский плагин",
@@ -1394,6 +1449,7 @@
             "enabled": "{{name}} Включен",
             "disabled": "{{name}} Отключен",
             "enableFailed": "{{name}} Ошибка включения",
+            "openfang": "Виртуальная машина",
             "userPluginAdapting": "Пользовательский плагин (В разработке)",
             "moltbotAdapting": "OpenClaw (В разработке)",
             "animationSettings": "Настройки анимации",
@@ -1511,6 +1567,52 @@
             "title": "Анимация покоя",
             "changed": "Анимация покоя изменена: {{name}}",
             "changeFailed": "Не удалось изменить анимацию покоя"
+        },
+        "settingsTitle": "Настройки VRM модели",
+        "cursorFollow": {
+            "title": "Отслеживание мыши",
+            "preset": "Интенсивность",
+            "none": "Выкл",
+            "low": "Низкая",
+            "medium": "Средняя",
+            "high": "Высокая",
+            "eyeSensitivity": "Чувствительность глаз",
+            "headSensitivity": "Чувствительность головы",
+            "headSpeed": "Скорость отслеживания"
+        }
+    },
+    "mmd": {
+        "settingsTitle": "Настройки MMD модели",
+        "lighting": {
+            "title": "Освещение MMD",
+            "ambientIntensity": "Интенсивность окруж. света",
+            "ambientColor": "Цвет окружающего света",
+            "directionalIntensity": "Интенсивность осн. света",
+            "directionalColor": "Цвет основного света"
+        },
+        "rendering": {
+            "title": "Рендеринг MMD",
+            "toneMapping": "Тональная компрессия",
+            "exposure": "Экспозиция",
+            "outline": "Контур",
+            "pixelRatio": "Соотн. пикселей"
+        },
+        "physics": {
+            "title": "Физика MMD",
+            "enabled": "Физическая симуляция",
+            "strength": "Интенсивность симуляции"
+        },
+        "cursorFollow": {
+            "title": "Отслеживание мыши",
+            "enabled": "Отслеживание головы",
+            "headYaw": "Диапазон поворота",
+            "headPitch": "Диапазон наклона",
+            "smoothSpeed": "Плавность отслеживания"
+        },
+        "idleAnimation": {
+            "title": "Анимация ожидания",
+            "changed": "Анимация ожидания изменена",
+            "changeFailed": "Не удалось изменить анимацию ожидания"
         }
     },
     "modelManager": {
@@ -1929,7 +2031,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ Important Notice",
-                "desc": "Voice cloning requires Alibaba Cloud API. Make sure you've configured Alibaba Cloud API Key in API settings."
+                "desc": "Клонирование голоса требует настроенного API-ключа провайдера. Сохраните необходимый API-ключ в настройках API."
             },
             "step2": {
                 "title": "🌍 Select Reference Audio Language",
@@ -2172,6 +2274,45 @@
             "surprised": "Удивление"
         }
     },
+    "mmdEmotionManager": {
+        "title": "Менеджер маппинга эмоций MMD — Project N.E.K.O.",
+        "pageTitle": "Менеджер маппинга эмоций MMD",
+        "subtitle": "Настройте маппинг морфов для разных эмоций",
+        "selectModel": "Выбрать модель MMD",
+        "morphPreview": "Предпросмотр морфа",
+        "morphCandidates": "Кандидаты морфов",
+        "selectMorph": "Выбрать морф",
+        "saveConfig": "Сохранить конфигурацию",
+        "resetToDefault": "Сброс по умолчанию",
+        "loading": "Загрузка...",
+        "loadingMorphs": "Загрузка списка морфов",
+        "pleaseSelectModel": "Выберите модель",
+        "noModelsFound": "Доступные модели MMD не найдены",
+        "noMorphsFound": "Нет доступных морфов",
+        "loadModelListFailed": "Не удалось загрузить список моделей",
+        "loadMorphsFailed": "Не удалось загрузить список морфов",
+        "morphsLoadedFromModel": "Список морфов загружен из текущей модели",
+        "useDefaultMorphs": "Используется список морфов по умолчанию (сначала загрузите модель на главной странице для точного списка)",
+        "configLoadSuccess": "Конфигурация загружена успешно",
+        "configLoadFailed": "Не удалось загрузить конфигурацию",
+        "configUseDefault": "Используется конфигурация по умолчанию",
+        "configSaveSuccess": "Конфигурация сохранена!",
+        "saveFailed": "Ошибка сохранения",
+        "configReset": "Конфигурация сброшена по умолчанию",
+        "pleaseSelectModelFirst": "Сначала выберите модель",
+        "tip": "Совет: ",
+        "tipContent": "Выражения MMD используют морф-таргеты. Выберите несколько кандидатов морфов для каждой эмоции, система подберёт поддерживаемые моделью.",
+        "close": "Закрыть",
+        "emotions": {
+            "neutral": "Нейтральный",
+            "happy": "Радость",
+            "relaxed": "Расслабленный",
+            "sad": "Грусть",
+            "angry": "Злость",
+            "surprised": "Удивление",
+            "fear": "Страх"
+        }
+    },
     "theme": {
         "darkMode": "Тёмный режим",
         "lightMode": "Светлый режим",
@@ -2343,6 +2484,12 @@
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice обновлён до версии 3.5. Ваши старые голоса устарели — пожалуйста, клонируйте их повторно."
+        }
+    },
+    "proactive": {
+        "meme": {
+            "title": "Мем",
+            "loadError": "Не удалось загрузить мем"
         }
     }
 }

@@ -9,7 +9,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Dict, Optional
+from typing import Any, Awaitable, ClassVar, Dict, Optional, TypeVar
 
 from loguru import logger
 
@@ -27,6 +27,8 @@ from plugin.logging_config import format_log_text as _format_log_text
 from plugin.core.zmq_transport import (
     HostTransport, CH_RES, CH_STS, CH_MSG, CH_COMM,
 )
+
+_T = TypeVar("_T")
 
 
 @dataclass
@@ -47,6 +49,7 @@ class PluginCommunicationResourceManager:
     _shutdown_event: Optional[asyncio.Event] = None
     _message_target_queue: Optional[asyncio.Queue] = None
     _background_tasks: set[asyncio.Task] = field(default_factory=set)
+    _owner_loop: Optional[asyncio.AbstractEventLoop] = None
     _last_forward_log_key: Optional[tuple] = field(default=None, init=False, repr=False)
     _last_forward_log_time: float = field(default=0.0, init=False, repr=False)
     _last_forward_log_repeat_count: int = field(default=0, init=False, repr=False)
@@ -57,13 +60,37 @@ class PluginCommunicationResourceManager:
         if self._shutdown_event is None:
             self._shutdown_event = asyncio.Event()
 
-    async def start(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
+    async def _run_on_owner_loop(self, coro: Awaitable[_T]) -> _T:
+        owner_loop = self._owner_loop
+        current_loop = asyncio.get_running_loop()
+        owner_loop_running = getattr(owner_loop, "is_running", None)
+        if (
+            owner_loop is None
+            or owner_loop.is_closed()
+            or (callable(owner_loop_running) and not owner_loop_running())
+        ):
+            self._owner_loop = current_loop
+            return await coro
+        if owner_loop is current_loop:
+            return await coro
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, owner_loop)
+        except Exception:
+            if asyncio.iscoroutine(coro):
+                coro.close()
+            raise
+        return await asyncio.wrap_future(future)
+
+    async def _start_local(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
         self._message_target_queue = message_target_queue
         if self._uplink_consumer_task is None or self._uplink_consumer_task.done():
             self._uplink_consumer_task = asyncio.create_task(self._consume_uplink())
             self.logger.debug("Started uplink consumer for plugin {}", self.plugin_id)
 
-    async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
+    async def start(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
+        await self._run_on_owner_loop(self._start_local(message_target_queue=message_target_queue))
+
+    async def _shutdown_local(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
         self.logger.debug("Shutting down communication for plugin {}", self.plugin_id)
         self._ensure_shutdown_event()
         se = self._shutdown_event
@@ -73,24 +100,50 @@ class PluginCommunicationResourceManager:
         # Let the consumer drain briefly, then cancel.
         graceful = min(0.5, float(timeout)) if timeout is not None else 0.5
         if self._uplink_consumer_task and not self._uplink_consumer_task.done():
-            try:
-                await asyncio.wait_for(self._uplink_consumer_task, timeout=graceful)
-            except asyncio.TimeoutError:
-                self._uplink_consumer_task.cancel()
+            current_loop = asyncio.get_running_loop()
+            task_loop = self._uplink_consumer_task.get_loop()
+            if task_loop is current_loop:
                 try:
-                    await self._uplink_consumer_task
-                except asyncio.CancelledError:
-                    pass
+                    await asyncio.wait_for(self._uplink_consumer_task, timeout=graceful)
+                except asyncio.TimeoutError:
+                    self._uplink_consumer_task.cancel()
+                    try:
+                        await self._uplink_consumer_task
+                    except asyncio.CancelledError:
+                        pass
+            else:
+                try:
+                    task_loop.call_soon_threadsafe(self._uplink_consumer_task.cancel)
+                except Exception:
+                    self.logger.debug(
+                        "Failed to cancel cross-loop uplink consumer for plugin {}",
+                        self.plugin_id,
+                        exc_info=True,
+                    )
 
         self._cleanup_pending_futures()
 
         if self._background_tasks:
             for t in list(self._background_tasks):
-                t.cancel()
-            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+                try:
+                    if t.get_loop() is asyncio.get_running_loop():
+                        t.cancel()
+                    else:
+                        t.get_loop().call_soon_threadsafe(t.cancel)
+                except Exception:
+                    pass
+            same_loop_tasks = [t for t in self._background_tasks if not t.done() and t.get_loop() is asyncio.get_running_loop()]
+            if same_loop_tasks:
+                await asyncio.gather(*same_loop_tasks, return_exceptions=True)
             self._background_tasks.clear()
 
+        self._uplink_consumer_task = None
+        self._shutdown_event = None
         self.logger.debug("Communication for plugin {} shutdown complete", self.plugin_id)
+
+    async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
+        await self._run_on_owner_loop(self._shutdown_local(timeout=timeout))
+        self._owner_loop = None
 
     # ── pending futures ──────────────────────────────────────────
 
@@ -108,7 +161,7 @@ class PluginCommunicationResourceManager:
 
     # ── send commands (downlink) ─────────────────────────────────
 
-    async def _send_command_and_wait(
+    async def _send_command_and_wait_local(
         self,
         req_id: str,
         msg: dict,
@@ -146,15 +199,29 @@ class PluginCommunicationResourceManager:
             raise TimeoutError(f"{error_context} execution timed out after {timeout}s") from None
 
     async def trigger(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:
+        return await self._run_on_owner_loop(self._trigger_local(entry_id, args, timeout))
+
+    async def _trigger_local(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:
         req_id = str(uuid.uuid4())
         self.logger.debug(
             "[CommManager] TRIGGER plugin_id={}, entry_id={}, req_id={}",
             self.plugin_id, entry_id, req_id,
         )
         msg = {"type": "TRIGGER", "req_id": req_id, "entry_id": entry_id, "args": args}
-        return await self._send_command_and_wait(req_id, msg, timeout, f"entry {entry_id}")
+        return await self._send_command_and_wait_local(req_id, msg, timeout, f"entry {entry_id}")
 
     async def trigger_custom_event(
+        self,
+        event_type: str,
+        event_id: str,
+        args: dict,
+        timeout: float = PLUGIN_TRIGGER_TIMEOUT,
+    ) -> Any:
+        return await self._run_on_owner_loop(
+            self._trigger_custom_event_local(event_type, event_id, args, timeout)
+        )
+
+    async def _trigger_custom_event_local(
         self,
         event_type: str,
         event_id: str,
@@ -173,15 +240,18 @@ class PluginCommunicationResourceManager:
             "event_id": event_id,
             "args": args,
         }
-        return await self._send_command_and_wait(
+        return await self._send_command_and_wait_local(
             req_id, msg, timeout, f"custom event {event_type}.{event_id}",
         )
 
     async def send_freeze_command(self, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Dict[str, Any]:
+        return await self._run_on_owner_loop(self._send_freeze_command_local(timeout))
+
+    async def _send_freeze_command_local(self, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Dict[str, Any]:
         req_id = str(uuid.uuid4())
         self.logger.info("[CommManager] FREEZE plugin_id={}, req_id={}", self.plugin_id, req_id)
         try:
-            result = await self._send_command_and_wait(
+            result = await self._send_command_and_wait_local(
                 req_id, {"type": "FREEZE", "req_id": req_id}, timeout, "freeze",
             )
         except Exception as e:
@@ -195,6 +265,9 @@ class PluginCommunicationResourceManager:
         return {"success": True, "data": result, "error": None}
 
     async def send_cancel_run(self, run_id: str) -> None:
+        await self._run_on_owner_loop(self._send_cancel_run_local(run_id))
+
+    async def _send_cancel_run_local(self, run_id: str) -> None:
         try:
             await self.transport.send_command({"type": "CANCEL_RUN", "run_id": str(run_id)})
             self.logger.debug("Sent CANCEL_RUN for run_id={} to plugin {}", run_id, self.plugin_id)
@@ -202,6 +275,13 @@ class PluginCommunicationResourceManager:
             self.logger.warning("Failed to send CANCEL_RUN to plugin {}: {}", self.plugin_id, e)
 
     async def push_bus_change(
+        self, *, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None,
+    ) -> None:
+        await self._run_on_owner_loop(
+            self._push_bus_change_local(sub_id=sub_id, bus=bus, op=op, delta=delta)
+        )
+
+    async def _push_bus_change_local(
         self, *, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None,
     ) -> None:
         msg = {
@@ -217,6 +297,9 @@ class PluginCommunicationResourceManager:
             raise RuntimeError(f"Failed to push BUS_CHANGE to plugin {self.plugin_id}: {e}") from e
 
     async def send_stop_command(self, timeout: float = 0.5) -> None:
+        await self._run_on_owner_loop(self._send_stop_command_local(timeout))
+
+    async def _send_stop_command_local(self, timeout: float = 0.5) -> None:
         try:
             await asyncio.wait_for(self.transport.send_command({"type": "STOP"}), timeout=timeout)
             self.logger.debug("Sent STOP to plugin {}", self.plugin_id)
@@ -226,6 +309,9 @@ class PluginCommunicationResourceManager:
             self.logger.warning("Failed to send STOP to plugin {}: {}", self.plugin_id, e)
 
     async def send_plugin_response(self, msg: dict) -> None:
+        await self._run_on_owner_loop(self._send_plugin_response_local(msg))
+
+    async def _send_plugin_response_local(self, msg: dict) -> None:
         """Forward a plugin-to-plugin response to the child via the downlink."""
         try:
             await self.transport.send_response(msg)
@@ -405,7 +491,7 @@ class PluginCommunicationResourceManager:
     async def _handle_entry_update(self, msg: Dict[str, Any]) -> None:
         try:
             from plugin.core.state import state
-            from plugin.sdk.events import EventMeta, EventHandler
+            from plugin._types.events import EventMeta, EventHandler
 
             action = msg.get("action")
             entry_id = msg.get("entry_id")
@@ -429,9 +515,17 @@ class PluginCommunicationResourceManager:
                 if not meta_dict:
                     self.logger.warning("ENTRY_UPDATE register missing meta: {}", msg)
                     return
+                ipc_metadata = {
+                    **(meta_dict.get("metadata") if isinstance(meta_dict.get("metadata"), dict) else {}),
+                    "_dynamic": True,
+                    "_registered_via_ipc": True,
+                }
+                llm_fields = meta_dict.get("llm_result_fields")
+                if isinstance(llm_fields, list):
+                    ipc_metadata["llm_result_fields"] = llm_fields
                 event_meta = EventMeta(
                     event_type="plugin_entry",
-                    id=meta_dict.get("id", entry_id),
+                    id=entry_id,
                     name=meta_dict.get("name", entry_id),
                     description=meta_dict.get("description", ""),
                     input_schema=meta_dict.get("input_schema"),
@@ -439,16 +533,9 @@ class PluginCommunicationResourceManager:
                     auto_start=meta_dict.get("auto_start", False),
                     enabled=meta_dict.get("enabled", True),
                     dynamic=True,
-                    metadata={"_dynamic": True, "_registered_via_ipc": True},
+                    metadata=ipc_metadata,
                 )
-                handler = EventHandler(
-                    event_type="plugin_entry",
-                    id=entry_id,
-                    meta=event_meta,
-                    handler=None,
-                    plugin_id=plugin_id,
-                    is_dynamic=True,
-                )
+                handler = EventHandler(meta=event_meta, handler=lambda *args, **kwargs: None)
                 state.register_event_handler(plugin_id, handler)
                 self.logger.info("Dynamic entry registered: {} for plugin {}", entry_id, plugin_id)
             elif action == "unregister":
@@ -468,13 +555,17 @@ class PluginCommunicationResourceManager:
                 self.logger.warning("STATIC_UI_REGISTER missing config from plugin {}", plugin_id)
                 return
             self.logger.info("Processing STATIC_UI_REGISTER: plugin_id={}", plugin_id)
+            updated = False
             with state.acquire_plugins_write_lock():
                 plugin_meta = state.plugins.get(plugin_id)
                 if isinstance(plugin_meta, dict):
                     plugin_meta["static_ui_config"] = config
                     state.plugins[plugin_id] = plugin_meta
+                    updated = True
                     self.logger.info("Static UI registered for plugin {}: {}", plugin_id, config.get("directory"))
                 else:
                     self.logger.warning("Plugin {} not found in state.plugins", plugin_id)
+                if updated:
+                    state.invalidate_snapshot_cache("plugins")
         except Exception:
             self.logger.exception("Failed to handle STATIC_UI_REGISTER")

@@ -24,8 +24,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage
+from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
 import httpx
+from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from config import get_extra_body, MEMORY_SERVER_PORT
@@ -45,12 +46,8 @@ from config.prompts_sys import (
     SCREEN_WINDOW_TITLE, SCREEN_IMG_HINT,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
     PROACTIVE_SOURCE_LABELS,
-    MUSIC_SEARCH_RESULT_TEXTS,
-    PROACTIVE_MUSIC_TAG_HINT,
-    PROACTIVE_BOTH_TAG_INSTRUCTIONS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
-    PROACTIVE_SCREEN_MUSIC_TAG_HINT,
-    PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS,
+    MUSIC_SEARCH_RESULT_TEXTS,
 )
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
@@ -63,10 +60,13 @@ from utils.web_scraper import (
     fetch_personal_dynamics, format_personal_dynamics,
 )
 from utils.music_crawlers import fetch_music_content
+from utils.meme_fetcher import fetch_meme_content, MEME_ALLOWED_HOSTS
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
+
+# 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 
 
 @router.get("/token-usage")
@@ -111,6 +111,11 @@ _RECENT_TOPIC_MAX_AGE_SECONDS = 3600  # 1小时内避免重复外部话题
 _PROACTIVE_SIMILARITY_THRESHOLD = 0.94  # 高阈值，尽量避免误杀
 _PHASE1_FETCH_PER_SOURCE = 10  # Phase 1 每个信息源固定抓取条数
 _PHASE1_TOTAL_TOPIC_TARGET = 20  # Phase 1 输入给筛选模型的总候选目标条数
+
+# --- 来源动态权重系统 ---
+_SOURCE_WEIGHT_DECAY_LAMBDA = 0.002   # 指数衰减系数，半衰期 ≈ 5.8 分钟
+_SOURCE_WEIGHT_K = 0.30               # freshness 惩罚系数：freshness = 1 / (1 + k * raw_score)
+_SOURCE_WEIGHT_FLOOR = 0.20           # 归一化权重绝对下限
 
 
 def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
@@ -252,6 +257,111 @@ def _parse_web_screening_result(text: str) -> dict | None:
     return None
 
 
+def _parse_unified_phase1_result(text: str) -> dict:
+    """
+    解析合并 Phase 1 LLM 输出。
+
+    按 [WEB] / [MUSIC] / [MEME] 标记分段：
+    - web 段: 复用现有正则提取 title/source/number/summary
+    - music 段: 提取关键词（或识别 PASS）
+    - meme 段: 同上
+
+    Returns:
+        {
+            'web': {'title': ..., 'source': ..., 'number': ...} | None,
+            'music_keyword': str | None,    # None 表示 PASS 或不存在
+            'meme_keyword': str | None,     # None 表示 PASS 或不存在
+        }
+    """
+    result: dict = {'web': None, 'music_keyword': None, 'meme_keyword': None}
+
+    # 按 [WEB] / [MUSIC] / [MEME] 分段
+    # 使用正则切分，保留标签
+    sections: dict[str, str] = {}
+    current_tag = None
+    current_lines: list[str] = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        upper = stripped.upper()
+        # 检测段标签
+        if upper.startswith('[WEB]'):
+            if current_tag:
+                sections[current_tag] = '\n'.join(current_lines)
+            current_tag = 'web'
+            # 标签行后面可能有内容（如 [WEB] [PASS]）
+            remainder = stripped[5:].strip()
+            current_lines = [remainder] if remainder else []
+        elif upper.startswith('[MUSIC]'):
+            if current_tag:
+                sections[current_tag] = '\n'.join(current_lines)
+            current_tag = 'music'
+            remainder = stripped[7:].strip()
+            current_lines = [remainder] if remainder else []
+        elif upper.startswith('[MEME]'):
+            if current_tag:
+                sections[current_tag] = '\n'.join(current_lines)
+            current_tag = 'meme'
+            remainder = stripped[6:].strip()
+            current_lines = [remainder] if remainder else []
+        else:
+            current_lines.append(line)
+
+    if current_tag:
+        sections[current_tag] = '\n'.join(current_lines)
+
+    # 如果 LLM 没有输出段标签（fallback：尝试当作纯 web 输出解析）
+    if not sections:
+        web_parsed = _parse_web_screening_result(text)
+        if web_parsed:
+            result['web'] = web_parsed
+        return result
+
+    # --- 解析 web 段 ---
+    # 先尝试提取结构化字段；LLM 经常同时输出话题详情和模板里的
+    # "If nothing is worth sharing: [WEB] [PASS]" 行，导致 [PASS]
+    # 误杀已填好的话题。因此优先以 parse 结果为准。
+    web_text = sections.get('web', '')
+    if web_text:
+        parsed_web = _parse_web_screening_result(web_text)
+        if parsed_web:
+            result['web'] = parsed_web
+        elif '[PASS]' in web_text.upper():
+            pass  # 确实是 PASS，web 保持 None
+
+    # --- 解析 music 段 ---
+    music_text = sections.get('music', '')
+    if music_text:
+        music_text = music_text.strip()
+        if '[PASS]' not in music_text.upper() and music_text:
+            # 去掉前缀标签（如"关键词：" "keyword:" 等）
+            keyword = re.sub(
+                r'(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+',
+                '', music_text, count=1
+            )
+            keyword = keyword.strip('\'"「」【】[]《》<> \n\r\t')
+            # 取第一行非空内容
+            keyword = keyword.splitlines()[0].strip() if keyword else ''
+            if keyword and not re.fullmatch(r'\[?\s*pass\s*\]?', keyword, re.IGNORECASE):
+                result['music_keyword'] = keyword
+
+    # --- 解析 meme 段 ---
+    meme_text = sections.get('meme', '')
+    if meme_text:
+        meme_text = meme_text.strip()
+        if '[PASS]' not in meme_text.upper() and meme_text:
+            keyword = re.sub(
+                r'(?i).*?(?:关键词|keyword|キーワード|키워드|ключевое\s*слово)[：:\s]+',
+                '', meme_text, count=1
+            )
+            keyword = keyword.strip('\'"「」【】[]《》<> \n\r\t')
+            keyword = keyword.splitlines()[0].strip() if keyword else ''
+            if keyword and not re.fullmatch(r'\[?\s*pass\s*\]?', keyword, re.IGNORECASE):
+                result['meme_keyword'] = keyword
+
+    return result
+
+
 def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
     """
     根据 Phase 1 输出的标题在 all_web_links 中查找对应链接
@@ -311,10 +421,15 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
     for entry in recent:
         ts, msg = entry[0], entry[1]
         ch = entry[2] if len(entry) > 2 else ''
+        # 过滤掉 vision 通道的记录，避免 AI 引用已过期的屏幕内容产生幻觉
+        if ch == 'vision':
+            continue
         tag = _rel(ts)
         if ch:
             tag += f"·{cl.get(ch, ch)}"
         lines.append(f"- [{tag}] {msg}")
+    if not lines:
+        return ""
     return f"\n{header}\n" + "\n".join(lines) + f"\n{footer}\n"
 
 
@@ -415,6 +530,86 @@ def _record_topic_usage(lanlan_name: str, topic_key: str):
     if lanlan_name not in _proactive_topic_history:
         _proactive_topic_history[lanlan_name] = deque(maxlen=100)
     _proactive_topic_history[lanlan_name].append((time.time(), topic_key))
+
+
+def _compute_source_weights(
+    lanlan_name: str,
+    candidate_channels: list[str],
+) -> dict[str, float]:
+    """
+    计算各来源的归一化权重。
+
+    算法：
+    1. 从 _proactive_chat_history 取 1h 内记录
+    2. raw_score[ch] = Σ exp(-λ·age)  (每次使用按时间衰减累加)
+    3. freshness[ch] = 1 / (1 + k·raw_score[ch])
+    4. 归一化 weight[ch] = freshness[ch] / Σ freshness
+
+    无历史记录时返回均匀分布。
+
+    Args:
+        lanlan_name: 角色名
+        candidate_channels: 参与权重计算的通道列表（不含 vision）
+
+    Returns:
+        {channel: normalized_weight}，weight 之和为 1.0
+    """
+    import math
+    n = len(candidate_channels)
+    if n == 0:
+        return {}
+
+    # 收集 1h 内历史
+    history = _proactive_chat_history.get(lanlan_name)
+    now = time.time()
+
+    raw_scores: dict[str, float] = {ch: 0.0 for ch in candidate_channels}
+
+    if history:
+        for ts, _msg, ch in history:
+            age = now - ts
+            if age > _SOURCE_WEIGHT_WINDOW:
+                continue
+            if ch in raw_scores:
+                raw_scores[ch] += math.exp(-_SOURCE_WEIGHT_DECAY_LAMBDA * age)
+
+    # freshness: 使用越多 → raw 越高 → freshness 越低
+    freshness: dict[str, float] = {}
+    for ch in candidate_channels:
+        freshness[ch] = 1.0 / (1.0 + _SOURCE_WEIGHT_K * raw_scores[ch])
+
+    total = sum(freshness.values())
+    if total <= 0:
+        # 不可能发生，但做防御
+        return {ch: 1.0 / n for ch in candidate_channels}
+
+    return {ch: freshness[ch] / total for ch in candidate_channels}
+
+
+def _filter_sources_by_weight(weights: dict[str, float]) -> set[str]:
+    """
+    返回应被剔除的 channel 集合。
+
+    阈值 = min(_SOURCE_WEIGHT_FLOOR, 1 / N)
+    - 4 通道时 threshold=0.20，2 次使用触发剔除
+    - 6 通道时 threshold=0.167，竞争更激烈
+
+    Args:
+        weights: _compute_source_weights 返回的归一化权重
+
+    Returns:
+        应被剔除的 channel 名称集合
+    """
+    n = len(weights)
+    if n <= 1:
+        return set()  # 只剩 1 个来源时不剔除
+
+    threshold = min(_SOURCE_WEIGHT_FLOOR, 1.0 / n)
+    return {ch for ch, w in weights.items() if w < threshold}
+
+
+# 复用 _RECENT_CHAT_MAX_AGE_SECONDS 作为权重窗口
+_SOURCE_WEIGHT_WINDOW = _RECENT_CHAT_MAX_AGE_SECONDS
 
 
 def _is_path_within_base(base_dir: str, candidate_path: str) -> bool:
@@ -565,7 +760,7 @@ def _format_music_content(music_content: dict, lang: str = 'zh') -> str:
     output_lines = [t['title']]
     tracks = music_content.get('data', [])
     for i, track in enumerate(tracks[:5], 1):
-        # 使用多语言字典中的“未知”占位符，替代硬编码的中文
+        # 使用多语言字典中的"未知"占位符，替代硬编码的中文
         name = track.get('name') or t['unknown_track']
         artist = track.get('artist') or t['unknown_artist']
         album = track.get('album', '')
@@ -695,9 +890,6 @@ async def emotion_analysis(request: Request):
         if not model:
             return {"error": "情绪分析模型配置缺失: 模型名称未提供且配置中未设置默认模型"}
         
-        # 创建异步客户端
-        client = AsyncOpenAI(api_key=api_key, base_url=emotion_base_url)
-        
         # 构建请求消息
         messages = [
             {
@@ -726,7 +918,10 @@ async def emotion_analysis(request: Request):
         
         from utils.token_tracker import set_call_type
         set_call_type("emotion")
-        response = await client.chat.completions.create(**request_params)
+        
+        # 使用异步上下文管理器确保 client 正确关闭
+        async with AsyncOpenAI(api_key=api_key, base_url=emotion_base_url) as client:
+            response = await client.chat.completions.create(**request_params)
 
         # 解析响应
         result_text = response.choices[0].message.content.strip()
@@ -1114,8 +1309,153 @@ async def find_first_image(folder: str = None):
         
     except Exception as e:
         logger.error(f"查找预览图片文件失败: {e}")
-        # 发生异常时不泄露详细信息
         return JSONResponse(content={"success": False, "error": "服务器内部错误"}, status_code=500)
+
+# 统一的表情包代理缓存，使用 byte-based 限制 (50MB)，防止 OOM
+MEME_PROXY_CACHE = TTLCache(
+    maxsize=50 * 1024 * 1024,  # 50MB 内存预算
+    ttl=1800,
+    getsizeof=lambda item: len(item.get('body', b''))
+)
+
+@router.get('/meme/proxy-image')
+async def proxy_meme_image(url: str):
+    """
+    代理远程表情包图片，解决跨域问题，包含 SSRF 防护
+    """
+    import time
+    
+    # 检查缓存
+    cache_key = url
+    if cache_key in MEME_PROXY_CACHE:
+        logger.info(f"[Meme Proxy] 命中缓存: {url[:60]}...")
+        cached = MEME_PROXY_CACHE[cache_key]
+        return Response(
+            content=cached['body'],
+            media_type=cached['content_type'],
+            headers={
+                'Cache-Control': 'public, max-age=86400',
+                'X-Cache': 'HIT',
+                'X-Content-Type-Options': 'nosniff'
+            }
+        )
+    
+    try:
+        logger.info(f"[Meme Proxy] 收到代理请求, url: {url[:100] if url else 'None'}...")
+        
+        if not url:
+            return JSONResponse(content={"success": False, "error": "缺少URL参数"}, status_code=400)
+        
+        decoded_url = unquote(url)
+        if not decoded_url.startswith(('http://', 'https://')):
+            return JSONResponse(content={"success": False, "error": "无效的URL"}, status_code=400)
+        
+        allowed_hosts = MEME_ALLOWED_HOSTS
+        
+        from urllib.parse import urlparse, urljoin
+        parsed = urlparse(decoded_url)
+        hostname = (parsed.hostname or '').lower()
+        
+        if not any(hostname == host or hostname.endswith('.' + host) for host in allowed_hosts):
+            logger.warning(f"[Meme Proxy] 非法域名请求: {hostname}")
+            return JSONResponse(content={"success": False, "error": f"不允许代理该域名: {hostname}"}, status_code=403)
+
+        # 构建请求头
+        # 【修复】完善所有域名的 Referer 映射，避免被反爬拦截
+        referer_map = {
+            'img.soutula.com': 'https://fabiaoqing.com/',
+            'fabiaoqing.com': 'https://fabiaoqing.com/',
+            'qn.doutub.com': 'https://www.doutub.com/',
+            'doutub.com': 'https://www.doutub.com/',
+            'i.imgflip.com': 'https://imgflip.com/',
+            'imgflip.com': 'https://imgflip.com/',
+            'soutula.com': 'https://fabiaoqing.com/',
+        }
+        referer = referer_map.get(hostname, f'{parsed.scheme}://{hostname}/')
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Referer': referer,
+            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+        }
+
+        # 使用流式下载以严格控制资源大小，防止内存溢出或大文件攻击
+        MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB 限制
+        
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+            current_url = decoded_url
+            for _ in range(4):  # 最多跟随 3 次重定向 (4次请求)
+                async with client.stream("GET", current_url, headers=headers) as resp:
+                    if resp.status_code in (301, 302, 303, 307, 308):
+                        location = resp.headers.get("Location")
+                        if not location:
+                            break
+                        
+                        new_url = urljoin(current_url, location)
+                        new_parsed = urlparse(new_url)
+                        new_hostname = (new_parsed.hostname or '').lower()
+                        
+                        if not any(new_hostname == host or new_hostname.endswith('.' + host) for host in allowed_hosts):
+                            logger.warning(f"[Meme Proxy] 重定向到非法域名: {new_hostname}")
+                            return JSONResponse(content={"success": False, "error": "非法重定向"}, status_code=403)
+                        
+                        current_url = new_url
+                        continue
+                    
+                    resp.raise_for_status()
+                    
+                    # 校验 Content-Type (严格白名单，防 SVG XSS 注入)
+                    raw_content_type = resp.headers.get('Content-Type', '').lower()
+                    content_type = raw_content_type.split(';', 1)[0].strip()
+                    allowed_content_types = {
+                        'image/jpeg', 'image/png', 'image/gif', 
+                        'image/webp', 'image/avif', 'image/bmp'
+                    }
+                    if content_type not in allowed_content_types:
+                        logger.warning(f"[Meme Proxy] 拒绝非安全图片内容: {raw_content_type}")
+                        return JSONResponse(content={"success": False, "error": "格式不支持或含有潜在风险"}, status_code=403)
+                    
+                    # 校验 Content-Length (如果存在)
+                    content_length = resp.headers.get('Content-Length')
+                    if content_length:
+                        try:
+                            declared_size = int(content_length)
+                        except (ValueError, TypeError):
+                            declared_size = None  # 解析失败就当未知长度，靠流式校验兜底
+                        if declared_size is not None and declared_size > MAX_IMAGE_SIZE:
+                            logger.warning(f"[Meme Proxy] 资源过大 (Content-Length): {content_length}")
+                            return JSONResponse(content={"success": False, "error": "资源超过大小限制 (10MB)"}, status_code=413)
+
+                    # 流式读取内容并累加大小校验
+                    body = bytearray()
+                    async for chunk in resp.aiter_bytes():
+                        body.extend(chunk)
+                        if len(body) > MAX_IMAGE_SIZE:
+                            logger.warning(f"[Meme Proxy] 资源过大 (实际读取): {len(body)}")
+                            return JSONResponse(content={"success": False, "error": "资源超过大小限制 (10MB)"}, status_code=413)
+
+                    # 存入 TTLCache
+                    MEME_PROXY_CACHE[cache_key] = {
+                        'body': bytes(body),
+                        'content_type': content_type
+                    }
+                    
+                    return Response(
+                        content=bytes(body),
+                        media_type=content_type,
+                        headers={
+                            'Cache-Control': 'public, max-age=86400',
+                            'X-Cache': 'MISS',
+                            'X-Content-Type-Options': 'nosniff'
+                        }
+                    )
+            
+            return JSONResponse(content={"success": False, "error": "过多的重定向"}, status_code=400)
+
+    except httpx.TimeoutException:
+        return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
+    except Exception as e:
+        logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
 # 辅助函数
 
@@ -1381,10 +1721,51 @@ async def backend_screenshot(request: Request):
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
+# ================================================================
+# 主动搭话响应构建 (Response builder pure function)
+# ================================================================
+def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
+    primary_channel = 'unknown'
+    source_links = []
+    lan_name = ctx.get('lanlan_name', 'System')
+    
+    match source_tag:
+        case 'CHAT':
+            primary_channel = 'vision'
+        case 'WEB':
+            # 使用细粒度 web 子通道（news/video/home/personal），fallback 到 'web'
+            web_link = ctx.get('selected_web_link')
+            primary_channel = web_link.get('mode', 'web') if web_link else 'web'
+            if web_link:
+                source_links.append(web_link)
+                logger.debug(f"[{lan_name}] Phase 2 确定选择 WEB (子通道: {primary_channel})，已添加链接")
+        case 'MUSIC':
+            primary_channel = 'music'
+            if ctx.get('selected_music_link'):
+                source_links.append(ctx['selected_music_link'])
+                logger.debug(f"[{lan_name}] Phase 2 确定选择 MUSIC，已添加链接")
+        case 'MEME':
+            primary_channel = 'meme'
+            if ctx.get('selected_meme_link'):
+                source_links.append(ctx['selected_meme_link'])
+                logger.debug(f"[{lan_name}] Phase 2 确定选择 MEME，已添加相关链接")
+            else:
+                logger.warning(f"[{lan_name}] Phase 2 AI 选择 MEME 但无可用表情包链接，回退处理")
+                if ctx.get('selected_web_link'):
+                    primary_channel = ctx['selected_web_link'].get('mode', 'web')
+                    source_links.append(ctx['selected_web_link'])
+                    logger.debug(f"[{lan_name}] Phase 2 回退到 WEB 通道 (子通道: {primary_channel})")
+                elif ctx.get('vision_content'):
+                    primary_channel = 'vision'
+                    logger.debug(f"[{lan_name}] Phase 2 回退到 VISION 通道")
+                else:
+                    logger.debug(f"[{lan_name}] Phase 2 MEME 无表情包且无回退通道，将跳过链接展示")
+    return primary_channel, source_links
+
 @router.post('/proactive_chat')
 async def proactive_chat(request: Request):
     """
-    主动搭话：两阶段架构 — Phase 1 筛选话题（max 2 并发 LLM），Phase 2 结合人设生成搭话
+    主动搭话：两阶段架构 — Phase 1 合并 LLM（web筛选+music/meme关键词，1次调用），Phase 2 结合人设生成搭话
     """
     try:
         _config_manager = get_config_manager()
@@ -1513,12 +1894,19 @@ async def proactive_chat(request: Request):
             
             elif mode == 'music':
                 return (mode, {'placeholder': True, 'note': '关键词将在 Phase 1 开始前生成'})
+            
+            elif mode == 'meme':
+                # meme 关键词将由合并 LLM 调用生成，此处仅占位
+                return (mode, {'placeholder': True, 'note': '关键词将由合并 Phase 1 LLM 生成'})
 
             else:
                 raise ValueError(f"未知模式: {mode}")
         
         # 并行获取所有信息源
-        fetch_tasks = [_fetch_source(m) for m in enabled_modes]
+        fetch_tasks = [
+            _fetch_source(m)
+            for m in enabled_modes
+        ]
         fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
         
         # 收集成功的信息源
@@ -1637,41 +2025,36 @@ async def proactive_chat(request: Request):
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
             else:
                 m, bu, ak = correction_model, correction_base_url, correction_api_key
-            kwargs = dict(
-                model=m, base_url=bu, api_key=ak,
+            kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_tokens,
                 streaming=True,
             )
-            if disable_thinking:
-                extra_body = get_extra_body(m)
-                if extra_body:
-                    kwargs['model_kwargs'] = {"extra_body": extra_body}
-            return ChatOpenAI(**kwargs)
+            if not disable_thinking:
+                kw["extra_body"] = None  # skip auto-resolved extra_body
+            return create_chat_llm(m, bu, ak, **kw)
         
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,
             temperature: float = 1.0, max_tokens: int = 1024, timeout: float = 16.0,
             use_vision: bool = False, disable_thinking: bool = True,
             image_b64: str = '',
+            dynamic_context: str = '',
         ) -> str:
             """
             带重试的 LLM 调用。image_b64 非空时以多模态方式发送截图。
+            dynamic_context: 动态上下文，注入到 HumanMessage 中使 SystemMessage 可被缓存。
             """
             actual_model = (vision_model_name if use_vision and has_vision_model else correction_model)
-            # [临时调试]
-            print(f"\n{'='*60}\n[PROACTIVE-DEBUG] LLM call: [{label}] | model={actual_model} | temp={temperature} | max_tokens={max_tokens} | vision={use_vision} | img={'yes' if image_b64 else 'no'}\n{'='*60}\n{system_prompt}\n{'='*60}\n")
-            llm = _make_llm(temperature=temperature, max_tokens=max_tokens,
-                            use_vision=use_vision, disable_thinking=disable_thinking)
-            
             begin_text = _loc(BEGIN_GENERATE, proactive_lang)
+            human_text = f"{dynamic_context}\n\n{begin_text}" if dynamic_context else begin_text
             if image_b64:
                 human_content = [
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                    {"type": "text", "text": begin_text},
+                    {"type": "text", "text": human_text},
                 ]
             else:
-                human_content = begin_text
+                human_content = human_text
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_content)]
 
             from utils.token_tracker import set_call_type
@@ -1680,14 +2063,17 @@ async def proactive_chat(request: Request):
             retry_delays = [1, 2]
             for attempt in range(max_retries):
                 try:
-                    response = await asyncio.wait_for(
-                        llm.ainvoke(messages),
-                        timeout=timeout
-                    )
-                    # [临时调试]
-                    print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:200]}...\n")
-                    return response.content.strip()
-                except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                    # 使用 async with 确保 ChatOpenAI (AsyncOpenAI) 实例被正确关闭
+                    async with _make_llm(temperature=temperature, max_tokens=max_tokens,
+                                        use_vision=use_vision, disable_thinking=disable_thinking) as llm:
+                        response = await asyncio.wait_for(
+                            llm.ainvoke(messages),
+                            timeout=timeout
+                        )
+                        # [临时调试]
+                        print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:500]}...\n")
+                        return response.content.strip()
+                except (asyncio.TimeoutError, APIConnectionError, InternalServerError, RateLimitError) as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"[{lanlan_name}] LLM [{label}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                         await asyncio.sleep(retry_delays[attempt])
@@ -1697,21 +2083,24 @@ async def proactive_chat(request: Request):
             raise RuntimeError("Unexpected")
         
         # ================================================================
-        # Phase 1: 筛选话题（仅 Web 通道）
-        # ⚠️ 一阶段一定不要分析屏幕！截图会在二阶段由 vision_model 直接 feed in，
-        #    在这里花 LLM 调用分析屏幕是白费功夫。
-        # - Web 通道: 合并所有文本源（含 URL）→ 1 次 LLM 筛选
+        # Phase 1: 合并 LLM 调用（web 筛选 + music 关键词 + meme 关键词）
+        # ⚠️ 一阶段一定不要分析屏幕！截图会在二阶段由 vision_model 直接 feed in。
+        # - 所有文本源合并 → 1 次 LLM 同时完成 web 筛选、music/meme 关键词生成
+        # - 来源动态权重系统在 LLM 调用前剔除低权重通道
         # 总计最多 1 次 LLM 调用
         # ================================================================
         
         vision_content = sources.get('vision')  # 仅保留给 Phase 2 使用，Phase 1 不处理
         music_content = sources.get('music')
+        meme_content = sources.get('meme')
         logger.info(f"[{lanlan_name}] 主动搭话-音乐内容: type={type(music_content)}, success={music_content.get('success') if music_content else 'N/A'}")
+        logger.info(f"[{lanlan_name}] 主动搭话-表情包内容: type={type(meme_content)}, success={meme_content.get('success') if meme_content else 'N/A'}")
         
         all_web_links: list[dict] = []
         
         # 收集音乐链接（在 Phase 1 Web 筛选完成后）
-        web_modes = [m for m in sources if m != 'vision' and m != 'music']
+        # meme 也不经过 Phase 1 LLM 筛选，直接添加话题
+        web_modes = [m for m in sources if m not in ('vision', 'music', 'meme')]
         
         merged_web_content = ""
         if web_modes:
@@ -1736,6 +2125,9 @@ async def proactive_chat(request: Request):
                         if key in seen_topic_keys or _is_recent_topic_used(lanlan_name, key):
                             continue
                         seen_topic_keys.add(key)
+                    # 给 link 打上来源 mode 标记，用于细粒度 channel 记录
+                    if 'mode' not in link:
+                        link['mode'] = m
                     selected_links.append(link)
                     if len(selected_links) >= remaining_total:
                         break
@@ -1774,143 +2166,302 @@ async def proactive_chat(request: Request):
         # Phase 1 结果收集
         phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
         source_links: list[dict] = []  # [{"title": ..., "url": ..., "source": ...}]
-        selected_web_topic_key = ''
-        selected_music_topic_key = ''  # 暂存音乐话题 key，等 Phase 2 成功后再记录
-        
-        # --- 音乐模式：让 LLM 生成搜索关键词，再用关键词搜索音乐 ---
+        selected_web_link = None
+        selected_web_topic_key = None
+        selected_music_link = None
+        selected_music_topic_key = None
+        selected_meme_link = None
+        selected_meme_topic_key = None
+
         # 【加固】如果正在放歌，强制在此环节清空 music_content，彻底跳过 Phase 1 的所有搜歌逻辑
         if is_playing_music:
             if music_content:
                 logger.info(f"[{lanlan_name}]-音乐正在播放，强制屏蔽 Phase 1 搜歌逻辑")
             music_content = None
 
-        if music_content and music_content.get('placeholder'):
-            logger.info(f"[{lanlan_name}]-音乐模式：开始生成搜索关键词...")
+        # ============================================================
+        # 来源动态权重过滤（vision 不参与权重计算）
+        # ============================================================
+        non_vision_modes = [m for m in enabled_modes if m != 'vision']
+        if non_vision_modes:
+            source_weights = _compute_source_weights(lanlan_name, non_vision_modes)
+            suppressed = _filter_sources_by_weight(source_weights)
+            weight_str = ' '.join(f"{ch}={w:.3f}" for ch, w in source_weights.items())
+            logger.info(f"[{lanlan_name}] 来源权重: {weight_str} | 剔除: {suppressed or '无'}")
+
+            for ch in suppressed:
+                sources.pop(ch, None)
+            if 'music' in suppressed:
+                music_content = None
+            if 'meme' in suppressed:
+                meme_content = None
+
+            # 被剔除的 web 子通道不参与 merged_web_content（sources 已弹出，
+            # 但 merged_web_content 已经构建完毕，需要重新构建）
+            if suppressed & set(web_modes):
+                # 重新构建 merged_web_content，排除被剔除的通道
+                remaining_web_modes = [m for m in web_modes if m not in suppressed]
+                if remaining_web_modes:
+                    # 先从 all_web_links 中移除被剔除通道的链接
+                    all_web_links = [lk for lk in all_web_links if lk.get('mode') not in suppressed]
+                    parts = []
+                    seen_topic_keys_2: set[str] = set()
+                    remaining_total_2 = _PHASE1_TOTAL_TOPIC_TARGET
+                    for m in remaining_web_modes:
+                        if remaining_total_2 <= 0:
+                            break
+                        src = sources.get(m)
+                        if not src:
+                            continue
+                        label_map = PROACTIVE_SOURCE_LABELS.get(proactive_lang, PROACTIVE_SOURCE_LABELS['zh'])
+                        label = label_map.get(m, m)
+                        links = src.get('links', []) or []
+                        selected_links_2: list[dict] = []
+                        for link in links:
+                            title = link.get('title', '')
+                            source_name = link.get('source', '')
+                            url = link.get('url', '')
+                            key = _build_topic_dedup_key(topic_title=title, topic_source=source_name, topic_url=url)
+                            if key:
+                                if key in seen_topic_keys_2 or _is_recent_topic_used(lanlan_name, key):
+                                    continue
+                                seen_topic_keys_2.add(key)
+                            if 'mode' not in link:
+                                link['mode'] = m
+                            selected_links_2.append(link)
+                            if len(selected_links_2) >= remaining_total_2:
+                                break
+                        if selected_links_2:
+                            remaining_total_2 -= len(selected_links_2)
+                            lines = []
+                            for idx, item in enumerate(selected_links_2, start=1):
+                                t = item.get('title', '').strip()
+                                if not t:
+                                    continue
+                                s = item.get('source', '').strip()
+                                u = item.get('url', '').strip()
+                                suffix = []
+                                if s:
+                                    suffix.append(f"来源: {s}")
+                                if u:
+                                    suffix.append(f"URL: {u}")
+                                ext = (" | " + " | ".join(suffix)) if suffix else ""
+                                lines.append(f"{idx}. {t}{ext}")
+                            if lines:
+                                parts.append(f"--- {label} ---\n" + "\n".join(lines))
+                    merged_web_content = "\n\n".join(parts)
+                else:
+                    merged_web_content = ""
+                    all_web_links = []
+
+        # ============================================================
+        # 合并 Phase 1 LLM 调用：web 筛选 + music 关键词 + meme 关键词
+        # 一次 LLM 调用完成所有任务，降低 RPM
+        # ============================================================
+        has_music_task = bool(music_content and music_content.get('placeholder'))
+        has_meme_task = bool(meme_content and meme_content.get('placeholder'))
+        has_web_task = bool(merged_web_content)
+
+        # 只要有至少一个任务就发起 LLM 调用
+        unified_parsed: dict = {'web': None, 'music_keyword': None, 'meme_keyword': None}
+        if has_web_task or has_music_task or has_meme_task:
             try:
-                from config.prompts_sys import get_proactive_music_keyword_prompt
-                music_keyword_prompt = get_proactive_music_keyword_prompt(proactive_lang).format(
+                from config.prompts_sys import build_unified_phase1_prompt
+                unified_prompt = build_unified_phase1_prompt(
+                    proactive_lang,
+                    merged_content=merged_web_content if has_web_task else None,
+                    memory_context=memory_context,
+                    recent_chats_section=proactive_chat_history_prompt,
+                    music_ctx={'lanlan_name': lanlan_name, 'master_name': master_name_current} if has_music_task else None,
+                    meme_enabled=has_meme_task,
                     lanlan_name=lanlan_name,
                     master_name=master_name_current,
-                    memory_context=memory_context,
-                    recent_chats_section=proactive_chat_history_prompt
                 )
-                music_keyword_result = await _llm_call_with_retry(music_keyword_prompt, "music_keyword")
-                print(f"[{lanlan_name}] Phase 1 音乐关键词: {music_keyword_result[:100]}")
-                
-                keyword = (music_keyword_result or '').strip()
-                keyword = re.sub(r'(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+', '', keyword, count=1)
-                keyword = keyword.strip('\'"「」【】[]《》<> \n\r\t')
-
-                if re.fullmatch(r'\[?\s*pass\s*\]?', keyword, re.IGNORECASE):
-                    print(f"[{lanlan_name}]-音乐模式：AI 判断不适合播放音乐")
-                    music_content = None
-                else:
-                    music_raw = None
-                    if keyword:
-                        music_raw = await fetch_music_content(keyword=keyword, limit=5)
-                        if not (music_raw and music_raw.get('success')):
-                            logger.warning(f"[{lanlan_name}]-音乐模式：关键词 '{keyword}' 搜索失败，尝试随机推荐")
-                            music_raw = await fetch_music_content(keyword="", limit=5)
-                    else:
-                        logger.warning(f"[{lanlan_name}]-音乐模式：AI 未返回有效关键词，尝试随机推荐")
-                        music_raw = await fetch_music_content(keyword="", limit=5)
-
-                    if music_raw and music_raw.get('success'):
-                        _log_music_content(lanlan_name, music_raw)
-                        music_content = {
-                            'formatted_content': _format_music_content(music_raw, proactive_lang),
-                            'raw_data': music_raw,
-                        }
-                    else:
-                        music_content = None
+                unified_result_text = await _llm_call_with_retry(unified_prompt, "unified_phase1")
+                print(f"[{lanlan_name}] Phase 1 合并 LLM 结果: {unified_result_text[:500]}")
+                unified_parsed = _parse_unified_phase1_result(unified_result_text)
+                logger.info(f"[{lanlan_name}] Phase 1 解析: web={'有' if unified_parsed.get('web') else '无'}, "
+                           f"music_kw={unified_parsed.get('music_keyword', 'N/A')}, "
+                           f"meme_kw={unified_parsed.get('meme_keyword', 'N/A')}")
             except Exception as e:
-                logger.warning(f"[{lanlan_name}]-音乐模式关键词生成异常: {type(e).__name__}: {e}，尝试随机推荐")
-                try:
-                    music_raw = await fetch_music_content(keyword="", limit=5)
-                    if music_raw and music_raw.get('success'):
-                        _log_music_content(lanlan_name, music_raw)
-                        music_content = {
-                            'formatted_content': _format_music_content(music_raw, proactive_lang),
-                            'raw_data': music_raw,
-                        }
-                    else:
-                        music_content = None
-                except Exception:
-                    music_content = None
-        
-        # --- Web 通道: 1 次 LLM 筛选 ---
-        if merged_web_content:
+                logger.warning(f"[{lanlan_name}] Phase 1 合并 LLM 调用异常: {type(e).__name__}: {e}，降级处理")
+                # LLM 失败：各通道降级
+                unified_parsed = {'web': None, 'music_keyword': None, 'meme_keyword': None}
+
+        # ============================================================
+        # 解析 web 结果 → 链接匹配 → 去重
+        # ============================================================
+        web_parsed = unified_parsed.get('web')
+        if web_parsed and web_parsed.get('title'):
+            matched = _lookup_link_by_title(web_parsed.get('title', ''), all_web_links)
+            topic_key = _build_topic_dedup_key(
+                topic_title=web_parsed.get('title', ''),
+                topic_source=web_parsed.get('source', ''),
+                topic_url=(matched.get('url', '') if matched else ''),
+            )
+            if topic_key and _is_recent_topic_used(lanlan_name, topic_key):
+                print(f"[{lanlan_name}] Phase 1 话题去重命中，跳过: {web_parsed.get('title','')[:60]}")
+            else:
+                if matched:
+                    selected_web_link = {
+                        'title': web_parsed.get('title', matched.get('title', '')),
+                        'url': matched['url'],
+                        'source': web_parsed.get('source', matched.get('source', '')),
+                        'mode': matched.get('mode', 'web'),  # 保留细粒度 mode
+                    }
+                    selected_web_topic_key = topic_key
+                    print(f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title','')[:60]}")
+                else:
+                    print(f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {web_parsed.get('title','')[:60]}")
+                # 用 web_parsed 的 summary 或原始文本作为 topic
+                web_topic_text = web_parsed.get('summary', web_parsed.get('title', ''))
+                phase1_topics.append(('web', web_topic_text.strip()))
+
+        # ============================================================
+        # 并行后置 fetch：music + meme（使用 LLM 生成的关键词）
+        # ============================================================
+        music_keyword = unified_parsed.get('music_keyword')
+        meme_keyword = unified_parsed.get('meme_keyword')
+
+        async def _fetch_music_with_fallback(kw: str):
+            """用 LLM 关键词搜索音乐，失败则随机推荐"""
             try:
-                prompt = get_proactive_screen_prompt('web', proactive_lang).format(
-                    memory_context=memory_context,
-                    merged_content=merged_web_content,
-                    # --- 修改：传入空字符串即可，因为真实对话已经在 memory_context 里了 ---
-                    recent_chats_section=""
-                )
-                web_result_text = await _llm_call_with_retry(prompt, "screen_web")
-                print(f"[{lanlan_name}] Phase 1 Web 筛选结果: {web_result_text[:120]}")
-                
-                if "[PASS]" not in web_result_text.upper():
-                    parsed = _parse_web_screening_result(web_result_text)
-                    if parsed:
-                        matched = _lookup_link_by_title(parsed.get('title', ''), all_web_links)
-                        topic_key = _build_topic_dedup_key(
-                            topic_title=parsed.get('title', ''),
-                            topic_source=parsed.get('source', ''),
-                            topic_url=(matched.get('url', '') if matched else ''),
-                        )
-                        if topic_key and _is_recent_topic_used(lanlan_name, topic_key):
-                            print(f"[{lanlan_name}] Phase 1 话题去重命中，跳过: {parsed.get('title','')[:60]}")
-                            web_result_text = "[PASS] duplicate topic"
-                        else:
-                            selected_web_topic_key = topic_key
-                            if matched:
-                                source_links.append({
-                                    'title': parsed.get('title', matched.get('title', '')),
-                                    'url': matched['url'],
-                                    'source': parsed.get('source', matched.get('source', '')),
-                                })
-                                print(f"[{lanlan_name}] Phase 1 链接匹配成功: {matched.get('title','')[:60]}")
-                            else:
-                                print(f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {parsed.get('title','')[:60]}")
-                    if "[PASS]" not in web_result_text.upper():
-                        phase1_topics.append(('web', web_result_text.strip()))
-                else:
-                    print(f"[{lanlan_name}] Phase 1 Web 通道返回 PASS")
+                raw = await fetch_music_content(keyword=kw, limit=5)
+                if raw and raw.get('success'):
+                    return raw
             except Exception as e:
-                logger.warning(f"[{lanlan_name}] Phase 1 Web 筛选异常: {type(e).__name__}: {e}")
-        
-        # 音乐模式特殊处理：不经过 Phase 1 LLM 筛选，直接添加音乐话题
+                logger.warning(f"[{lanlan_name}] 音乐关键词 '{kw}' 搜索异常: {e}")
+            logger.warning(f"[{lanlan_name}] 音乐关键词 '{kw}' 搜索失败，尝试随机推荐")
+            try:
+                return await fetch_music_content(keyword="", limit=5)
+            except Exception:
+                return None
+
+        async def _fetch_meme_with_fallback(kw: str):
+            """用 LLM 关键词搜索表情包，失败则随机热词"""
+            try:
+                raw = await asyncio.wait_for(
+                    fetch_meme_content(keyword=kw, limit=_PHASE1_FETCH_PER_SOURCE),
+                    timeout=12.0
+                )
+                if raw and raw.get('success'):
+                    return raw
+            except Exception as e:
+                logger.warning(f"[{lanlan_name}] 表情包关键词 '{kw}' 搜索异常: {e}")
+            logger.warning(f"[{lanlan_name}] 表情包关键词 '{kw}' 搜索失败，尝试随机热词")
+            try:
+                return await asyncio.wait_for(
+                    fetch_meme_content(keyword="", limit=_PHASE1_FETCH_PER_SOURCE),
+                    timeout=12.0
+                )
+            except Exception:
+                return None
+
+        fetch_tasks_p1: list = []
+        fetch_labels: list[str] = []
+
+        if has_music_task:
+            kw = music_keyword or ""
+            fetch_tasks_p1.append(_fetch_music_with_fallback(kw))
+            fetch_labels.append('music')
+        if has_meme_task:
+            kw = meme_keyword or ""
+            fetch_tasks_p1.append(_fetch_meme_with_fallback(kw))
+            fetch_labels.append('meme')
+
+        if fetch_tasks_p1:
+            fetch_results_p1 = await asyncio.gather(*fetch_tasks_p1, return_exceptions=True)
+            for label_p1, result_p1 in zip(fetch_labels, fetch_results_p1):
+                if isinstance(result_p1, Exception):
+                    logger.warning(f"[{lanlan_name}] Phase 1 后置 fetch [{label_p1}] 异常: {result_p1}")
+                    continue
+                if label_p1 == 'music' and result_p1 and result_p1.get('success'):
+                    _log_music_content(lanlan_name, result_p1)
+                    music_content = {
+                        'formatted_content': _format_music_content(result_p1, proactive_lang),
+                        'raw_data': result_p1,
+                    }
+                elif label_p1 == 'meme' and result_p1 and result_p1.get('success'):
+                    meme_content = {
+                        'success': True,
+                        'data': result_p1.get('data', []),
+                        'raw_data': result_p1,
+                        'source': result_p1.get('source', '表情包'),
+                    }
+                    print(f"[{lanlan_name}] 成功获取 {len(result_p1.get('data', []))} 个表情包 (来源: {result_p1.get('source', '?')})")
+
+        # ============================================================
+        # 音乐话题组装（去重 + 暂存链接）
+        # ============================================================
         if music_content and music_content.get('formatted_content'):
             music_topic = music_content['formatted_content']
             if music_topic:
-                # 检查音乐话题是否重复
                 music_tracks = music_content.get('raw_data', {}).get('data', [])
                 if music_tracks:
-                    # 获取第一首歌的详细信息
                     first_track = music_tracks[0]
                     track_name = first_track.get('name', '')
                     track_artist = first_track.get('artist', '')
                     track_url = first_track.get('url', '')
-                    
-                    # 复用通用的去重键生成函数，优先利用 URL 的唯一性，
-                    # 即使没有 URL 也会结合“歌名 - 艺术家”来生成 key，避免同名曲误伤
+                    track_cover = first_track.get('cover', '')
                     music_topic_key = _build_topic_dedup_key(
                         topic_title=f"{track_name} - {track_artist}",
                         topic_source='music',
                         topic_url=track_url
                     )
-                    
                     if _is_recent_topic_used(lanlan_name, music_topic_key):
                         print(f"[{lanlan_name}]- Phase 1 音乐话题去重命中，跳过: {track_name}")
                     else:
                         logger.info(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
-                        phase1_topics.append(('music', music_topic))
-                        # 暂存音乐话题 key，等 Phase 2 成功后再记录
+                        selected_music_link = {
+                            'title': track_name,
+                            'artist': track_artist,
+                            'url': track_url,
+                            'cover': track_cover,
+                            'source': '音乐推荐',
+                            'type': 'music'
+                        }
                         selected_music_topic_key = music_topic_key
+                        phase1_topics.append(('music', music_topic))
                 else:
                     logger.info(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
                     phase1_topics.append(('music', music_topic))
+
+        # ============================================================
+        # 表情包话题组装（遍历候选 → 去重 → 限1张）
+        # ============================================================
+        if meme_content and meme_content.get('success') and meme_content.get('data'):
+            meme_data = meme_content.get('data', [])
+            if meme_data:
+                for candidate_meme in meme_data:
+                    meme_title = candidate_meme.get('title', '')
+                    meme_url = candidate_meme.get('url', '')
+                    if not meme_url:
+                        continue  # 跳过无 URL 的候选
+                    meme_source = candidate_meme.get('source', '表情包')
+                    meme_topic_key = _build_topic_dedup_key(
+                        topic_title=meme_title,
+                        topic_source=meme_source,
+                        topic_url=meme_url
+                    )
+                    if meme_topic_key and _is_recent_topic_used(lanlan_name, meme_topic_key):
+                        logger.info(f"[{lanlan_name}]- Phase 1 表情包话题去重命中，跳过: {meme_title[:30]}")
+                        continue
+                    single_meme_topic = f"发现一个很有意思的[表情包]：'{meme_title}' (来自 {meme_source})"
+                    logger.info(f"[{lanlan_name}]- Phase 1 表情包话题已添加 (限额1张): {single_meme_topic}")
+                    phase1_topics.append(('meme', single_meme_topic))
+                    selected_meme_link = {
+                        'title': meme_title,
+                        'url': meme_url,
+                        'source': meme_source,
+                        'type': candidate_meme.get('type', 'meme')
+                    }
+                    selected_meme_topic_key = meme_topic_key
+                    logger.info(f"[{lanlan_name}] 预选表情包话题: {meme_title[:30]}")
+                    break
+                else:
+                    logger.info(f"[{lanlan_name}]- Phase 1 所有表情包候选均被去重，跳过表情包话题")
+            else:
+                logger.warning(f"[{lanlan_name}] Phase 1 表情包数据为空，跳过表情包话题")
         
         if not phase1_topics and not vision_content:
             print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
@@ -1992,26 +2543,34 @@ async def proactive_chat(request: Request):
             print(f"[{lanlan_name}] 正在播放音乐，已屏蔽音乐推荐素材（仅保留 playing_hint）")
             music_section = ""
         
+        # 构建表情包段（meme 通道）
+        meme_section = ""
+        meme_topic = None
+        for channel, topic in phase1_topics:
+            if channel == 'meme':
+                meme_topic = topic
+                break
+        if meme_topic:
+            meme_section = f"======表情包素材======\n{meme_topic}\n======表情包素材结束======"
+        
         source_instruction, output_format_section = get_proactive_format_sections(
             has_screen=bool(screen_section),
             has_web=bool(external_section),
-            has_music=bool(music_section),  # 分离音乐布尔位
+            has_music=bool(music_section),
+            has_meme=bool(meme_section),
             lang=proactive_lang,
         )
-        #如果同时存在网页和音乐，手动补全被 Helper 忽略的 [BOTH] 和 [MUSIC] 指令
-        if music_section and external_section:
-            music_tag_hint = PROACTIVE_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC], or [BOTH]")
-            output_format_section = output_format_section.replace('[WEB]', f'[WEB]{music_tag_hint}')
-        elif music_section and screen_section:
-            screen_music_hint = PROACTIVE_SCREEN_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC], or [BOTH]")
-            output_format_section = output_format_section.replace('[SCREEN]', f'[SCREEN]{screen_music_hint}', 1)
-
         music_playing_hint = ""
         if is_playing_music and current_track:
             track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
             music_playing_hint = get_proactive_music_playing_hint(track_name, proactive_lang)
 
-        generate_prompt = get_proactive_generate_prompt(proactive_lang, music_playing_hint).format(
+        # 静动分离：generate_prompt 作为静态 SystemMessage（可被缓存），
+        # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
+        generate_prompt = get_proactive_generate_prompt(
+            proactive_lang, music_playing_hint,
+            has_music=bool(music_section), has_meme=bool(meme_section),
+        ).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
             memory_context=memory_context,
@@ -2019,38 +2578,25 @@ async def proactive_chat(request: Request):
             screen_section=screen_section,
             external_section=external_section,
             music_section=music_section,
+            meme_section=meme_section,
             master_name=master_name_current,
             source_instruction=source_instruction,
             output_format_section=output_format_section,
         )
+        dynamic_context_for_phase2 = ""
         if music_topic:
-            if external_section:
-                generate_prompt += PROACTIVE_BOTH_TAG_INSTRUCTIONS.get(
-                    proactive_lang,
-                    PROACTIVE_BOTH_TAG_INSTRUCTIONS.get('en', PROACTIVE_BOTH_TAG_INSTRUCTIONS['zh']),
-                )
-            elif screen_section:
-                generate_prompt += PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS.get(
-                    proactive_lang,
-                    PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS['zh']),
-                )
-            else:
-                generate_prompt += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
-                    proactive_lang,
-                    PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
-                )
-
-            # 【核心补齐】如果搜索结果是模糊匹配，注入 failsafe hint
-            # 注意：random 状态（随机推荐）不应触发 failsafe hint，因为这是正常的随机推荐行为
+            dynamic_context_for_phase2 += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
+                proactive_lang,
+                PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
+            )
             raw_data = music_content.get('raw_data', {}) if music_content else {}
             if raw_data.get('best_match', {}).get('status') == 'fuzzy':
-                generate_prompt += get_proactive_music_failsafe_hint(proactive_lang)
+                dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(proactive_lang)
 
-        # 【强制约束】放歌时禁止产生任何换歌念头
         if is_playing_music:
-            generate_prompt += get_proactive_music_strict_constraint(proactive_lang)
-        print(f"[{lanlan_name}] Phase 2 完整 prompt 长度: {len(generate_prompt)} 字符")
-        
+            dynamic_context_for_phase2 += get_proactive_music_strict_constraint(proactive_lang)
+        print(f"[{lanlan_name}] Phase 2 prompt 长度: {len(generate_prompt)}, 动态上下文: {len(dynamic_context_for_phase2)} 字符")
+
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
         if not await mgr.prepare_proactive_delivery(min_idle_secs=30.0):
             return JSONResponse({
@@ -2058,25 +2604,24 @@ async def proactive_chat(request: Request):
                 "action": "pass",
                 "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
             })
-        
-        # --- 构建 LLM + messages ---
+
+        # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
-        llm = _make_llm(temperature=1.0, max_tokens=1536,
-                        use_vision=phase2_use_vision, disable_thinking=True)
-        
+
         begin_text = _loc(BEGIN_GENERATE, proactive_lang)
+        human_text = f"{dynamic_context_for_phase2}\n\n{begin_text}" if dynamic_context_for_phase2 else begin_text
         if phase2_use_vision:
             human_content = [
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64_for_phase2}"}},
-                {"type": "text", "text": begin_text},
+                {"type": "text", "text": human_text},
             ]
         else:
-            human_content = begin_text
+            human_content = human_text
         messages = [SystemMessage(content=generate_prompt), HumanMessage(content=human_content)]
-        
+
         actual_model = (vision_model_name if phase2_use_vision else correction_model)
         print(f"\n{'='*60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: model={actual_model} | vision={phase2_use_vision} | img={'yes' if phase2_use_vision else 'no'}\n{'='*60}\n{generate_prompt}\n{'='*60}\n")
-        
+
         # --- 流式调用 + 在线拦截 ---
         from utils.token_tracker import set_call_type
         set_call_type("proactive")
@@ -2089,60 +2634,63 @@ async def proactive_chat(request: Request):
         
         try:
             async with asyncio.timeout(25.0):
-                async for chunk in llm.astream(messages):
-                    content = chunk.content if hasattr(chunk, 'content') else ''
-                    if not content:
-                        continue
-                    
-                    if not tag_parsed:
-                        buffer += content
-                        # 缓冲前 ~80 字符，解析 "主动搭话" 前缀和来源标签
-                        if len(buffer) < 80 and '\n' not in buffer[min(len(buffer)-1, 10):]:
+                # 使用 async with 确保 ChatOpenAI 正确关闭
+                async with _make_llm(temperature=1.0, max_tokens=1536,
+                                    use_vision=phase2_use_vision, disable_thinking=True) as llm:
+                    async for chunk in llm.astream(messages):
+                        content = chunk.content if hasattr(chunk, 'content') else ''
+                        if not content:
                             continue
-                        # 清理 "主动搭话" 前缀
-                        cleaned = buffer
-                        m = re.search(r'主动搭话\s*\n', cleaned)
-                        if m:
-                            cleaned = cleaned[m.end():]
-                        # 解析 [PASS] / [SCREEN] / [WEB] / [BOTH] / [MUSIC]
-                        tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC)\]\s*', cleaned, re.IGNORECASE)
-                        if tag_match:
-                            source_tag = tag_match.group(1).upper()
-                            cleaned = cleaned[tag_match.end():]
-                        tag_parsed = True
                         
-                        if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
-                            print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
+                        if not tag_parsed:
+                            buffer += content
+                            # 缓冲前 ~80 字符，解析 "主动搭话" 前缀和来源标签
+                            if len(buffer) < 80 and '\n' not in buffer[min(len(buffer)-1, 10):]:
+                                continue
+                            # 清理 "主动搭话" 前缀
+                            cleaned = buffer
+                            m = re.search(r'主动搭话\s*\n', cleaned)
+                            if m:
+                                cleaned = cleaned[m.end():]
+                            # 解析 [PASS] / [CHAT] / [WEB] / [MUSIC] / [MEME]
+                            tag_match = re.match(r'^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
+                            if tag_match:
+                                source_tag = tag_match.group(1).upper()
+                                cleaned = cleaned[tag_match.end():]
+                            tag_parsed = True
+                            
+                            if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
+                                print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
+                                aborted = True
+                                break
+                            
+                            # 缓冲中剩余的文本作为首批内容
+                            if cleaned.strip():
+                                full_text += cleaned
+                                await mgr.feed_tts_chunk(cleaned)
+                            continue
+                        
+                        # --- 在线拦截: fence ---
+                        fence_hit = False
+                        for ch in content:
+                            if ch in ('|', '｜'):
+                                pipe_count += 1
+                                if pipe_count >= 2:
+                                    fence_hit = True
+                                    break
+                        if fence_hit:
+                            print(f"[{lanlan_name}] Phase 2 流式 fence 触发 (pipe_count={pipe_count})，abort")
                             aborted = True
                             break
                         
-                        # 缓冲中剩余的文本作为首批内容
-                        if cleaned.strip():
-                            full_text += cleaned
-                            await mgr.feed_tts_chunk(cleaned)
-                        continue
-                    
-                    # --- 在线拦截: fence ---
-                    fence_hit = False
-                    for ch in content:
-                        if ch in ('|', '｜'):
-                            pipe_count += 1
-                            if pipe_count >= 2:
-                                fence_hit = True
-                                break
-                    if fence_hit:
-                        print(f"[{lanlan_name}] Phase 2 流式 fence 触发 (pipe_count={pipe_count})，abort")
-                        aborted = True
-                        break
-                    
-                    # --- 在线拦截: 长度 ---
-                    if len(full_text) + len(content) > 400:
-                        print(f"[{lanlan_name}] Phase 2 流式长度超限 ({len(full_text)+len(content)} > 400)，abort")
-                        aborted = True
-                        break
-                    
-                    full_text += content
-                    await mgr.feed_tts_chunk(content)
+                        # --- 在线拦截: 长度 ---
+                        if len(full_text) + len(content) > 400:
+                            print(f"[{lanlan_name}] Phase 2 流式长度超限 ({len(full_text)+len(content)} > 400)，abort")
+                            aborted = True
+                            break
+                        
+                        full_text += content
+                        await mgr.feed_tts_chunk(content)
         
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning(f"[{lanlan_name}] Phase 2 流式调用异常: {type(e).__name__}: {e}")
@@ -2154,7 +2702,7 @@ async def proactive_chat(request: Request):
             m = re.search(r'主动搭话\s*\n', cleaned)
             if m:
                 cleaned = cleaned[m.end():]
-            tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC)\]\s*', cleaned, re.IGNORECASE)
+            tag_match = re.match(r'^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
             if tag_match:
                 source_tag = tag_match.group(1).upper()
                 cleaned = cleaned[tag_match.end():]
@@ -2182,19 +2730,15 @@ async def proactive_chat(request: Request):
         has_music_topic = 'music' in active_channels
 
         # 【加固】数据级锁：如果正在同步播放音乐，哪怕 AI 产生了音乐标签，也强制降级/忽略
-        # 注意：只要 source_tag 是 MUSIC 或 BOTH，就视为 AI 想要使用音乐，无论 has_music_topic 状态
-        is_music_used = has_music_topic and (source_tag in ('MUSIC', 'BOTH'))
-        ai_wants_music = source_tag in ('MUSIC', 'BOTH')
-        
+        is_music_used = has_music_topic and source_tag == 'MUSIC'
+        ai_wants_music = source_tag == 'MUSIC'
+
         if is_playing_music and ai_wants_music:
             print(f"[{lanlan_name}] 数据级锁触发：AI 在播放中尝试推荐新歌，已强制拦截并清空曲目列表")
             is_music_used = False
             music_content = None
-            if source_tag == 'MUSIC':
-                source_tag = 'PASS'
-                aborted = True
-            elif source_tag == 'BOTH':
-                source_tag = 'WEB'
+            source_tag = 'PASS'
+            aborted = True
         
         # 【加固补齐】如果触发了降级拦截（aborted），立即返回
         if aborted:
@@ -2205,27 +2749,21 @@ async def proactive_chat(request: Request):
                 "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
             })
 
-        if source_tag == 'SCREEN':
-            source_links = []
-            primary_channel = 'vision'
-        elif source_tag == 'WEB':
-            primary_channel = 'web'
-        elif source_tag == 'MUSIC':
-            source_links = [] # 纯音乐模式不需要 Web 链接
-            primary_channel = 'music'
-        elif source_tag == 'BOTH':
-            # BOTH 模式下，如果包含音乐，强制设为 music 模式以触发前端播放器
-            # 前端会优先处理 music 信号，同时渲染 source_links 里的所有内容
-            if is_music_used:
-                primary_channel = 'music'
-            else:
-                primary_channel = 'web'
+        # 使用纯函数构建响应
+        primary_channel, source_links = build_proactive_response(source_tag, {
+            'lanlan_name': lanlan_name,
+            'is_music_used': is_music_used,
+            'selected_web_link': selected_web_link,
+            'selected_music_link': selected_music_link,
+            'selected_meme_link': selected_meme_link,
+            'vision_content': vision_content
+        })
 
         # 兜底：当最终主通道已经落到 music，或当前实际上只剩音乐通道时，
-        # 【加固】播放中严禁任何形式的自动补全或兜底推荐
+        # 【逻辑加固】如果 active_channels 里包含 meme 且 primary_channel 是 meme，不触发 fallback
         should_try_music_fallback = not is_playing_music and (
             primary_channel == 'music'
-            or (has_music_topic and not any(ch in ('vision', 'web') for ch in active_channels))
+            or (has_music_topic and not any(ch in ('vision', 'web', 'meme') for ch in active_channels))
         )
         if should_try_music_fallback:
             if source_links is None:
@@ -2234,7 +2772,13 @@ async def proactive_chat(request: Request):
                 is_music_used = True
 
         if is_music_used:
-            _append_music_recommendations(source_links, music_content)
+            # 此处不再二次调用，因为 should_try_music_fallback 已经处理了 append
+            # 或者如果 is_music_used 为 True 但 haven't appended yet, do it.
+            # 实际上 supports_music_fallback 已经 append 了。
+            # 为了稳妥，我们只在尚未 append 时调用。
+            music_already_appended = any(link.get('source') == '音乐推荐' for link in source_links)
+            if not music_already_appended:
+                _append_music_recommendations(source_links, music_content)
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         await mgr.finish_proactive_delivery(response_text)
@@ -2242,23 +2786,53 @@ async def proactive_chat(request: Request):
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
         
-        # 【逻辑优化】精准的话题去重记录
-        if selected_web_topic_key and (source_tag in ('WEB', 'BOTH')):
+        # 【逻辑优化】精准的话题去重记录：仅当链接真正被加入 source_links 时才记录已使用
+        def _is_link_selected(selected_link):
+            if not selected_link:
+                return False
+
+            target_url = (selected_link.get('url') or '').strip()
+            if target_url:
+                # 存在有效 URL 时，按 URL 对比
+                return any((link.get('url') or '').strip() == target_url for link in source_links if link)
+
+            # URL 为空（如音乐降级记录），按元数据签名对比
+            target_sig = (
+                (selected_link.get('title') or '').strip(),
+                (selected_link.get('artist') or '').strip(),
+                (selected_link.get('source') or '').strip(),
+            )
+            return any(
+                (
+                    (link.get('title') or '').strip(),
+                    (link.get('artist') or '').strip(),
+                    (link.get('source') or '').strip(),
+                ) == target_sig
+                for link in source_links if link
+            )
+
+        if selected_web_topic_key and _is_link_selected(selected_web_link):
             _record_topic_usage(lanlan_name, selected_web_topic_key)
+            print(f"[{lanlan_name}] 已记录 Web 话题去重: {selected_web_topic_key[:60]}")
             
-        # 【增强去重】即使 source_tag 解析为空，只要逻辑上判定使用了音乐（如 BOTH 模式降级处理），也必须记录
-        if selected_music_topic_key and is_music_used:
+        if selected_music_topic_key and (is_music_used or _is_link_selected(selected_music_link)):
             _record_topic_usage(lanlan_name, selected_music_topic_key)
+            print(f"[{lanlan_name}] 已记录音乐话题去重: {selected_music_topic_key}")
+            
+        if selected_meme_topic_key and _is_link_selected(selected_meme_link):
+            _record_topic_usage(lanlan_name, selected_meme_topic_key)
+            print(f"[{lanlan_name}] 已记录表情包话题去重: {selected_meme_topic_key[:60]}")
 
         return JSONResponse({
             "success": True,
             "action": "chat",
             "message": "主动搭话已发送",
             "lanlan_name": lanlan_name,
-            "source_mode": primary_channel,
+            "source_mode": primary_channel.lower(),
             "source_tag": source_tag or "unknown",
             "active_channels": active_channels,
-            "source_links": source_links
+            "source_links": source_links,
+            "turn_id": mgr.current_speech_id
         })
         
     except asyncio.TimeoutError:

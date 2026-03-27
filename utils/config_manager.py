@@ -174,9 +174,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     model_type = str(
         get_reserved(catgirl_data, "avatar", "model_type", default="", legacy_keys=("model_type",))
     ).strip().lower()
-    if model_type not in {"live2d", "vrm"}:
+    if model_type not in {"live2d", "vrm", "live3d"}:
         has_vrm = catgirl_data.get("vrm") or get_reserved(catgirl_data, "avatar", "vrm", "model_path")
-        model_type = "vrm" if has_vrm else "live2d"
+        has_mmd = catgirl_data.get("mmd") or get_reserved(catgirl_data, "avatar", "mmd", "model_path")
+        model_type = "live3d" if (has_vrm or has_mmd) else "live2d"
+    # 归一化：旧配置中的 'vrm' 统一为 'live3d'
+    if model_type == "vrm":
+        model_type = "live3d"
     changed |= set_reserved(catgirl_data, "avatar", "model_type", model_type)
 
     asset_source_id = get_reserved(
@@ -255,6 +259,40 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     if isinstance(lighting, dict):
         changed |= set_reserved(catgirl_data, "avatar", "vrm", "lighting", lighting)
 
+    # MMD 模型路径迁移
+    mmd_model_path = get_reserved(
+        catgirl_data,
+        "avatar",
+        "mmd",
+        "model_path",
+        default="",
+        legacy_keys=("mmd",),
+    )
+    if mmd_model_path:
+        changed |= set_reserved(catgirl_data, "avatar", "mmd", "model_path", str(mmd_model_path).strip())
+
+    mmd_animation = get_reserved(
+        catgirl_data,
+        "avatar",
+        "mmd",
+        "animation",
+        default=None,
+        legacy_keys=("mmd_animation",),
+    )
+    if mmd_animation is not None:
+        changed |= set_reserved(catgirl_data, "avatar", "mmd", "animation", mmd_animation)
+
+    mmd_idle_animation = get_reserved(
+        catgirl_data,
+        "avatar",
+        "mmd",
+        "idle_animation",
+        default="",
+        legacy_keys=("mmd_idle_animation",),
+    )
+    if mmd_idle_animation:
+        changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", str(mmd_idle_animation))
+
     # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
     for legacy_key in (
         "voice_id",
@@ -268,6 +306,9 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "idleAnimation",
         "lighting",
         "vrm_rotation",
+        "mmd",
+        "mmd_animation",
+        "mmd_idle_animation",
     ):
         if legacy_key in catgirl_data:
             catgirl_data.pop(legacy_key, None)
@@ -317,7 +358,19 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     lighting = get_reserved(result, "avatar", "vrm", "lighting", default=None)
     if isinstance(lighting, dict):
         result["lighting"] = lighting
-    
+
+    mmd_model_path = get_reserved(result, "avatar", "mmd", "model_path", default="")
+    if mmd_model_path:
+        result["mmd"] = mmd_model_path
+
+    mmd_animation = get_reserved(result, "avatar", "mmd", "animation", default=None)
+    if mmd_animation is not None:
+        result["mmd_animation"] = mmd_animation
+
+    mmd_idle_animation = get_reserved(result, "avatar", "mmd", "idle_animation", default="")
+    if mmd_idle_animation:
+        result["mmd_idle_animation"] = mmd_idle_animation
+
     touch_set = get_reserved(result, 'touch_set', default=None)
     if touch_set:
         result['touch_set'] = touch_set
@@ -362,6 +415,9 @@ class ConfigManager:
         # VRM模型存储在用户文档目录下（与Live2D保持一致）
         self.vrm_dir = self.app_docs_dir / "vrm"
         self.vrm_animation_dir = self.vrm_dir / "animation"  # VRMA动画文件目录
+        # MMD模型存储在用户文档目录下
+        self.mmd_dir = self.app_docs_dir / "mmd"
+        self.mmd_animation_dir = self.mmd_dir / "animation"  # VMD动画文件目录
         self.workshop_dir = self.app_docs_dir / "workshop"
         self._steam_workshop_path = None
         self._user_workshop_folder_persisted = False
@@ -685,6 +741,18 @@ class ConfigManager:
         except Exception as e:
             print(f"Warning: Failed to create vrm directory: {e}", file=sys.stderr)
             return False
+    
+    def ensure_mmd_directory(self):
+        """确保用户文档目录下的mmd目录和animation子目录存在"""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.mmd_dir.mkdir(parents=True, exist_ok=True)
+            self.mmd_animation_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create mmd directory: {e}", file=sys.stderr)
+            return False
         
     def ensure_chara_directory(self):
         """确保我的文档下的character_cards目录存在"""
@@ -942,38 +1010,112 @@ class ConfigManager:
             voice_id.startswith("cosyvoice-v2") or voice_id.startswith("cosyvoice-v3-")
         )
 
+    def get_tts_api_key(self, provider: str) -> str | None:
+        """根据 provider 统一获取 TTS API Key，返回 None 表示未配置。
+
+        - cosyvoice: tts_custom 配置的 api_key
+        - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
+        - minimax_intl: ASSIST_API_KEY_MINIMAX → MINIMAX_INTL_API_KEY fallback
+        """
+        if provider == 'cosyvoice':
+            tts_config = self.get_model_api_config('tts_custom')
+            key = (tts_config.get('api_key') or '').strip()
+            return key or None
+        if provider in ('minimax', 'minimax_intl'):
+            core_config = self.get_core_config()
+            key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+            if not key:
+                from utils.minimax_api_keys import MINIMAX_API_KEY, MINIMAX_INTL_API_KEY
+                fallback = MINIMAX_INTL_API_KEY if provider == 'minimax_intl' else MINIMAX_API_KEY
+                key = (fallback or '').strip()
+            return key or None
+        return None
+
+    def _get_minimax_storage_keys(self) -> list[str]:
+        """返回当前 MiniMax API Key 对应的 voice_storage key 列表。
+
+        只返回与当前 ASSIST_API_KEY_MINIMAX 匹配的 bucket，避免跨账户混用。
+        """
+        core_config = self.get_core_config()
+        minimax_api_key = (
+            (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+            or (core_config.get('MINIMAX_API_KEY') or '').strip()
+            or (core_config.get('MINIMAX_INTL_API_KEY') or '').strip()
+        )
+        if not minimax_api_key:
+            return []
+        suffix = minimax_api_key[-8:] if len(minimax_api_key) >= 8 else minimax_api_key
+        expected = [f'__MINIMAX__{suffix}', f'__MINIMAX_INTL__{suffix}']
+        voice_storage = self.load_voice_storage()
+        return [k for k in expected if k in voice_storage]
+
+    @staticmethod
+    def _infer_provider_from_storage_key(storage_key: str) -> str:
+        """根据 voice_storage 的分区 key 推断 provider（仅用于兼容旧数据）。"""
+        if storage_key == '__LOCAL_TTS__':
+            return 'local'
+        if storage_key.startswith('__MINIMAX_INTL__'):
+            return 'minimax_intl'
+        if storage_key.startswith('__MINIMAX__'):
+            return 'minimax'
+        return 'cosyvoice'
+
     def get_voices_for_current_api(self):
         """获取当前 TTS 配置对应的所有音色
-        
+
         根据实际使用的 TTS 配置返回音色：
         1. 本地 TTS（ws/wss 协议）→ 返回 __LOCAL_TTS__ 下的音色
         2. 阿里云 TTS（通过 ASSIST_API_KEY_QWEN）→ 返回该 API Key 下的音色
         3. 其他情况 → 返回 AUDIO_API_KEY 下的音色
+        结果中同时合并 MiniMax 音色（__MINIMAX__ 下的音色）。
+
+        返回的每个 voice_data 都保证包含 ``provider`` 字段
+        （``local`` / ``minimax`` / ``minimax_intl`` / ``cosyvoice``）。
         """
         voice_storage = self.load_voice_storage()
-        
+
         tts_config = self.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url', '')
         is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
-        
+
         if is_local_tts:
-            all_voices = voice_storage.get('__LOCAL_TTS__', {})
-            return {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
-        
-        tts_api_key = tts_config.get('api_key', '')
-        if tts_api_key:
-            all_voices = voice_storage.get(tts_api_key, {})
-            return {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
-        
-        core_config = self.get_core_config()
-        audio_api_key = core_config.get('AUDIO_API_KEY', '')
+            storage_key = '__LOCAL_TTS__'
+            all_voices = voice_storage.get(storage_key, {})
+            result = {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
+        else:
+            tts_api_key = tts_config.get('api_key', '')
+            if tts_api_key:
+                storage_key = tts_api_key
+                all_voices = voice_storage.get(storage_key, {})
+                result = {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
+            else:
+                core_config = self.get_core_config()
+                audio_api_key = core_config.get('AUDIO_API_KEY', '')
+                if not audio_api_key:
+                    storage_key = ''
+                    result = {}
+                else:
+                    storage_key = audio_api_key
+                    all_voices = voice_storage.get(storage_key, {})
+                    result = {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
 
-        if not audio_api_key:
-            logger.warning("未配置 AUDIO_API_KEY")
-            return {}
+        # 确保主分区音色有 provider 字段
+        default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
+        for vdata in result.values():
+            if isinstance(vdata, dict) and 'provider' not in vdata:
+                vdata['provider'] = default_provider
 
-        all_voices = voice_storage.get(audio_api_key, {})
-        return {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
+        # 合并 MiniMax 音色，并确保 provider 字段
+        for mk in self._get_minimax_storage_keys():
+            mm_provider = self._infer_provider_from_storage_key(mk)
+            minimax_voices = voice_storage.get(mk, {})
+            for vid, vdata in minimax_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = mm_provider
+                    result[vid] = vdata
+
+        return result
 
     def save_voice_for_current_api(self, voice_id, voice_data):
         """为当前 AUDIO_API_KEY 保存音色"""
@@ -1022,8 +1164,15 @@ class ConfigManager:
         return None
 
     def delete_voice_for_current_api(self, voice_id):
-        """删除当前 TTS 配置下的指定音色"""
+        """删除当前 TTS 配置下的指定音色（含 MiniMax 音色）"""
         voice_storage = self.load_voice_storage()
+
+        # 先检查 MiniMax 存储（__MINIMAX__ / __MINIMAX_INTL__ 开头的 key）
+        for storage_key in list(voice_storage.keys()):
+            if (storage_key.startswith('__MINIMAX__') or storage_key.startswith('__MINIMAX_INTL__')) and voice_id in voice_storage.get(storage_key, {}):
+                del voice_storage[storage_key][voice_id]
+                self.save_voice_storage(voice_storage)
+                return True
         
         tts_config = self.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url', '')
@@ -1370,6 +1519,7 @@ class ConfigManager:
             'ASSIST_API_KEY_STEP': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_SILICON': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_GEMINI': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_MINIMAX': '',
             'IS_FREE_VERSION': False,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
@@ -1422,6 +1572,7 @@ class ConfigManager:
         config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']

@@ -123,6 +123,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
     });
     // 【状态机】初始显示"查询中..."，由状态机更新
     statusDiv.textContent = window.t ? window.t('settings.toggles.checking') : '查询中...';
+    statusDiv.setAttribute('data-i18n', 'settings.toggles.checking');
     popup.appendChild(statusDiv);
 
     // 【状态机严格控制】所有 agent 开关默认禁用，title显示查询中
@@ -153,6 +154,13 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             id: 'agent-user-plugin',
             label: window.t ? window.t('settings.toggles.userPlugin') : '用户插件',
             labelKey: 'settings.toggles.userPlugin',
+            initialDisabled: true,
+            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
+        },
+        {
+            id: 'agent-openfang',
+            label: window.t ? window.t('settings.toggles.openfang') : '虚拟机',
+            labelKey: 'settings.toggles.openfang',
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         }

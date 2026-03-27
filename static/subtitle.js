@@ -20,8 +20,26 @@ function normalizeLanguageCode(lang) {
     return 'zh'; // 默认中文
 }
 
-// 字幕开关状态
-let subtitleEnabled = localStorage.getItem('subtitleEnabled') === 'true';
+// 字幕开关状态（优先从 appState 读取，否则从 localStorage 读取）
+let subtitleEnabled = (typeof window.appState !== 'undefined' && typeof window.appState.subtitleEnabled !== 'undefined')
+    ? window.appState.subtitleEnabled
+    : localStorage.getItem('subtitleEnabled') === 'true';
+
+/**
+ * 设置用户语言并同步到 appState
+ */
+function setUserLanguage(lang) {
+    userLanguage = lang;
+    localStorage.setItem('userLanguage', userLanguage);
+    // 同步到 appState
+    if (typeof window.appState !== 'undefined') {
+        window.appState.userLanguage = userLanguage;
+    }
+    // 触发统一保存（会同步到服务器）
+    if (typeof window.appSettings !== 'undefined' && window.appSettings.saveSettings) {
+        window.appSettings.saveSettings();
+    }
+}
 // 用户语言（延迟初始化，避免使用 localStorage 旧值）
 // 初始化为 null，确保在使用前从 API 获取最新值
 let userLanguage = null;
@@ -51,8 +69,7 @@ async function getUserLanguage() {
             if (data.success && data.language) {
                 // 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja', 'ko'）
                 // 与 detectLanguage() 返回的格式保持一致，避免误判
-                userLanguage = normalizeLanguageCode(data.language);
-                localStorage.setItem('userLanguage', userLanguage);
+                setUserLanguage(normalizeLanguageCode(data.language));
                 return userLanguage;
             }
         } catch (error) {
@@ -62,14 +79,13 @@ async function getUserLanguage() {
         // API失败时，尝试从localStorage获取（作为回退）
         const cachedLang = localStorage.getItem('userLanguage');
         if (cachedLang) {
-            userLanguage = normalizeLanguageCode(cachedLang);
+            setUserLanguage(normalizeLanguageCode(cachedLang));
             return userLanguage;
         }
         
         // 最后回退到浏览器语言
         const browserLang = navigator.language || navigator.userLanguage;
-        userLanguage = normalizeLanguageCode(browserLang);
-        localStorage.setItem('userLanguage', userLanguage);
+        setUserLanguage(normalizeLanguageCode(browserLang));
         return userLanguage;
     })();
     
@@ -533,7 +549,15 @@ function showSubtitlePrompt() {
             e.stopPropagation();
         }
         subtitleEnabled = !subtitleEnabled;
+        // 同步到 appState 和 localStorage
+        if (typeof window.appState !== 'undefined') {
+            window.appState.subtitleEnabled = subtitleEnabled;
+        }
         localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
+        // 触发统一保存（会同步到服务器）
+        if (typeof window.appSettings !== 'undefined' && window.appSettings.saveSettings) {
+            window.appSettings.saveSettings();
+        }
         updateIndicator();
         console.log('字幕开关:', subtitleEnabled ? '开启' : '关闭');
         
@@ -807,3 +831,26 @@ function initSubtitleDrag() {
 
     console.log('[Subtitle] 字幕拖拽功能已初始化');
 }
+
+// ======================== 外部桥接接口 ========================
+// 供 app-settings.js 等其他模块在合并服务器设置后调用，保持内部状态同步
+window.subtitleBridge = {
+    setSubtitleEnabled: function(enabled) {
+        subtitleEnabled = enabled;
+        if (typeof window.appState !== 'undefined') {
+            window.appState.subtitleEnabled = subtitleEnabled;
+        }
+        localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
+    },
+    setUserLanguage: function(lang) {
+        // 空值时回退到默认值
+        if (!lang || typeof lang !== 'string') {
+            lang = 'zh';
+        }
+        userLanguage = normalizeLanguageCode(lang.trim().toLowerCase());
+        if (typeof window.appState !== 'undefined') {
+            window.appState.userLanguage = userLanguage;
+        }
+        localStorage.setItem('userLanguage', userLanguage);
+    }
+};

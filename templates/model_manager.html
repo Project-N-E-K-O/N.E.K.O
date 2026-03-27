@@ -30,7 +30,9 @@
 
         <div class="control-group">
             <input type="file" id="model-upload" webkitdirectory directory multiple style="display: none;">
-            <input type="file" id="vrm-file-upload" accept=".vrm" style="display: none;">
+            <input type="file" id="vrm-file-upload" accept=".vrm,.zip" style="display: none;">
+            <input type="file" id="mmd-file-upload" accept=".pmx,.pmd,.zip" style="display: none;">
+            <input type="file" id="mmd-animation-file-upload" accept=".vmd" style="display: none;">
             <input type="file" id="motion-file-upload" accept=".motion3.json" style="display: none;">
             <input type="file" id="expression-file-upload" accept=".exp3.json" style="display: none;">
             <input type="file" id="vrm-animation-file-upload" accept=".vrma" style="display: none;">
@@ -54,11 +56,11 @@
                 </button>
                 <select id="model-type-select" class="control-select" style="display: none;">
                     <option value="live2d">Live2D</option>
-                    <option value="vrm">VRM</option>
+                    <option value="live3d">Live3D</option>
                 </select>
                 <div id="model-type-dropdown" class="model-type-dropdown" style="display: none;">
                     <div class="dropdown-item" data-value="live2d"><span class="dropdown-item-text" data-text="Live2D">Live2D</span></div>
-                    <div class="dropdown-item" data-value="vrm"><span class="dropdown-item-text" data-text="VRM">VRM</span></div>
+                    <div class="dropdown-item" data-value="live3d"><span class="dropdown-item-text" data-text="Live3D">Live3D</span></div>
                 </div>
             </div>
         </div>
@@ -90,6 +92,61 @@
                 <div id="vrm-model-dropdown" class="vrm-model-dropdown" style="display: none;">
                     <!-- 下拉菜单项将动态生成 -->
                 </div>
+            </div>
+        </div>
+
+        <!-- MMD模型选择 (Live3D模式) -->
+        <div class="control-group" id="mmd-model-group" style="display:none;">
+            <div style="display: flex; gap: 0; align-items: center;">
+            <div id="mmd-model-select-wrapper" style="position: relative;">
+                <button id="mmd-model-select-btn" class="btn btn-primary" type="button" data-i18n-title="live2d.mmdModel.selectModel">
+                    <img src="/static/icons/live2d_model_select_icon.png?v=1" data-i18n-alt="live2d.mmdModel.selectModel" class="mmd-model-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                    <span class="round-stroke-text" id="mmd-model-select-text" data-i18n="live2d.mmdModel.selectModel" data-text="选择MMD模型">选择MMD模型</span>
+                </button>
+                <select id="mmd-model-select" class="control-select" style="display: none;">
+                    <option data-i18n="common.loading">加载中...</option>
+                </select>
+                <div id="mmd-model-dropdown" class="mmd-model-dropdown" style="display: none;">
+                    <!-- 下拉菜单项将动态生成 -->
+                </div>
+            </div>
+            <button id="delete-mmd-model-btn" class="btn btn-danger" data-i18n-title="live2d.mmdModel.deleteModel" aria-label="Delete imported MMD models">
+                <img src="/static/icons/delete_model_button.png?v=1" data-i18n-alt="live2d.mmdModel.deleteModel">
+            </button>
+            </div>
+        </div>
+
+        <!-- MMD动画选择 (Live3D模式) -->
+        <div class="control-group" id="mmd-animation-group" style="display:none;">
+            <div style="display: flex; gap: 0; align-items: center;">
+                <div id="mmd-animation-select-wrapper" style="position: relative;">
+                    <button id="mmd-animation-select-btn" class="btn btn-primary" type="button" data-i18n-title="live2d.mmdAnimation.selectAnimation">
+                        <img src="/static/icons/motion_select_icon.png?v=1" data-i18n-alt="live2d.mmdAnimation.selectAnimation" class="mmd-animation-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                        <span class="round-stroke-text" id="mmd-animation-select-text" data-i18n="live2d.mmdAnimation.selectAnimation" data-text="选择VMD动画">选择VMD动画</span>
+                    </button>
+                    <select id="mmd-animation-select" class="control-select" style="display: none;">
+                        <option value="" data-i18n="live2d.mmdAnimation.noAnimation">无动画</option>
+                    </select>
+                    <div id="mmd-animation-dropdown" class="mmd-animation-dropdown" style="display: none;">
+                        <!-- 下拉菜单项将动态生成 -->
+                    </div>
+                </div>
+                <button id="play-mmd-animation-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.mmdAnimation.play" data-i18n-aria-label="live2d.mmdAnimation.play">
+                    <img src="/static/icons/motion_play_icon.png?v=1" data-i18n-alt="live2d.mmdAnimation.play" class="mmd-animation-play-icon" style="height: 40px; width: auto; image-rendering: crisp-edges;">
+                </button>
+            </div>
+        </div>
+
+        <!-- MMD动画上传/删除按钮 (Live3D模式) -->
+        <div class="control-group" id="mmd-animation-actions-group" style="display:none;">
+            <div style="display: flex; gap: 0; align-items: center;">
+                <button id="upload-mmd-animation-btn" type="button" data-i18n-title="live2d.mmdAnimation.uploadAnimation">
+                    <img src="/static/icons/import_model_button_icon.png?v=1" data-i18n-alt="live2d.mmdAnimation.uploadAnimation" class="upload-mmd-animation-icon">
+                    <span class="round-stroke-text" id="upload-mmd-animation-text" data-i18n="live2d.mmdAnimation.uploadAnimation" data-text="导入VMD动画">导入VMD动画</span>
+                </button>
+                <button id="delete-mmd-animation-btn" data-i18n-title="live2d.mmdAnimation.deleteAnimation" data-i18n-aria-label="live2d.mmdAnimation.deleteAnimation">
+                    <img src="/static/icons/delete_model_button.png?v=1" data-i18n-alt="live2d.mmdAnimation.deleteAnimation">
+                </button>
             </div>
         </div>
 
@@ -206,13 +263,21 @@
                 <span class="round-stroke-text round-stroke-text-center" data-i18n="live2d.emotionConfig" data-text="Emotion Config">情感配置</span>
             </button>
         </div>
+
         <div class="control-group" id="touch_set"></div>
-        <!-- VRM 情感配置按钮 -->
-        <div class="control-group" id="vrm-emotion-config-group" style="display:none;">
-            <button id="vrm-emotion-config-btn" class="btn btn-primary btn-icon" style="width: 100%;" data-i18n-title="vrm.emotionConfig">
-                <span class="round-stroke-text round-stroke-text-center" data-i18n="vrm.emotionConfig" data-text="Emotion Config">情感配置</span>
+        <!-- Live3D 情感配置按钮 (VRM/MMD 统一) -->
+        <div class="control-group" id="live3d-emotion-config-group" style="display:none;">
+            <button id="live3d-emotion-config-btn" class="btn btn-primary btn-icon" style="width: 100%;" data-i18n-title="live2d.emotionConfig">
+                <span class="round-stroke-text round-stroke-text-center" data-i18n="live2d.emotionConfig" data-text="Emotion Config">情感配置</span>
             </button>
         </div>
+
+        <!-- ===== VRM 专属设置区域 ===== -->
+        <div id="vrm-settings-section" class="model-settings-section" style="display:none;">
+            <div class="settings-section-header vrm-section-header">
+                <span class="settings-section-badge vrm-badge-label">VRM</span>
+                <span class="settings-section-title" data-i18n="vrm.settingsTitle">VRM 模型设置</span>
+            </div>
 
         <!-- VRM 打光设置 (已简化为二次元风格) -->
         <div class="control-group" id="vrm-lighting-group" style="display:none;">
@@ -318,6 +383,117 @@
         </div>
         </div>
 
+        <!-- VRM 鼠标跟踪已移至 popup-ui 统一控制 -->
+
+        </div><!-- /vrm-settings-section -->
+
+        <!-- ===== MMD 专属设置区域 ===== -->
+        <div id="mmd-settings-section" class="model-settings-section" style="display:none;">
+            <div class="settings-section-header mmd-section-header">
+                <span class="settings-section-badge mmd-badge-label">MMD</span>
+                <span class="settings-section-title" data-i18n="mmd.settingsTitle">MMD 模型设置</span>
+            </div>
+
+            <!-- MMD 光照设置 -->
+            <div class="control-group" id="mmd-lighting-group">
+                <div class="vrm-lighting-wrapper mmd-lighting-wrapper">
+                    <div class="vrm-lighting-header mmd-lighting-header">
+                        <span class="vrm-lighting-header-text" data-i18n="mmd.lighting.title">MMD光照设置</span>
+                    </div>
+                    <div class="vrm-lighting-content">
+                        <div class="lighting-control">
+                            <label for="mmd-ambient-intensity-slider" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.lighting.ambientIntensity">环境光强度</label>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <input type="range" id="mmd-ambient-intensity-slider" min="0" max="10" step="0.1" value="3" style="flex: 1;">
+                                <span id="mmd-ambient-intensity-value" style="min-width: 40px; color: #2ecc71; font-size: 14px; font-weight: 500;">3.0</span>
+                            </div>
+                        </div>
+                        <div class="lighting-control">
+                            <label for="mmd-ambient-color-picker" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.lighting.ambientColor">环境光颜色</label>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <input type="color" id="mmd-ambient-color-picker" value="#aaaaaa" style="flex: 0 0 40px; height: 30px; border: none; cursor: pointer;">
+                                <span id="mmd-ambient-color-value" style="min-width: 70px; color: #2ecc71; font-size: 14px; font-weight: 500;">#aaaaaa</span>
+                            </div>
+                        </div>
+                        <div class="lighting-control">
+                            <label for="mmd-directional-intensity-slider" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.lighting.directionalIntensity">主光源强度</label>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <input type="range" id="mmd-directional-intensity-slider" min="0" max="10" step="0.1" value="2" style="flex: 1;">
+                                <span id="mmd-directional-intensity-value" style="min-width: 40px; color: #2ecc71; font-size: 14px; font-weight: 500;">2.0</span>
+                            </div>
+                        </div>
+                        <div class="lighting-control">
+                            <label for="mmd-directional-color-picker" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.lighting.directionalColor">主光源颜色</label>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <input type="color" id="mmd-directional-color-picker" value="#ffffff" style="flex: 0 0 40px; height: 30px; border: none; cursor: pointer;">
+                                <span id="mmd-directional-color-value" style="min-width: 70px; color: #2ecc71; font-size: 14px; font-weight: 500;">#ffffff</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- MMD 渲染设置 -->
+            <div class="control-group" id="mmd-rendering-group">
+                <div class="vrm-lighting-wrapper mmd-lighting-wrapper">
+                    <div class="vrm-lighting-header mmd-lighting-header">
+                        <span class="vrm-lighting-header-text" data-i18n="mmd.rendering.title">MMD渲染设置</span>
+                    </div>
+                    <div class="vrm-lighting-content">
+                        <div class="lighting-control">
+                            <label for="mmd-tonemapping-select" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.rendering.toneMapping">色调映射</label>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <select id="mmd-tonemapping-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #2ecc71;">
+                                    <option value="0" selected style="color: #2ecc71;">None (无)</option>
+                                    <option value="1" style="color: #2ecc71;">Linear (线性)</option>
+                                    <option value="2" style="color: #2ecc71;">Reinhard</option>
+                                    <option value="3" style="color: #2ecc71;">Cineon (电影)</option>
+                                    <option value="4" style="color: #2ecc71;">ACES Filmic</option>
+                                    <option value="6" style="color: #2ecc71;">AgX</option>
+                                    <option value="7" style="color: #2ecc71;">Neutral</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="lighting-control">
+                            <label for="mmd-exposure-slider" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.rendering.exposure">曝光度</label>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <input type="range" id="mmd-exposure-slider" min="0" max="5" step="0.05" value="1.0" style="flex: 1;">
+                                <span id="mmd-exposure-value" style="min-width: 40px; color: #2ecc71; font-size: 14px; font-weight: 500;">1.00</span>
+                            </div>
+                        </div>
+                        <div class="lighting-control">
+                            <label style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.rendering.outline">描边效果</label>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="mmd-outline-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </label>
+                                <span id="mmd-outline-status" style="color: #2ecc71; font-size: 14px;">ON</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+
+        <!-- MMD 待机动作选择 -->
+        <div class="control-group" id="mmd-idle-animation-group" style="display:none;">
+            <div class="mmd-idle-animation-wrapper">
+                <div class="mmd-idle-animation-content">
+                    <div class="lighting-control" id="mmd-idle-animation-control">
+                        <label for="mmd-idle-animation-select" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.idleAnimation.title">待机动作</label>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <select id="mmd-idle-animation-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #2ecc71;">
+                                <option value="" style="color: #2ecc71;" data-i18n="common.loading">加载中...</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        </div><!-- /mmd-settings-section -->
+
         <div class="control-group" id="parameter-editor-group">
             <a id="parameter-editor-btn" href="/live2d_parameter_editor" class="btn btn-primary"
                 style="text-decoration: none; display: block;" data-i18n-title="live2d.parameterEditor.title">
@@ -336,6 +512,9 @@
 
     <div id="live2d-container"><canvas id="live2d-canvas"></canvas></div>
     <div id="vrm-container" class="hidden"></div>
+    <div id="mmd-container" class="hidden">
+        <canvas id="mmd-canvas"></canvas>
+    </div>
 
     <div id="delete-model-modal">
         <div class="modal-content">
@@ -357,6 +536,44 @@
         </div>
     </div>
 
+    <div id="delete-mmd-model-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; justify-content:center; align-items:center;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="live2d.mmdModel.deleteModelTitle">删除已导入MMD模型</h3>
+                <button class="modal-close" id="close-delete-mmd-modal">&times;</button>
+            </div>
+            <div class="delete-warning" data-i18n="live2d.mmdModel.deleteWarning">
+                以下列出了所有已导入的用户MMD模型。选择要删除的模型（模型所在文件夹及纹理将一并删除）。
+            </div>
+            <div class="model-list-container" id="mmd-user-model-list">
+                <div class="empty-message" data-i18n="live2d.mmdModel.noUserModels">暂无可删除的用户MMD模型</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancel-delete-mmd-btn" data-i18n="common.cancel">取消</button>
+                <button class="btn btn-danger" id="confirm-delete-mmd-btn" data-i18n="live2d.mmdModel.deleteSelected" disabled>删除选中</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="delete-mmd-animation-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; justify-content:center; align-items:center;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="live2d.mmdAnimation.deleteAnimationTitle">删除已导入VMD动画</h3>
+                <button class="modal-close" id="close-delete-mmd-animation-modal">&times;</button>
+            </div>
+            <div class="delete-warning" data-i18n="live2d.mmdAnimation.deleteAnimationWarning">
+                以下列出了所有已导入的用户VMD动画文件。选择要删除的动画文件。
+            </div>
+            <div class="model-list-container" id="mmd-user-animation-list">
+                <div class="empty-message" data-i18n="live2d.mmdAnimation.noUserAnimations">暂无可删除的用户VMD动画</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancel-delete-mmd-animation-btn" data-i18n="common.cancel">取消</button>
+                <button class="btn btn-danger" id="confirm-delete-mmd-animation-btn" data-i18n="live2d.mmdAnimation.deleteSelected" disabled>删除选中</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/libs/live2dcubismcore.min.js"></script>
     <script src="/static/libs/live2d.min.js"></script>
     <script src="/static/libs/pixi.min.js"></script>
@@ -365,10 +582,12 @@
     <script src="/static/live2d-emotion.js"></script>
     <script src="/static/live2d-model.js"></script>
     <script src="/static/live2d-interaction.js"></script>
-    <script src="/static/live2d-ui-buttons.js"></script>
     <script src="/static/avatar-popup-common.js"></script>
-    <script src="/static/live2d-ui-popup.js"></script>
-    <script src="/static/live2d-ui-drag.js"></script>
+    <script src="/static/avatar-ui-popup.js"></script>
+    <script src="/static/avatar-ui-popup-config.js"></script>
+    <script src="/static/avatar-ui-buttons.js"></script>
+    <script src="/static/live2d-ui-buttons.js"></script>
+    <script src="/static/avatar-ui-drag.js"></script>
     <script src="/static/live2d-init.js"></script>
 
     <!-- Three.js 核心库和importmap（用于ES6模块导入）-->
@@ -381,7 +600,10 @@
             "three": "/static/libs/three.module.js",
             "three/addons/": "/static/libs/three/addons/",
             "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
-            "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js"
+            "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js",
+            "@moeru/three-mmd": "/static/libs/three-mmd.module.js",
+            "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v=23",
+            "ammojs-typed": "/static/libs/ammojs-typed.module.js"
         }
     }
     </script>
@@ -403,6 +625,7 @@
 
     <!-- 通用教程管理器 -->
     <script src="/static/universal-tutorial-manager.js"></script>
+    <link rel="stylesheet" href="/static/css/touch-config.css">
     <script src="/static/touch-config.js"></script>
     <!-- 初始化 -->
     <script>

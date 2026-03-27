@@ -17,7 +17,10 @@ from plugin._types.models import PluginAuthor, PluginMeta
 from plugin._types.version import SDK_VERSION
 from plugin.core.host import PluginProcessHost
 from plugin.core.registry import (
+    _collect_plugin_python_requirements,
     _check_plugin_dependency,
+    _extract_entries_preview,
+    _find_missing_python_requirements,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
     register_plugin,
@@ -105,7 +108,10 @@ def _get_plugin_host_sync(plugin_id: str) -> object | None:
 
 def _pop_plugin_host_sync(plugin_id: str) -> object | None:
     with state.acquire_plugin_hosts_write_lock():
-        return state.plugin_hosts.pop(plugin_id, None)
+        popped = state.plugin_hosts.pop(plugin_id, None)
+    if popped is not None:
+        state.invalidate_snapshot_cache("hosts")
+    return popped
 
 
 def _plugin_is_running_sync(plugin_id: str) -> bool:
@@ -119,6 +125,7 @@ def _list_running_plugin_ids_sync() -> list[str]:
 
 
 def _remove_event_handlers_sync(plugin_id: str) -> None:
+    removed_any = False
     with state.acquire_event_handlers_write_lock():
         target_prefix_dot = f"{plugin_id}."
         target_prefix_colon = f"{plugin_id}:"
@@ -129,6 +136,9 @@ def _remove_event_handlers_sync(plugin_id: str) -> None:
         ]
         for key in keys_to_remove:
             del state.event_handlers[key]
+            removed_any = True
+    if removed_any:
+        state.invalidate_snapshot_cache("handlers")
 
 
 def _get_plugin_meta_sync(plugin_id: str) -> dict[str, object] | None:
@@ -151,6 +161,26 @@ def _set_plugin_runtime_enabled_sync(plugin_id: str, enabled: bool) -> None:
             return
         raw_meta["runtime_enabled"] = enabled
         state.plugins[plugin_id] = raw_meta
+    state.invalidate_snapshot_cache("plugins")
+
+
+def _set_plugin_runtime_metadata_sync(
+    plugin_id: str,
+    *,
+    runtime_enabled: bool,
+    runtime_auto_start: bool,
+    entries_preview: list[dict[str, object]] | None = None,
+) -> None:
+    with state.acquire_plugins_write_lock():
+        raw_meta = state.plugins.get(plugin_id)
+        if not isinstance(raw_meta, dict):
+            return
+        raw_meta["runtime_enabled"] = runtime_enabled
+        raw_meta["runtime_auto_start"] = runtime_auto_start
+        if entries_preview is not None:
+            raw_meta["entries_preview"] = entries_preview
+        state.plugins[plugin_id] = raw_meta
+    state.invalidate_snapshot_cache("plugins")
 
 
 def _get_plugin_config_path(plugin_id: str) -> Path | None:
@@ -175,7 +205,24 @@ def _register_or_replace_host_sync(plugin_id: str, host: PluginHostContract) -> 
             if existing_host is not None and existing_host is not host:
                 logger.warning("Plugin {} already exists in plugin_hosts, replacing host", plugin_id)
         state.plugin_hosts[plugin_id] = host
-        return len(state.plugin_hosts)
+        current_count = len(state.plugin_hosts)
+    state.invalidate_snapshot_cache("hosts")
+    return current_count
+
+
+def _remap_entries_preview_plugin_id(
+    entries_preview: list[dict[str, object]],
+    *,
+    plugin_id: str,
+) -> list[dict[str, object]]:
+    remapped: list[dict[str, object]] = []
+    for item in entries_preview:
+        entry_copy = dict(item)
+        entry_id_obj = entry_copy.get("id")
+        if isinstance(entry_id_obj, str) and entry_id_obj:
+            entry_copy["event_key"] = f"{plugin_id}.{entry_id_obj}"
+        remapped.append(entry_copy)
+    return remapped
 
 
 def _read_plugin_config_sync(config_path: Path) -> dict[str, object]:
@@ -360,9 +407,11 @@ class PluginLifecycleService:
 
             runtime_obj = conf.get("plugin_runtime")
             enabled_value = True
+            auto_start_value = True
             if isinstance(runtime_obj, Mapping):
                 runtime_cfg = _normalize_mapping(runtime_obj, context=f"plugin_config[{current_plugin_id}].plugin_runtime")
                 enabled_value = parse_bool_config(runtime_cfg.get("enabled"), default=True)
+                auto_start_value = parse_bool_config(runtime_cfg.get("auto_start"), default=True)
             if not enabled_value:
                 raise _to_domain_error(
                     code="PLUGIN_DISABLED",
@@ -421,6 +470,24 @@ class PluginLifecycleService:
                     error_type="DuplicatePlugin",
                 )
             current_plugin_id = resolved_id
+            python_requirements = _collect_plugin_python_requirements(
+                conf,
+                config_path,
+                logger,
+                current_plugin_id,
+            )
+            unsatisfied_python_requirements = _find_missing_python_requirements(python_requirements)
+            if unsatisfied_python_requirements:
+                raise _to_domain_error(
+                    code="PLUGIN_PYTHON_DEPENDENCIES_MISSING",
+                    message=(
+                        f"Plugin '{current_plugin_id}' has unsatisfied Python dependencies: "
+                        f"{unsatisfied_python_requirements}. Install compatible packages in the current runtime environment."
+                    ),
+                    status_code=400,
+                    plugin_id=current_plugin_id,
+                    error_type="MissingPythonDependencies",
+                )
 
             _emit_lifecycle_event(event_type="plugin_start_requested", plugin_id=current_plugin_id)
             created_host = await asyncio.to_thread(
@@ -483,6 +550,13 @@ class PluginLifecycleService:
                 )
 
             await asyncio.to_thread(scan_static_metadata, current_plugin_id, cls_obj, conf, pdata)
+            entries_preview = await asyncio.to_thread(
+                _extract_entries_preview,
+                current_plugin_id,
+                cls_obj,
+                conf,
+                pdata,
+            )
 
             plugin_meta = PluginMeta(
                 id=current_plugin_id,
@@ -512,7 +586,19 @@ class PluginLifecycleService:
 
             if final_plugin_id != current_plugin_id and hasattr(created_host, "plugin_id"):
                 setattr(created_host, "plugin_id", final_plugin_id)
+            if final_plugin_id != current_plugin_id:
+                entries_preview = _remap_entries_preview_plugin_id(
+                    entries_preview,
+                    plugin_id=final_plugin_id,
+                )
             current_plugin_id = final_plugin_id
+            await asyncio.to_thread(
+                _set_plugin_runtime_metadata_sync,
+                current_plugin_id,
+                runtime_enabled=True,
+                runtime_auto_start=auto_start_value,
+                entries_preview=entries_preview,
+            )
 
             await asyncio.to_thread(_register_or_replace_host_sync, current_plugin_id, host_obj)
             registered_plugin_id = current_plugin_id

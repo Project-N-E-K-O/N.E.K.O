@@ -4,7 +4,7 @@
 
 ### v0.7 — Agent 系统（目标：2026 年 2 月）
 - 完成 Agent 相关功能
-- MCP、Computer Use、Browser Use 集成
+- MCP、Computer Use、Browser Use、虚拟机集成
 
 ### v0.8 — 记忆系统（目标：2026 年 3 月）
 - 增强记忆管理

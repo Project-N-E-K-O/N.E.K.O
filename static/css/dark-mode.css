@@ -525,7 +525,9 @@ html #chat-container {
 [data-theme="dark"] #live2d-popup-mic div[style*="border-right"],
 [data-theme="dark"] #live2d-popup-mic div[style*="border-left"],
 [data-theme="dark"] #vrm-popup-mic div[style*="border-right"],
-[data-theme="dark"] #vrm-popup-mic div[style*="border-left"] {
+[data-theme="dark"] #vrm-popup-mic div[style*="border-left"],
+[data-theme="dark"] #mmd-popup-mic div[style*="border-right"],
+[data-theme="dark"] #mmd-popup-mic div[style*="border-left"] {
   border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
@@ -662,7 +664,7 @@ html #chat-container {
   color: #e0e0e0;
 }
 [data-theme="dark"] .save-button-box {
-  background: #0f0f0f;
+  background: transparent;
   color: #e0e0e0;
 }
 
@@ -677,8 +679,7 @@ html #chat-container {
 
 /* ===== 子页面：表单字段行 ===== */
 [data-theme="dark"] .field-row {
-  background: #2d2d2d;
-  border-color: #444;
+  background: transparent;
 }
 
 [data-theme="dark"] .field-row:focus-within {
@@ -736,6 +737,26 @@ html #chat-container {
 
 [data-theme="dark"] .field-row label {
   color: #4aa3df;
+}
+
+/* ===== 子页面：提示框 ===== */
+[data-theme="dark"] #advanced-options > div[style*="background: #e7f3ff"],
+[data-theme="dark"] #advanced-options > div[style*="background: #f0f8ff"],
+[data-theme="dark"] #custom-api-options > div[style*="background: #f0f8ff"] {
+  background: rgba(42, 123, 196, 0.15) !important;
+  border-color: rgba(74, 163, 223, 0.3) !important;
+}
+
+[data-theme="dark"] #assist-api-key-hint {
+  background: rgba(42, 123, 196, 0.12) !important;
+  border-color: rgba(74, 163, 223, 0.25) !important;
+  color: #4aa3df !important;
+}
+
+[data-theme="dark"] #gptsovits-config-fields > div[style*="background: #fff8e6"] {
+  background: rgba(153, 102, 0, 0.2) !important;
+  border-color: rgba(204, 153, 0, 0.4) !important;
+  color: #e0c080 !important;
 }
 
 /* ===== 子页面：卡片 ===== */
@@ -938,13 +959,6 @@ html #chat-container {
   background: #1a2e3d !important;
   border-color: #2a5a7e !important;
   color: #4aa3df !important;
-}
-
-/* 辅助API Key 提示框 */
-[data-theme="dark"] #assist-api-key-hint {
-  background: #1a2a3d !important;
-  border-color: #2a4a6e !important;
-  color: #5cb8f0 !important;
 }
 
 /* 自定义API 说明框 */
@@ -1364,7 +1378,7 @@ html #chat-container {
 /* 保存设置、情感配置按钮 — 背景图和样式不被暗色模式覆盖 */
 [data-theme="dark"] #save-position-btn,
 [data-theme="dark"] #emotion-config-btn,
-[data-theme="dark"] #vrm-emotion-config-btn {
+[data-theme="dark"] #live3d-emotion-config-btn {
   background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
   background-color: transparent !important;
   filter: none !important;

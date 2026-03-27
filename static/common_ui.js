@@ -1024,8 +1024,10 @@ if (chatContentWrapper) {
  * Electron 调用此接口来触发语音按钮的切换
  */
 window.toggleVoiceSession = function () {
-    // 获取浮动按钮的当前状态
-    const micButton = window.live2dManager?._floatingButtons?.mic?.button;
+    // 获取浮动按钮的当前状态（Live2D / VRM / MMD）
+    const micButton = window.live2dManager?._floatingButtons?.mic?.button
+        || window.vrmManager?._floatingButtons?.mic?.button
+        || window.mmdManager?._floatingButtons?.mic?.button;
     const isActive = micButton?.dataset.active === 'true';
 
     // 派发切换事件
@@ -1042,8 +1044,10 @@ window.toggleVoiceSession = function () {
  * Electron 调用此接口来触发屏幕分享按钮的切换
  */
 window.toggleScreenShare = function () {
-    // 获取浮动按钮的当前状态
-    const screenBtn = window.live2dManager?._floatingButtons?.screen?.button;
+    // 获取浮动按钮的当前状态（Live2D / VRM / MMD）
+    const screenBtn = window.live2dManager?._floatingButtons?.screen?.button
+        || window.vrmManager?._floatingButtons?.screen?.button
+        || window.mmdManager?._floatingButtons?.screen?.button;
     const isActive = screenBtn?.dataset.active === 'true';
     const isRecording = window.isRecording || false;
 

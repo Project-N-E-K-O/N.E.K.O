@@ -240,6 +240,7 @@ export default {
     running: 'Running',
     stopped: 'Stopped',
     crashed: 'Crashed',
+    loadFailed: 'Load Failed',
     loading: 'Loading',
     disabled: 'Disabled',
     injected: 'Injected',
@@ -268,6 +269,7 @@ export default {
     stopFailed: 'Failed to stop',
     reloadFailed: 'Failed to reload',
     pluginDisabled: 'Plugin is disabled. Please enable it first.',
+    pluginLoadFailed: 'Plugin load failed and cannot be started.',
     confirmDisableExt: 'Disable this extension? Its functionality will be unloaded from the host plugin.',
     extensionDisabled: 'Extension disabled',
     extensionEnabled: 'Extension enabled',
@@ -321,17 +323,7 @@ export default {
       linkLastSeparator: ', and '
     }
   },
-  metrics: {
-    cpu: 'CPU Usage',
-    memoryMb: 'Memory Usage',
-    memoryPercent: 'Memory %',
-    threads: 'Threads',
-    pendingRequests: 'Pending Requests',
-    updatedAt: 'Updated At',
-    noData: 'No data'
-  },
   app: {
     titleSuffix: 'N.E.K.O Plugin Manager'
   }
 }
-

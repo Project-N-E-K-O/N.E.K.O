@@ -4,7 +4,7 @@
 
 ### v0.7 -- エージェントシステム（目標: 2026年2月）
 - エージェント関連機能の完成
-- MCP、Computer Use、Browser Use の統合
+- MCP、Computer Use、Browser Use、仮想マシンの統合
 
 ### v0.8 -- メモリシステム（目標: 2026年3月）
 - メモリ管理の強化

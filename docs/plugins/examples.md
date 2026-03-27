@@ -1,89 +1,57 @@
 # Plugin Examples
 
-## File processor plugin
-
-A plugin that handles file processing with lifecycle management and scheduled cleanup.
+## Basic plugin with Result types
 
 ```python
-import os
-import shutil
-from pathlib import Path
-from typing import Any, Optional
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import (
-    neko_plugin, plugin_entry, lifecycle, timer_interval
+from typing import Any
+from plugin.sdk.plugin import (
+    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    Ok, Err, SdkError,
 )
 
 @neko_plugin
-class FileProcessorPlugin(NekoPluginBase):
+class GreeterPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         self.logger = ctx.logger
-        self.work_dir = Path("/tmp/file_processor")
-        self.work_dir.mkdir(exist_ok=True)
-        self.processed_count = 0
+        self.greet_count = 0
 
     @lifecycle(id="startup")
-    def startup(self, **_):
-        self.logger.info("FileProcessorPlugin starting...")
-        self.report_status({"status": "initialized"})
-        return {"status": "ready"}
-
-    @lifecycle(id="shutdown")
-    def shutdown(self, **_):
-        if self.work_dir.exists():
-            shutil.rmtree(self.work_dir)
-        return {"status": "stopped"}
+    def on_startup(self, **_):
+        self.logger.info("GreeterPlugin ready")
+        return Ok({"status": "ready"})
 
     @plugin_entry(
-        id="process_file",
-        name="Process File",
+        id="greet",
+        name="Greet",
+        description="Greet someone by name",
         input_schema={
             "type": "object",
             "properties": {
-                "file_path": {"type": "string"},
-                "operation": {
-                    "type": "string",
-                    "enum": ["compress", "extract", "convert"]
-                }
-            },
-            "required": ["file_path", "operation"]
+                "name": {"type": "string", "default": "World"}
+            }
         }
     )
-    def process_file(self, file_path: str, operation: str, **_):
-        self.report_status({"status": "processing", "file": file_path})
+    def greet(self, name: str = "World", **_):
+        if not name.strip():
+            return Err(SdkError("Name cannot be empty"))
 
-        try:
-            # ... processing logic ...
-            self.processed_count += 1
-            self.ctx.push_message(
-                source="file_processor",
-                message_type="text",
-                description="File processed",
-                priority=6,
-                content=f"Processed {file_path}",
-            )
-            return {"success": True}
-        except Exception as e:
-            self.logger.exception(f"Error: {e}")
-            return {"success": False, "error": str(e)}
-
-    @timer_interval(id="cleanup", seconds=3600, auto_start=True)
-    def cleanup(self, **_):
-        self.logger.info("Cleaning temporary files...")
-        return {"cleaned": True}
+        self.greet_count += 1
+        return Ok({
+            "message": f"Hello, {name}!",
+            "total_greets": self.greet_count,
+        })
 ```
 
-## Async API client plugin
-
-A plugin that calls external APIs with async support and batch operations.
+## Async API client with cross-plugin calls
 
 ```python
-import asyncio
 import aiohttp
-from typing import Any, Optional, Dict
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import neko_plugin, plugin_entry, lifecycle
+from typing import Any, Optional
+from plugin.sdk.plugin import (
+    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    Ok, Err, SdkError, unwrap_or,
+)
 
 @neko_plugin
 class APIClientPlugin(NekoPluginBase):
@@ -96,128 +64,190 @@ class APIClientPlugin(NekoPluginBase):
     @lifecycle(id="startup")
     async def startup(self, **_):
         self.session = aiohttp.ClientSession()
-        return {"status": "ready"}
+        return Ok({"status": "ready"})
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
         if self.session:
             await self.session.close()
-        return {"status": "stopped"}
+        return Ok({"status": "stopped"})
 
     @plugin_entry(
-        id="fetch_data",
+        id="fetch",
         name="Fetch Data",
         input_schema={
             "type": "object",
             "properties": {
                 "endpoint": {"type": "string"},
-                "method": {
-                    "type": "string",
-                    "enum": ["GET", "POST"],
-                    "default": "GET"
-                }
+                "method": {"type": "string", "enum": ["GET", "POST"], "default": "GET"}
             },
             "required": ["endpoint"]
         }
     )
-    async def fetch_data(self, endpoint: str, method: str = "GET", **_):
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        async with self.session.request(method, url) as response:
-            data = await response.json()
-            return {"success": True, "data": data}
+    async def fetch(self, endpoint: str, method: str = "GET", **_):
+        try:
+            url = f"{self.base_url}/{endpoint.lstrip('/')}"
+            async with self.session.request(method, url) as response:
+                data = await response.json()
+                return Ok({"status": response.status, "data": data})
+        except Exception as e:
+            return Err(SdkError(f"Request failed: {e}"))
 
-    @plugin_entry(
-        id="batch_fetch",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "endpoints": {
-                    "type": "array",
-                    "items": {"type": "string"}
-                },
-                "concurrent": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 10,
-                    "default": 3
-                }
-            },
-            "required": ["endpoints"]
-        }
-    )
-    async def batch_fetch(self, endpoints: list, concurrent: int = 3, **_):
-        semaphore = asyncio.Semaphore(concurrent)
-
-        async def fetch_one(ep):
-            async with semaphore:
-                return await self.fetch_data(ep)
-
-        results = await asyncio.gather(
-            *[fetch_one(ep) for ep in endpoints],
-            return_exceptions=True
+    @plugin_entry(id="fetch_with_cache")
+    async def fetch_with_cache(self, endpoint: str, **_):
+        # Cross-plugin call: check cache plugin first
+        cached = await self.plugins.call_entry(
+            "cache_plugin:get", {"key": endpoint}
         )
-        success = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
-        return {"success_count": success, "total": len(endpoints)}
+        cached_value = unwrap_or(cached, None)
+        if cached_value and cached_value.get("hit"):
+            return Ok(cached_value["data"])
+
+        # Fetch fresh data
+        result = await self.fetch(endpoint=endpoint)
+        if isinstance(result, Ok):
+            # Store in cache plugin
+            await self.plugins.call_entry(
+                "cache_plugin:set",
+                {"key": endpoint, "value": result.value}
+            )
+        return result
 ```
 
-## Data collector with persistence
+## Plugin with hooks and timer
 
 ```python
-import json
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Optional, Dict
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import (
-    neko_plugin, plugin_entry, lifecycle, timer_interval
+import time
+from typing import Any
+from plugin.sdk.plugin import (
+    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    timer_interval, before_entry, after_entry,
+    Ok, Err, SdkError,
 )
 
 @neko_plugin
-class DataCollectorPlugin(NekoPluginBase):
+class MonitoredPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         self.logger = ctx.logger
-        self.data_dir = ctx.config_path.parent / "data"
-        self.data_dir.mkdir(exist_ok=True)
-        self.collection_count = 0
+        self.call_stats: dict[str, int] = {}
+
+    @lifecycle(id="startup")
+    def on_startup(self, **_):
+        return Ok({"status": "ready"})
+
+    # --- Hooks ---
+
+    @before_entry(target="*")
+    def count_calls(self, *, entry_id, **_):
+        """Count every entry point invocation."""
+        self.call_stats[entry_id] = self.call_stats.get(entry_id, 0) + 1
+
+    @after_entry(target="*")
+    def log_results(self, *, entry_id, result, **_):
+        """Log every entry point result."""
+        self.logger.info(f"[{entry_id}] result={result}")
+
+    # --- Entry points ---
+
+    @plugin_entry(id="process", description="Process some data")
+    def process(self, data: str, **_):
+        return Ok({"processed": data.upper()})
+
+    @plugin_entry(id="stats", description="Get call statistics")
+    def stats(self, **_):
+        return Ok({"stats": dict(self.call_stats)})
+
+    # --- Timer ---
+
+    @timer_interval(id="health_check", seconds=300, auto_start=True)
+    def health_check(self, **_):
+        self.report_status({
+            "status": "healthy",
+            "uptime": time.time(),
+            "total_calls": sum(self.call_stats.values()),
+        })
+        return Ok({"healthy": True})
+```
+
+## Plugin with persistent storage
+
+```python
+from typing import Any
+from plugin.sdk.plugin import (
+    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    PluginStore, Ok, Err, SdkError,
+)
+
+@neko_plugin
+class NotesPlugin(NekoPluginBase):
+    def __init__(self, ctx: Any):
+        super().__init__(ctx)
+        self.logger = ctx.logger
+        self.store = PluginStore(ctx)
 
     @plugin_entry(
-        id="collect",
+        id="save_note",
         input_schema={
             "type": "object",
             "properties": {
-                "source": {"type": "string"}
+                "title": {"type": "string"},
+                "content": {"type": "string"}
             },
-            "required": ["source"]
+            "required": ["title", "content"]
         }
     )
-    def collect(self, source: str, **_):
-        data = self._fetch_data(source)
+    async def save_note(self, title: str, content: str, **_):
+        await self.store.set(f"note:{title}", {
+            "title": title,
+            "content": content,
+        })
+        return Ok({"saved": title})
 
-        filename = f"{source}_{datetime.now().isoformat()}.json"
-        filepath = self.data_dir / filename
-        filepath.write_text(json.dumps(data, indent=2))
+    @plugin_entry(id="get_note")
+    async def get_note(self, title: str, **_):
+        note = await self.store.get(f"note:{title}")
+        if note is None:
+            return Err(SdkError(f"Note not found: {title}"))
+        return Ok(note)
+```
 
-        self.collection_count += 1
-        self.ctx.push_message(
-            source="collector",
-            message_type="text",
-            priority=5,
-            content=f"Collected {len(data)} records from {source}",
-        )
-        return {"count": len(data), "file": filename}
+## Plugin with dynamic entries
 
-    @timer_interval(id="auto_collect", seconds=300, auto_start=True)
-    def auto_collect(self, **_):
-        for source in ["source1", "source2"]:
-            self.collect(source=source)
+```python
+from typing import Any
+from plugin.sdk.plugin import (
+    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    Ok, Err, SdkError,
+)
 
-    @plugin_entry(id="stats")
-    def stats(self, **_):
-        files = list(self.data_dir.glob("*.json"))
-        return {"collection_count": self.collection_count, "files": len(files)}
+@neko_plugin
+class DynamicPlugin(NekoPluginBase):
+    def __init__(self, ctx: Any):
+        super().__init__(ctx)
+        self.logger = ctx.logger
 
-    def _fetch_data(self, source):
-        # Replace with actual data fetching logic
-        return [{"id": 1, "source": source}]
+    @lifecycle(id="startup")
+    def on_startup(self, **_):
+        # Register entries at runtime based on config
+        commands = self.metadata.get("commands", {})
+        for cmd_id, cmd_config in commands.items():
+            self.register_dynamic_entry(
+                entry_id=cmd_id,
+                handler=self._make_handler(cmd_config),
+                name=cmd_config.get("name", cmd_id),
+                description=cmd_config.get("description", ""),
+            )
+        return Ok({"registered": list(commands.keys())})
+
+    @plugin_entry(id="list_commands")
+    def list_commands(self, **_):
+        entries = self.list_entries()
+        return Ok({"commands": [e["id"] for e in entries]})
+
+    def _make_handler(self, config):
+        template = config.get("template", "Executed: {cmd}")
+        def handler(cmd: str = "", **_):
+            return Ok({"output": template.format(cmd=cmd)})
+        return handler
 ```

@@ -34,6 +34,9 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "live2d_item_id",
     "item_id",
     "idleAnimation",
+    "mmd",
+    "mmd_animation",
+    "mmd_idle_animation",
     "touch_set",
 )
 
@@ -76,6 +79,16 @@ RESERVED_FIELD_SCHEMA = {
             "animation": (str, dict, list, type(None)),
             "idle_animation": str,
             "lighting": (dict, type(None)),
+            "cursor_follow": (dict, type(None)),
+        },
+        "mmd": {
+            "model_path": str,
+            "animation": (str, dict, list, type(None)),
+            "idle_animation": str,
+            "lighting": (dict, type(None)),
+            "rendering": (dict, type(None)),
+            "physics": (dict, type(None)),
+            "cursor_follow": (dict, type(None)),
         },
     },
 }
@@ -94,6 +107,9 @@ LEGACY_FLAT_TO_RESERVED = {
     "vrm_animation": ("avatar", "vrm", "animation"),
     "idleAnimation": ("avatar", "vrm", "idle_animation"),
     "lighting": ("avatar", "vrm", "lighting"),
+    "mmd": ("avatar", "mmd", "model_path"),
+    "mmd_animation": ("avatar", "mmd", "animation"),
+    "mmd_idle_animation": ("avatar", "mmd", "idle_animation"),
 }
 
 # 从 Electron userData 目录读取端口覆盖配置（由前端端口设置窗口写入）
@@ -162,6 +178,10 @@ TOOL_SERVER_PORT = _read_port_env("TOOL_SERVER_PORT", 48915)
 USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)
 AGENT_MQ_PORT = _read_port_env("AGENT_MQ_PORT", 48917)
 MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
+
+# OpenFang Agent 执行后端端口 (由 Electron 并行启动，端口写入 port_config.json)
+OPENFANG_PORT = _read_port_env("OPENFANG_PORT", 50051)
+OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
 
 # 实例 ID：同一次启动的所有服务共享。
 # launcher 会在拉起子进程前写入 NEKO_INSTANCE_ID 环境变量。
@@ -264,6 +284,11 @@ DEFAULT_LANLAN_TEMPLATE = {
                     "idle_animation": "",
                     "lighting": None,
                 },
+                "mmd": {
+                    "model_path": "",
+                    "animation": None,
+                    "idle_animation": "",
+                },
             },
         },
     }
@@ -297,6 +322,73 @@ VRM_LIGHTING_RANGES = {
 def get_default_vrm_lighting() -> dict[str, float]:
     """获取默认VRM打光配置的副本"""
     return dict(DEFAULT_VRM_LIGHTING)
+
+
+# ─── MMD 默认设置 ───
+_DEFAULT_MMD_LIGHTING_MUTABLE = {
+    "ambientIntensity": 3.0,
+    "ambientColor": "#aaaaaa",
+    "directionalIntensity": 2.0,
+    "directionalColor": "#ffffff",
+}
+
+DEFAULT_MMD_LIGHTING = MappingProxyType(_DEFAULT_MMD_LIGHTING_MUTABLE)
+
+MMD_LIGHTING_RANGES = {
+    "ambientIntensity": (0, 10.0),
+    "directionalIntensity": (0, 10.0),
+}
+
+_DEFAULT_MMD_RENDERING_MUTABLE = {
+    "toneMapping": 0,
+    "exposure": 1.0,
+    "outline": True,
+    "pixelRatio": 0,
+}
+
+DEFAULT_MMD_RENDERING = MappingProxyType(_DEFAULT_MMD_RENDERING_MUTABLE)
+
+MMD_RENDERING_RANGES = {
+    "toneMapping": (0, 7),
+    "exposure": (0, 5.0),
+    "pixelRatio": (0, 2.0),
+}
+
+_DEFAULT_MMD_PHYSICS_MUTABLE = {
+    "enabled": True,
+    "strength": 1.0,
+}
+
+DEFAULT_MMD_PHYSICS = MappingProxyType(_DEFAULT_MMD_PHYSICS_MUTABLE)
+
+MMD_PHYSICS_RANGES = {
+    "strength": (0.1, 2.0),
+}
+
+_DEFAULT_MMD_CURSOR_FOLLOW_MUTABLE = {
+    "enabled": True,
+    "headYaw": 30,
+    "headPitch": 20,
+    "smoothSpeed": 3.0,
+}
+
+DEFAULT_MMD_CURSOR_FOLLOW = MappingProxyType(_DEFAULT_MMD_CURSOR_FOLLOW_MUTABLE)
+
+MMD_CURSOR_FOLLOW_RANGES = {
+    "headYaw": (10, 50),
+    "headPitch": (5, 30),
+    "smoothSpeed": (1.0, 8.0),
+}
+
+
+def get_default_mmd_settings() -> dict:
+    """获取默认MMD设置的副本"""
+    return {
+        "lighting": dict(DEFAULT_MMD_LIGHTING),
+        "rendering": dict(DEFAULT_MMD_RENDERING),
+        "physics": dict(DEFAULT_MMD_PHYSICS),
+        "cursor_follow": dict(DEFAULT_MMD_CURSOR_FOLLOW),
+    }
 
 DEFAULT_CHARACTERS_CONFIG = {
     "主人": deepcopy(DEFAULT_MASTER_TEMPLATE),
@@ -414,6 +506,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyStep": "",
     "assistApiKeySilicon": "",
     "assistApiKeyGemini": "",
+    "assistApiKeyMinimax": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
@@ -541,6 +634,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'silicon': 'ASSIST_API_KEY_SILICON',
     'gemini': 'ASSIST_API_KEY_GEMINI',
     'kimi': 'ASSIST_API_KEY_KIMI',
+    'minimax': 'ASSIST_API_KEY_MINIMAX',
 }
 
 DEFAULT_CONFIG_DATA = {
@@ -555,63 +649,16 @@ TIME_ORIGINAL_TABLE_NAME = "time_indexed_original"
 TIME_COMPRESSED_TABLE_NAME = "time_indexed_compressed"
 
 
-# 不同模型供应商需要的 extra_body 格式
-EXTRA_BODY_OPENAI = {"enable_thinking": False}
-EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
-EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
-EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
-
-# Agent 调用统一开关：是否加载 extra_body。
-# 默认开启，配合 MODELS_EXTRA_BODY_MAP 实现默认关闭 thinking。
-AGENT_USE_EXTRA_BODY = True
-
-# 模型到 extra_body 的映射
-MODELS_EXTRA_BODY_MAP = {
-    # Qwen 系列
-    "qwen-flash": EXTRA_BODY_OPENAI,
-    "qwen3-vl-plus-2025-09-23": EXTRA_BODY_OPENAI,
-    "qwen3-vl-plus": EXTRA_BODY_OPENAI,
-    "qwen3-vl-flash": EXTRA_BODY_OPENAI,
-    "qwen3.5-plus": EXTRA_BODY_OPENAI,
-    "qwen-plus": EXTRA_BODY_OPENAI,
-    "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
-    # GLM 系列
-    "glm-4.5-air": EXTRA_BODY_CLAUDE,
-    "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
-    "glm-4.7-flash": EXTRA_BODY_CLAUDE,
-    "glm-4.6v": EXTRA_BODY_CLAUDE,
-    # Silicon (zai-org) - 使用 Qwen 格式
-    "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
-    # "free-model": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
-    "step-2-mini": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
-    # Gemini 系列
-    "gemini-2.5-flash": EXTRA_BODY_GEMINI,  # 禁用 thinking
-    "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,  # 禁用 thinking
-    "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,  # 低级别 thinking
-}
-
-
-def get_extra_body(model: str) -> dict | None:
-    """根据模型名称返回对应的 extra_body 配置。
-
-    Args:
-        model: 模型名称
-
-    Returns:
-        对应的 extra_body dict，如果模型不需要特殊配置则返回 None
-    """
-    if not model:
-        return None
-    if model in MODELS_EXTRA_BODY_MAP:
-        return MODELS_EXTRA_BODY_MAP[model]
-    return {}
-
-
-def get_agent_extra_body(model: str) -> dict | None:
-    """Return extra_body for Agent calls based on a single global switch."""
-    if not AGENT_USE_EXTRA_BODY:
-        return None
-    return get_extra_body(model)
+# Provider 相关配置已统一迁移至 config.providers, 此处仅 re-export 保持向后兼容
+from config.providers import (  # noqa: E402, F401
+    EXTRA_BODY_OPENAI,
+    EXTRA_BODY_CLAUDE,
+    EXTRA_BODY_GEMINI,
+    AGENT_USE_EXTRA_BODY,
+    MODELS_EXTRA_BODY_MAP,
+    get_extra_body,
+    get_agent_extra_body,
+)
 
 
 __all__ = [
@@ -629,6 +676,15 @@ __all__ = [
     'DEFAULT_VRM_LIGHTING',
     'VRM_LIGHTING_RANGES',
     'get_default_vrm_lighting',
+    'DEFAULT_MMD_LIGHTING',
+    'MMD_LIGHTING_RANGES',
+    'DEFAULT_MMD_RENDERING',
+    'MMD_RENDERING_RANGES',
+    'DEFAULT_MMD_PHYSICS',
+    'MMD_PHYSICS_RANGES',
+    'DEFAULT_MMD_CURSOR_FOLLOW',
+    'MMD_CURSOR_FOLLOW_RANGES',
+    'get_default_mmd_settings',
     'DEFAULT_CHARACTERS_CONFIG',
     'get_localized_default_characters',
     'get_lanlan_prompt',
@@ -707,5 +763,8 @@ __all__ = [
     'DEFAULT_TTS_MODEL_API_KEY',
     'DEFAULT_AGENT_MODEL_URL',
     'DEFAULT_AGENT_MODEL_API_KEY',
+    # OpenFang
+    'OPENFANG_PORT',
+    'OPENFANG_BASE_URL',
 ]
 

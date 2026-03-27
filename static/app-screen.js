@@ -372,7 +372,7 @@
     // ======================== syncFloatingScreenButtonState ========================
     function syncFloatingScreenButtonState(isActive) {
         // 更新所有存在的 manager 的按钮状态
-        var managers = [window.live2dManager, window.vrmManager];
+        var managers = [window.live2dManager, window.vrmManager, window.mmdManager];
 
         for (var i = 0; i < managers.length; i++) {
             var manager = managers[i];
@@ -894,23 +894,26 @@
 
     // ======================== updateScreenSourceListSelection ========================
     function updateScreenSourceListSelection() {
-        var screenPopup = document.getElementById('live2d-popup-screen');
-        if (!screenPopup) return;
+        var popupIds = ['live2d-popup-screen', 'vrm-popup-screen', 'mmd-popup-screen'];
+        popupIds.forEach(function (popupId) {
+            var screenPopup = document.getElementById(popupId);
+            if (!screenPopup) return;
 
-        var options = screenPopup.querySelectorAll('.screen-source-option');
-        options.forEach(function (option) {
-            var sourceId = option.dataset.sourceId;
-            var isSelected = sourceId === S.selectedScreenSourceId;
+            var options = screenPopup.querySelectorAll('.screen-source-option');
+            options.forEach(function (option) {
+                var sourceId = option.dataset.sourceId;
+                var isSelected = sourceId === S.selectedScreenSourceId;
 
-            if (isSelected) {
-                option.classList.add('selected');
-                option.style.background = 'var(--neko-popup-selected-bg)';
-                option.style.borderColor = '#4f8cff';
-            } else {
-                option.classList.remove('selected');
-                option.style.background = 'transparent';
-                option.style.borderColor = 'transparent';
-            }
+                if (isSelected) {
+                    option.classList.add('selected');
+                    option.style.background = 'var(--neko-popup-selected-bg)';
+                    option.style.borderColor = '#4f8cff';
+                } else {
+                    option.classList.remove('selected');
+                    option.style.background = 'transparent';
+                    option.style.borderColor = 'transparent';
+                }
+            });
         });
     }
     mod.updateScreenSourceListSelection = updateScreenSourceListSelection;

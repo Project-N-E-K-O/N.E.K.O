@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
 from utils.file_utils import atomic_write_json
-from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top
+from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, load_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
 from config import (
@@ -41,6 +41,10 @@ logger = get_module_logger(__name__, "Main")
 VRM_STATIC_PATH = "/static/vrm"  # 项目目录下的 VRM 模型路径
 VRM_USER_PATH = "/user_vrm"  # 用户文档目录下的 VRM 模型路径
 
+# MMD 模型路径常量
+MMD_STATIC_PATH = "/static/mmd"  # 项目目录下的 MMD 模型路径
+MMD_USER_PATH = "/user_mmd"  # 用户文档目录下的 MMD 模型路径
+
 
 @router.get("/character_reserved_fields")
 async def get_character_reserved_fields():
@@ -53,9 +57,107 @@ async def get_character_reserved_fields():
     }
 
 
+# MMD 文件扩展名
+_MMD_EXTENSIONS = {'.pmx', '.pmd'}
+
+
+def _get_live3d_sub_type(catgirl_config: dict) -> str:
+    """判断 Live3D 模式下应使用 VRM 还是 MMD 渲染器。
+    优先检查 MMD 路径（因为 VRM 是旧字段，可能遗留非空值）。"""
+    mmd_path = get_reserved(catgirl_config, 'avatar', 'mmd', 'model_path', default='')
+    if mmd_path:
+        return 'mmd'
+    vrm_path = get_reserved(catgirl_config, 'avatar', 'vrm', 'model_path', default='', legacy_keys=('vrm',))
+    if vrm_path:
+        return 'vrm'
+    return ''
+
+
+def _resolve_vrm_path(vrm_path: str, _config_manager, target_name: str) -> str:
+    """解析 VRM 模型路径，验证文件存在性，返回可用 URL 或空字符串。"""
+    if vrm_path.startswith('http://') or vrm_path.startswith('https://'):
+        logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型HTTP路径: {vrm_path}")
+        return vrm_path
+    elif vrm_path.startswith('/'):
+        _vrm_file_verified = False
+        if vrm_path.startswith(VRM_USER_PATH + '/'):
+            _fname = vrm_path[len(VRM_USER_PATH) + 1:]
+            _vrm_file_verified = (_config_manager.vrm_dir / _fname).exists()
+        elif vrm_path.startswith(VRM_STATIC_PATH + '/'):
+            _fname = vrm_path[len(VRM_STATIC_PATH) + 1:]
+            _vrm_file_verified = (_config_manager.project_root / 'static' / 'vrm' / _fname).exists()
+        else:
+            _vrm_file_verified = True
+        if _vrm_file_verified:
+            logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型绝对路径: {vrm_path}")
+            return vrm_path
+        else:
+            logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {vrm_path}")
+            return ""
+    else:
+        from pathlib import PurePosixPath
+        safe_rel = PurePosixPath(vrm_path)
+        if safe_rel.is_absolute() or '..' in safe_rel.parts:
+            logger.warning(f"获取页面配置 - 角色: {target_name}, VRM路径不合法: {vrm_path}")
+            return ""
+        project_vrm_path = _config_manager.project_root / 'static' / 'vrm' / str(safe_rel)
+        if project_vrm_path.exists():
+            result = f'{VRM_STATIC_PATH}/{safe_rel}'
+            logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在项目目录: {vrm_path} -> {result}")
+            return result
+        user_vrm_path = _config_manager.vrm_dir / str(safe_rel)
+        if user_vrm_path.exists():
+            result = f'{VRM_USER_PATH}/{safe_rel}'
+            logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在用户目录: {vrm_path} -> {result}")
+            return result
+        logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {vrm_path}")
+        return ""
+
+
+def _resolve_mmd_path(mmd_path: str, _config_manager, target_name: str) -> str:
+    """解析 MMD 模型路径，验证文件存在性，返回可用 URL 或空字符串。"""
+    if mmd_path.startswith('http://') or mmd_path.startswith('https://'):
+        logger.debug(f"获取页面配置 - 角色: {target_name}, MMD模型HTTP路径: {mmd_path}")
+        return mmd_path
+    elif mmd_path.startswith('/'):
+        _mmd_file_verified = False
+        if mmd_path.startswith(MMD_USER_PATH + '/'):
+            _fname = mmd_path[len(MMD_USER_PATH) + 1:]
+            _mmd_file_verified = (_config_manager.mmd_dir / _fname).exists()
+        elif mmd_path.startswith(MMD_STATIC_PATH + '/'):
+            _fname = mmd_path[len(MMD_STATIC_PATH) + 1:]
+            _mmd_file_verified = (_config_manager.project_root / 'static' / 'mmd' / _fname).exists()
+        else:
+            _mmd_file_verified = True
+        if _mmd_file_verified:
+            logger.debug(f"获取页面配置 - 角色: {target_name}, MMD模型绝对路径: {mmd_path}")
+            return mmd_path
+        else:
+            logger.warning(f"获取页面配置 - 角色: {target_name}, MMD模型文件未找到: {mmd_path}")
+            return ""
+    else:
+        from pathlib import PurePosixPath
+        safe_rel = PurePosixPath(mmd_path)
+        if safe_rel.is_absolute() or '..' in safe_rel.parts:
+            logger.warning(f"获取页面配置 - 角色: {target_name}, MMD路径不合法: {mmd_path}")
+            return ""
+        project_mmd_path = _config_manager.project_root / 'static' / 'mmd' / str(safe_rel)
+        if project_mmd_path.exists():
+            result = f'{MMD_STATIC_PATH}/{safe_rel}'
+            logger.debug(f"获取页面配置 - 角色: {target_name}, MMD模型在项目目录: {mmd_path} -> {result}")
+            return result
+        user_mmd_path = _config_manager.mmd_dir / str(safe_rel)
+        if user_mmd_path.exists():
+            result = f'{MMD_USER_PATH}/{safe_rel}'
+            logger.debug(f"获取页面配置 - 角色: {target_name}, MMD模型在用户目录: {mmd_path} -> {result}")
+            return result
+        logger.warning(f"获取页面配置 - 角色: {target_name}, MMD模型文件未找到: {mmd_path}")
+        return ""
+
+
 @router.get("/page_config")
 async def get_page_config(lanlan_name: str = ""):
-    """获取页面配置(lanlan_name 和 model_path),支持Live2D和VRM模型"""
+    """获取页面配置(lanlan_name 和 model_path),支持Live2D、VRM和MMD(Live3D)模型"""
     try:
         # 获取角色数据
         _config_manager = get_config_manager()
@@ -67,55 +169,35 @@ async def get_page_config(lanlan_name: str = ""):
         # 获取角色配置
         catgirl_config = lanlan_basic_config.get(target_name, {})
         model_type = get_reserved(catgirl_config, 'avatar', 'model_type', default='live2d', legacy_keys=('model_type',))
+        # 归一化：旧配置中的 'vrm' 统一为 'live3d'
+        if model_type == 'vrm':
+            model_type = 'live3d'
         
         model_path = ""
+        # live3d_sub_type: 前端用于区分 Live3D 模式下加载 VRM 还是 MMD 渲染器
+        live3d_sub_type = ""
         
         # 根据模型类型获取模型路径
-        if model_type == 'vrm':
+        if model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'vrm':
+            live3d_sub_type = 'vrm'
             # VRM模型：处理路径转换
             vrm_path = get_reserved(catgirl_config, 'avatar', 'vrm', 'model_path', default='', legacy_keys=('vrm',))
             if vrm_path:
-                if vrm_path.startswith('http://') or vrm_path.startswith('https://'):
-                    model_path = vrm_path
-                    logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型HTTP路径: {model_path}")
-                elif vrm_path.startswith('/'):
-                    # 对已知前缀的路径验证文件是否实际存在，防止返回指向已删除文件的路径
-                    _vrm_file_verified = False
-                    if vrm_path.startswith(VRM_USER_PATH + '/'):
-                        _fname = vrm_path[len(VRM_USER_PATH) + 1:]
-                        _vrm_file_verified = (_config_manager.vrm_dir / _fname).exists()
-                    elif vrm_path.startswith(VRM_STATIC_PATH + '/'):
-                        _fname = vrm_path[len(VRM_STATIC_PATH) + 1:]
-                        _vrm_file_verified = (_config_manager.project_root / 'static' / 'vrm' / _fname).exists()
-                    else:
-                        _vrm_file_verified = True  # 未知前缀，不做判断
-                    if _vrm_file_verified:
-                        model_path = vrm_path
-                        logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型绝对路径: {model_path}")
-                    else:
-                        model_path = ""
-                        logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {vrm_path}")
-                else:
-                    filename = os.path.basename(vrm_path)
-                    project_root = _config_manager.project_root
-                    project_vrm_path = project_root / 'static' / 'vrm' / filename
-                    if project_vrm_path.exists():
-                        model_path = f'{VRM_STATIC_PATH}/{filename}'
-                        logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在项目目录: {vrm_path} -> {model_path}")
-                    else:
-                        user_vrm_dir = _config_manager.vrm_dir
-                        user_vrm_path = user_vrm_dir / filename
-                        if user_vrm_path.exists():
-                            model_path = f'{VRM_USER_PATH}/{filename}'
-                            logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在用户目录: {vrm_path} -> {model_path}")
-                        else:
-                            # 文件不存在，返回空路径让前端使用默认模型
-                            model_path = ""
-                            logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {filename}")
+                model_path = _resolve_vrm_path(vrm_path, _config_manager, target_name)
             else:
-                # vrm_path 为空，使用默认模型
-                model_path = f'{VRM_STATIC_PATH}/sister1.0.vrm'
-                logger.info(f"角色 {target_name} 的VRM模型路径为空，使用默认模型: {model_path}")
+                logger.warning(f"角色 {target_name} 的VRM模型路径为空")
+        elif model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'mmd':
+            live3d_sub_type = 'mmd'
+            # MMD模型：处理路径转换
+            mmd_path = get_reserved(catgirl_config, 'avatar', 'mmd', 'model_path', default='')
+            if mmd_path:
+                model_path = _resolve_mmd_path(mmd_path, _config_manager, target_name)
+            else:
+                logger.warning(f"角色 {target_name} 的MMD模型路径为空")
+        elif model_type == 'live3d':
+            # live3d 但无法判断子类型（两个路径都为空），返回空路径
+            live3d_sub_type = ''
+            logger.warning(f"角色 {target_name} 的Live3D模型路径均为空")
         else:
             # Live2D模型：使用原有逻辑
             live2d = get_reserved(catgirl_config, 'avatar', 'live2d', 'model_path', default='mao_pro', legacy_keys=('live2d',))
@@ -136,12 +218,15 @@ async def get_page_config(lanlan_name: str = ""):
             model_info = model_json.get('model_info', {})
             model_path = model_info.get('path', '')
         
-        return {
+        result = {
             "success": True,
             "lanlan_name": target_name,
             "model_path": model_path,
             "model_type": model_type
         }
+        if model_type == 'live3d':
+            result["live3d_sub_type"] = live3d_sub_type
+        return result
     except Exception as e:
         logger.error(f"获取页面配置失败: {str(e)}")
         return {
@@ -171,6 +256,10 @@ async def save_preferences(request: Request):
         # 验证偏好数据
         if not validate_model_preferences(data):
             return {"success": False, "error": "偏好数据格式无效"}
+        
+        # 防止使用保留的全局对话设置键作为模型路径
+        if data.get('model_path') == GLOBAL_CONVERSATION_KEY:
+            return {"success": False, "error": "model_path 不能使用保留键"}
         
         # 获取参数（可选）
         parameters = data.get('parameters')
@@ -221,6 +310,34 @@ async def set_preferred_model(request: Request):
             
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@router.get("/conversation-settings")
+async def get_conversation_settings():
+    """获取全局对话设置（从 user_preferences.json 同步备份中读取）"""
+    try:
+        settings = load_global_conversation_settings()
+        return {"success": True, "settings": settings}
+    except Exception as e:
+        logger.exception(f"获取对话设置失败: {e}")
+        return {"success": False, "error": "Internal server error", "settings": {}}
+
+
+@router.post("/conversation-settings")
+async def save_conversation_settings(request: Request):
+    """保存全局对话设置（同步到 user_preferences.json 备份）"""
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return {"success": False, "error": "请求体必须为对象"}
+
+        if save_global_conversation_settings(data):
+            return {"success": True, "message": "对话设置已保存"}
+        else:
+            return {"success": False, "error": "保存失败"}
+    except Exception as e:
+        logger.exception(f"保存对话设置失败: {e}")
+        return {"success": False, "error": "Internal server error"}
 
 
 @router.get("/steam_language")

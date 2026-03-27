@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Windows multiprocessing 支持：确保子进程不会重复执行模块级初始化
 from multiprocessing import freeze_support
 import multiprocessing
+from utils.port_utils import set_port_probe_reuse
 freeze_support()
 
 # 设置 multiprocessing 启动方法（确保跨进程共享结构的一致性）
@@ -540,6 +541,7 @@ app.mount("/static", CustomStaticFiles(directory=static_dir), name="static")
 if _IS_MAIN_PROCESS:
     _config_manager.ensure_live2d_directory()
     _config_manager.ensure_vrm_directory()
+    _config_manager.ensure_mmd_directory()
     _config_manager.ensure_chara_directory()
 
     # CFA (反勒索防护) 感知挂载：
@@ -576,6 +578,22 @@ if _IS_MAIN_PROCESS:
     if os.path.exists(project_vrm_path) and os.path.isdir(project_vrm_path):
         logger.info(f"项目VRM目录存在: {project_vrm_path} (可通过 /static/vrm/ 访问)")
     
+    # 挂载MMD动画目录（必须在MMD模型目录之前挂载）
+    mmd_animation_path = str(_config_manager.mmd_animation_dir)
+    if os.path.exists(mmd_animation_path):
+        app.mount("/user_mmd/animation", CustomStaticFiles(directory=mmd_animation_path), name="user_mmd_animation")
+        logger.info(f"已挂载MMD动画目录: {mmd_animation_path}")
+
+    # 挂载MMD模型目录（用户文档目录）
+    user_mmd_path = str(_config_manager.mmd_dir)
+    if os.path.exists(user_mmd_path):
+        app.mount("/user_mmd", CustomStaticFiles(directory=user_mmd_path), name="user_mmd")
+        logger.info(f"已挂载MMD目录: {user_mmd_path}")
+    
+    # 挂载项目目录下的static/mmd（作为备用）
+    project_mmd_path = os.path.join(static_dir, 'mmd')
+    if os.path.exists(project_mmd_path) and os.path.isdir(project_mmd_path):
+        logger.info(f"项目MMD目录存在: {project_mmd_path} (可通过 /static/mmd/ 访问)")
 
     # 挂载用户mod路径
     user_mod_path = _config_manager.get_workshop_path()
@@ -590,6 +608,7 @@ from main_routers import ( # noqa
     characters_router,
     live2d_router,
     vrm_router,
+    mmd_router,
     workshop_router,
     memory_router,
     pages_router,
@@ -650,6 +669,7 @@ app.include_router(config_router)
 app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
+app.include_router(mmd_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
@@ -864,6 +884,7 @@ async def on_startup():
             from utils.token_tracker import TokenTracker, install_hooks
             install_hooks()
             TokenTracker.get_instance().start_periodic_save()
+            TokenTracker.get_instance().record_app_start()
             logger.info("Token usage tracker initialized")
         except Exception as e:
             logger.warning(f"Token tracker initialization failed (non-critical): {e}")
@@ -915,6 +936,17 @@ async def on_shutdown():
                     mgr.audio_resampler = None
         except Exception as e:
             logger.debug(f"soxr resampler cleanup failed: {e}")
+
+        # 关闭翻译服务
+        try:
+            from utils import language_utils
+            close_fn = getattr(language_utils, "aclose_translation_service", None)
+            if callable(close_fn):
+                await close_fn()
+            else:
+                logger.debug("Translation service cleanup skipped: function not implemented")
+        except Exception as e:
+            logger.debug(f"Translation service cleanup failed: {e}")
 
         # 保存 Token 用量数据
         try:
@@ -1133,6 +1165,7 @@ def _is_port_available(port: int) -> bool:
     import socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        set_port_probe_reuse(sock)
         sock.bind(("127.0.0.1", port))
         return True
     except OSError:
@@ -1213,11 +1246,16 @@ if __name__ == "__main__":
     print(f"启动配置: {get_start_config()}")
 
     # 2) 信号处理：Ctrl+C 时快速关闭
+    _shutdown_state = {"signal_count": 0}
+
     def _signal_handler(signum, frame):
+        _shutdown_state["signal_count"] += 1
+        if _shutdown_state["signal_count"] > 1:
+            logger.warning("收到第二次关闭信号，立即强制退出。")
+            os._exit(130)
         logger.info("正在关闭服务器...")
         cleanup()
         server.should_exit = True
-        threading.Timer(3.0, lambda: os._exit(0)).start()
     
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)

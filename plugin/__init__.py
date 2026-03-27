@@ -37,29 +37,32 @@ from plugin._types.exceptions import (
     PluginMetadataError,
     PluginQueueError,
 )
-from plugin.sdk.base import NekoPluginBase, PluginMeta as SDKPluginMeta, NEKO_PLUGIN_TAG, NEKO_PLUGIN_META_ATTR
-from plugin._types.events import (
-    EventMeta,
-    EventHandler,
-    EventType,
-    EVENT_META_ATTR,
-)
-from plugin.sdk.logger import (
-    PluginFileLogger,
-    enable_plugin_file_logging,
-    plugin_file_logger,
-)
-from plugin.settings import EVENT_QUEUE_MAX, MESSAGE_QUEUE_MAX
-from plugin.sdk.decorators import (
+from plugin.sdk.plugin import (
+    NekoPluginBase,
+    PluginMeta as SDKPluginMeta,
+    NEKO_PLUGIN_TAG,
+    NEKO_PLUGIN_META_ATTR,
     neko_plugin,
     on_event,
     plugin_entry,
     lifecycle,
     message,
     timer_interval,
+    SystemInfo,
+    MemoryClient,
 )
-from plugin.sdk.system_info import SystemInfo
-from plugin.sdk.memory import MemoryClient
+from plugin._types.events import (
+    EventMeta,
+    EventHandler,
+    EventType,
+    EVENT_META_ATTR,
+)
+from plugin.core.plugin_logger import (
+    PluginFileLogger,
+    enable_plugin_file_logging,
+    plugin_file_logger,
+)
+from plugin.settings import EVENT_QUEUE_MAX, MESSAGE_QUEUE_MAX
 
 __all__ = [
     # Core

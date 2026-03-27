@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Project N.E.K.O.
   text: 開発者ドキュメント
-  tagline: 生きたAIコンパニオンメタバースを構築しよう — オープンソース、拡張可能、マルチモーダル。
+  tagline: プロアクティブなオムニモーダルAIコンパニオン — 24時間環境認識、エージェント機能、具現化された感情エンジンを搭載。
   image:
     src: /logo.jpg
     alt: N.E.K.O. ロゴ
@@ -37,12 +37,12 @@ features:
     linkText: APIリファレンス
   - icon: 🧠
     title: メモリシステム
-    details: Embeddingによるセマンティック検索、時間インデックス付き履歴、スライディングウィンドウによる圧縮された最近のメモリ、永続的なユーザー設定。
+    details: EmbeddingベクトルとBM25のハイブリッドインデックスによるセマンティック検索、時間インデックス付き履歴、スライディングウィンドウによる圧縮された最近のメモリ、永続的なユーザー設定。
     link: /ja/architecture/memory-system
     linkText: 仕組みを見る
   - icon: 🤖
     title: エージェントフレームワーク
-    details: MCP、Computer Use、Browser Useアダプターによるバックグラウンドタスク実行。自動タスク計画、重複排除、並列機能評価に対応。
+    details: MCP、Computer Use、Browser Use、仮想マシンアダプターによるバックグラウンドタスク実行。自動タスク計画、重複排除、並列機能評価に対応。
     link: /ja/architecture/agent-system
     linkText: エージェントを探る
   - icon: 🎨

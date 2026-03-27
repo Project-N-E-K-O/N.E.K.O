@@ -1,79 +1,141 @@
-"""
-NEKO Plugin SDK - Adapter Module
+"""SDK v2 adapter surface."""
 
-Adapter 是一种特殊的插件类型，用于：
-1. 作为网关转发外部协议请求到 NEKO 插件
-2. 作为路由器直接处理外部请求
-3. 作为桥接器在不同协议间转换
+from __future__ import annotations
 
-支持的协议：
-- MCP (Model Context Protocol)
-- NoneBot
-- OpenClaw
-- 自定义协议
-"""
-
-from plugin.sdk.adapter.base import (
-    AdapterBase,
-    AdapterConfig,
-    AdapterContext,
-    AdapterMode,
-)
-from plugin.sdk.adapter.types import (
-    AdapterMessage,
-    AdapterResponse,
-    Protocol,
-)
-from plugin.sdk.adapter.decorators import (
+from .base import AdapterBase, AdapterConfig, AdapterContext, AdapterMode
+from .decorators import (
+    ADAPTER_EVENT_META,
+    ADAPTER_LIFECYCLE_META,
+    AdapterEventMeta,
     on_adapter_event,
-    on_adapter_startup,
     on_adapter_shutdown,
+    on_adapter_startup,
+    on_mcp_resource,
+    on_mcp_tool,
+    on_nonebot_message,
 )
-from plugin.sdk.adapter.gateway_models import (
-    ExternalEnvelope,
+from .neko_adapter import NekoAdapterPlugin
+from .runtime import (
+    AsyncCallChain,
+    AdapterGatewayCore,
+    AuthorizationError,
+    CallablePluginInvoker,
+    CallChain,
+    CallChainTooDeepError,
+    CapabilityUnavailableError,
+    CircularCallError,
+    DefaultPolicyEngine,
+    DefaultRequestNormalizer,
+    DefaultResponseSerializer,
+    DefaultRouteEngine,
+    Err,
+    ErrorCode,
+    ExternalRequest,
     GatewayAction,
     GatewayError,
     GatewayErrorException,
     GatewayRequest,
     GatewayResponse,
-    RouteDecision,
-    RouteMode,
-)
-from plugin.sdk.adapter.gateway_contracts import (
+    InvalidArgumentError,
+    LogLevel,
     LoggerLike,
+    Ok,
     PluginInvoker,
     PolicyEngine,
     RequestNormalizer,
     ResponseSerializer,
+    Result,
+    ResultError,
+    RouteDecision,
     RouteEngine,
+    RouteMode,
+    SDK_VERSION,
+    SdkError,
     TransportAdapter,
+    TransportError,
+    bind_result,
+    build_component_name,
+    capture,
+    configure_sdk_default_logger,
+    format_log_text,
+    get_adapter_logger,
+    get_call_chain,
+    get_call_depth,
+    get_sdk_logger,
+    intercept_standard_logging,
+    is_err,
+    is_in_call_chain,
+    is_ok,
+    map_err_result,
+    map_result,
+    match_result,
+    must,
+    raise_for_err,
+    setup_sdk_logging,
+    unwrap,
+    unwrap_or,
 )
-from plugin.sdk.adapter.gateway_core import AdapterGatewayCore
-from plugin.sdk.adapter.gateway_defaults import (
-    CallablePluginInvoker,
-    DefaultPolicyEngine,
-    DefaultRequestNormalizer,
-    DefaultResponseSerializer,
-    DefaultRouteEngine,
-)
-from plugin.sdk.adapter.neko_adapter import NekoAdapterPlugin
+from .types import AdapterMessage, AdapterResponse, Protocol, RouteRule, RouteTarget
 
 __all__ = [
-    # 基类
-    "AdapterBase",
+    "AdapterMode",
     "AdapterConfig",
     "AdapterContext",
-    "AdapterMode",
-    # 类型
+    "AdapterBase",
+    "Protocol",
+    "RouteTarget",
     "AdapterMessage",
     "AdapterResponse",
-    "Protocol",
-    # 装饰器
+    "RouteRule",
+    "ADAPTER_EVENT_META",
+    "ADAPTER_LIFECYCLE_META",
+    "AdapterEventMeta",
     "on_adapter_event",
     "on_adapter_startup",
     "on_adapter_shutdown",
-    # Gateway Core 模型
-    "ExternalEnvelope",
+    "on_mcp_tool",
+    "on_mcp_resource",
+    "on_nonebot_message",
+    "NekoAdapterPlugin",
+    "SDK_VERSION",
+    "LogLevel",
+    "build_component_name",
+    "LoggerLike",
+    "get_sdk_logger",
+    "get_adapter_logger",
+    "setup_sdk_logging",
+    "configure_sdk_default_logger",
+    "intercept_standard_logging",
+    "format_log_text",
+    "ErrorCode",
+    "SdkError",
+    "InvalidArgumentError",
+    "CapabilityUnavailableError",
+    "AuthorizationError",
+    "TransportError",
+    "Ok",
+    "Err",
+    "Result",
+    "ResultError",
+    "is_ok",
+    "is_err",
+    "map_result",
+    "map_err_result",
+    "bind_result",
+    "match_result",
+    "unwrap",
+    "unwrap_or",
+    "raise_for_err",
+    "must",
+    "capture",
+    "CallChain",
+    "AsyncCallChain",
+    "CircularCallError",
+    "CallChainTooDeepError",
+    "get_call_chain",
+    "get_call_depth",
+    "is_in_call_chain",
+    "ExternalRequest",
     "GatewayAction",
     "GatewayRequest",
     "GatewayError",
@@ -81,22 +143,16 @@ __all__ = [
     "GatewayResponse",
     "RouteDecision",
     "RouteMode",
-    # Gateway Core 契约
-    "LoggerLike",
     "TransportAdapter",
     "RequestNormalizer",
     "PolicyEngine",
     "RouteEngine",
     "PluginInvoker",
     "ResponseSerializer",
-    # Gateway Core
     "AdapterGatewayCore",
-    # Gateway Core 默认组件
     "DefaultRequestNormalizer",
     "DefaultPolicyEngine",
     "DefaultRouteEngine",
     "DefaultResponseSerializer",
     "CallablePluginInvoker",
-    # NEKO Adapter 基类
-    "NekoAdapterPlugin",
 ]

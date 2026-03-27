@@ -12,8 +12,7 @@ router = APIRouter()
 
 def _get_frontend_root_dir() -> Path:
     plugin_root = Path(__file__).resolve().parents[2]
-    exported = plugin_root / "frontend" / "exported"
-    return exported
+    return plugin_root / "frontend" / "vue-project" / "dist"
 
 
 _FRONTEND_ROOT_DIR = _get_frontend_root_dir()
@@ -34,7 +33,10 @@ async def frontend_index():
     if not index_file.exists():
         raise HTTPException(
             status_code=404,
-            detail=f"Frontend index not found: {index_file}. Please export frontend first.",
+            detail=(
+                f"Frontend index not found: {index_file}. "
+                "Build plugin/frontend/vue-project (npm run build-only) or run plugin/export_frontend."
+            ),
         )
     return FileResponse(
         str(index_file),
@@ -74,7 +76,10 @@ async def frontend_file(full_path: str):
     if not index_file.exists():
         raise HTTPException(
             status_code=404,
-            detail=f"Frontend index not found: {index_file}. Please export frontend first.",
+            detail=(
+                f"Frontend index not found: {index_file}. "
+                "Build plugin/frontend/vue-project (npm run build-only) or run plugin/export_frontend."
+            ),
         )
     return FileResponse(
         str(index_file),

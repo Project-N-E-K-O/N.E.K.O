@@ -6,8 +6,9 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from plugin.sdk.adapter import Err, Ok, Result, TransportError
 from plugin.sdk.adapter.gateway_contracts import LoggerLike
-from plugin.sdk.adapter.gateway_models import ExternalEnvelope, GatewayResponse
+from plugin.sdk.adapter.gateway_models import ExternalRequest, GatewayResponse
 
 if TYPE_CHECKING:
     from plugin.plugins.mcp_adapter import MCPClient
@@ -27,51 +28,58 @@ class MCPTransportAdapter:
     client: "MCPClient"
     logger: LoggerLike
     protocol_name: str = "mcp"
-    _request_queue: asyncio.Queue[ExternalEnvelope] = field(
+    _request_queue: asyncio.Queue[ExternalRequest] = field(
         default_factory=lambda: asyncio.Queue(maxsize=1000)
     )
     _running: bool = False
 
-    async def start(self) -> None:
+    async def start(self) -> Result[None, TransportError]:
         """启动传输层（连接 MCP Server）。"""
         if self._running:
             self.logger.warning("MCPTransportAdapter already started")
-            return
+            return Ok(None)
 
         self._running = True
         timeout = 30.0
         connected = await self.client.connect(timeout=timeout)
         if not connected:
             self._running = False
-            raise RuntimeError(f"Failed to connect to MCP server: {self.client.config.name}")
+            return Err(
+                TransportError(
+                    f"Failed to connect to MCP server: {self.client.config.name}",
+                    op_name="mcp.transport.start",
+                )
+            )
 
         self.logger.info(
             "MCPTransportAdapter started for server '{}' with {} tools",
             self.client.config.name,
             len(self.client.tools),
         )
+        return Ok(None)
 
-    async def stop(self) -> None:
+    async def stop(self) -> Result[None, TransportError]:
         """停止传输层。"""
         if not self._running:
-            return
+            return Ok(None)
 
         self._running = False
         await self.client.disconnect()
         self.logger.info("MCPTransportAdapter stopped for server '{}'", self.client.config.name)
+        return Ok(None)
 
-    async def recv(self) -> ExternalEnvelope:
+    async def recv(self) -> Result[ExternalRequest, TransportError]:
         """
         接收外部请求。
         
         MCP 是被动模式，请求由 enqueue_request() 推入队列。
         """
         if not self._running:
-            raise RuntimeError("MCPTransportAdapter is not running")
+            return Err(TransportError("MCPTransportAdapter is not running", op_name="mcp.transport.recv"))
 
-        return await self._request_queue.get()
+        return Ok(await self._request_queue.get())
 
-    async def send(self, response: GatewayResponse) -> None:
+    async def send(self, response: GatewayResponse) -> Result[None, TransportError]:
         """
         发送响应。
         
@@ -91,8 +99,9 @@ class MCPTransportAdapter:
                 error_code,
                 response.latency_ms or 0.0,
             )
+        return Ok(None)
 
-    def enqueue_request(self, envelope: ExternalEnvelope) -> bool:
+    def enqueue_request(self, envelope: ExternalRequest) -> bool:
         """
         将请求推入队列（供外部调用）。
         

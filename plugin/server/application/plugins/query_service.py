@@ -45,6 +45,37 @@ def _normalize_plugin_entries(raw_items: list[object]) -> list[dict[str, object]
     return normalized_items
 
 
+def _normalize_string_list(raw_value: object) -> list[str]:
+    if not isinstance(raw_value, list):
+        return []
+    fields: list[str] = []
+    seen: set[str] = set()
+    for item in raw_value:
+        if not isinstance(item, str):
+            continue
+        field_name = item.strip()
+        if not field_name or field_name in seen:
+            continue
+        seen.add(field_name)
+        fields.append(field_name)
+    return fields
+
+
+def _extract_llm_result_fields(raw_value: object, *, raw_schema: object = None) -> list[str]:
+    fields = _normalize_string_list(raw_value)
+    if fields:
+        return fields
+    if isinstance(raw_schema, Mapping):
+        properties_obj = raw_schema.get("properties")
+        if isinstance(properties_obj, Mapping):
+            return [
+                key_obj
+                for key_obj in properties_obj.keys()
+                if isinstance(key_obj, str) and key_obj.strip()
+            ]
+    return []
+
+
 def _to_bool(value: object, *, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -63,6 +94,10 @@ def _resolve_plugin_status(
     plugin_meta: Mapping[str, object],
     running_plugin_ids: set[str],
 ) -> str:
+    runtime_load_state_obj = plugin_meta.get("runtime_load_state")
+    if isinstance(runtime_load_state_obj, str) and runtime_load_state_obj == "failed":
+        return "load_failed"
+
     plugin_type = plugin_meta.get("type")
     if plugin_type == "extension":
         runtime_enabled = _to_bool(plugin_meta.get("runtime_enabled"), default=True)
@@ -111,6 +146,25 @@ def _build_entries_from_handlers(
             input_schema = _normalize_mapping(raw_input_schema, context=f"plugin_entry[{entry_id}].input_schema")
         else:
             input_schema = {}
+        raw_metadata = getattr(meta, "metadata", {})
+        metadata: dict[str, object]
+        if isinstance(raw_metadata, Mapping):
+            metadata = _normalize_mapping(raw_metadata, context=f"plugin_entry[{entry_id}].metadata")
+        else:
+            metadata = {}
+        raw_llm_result_schema = getattr(meta, "llm_result_schema", {})
+        llm_result_schema: dict[str, object]
+        if isinstance(raw_llm_result_schema, Mapping):
+            llm_result_schema = _normalize_mapping(
+                raw_llm_result_schema,
+                context=f"plugin_entry[{entry_id}].llm_result_schema",
+            )
+        else:
+            llm_result_schema = {}
+        llm_result_fields = _extract_llm_result_fields(
+            getattr(meta, "llm_result_fields", None),
+            raw_schema=raw_llm_result_schema,
+        )
 
         name_obj = getattr(meta, "name", "")
         description_obj = getattr(meta, "description", "")
@@ -123,6 +177,9 @@ def _build_entries_from_handlers(
             "event_key": event_key_obj,
             "input_schema": input_schema,
             "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
+            "llm_result_fields": llm_result_fields,
+            "llm_result_schema": llm_result_schema,
+            "metadata": metadata,
         }
 
         # 透传 llm_result_fields 到运行时 entry，供 agent_server._lookup_llm_result_fields 读取
@@ -172,6 +229,28 @@ def _append_entries_from_preview(
             )
         else:
             input_schema = {}
+        metadata_obj = normalized_preview.get("metadata")
+        metadata: dict[str, object]
+        if isinstance(metadata_obj, Mapping):
+            metadata = _normalize_mapping(
+                metadata_obj,
+                context=f"plugins[{plugin_id}].entries_preview[{index}].metadata",
+            )
+        else:
+            metadata = {}
+        llm_result_schema_obj = normalized_preview.get("llm_result_schema")
+        llm_result_schema: dict[str, object]
+        if isinstance(llm_result_schema_obj, Mapping):
+            llm_result_schema = _normalize_mapping(
+                llm_result_schema_obj,
+                context=f"plugins[{plugin_id}].entries_preview[{index}].llm_result_schema",
+            )
+        else:
+            llm_result_schema = {}
+        llm_result_fields = _extract_llm_result_fields(
+            normalized_preview.get("llm_result_fields"),
+            raw_schema=llm_result_schema_obj,
+        )
 
         event_key_obj = normalized_preview.get("event_key")
         return_message_obj = normalized_preview.get("return_message")
@@ -185,6 +264,9 @@ def _append_entries_from_preview(
             "event_key": event_key_obj if isinstance(event_key_obj, str) and event_key_obj else f"{plugin_id}.{entry_id_obj}",
             "input_schema": input_schema,
             "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
+            "llm_result_fields": llm_result_fields,
+            "llm_result_schema": llm_result_schema,
+            "metadata": metadata,
         }
 
         # 透传 llm_result_fields（来源：registry._extract_entries_preview）
@@ -274,13 +356,12 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
                 plugin_id=plugin_id,
                 handlers_snapshot=handlers_snapshot,
             )
-            if not entries:
-                _append_entries_from_preview(
-                    plugin_id=plugin_id,
-                    plugin_meta=plugin_meta,
-                    entries=entries,
-                    seen=seen,
-                )
+            _append_entries_from_preview(
+                plugin_id=plugin_id,
+                plugin_meta=plugin_meta,
+                entries=entries,
+                seen=seen,
+            )
 
             plugin_info["entries"] = entries
             result.append(plugin_info)

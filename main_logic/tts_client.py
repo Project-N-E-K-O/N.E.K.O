@@ -21,6 +21,23 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Main")
 
 
+def _record_tts_telemetry(model_name: str, text: str):
+    """Record TTS usage telemetry via TokenTracker."""
+    if not text or not text.strip():
+        return
+    try:
+        from utils.token_tracker import TokenTracker
+        TokenTracker.get_instance().record(
+            model=f"tts:{model_name}",
+            prompt_tokens=len(text),
+            completion_tokens=0,
+            total_tokens=len(text),
+            call_type='tts'
+        )
+    except Exception:
+        pass
+
+
 class CustomTTSVoiceFetchError(Exception):
     """Raised when custom TTS voice list cannot be fetched from provider."""
 
@@ -448,12 +465,14 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         
                     except Exception as e:
                         logger.error(f"重新建立连接失败: {e}")
+                        response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+                        await asyncio.sleep(1.0)
                         continue
-                
+
                 # 检查文本有效性
                 if not tts_text or not tts_text.strip():
                     continue
-                
+
                 if not ws or not session_id:
                     continue
                 
@@ -467,6 +486,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         }
                     }
                     await ws.send(json.dumps(text_event))
+                    _record_tts_telemetry("stepfun", tts_text)
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     # 连接已关闭，标记为无效以便下次重连
@@ -740,12 +760,14 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         
                     except Exception as e:
                         logger.error(f"重新建立连接失败: {e}")
+                        response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+                        await asyncio.sleep(1.0)
                         continue
-                
+
                 # 检查文本有效性
                 if not tts_text or not tts_text.strip():
                     continue
-                
+
                 if not ws or not session_ready.is_set():
                     continue
                 
@@ -756,6 +778,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         "event_id": f"event_{int(time.time() * 1000)}",
                         "text": tts_text
                     }))
+                    _record_tts_telemetry("qwen", tts_text)
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     # 连接已关闭，标记为无效以便下次重连
@@ -862,10 +885,14 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             finally:
                 self.reset_bootstrap_state()
                 
-        def on_error(self, message: str): 
+        def on_error(self, message: str):
             if "request timeout after 23 seconds" in message:
                 self.connection_lost = True
                 logger.debug("CosyVoice SDK 内部 WebSocket 空闲超时，标记连接已断开")
+            elif "request timeout" in message:
+                self.connection_lost = True
+                logger.warning(f"CosyVoice 请求超时，标记连接已断开: {message}")
+                self.response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
             else:
                 _enqueue_error(self.response_queue, message)
             
@@ -941,6 +968,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             synthesizer = _create_synthesizer(detected_lang)
             callback.accepted_speech_id = current_speech_id
         synthesizer.streaming_call(char_buffer)
+        _record_tts_telemetry("cosyvoice", char_buffer)
         last_streaming_call_time = time.time()
         char_buffer = ""
 
@@ -1059,6 +1087,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 synthesizer = _create_synthesizer(detected_lang)
                 callback.accepted_speech_id = current_speech_id
                 synthesizer.streaming_call(char_buffer)
+                _record_tts_telemetry("cosyvoice", char_buffer)
                 last_streaming_call_time = time.time()
                 char_buffer = ""
             except Exception as e:
@@ -1092,6 +1121,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     last_streaming_call_time = time.time()
                 except Exception as reconnect_error:
                     logger.error(f"TTS Reconnect Error: {reconnect_error}")
+                    response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+                    time.sleep(1.0)
                     synthesizer = None
                     current_speech_id = None
                     last_streaming_call_time = None
@@ -1174,6 +1205,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                 ) as session:
                                     async with session.post(tts_url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                                         if resp.status == 200:
+                                            _record_tts_telemetry("cogtts", full_text[:1024])
                                             # CogTTS返回SSE格式: data: {...JSON...}
                                             # 使用缓冲区逐块读取，避免 "Chunk too big" 错误
                                             buffer = ""
@@ -1403,6 +1435,7 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                     _enqueue_error(response_queue, f"Gemini TTS失败: {e}")
 
                         if audio_data:
+                            _record_tts_telemetry("gemini", full_text)
                             audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
                             resampled = soxr.resample(audio_array, 24000, 48000, quality='HQ')
                             resampled_int16 = (resampled * 32768.0).clip(-32768, 32767).astype(np.int16)
@@ -1506,6 +1539,7 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                     input=full_text,
                                     response_format="pcm",
                                 ) as response:
+                                    _record_tts_telemetry("gpt-4o-mini-tts", full_text)
                                     # 流式接收音频数据
                                     async for chunk in response.iter_bytes(chunk_size=4096):
                                         if chunk:
@@ -1785,6 +1819,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 if _ws_is_open(ws):
                     try:
                         await ws.send(json.dumps({"cmd": "append", "data": tts_text}))
+                        _record_tts_telemetry("gptsovits", tts_text)
                         logger.debug(f"[GPT-SoVITS v3] append: {tts_text[:30]}...")
                     except Exception as e:
                         logger.error(f"[GPT-SoVITS v3] 发送失败: {e}")
@@ -1805,6 +1840,124 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         asyncio.run(async_worker())
     except Exception as e:
         logger.error(f"[GPT-SoVITS v3] Worker 启动失败: {e}")
+        response_queue.put(("__ready__", False))
+
+
+def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
+    """
+    MiniMax TTS worker（国服 / 国际服，用于 MiniMax 克隆音色）
+    使用 MiniMax 的 T2A v2 API，累积文本后一次性合成，返回 PCM 音频
+    
+    Args:
+        request_queue: 多进程请求队列，接收(speech_id, text)元组
+        response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
+        audio_api_key: MiniMax API Key (ASSIST_API_KEY_MINIMAX)
+        voice_id: MiniMax 音色ID (custom_xxx)
+        base_url: MiniMax API base URL（国服 / 国际服），为 None 时使用国服默认值
+    """
+    import asyncio
+    import httpx
+
+    _base = (base_url or "https://api.minimaxi.com").rstrip('/')
+    MINIMAX_TTS_URL = f"{_base}/v1/t2a_v2"
+
+    async def async_worker():
+        current_speech_id = None
+        text_buffer = []
+
+        logger.info("MiniMax TTS 已就绪，发送就绪信号 (voice_id=%s)", voice_id)
+        response_queue.put(("__ready__", True))
+
+        try:
+            loop = asyncio.get_running_loop()
+
+            while True:
+                try:
+                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                except Exception:
+                    break
+
+                if sid == "__interrupt__":
+                    # 打断：丢弃已累积文本，不调用 TTS API
+                    text_buffer = []
+                    current_speech_id = None
+                    continue
+
+                if current_speech_id != sid and sid is not None:
+                    current_speech_id = sid
+                    text_buffer = []
+
+                if sid is None:
+                    # 收到终止信号，合成累积的文本
+                    if text_buffer and current_speech_id is not None:
+                        full_text = "".join(text_buffer)
+                        if full_text.strip():
+                            try:
+                                payload = {
+                                    "model": "speech-01-turbo",
+                                    "text": full_text,
+                                    "stream": False,
+                                    "voice_setting": {
+                                        "voice_id": voice_id,
+                                        "speed": 1.0,
+                                        "vol": 1.0,
+                                        "pitch": 0,
+                                    },
+                                    "audio_setting": {
+                                        "sample_rate": 24000,
+                                        "bitrate": 128000,
+                                        "format": "pcm",
+                                        "channel": 1,
+                                    },
+                                }
+                                headers = {
+                                    'Authorization': f'Bearer {audio_api_key}',
+                                    'Content-Type': 'application/json',
+                                }
+                                async with httpx.AsyncClient(timeout=30) as client:
+                                    resp = await client.post(MINIMAX_TTS_URL, headers=headers, json=payload)
+
+                                if resp.status_code == 200:
+                                    result = resp.json()
+                                    base_resp = result.get('base_resp') or {}
+                                    if base_resp.get('status_code', 0) != 0:
+                                        _enqueue_error(response_queue, f"MiniMax TTS 错误: {base_resp.get('status_msg')}")
+                                    else:
+                                        audio_hex = result.get('data', {}).get('audio', '')
+                                        if audio_hex:
+                                            _record_tts_telemetry("minimax", full_text)
+                                            import binascii
+                                            pcm_bytes = binascii.unhexlify(audio_hex)
+                                            # MiniMax 返回 PCM 24kHz 16bit mono → 重采样到 48kHz
+                                            audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
+                                            resampled = _resample_audio(audio_array, 24000, 48000)
+                                            # 分块发送，每块 4096 bytes
+                                            for i in range(0, len(resampled), 4096):
+                                                chunk = resampled[i:i+4096]
+                                                if chunk:
+                                                    response_queue.put(("__audio__", current_speech_id, chunk))
+                                else:
+                                    _enqueue_error(response_queue, f"MiniMax TTS HTTP {resp.status_code}: {resp.text[:200]}")
+
+                            except Exception as e:
+                                _enqueue_error(response_queue, f"MiniMax TTS 合成失败: {e}")
+
+                    text_buffer = []
+                    current_speech_id = None
+                    continue
+
+                # 累积文本
+                if tts_text and tts_text.strip():
+                    text_buffer.append(tts_text)
+
+        except Exception as e:
+            _enqueue_error(response_queue, f"MiniMax TTS Worker 错误: {e}")
+            response_queue.put(("__ready__", False))
+
+    try:
+        asyncio.run(async_worker())
+    except Exception as e:
+        logger.error(f"MiniMax TTS Worker 启动失败: {e}")
         response_queue.put(("__ready__", False))
 
 
@@ -1835,52 +1988,88 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             break
 
 
-def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
-    """
-    根据 core_api 类型和是否有自定义音色，返回对应的 TTS worker 函数
-    
-    Args:
-        core_api_type: core API 类型 ('qwen', 'step', 'glm' 等)
-        has_custom_voice: 是否有自定义音色 (voice_id)
-    
-    Returns:
-        对应的 TTS worker 函数
-    """
+def _get_voice_meta(voice_id: str) -> dict | None:
+    """获取 voice_id 对应的 voice_data 元信息（含 provider 字段）。
 
+    返回 voice_data dict（至少含 ``provider``），找不到时返回 None。
+    """
+    if not voice_id:
+        return None
     try:
         cm = get_config_manager()
+        voices = cm.get_voices_for_current_api()
+        vdata = voices.get(voice_id)
+        if isinstance(vdata, dict):
+            return vdata
+    except Exception:
+        pass
+    return None
+
+
+def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
+    """
+    根据 core_api 类型和是否有自定义音色，返回一个 callable。
+
+    该 callable 的签名为 (request_queue, response_queue, api_key, voice_id)，
+    所有 provider 特有的参数（如 base_url）已通过 partial 绑定。
+    若某个 provider 需要替换 api_key，返回的第二个值非 None。
+
+    Returns:
+        (worker_fn, api_key_override)
+        - worker_fn: 签名统一的 TTS worker callable
+        - api_key_override: 若非 None，替换 tts_config['api_key']
+    """
+    cm = get_config_manager()
+
+    # 优先检查克隆音色 provider（MiniMax / 阿里 CosyVoice）
+    if has_custom_voice and voice_id:
+        voice_meta = _get_voice_meta(voice_id)
+        if voice_meta is None:
+            # 本地元数据缺失 — 可能是本地 TTS 音色（GPT-SoVITS / CosyVoice local），
+            # 也可能是远端 clone 成功但本地保存失败。fallthrough 让后续分支处理。
+            logger.debug("克隆音色 %s 无本地元数据，跳过 MiniMax 检测", voice_id)
+        elif voice_meta.get('provider', '').startswith('minimax'):
+            provider = voice_meta['provider']
+            logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
+                        voice_id, provider)
+            api_key = cm.get_tts_api_key(provider)
+            from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
+            base_url = voice_meta.get('minimax_base_url') or (
+                MINIMAX_INTL_BASE_URL if provider == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
+            )
+            worker = partial(minimax_tts_worker, base_url=base_url)
+            return worker, api_key
+
+    try:
         tts_config = cm.get_model_api_config('tts_custom')
-        # 只有当 is_custom=True（即 ENABLE_CUSTOM_API=true 且用户明确配置了自定义 TTS）时才使用本地 worker
         if tts_config.get('is_custom'):
             base_url = tts_config.get('base_url') or ''
-            # GPT-SoVITS v3：配置 http/https URL，worker 内部自动转为 ws:// 连接
-            # local_cosyvoice：配置 ws:// URL，直接使用 WebSocket
             if base_url.startswith('http://') or base_url.startswith('https://'):
-                return gptsovits_tts_worker
-            return local_cosyvoice_worker
+                return gptsovits_tts_worker, None
+            return local_cosyvoice_worker, None
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 
-    # 如果有自定义音色，使用 CosyVoice（仅阿里云支持）
+    # 如果有自定义音色，使用 CosyVoice（阿里云）
     if has_custom_voice:
-        return cosyvoice_vc_tts_worker
+        return cosyvoice_vc_tts_worker, None
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type == 'qwen':
-        return qwen_realtime_tts_worker
+        return qwen_realtime_tts_worker, None
     if core_api_type == 'free':
-        return partial(step_realtime_tts_worker, free_mode=True)
+        return partial(step_realtime_tts_worker, free_mode=True), None
     elif core_api_type == 'step':
-        return step_realtime_tts_worker
+        return step_realtime_tts_worker, None
     elif core_api_type == 'glm':
-        return cogtts_tts_worker
+        return cogtts_tts_worker, None
     elif core_api_type == 'gemini':
-        return gemini_tts_worker
+        return gemini_tts_worker, None
     elif core_api_type == 'openai':
-        return openai_tts_worker
+        return openai_tts_worker, None
     else:
         logger.error(f"{core_api_type}不支持原生TTS，请使用自定义语音")
-        return dummy_tts_worker
+        return dummy_tts_worker, None
 
 
 def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_id):
@@ -2071,6 +2260,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             if ws:
                 try:
                     await ws.send(json.dumps({"text": tts_text}))
+                    _record_tts_telemetry("local_cosyvoice", tts_text)
                     logger.debug(f"发送合成片段: {tts_text}")
                 except Exception as e:
                     _enqueue_error(response_queue, f"发送失败: {e}")

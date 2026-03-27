@@ -1,434 +1,380 @@
-"""
-Adapter 基类
-
-提供 Adapter 插件的核心功能和生命周期管理。
-"""
+"""Adapter-facing base facade for SDK v2."""
 
 from __future__ import annotations
 
-import asyncio
-from abc import ABC, abstractmethod
+import inspect
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Protocol, TypeAlias, cast
 
-from plugin.sdk.adapter.gateway_contracts import LoggerLike
+from plugin.sdk.shared.core.types import JsonObject, PluginContextProtocol
+from plugin.sdk.shared.models import Err, Ok, Result
+from plugin.sdk.shared.models.exceptions import CapabilityUnavailableError, SdkError, TransportError
 
-if TYPE_CHECKING:
-    from plugin.core.context import PluginContext
-    from plugin.sdk.adapter.types import AdapterMessage, AdapterResponse, RouteRule
+from .decorators import _matches_action_pattern
+from .gateway_contracts import LoggerLike
+from .types import RouteRule, RouteTarget
 
-__all__ = [
-    "AdapterMode",
-    "AdapterConfig",
-    "AdapterContext",
-    "AdapterBase",
-]
+_ROUTE_RULE_FIELDS = frozenset(RouteRule.__dataclass_fields__)
+AdapterEventHandler: TypeAlias = Callable[[JsonObject], object]
+
+
+class _RouteRuleLike(Protocol):
+    protocol: str
+    action: str
+    target: object
+    plugin_id: str | None
+    entry_id: str | None
+    priority: int
+    pattern: str | None
+
+
+RouteRuleInput: TypeAlias = RouteRule | Mapping[str, Any] | _RouteRuleLike
+
+
+def _route_rule_from_mapping(raw: Mapping[str, object]) -> RouteRule | None:
+    filtered: dict[str, object] = {
+        key: value
+        for key, value in raw.items()
+        if key in _ROUTE_RULE_FIELDS
+    }
+    if not filtered:
+        return None
+    try:
+        if "priority" in filtered:
+            filtered["priority"] = int(cast(object, filtered["priority"]))
+        if "target" in filtered:
+            raw_target = filtered["target"]
+            if isinstance(raw_target, RouteTarget):
+                filtered["target"] = raw_target
+            else:
+                target_value = getattr(raw_target, "value", raw_target)
+                filtered["target"] = RouteTarget(str(target_value))
+        return cast(RouteRule, RouteRule(**cast(Any, filtered)))
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass(slots=True)
+class _RegisteredEventHandler:
+    event_type: str
+    handler: AdapterEventHandler
+    protocol: str = "*"
+    action: str = "*"
+    pattern: str | None = None
+    priority: int = 0
 
 
 class AdapterMode(str, Enum):
-    """Adapter 工作模式"""
-    GATEWAY = "gateway"   # 网关模式：转发请求到其他插件
-    ROUTER = "router"     # 路由模式：直接处理请求
-    BRIDGE = "bridge"     # 桥接模式：协议转换
-    HYBRID = "hybrid"     # 混合模式：根据规则选择
+    GATEWAY = "gateway"
+    ROUTER = "router"
+    BRIDGE = "bridge"
+    HYBRID = "hybrid"
 
 
-@dataclass
+@dataclass(slots=True)
 class AdapterConfig:
-    """
-    Adapter 配置
-    
-    从 plugin.toml 的 [adapter] 部分解析。
-    
-    Attributes:
-        mode: 工作模式
-        protocols: 协议配置 {protocol_name: config_dict}
-        routes: 路由规则列表
-        priority: Adapter 启动优先级（数字越小越先启动）
-    """
     mode: AdapterMode = AdapterMode.HYBRID
-    protocols: Dict[str, Dict[str, object]] = field(default_factory=dict)
-    routes: List[Dict[str, object]] = field(default_factory=list)
+    protocols: dict[str, JsonObject] = field(default_factory=dict)
+    routes: list[RouteRule] = field(default_factory=list)
     priority: int = 0
-    
+
     @classmethod
-    def from_dict(cls, data: Dict[str, object]) -> "AdapterConfig":
-        """从字典创建配置"""
-        mode_str = data.get("mode", "hybrid")
+    def from_dict(cls, raw: JsonObject) -> "AdapterConfig":
+        mode = raw.get("mode", AdapterMode.HYBRID)
         try:
-            mode = AdapterMode(str(mode_str))
-        except ValueError:
-            mode = AdapterMode.HYBRID
-        
-        # 类型安全的提取
-        protocols_raw = data.get("protocols", {})
-        protocols = dict(protocols_raw) if isinstance(protocols_raw, dict) else {}
-        
-        routes_raw = data.get("routes", [])
-        routes = list(routes_raw) if isinstance(routes_raw, list) else []
-        
-        priority_raw = data.get("priority", 0)
-        priority = int(priority_raw) if isinstance(priority_raw, (int, float, str)) else 0
-        
+            mode_value = mode if isinstance(mode, AdapterMode) else AdapterMode(str(mode))
+        except Exception:
+            mode_value = AdapterMode.HYBRID
+        priority_raw = raw.get("priority", 0)
+        try:
+            priority_value = int(cast(int | str | bytes | bytearray, priority_raw))
+        except Exception:
+            priority_value = 0
+        protocols = raw.get("protocols", {})
+        routes_raw = raw.get("routes", [])
+        routes: list[RouteRule] = []
+        if isinstance(routes_raw, list):
+            for item in routes_raw:
+                if isinstance(item, Mapping):
+                    rule = _route_rule_from_mapping(cast(Mapping[str, object], item))
+                    if rule is not None:
+                        routes.append(rule)
+        protocols_value: dict[str, JsonObject] = {}
+        if isinstance(protocols, Mapping):
+            for key, value in protocols.items():
+                if isinstance(key, str) and isinstance(value, dict):
+                    protocols_value[key] = cast(JsonObject, dict(value))
         return cls(
-            mode=mode,
-            protocols=protocols,  # type: ignore[arg-type]
-            routes=routes,  # type: ignore[arg-type]
-            priority=priority,
+            mode=mode_value,
+            protocols=protocols_value,
+            routes=routes,
+            priority=priority_value,
         )
 
 
 class AdapterContext:
-    """
-    Adapter 上下文
-    
-    提供 Adapter 与 NEKO 系统交互的能力。
-    
-    Attributes:
-        adapter_id: Adapter 的插件ID
-        config: Adapter 配置
-        logger: 日志记录器
-        plugin_ctx: 底层的 PluginContext（如果有）
-    """
-    
     def __init__(
         self,
         adapter_id: str,
         config: AdapterConfig,
         logger: LoggerLike,
-        plugin_ctx: Optional["PluginContext"] = None,
-    ):
+        plugin_ctx: PluginContextProtocol | None = None,
+    ) -> None:
         self.adapter_id = adapter_id
         self.config = config
-        self.logger: LoggerLike = logger
-        self._plugin_ctx = plugin_ctx
-        self._event_handlers: Dict[str, List[Callable]] = {}
-    
+        self.logger = logger
+        self.plugin_ctx = plugin_ctx
+        self._event_handlers: dict[str, list[_RegisteredEventHandler]] = {}
+
+    def register_event_handler(
+        self,
+        event_type: str,
+        handler: AdapterEventHandler,
+        *,
+        protocol: str = "*",
+        action: str | None = None,
+        pattern: str | None = None,
+        priority: int = 0,
+    ) -> None:
+        if not callable(handler):
+            raise TypeError("handler must be callable")
+        registration = _RegisteredEventHandler(
+            event_type=event_type,
+            handler=handler,
+            protocol=protocol,
+            action=action or event_type,
+            pattern=pattern,
+            priority=priority,
+        )
+        self._event_handlers.setdefault(event_type, []).append(registration)
+
+    def get_event_handlers(self, event_type: str, *, protocol: str | None = None) -> list[AdapterEventHandler]:
+        matched: list[_RegisteredEventHandler] = []
+        candidates: list[_RegisteredEventHandler] = list(self._event_handlers.get(event_type, []))
+        seen_ids = {id(item) for item in candidates}
+        for registered_event_type, handlers in self._event_handlers.items():
+            if registered_event_type == event_type:
+                continue
+            for item in handlers:
+                if id(item) in seen_ids:
+                    continue
+                if _matches_action_pattern(item.event_type, event_type) or _matches_action_pattern(item.pattern, event_type):
+                    candidates.append(item)
+                    seen_ids.add(id(item))
+        for item in candidates:
+            event_matches = (
+                item.event_type == event_type
+                or _matches_action_pattern(item.event_type, event_type)
+                or _matches_action_pattern(item.pattern, event_type)
+            )
+            if not event_matches:
+                continue
+            if protocol is not None and item.protocol not in {"*", protocol}:
+                continue
+            action_matches = (
+                item.action == event_type
+                or _matches_action_pattern(item.action, event_type)
+                or _matches_action_pattern(item.pattern, event_type)
+            )
+            if action_matches:
+                matched.append(item)
+        matched.sort(key=lambda item: item.priority, reverse=True)
+        return [item.handler for item in matched]
+
     async def call_plugin(
         self,
         plugin_id: str,
-        entry: str,
-        payload: Dict[str, object],
+        entry_id: str,
+        payload: JsonObject,
         timeout: float = 30.0,
-    ) -> object:
-        """
-        调用指定插件的入口
-        
-        Args:
-            plugin_id: 目标插件ID
-            entry: 入口ID
-            payload: 请求参数
-            timeout: 超时时间（秒）
-        
-        Returns:
-            插件返回的结果
-        """
-        if self._plugin_ctx is None:
-            raise RuntimeError("AdapterContext not bound to PluginContext")
-        
-        # 使用 PluginContext 的 trigger_plugin_event_async 能力
-        return await self._plugin_ctx.trigger_plugin_event_async(
-            target_plugin_id=plugin_id,
-            event_type="adapter_call",
-            event_id=entry,
-            params=payload,
-            timeout=timeout,
-        )
-    
+    ) -> Result[JsonObject | None, CapabilityUnavailableError | TransportError]:
+        plugin_ctx = self.plugin_ctx
+        entry_ref = f"{plugin_id}:{entry_id}"
+        if plugin_ctx is None:
+            return Err(
+                CapabilityUnavailableError(
+                    "plugin_ctx is not available",
+                    op_name="adapter.call_plugin",
+                    capability="plugin_ctx",
+                    plugin_id=plugin_id,
+                    entry_ref=entry_ref,
+                    timeout=timeout,
+                )
+            )
+        entry_caller = getattr(plugin_ctx, "call_plugin_entry", None)
+        event_caller = getattr(plugin_ctx, "trigger_plugin_event", None)
+        try:
+            if callable(entry_caller):
+                invoke_result = entry_caller(
+                    target_plugin_id=plugin_id,
+                    entry_id=entry_id,
+                    params=payload,
+                    timeout=timeout,
+                )
+            elif callable(event_caller):
+                invoke_result = event_caller(
+                    target_plugin_id=plugin_id,
+                    event_type="plugin_entry",
+                    event_id=entry_id,
+                    params=payload,
+                    timeout=timeout,
+                )
+            else:
+                return Err(
+                    CapabilityUnavailableError(
+                        "plugin_ctx.call_plugin_entry / plugin_ctx.trigger_plugin_event is not available",
+                        op_name="adapter.call_plugin",
+                        capability="plugin_ctx.call_plugin_entry",
+                        plugin_id=plugin_id,
+                        entry_ref=entry_ref,
+                        timeout=timeout,
+                    )
+                )
+            result = await invoke_result if inspect.isawaitable(invoke_result) else invoke_result
+        except Exception as error:
+            if isinstance(error, (CapabilityUnavailableError, TransportError)):
+                return Err(error)
+            return Err(TransportError(str(error), op_name="adapter.call_plugin", plugin_id=plugin_id, entry_ref=entry_ref, timeout=timeout))
+        return Ok(result if isinstance(result, dict) else None)
+
     async def broadcast_event(
         self,
         event_type: str,
-        payload: Dict[str, object],
-    ) -> List[object]:
-        """
-        广播事件到所有订阅的插件
-        
-        Args:
-            event_type: 事件类型
-            payload: 事件数据
-        
-        Returns:
-            所有响应的列表
-        """
-        if self._plugin_ctx is None:
-            raise RuntimeError("AdapterContext not bound to PluginContext")
+        payload: JsonObject,
+        *,
+        protocol: str | None = None,
+    ) -> Result[list[JsonObject], TransportError]:
+        handlers = self.get_event_handlers(event_type, protocol=protocol)
+        outputs: list[JsonObject] = []
+        first_error: TransportError | None = None
+        for handler in handlers:
+            if callable(handler):
+                try:
+                    result = handler(payload)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    if isinstance(result, dict):
+                        outputs.append(result)
+                except Exception as error:
+                    if first_error is None:
+                        first_error = error if isinstance(error, TransportError) else TransportError(
+                            str(error),
+                            op_name="adapter.broadcast_event",
+                            event_type=event_type,
+                        )
+        if first_error is not None:
+            return Err(first_error)
+        return Ok(outputs)
 
-        # 当前 SDK 尚未提供 adapter 级稳定广播协议，避免静默返回空列表造成误判。
-        self.logger.warning(
-            "broadcast_event is not implemented: event_type={}, payload_keys={}",
-            event_type,
-            list(payload.keys()) if isinstance(payload, dict) else [],
+
+class AdapterBase:
+    def __init__(self, config: AdapterConfig, adapter_ctx: AdapterContext):
+        self.config = AdapterConfig(
+            mode=config.mode,
+            protocols={key: dict(value) for key, value in config.protocols.items()},
+            routes=list(config.routes),
+            priority=config.priority,
         )
-        raise NotImplementedError("Adapter broadcast_event is not implemented yet")
-    
-    def register_event_handler(
-        self,
-        event_key: str,
-        handler: Callable,
-    ) -> None:
-        """注册事件处理器"""
-        if event_key not in self._event_handlers:
-            self._event_handlers[event_key] = []
-        self._event_handlers[event_key].append(handler)
-    
-    def get_event_handlers(self, event_key: str) -> List[Callable]:
-        """获取事件处理器列表"""
-        return self._event_handlers.get(event_key, [])
+        self.adapter_ctx = adapter_ctx
+        self.adapter_ctx.config = self.config
+        self._tools: dict[str, object] = {}
+        self._resources: dict[str, object] = {}
+        self._routes: list[RouteRule] = list(self.config.routes)
 
-
-class AdapterBase(ABC):
-    """
-    Adapter 基类
-    
-    所有 Adapter 插件必须继承此类。
-    
-    示例:
-        ```python
-        from plugin.sdk.adapter import AdapterBase, AdapterConfig, AdapterContext
-        
-        class MyAdapter(AdapterBase):
-            async def on_startup(self) -> None:
-                self.logger.info("MyAdapter started")
-            
-            async def on_shutdown(self) -> None:
-                self.logger.info("MyAdapter stopped")
-        ```
-    """
-    
-    def __init__(self, config: AdapterConfig, ctx: AdapterContext):
-        self.config = config
-        self.ctx = ctx
-        self.logger = ctx.logger
-        self._routes: List["RouteRule"] = []
-        self._tools: Dict[str, Callable] = {}
-        self._resources: Dict[str, Callable] = {}
-        self._running = False
-    
     @property
     def adapter_id(self) -> str:
-        """获取 Adapter ID"""
-        return self.ctx.adapter_id
-    
+        return self.adapter_ctx.adapter_id
+
     @property
     def mode(self) -> AdapterMode:
-        """获取工作模式"""
         return self.config.mode
-    
-    # ========== 生命周期方法 ==========
-    
-    @abstractmethod
-    async def on_startup(self) -> None:
-        """
-        Adapter 启动时调用
-        
-        在此方法中初始化协议连接、注册工具等。
-        """
-        ...
-    
-    @abstractmethod
-    async def on_shutdown(self) -> None:
-        """
-        Adapter 关闭时调用
-        
-        在此方法中清理资源、关闭连接等。
-        """
-        ...
-    
-    async def on_message(self, msg: "AdapterMessage") -> Optional["AdapterResponse"]:
-        """
-        处理收到的消息
-        
-        默认实现根据路由规则分发消息。子类可以重写此方法。
-        
-        Args:
-            msg: 收到的消息
-        
-        Returns:
-            响应消息，或 None 表示不响应
-        """
-        from plugin.sdk.adapter.types import RouteTarget
-        
-        # 查找匹配的路由规则
-        route = self._find_matching_route(msg)
-        
-        if route is None:
-            self.logger.debug("No matching route for message: {}", msg.id)
-            return None
-        
-        if route.target == RouteTarget.DROP:
-            return None
-        
-        if route.target == RouteTarget.SELF:
-            return await self._handle_locally(msg)
-        
-        if route.target == RouteTarget.PLUGIN:
-            return await self._forward_to_plugin(msg, route)
-        
-        if route.target == RouteTarget.BROADCAST:
-            try:
-                responses = await self.ctx.broadcast_event(
-                    f"{msg.protocol.value}.{msg.action}",
-                    {"message": msg},
-                )
-                # 返回第一个非空响应
-                for resp in responses:
-                    if resp is not None:
-                        return msg.reply(resp)
-                return None
-            except NotImplementedError as e:
-                self.logger.warning("Broadcast route is not implemented: {}", e)
-                return msg.error(str(e), code="NOT_IMPLEMENTED")
-            except Exception as e:
-                self.logger.exception("Broadcast route failed")
-                return msg.error(str(e), code="BROADCAST_ERROR")
-        
-        return None
-    
-    # ========== Router 模式 API ==========
-    
-    def register_tool(
-        self,
-        name: str,
-        handler: Callable,
-        schema: Optional[Dict[str, object]] = None,
-    ) -> None:
-        """
-        注册一个工具（Router 模式）
-        
-        Args:
-            name: 工具名称
-            handler: 处理函数
-            schema: JSON Schema 描述
-        """
+
+    def register_tool(self, name: str, handler: object) -> bool:
+        if not isinstance(name, str) or name.strip() == "":
+            return False
         self._tools[name] = handler
-        self.logger.debug("Registered tool: {}", name)
-    
-    def register_resource(
-        self,
-        uri: str,
-        handler: Callable,
-    ) -> None:
-        """
-        注册一个资源（Router 模式）
-        
-        Args:
-            uri: 资源 URI
-            handler: 处理函数
-        """
-        self._resources[uri] = handler
-        self.logger.debug("Registered resource: {}", uri)
-    
-    def get_tool(self, name: str) -> Optional[Callable]:
-        """获取工具处理函数"""
+        return True
+
+    def unregister_tool(self, name: str) -> object | None:
+        return self._tools.pop(name, None)
+
+    def register_resource(self, name: str, handler: object) -> bool:
+        if not isinstance(name, str) or name.strip() == "":
+            return False
+        self._resources[name] = handler
+        return True
+
+    def unregister_resource(self, name: str) -> object | None:
+        return self._resources.pop(name, None)
+
+    def get_tool(self, name: str) -> object | None:
         return self._tools.get(name)
-    
-    def get_resource(self, uri: str) -> Optional[Callable]:
-        """获取资源处理函数"""
-        return self._resources.get(uri)
-    
-    def list_tools(self) -> List[str]:
-        """列出所有注册的工具"""
-        return list(self._tools.keys())
-    
-    def list_resources(self) -> List[str]:
-        """列出所有注册的资源"""
-        return list(self._resources.keys())
-    
-    # ========== Gateway 模式 API ==========
-    
-    async def forward_to_plugin(
-        self,
-        plugin_id: str,
-        entry: str,
-        payload: Dict[str, object],
-        timeout: float = 30.0,
-    ) -> object:
-        """
-        转发请求到指定插件
-        
-        Args:
-            plugin_id: 目标插件ID
-            entry: 入口ID
-            payload: 请求参数
-            timeout: 超时时间
-        
-        Returns:
-            插件返回的结果
-        """
-        return await self.ctx.call_plugin(plugin_id, entry, payload, timeout)
-    
+
+    def get_resource(self, name: str) -> object | None:
+        return self._resources.get(name)
+
+    def list_tools(self) -> list[str]:
+        return sorted(self._tools.keys())
+
+    def list_resources(self) -> list[str]:
+        return sorted(self._resources.keys())
+
+    def add_route(self, rule: RouteRuleInput) -> bool:
+        if isinstance(rule, RouteRule):
+            normalized = rule
+        elif isinstance(rule, Mapping):
+            normalized = _route_rule_from_mapping(cast(Mapping[str, object], rule))
+            if normalized is None:
+                return False
+        elif all(hasattr(rule, name) for name in ("protocol", "action", "target", "plugin_id", "entry_id", "priority", "pattern")):
+            normalized = _route_rule_from_mapping(
+                {
+                    "protocol": rule.protocol,
+                    "action": rule.action,
+                    "pattern": rule.pattern,
+                    "target": rule.target,
+                    "plugin_id": rule.plugin_id,
+                    "entry_id": rule.entry_id,
+                    "priority": rule.priority,
+                }
+            )
+            if normalized is None:
+                return False
+        else:
+            return False
+        self._routes.append(normalized)
+        self.config.routes = [*self.config.routes, normalized]
+        return True
+
+    def list_routes(self) -> list[RouteRule]:
+        return list(self._routes)
+
+    async def forward_to_plugin(self, plugin_id: str, entry_id: str, payload: JsonObject, timeout: float = 30.0) -> Result[JsonObject | None, CapabilityUnavailableError | TransportError]:
+        return await self.adapter_ctx.call_plugin(plugin_id, entry_id, payload, timeout=timeout)
+
     async def broadcast(
         self,
         event_type: str,
-        payload: Dict[str, object],
-    ) -> List[object]:
-        """
-        广播事件到所有订阅的插件
-        
-        Args:
-            event_type: 事件类型
-            payload: 事件数据
-        
-        Returns:
-            所有响应的列表
-        """
-        return await self.ctx.broadcast_event(event_type, payload)
-    
-    # ========== 路由管理 ==========
-    
-    def add_route(self, route: "RouteRule") -> None:
-        """添加路由规则"""
-        self._routes.append(route)
-        # 按优先级排序（高优先级在前）
-        self._routes.sort(key=lambda r: -r.priority)
-    
-    def _find_matching_route(self, msg: "AdapterMessage") -> Optional["RouteRule"]:
-        """查找匹配的路由规则"""
-        for route in self._routes:
-            if route.matches(msg):
-                return route
-        return None
-    
-    async def _handle_locally(self, msg: "AdapterMessage") -> Optional["AdapterResponse"]:
-        """本地处理消息"""
-        # 检查是否有对应的工具
-        if msg.action == "tool_call":
-            tool_name = msg.payload.get("name") if isinstance(msg.payload, dict) else None
-            if tool_name and tool_name in self._tools:
-                handler = self._tools[tool_name]
-                args = msg.payload.get("arguments", {}) if isinstance(msg.payload, dict) else {}
-                try:
-                    if not callable(handler):
-                        return msg.error(f"Handler for tool '{tool_name}' is not callable")
-                    if not isinstance(args, dict):
-                        return msg.error(f"Invalid arguments for tool '{tool_name}': must be object")
-                    result = handler(**args)
-                    if asyncio.iscoroutine(result):
-                        result = await result
-                    return msg.reply(result)
-                except Exception as e:
-                    return msg.error(str(e))
-        
-        return None
-    
-    async def _forward_to_plugin(
-        self,
-        msg: "AdapterMessage",
-        route: "RouteRule",
-    ) -> Optional["AdapterResponse"]:
-        """转发消息到插件"""
-        if not route.plugin_id or not route.entry:
-            self.logger.warning("Route missing plugin_id or entry: {}", route)
-            return msg.error("Invalid route configuration")
-        
-        try:
-            result = await self.forward_to_plugin(
-                route.plugin_id,
-                route.entry,
-                {"message": msg, "payload": msg.payload},
-            )
-            return msg.reply(result)
-        except Exception as e:
-            self.logger.exception("Failed to forward message to plugin")
-            return msg.error(str(e))
+        payload: JsonObject,
+        *,
+        protocol: str | None = None,
+    ) -> Result[list[JsonObject], TransportError]:
+        return await self.adapter_ctx.broadcast_event(
+            event_type,
+            payload,
+            protocol=protocol,
+        )
+
+    async def on_message(self, message: JsonObject) -> Result[JsonObject | None, SdkError]:
+        return Ok(message)
+
+    async def on_startup(self) -> Result[None, SdkError]:
+        return Ok(None)
+
+    async def on_shutdown(self) -> Result[None, SdkError]:
+        return Ok(None)
+
+
+__all__ = ["AdapterBase", "AdapterConfig", "AdapterContext", "AdapterMode"]

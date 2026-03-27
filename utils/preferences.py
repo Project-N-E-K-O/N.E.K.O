@@ -13,11 +13,13 @@ PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
 def load_user_preferences() -> List[Dict[str, Any]]:
     """
     加载用户偏好设置
-    
+
     Returns:
         List[Dict[str, Any]]: 用户偏好列表，每个元素对应一个模型的偏好设置，如果文件不存在或读取失败则返回空列表
     """
     try:
+        global PREFERENCES_FILE
+        PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
         if os.path.exists(PREFERENCES_FILE):
             with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -75,13 +77,18 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         bool: 更新成功返回True，失败返回False
     """
     try:
+        # 拒绝保留键作为模型路径，防止破坏全局对话设置条目
+        if model_path == GLOBAL_CONVERSATION_KEY:
+            print(f"拒绝更新模型偏好：model_path 不能使用保留键 '{GLOBAL_CONVERSATION_KEY}'")
+            return False
+
         # 加载现有偏好
         current_preferences = load_user_preferences()
         
-        # 查找是否已存在该模型的偏好
+        # 查找是否已存在该模型的偏好（跳过哨兵）
         model_index = -1
         for i, pref in enumerate(current_preferences):
-            if pref.get('model_path') == model_path:
+            if pref.get('model_path') != GLOBAL_CONVERSATION_KEY and pref.get('model_path') == model_path:
                 model_index = i
                 break
         
@@ -177,8 +184,11 @@ def get_model_preferences(model_path: Optional[str] = None) -> Optional[Dict[str
                 return pref
         return None
     else:
-        # 返回首选模型（列表第一个）的偏好
-        return preferences[0] if preferences else None
+        # 返回首选模型（列表第一个）的偏好，跳过哨兵
+        for pref in preferences:
+            if pref.get('model_path') != GLOBAL_CONVERSATION_KEY:
+                return pref
+        return None
 
 def get_preferred_model_path() -> Optional[str]:
     """
@@ -188,8 +198,9 @@ def get_preferred_model_path() -> Optional[str]:
         Optional[str]: 首选模型的路径，如果没有则返回None
     """
     preferences = load_user_preferences()
-    if preferences and len(preferences) > 0:
-        return preferences[0].get('model_path')
+    for pref in preferences:
+        if pref.get('model_path') != GLOBAL_CONVERSATION_KEY:
+            return pref.get('model_path')
     return None
 
 def validate_model_preferences(preferences: Dict[str, Any]) -> bool:
@@ -235,10 +246,10 @@ def move_model_to_top(model_path: str) -> bool:
     try:
         preferences = load_user_preferences()
         
-        # 查找模型索引
+        # 查找模型索引（跳过哨兵）
         model_index = -1
         for i, pref in enumerate(preferences):
-            if pref.get('model_path') == model_path:
+            if pref.get('model_path') != GLOBAL_CONVERSATION_KEY and pref.get('model_path') == model_path:
                 model_index = i
                 break
         
@@ -252,4 +263,121 @@ def move_model_to_top(model_path: str) -> bool:
             return False
     except Exception as e:
         print(f"移动模型到顶部失败: {e}")
+        return False
+
+
+# ========== 全局对话设置（用于 localStorage 同步备份）==========
+
+GLOBAL_CONVERSATION_KEY = "__global_conversation__"
+
+# 全局对话设置允许的字段（白名单）
+_ALLOWED_CONVERSATION_SETTINGS = {
+    'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
+    'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
+    'proactiveMusicEnabled', 'proactiveMemeEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
+    'proactiveChatInterval', 'proactiveVisionInterval', 'subtitleEnabled', 'userLanguage'
+}
+
+
+def load_global_conversation_settings() -> Dict[str, Any]:
+    """
+    加载全局对话设置（从 user_preferences.json 的全局条目中读取）
+    直接读取文件，不经过 load_user_preferences()（后者会过滤掉哨兵）
+
+    Returns:
+        Dict[str, Any]: 对话设置字典，如果不存在则返回空字典
+    """
+    try:
+        global PREFERENCES_FILE
+        PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
+        if os.path.exists(PREFERENCES_FILE):
+            with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    for pref in data:
+                        if pref.get('model_path') == GLOBAL_CONVERSATION_KEY:
+                            # 提取对话设置：仅返回白名单字段，防止泄露无关数据
+                            return {k: v for k, v in pref.items() if k in _ALLOWED_CONVERSATION_SETTINGS}
+    except Exception as e:
+        print(f"加载全局对话设置失败: {e}")
+    return {}
+
+
+def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
+    """
+    保存全局对话设置（写入 user_preferences.json 的全局条目）
+    使用白名单过滤，只保存允许的字段，model_path 固定为哨兵值
+
+    Args:
+        settings (Dict[str, Any]): 要保存的对话设置字典
+
+    Returns:
+        bool: 保存成功返回True，失败返回False
+    """
+    try:
+        # 确保配置目录存在，并使用最新路径（与 save_user_preferences 保持一致）
+        _config_manager.ensure_config_directory()
+        global PREFERENCES_FILE
+        PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
+
+        # 直接读取完整文件（不经过 load_user_preferences，避免哨兵被过滤）
+        if os.path.exists(PREFERENCES_FILE):
+            with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = []
+
+        if isinstance(data, dict):
+            # 兼容旧 dict 格式：包装为列表
+            data = [data]
+        elif not isinstance(data, list):
+            data = []
+
+        # 查找全局对话设置条目的索引
+        global_index = -1
+        for i, pref in enumerate(data):
+            if pref.get('model_path') == GLOBAL_CONVERSATION_KEY:
+                global_index = i
+                break
+
+        # 白名单过滤：只保留允许的字段，防止恶意覆盖
+        filtered_settings = {k: v for k, v in settings.items() if k in _ALLOWED_CONVERSATION_SETTINGS}
+
+        # 值级别验证：确保字段类型和范围正确
+        _BOOL_FIELDS = {
+            'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
+            'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
+            'proactiveMusicEnabled', 'mergeMessagesEnabled', 'focusModeEnabled', 'subtitleEnabled'
+        }
+        _INT_INTERVAL_FIELDS = {'proactiveChatInterval', 'proactiveVisionInterval'}
+        _STRING_FIELDS = {'userLanguage'}
+
+        validated = {}
+        for k, v in filtered_settings.items():
+            if k in _BOOL_FIELDS:
+                if isinstance(v, bool):
+                    validated[k] = v
+            elif k in _INT_INTERVAL_FIELDS:
+                if isinstance(v, int) and 1000 <= v <= 3600000:
+                    validated[k] = v
+            elif k in _STRING_FIELDS:
+                if isinstance(v, str) and v:
+                    validated[k] = v
+        filtered_settings = validated
+
+        # 创建全局对话设置条目（model_path 固定，不可被用户输入篡改）
+        global_pref = {'model_path': GLOBAL_CONVERSATION_KEY}
+        global_pref.update(filtered_settings)
+
+        if global_index >= 0:
+            # 更新现有条目（保留其他模型偏好不变）
+            data[global_index] = global_pref
+        else:
+            # 添加新条目到列表末尾
+            data.append(global_pref)
+
+        atomic_write_json(PREFERENCES_FILE, data, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"保存全局对话设置失败: {e}")
         return False 

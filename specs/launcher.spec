@@ -172,12 +172,6 @@ hiddenimports += [
     'requests',
     'cachetools',
     
-    # Langchain
-    'langchain',
-    'langchain_community',
-    'langchain_core',
-    'langchain_openai',
-    
     # 项目主模块
     'main_server',
     'memory_server',

@@ -58,8 +58,8 @@
      */
     function hasAnyChatModeEnabled() {
         return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled ||
-               S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
-               S.proactiveMusicEnabled;
+            S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
+            S.proactiveMusicEnabled || S.proactiveMemeEnabled;
     }
     mod.hasAnyChatModeEnabled = hasAnyChatModeEnabled;
 
@@ -75,25 +75,25 @@
         // 必须选择至少一种搭话方式
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
-            !S.proactiveMusicEnabled) {
+            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled) {
             return false;
         }
 
         // 如果只选择了视觉搭话，需要同时开启自主视觉
         if (S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
-            !S.proactiveMusicEnabled) {
+            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled) {
             return S.proactiveVisionEnabled;
         }
 
         // 如果只选择了个人动态搭话，需要同时开启个人动态
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && S.proactivePersonalChatEnabled &&
-            !S.proactiveMusicEnabled) {
+            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled) {
             return S.proactivePersonalChatEnabled;
         }
 
-        // 音乐搭话不需要额外条件，总是允许
+        // 音乐搭话和meme搭话不需要额外条件，总是允许
         return true;
     }
     mod.canTriggerProactively = canTriggerProactively;
@@ -136,11 +136,11 @@
 
         // 计算延迟时间（指数退避，倍率2.5）
         var delay = (S.proactiveChatInterval * 1000) * Math.pow(2.5, S.proactiveChatBackoffLevel);
-        
+
         // 首次启动时额外等待5秒，避免程序刚启动就触发音乐推荐
         var startupDelay = S.proactiveChatBackoffLevel === 0 ? 6000 : 0;
         delay += startupDelay;
-        
+
         console.log('主动搭话：' + (delay / 1000) + '秒后触发（基础间隔：' + S.proactiveChatInterval + '秒，退避级别：' + S.proactiveChatBackoffLevel + '，启动延迟：' + (startupDelay / 1000) + '秒）');
 
         S.proactiveChatTimer = setTimeout(async function () {
@@ -243,6 +243,12 @@
                 availableModes.push('music');
             }
 
+            // Meme搭话
+            if (S.proactiveMemeEnabled && S.proactiveChatEnabled) {
+                console.log('[ProactiveChat] Meme模式已启用');
+                availableModes.push('meme');
+            }
+
             // 如果没有选择任何搭话方式，跳过本次搭话
             if (availableModes.length === 0) {
                 console.log('未选择任何搭话方式，跳过本次搭话');
@@ -303,6 +309,10 @@
                 // 音乐搭话
                 if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
                     latestModes.push('music');
+                }
+                // Meme搭话
+                if (S.proactiveMemeEnabled && S.proactiveChatEnabled) {
+                    latestModes.push('meme');
                 }
                 availableModes = availableModes.filter(function (m) { return latestModes.includes(m); });
                 requestBody.enabled_modes = availableModes;
@@ -402,11 +412,30 @@
                         }
                     }
 
-                    // 无论 source_mode 是什么，只要有链接就尝试显示（音乐推荐链接除外）
-                    if (result.source_links && result.source_links.length > 0) {
-                        setTimeout(function () {
-                            _showProactiveChatSourceLinks(result.source_links, dispatchedTrackUrl);
-                        }, 3000);
+                    // 【重构】统一处理链接，使用服务端返回的 turn_id 绑定，解决 HTTP/WS 竞态
+                    var captureTurnId = result.turn_id || 'fallback';
+                    var processed = _processProactiveLinks(result.source_links || [], dispatchedTrackUrl);
+
+                    // 暂存待展示附件，等待对应的 turn_id 建立后统一 flush
+                    if (!window._proactiveAttachmentBuffer) {
+                        window._proactiveAttachmentBuffer = {};
+                    }
+                    if (!window._proactiveAttachmentBuffer[captureTurnId]) {
+                        window._proactiveAttachmentBuffer[captureTurnId] = { memes: [], links: [] };
+                    }
+                    
+                    if (processed.memeLinks.length > 0) {
+                        var MAX_MEME_BUBBLES = 2;
+                        window._proactiveAttachmentBuffer[captureTurnId].memes = processed.memeLinks.slice(0, MAX_MEME_BUBBLES);
+                    }
+                    
+                    if (processed.otherLinks.length > 0) {
+                        window._proactiveAttachmentBuffer[captureTurnId].links = processed.otherLinks;
+                    }
+
+                    // 如果当前 turn 已经就绪（例如主动搭话回复极快），直接 flush
+                    if (window.realisticGeminiCurrentTurnId === captureTurnId) {
+                        _flushProactiveAttachments(captureTurnId);
                     }
 
                     // 后端会直接通过session发送消息和TTS，前端无需处理显示
@@ -422,56 +451,120 @@
     }
     mod.triggerProactiveChat = triggerProactiveChat;
 
+    // ======================== attachment buffering ========================
+
+    /**
+     * 统一 flush 对应 turn_id 的主动搭话附件（表情包、来源卡片）
+     */
+    function _flushProactiveAttachments(turnId) {
+        if (!window._proactiveAttachmentBuffer || !window._proactiveAttachmentBuffer[turnId]) {
+            return; // 没有待展示的附件
+        }
+        
+        var attachments = window._proactiveAttachmentBuffer[turnId];
+        
+        if (attachments.memes && attachments.memes.length > 0) {
+            _showMemeBubbles(attachments.memes, turnId);
+        }
+        
+        if (attachments.links && attachments.links.length > 0) {
+            setTimeout(function () {
+                _showProactiveSourceCards(attachments.links, turnId);
+            }, 3000);
+        }
+        
+        // flush 后清理 buffer
+        delete window._proactiveAttachmentBuffer[turnId];
+    }
+    mod._flushProactiveAttachments = _flushProactiveAttachments;
+
     // ======================== source link card ========================
 
     /**
      * 在聊天区域临时显示来源链接卡片（旁路，不进入 AI 记忆）
      */
-    function _showProactiveChatSourceLinks(links, dispatchedUrl) {
-        try {
-            var chatContent = document.getElementById('chat-content-wrapper');
-            if (!chatContent) return;
+    /**
+     * 将原始链接处理为分类好的安全链接对象
+     */
+    function _processProactiveLinks(links, dispatchedUrl) {
+        var isSameUrl = function (u1, u2) {
+            if (!u1 || !u2) return false;
+            if (u1 === u2) return true;
+            try {
+                var url1 = new URL(u1, window.location.origin);
+                var url2 = new URL(u2, window.location.origin);
+                var getRef = function (u) { return (u.hostname + u.pathname.replace(/\/$/, '') + u.search).toLowerCase(); };
+                return getRef(url1) === getRef(url2);
+            } catch (e) { return u1 === u2; }
+        };
 
-            // 鲁棒的 URL 比较函数
-            var isSameUrl = function (u1, u2) {
-                if (!u1 || !u2) return false;
-                if (u1 === u2) return true;
-                try {
-                    var url1 = new URL(u1, window.location.origin);
-                    var url2 = new URL(u2, window.location.origin);
-                    var getRef = function (u) { return (u.hostname + u.pathname.replace(/\/$/, '') + u.search).toLowerCase(); };
-                    return getRef(url1) === getRef(url2);
-                } catch (e) { return u1 === u2; }
-            };
+        var memeLinks = [];
+        var otherLinks = [];
 
-            var validLinks = [];
-            for (var i = 0; i < links.length; i++) {
-                var link = links[i];
+        for (var i = 0; i < links.length; i++) {
+            var link = links[i];
+            if (!link) continue;
 
-                // 跳过 null/undefined 条目
-                if (!link) continue;
+            var isMusicLink = link.artist || link.source === '音乐推荐' || (dispatchedUrl && isSameUrl(link.url, dispatchedUrl));
+            if (isMusicLink) continue;
 
-                // 所有的音乐推荐链接都不显示在聊天框中（由播放器统一处理）
-                var isMusicLink = link.artist || link.source === '音乐推荐' || (dispatchedUrl && isSameUrl(link.url, dispatchedUrl));
-                if (isMusicLink) continue;
-
-                var safeUrl = null;
-                try {
-                    var u = new URL(String(link.url || ''), window.location.origin);
-                    if (u.protocol === 'http:' || u.protocol === 'https:') {
-                        safeUrl = u.href;
+            var isMemeLink = link.type === 'meme' || link.type === 'gif';
+            if (!isMemeLink) {
+                var memeSourceKeywords = ['表情包', '斗图吧', '发表情', 'Imgflip', 'meme', 'sticker'];
+                var linkSource = String(link.source || '').toLowerCase();
+                for (var k = 0; k < memeSourceKeywords.length; k++) {
+                    if (linkSource.indexOf(memeSourceKeywords[k].toLowerCase()) !== -1) {
+                        isMemeLink = true;
+                        break;
                     }
-                } catch (e) {
-                    console.warn('解析链接失败:', e);
                 }
-                if (safeUrl) {
-                    validLinks.push(Object.assign({}, link, { safeUrl: safeUrl }));
+            }
+            if (!isMemeLink && link.url) {
+                var memeDomains = ['qn.doutub.com', 'img.soutula.com', 'i.imgflip.com', 'doutub.com', 'fabiaoqing.com', 'soutula.com'];
+                var linkHost = '';
+                try {
+                    var tempUrl = new URL(String(link.url), window.location.origin);
+                    linkHost = tempUrl.hostname.toLowerCase();
+                } catch (e) {}
+                for (var m = 0; m < memeDomains.length; m++) {
+                    if (linkHost === memeDomains[m] || linkHost.endsWith('.' + memeDomains[m])) {
+                        isMemeLink = true;
+                        break;
+                    }
                 }
             }
 
-            if (validLinks.length === 0) return;
+            var safeUrl = null;
+            var rawUrl = String(link.url || '').trim();
+            if (rawUrl && (rawUrl.startsWith('http://') || rawUrl.startsWith('https://'))) {
+                try {
+                    var u = new URL(rawUrl);
+                    if (u.protocol === 'http:' || u.protocol === 'https:') {
+                        safeUrl = u.href;
+                    }
+                } catch (e) {}
+            }
 
-            // 超过 3 个旧卡片时，移除最早的
+            if (safeUrl) {
+                if (isMemeLink) {
+                    memeLinks.push(Object.assign({}, link, { safeUrl: safeUrl }));
+                } else {
+                    otherLinks.push(Object.assign({}, link, { safeUrl: safeUrl }));
+                }
+            }
+        }
+        return { memeLinks: memeLinks, otherLinks: otherLinks };
+    }
+
+    /**
+     * 在聊天区域临时显示来源链接卡片
+     */
+    function _showProactiveSourceCards(otherLinks, targetTurnId) {
+        try {
+            if (window.realisticGeminiCurrentTurnId !== targetTurnId) return;
+            var chatContent = document.getElementById('chat-content-wrapper');
+            if (!chatContent || otherLinks.length === 0) return;
+
             var MAX_LINK_CARDS = 3;
             var existingCards = chatContent.querySelectorAll('.proactive-source-link-card');
             var overflow = existingCards.length - MAX_LINK_CARDS + 1;
@@ -484,95 +577,152 @@
             var linkCard = document.createElement('div');
             linkCard.className = 'proactive-source-link-card';
             linkCard.style.cssText =
-                'margin: 6px 12px;' +
-                'padding: 8px 14px;' +
-                'background: var(--bg-secondary, rgba(255,255,255,0.08));' +
-                'border-left: 3px solid var(--accent-color, #6c8cff);' +
-                'border-radius: 8px;' +
-                'font-size: 12px;' +
-                'opacity: 0;' +
-                'transition: opacity 0.4s ease;' +
-                'max-width: 320px;' +
-                'position: relative;';
+                'margin: 6px 12px; padding: 8px 14px; background: var(--bg-secondary, rgba(255,255,255,0.08));' +
+                'border-left: 3px solid var(--accent-color, #6c8cff); border-radius: 8px;' +
+                'font-size: 12px; opacity: 0; transition: opacity 0.4s ease; max-width: 320px; position: relative;';
 
             var closeBtn = document.createElement('span');
-            closeBtn.textContent = '\u2715'; // ✕
-            closeBtn.style.cssText =
-                'position: absolute;' +
-                'top: 6px;' +
-                'right: 6px;' +
-                'cursor: pointer;' +
-                'color: var(--text-secondary, rgba(200,200,200,0.8));' +
-                'font-size: 14px;' +
-                'font-weight: bold;' +
-                'line-height: 1;' +
-                'width: 20px;' +
-                'height: 20px;' +
-                'display: flex;' +
-                'align-items: center;' +
-                'justify-content: center;' +
-                'border-radius: 50%;' +
-                'background: rgba(255,255,255,0.08);' +
-                'transition: color 0.2s, background 0.2s;' +
-                'z-index: 1;';
-            closeBtn.addEventListener('mouseenter', function () {
-                closeBtn.style.color = '#fff';
-                closeBtn.style.background = 'rgba(255,255,255,0.2)';
-            });
-            closeBtn.addEventListener('mouseleave', function () {
-                closeBtn.style.color = 'var(--text-secondary, rgba(200,200,200,0.8))';
-                closeBtn.style.background = 'rgba(255,255,255,0.08)';
-            });
-            closeBtn.addEventListener('click', function () {
-                linkCard.style.opacity = '0';
-                setTimeout(function () { linkCard.remove(); }, 300);
-            });
+            closeBtn.textContent = '\u2715';
+            closeBtn.style.cssText = 'position: absolute; top: 6px; right: 6px; cursor: pointer; color: var(--text-secondary, rgba(200,200,200,0.8)); font-size: 14px; font-weight: bold; line-height: 1; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(255,255,255,0.08); transition: color 0.2s, background 0.2s; z-index: 1;';
+            closeBtn.addEventListener('click', function () { linkCard.style.opacity = '0'; setTimeout(function () { linkCard.remove(); }, 300); });
             linkCard.appendChild(closeBtn);
 
-            for (var k = 0; k < validLinks.length; k++) {
+            for (var k = 0; k < otherLinks.length; k++) {
                 (function (vl) {
                     var a = document.createElement('a');
                     a.href = vl.safeUrl;
                     a.textContent = '\uD83D\uDD17 ' + (vl.source ? '[' + vl.source + '] ' : '') + (vl.title || vl.url);
-                    a.style.cssText =
-                        'display: block;' +
-                        'color: var(--accent-color, #6c8cff);' +
-                        'text-decoration: none;' +
-                        'padding: 3px 0;' +
-                        'padding-right: 20px;' +
-                        'word-break: break-all;' +
-                        'font-size: 12px;' +
-                        'cursor: pointer;';
-                    a.addEventListener('mouseenter', function () { a.style.textDecoration = 'underline'; });
-                    a.addEventListener('mouseleave', function () { a.style.textDecoration = 'none'; });
+                    a.style.cssText = 'display: block; color: var(--accent-color, #6c8cff); text-decoration: none; padding: 3px 0; padding-right: 20px; word-break: break-all; font-size: 12px; cursor: pointer;';
                     a.addEventListener('click', function (e) {
                         e.preventDefault();
-                        if (window.electronShell && window.electronShell.openExternal) {
-                            window.electronShell.openExternal(vl.safeUrl);
-                        } else {
-                            window.open(vl.safeUrl, '_blank', 'noopener,noreferrer');
-                        }
+                        if (window.electronShell && window.electronShell.openExternal) { window.electronShell.openExternal(vl.safeUrl); }
+                        else { window.open(vl.safeUrl, '_blank', 'noopener,noreferrer'); }
                     });
                     linkCard.appendChild(a);
-                })(validLinks[k]);
+                })(otherLinks[k]);
             }
 
             chatContent.appendChild(linkCard);
             chatContent.scrollTop = chatContent.scrollHeight;
 
+            if (window.currentTurnGeminiAttachments) {
+                window.currentTurnGeminiAttachments.push(linkCard);
+            }
+
             requestAnimationFrame(function () { linkCard.style.opacity = '1'; });
-
-            setTimeout(function () {
-                linkCard.style.opacity = '0';
-                setTimeout(function () { linkCard.remove(); }, 500);
-            }, 5 * 60 * 1000);
-
-            console.log('已显示主动搭话来源链接:', validLinks.length, '条');
+            setTimeout(function () { linkCard.style.opacity = '0'; setTimeout(function () { linkCard.remove(); }, 500); }, 5 * 60 * 1000);
         } catch (e) {
             console.warn('显示来源链接失败:', e);
         }
     }
-    mod._showProactiveChatSourceLinks = _showProactiveChatSourceLinks;
+
+    function _showMemeBubbles(memeLinks, targetTurnId) {
+        if (window.realisticGeminiCurrentTurnId !== targetTurnId) return;
+        // [优化] 不再此处手动 addToHistory，因为正向的对话流(response_text) 已经由 finish_proactive_delivery 记录。
+        // 表情包作为 UI 侧挂件展示，无需单独污染 LLM 上下文。
+        var chatContainer = S.dom.chatContainer || document.getElementById('chatContainer');
+        if (!chatContainer) {
+            console.warn('[Meme] chatContainer not found, cannot show meme bubbles');
+            return;
+        }
+        if (!memeLinks || !Array.isArray(memeLinks) || memeLinks.length === 0) {
+            return;
+        }
+
+        for (var i = 0; i < memeLinks.length; i++) {
+            (function (meme) {
+                if (!meme || !meme.safeUrl) return;
+
+                // 创建包含时间戳、表情和图片的统一气泡
+                var imgBubble = document.createElement('div');
+                imgBubble.classList.add('message', 'gemini', 'attachment');
+                imgBubble.style.padding = '12px';
+                imgBubble.style.textAlign = 'left';
+
+                // 添加时间戳和 🎀 (复刻 createGeminiBubble 的头部)
+                var now = new Date();
+                var timestamp = now.getHours().toString().padStart(2, '0') + ':' +
+                    now.getMinutes().toString().padStart(2, '0') + ':' +
+                    now.getSeconds().toString().padStart(2, '0');
+
+                var headerSpan = document.createElement('span');
+                headerSpan.textContent = "[" + (window.appChat ? window.appChat.getCurrentTimeString() : timestamp) + "] \uD83C\uDF80 ";
+                imgBubble.appendChild(headerSpan);
+
+                // 添加图片容器（为了间距）
+                var imgOuter = document.createElement('div');
+                imgOuter.style.marginTop = '8px';
+                imgOuter.style.textAlign = 'center';
+
+                var proxyUrl = '/api/meme/proxy-image?url=' + encodeURIComponent(meme.safeUrl);
+                var img = document.createElement('img');
+                img.src = proxyUrl;
+                img.alt = meme.title || 'Meme';
+                img.style.cssText = 'max-width: 100%; max-height: 350px; border-radius: 8px; cursor: pointer; display: inline-block;';
+
+                // 【修复】添加重试机制，最多重试 2 次
+                var retryCount = 0;
+                var maxRetries = 2;
+
+                img.addEventListener('load', function () {
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                });
+                img.addEventListener('click', function (e) {
+                    if (img.dataset.failed === 'true') return;
+                    e.preventDefault();
+                    if (window.electronShell && window.electronShell.openExternal) {
+                        window.electronShell.openExternal(meme.safeUrl);
+                    } else {
+                        window.open(meme.safeUrl, '_blank', 'noopener,noreferrer');
+                    }
+                });
+                img.addEventListener('error', function () {
+                    if (img.dataset.failed) return;
+                    retryCount++;
+                    if (retryCount <= maxRetries) {
+                        console.log('[Meme] 加载失败，重试第', retryCount, '次:', meme.title);
+                        // 添加随机参数避免缓存（proxyUrl 已包含 ?url=，所以用 &）
+                        img.src = proxyUrl + '&retry=' + retryCount + '&t=' + Date.now();
+                    } else {
+                        img.dataset.failed = "true";
+                        img.src = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMjQgMjQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzg4OCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHg9IjMiIHk9IjMiIHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgcng9IjIiIHJ5PSIyIjPjwvcmVjdD48Y2lyY2xlIGN4PSI4LjUiIGN5PSI4LjUiIHI9IjEuNSI+PC9jaXJjbGU+PHBvbHlsaW5lIHBvaW50cz0iMjEgMTUgMTYgMTAgNSAyMSI+PC9wb2x5bGluZT48bGluZSB4MT0iNCIgeTE9IjQiIHgyPSIyMCIgeTI9IjIwIiBzdHJva2U9IiNmNDQzMzYiIG9wYWNpdHk9IjAuOCI+PC9saW5lPjwvc3ZnPg==";
+                        img.style.objectFit = "none";
+                        img.style.backgroundColor = "rgba(128,128,128,0.05)";
+                        img.style.border = "1px dashed var(--border-color, rgba(128,128,128,0.3))";
+                        img.style.minWidth = "120px";
+                        img.style.minHeight = "120px";
+                        img.style.cursor = "default";
+                        
+                        var errSpan = document.createElement('div');
+                        errSpan.textContent = '[' + (window.t ? window.t('proactive.meme.loadError') : '表情包加载失败') + ']';
+                        errSpan.style.cssText = 'color: var(--text-secondary, rgba(200,200,200,0.6)); font-size: 12px; margin-top: 4px;';
+                        imgOuter.appendChild(errSpan);
+                    }
+                });
+
+                // 【修复】拦截图片失效后的点击事件
+                img.addEventListener('click', function (e) {
+                    if (img.dataset.failed === "true") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        return false;
+                    }
+                });
+
+                imgOuter.appendChild(img);
+                imgBubble.appendChild(imgOuter);
+                chatContainer.appendChild(imgBubble);
+
+                if (window.currentTurnGeminiAttachments) {
+                    window.currentTurnGeminiAttachments.push(imgBubble);
+                }
+
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+                console.log('[Meme] 已展示图片气泡:', meme.title);
+            })(memeLinks[i]);
+        }
+    }
+    mod._showMemeBubbles = _showMemeBubbles;
 
     // ======================== backoff reset ========================
 

@@ -452,6 +452,7 @@
         "API_UNKNOWN_ERROR": "💥 API 오류: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 메모리 서버가 시작되지 않았습니다! 먼저 memory_server.py를 실행하세요.",
         "MEMORY_SERVER_CRASHED": "🧠 메모리 서버(포트 {{port}})가 충돌했습니다. memory_server.py를 재시작하세요.",
+        "MEMORY_SERVER_COOLDOWN": "🧠 메모리 서비스가 복구 중입니다. {{wait_time}}초 후 다시 시도해주세요",
         "CONNECTION_REFUSED": "💥 서버 연결이 거부되었습니다. API Key와 네트워크 연결을 확인하세요.",
         "API_KEY_REJECTED": "💥 API Key가 서버에 의해 거부되었습니다. API Key가 선택한 모델과 일치하는지 확인하세요.",
         "API_RATE_LIMIT_SESSION": "💥 API 요청 빈도가 너무 높습니다. 잠시 후 다시 시도해 주세요.",
@@ -496,6 +497,7 @@
         "AGENT_CU_AUTO_CLOSED": "Computer Use 모듈이 로드되지 않아 자동 비활성화되었습니다",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use를 사용할 수 없습니다: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS 서비스 연결 실패: {{msg}}",
+        "TTS_RECONNECTING": "🔄 음성 서비스가 자동 재연결 중입니다. 잠시만 기다려주세요...",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URL이 설정되지 않았습니다. API 설정에서 커스텀 TTS를 활성화하고 설정하세요.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL은 localhost여야 합니다",
         "TTS_AUDIO_API_KEY_MISSING": "오디오 API 키(AUDIO_API_KEY)가 설정되지 않았습니다",
@@ -933,6 +935,42 @@
             "loop": "루프",
             "speed": "속도:"
         },
+        "mmdModel": {
+            "selectModel": "MMD 모델 선택",
+            "deleteModel": "가져온 MMD 모델 삭제",
+            "deleteModelTitle": "가져온 MMD 모델 삭제",
+            "deleteWarning": "아래는 가져온 모든 사용자 MMD 모델입니다. 삭제할 모델을 선택하세요(모델 폴더와 텍스처가 함께 삭제됩니다).",
+            "noUserModels": "삭제할 사용자 MMD 모델이 없습니다",
+            "deleteSelected": "선택 삭제"
+        },
+        "mmdAnimation": {
+            "selectAnimation": "VMD 애니메이션 선택",
+            "noAnimation": "애니메이션 없음",
+            "play": "재생",
+            "uploadAnimation": "VMD 애니메이션 가져오기",
+            "deleteAnimation": "VMD 애니메이션 삭제",
+            "deleteAnimationTitle": "가져온 VMD 애니메이션 삭제",
+            "deleteAnimationWarning": "가져온 모든 사용자 VMD 애니메이션 파일이 아래에 나열됩니다. 삭제할 애니메이션을 선택하세요.",
+            "noUserAnimations": "삭제할 사용자 VMD 애니메이션이 없습니다",
+            "deleteSelected": "선택 삭제",
+            "deleteConfirmTitle": "VMD 애니메이션 삭제",
+            "deleteConfirmMessage": "선택한 {{count}}개의 VMD 애니메이션을 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.",
+            "deleting": "삭제 중...",
+            "loading": "VMD 애니메이션 불러오는 중...",
+            "loadSuccess": "VMD 애니메이션 불러오기 성공",
+            "loadFailed": "VMD 애니메이션 불러오기 실패: {{error}}",
+            "selectFirst": "먼저 VMD 애니메이션을 선택하세요",
+            "stopped": "VMD 애니메이션 중지됨",
+            "playing": "VMD 애니메이션 재생 중",
+            "selectVmdFile": ".vmd 파일을 선택하세요",
+            "uploading": "VMD 애니메이션 업로드 중...",
+            "uploadSuccess": "VMD 애니메이션 {{name}} 업로드 성공",
+            "uploadFailed": "업로드 실패: {{error}}",
+            "deleteSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공",
+            "deleteFailed": "삭제 실패: {{count}}개의 애니메이션",
+            "deleteSelectedCount": "선택 삭제 ({{count}})",
+            "deletePartialSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공, {{failed}}개 실패"
+        },
         "modelFilesFetchFailed": "모델 파일 목록을 가져오지 못했습니다.",
         "modelConfigFetchFailed": "모델 구성을 가져오지 못했습니다: {{status}}",
         "updatedPersistentExpression": "업데이트된 영구 표현",
@@ -1038,7 +1076,15 @@
     },
     "voice": {
         "title": "음성 등록",
-        "alibabaApiRequired": "⚠️ 이 기능을 사용하려면 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Assist API 또는 로컬 음성 서버를 구성하세요.",
+        "alibabaApiRequired": "⚠️ 이 기능에는 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Bailian API 키를 저장하세요 (Assist API 활성화 불필요). 또는 로컬 음성 서버를 구성하세요.",
+        "minimaxApiRequired": "⚠️ 이 기능에는 MiniMax 모델(중국 내수)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
+        "minimaxIntlApiRequired": "⚠️ 이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
+        "providerLabel": "음성 복제 제공업체",
+        "provider": {
+            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "minimax": "MiniMax (중국 내수)",
+            "minimax_intl": "MiniMax (국제판)"
+        },
         "selectFile": "로컬 오디오 파일 선택(8초 권장, 최대 20초, wav/mp3 형식)",
         "customPrefix": "사용자 정의 접두사(필수, 다양한 음성을 구별하는 데 사용됨)",
         "customPrefixNote": "UI : 최대 10자, 숫자, 영문만 가능",
@@ -1134,7 +1180,7 @@
         "saveSuccess": "저장 성공",
         "saveFailed": "저장 실패: {{error}}",
         "saveFailedGeneral": "저장 실패",
-        "clearedMemory": "최근 메모리가 지워졌으나 저장되지 않았습니다.",
+        "clearedChatKeptMemo": "대화 기록만 지웠습니다. 메모는 유지됩니다(저장 안 됨).",
         "enabled": "활성화됨",
         "disabled": "비활성화됨",
         "autoReviewNote": "활성화하면 시스템이 자동으로 메모리 내용을 구성하고 최적화하여 대화 품질을 향상시킵니다.",
@@ -1248,7 +1294,10 @@
         "renameError": "이름 변경 실패: {{error}}",
         "renameMasterTitle": "주인 이름 변경",
         "renameSuccess": "이름 변경 성공",
-        "saveMasterError": "주인 설정 저장 실패"
+        "autoSaveError": "설정 저장 실패",
+        "saveMasterError": "주인 설정 저장 실패",
+        "autoSaved": "설정 자동 저장됨",
+        "autoSaveFailed": "자동 저장 실패, 페이지를 닫기 전에 수동으로 저장하세요"
     },
     "app": {
         "welcomeBack": "{{name}}이 돌아왔습니다!",
@@ -1261,6 +1310,8 @@
         "autoMuteTimeout": "오랫동안 음성 입력이 없고 마이크가 자동으로 닫힙니다.",
         "deviceSelected": "{{device}} 선택됨",
         "micAccessDenied": "마이크에 액세스할 수 없습니다.",
+        "micMuted": "마이크가 음소거되었습니다",
+        "micUnmuted": "마이크 음소거가 해제되었습니다",
         "speaking": "말하기...",
         "standby": "{{name}} 대기 중...",
         "micRequired": "먼저 마이크를 활성화해 주세요!",
@@ -1331,7 +1382,9 @@
         "agentTools": "네코클로",
         "settings": "설정",
         "leave": "나가기",
-        "return": "복귀"
+        "return": "복귀",
+        "micMute": "마이크 음소거",
+        "micUnmute": "음소거 해제"
     },
     "settings": {
         "menu": {
@@ -1378,6 +1431,8 @@
             "proactivePersonalChatTooltip": "연결된 플랫폼의 개인 업데이트를 사용하여 채팅",
             "proactiveMusicChat": "음악 추천",
             "proactiveMusicChatTooltip": "추천 음악을 사용하여 채팅",
+            "proactiveMemeChat": "밈 공유",
+            "proactiveMemeChatTooltip": "재미있는 밈을 공유하여 채팅",
             "agentMaster": "네코클로 마스터 스위치",
             "keyboardControl": "키보드/마우스 제어",
             "userPlugin": "사용자 플러그인",
@@ -1394,6 +1449,7 @@
             "enabled": "{{name}} 활성화됨",
             "disabled": "{{name}} 비활성화됨",
             "enableFailed": "{{name}} 활성화 실패",
+            "openfang": "가상 머신",
             "userPluginAdapting": "사용자 플러그인(개발 중)",
             "moltbotAdapting": "OpenClaw (개발 중)",
             "chatSettings": "채팅 설정",
@@ -1511,6 +1567,52 @@
             "title": "대기 애니메이션",
             "changed": "대기 애니메이션이 변경되었습니다: {{name}}",
             "changeFailed": "대기 애니메이션 변경 실패"
+        },
+        "settingsTitle": "VRM 모델 설정",
+        "cursorFollow": {
+            "title": "마우스 추적",
+            "preset": "추적 강도",
+            "none": "끄기",
+            "low": "낮음",
+            "medium": "중간",
+            "high": "높음",
+            "eyeSensitivity": "눈 감도",
+            "headSensitivity": "머리 감도",
+            "headSpeed": "머리 추적 속도"
+        }
+    },
+    "mmd": {
+        "settingsTitle": "MMD 모델 설정",
+        "lighting": {
+            "title": "MMD 조명",
+            "ambientIntensity": "환경광 강도",
+            "ambientColor": "환경광 색상",
+            "directionalIntensity": "주 광원 강도",
+            "directionalColor": "주 광원 색상"
+        },
+        "rendering": {
+            "title": "MMD 렌더링",
+            "toneMapping": "톤 매핑",
+            "exposure": "노출",
+            "outline": "윤곽선 효과",
+            "pixelRatio": "픽셀 비율"
+        },
+        "physics": {
+            "title": "MMD 물리",
+            "enabled": "물리 시뮬레이션",
+            "strength": "시뮬레이션 강도"
+        },
+        "cursorFollow": {
+            "title": "마우스 추적",
+            "enabled": "머리 추적",
+            "headYaw": "좌우 회전 범위",
+            "headPitch": "상하 회전 범위",
+            "smoothSpeed": "추적 부드러움"
+        },
+        "idleAnimation": {
+            "title": "대기 애니메이션",
+            "changed": "대기 애니메이션이 변경되었습니다",
+            "changeFailed": "대기 애니메이션 변경에 실패했습니다"
         }
     },
     "modelManager": {
@@ -1929,7 +2031,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ 중요 공지",
-                "desc": "음성 복제에는 Alibaba Cloud API가 필요합니다. API 설정에서 Alibaba Cloud API 키를 구성했는지 확인하세요."
+                "desc": "음성 복제에는 해당 제공업체의 API 키가 필요합니다. API 키 설정에서 필요한 API 키를 저장하세요."
             },
             "step2": {
                 "title": "🌍 참조 오디오 언어 선택",
@@ -2172,6 +2274,45 @@
             "surprised": "놀람 (Surprised)"
         }
     },
+    "mmdEmotionManager": {
+        "title": "MMD 감정 매핑 관리자 - Project N.E.K.O.",
+        "pageTitle": "MMD 감정 매핑 관리자",
+        "subtitle": "각 감정에 해당하는 모프타겟 매핑을 설정합니다",
+        "selectModel": "MMD 모델 선택",
+        "morphPreview": "모프 미리보기",
+        "morphCandidates": "모프 후보",
+        "selectMorph": "모프 선택",
+        "saveConfig": "설정 저장",
+        "resetToDefault": "기본값으로 초기화",
+        "loading": "로딩 중...",
+        "loadingMorphs": "모프 목록 로딩 중",
+        "pleaseSelectModel": "모델을 선택하세요",
+        "noModelsFound": "사용 가능한 MMD 모델이 없습니다",
+        "noMorphsFound": "사용 가능한 모프가 없습니다",
+        "loadModelListFailed": "모델 목록을 로드하지 못했습니다",
+        "loadMorphsFailed": "모프 목록을 로드하지 못했습니다",
+        "morphsLoadedFromModel": "현재 모델에서 모프 목록을 로드했습니다",
+        "useDefaultMorphs": "기본 모프 목록 사용 (정확한 목록을 위해 먼저 메인 페이지에서 모델을 로드하세요)",
+        "configLoadSuccess": "설정이 성공적으로 로드되었습니다",
+        "configLoadFailed": "설정을 로드하지 못했습니다",
+        "configUseDefault": "기본 설정 사용",
+        "configSaveSuccess": "설정이 저장되었습니다!",
+        "saveFailed": "저장 실패",
+        "configReset": "기본 설정으로 초기화되었습니다",
+        "pleaseSelectModelFirst": "먼저 모델을 선택하세요",
+        "tip": "팁: ",
+        "tipContent": "MMD 모델의 표정은 모프타겟으로 구현됩니다. 각 감정에 대해 여러 후보 모프를 선택하세요. 시스템이 모델이 지원하는 모프를 자동으로 매칭합니다.",
+        "close": "닫기",
+        "emotions": {
+            "neutral": "평온 (Neutral)",
+            "happy": "행복 (Happy)",
+            "relaxed": "편안함 (Relaxed)",
+            "sad": "슬픔 (Sad)",
+            "angry": "화남 (Angry)",
+            "surprised": "놀람 (Surprised)",
+            "fear": "공포 (Fear)"
+        }
+    },
     "theme": {
         "darkMode": "다크 모드",
         "lightMode": "라이트 모드",
@@ -2343,6 +2484,12 @@
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice가 3.5로 업그레이드되었습니다. 기존 음성이 만료되었으니 다시 클론하세요."
+        }
+    },
+    "proactive": {
+        "meme": {
+            "title": "밈",
+            "loadError": "밈을 불러오지 못했습니다"
         }
     }
 }

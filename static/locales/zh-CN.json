@@ -452,6 +452,7 @@
         "API_UNKNOWN_ERROR": "💥 API错误：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 记忆服务器未启动！请先运行 memory_server.py",
         "MEMORY_SERVER_CRASHED": "🧠 记忆服务器(端口{{port}})已崩溃。请重启 memory_server.py",
+        "MEMORY_SERVER_COOLDOWN": "🧠 记忆服务正在恢复中，请稍候{{wait_time}}秒",
         "CONNECTION_REFUSED": "💥 服务器连接被拒绝。请检查API Key和网络连接。",
         "API_KEY_REJECTED": "💥 API Key被服务器拒绝。请检查API Key是否与所选模型匹配。",
         "API_RATE_LIMIT_SESSION": "💥 API请求频率过高，请稍后再试。",
@@ -496,6 +497,7 @@
         "AGENT_CU_AUTO_CLOSED": "Computer Use 模块未加载，已自动关闭",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use 不可用：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS服务连接失败: {{msg}}",
+        "TTS_RECONNECTING": "🔄 语音服务正在自动重连，请稍候...",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "未配置 GPT-SoVITS API URL，请先在 API 设置中启用并配置自定义 TTS",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL 必须为 localhost",
         "TTS_AUDIO_API_KEY_MISSING": "未配置音频 API 密钥 (AUDIO_API_KEY)",
@@ -933,6 +935,42 @@
             "loop": "循环播放",
             "speed": "速度:"
         },
+        "mmdModel": {
+            "selectModel": "选择MMD模型",
+            "deleteModel": "删除已导入MMD模型",
+            "deleteModelTitle": "删除已导入MMD模型",
+            "deleteWarning": "以下列出了所有已导入的用户MMD模型。选择要删除的模型（模型所在文件夹及纹理将一并删除）。",
+            "noUserModels": "暂无可删除的用户MMD模型",
+            "deleteSelected": "删除选中"
+        },
+        "mmdAnimation": {
+            "selectAnimation": "选择VMD动画",
+            "noAnimation": "无动画",
+            "play": "播放",
+            "uploadAnimation": "导入VMD动画",
+            "deleteAnimation": "删除VMD动画",
+            "deleteAnimationTitle": "删除已导入VMD动画",
+            "deleteAnimationWarning": "以下列出了所有已导入的用户VMD动画文件。选择要删除的动画文件。",
+            "noUserAnimations": "暂无可删除的用户VMD动画",
+            "deleteSelected": "删除选中",
+            "deleteConfirmTitle": "删除VMD动画",
+            "deleteConfirmMessage": "确定要删除选中的 {{count}} 个VMD动画吗？此操作不可恢复。",
+            "deleting": "删除中...",
+            "loading": "正在加载VMD动画...",
+            "loadSuccess": "VMD动画加载成功",
+            "loadFailed": "VMD动画加载失败: {{error}}",
+            "selectFirst": "请先选择VMD动画",
+            "stopped": "VMD动画已停止",
+            "playing": "VMD动画开始播放",
+            "selectVmdFile": "请选择 .vmd 文件",
+            "uploading": "正在上传VMD动画...",
+            "uploadSuccess": "VMD动画 {{name}} 上传成功",
+            "uploadFailed": "上传失败: {{error}}",
+            "deleteSuccess": "成功删除 {{count}} 个VMD动画",
+            "deleteFailed": "删除失败: {{count}} 个动画",
+            "deleteSelectedCount": "删除选中 ({{count}})",
+            "deletePartialSuccess": "成功删除 {{count}} 个VMD动画，{{failed}} 个失败"
+        },
         "modelFilesFetchFailed": "无法获取模型文件列表",
         "modelConfigFetchFailed": "无法获取模型配置: {{status}}",
         "updatedPersistentExpression": "已更新常驻表情",
@@ -1038,7 +1076,15 @@
     },
     "voice": {
         "title": "音色注册",
-        "alibabaApiRequired": "⚠️ 此功能需要CosyVoice模型，请在API密钥设置页中配置阿里辅助API或本地语音服务器",
+        "alibabaApiRequired": "⚠️ 此功能需要阿里CosyVoice模型，请在API密钥设置页中保存阿里百炼API Key（不要求启用辅助API）或配置本地语音服务器",
+        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（国服），请在API密钥设置页中保存MiniMax API Key（不要求启用辅助API）",
+        "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（国际服），请在API密钥设置页中保存MiniMax国际服API Key（不要求启用辅助API）",
+        "providerLabel": "语音克隆服务商",
+        "provider": {
+            "cosyvoice": "阿里云 CosyVoice",
+            "minimax": "MiniMax（国服）",
+            "minimax_intl": "MiniMax（国际服）"
+        },
         "selectFile": "选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "customPrefix": "自定义前缀（必填，用于区分音色）",
         "customPrefixNote": "不超过10个字符，只支持数字和英文字母",
@@ -1134,7 +1180,7 @@
         "saveSuccess": "保存成功",
         "saveFailed": "保存失败：{{error}}",
         "saveFailedGeneral": "保存失败",
-        "clearedMemory": "已清空近期记忆，未保存",
+        "clearedChatKeptMemo": "已清空对话记录，备忘录已保留（未保存）",
         "enabled": "已开启",
         "disabled": "已关闭",
         "autoReviewNote": "开启后系统将自动整理和优化记忆内容，提高对话质量",
@@ -1248,7 +1294,10 @@
         "renameError": "重命名失败: {{error}}",
         "renameMasterTitle": "重命名主人",
         "renameSuccess": "重命名成功",
-        "saveMasterError": "保存主人设定失败"
+        "autoSaveError": "保存设定失败",
+        "saveMasterError": "保存主人设定失败",
+        "autoSaved": "已自动保存设定",
+        "autoSaveFailed": "自动保存失败，请手动保存后再关闭页面"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",
@@ -1261,6 +1310,8 @@
         "autoMuteTimeout": "长时间无语音输入，已自动关闭麦克风",
         "deviceSelected": "已选择 {{device}}",
         "micAccessDenied": "无法访问麦克风",
+        "micMuted": "麦克风已静音",
+        "micUnmuted": "麦克风已取消静音",
         "speaking": "正在语音...",
         "standby": "{{name}}待机中...",
         "micRequired": "请先开启麦克风录音！",
@@ -1331,7 +1382,9 @@
         "agentTools": "猫爪",
         "settings": "设置",
         "leave": "请她离开",
-        "return": "请她回来"
+        "return": "请她回来",
+        "micMute": "静音麦克风",
+        "micUnmute": "取消静音"
     },
     "settings": {
         "menu": {
@@ -1378,6 +1431,8 @@
             "proactivePersonalChatTooltip": "使用已连接平台的个人动态进行搭话",
             "proactiveMusicChat": "音乐推荐",
             "proactiveMusicChatTooltip": "使用推荐音乐进行搭话",
+            "proactiveMemeChat": "表情包分享",
+            "proactiveMemeChatTooltip": "使用有趣表情包进行搭话",
             "agentMaster": "猫爪总开关",
             "keyboardControl": "键鼠控制",
             "userPlugin": "用户插件",
@@ -1394,6 +1449,7 @@
             "enabled": "{{name}}已开启",
             "disabled": "{{name}}已关闭",
             "enableFailed": "{{name}}开启失败",
+            "openfang": "虚拟机",
             "userPluginAdapting": "用户插件（开发中）",
             "moltbotAdapting": "OpenClaw（开发中）",
             "chatSettings": "对话设置",
@@ -1510,6 +1566,52 @@
         "idleAnimation": {
             "title": "待机动作",
             "changed": "待机动作已切换: {{name}}",
+            "changeFailed": "切换待机动作失败"
+        },
+        "settingsTitle": "VRM 模型设置",
+        "cursorFollow": {
+            "title": "鼠标跟踪",
+            "preset": "跟踪强度",
+            "none": "关闭",
+            "low": "低",
+            "medium": "中",
+            "high": "高",
+            "eyeSensitivity": "眼睛灵敏度",
+            "headSensitivity": "头部灵敏度",
+            "headSpeed": "头部跟踪速度"
+        }
+    },
+    "mmd": {
+        "settingsTitle": "MMD 模型设置",
+        "lighting": {
+            "title": "MMD光照设置",
+            "ambientIntensity": "环境光强度",
+            "ambientColor": "环境光颜色",
+            "directionalIntensity": "主光源强度",
+            "directionalColor": "主光源颜色"
+        },
+        "rendering": {
+            "title": "MMD渲染设置",
+            "toneMapping": "色调映射",
+            "exposure": "曝光度",
+            "outline": "描边效果",
+            "pixelRatio": "像素比例"
+        },
+        "physics": {
+            "title": "MMD物理设置",
+            "enabled": "物理模拟",
+            "strength": "拟真强度"
+        },
+        "cursorFollow": {
+            "title": "鼠标跟踪",
+            "enabled": "头部跟踪",
+            "headYaw": "左右转角范围",
+            "headPitch": "上下转角范围",
+            "smoothSpeed": "跟踪平滑度"
+        },
+        "idleAnimation": {
+            "title": "待机动作",
+            "changed": "待机动作已切换",
             "changeFailed": "切换待机动作失败"
         }
     },
@@ -1929,7 +2031,7 @@
         "voice_clone": {
             "step1": {
                 "title": "⚠️ 重要提示",
-                "desc": "语音克隆功能需要使用阿里云 API。请确保您已经在 API 设置中配置了阿里云的 API Key。"
+                "desc": "语音克隆功能需要配置对应服务商的 API Key。请在 API 密钥设置页中保存所需的 API Key。"
             },
             "step2": {
                 "title": "🌍 选择参考音频语言",
@@ -2172,6 +2274,45 @@
             "surprised": "惊讶 (Surprised)"
         }
     },
+    "mmdEmotionManager": {
+        "title": "MMD 情感映射管理器 - Project N.E.K.O.",
+        "pageTitle": "MMD 情感映射管理器",
+        "subtitle": "配置不同情绪对应的 MorphTarget 映射",
+        "selectModel": "选择 MMD 模型",
+        "morphPreview": "Morph 预览",
+        "morphCandidates": "Morph 候选",
+        "selectMorph": "选择 Morph",
+        "saveConfig": "保存配置",
+        "resetToDefault": "重置为默认",
+        "loading": "加载中...",
+        "loadingMorphs": "加载 Morph 列表",
+        "pleaseSelectModel": "请选择模型",
+        "noModelsFound": "没有找到可用的MMD模型",
+        "noMorphsFound": "没有可用的 Morph",
+        "loadModelListFailed": "加载模型列表失败",
+        "loadMorphsFailed": "加载 Morph 列表失败",
+        "morphsLoadedFromModel": "已从当前模型加载 Morph 列表",
+        "useDefaultMorphs": "使用默认 Morph 列表（请先在主页面加载模型以获取精确列表）",
+        "configLoadSuccess": "配置加载成功",
+        "configLoadFailed": "配置加载失败",
+        "configUseDefault": "使用默认配置",
+        "configSaveSuccess": "配置保存成功！",
+        "saveFailed": "保存失败",
+        "configReset": "已重置为默认配置",
+        "pleaseSelectModelFirst": "请先选择模型",
+        "tip": "提示：",
+        "tipContent": "MMD模型的表情使用 MorphTarget（モーフ）实现。请为每种情绪选择多个候选 Morph，系统会自动匹配模型支持的 Morph。",
+        "close": "关闭",
+        "emotions": {
+            "neutral": "平静 (Neutral)",
+            "happy": "开心 (Happy)",
+            "relaxed": "放松 (Relaxed)",
+            "sad": "悲伤 (Sad)",
+            "angry": "生气 (Angry)",
+            "surprised": "惊讶 (Surprised)",
+            "fear": "恐惧 (Fear)"
+        }
+    },
     "theme": {
         "darkMode": "暗色模式",
         "lightMode": "亮色模式",
@@ -2343,6 +2484,12 @@
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。"
+        }
+    },
+    "proactive": {
+        "meme": {
+            "title": "表情包",
+            "loadError": "表情包加载失败"
         }
     }
 }

@@ -78,7 +78,6 @@ const currentPlugin = computed(() => {
 const status = computed(() => currentPlugin.value?.status || 'stopped')
 const isExtension = computed(() => currentPlugin.value?.type === 'extension')
 const isDisabled = computed(() => status.value === 'disabled')
-
 async function handleStart() {
   if (isDisabled.value) {
     ElMessage.warning(t('messages.pluginDisabled'))
@@ -173,4 +172,3 @@ async function handleEnableExt() {
   gap: 8px;
 }
 </style>
-
