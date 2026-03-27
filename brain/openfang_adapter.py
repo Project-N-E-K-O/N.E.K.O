@@ -890,7 +890,7 @@ class OpenFangAdapter:
 
                 resp.raise_for_status()
                 data = resp.json()
-                self._executor_agent_id = data.get("id")
+                self._executor_agent_id = data.get("id") or data.get("agent_id")
                 print(f"[OpenFang DEBUG] Agent created successfully: data={str(data)[:500]}")
                 print(f"[OpenFang DEBUG] _executor_agent_id set to: {self._executor_agent_id}")
                 logger.info("[OpenFang] Agent registered: id=%s, model=openai/%s",
