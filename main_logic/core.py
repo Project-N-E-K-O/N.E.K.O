@@ -798,6 +798,12 @@ class LLMSessionManager:
         if self.tts_thread and self.tts_thread.is_alive():
             return  # 线程还活着，无需重启
 
+        # 如果上次错误属于不应自动重试的类型，直接跳过 respawn
+        _no_retry_codes = {'API_ARREARS', 'API_QUOTA_TIME', 'ERROR_1007_ARREARS'}
+        if self._last_tts_error_code in _no_retry_codes:
+            logger.warning(f"⚠️ _respawn_tts_worker: 上次错误为 {self._last_tts_error_code}，跳过自动重试")
+            return
+
         import time
         now = time.monotonic()
         if now - self._last_tts_respawn_time < 12.0:
@@ -807,7 +813,6 @@ class LLMSessionManager:
         if self._tts_respawn_task and not self._tts_respawn_task.done():
             self._tts_respawn_task.cancel()
             self._tts_respawn_task = None
-        self._last_tts_error_code = ''
         self._last_tts_respawn_time = now
 
         logger.info("🔄 TTS Worker 已死亡，尝试重新拉起...")
