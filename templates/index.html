@@ -58,6 +58,17 @@
                 style="object-fit: cover; pointer-events: none;"></button>
         <div id="chat-tooltip" data-i18n="chat.tooltip">✨ 对话区</div>
         <div id="chat-content-wrapper">
+            <div id="chat-content-actions">
+                <button id="avatarPreviewButton" class="chat-header-action-btn chat-header-action-btn-avatar" type="button"
+                    title="显示当前头像"
+                    aria-label="显示当前头像">
+                    <svg class="chat-header-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 12a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z" />
+                        <path d="M5.5 19.25a6.5 6.5 0 0 1 13 0" />
+                    </svg>
+                    <span class="chat-header-btn-label">当前头像</span>
+                </button>
+            </div>
             <div id="chatContainer"></div>
         </div>
         <div id="text-input-area">
@@ -69,6 +80,25 @@
                 </div>
                 <div id="screenshots-list">
                     <!-- 截图项将动态添加到这里 -->
+                </div>
+            </div>
+            <div id="chat-avatar-preview-card" hidden>
+                <div class="chat-avatar-preview-card-header">
+                    <div class="chat-avatar-preview-card-title-group">
+                        <div class="chat-avatar-preview-card-title">当前头像</div>
+                        <div id="chat-avatar-preview-status" class="chat-avatar-preview-card-status">点击上方按钮生成当前模型头像</div>
+                    </div>
+                    <button id="chatAvatarPreviewCloseButton" class="chat-avatar-preview-card-close" type="button" title="关闭头像预览" aria-label="关闭头像预览">×</button>
+                </div>
+                <div class="chat-avatar-preview-card-body">
+                    <div id="chat-avatar-preview-image-shell" class="chat-avatar-preview-image-shell is-empty">
+                        <img id="chat-avatar-preview-image" class="chat-avatar-preview-image" alt="当前头像预览" hidden>
+                        <div id="chat-avatar-preview-placeholder" class="chat-avatar-preview-placeholder">AVATAR</div>
+                    </div>
+                    <div class="chat-avatar-preview-card-meta">
+                        <div id="chat-avatar-preview-note" class="chat-avatar-preview-card-note">将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。</div>
+                        <button id="chatAvatarPreviewRefreshButton" class="chat-avatar-preview-refresh-btn" type="button">刷新头像</button>
+                    </div>
                 </div>
             </div>
             <div id="text-input-row">
@@ -167,6 +197,7 @@
     <script src="/static/common_ui.js"></script>
     <script src="/static/vrm-init.js"></script>
     <script src="/static/mmd-init.js"></script>
+    <script src="/static/avatar-portrait.js"></script>
     <script src="/static/achievement_manager.js"></script>
     <script src="/static/js/agent_ui_v2.js"></script>
     <script src="/static/ogg-opus-decoder-wrapper.js"></script>
@@ -175,6 +206,7 @@
     <script src="/static/app-state.js"></script>
     <script src="/static/app-ui.js"></script>
     <script src="/static/app-chat.js"></script>
+    <script src="/static/app-chat-avatar.js"></script>
     <script src="/static/app-audio-playback.js"></script>
     <script src="/static/app-audio-capture.js"></script>
     <script src="/static/app-screen.js"></script>
