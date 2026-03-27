@@ -452,10 +452,14 @@ async function loadApiProviders() {
                     const allProviders = { ..._coreApiProviders, ..._assistApiProviders };
                     Object.keys(allProviders).forEach(pk => {
                         if (pk === 'free') return;
+                        // Backend expects camelCase: assistApiKey + PascalCased provider key
+                        // e.g. qwen → assistApiKeyQwen, minimax_intl → assistApiKeyMinimaxIntl
+                        const defaultField = 'assistApiKey' + pk.replace(/(^|_)([a-z])/g,
+                            (_, _sep, c) => c.toUpperCase());
                         _apiKeyRegistry[pk] = {
                             label: allProviders[pk].name || pk,
                             restricted: (pk === 'openai' || pk === 'gemini'),
-                            config_field: allProviders[pk].config_field || `${pk}_api_key`
+                            config_field: allProviders[pk].config_field || defaultField
                         };
                     });
                 }
