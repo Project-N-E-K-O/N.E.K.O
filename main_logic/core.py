@@ -798,16 +798,16 @@ class LLMSessionManager:
         if self.tts_thread and self.tts_thread.is_alive():
             return  # 线程还活着，无需重启
 
-        # 取消可能仍在等待的延迟重试任务，既然已经在直接 respawn 了
+        import time
+        now = time.monotonic()
+        if now - self._last_tts_respawn_time < 12.0:
+            return  # 冷却中，保留待执行的延迟任务和错误码状态
+
+        # 通过冷却检查后，取消可能仍在等待的延迟重试任务，既然已经在直接 respawn 了
         if self._tts_respawn_task and not self._tts_respawn_task.done():
             self._tts_respawn_task.cancel()
             self._tts_respawn_task = None
         self._last_tts_error_code = ''
-
-        import time
-        now = time.monotonic()
-        if now - self._last_tts_respawn_time < 12.0:
-            return  # 冷却中，跳过
         self._last_tts_respawn_time = now
 
         logger.info("🔄 TTS Worker 已死亡，尝试重新拉起...")
@@ -2942,6 +2942,10 @@ class LLMSessionManager:
                             _last_code = getattr(self, '_last_tts_error_code', '')
                             if _last_code in _no_retry_codes:
                                 logger.warning(f"⚠️ TTS 未就绪且上次错误为 {_last_code}，跳过自动重试")
+                                # 取消可能仍在等待的延迟重试任务，避免绕过 no-retry 策略
+                                if self._tts_respawn_task and not self._tts_respawn_task.done():
+                                    self._tts_respawn_task.cancel()
+                                    self._tts_respawn_task = None
                             else:
                                 logger.warning("⚠️ 收到TTS未就绪信号，12秒后尝试重新拉起Worker")
                                 # 取消之前的延迟重试任务（如有）
