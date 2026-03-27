@@ -763,5 +763,8 @@ __all__ = [
     'DEFAULT_TTS_MODEL_API_KEY',
     'DEFAULT_AGENT_MODEL_URL',
     'DEFAULT_AGENT_MODEL_API_KEY',
+    # OpenFang
+    'OPENFANG_PORT',
+    'OPENFANG_BASE_URL',
 ]
 

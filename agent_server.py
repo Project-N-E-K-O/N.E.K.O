@@ -1530,13 +1530,17 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 result.task_description,
                                 session_id=of_session.session_id,
                             )
-                            logger.info("[OpenFang] ====== RAW RESULT ======")
-                            logger.info("[OpenFang] success=%s, keys=%s", of_res.get("success"), list(of_res.keys()))
-                            logger.info("[OpenFang] result (first 500): %s", str(of_res.get("result", ""))[:500])
-                            logger.info("[OpenFang] error: %s", of_res.get("error"))
-                            logger.info("[OpenFang] steps=%s, agent=%s", of_res.get("steps"), of_res.get("agent_name"))
-                            logger.info("[OpenFang] artifacts=%s", of_res.get("artifacts"))
-                            logger.info("[OpenFang] ========================")
+                            logger.info("[OpenFang] Task completed: success=%s, agent=%s, result_len=%d, steps=%s, artifacts_count=%d",
+                                        of_res.get("success"), of_res.get("agent_name"),
+                                        len(str(of_res.get("result", ""))),
+                                        of_res.get("steps"),
+                                        len(of_res.get("artifacts") or []))
+                            logger.debug("[OpenFang] ====== RAW RESULT (debug) ======")
+                            logger.debug("[OpenFang] keys=%s", list(of_res.keys()))
+                            logger.debug("[OpenFang] result (first 500): %s", str(of_res.get("result", ""))[:500])
+                            logger.debug("[OpenFang] error: %s", of_res.get("error"))
+                            logger.debug("[OpenFang] artifacts=%s", of_res.get("artifacts"))
+                            logger.debug("[OpenFang] ==============================")
                             success = of_res.get("success", False)
                             of_result_text = of_res.get("result", "") or ""
                             of_error_text = of_res.get("error", "") or ""
@@ -2323,19 +2327,20 @@ async def openfang_llm_proxy(request: Request, path: str):
                     request.method, target_url,
                     content=body, headers=forward_headers,
                 )
-                print(f"[LLM Proxy] upstream response: status={resp.status_code}, len={len(resp.content)}")
-                print(f"[LLM Proxy] upstream body (first 500): {resp.text[:500]}")
+                logger.info("[LLM Proxy] upstream response: status=%s, len=%d", resp.status_code, len(resp.content))
+                logger.debug("[LLM Proxy] upstream body (first 500): %s", resp.text[:500])
                 # 尝试 JSON patch
                 try:
                     data = resp.json()
                     _patch_openai_response(data)
                     return JSONResponse(data, status_code=resp.status_code)
                 except Exception:
-                    # 非 JSON 响应原样返回
-                    return JSONResponse(
-                        content=resp.text,
+                    # 非 JSON 响应原样返回 (使用 raw Response 避免二次编码)
+                    from starlette.responses import Response as RawResponse
+                    return RawResponse(
+                        content=resp.content,
                         status_code=resp.status_code,
-                        media_type=resp.headers.get("content-type", "application/json"),
+                        media_type=resp.headers.get("content-type", "application/octet-stream"),
                     )
     except httpx.TimeoutException:
         return JSONResponse({"error": "Upstream API timeout"}, status_code=504)
@@ -2514,13 +2519,15 @@ async def openfang_run(payload: Dict[str, Any]):
             }
 
             def _on_progress(info):
-                if Modules.agent_bridge:
-                    Modules.agent_bridge.push_event({
-                        "event_type": "task_update", "task_id": task_id,
-                        "lanlan_name": payload.get("lanlan_name"),
-                        "status": info.get("status"), "channel": "openfang",
-                        "elapsed": info.get("elapsed", 0),
-                    })
+                try:
+                    asyncio.create_task(_emit_main_event(
+                        "task_update", payload.get("lanlan_name"),
+                        task_id=task_id,
+                        status=info.get("status"), channel="openfang",
+                        elapsed=info.get("elapsed", 0),
+                    ))
+                except Exception as e:
+                    logger.debug("[OpenFang] _on_progress emit failed: %s", e)
 
             result = await Modules.openfang.run_instruction(
                 instruction=instruction,
@@ -2531,24 +2538,27 @@ async def openfang_run(payload: Dict[str, Any]):
             Modules.task_registry[task_id]["result"] = result
             Modules.task_registry[task_id]["end_time"] = datetime.now(timezone.utc).isoformat()
 
-            if Modules.agent_bridge:
-                Modules.agent_bridge.push_event({
-                    "event_type": "task_result", "task_id": task_id,
-                    "lanlan_name": payload.get("lanlan_name"),
-                    "status": Modules.task_registry[task_id]["status"],
-                    "channel": "openfang",
-                    "summary": result.get("result", "")[:500],
-                    "detail": result.get("result", ""),
-                    "error_message": result.get("error"),
-                })
+            await _emit_main_event(
+                "task_result", payload.get("lanlan_name"),
+                task_id=task_id,
+                status=Modules.task_registry[task_id]["status"],
+                channel="openfang",
+                summary=result.get("result", "")[:500],
+                detail=result.get("result", ""),
+                error_message=result.get("error"),
+            )
         except Exception as e:
             logger.error("[OpenFang] Task %s failed: %s", task_id, e)
             Modules.task_registry[task_id]["status"] = "failed"
             Modules.task_registry[task_id]["error"] = str(e)
 
     bg = asyncio.create_task(_run())
+    Modules.task_async_handles[task_id] = bg
     Modules._background_tasks.add(bg)
-    bg.add_done_callback(Modules._background_tasks.discard)
+    def _cleanup_of_bg(_t, _tid=task_id):
+        Modules._background_tasks.discard(_t)
+        Modules.task_async_handles.pop(_tid, None)
+    bg.add_done_callback(_cleanup_of_bg)
 
     return {"success": True, "task_id": task_id, "status": "running"}
 
@@ -2605,7 +2615,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
     old_flags = dict(Modules.agent_flags)
     old_analyzer_enabled = bool(Modules.analyzer_enabled)
     of = (payload or {}).get("openfang_enabled")
-    if gate.get("ready") is not True and any(x is True for x in (cf, bf, uf)):
+    if gate.get("ready") is not True and any(x is True for x in (cf, bf, uf, of)):
         Modules.agent_flags["computer_use_enabled"] = False
         Modules.agent_flags["browser_use_enabled"] = False
         Modules.agent_flags["user_plugin_enabled"] = False
@@ -2614,6 +2624,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
         _set_capability("computer_use", False, first_reason)
         _set_capability("browser_use", False, first_reason)
         _set_capability("user_plugin", False, first_reason)
+        _set_capability("openfang", False, first_reason)
         await _ensure_plugin_lifecycle_stopped()
         Modules.notification = None
         if Modules.agent_flags != old_flags:
