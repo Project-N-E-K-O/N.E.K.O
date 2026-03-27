@@ -583,8 +583,6 @@ class OpenFangAdapter:
                 if not key_pushed:
                     logger.warning("[OpenFang] All key push formats failed, relying on config.toml")
 
-                ok = key_pushed
-
                 # (2) Override provider base_url
                 push_url = effective_url  # proxy URL 或直连 URL
                 print(f"[OpenFang DEBUG] Pushing provider URL: {push_url} (real: {base_url}, proxy={needs_proxy})")
@@ -603,12 +601,15 @@ class OpenFangAdapter:
             logger.error("[OpenFang] HTTP config sync failed: %s", e)
 
         # (3) Write config.toml
+        file_written = False
         try:
             self._write_openfang_model_config(api_key, base_url, model)
+            file_written = True
         except Exception as e:
             logger.debug("[OpenFang] config.toml write failed (non-fatal): %s", e)
 
         # (4) 通过 API 热更新 default_model（确保运行中的 OpenFang 用新 model）
+        reload_ok = False
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # 用 /api/config/set 设置 default_model.model + provider + base_url
@@ -639,11 +640,13 @@ class OpenFangAdapter:
                     )
                     logger.info("[OpenFang] config/reload → %d: %s",
                                 r2.status_code, r2.text[:200])
+                    reload_ok = r2.status_code == 200
                 except Exception as e_reload:
                     logger.debug("[OpenFang] config/reload failed: %s", e_reload)
         except Exception as e:
             logger.debug("[OpenFang] Hot-update default_model failed (non-fatal): %s", e)
 
+        ok = any([key_pushed, file_written, reload_ok])
         self._config_synced = ok
         if ok:
             self._last_synced_config_hash = self._compute_config_hash()

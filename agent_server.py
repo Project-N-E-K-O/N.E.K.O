@@ -2540,6 +2540,8 @@ async def openfang_run(payload: Dict[str, Any]):
             Modules.task_registry[task_id] = {
                 "id": task_id, "type": "openfang", "status": "running",
                 "params": {"instruction": instruction},
+                "lanlan_name": _lanlan,
+                "session_id": payload.get("conversation_id"),
                 "start_time": datetime.now(timezone.utc).isoformat(),
             }
             # Emit initial running event with full task object
