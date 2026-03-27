@@ -53,6 +53,9 @@ import httpx
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
 
+# TTS 错误码中不应自动重试的类型（欠费 / 配额耗尽）
+NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_QUOTA_TIME'}
+
 # ---------------------------------------------------------------------------
 # 重要通知缓冲池
 # 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息；
@@ -841,8 +844,7 @@ class LLMSessionManager:
             return
 
         # 如果上次错误属于不应自动重试的类型，直接跳过 respawn
-        _no_retry_codes = {'API_ARREARS', 'API_QUOTA_TIME', 'ERROR_1007_ARREARS'}
-        if self._last_tts_error_code in _no_retry_codes:
+        if self._last_tts_error_code in NO_RETRY_TTS_CODES:
             logger.warning(f"⚠️ _respawn_tts_worker: 上次错误为 {self._last_tts_error_code}，跳过自动重试")
             return
 
@@ -2954,9 +2956,8 @@ class LLMSessionManager:
                             await self._flush_tts_pending_chunks()
                         else:
                             # 复用 __error__ 分支记录的 code 判断是否重试
-                            _no_retry_codes = {'API_ARREARS', 'API_QUOTA_TIME', 'ERROR_1007_ARREARS'}
                             _last_code = getattr(self, '_last_tts_error_code', '')
-                            if _last_code in _no_retry_codes:
+                            if _last_code in NO_RETRY_TTS_CODES:
                                 logger.warning(f"⚠️ TTS 未就绪且上次错误为 {_last_code}，跳过自动重试")
                                 # 取消可能仍在等待的延迟重试任务，避免绕过 no-retry 策略
                                 if self._tts_respawn_task and not self._tts_respawn_task.done():
