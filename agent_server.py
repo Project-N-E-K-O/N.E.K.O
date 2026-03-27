@@ -1578,6 +1578,13 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 logger.debug("[OpenFang] emit task_update(terminal) failed: task_id=%s error=%s", of_task_id, emit_err)
                         except asyncio.CancelledError as e:
                             cancel_msg = str(e)[:500] if str(e) else "cancelled"
+                            # Best-effort remote cancel
+                            try:
+                                if Modules.openfang:
+                                    await Modules.openfang.cancel_running(of_task_id)
+                                    Modules.openfang.unregister_local_task(of_task_id)
+                            except Exception as cancel_err:
+                                logger.debug("[OpenFang] remote cancel failed for %s: %s", of_task_id, cancel_err)
                             of_info["status"] = "cancelled"
                             of_info["error"] = cancel_msg
                             of_session.complete_task(cancel_msg, success=False)
@@ -2301,37 +2308,42 @@ async def openfang_llm_proxy(request: Request, path: str):
             logger.debug("[LLM Proxy] failed to parse request body for stream detection", exc_info=True)
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
-            if is_stream:
-                # 流式：先发 HEAD 获取状态码，再 stream body
-                _upstream_status = {"code": 200}
-
-                async def _stream_with_patch():
-                    async with client.stream(
-                        request.method, target_url,
-                        content=body, headers=forward_headers,
-                    ) as upstream:
-                        _upstream_status["code"] = upstream.status_code
-                        async for line in upstream.aiter_lines():
-                            if line.startswith("data: ") and line != "data: [DONE]":
-                                try:
-                                    chunk = json.loads(line[6:])
-                                    _patch_openai_response(chunk)
-                                    yield f"data: {json.dumps(chunk)}\n\n"
-                                    continue
-                                except Exception:
-                                    logger.debug("[LLM Proxy] failed to parse streaming chunk", exc_info=True)
-                            yield line + "\n"
-
-                # 注意: generator 延迟执行，status_code 在首次 yield 后才准确;
-                # 对 SSE 场景客户端通常只关注 2xx vs non-2xx，此处尽力传播
-                gen = _stream_with_patch()
-                return StarletteStreamingResponse(
-                    gen,
-                    status_code=_upstream_status["code"],
-                    media_type="text/event-stream",
+        if is_stream:
+            # 流式：手动管理 client 生命周期（generator 延迟消费，不能用 async with）
+            client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0))
+            try:
+                upstream_resp = await client.send(
+                    client.build_request(request.method, target_url, content=body, headers=forward_headers),
+                    stream=True,
                 )
-            else:
+            except Exception:
+                await client.aclose()
+                raise
+            upstream_status = upstream_resp.status_code
+
+            async def _stream_with_patch():
+                try:
+                    async for line in upstream_resp.aiter_lines():
+                        if line.startswith("data: ") and line != "data: [DONE]":
+                            try:
+                                chunk = json.loads(line[6:])
+                                _patch_openai_response(chunk)
+                                yield f"data: {json.dumps(chunk)}\n\n"
+                                continue
+                            except Exception:
+                                logger.debug("[LLM Proxy] failed to parse streaming chunk", exc_info=True)
+                        yield line + "\n"
+                finally:
+                    await upstream_resp.aclose()
+                    await client.aclose()
+
+            return StarletteStreamingResponse(
+                _stream_with_patch(),
+                status_code=upstream_status,
+                media_type="text/event-stream",
+            )
+        else:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
                 # 非流式：一次性读取并 patch
                 resp = await client.request(
                     request.method, target_url,
@@ -2560,9 +2572,12 @@ async def openfang_run(payload: Dict[str, Any]):
                 local_task_id=task_id,
             )
             final_status = "completed" if result.get("success") else "failed"
-            Modules.task_registry[task_id]["status"] = final_status
-            Modules.task_registry[task_id]["result"] = result
-            Modules.task_registry[task_id]["end_time"] = datetime.now(timezone.utc).isoformat()
+            reg = Modules.task_registry[task_id]
+            reg["status"] = final_status
+            reg["result"] = result
+            reg["end_time"] = datetime.now(timezone.utc).isoformat()
+            if not result.get("success"):
+                reg["error"] = result.get("error", "")
 
             await _emit_task_result(
                 _lanlan,
@@ -2573,10 +2588,21 @@ async def openfang_run(payload: Dict[str, Any]):
                 detail=result.get("result", ""),
                 error_message=result.get("error", ""),
             )
+            # Terminal task_update so HUD transitions out of running
+            try:
+                await _emit_main_event(
+                    "task_update", _lanlan,
+                    task_id=task_id, channel="openfang",
+                    task=reg,
+                )
+            except Exception:
+                logger.debug("[OpenFang] terminal task_update emit failed", exc_info=True)
         except Exception as e:
             logger.error("[OpenFang] Task %s failed: %s", task_id, e)
-            Modules.task_registry[task_id]["status"] = "failed"
-            Modules.task_registry[task_id]["error"] = str(e)
+            reg = Modules.task_registry[task_id]
+            reg["status"] = "failed"
+            reg["error"] = str(e)
+            reg["end_time"] = datetime.now(timezone.utc).isoformat()
             try:
                 await _emit_task_result(
                     _lanlan,
@@ -2588,6 +2614,14 @@ async def openfang_run(payload: Dict[str, Any]):
                 )
             except Exception:
                 logger.debug("[OpenFang] terminal task_result emit failed", exc_info=True)
+            try:
+                await _emit_main_event(
+                    "task_update", _lanlan,
+                    task_id=task_id, channel="openfang",
+                    task=reg,
+                )
+            except Exception:
+                logger.debug("[OpenFang] terminal task_update emit failed", exc_info=True)
 
     bg = asyncio.create_task(_run())
     Modules.task_async_handles[task_id] = bg

@@ -86,8 +86,10 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": "DEEPSEEK_API_KEY",
         }
 
-    # Ollama (local)
-    if "localhost" in url_lower and ("11434" in url_lower or "ollama" in model_lower):
+    # Ollama (local) — detect localhost, 127.0.0.1, 0.0.0.0, [::1]
+    _loopback_hosts = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]")
+    _is_loopback = any(h in url_lower for h in _loopback_hosts)
+    if _is_loopback and ("11434" in url_lower or "ollama" in model_lower):
         return {
             "provider": "ollama",
             "needs_proxy": False,
@@ -177,7 +179,9 @@ class OpenFangAdapter:
         return list(self._cached_tools_list)
 
     def _compute_config_hash(self) -> str:
-        """计算当前 agent API 配置的 hash，用于检测变更。"""
+        """计算当前 agent API 配置的 hash，用于检测变更。
+        注: get_model_api_config() 每次调用时从文件/内存重新读取，无缓存过期问题。
+        """
         import hashlib
         cm = get_config_manager()
         agent_cfg = cm.get_model_api_config('agent')
@@ -221,7 +225,7 @@ class OpenFangAdapter:
             # 方案 A：直接给注册的 agent 发消息（确保用 openai provider）
             print(f"[OpenFang DEBUG] executor_agent_id={self._executor_agent_id}")
             if self._executor_agent_id:
-                result = await self._send_direct_message(instruction, timeout)
+                result = await self._send_direct_message(instruction, timeout, local_task_id=local_task_id)
                 print(f"[OpenFang DEBUG] _send_direct_message returned: {result is not None}, type={type(result).__name__}")
                 if result is not None:
                     return result
@@ -239,7 +243,7 @@ class OpenFangAdapter:
             return {"success": False, "error": self.last_error}
 
     async def _send_direct_message(
-        self, instruction: str, timeout: float
+        self, instruction: str, timeout: float, local_task_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         POST /api/agents/{id}/message — 直接给指定 agent 发消息。
@@ -280,7 +284,15 @@ class OpenFangAdapter:
                     if task_id and task_status not in ("completed", "done", "finished", "success", ""):
                         print(f"[OpenFang DEBUG] Direct message returned async task: id={task_id}, status={task_status}")
                         print(f"[OpenFang DEBUG] Switching to poll mode for task {task_id}")
-                        poll_result = await self._poll_task(task_id, timeout=timeout)
+                        self._active_tasks[task_id] = task_id
+                        if local_task_id:
+                            self._active_tasks[local_task_id] = task_id
+                        try:
+                            poll_result = await self._poll_task(task_id, timeout=timeout)
+                        finally:
+                            self._active_tasks.pop(task_id, None)
+                            if local_task_id:
+                                self._active_tasks.pop(local_task_id, None)
                         return {
                             "success": poll_result.status == "completed",
                             "result": poll_result.result or "",
@@ -288,11 +300,20 @@ class OpenFangAdapter:
                             "agent_name": poll_result.agent_name or "neko-executor",
                             "artifacts": poll_result.artifacts,
                             "error": poll_result.error,
+                            "remote_task_id": task_id,
                         }
                     # 如果 id 存在且 status 为空（可能是 fire-and-forget），也轮询
                     if task_id and not task_status and not data.get("response") and not data.get("result"):
                         print(f"[OpenFang DEBUG] Direct message returned task id={task_id} with no result, trying poll")
-                        poll_result = await self._poll_task(task_id, timeout=timeout)
+                        self._active_tasks[task_id] = task_id
+                        if local_task_id:
+                            self._active_tasks[local_task_id] = task_id
+                        try:
+                            poll_result = await self._poll_task(task_id, timeout=timeout)
+                        finally:
+                            self._active_tasks.pop(task_id, None)
+                            if local_task_id:
+                                self._active_tasks.pop(local_task_id, None)
                         if poll_result.result:
                             return {
                                 "success": poll_result.status == "completed",
@@ -301,6 +322,7 @@ class OpenFangAdapter:
                                 "agent_name": poll_result.agent_name or "neko-executor",
                                 "artifacts": poll_result.artifacts,
                                 "error": poll_result.error,
+                                "remote_task_id": task_id,
                             }
 
                 # ── 同步结果解析 ──
@@ -341,9 +363,21 @@ class OpenFangAdapter:
         except httpx.TimeoutException:
             logger.warning("[OpenFang] Direct message timed out after %.0fs", timeout)
             return {"success": False, "error": f"Agent timed out after {timeout}s"}
+        except (httpx.ConnectError, httpx.ConnectTimeout, ConnectionRefusedError, OSError) as e:
+            # 连接级别错误: endpoint 不可用，允许 fallback 到 A2A
+            logger.debug("[OpenFang] Direct message connect-level failure: %s", e)
+            return None
+        except httpx.HTTPStatusError as e:
+            # 5xx 网关级别错误也允许 fallback
+            if e.response.status_code in (502, 503, 504):
+                logger.debug("[OpenFang] Direct message 5xx gateway error: %s", e)
+                return None
+            logger.warning("[OpenFang] Direct message HTTP error: %s", e)
+            return {"success": False, "error": f"HTTP {e.response.status_code}: {str(e)[:200]}"}
         except Exception as e:
-            logger.debug("[OpenFang] Direct message failed: %s", e)
-            return None  # 返回 None 让调用方 fallback 到 A2A
+            # 其他错误（解析/逻辑错误）: 不 fallback，直接返回失败避免双执行
+            logger.warning("[OpenFang] Direct message failed (no fallback): %s", e)
+            return {"success": False, "error": str(e)[:500]}
 
     async def _send_via_a2a(
         self,
@@ -383,10 +417,12 @@ class OpenFangAdapter:
         self._active_tasks[of_task_id] = of_task_id
         if local_task_id:
             self._active_tasks[local_task_id] = of_task_id
-        result = await self._poll_task(of_task_id, on_progress, timeout=timeout)
-        self._active_tasks.pop(of_task_id, None)
-        if local_task_id:
-            self._active_tasks.pop(local_task_id, None)
+        try:
+            result = await self._poll_task(of_task_id, on_progress, timeout=timeout)
+        finally:
+            self._active_tasks.pop(of_task_id, None)
+            if local_task_id:
+                self._active_tasks.pop(local_task_id, None)
         print(f"[OpenFang DEBUG] A2A poll result: status={result.status}, result_len={len(result.result or '')}, error={result.error}")
 
         return {
@@ -624,7 +660,11 @@ class OpenFangAdapter:
         config_dir = os.path.join(home, ".openfang")
         config_path = os.path.join(config_dir, "config.toml")
 
-        os.makedirs(config_dir, exist_ok=True)
+        os.makedirs(config_dir, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(config_dir, 0o700)
+        except OSError:
+            pass  # Windows 不支持 POSIX 权限
 
         content = ""
         if os.path.exists(config_path):
@@ -675,6 +715,10 @@ class OpenFangAdapter:
 
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(content)
+        try:
+            os.chmod(config_path, 0o600)
+        except OSError:
+            pass  # Windows 不支持 POSIX 权限
 
         logger.info("[OpenFang] config.toml updated: default_model=openai/%s, provider_urls.openai=%s",
                     model, base_url)
@@ -707,6 +751,10 @@ class OpenFangAdapter:
                 existing = existing.rstrip() + f"\n{new_line}\n"
             with open(env_path, "w", encoding="utf-8") as f:
                 f.write(existing)
+            try:
+                os.chmod(env_path, 0o600)
+            except OSError:
+                pass  # Windows
             logger.info("[OpenFang] .env updated: %s=***%s", var_name, value[-4:] if len(value) > 4 else "****")
         except Exception as e:
             logger.debug("[OpenFang] .env write failed (non-fatal): %s", e)
@@ -814,14 +862,15 @@ class OpenFangAdapter:
                                         existing_id, agent_name)
                             return existing_id
 
-                    # Fallback: JSON 格式
+                    # Fallback: JSON 格式 — 使用检测到的 provider/effective_url
                     resp = await client.post(
                         f"{self.base_url}/api/agents",
                         json={
                             "name": agent_name,
                             "system_prompt": system_prompt,
                             "model": model_name,
-                            "provider": "openai",
+                            "provider": provider,
+                            "base_url": effective_url,
                             "temperature": 0.1,
                             "tools": agent_config.get("tools", []),
                         },
