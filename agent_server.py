@@ -2255,7 +2255,6 @@ async def complete_deferred_task(task_id: str):
 
 from fastapi import Request
 from starlette.responses import StreamingResponse as StarletteStreamingResponse
-import re as _proxy_re
 
 @app.api_route("/openfang-llm-proxy/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def openfang_llm_proxy(request: Request, path: str):
