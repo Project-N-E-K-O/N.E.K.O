@@ -156,6 +156,13 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             labelKey: 'settings.toggles.userPlugin',
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
+        },
+        {
+            id: 'agent-openfang',
+            label: window.t ? window.t('settings.toggles.openfang') : 'OpenFang',
+            labelKey: 'settings.toggles.openfang',
+            initialDisabled: true,
+            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         }
     ];
 

@@ -860,38 +860,4 @@
      * }
      * ```
      * 
-     * @param {string|object} message - Error message string or structured error object
-     * @returns {string} Translated message
-     */
-    function translateStatusMessage(message) {
-        // Attempt to parse JSON strings into objects
-        if (typeof message === 'string') {
-            try {
-                const parsed = JSON.parse(message);
-                if (parsed && typeof parsed === 'object') {
-                    message = parsed;
-                }
-            } catch (e) {
-                // Not valid JSON, keep as string
-            }
-        }
-
-        // Support structured error objects: {"code": "XXX", "details": {...}}
-        if (message && typeof message === 'object') {
-            if (message.code && typeof message.code === 'string') {
-                const translationKey = `errors.${message.code}`;
-                const details = message.details || {};
-                return i18next.t(translationKey, details);
-            }
-            if (message.message) {
-                message = message.message;
-            } else {
-                return String(message);
-            }
-        }
-
-        // Plain string passthrough (legacy)
-        return message || '';
-    }
-
-})();
+     * @param {string|object} message - Error message string or structur

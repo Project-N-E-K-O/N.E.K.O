@@ -16,6 +16,7 @@ from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 from .computer_use import ComputerUseAdapter
 from .browser_use_adapter import BrowserUseAdapter
+from .openfang_adapter import OpenFangAdapter
 
 logger = get_module_logger(__name__, "Agent")
 
@@ -26,7 +27,7 @@ class TaskResult:
     task_id: str
     has_task: bool = False
     task_description: str = ""
-    execution_method: str = "none"  # "computer_use" | "browser_use" | "user_plugin" | "none"
+    execution_method: str = "none"  # "computer_use" | "browser_use" | "user_plugin" | "openfang" | "none"
     success: bool = False
     result: Any = None
     error: Optional[str] = None
@@ -64,14 +65,27 @@ class UserPluginDecision:
     plugin_args: Optional[Dict] = None
     reason: str = ""
 
+
+@dataclass
+class OpenFangDecision:
+    """OpenFang 多 Agent 执行决策"""
+    has_task: bool = False
+    can_execute: bool = False
+    task_description: str = ""
+    suggested_tools: Optional[List[str]] = None
+    reason: str = ""
+
+
 class DirectTaskExecutor:
     """
     直接任务执行器：并行评估 BrowserUse / ComputerUse / UserPlugin 可行性并执行
     """
     
-    def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None):
+    def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None,
+                 openfang: Optional[OpenFangAdapter] = None):
         self.computer_use = computer_use or ComputerUseAdapter()
         self.browser_use = browser_use
+        self.openfang: Optional[OpenFangAdapter] = openfang
         self._config_manager = get_config_manager()
         self.plugin_list = []
         self.user_plugin_enabled_default = False
@@ -360,6 +374,85 @@ Rules:
         except Exception as e:
             return BrowserUseDecision(has_task=False, can_execute=False, reason=f"Assessment error: {e}")
     
+    async def _assess_openfang(self, conversation: str, available_tools: List[str]) -> OpenFangDecision:
+        """
+        评估是否应路由到 OpenFang 执行。
+
+        OpenFang 擅长: 多步推理+工具调用的复合任务、数据处理、Web 搜索、代码执行、消息发送。
+        不适合: 需要 GUI 交互 (截屏/点击)、纯对话/闲聊、需要可视化浏览器的任务。
+        """
+        if not self.openfang or not self.openfang.init_ok:
+            return OpenFangDecision(has_task=False, can_execute=False, reason="OpenFang not available")
+
+        tools_str = ", ".join(available_tools[:30]) if available_tools else "web_search, code_exec, file_ops, data_processing"
+        system_prompt = f"""You are a automation assessment agent, assess if the user's latest request should be handled by OpenFang multi-agent autonomous system.
+Return strict JSON:
+{{
+  "has_task": boolean,
+  "can_execute": boolean,
+  "task_description": "brief description",
+  "suggested_tools": ["tool1", "tool2"],
+  "reason": "why"
+}}
+OpenFang available tools: {tools_str}
+
+Route TO OpenFang:
+- Data processing, file operations, format conversion
+- Web search, information gathering, research tasks
+- Code generation and execution (sandboxed)
+- Sending messages/emails via API
+- Multi-step compound tasks requiring tool orchestration
+
+Do NOT route to OpenFang:
+- Tasks requiring screen interaction (screenshots, mouse clicks, GUI operations) → ComputerUse
+- Pure conversation, emotional exchange, role-playing → main conversation engine
+- Tasks requiring a visible browser with real-time visual feedback → BrowserUse
+- Simple factual questions that don't need tools"""
+        user_prompt = f"Conversation:\n{conversation}"
+        try:
+            client = self._get_client()
+            model = self._get_model()
+            req = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0,
+                "max_completion_tokens": 500,
+            }
+            extra_body = get_extra_body(model)
+            if extra_body:
+                req["extra_body"] = extra_body
+            quota_error = self._check_agent_quota("task_executor.assess_openfang")
+            if quota_error:
+                return OpenFangDecision(has_task=False, can_execute=False, reason=quota_error)
+            response = await client.chat.completions.create(**req)
+            text = response.choices[0].message.content.strip()
+            if text.startswith("```"):
+                text = text.replace("```json", "").replace("```", "").strip()
+            try:
+                decision = json.loads(text)
+            except json.JSONDecodeError as e:
+                raw_prefix = (text or "")[:10]
+                logger.warning(
+                    "[OpenFang Assessment] Invalid JSON, prefix=%r, len=%d, error=%s",
+                    raw_prefix, len(text or ""), e,
+                )
+                return OpenFangDecision(
+                    has_task=False, can_execute=False,
+                    reason=f"Assessment parse error: {e}; prefix={raw_prefix!r}",
+                )
+            return OpenFangDecision(
+                has_task=decision.get("has_task", False),
+                can_execute=decision.get("can_execute", False),
+                task_description=decision.get("task_description", ""),
+                suggested_tools=decision.get("suggested_tools", []),
+                reason=decision.get("reason", ""),
+            )
+        except Exception as e:
+            return OpenFangDecision(has_task=False, can_execute=False, reason=f"Assessment error: {e}")
+
     async def _assess_user_plugin(self, conversation: str, plugins: Any) -> UserPluginDecision:
         """
         评估本地用户插件可行性（plugins 为外部传入的插件列表）
@@ -708,13 +801,14 @@ Return only the JSON object, nothing else.
         computer_use_enabled = agent_flags.get("computer_use_enabled", False)
         browser_use_enabled = agent_flags.get("browser_use_enabled", False)
         user_plugin_enabled = agent_flags.get("user_plugin_enabled", False)
-        
+        openfang_enabled = agent_flags.get("openfang_enabled", False)
+
         logger.debug(
-            "[TaskExecutor] analyze_and_execute: task_id=%s lanlan=%s flags={cu=%s, bu=%s, up=%s}",
-            task_id, lanlan_name, computer_use_enabled, browser_use_enabled, user_plugin_enabled,
+            "[TaskExecutor] analyze_and_execute: task_id=%s lanlan=%s flags={cu=%s, bu=%s, up=%s, of=%s}",
+            task_id, lanlan_name, computer_use_enabled, browser_use_enabled, user_plugin_enabled, openfang_enabled,
         )
 
-        if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled:
+        if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled and not openfang_enabled:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
         
@@ -743,10 +837,22 @@ Return only the JSON object, nothing else.
             except Exception as e:
                 logger.warning(f"[TaskExecutor] Failed to check BrowserUse: {e}")
         
-        # 并行执行评估（包含 user_plugin 分支）
+        # OpenFang 可用性检查
+        of_available = False
+        of_tools: List[str] = []
+        if openfang_enabled and self.openfang:
+            try:
+                of_available = self.openfang.init_ok
+                of_tools = self.openfang.get_tools_list()
+                logger.info("[TaskExecutor] OpenFang available: %s, tools: %d", of_available, len(of_tools))
+            except Exception as e:
+                logger.warning("[TaskExecutor] Failed to check OpenFang: %s", e)
+
+        # 并行执行评估（包含 user_plugin / openfang 分支）
         cu_decision = None
         bu_decision = None
         up_decision = None
+        of_decision = None
 
         # user plugin 支路（由外部 provider 提供插件列表）
         plugins = []
@@ -756,10 +862,13 @@ Return only the JSON object, nothing else.
 
         if user_plugin_enabled and plugins:
             assessment_tasks.append(('up', self._assess_user_plugin(conversation, plugins)))
-        
+
+        if openfang_enabled and of_available:
+            assessment_tasks.append(('of', self._assess_openfang(conversation, of_tools)))
+
         if browser_use_enabled and browser_available:
             assessment_tasks.append(('bu', self._assess_browser_use(conversation, browser_available)))
-        
+
         if computer_use_enabled and cu_available:
             assessment_tasks.append(('cu', self._assess_computer_use(conversation, cu_available)))
         
@@ -781,6 +890,9 @@ Return only the JSON object, nothing else.
             if task_type == 'up':
                 up_decision = result
                 logger.info(f"[UserPlugin] has_task={getattr(up_decision,'has_task',None)}, can_execute={getattr(up_decision,'can_execute',None)}, reason={getattr(up_decision,'reason',None)}")
+            elif task_type == 'of':
+                of_decision = result
+                logger.info(f"[OpenFang] has_task={getattr(of_decision,'has_task',None)}, can_execute={getattr(of_decision,'can_execute',None)}, reason={getattr(of_decision,'reason',None)}")
             elif task_type == 'cu':
                 cu_decision = result
                 logger.info(f"[ComputerUse] has_task={getattr(cu_decision,'has_task',None)}, can_execute={getattr(cu_decision,'can_execute',None)}, reason={getattr(cu_decision,'reason',None)}")
@@ -816,7 +928,19 @@ Return only the JSON object, nothing else.
                 reason=up_decision.reason
             )
 
-        # 2. BrowserUse
+        # 2. OpenFang (沙箱保护 + 丰富工具集，优先于直接操作宿主的 BrowserUse/ComputerUse)
+        if isinstance(of_decision, OpenFangDecision) and of_decision.has_task and of_decision.can_execute:
+            logger.info("[TaskExecutor] Using OpenFang: %s", of_decision.task_description)
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=of_decision.task_description,
+                execution_method='openfang',
+                success=False,
+                reason=of_decision.reason,
+            )
+
+        # 3. BrowserUse
         if bu_decision and bu_decision.has_task and bu_decision.can_execute:
             logger.info(f"[TaskExecutor] ✅ Using BrowserUse: {bu_decision.task_description}")
             return TaskResult(
@@ -828,9 +952,9 @@ Return only the JSON object, nothing else.
                 reason=bu_decision.reason
             )
 
-        # 3. ComputerUse
+        # 4. ComputerUse
         if cu_decision and cu_decision.has_task and cu_decision.can_execute:
-            logger.info(f"[TaskExecutor] ✅ Using ComputerUse: {cu_decision.task_description}")
+            logger.info(f"[TaskExecutor] Using ComputerUse: {cu_decision.task_description}")
             return TaskResult(
                 task_id=task_id,
                 has_task=True,
@@ -839,8 +963,8 @@ Return only the JSON object, nothing else.
                 success=False,  # 标记为待执行
                 reason=cu_decision.reason
             )
-                
-        # 4. 没有可执行的分支，汇总原因
+
+        # 5. 没有可执行的分支，汇总原因
         reason_parts = []
         if cu_decision:
             reason_parts.append(f"ComputerUse: {cu_decision.reason}")
@@ -848,11 +972,14 @@ Return only the JSON object, nothing else.
             reason_parts.append(f"BrowserUse: {bu_decision.reason}")
         if isinstance(up_decision, UserPluginDecision):
             reason_parts.append(f"UserPlugin: {up_decision.reason}")
-        
+        if isinstance(of_decision, OpenFangDecision):
+            reason_parts.append(f"OpenFang: {of_decision.reason}")
+
         has_any_task = (
             (bu_decision and bu_decision.has_task)
             or (cu_decision and cu_decision.has_task)
             or (isinstance(up_decision, UserPluginDecision) and up_decision.has_task)
+            or (isinstance(of_decision, OpenFangDecision) and of_decision.has_task)
         )
         if has_any_task:
             if cu_decision and cu_decision.has_task:
@@ -861,6 +988,8 @@ Return only the JSON object, nothing else.
                 task_desc = bu_decision.task_description
             elif isinstance(up_decision, UserPluginDecision) and up_decision.has_task:
                 task_desc = up_decision.task_description
+            elif isinstance(of_decision, OpenFangDecision) and of_decision.has_task:
+                task_desc = of_decision.task_description
             else:
                 task_desc = ""
             logger.info(f"[TaskExecutor] Task detected but cannot execute: {task_desc}")
@@ -1274,5 +1403,4 @@ Return only the JSON object, nothing else.
         )
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
-        """保留接口兼容性，MCP 已移除，始终返回空。"""
-        return {}
+        """保留接口兼容性，MCP 已移除，始终返回空。""

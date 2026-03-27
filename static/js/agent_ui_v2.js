@@ -4,7 +4,7 @@
  * 包含状态快照、变更通知、繁忙状态等
  */
 (function () {
-    const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled'];
+    const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openfang_enabled'];
 
     const state = {
         snapshot: null,
@@ -29,6 +29,7 @@
         keyboard: getEls('live2d-agent-keyboard', 'vrm-agent-keyboard', 'mmd-agent-keyboard'),
         browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser'),
         userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin'),
+        openfang: getEls('live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang'),
         status: getEls('live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status'),
     });
     const sync = (cbs) => {
@@ -42,6 +43,7 @@
             computer_use_enabled: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
             browser_use_enabled: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
             user_plugin_enabled: window.t ? window.t('settings.toggles.userPlugin') : '用户插件',
+            openfang_enabled: window.t ? window.t('settings.toggles.openfang') : 'OpenFang',
         };
         return map[key] || key;
     };
@@ -71,6 +73,7 @@
             computer_use_enabled: 'computer_use',
             browser_use_enabled: 'browser_use',
             user_plugin_enabled: 'user_plugin',
+            openfang_enabled: 'openfang',
         };
         const cap = caps[map[key]];
         if (!cap) return true;
@@ -82,6 +85,7 @@
             computer_use_enabled: 'computer_use',
             browser_use_enabled: 'browser_use',
             user_plugin_enabled: 'user_plugin',
+            openfang_enabled: 'openfang',
         };
         const cap = caps[map[key]];
         return (cap && cap.reason) || '';
@@ -144,7 +148,7 @@
     }
 
     function render(source = 'render') {
-        const { master, keyboard, browser, userPlugin } = el();
+        const { master, keyboard, browser, userPlugin, openfang } = el();
         if (!master.length) return;
         const snap = state.snapshot;
         if (!snap) {
@@ -200,9 +204,13 @@
         sync(master);
 
         FLAG_KEYS.forEach((k) => {
-            const list = k === 'computer_use_enabled'
-                ? keyboard
-                : (k === 'browser_use_enabled' ? browser : (k === 'user_plugin_enabled' ? userPlugin : []));
+            const flagElMap = {
+                computer_use_enabled: keyboard,
+                browser_use_enabled: browser,
+                user_plugin_enabled: userPlugin,
+                openfang_enabled: openfang,
+            };
+            const list = flagElMap[k] || [];
             if (!list.length) return;
             const ready = capabilityReady(snap, k);
             const reason = capabilityReason(snap, k);
@@ -261,7 +269,7 @@
     }
 
     function bindEvents() {
-        const { master, keyboard, browser, userPlugin } = el();
+        const { master, keyboard, browser, userPlugin, openfang } = el();
         if (!master.length) return;
         const clearProcessing = (cbs) => {
             (Array.isArray(cbs) ? cbs : [cbs]).forEach(cb => {
@@ -363,6 +371,7 @@
         bindFlag(keyboard, 'computer_use_enabled');
         bindFlag(browser, 'browser_use_enabled');
         bindFlag(userPlugin, 'user_plugin_enabled');
+        bindFlag(openfang, 'openfang_enabled');
 
         window.addEventListener('live2d-agent-popup-opening', async () => {
             state.popupOpen = true;

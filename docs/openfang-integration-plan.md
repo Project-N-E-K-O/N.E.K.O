@@ -1,111 +1,366 @@
-# OpenFang 集成方案 — N.E.K.O. × OpenFang
+# OpenFang 集成方案 — N.E.K.O. × OpenFang (v2)
 
 ## 总体思路
 
 将 OpenFang 作为 N.E.K.O. 的**无头 Agent 执行后端**：抹除其人格，NEKO 通过 A2A 协议下发指令，OpenFang 利用其 53 个内置工具 + 60 个 Skill 执行任务，定期同步状态回 NEKO。API Key 由 NEKO 侧统一管理并下发。
 
+### 架构总览
+
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    N.E.K.O. (主控端)                          │
-│                                                              │
-│  main_server ←──ZMQ──→ agent_server                          │
-│       ↑                     │                                │
-│       │ WebSocket           │ HTTP/A2A                       │
-│       │ (用户对话)           ↓                                │
-│       │              ┌─────────────────┐                     │
-│       │              │ OpenFangAdapter  │ ← 新增适配层        │
-│       │              └────────┬────────┘                     │
-│       │                       │                              │
-└───────┼───────────────────────┼──────────────────────────────┘
-        │                       │ REST API (localhost:50051)
-        │                       ↓
-┌───────┼───────────────────────────────────────────────────────┐
-│       │            OpenFang (执行端)                           │
-│       │                                                       │
-│  ┌────┴────┐   ┌──────────┐   ┌──────────┐   ┌───────────┐  │
-│  │ A2A API │   │ 53 Tools │   │ 60 Skills│   │ WASM沙箱  │  │
-│  └─────────┘   └──────────┘   └──────────┘   └───────────┘  │
-│                                                               │
-│  人格: 已抹除 (纯执行者)                                       │
-│  LLM Key: 由 NEKO 下发                                        │
-│  任务: 仅接受 A2A 指令                                         │
-└───────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                   Electron (N.E.K.O.-PC)                        │
+│                                                                 │
+│   ┌─────────────────────┐       ┌─────────────────────┐        │
+│   │  child_process #1   │       │  child_process #2   │        │
+│   │  Python launcher.py │       │  OpenFang binary    │        │
+│   └─────────┬───────────┘       └─────────┬───────────┘        │
+│             │                             │                     │
+│     ┌───────┼───────────┐                 │                     │
+│     │       │           │                 │                     │
+│   :48912  :48911      :48915           :50051                   │
+│   memory  main_srv    agent_srv       openfang                  │
+│     │       │           │                 │                     │
+│     └───────┼───────────┘                 │                     │
+│             │          HTTP (localhost)    │                     │
+│             │  ┌──────────────────────┐   │                     │
+│             └──│  OpenFangAdapter     │───┘                     │
+│                │  (brain/ 纯通信层)    │                         │
+│                └──────────────────────┘                         │
+└─────────────────────────────────────────────────────────────────┘
+
+关键原则:
+  • Electron 并行 spawn 两个进程，互不依赖进程树
+  • Python 侧只负责「跟 OpenFang 通信」，不负责「管 OpenFang 的命」
+  • OpenFang 崩了 → NEKO 对话不受影响，只是 agent 执行暂时不可用
+  • Python 崩了 → OpenFang 仍在，Electron 可独立重启 Python
+```
+
+### 对比旧方案
+
+```
+❌ 旧: Electron → Python → OpenFang (三层套娃，生命周期耦合)
+✅ 新: Electron ──┬── Python (现有)     两个平级子进程
+                  └── OpenFang (新增)    独立生命周期
 ```
 
 ---
 
-## Phase 0: 环境准备与 OpenFang 部署
+## Phase 0: Electron 侧进程管理
 
-### 0.1 OpenFang 安装集成
+### 0.1 OpenFang 二进制打包
 
-**目标**: 将 OpenFang 二进制打包进 NEKO 的发行版中，用户无需手动安装。
+**目标**: 将 OpenFang ~32MB 二进制嵌入 N.E.K.O.-PC 的发行包，用户无需手动安装。
 
-**方案**:
-- OpenFang 是 ~32MB 单一二进制，可直接嵌入 NEKO 安装包
-- 在 `launcher.py` 中增加 OpenFang 进程管理（启动/停止/健康检查）
-- OpenFang 随 NEKO 启动自动拉起，随 NEKO 关闭自动终止
-
-**涉及文件**:
-- `launcher.py` — 增加 OpenFang 子进程管理
-- 新增 `openfang/` 目录存放二进制和默认配置
-
-```python
-# launcher.py 新增
-class OpenFangProcessManager:
-    """管理 OpenFang daemon 生命周期"""
-
-    def __init__(self):
-        self.process = None
-        self.binary_path = self._find_binary()
-        self.config_path = os.path.join(DATA_DIR, "openfang", "config.toml")
-
-    def start(self):
-        """随 NEKO 启动 OpenFang daemon"""
-        self._ensure_config()
-        self.process = subprocess.Popen(
-            [self.binary_path, "start", "--config", self.config_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-
-    def stop(self):
-        """优雅关闭"""
-        if self.process:
-            # 先尝试 HTTP API 关闭
-            requests.post("http://127.0.0.1:50051/api/shutdown")
-            self.process.wait(timeout=10)
-
-    def health_check(self) -> bool:
-        try:
-            r = requests.get("http://127.0.0.1:50051/api/health", timeout=2)
-            return r.status_code == 200
-        except:
-            return False
+**打包位置**:
+```
+N.E.K.O.-PC/
+├── resources/
+│   ├── openfang/
+│   │   ├── openfang.exe          # Windows
+│   │   ├── openfang-darwin        # macOS
+│   │   ├── openfang-linux         # Linux
+│   │   └── config.default.toml    # 默认配置模板
+│   └── python/                    # 现有 Python 后端
+└── ...
 ```
 
-### 0.2 OpenFang 默认配置生成
+### 0.2 Electron Main Process — OpenFangManager
 
-**目标**: NEKO 侧自动生成 OpenFang 的 config.toml，抹除人格、锁定为纯执行模式。
+**位置**: N.E.K.O.-PC 的 Electron main process（与现有 Python launcher 管理器平级）
+
+```typescript
+// electron/main/openfang-manager.ts
+
+import { spawn, ChildProcess } from 'child_process';
+import { app } from 'electron';
+import path from 'path';
+import http from 'http';
+
+interface OpenFangStatus {
+  running: boolean;
+  version?: string;
+  port: number;
+  pid?: number;
+}
+
+export class OpenFangManager {
+  private process: ChildProcess | null = null;
+  private port: number = 50051;
+  private configPath: string;
+  private binaryPath: string;
+  private healthCheckTimer: NodeJS.Timeout | null = null;
+  private restartCount: number = 0;
+  private maxRestarts: number = 5;
+
+  constructor() {
+    const resourcesPath = process.resourcesPath || path.join(app.getAppPath(), 'resources');
+    const platform = process.platform;
+
+    this.binaryPath = path.join(resourcesPath, 'openfang',
+      platform === 'win32' ? 'openfang.exe' :
+      platform === 'darwin' ? 'openfang-darwin' : 'openfang-linux'
+    );
+
+    // 配置存放在用户数据目录，跟 Python 侧的 port_config.json 同级
+    const userDataPath = app.getPath('userData'); // %APPDATA%/N.E.K.O 或 ~/Library/Application Support/N.E.K.O
+    this.configPath = path.join(userDataPath, 'openfang', 'config.toml');
+  }
+
+  /**
+   * 启动 OpenFang daemon
+   * 由 Electron app.whenReady() 调用，与 Python launcher 并行
+   */
+  async start(): Promise<void> {
+    this.ensureConfig();
+
+    this.process = spawn(this.binaryPath, [
+      'start',
+      '--config', this.configPath
+    ], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false,  // 不 detach，Electron 退出时自动回收
+    });
+
+    this.process.stdout?.on('data', (data: Buffer) => {
+      console.log(`[OpenFang] ${data.toString().trim()}`);
+    });
+
+    this.process.stderr?.on('data', (data: Buffer) => {
+      console.error(`[OpenFang] ${data.toString().trim()}`);
+    });
+
+    this.process.on('exit', (code: number | null) => {
+      console.log(`[OpenFang] exited with code ${code}`);
+      this.process = null;
+
+      // 非正常退出 → 自动重启 (带上限)
+      if (code !== 0 && code !== null && this.restartCount < this.maxRestarts) {
+        this.restartCount++;
+        console.log(`[OpenFang] restarting (attempt ${this.restartCount}/${this.maxRestarts})...`);
+        setTimeout(() => this.start(), 2000);
+      }
+    });
+
+    // 等待 health check 通过 (OpenFang 冷启动 ~180ms)
+    await this.waitForHealth(10_000);
+    this.startHealthMonitor();
+  }
+
+  /**
+   * 优雅关闭
+   */
+  async stop(): Promise<void> {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
+
+    if (!this.process) return;
+
+    try {
+      // 先通过 API 优雅关闭
+      await this.httpPost('/api/shutdown');
+      // 等待进程退出
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          this.process?.kill('SIGKILL');
+          resolve();
+        }, 5000);
+        this.process?.on('exit', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    } catch {
+      // API 不通，直接 kill
+      this.process?.kill('SIGTERM');
+    }
+
+    this.process = null;
+  }
+
+  /**
+   * 健康检查
+   */
+  async healthCheck(): Promise<OpenFangStatus> {
+    try {
+      const data = await this.httpGet('/api/health');
+      return {
+        running: true,
+        version: data.version,
+        port: this.port,
+        pid: this.process?.pid
+      };
+    } catch {
+      return { running: false, port: this.port };
+    }
+  }
+
+  /**
+   * 获取 OpenFang 端口 (供 Python 侧使用)
+   */
+  getPort(): number {
+    return this.port;
+  }
+
+  // ─────────────── 内部方法 ───────────────
+
+  private ensureConfig(): void {
+    const fs = require('fs');
+    const dir = path.dirname(this.configPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    if (!fs.existsSync(this.configPath)) {
+      // 从默认模板生成，抹除人格、关闭 channels
+      const template = fs.readFileSync(
+        path.join(path.dirname(this.binaryPath), 'config.default.toml'), 'utf-8'
+      );
+      fs.writeFileSync(this.configPath, template);
+    }
+  }
+
+  private async waitForHealth(timeoutMs: number): Promise<void> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const status = await this.healthCheck();
+      if (status.running) {
+        console.log(`[OpenFang] ready in ${Date.now() - start}ms (v${status.version})`);
+        return;
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+    console.warn('[OpenFang] health check timed out');
+  }
+
+  private startHealthMonitor(): void {
+    // 每 30s 检查一次
+    this.healthCheckTimer = setInterval(async () => {
+      const status = await this.healthCheck();
+      if (!status.running && this.restartCount < this.maxRestarts) {
+        console.warn('[OpenFang] daemon down, restarting...');
+        this.restartCount++;
+        await this.start();
+      }
+    }, 30_000);
+  }
+
+  private httpGet(path: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      http.get(`http://127.0.0.1:${this.port}${path}`, { timeout: 3000 }, (res) => {
+        let body = '';
+        res.on('data', (chunk) => body += chunk);
+        res.on('end', () => {
+          try { resolve(JSON.parse(body)); }
+          catch { reject(new Error('Invalid JSON')); }
+        });
+      }).on('error', reject);
+    });
+  }
+
+  private httpPost(path: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(`http://127.0.0.1:${this.port}${path}`, {
+        method: 'POST', timeout: 3000
+      }, () => resolve());
+      req.on('error', reject);
+      req.end();
+    });
+  }
+}
+```
+
+### 0.3 Electron 启动流程改造
+
+```typescript
+// electron/main/index.ts (伪代码，展示集成点)
+
+import { OpenFangManager } from './openfang-manager';
+
+const openfangManager = new OpenFangManager();
+
+app.whenReady().then(async () => {
+  // ===== 并行启动两个后端 =====
+  const [pythonResult, openfangResult] = await Promise.allSettled([
+    pythonLauncher.start(),       // 现有: spawn Python launcher.py
+    openfangManager.start()       // 新增: spawn OpenFang binary
+  ]);
+
+  // Python 是必须的，OpenFang 是可选的
+  if (pythonResult.status === 'rejected') {
+    showErrorDialog('Python 后端启动失败');
+    return;
+  }
+
+  if (openfangResult.status === 'rejected') {
+    console.warn('[OpenFang] 启动失败，agent 执行功能将不可用');
+    // 继续运行，降级模式
+  }
+
+  // 将 OpenFang 端口通过环境变量 / IPC 告知 Python 侧
+  // 方案 A: 写入 port_config.json (Python 侧已有读取逻辑)
+  writePortConfig({ openfang_port: openfangManager.getPort() });
+
+  // 方案 B: 通过 NEKO_EVENT 机制通知 (如果 Python 侧监听)
+  // pythonProcess.stdin.write(JSON.stringify({ event: 'openfang_ready', port: 50051 }));
+
+  createMainWindow();
+});
+
+app.on('before-quit', async () => {
+  // 并行关闭
+  await Promise.allSettled([
+    pythonLauncher.stop(),
+    openfangManager.stop()
+  ]);
+});
+```
+
+### 0.4 端口通信桥接
+
+Electron 需要把 OpenFang 的端口号传给 Python 侧。最简方案是复用现有的 `port_config.json`：
+
+```json
+// %APPDATA%/N.E.K.O/port_config.json
+{
+  "MAIN_SERVER_PORT": 48911,
+  "MEMORY_SERVER_PORT": 48912,
+  "TOOL_SERVER_PORT": 48915,
+  "OPENFANG_PORT": 50051
+}
+```
+
+Python 侧 `config/__init__.py` 已有读取 port_config.json 的逻辑，新增一个字段即可：
+
+```python
+# config/__init__.py 新增
+OPENFANG_PORT = _read_port("OPENFANG_PORT", 50051)
+OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
+```
+
+### 0.5 OpenFang 默认配置
 
 ```toml
-# data/openfang/config.toml (由 NEKO 自动生成)
+# resources/openfang/config.default.toml
+# 由 Electron 首次启动时复制到用户数据目录
+# NEKO 专用配置：抹除人格、关闭 channels、纯 API 执行模式
 
 # 基础设置
 home_dir = "~/.neko/openfang"
 data_dir = "~/.neko/openfang/data"
 log_level = "info"
-api_listen = "127.0.0.1:50051"   # 只绑定 localhost，安全
-api_key = ""                      # 由 NEKO 启动时动态设置
+api_listen = "127.0.0.1:50051"    # 只绑定 localhost
+api_key = ""                       # 启动后由 Python 侧动态推送
 
-# 默认模型 — 由 NEKO 下发配置覆盖
+# 默认模型 — 占位，启动后由 NEKO sync_config 覆盖
 [default_model]
-provider = "openai"               # 占位，启动后由 NEKO push
+provider = "openai"
 model = "gpt-4o"
 
-# 关闭所有 Channel — OpenFang 只通过 API 接受指令
-# 不配置任何 [channels.*] 段
+# 关闭所有 Channel — OpenFang 只通过 A2A API 接受指令
+# (不配置任何 [channels.*] 段)
 
-# 关闭所有 Hands 自主调度 — 由 NEKO 控制
+# 关闭所有 Hands 自主调度 — 完全由 NEKO 控制
 [hands]
 # 全部不启用
 
@@ -118,30 +373,30 @@ decay_rate = 0.5
 
 ---
 
-## Phase 1: OpenFangAdapter — 适配层
+## Phase 1: OpenFangAdapter — Python 侧适配层
 
 ### 1.1 新增 `brain/openfang_adapter.py`
 
-**核心职责**: 封装所有与 OpenFang 的 HTTP 通信，提供与现有 ComputerUseAdapter / BrowserUseAdapter 一致的接口。
+**核心职责**: 封装所有与 OpenFang 的 HTTP 通信，提供与现有 ComputerUseAdapter / BrowserUseAdapter 一致的接口。**不管进程生命周期**——那是 Electron 的事。
 
 ```python
 """
 brain/openfang_adapter.py
 OpenFang Agent 执行后端适配器
 
-职责:
-1. 管理与 OpenFang daemon 的连接
-2. 通过 A2A API 下发任务
-3. 轮询/SSE 监听任务状态
-4. API Key 下发与配置同步
+职责 (仅通信，不管进程):
+1. 通过 A2A API 下发任务
+2. 轮询/SSE 监听任务状态
+3. API Key 下发与配置同步
+4. 健康检查 (仅检测连通性，不负责启停)
 """
 
 import httpx
 import asyncio
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List, Callable
+from config import OPENFANG_BASE_URL
 from utils.config_manager import get_config_manager
 
 logger = logging.getLogger("openfang_adapter")
@@ -166,17 +421,20 @@ class OpenFangAdapter:
     - run_instruction(instruction, session_id) -> Dict[str, Any]
     - cancel_running() -> None
     - check_connectivity() -> bool
+
+    注意: 本适配器不管理 OpenFang 进程生命周期。
+    进程由 Electron main process 管理，本层只做 HTTP 通信。
     """
 
-    DEFAULT_BASE_URL = "http://127.0.0.1:50051"
-
     def __init__(self, base_url: str = None):
-        self.base_url = base_url or self.DEFAULT_BASE_URL
+        self.base_url = base_url or OPENFANG_BASE_URL
         self.init_ok = False
         self.last_error: Optional[str] = None
         self._active_tasks: Dict[str, str] = {}   # neko_task_id -> openfang_task_id
         self._api_key: Optional[str] = None        # OpenFang Bearer token
         self._config_synced = False
+        self._cached_version: Optional[str] = None
+        self._cached_tools_count: Optional[int] = None
 
     # ─────────────────────────────────────────────
     #  接口方法 (与 ComputerUseAdapter 对齐)
@@ -203,11 +461,10 @@ class OpenFangAdapter:
 
         流程:
         1. POST /a2a/tasks/send 创建任务
-        2. SSE 流式监听 或 轮询 GET /a2a/tasks/{id}
-        3. 返回最终结果
+        2. 轮询 GET /a2a/tasks/{id} 直到完成
+        3. 返回结果
         """
         try:
-            # Step 1: 提交任务
             task_payload = {
                 "message": {
                     "role": "user",
@@ -229,7 +486,6 @@ class OpenFangAdapter:
                 task_data = resp.json()
                 of_task_id = task_data["id"]
 
-            # Step 2: 轮询等待完成
             result = await self._poll_task(of_task_id, on_progress)
 
             return {
@@ -251,7 +507,7 @@ class OpenFangAdapter:
     async def cancel_running(self, neko_task_id: str = None) -> None:
         """取消正在运行的任务"""
         tasks_to_cancel = (
-            [self._active_tasks[neko_task_id]] if neko_task_id
+            [self._active_tasks[neko_task_id]] if neko_task_id and neko_task_id in self._active_tasks
             else list(self._active_tasks.values())
         )
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -265,7 +521,10 @@ class OpenFangAdapter:
                     logger.warning(f"Cancel task {of_id} failed: {e}")
 
     def check_connectivity(self) -> bool:
-        """同步健康检查 (在线程池中调用)"""
+        """
+        同步健康检查 (在线程池中调用)
+        仅检测连通性，不负责启停——启停是 Electron 的事
+        """
         try:
             with httpx.Client(timeout=3.0) as client:
                 r = client.get(
@@ -275,7 +534,6 @@ class OpenFangAdapter:
                 self.init_ok = r.status_code == 200
                 if self.init_ok:
                     self.last_error = None
-                    # 缓存版本和工具数
                     status = r.json()
                     self._cached_version = status.get("version")
                     self._cached_tools_count = status.get("tools_count")
@@ -286,14 +544,14 @@ class OpenFangAdapter:
             return False
 
     # ─────────────────────────────────────────────
-    #  配置同步 (NEKO → OpenFang)
+    #  配置同步 (NEKO Python → OpenFang)
     # ─────────────────────────────────────────────
 
     async def sync_config(self) -> bool:
         """
-        将 NEKO 侧的 API Key 和模型配置同步到 OpenFang
+        将 NEKO 侧的 API Key 和模型配置推送到 OpenFang
 
-        通过 OpenFang 的 POST /api/providers/{name}/key 端点
+        通过 POST /api/providers/{name}/key 端点
         运行时推送，不需要重启 OpenFang daemon
         """
         cm = get_config_manager()
@@ -304,7 +562,7 @@ class OpenFangAdapter:
             "qwen": "openai",      # 阿里走 OpenAI compatible
             "stepfun": "openai",   # 阶跃走 OpenAI compatible
             "gemini": "gemini",
-            "glm": "openai",      # 智谱走 OpenAI compatible
+            "glm": "openai",       # 智谱走 OpenAI compatible
             "anthropic": "anthropic"
         }
 
@@ -317,7 +575,6 @@ class OpenFangAdapter:
                     if not api_cfg or not api_cfg.get("api_key"):
                         continue
 
-                    # 推送 API Key
                     resp = await client.post(
                         f"{self.base_url}/api/providers/{of_provider}/key",
                         json={
@@ -340,9 +597,7 @@ class OpenFangAdapter:
 
     async def push_agent_manifest(self, agent_config: Dict) -> Optional[str]:
         """
-        向 OpenFang 注册/更新一个无人格执行 Agent
-
-        抹除人格: system_prompt 只保留执行指令，不含角色扮演
+        向 OpenFang 注册一个无人格执行 Agent
         """
         manifest = {
             "name": agent_config.get("name", "neko-executor"),
@@ -353,8 +608,8 @@ class OpenFangAdapter:
                 "If a task cannot be completed, explain why concisely."
             ),
             "model": agent_config.get("model"),
-            "temperature": 0.1,      # 低温度 = 精确执行
-            "tools": agent_config.get("tools", []),  # 可选: 限制可用工具集
+            "temperature": 0.1,
+            "tools": agent_config.get("tools", []),
         }
 
         try:
@@ -447,7 +702,7 @@ class OpenFangDecision:
     has_task: bool
     can_execute: bool
     task_description: str = ""
-    suggested_tools: List[str] = field(default_factory=list)  # 建议使用的工具
+    suggested_tools: List[str] = field(default_factory=list)
     reason: str = ""
 ```
 
@@ -474,7 +729,7 @@ async def _assess_openfang(
     - 文件处理 (CSV/JSON/数据库)
     - Web 搜索与信息聚合
     - 代码执行 (sandboxed)
-    - 邮件/消息发送 (如果配置了 channel)
+    - 邮件/消息发送
 
     不适合路由到 OpenFang:
     - 需要宿主 GUI 的任务 (截屏、点击) → ComputerUse
@@ -580,14 +835,13 @@ class Modules:
 async def startup_event():
     # ... 现有初始化 ...
 
-    # ===== OpenFang 初始化 =====
+    # ===== OpenFang 初始化 (仅通信层，不管进程) =====
     try:
         from brain.openfang_adapter import OpenFangAdapter
 
-        of_url = os.getenv("OPENFANG_BASE_URL", "http://127.0.0.1:50051")
-        Modules.openfang = OpenFangAdapter(base_url=of_url)
+        Modules.openfang = OpenFangAdapter()  # 从 config 读 OPENFANG_BASE_URL
 
-        # 异步检查连接
+        # 异步等待 OpenFang 就绪 (Electron 已并行启动它)
         asyncio.create_task(_init_openfang())
     except ImportError:
         logger.info("[OpenFang] adapter not available, skipping")
@@ -600,26 +854,31 @@ async def startup_event():
 
 
 async def _init_openfang():
-    """后台初始化 OpenFang 连接 + 配置同步"""
+    """
+    后台等待 OpenFang 连通 + 配置同步
+
+    注意: 不负责启动 OpenFang，只等它就绪。
+    OpenFang 由 Electron 并行启动，通常比 Python 先就绪 (180ms vs 数秒)。
+    """
     adapter = Modules.openfang
     if not adapter:
         return
 
-    # 等待 OpenFang daemon 就绪 (最多 30s)
+    # 等待连通 (最多 30s，通常 <1s 因为 Electron 并行启动)
     for i in range(30):
         if adapter.check_connectivity():
             break
         await asyncio.sleep(1)
 
     if not adapter.init_ok:
-        logger.warning("[OpenFang] daemon not reachable after 30s")
+        logger.warning("[OpenFang] not reachable after 30s (Electron may not have started it)")
         Modules.capability_cache["openfang"] = {
             "ready": False,
-            "reason": "OpenFang daemon 未就绪"
+            "reason": "OpenFang 未就绪 (检查 Electron 侧是否启用)"
         }
         return
 
-    # 同步 API Key 配置
+    # 同步 API Key
     await adapter.sync_config()
 
     # 注册无人格执行 Agent
@@ -635,7 +894,7 @@ async def _init_openfang():
             "agent_id": agent_id
         }
         Modules.agent_flags["openfang_enabled"] = True
-        logger.info(f"[OpenFang] ✅ Ready, executor agent: {agent_id}")
+        logger.info(f"[OpenFang] Ready, executor agent: {agent_id}")
 ```
 
 ### 3.3 任务执行路由
@@ -667,7 +926,6 @@ async def _run_openfang_task(
 ):
     """执行 OpenFang 任务并推送结果"""
 
-    # 注册到 task_registry
     Modules.task_registry[task_id] = {
         "id": task_id,
         "type": "openfang",
@@ -676,7 +934,6 @@ async def _run_openfang_task(
         "start_time": datetime.now().isoformat()
     }
 
-    # 进度回调 → 通过 ZMQ 推送到 main_server
     def on_progress(info):
         if Modules.agent_bridge:
             Modules.agent_bridge.push_event({
@@ -695,12 +952,10 @@ async def _run_openfang_task(
             on_progress=on_progress
         )
 
-        # 更新 registry
         Modules.task_registry[task_id]["status"] = "completed" if result["success"] else "failed"
         Modules.task_registry[task_id]["result"] = result
         Modules.task_registry[task_id]["end_time"] = datetime.now().isoformat()
 
-        # 推送结果到 main_server
         if Modules.agent_bridge:
             Modules.agent_bridge.push_event({
                 "event_type": "task_result",
@@ -779,19 +1034,14 @@ OpenFangAdapter 逐个调用 POST /api/providers/{name}/key
 OpenFang 运行时更新，无需重启
 ```
 
-### 4.2 `config_manager.py` 扩展
+### 4.2 `config/__init__.py` 新增
 
 ```python
-# utils/config_manager.py — 新增
+# config/__init__.py
 
-def get_openfang_config(self) -> Dict[str, Any]:
-    """获取 OpenFang 相关配置"""
-    return {
-        "enabled": self._core_config.get("openfang_enabled", False),
-        "base_url": self._core_config.get("openfang_base_url", "http://127.0.0.1:50051"),
-        "auto_start": self._core_config.get("openfang_auto_start", True),
-        "binary_path": self._core_config.get("openfang_binary_path", ""),
-    }
+# OpenFang 端口 (由 Electron 写入 port_config.json)
+OPENFANG_PORT = _read_port("OPENFANG_PORT", 50051)
+OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
 ```
 
 ### 4.3 `core_config.json` 新增字段
@@ -799,11 +1049,11 @@ def get_openfang_config(self) -> Dict[str, Any]:
 ```json
 {
   "openfang_enabled": true,
-  "openfang_base_url": "http://127.0.0.1:50051",
-  "openfang_auto_start": true,
-  "openfang_binary_path": ""
+  "openfang_auto_start": true
 }
 ```
+
+注意: `openfang_base_url` 和 `openfang_binary_path` 不再需要放在 Python 侧配置中——端口通过 port_config.json 从 Electron 传入，二进制路径由 Electron 管理。
 
 ---
 
@@ -815,7 +1065,7 @@ def get_openfang_config(self) -> Dict[str, Any]:
 
 ```
 ┌─────────────────────────────────────────┐
-│ 🐺 OpenFang Agent 执行后端               │
+│ OpenFang Agent 执行后端                  │
 │                                         │
 │ 状态: ● 已连接 (v0.3.30)                │
 │ 可用工具: 53 个                          │
@@ -829,16 +1079,18 @@ def get_openfang_config(self) -> Dict[str, Any]:
 └─────────────────────────────────────────┘
 ```
 
+**"重启"按钮**通过 Electron IPC 调用 `openfangManager.stop()` + `openfangManager.start()`，不经过 Python。
+
 ### 5.2 任务状态展示
 
 在 NEKO 聊天界面中，当 OpenFang 执行任务时显示:
 
 ```
 ┌─────────────────────────────────────────┐
-│ 🐺 OpenFang 正在执行...                  │
+│ OpenFang 正在执行...                     │
 │                                         │
 │ 任务: 搜索最近的 AI 新闻并整理摘要        │
-│ 状态: ⏳ 运行中 (12s)                    │
+│ 状态: 运行中 (12s)                       │
 │ 步骤: 3/? (web_search → parse → ...)    │
 │                                         │
 │ [取消]                                   │
@@ -852,13 +1104,14 @@ def get_openfang_config(self) -> Dict[str, Any]:
 ### 6.1 权限隔离
 
 ```
-NEKO (宿主环境)           OpenFang (受控环境)
-─────────────────         ──────────────────
-✅ GUI 操作               ❌ 无 GUI 访问
-✅ 用户文件系统            ⚠️ 仅限 sandbox 目录
-✅ 浏览器控制              ❌ 无浏览器 (除非启用 Browser Hand)
-✅ 语音/Live2D             ❌ 无多媒体
-✅ 用户对话/人格            ❌ 无人格 (纯执行者)
+NEKO (宿主环境)               OpenFang (受控环境)
+──────────────────            ──────────────────
+GUI 操作: ✅                  GUI 访问: ❌
+用户文件系统: ✅               仅限 sandbox 目录
+浏览器控制: ✅                 无浏览器 (除非启用 Browser Hand)
+语音/Live2D: ✅                无多媒体
+用户对话/人格: ✅               无人格 (纯执行者)
+进程管理: ❌ (Electron管)      进程管理: ❌ (Electron管)
 ```
 
 ### 6.2 OpenFang Agent Manifest 安全约束
@@ -872,23 +1125,25 @@ system_prompt = "You are a task executor. Execute instructions precisely. No con
 temperature = 0.1
 
 [capabilities]
-# 限制文件系统访问范围
 file_read = ["/tmp/neko-workspace/*"]
 file_write = ["/tmp/neko-workspace/*"]
-net_connect = ["*"]             # 网络访问: 按需收紧
-shell_exec = true               # 代码执行: 在 WASM 沙箱中
+net_connect = ["*"]
+shell_exec = true               # 在 WASM 沙箱中执行
 ```
 
 ---
 
 ## 实施优先级与里程碑
 
-### Milestone 1 — 基础连通 (1-2 周)
-- [ ] OpenFang 二进制打包 + launcher 集成
-- [ ] `brain/openfang_adapter.py` 核心实现
+### Milestone 1 — Electron 侧 + 基础连通 (1-2 周)
+- [ ] N.E.K.O.-PC: `OpenFangManager` 类实现
+- [ ] N.E.K.O.-PC: 并行启动逻辑 (`Promise.allSettled`)
+- [ ] N.E.K.O.-PC: OpenFang 二进制打包到 resources/
+- [ ] N.E.K.O.-PC: port_config.json 增加 OPENFANG_PORT
+- [ ] Python 侧: `brain/openfang_adapter.py` 核心实现
+- [ ] Python 侧: `config/__init__.py` 读取 OPENFANG_PORT
 - [ ] 配置同步 (API Key 下发)
-- [ ] `/openfang/run` 直接执行端点
-- [ ] 手动测试: NEKO → OpenFang → 执行 → 返回结果
+- [ ] 手动测试: Electron → 并行启动 → NEKO ↔ OpenFang 通信
 
 ### Milestone 2 — 智能路由 (1 周)
 - [ ] `_assess_openfang()` 评估逻辑
@@ -899,6 +1154,7 @@ shell_exec = true               # 代码执行: 在 WASM 沙箱中
 ### Milestone 3 — 前端集成 (1 周)
 - [ ] 设置页面 OpenFang 配置区
 - [ ] 聊天界面任务状态展示
+- [ ] Electron IPC: 重启/停止 OpenFang
 - [ ] 错误处理与用户提示
 
 ### Milestone 4 — 安全加固 + 打磨 (1 周)
@@ -914,7 +1170,23 @@ shell_exec = true               # 代码执行: 在 WASM 沙箱中
 | 风险 | 严重度 | 缓解方案 |
 |------|--------|----------|
 | OpenFang pre-1.0，API 可能 breaking change | 高 | 锁定特定版本，adapter 层做兼容 |
-| OpenFang daemon 崩溃 | 中 | launcher 做进程守护，自动重启 |
-| 两套 LLM 调用导致 token 消耗翻倍 | 中 | 路由评估用轻量模型 (qwen-flash)，仅确认路由的任务才调用 OpenFang |
+| OpenFang daemon 崩溃 | 中 | Electron 侧进程守护，自动重启 (上限 5 次) |
+| 两套 LLM 调用导致 token 消耗翻倍 | 中 | 路由评估用轻量模型，仅确认路由的任务才调 OpenFang |
 | 配置同步失败 (API Key) | 低 | 重试机制 + 用户手动同步按钮 |
 | OpenFang 工具执行出错无法调试 | 中 | 保留 OpenFang 日志，提供 [查看日志] 入口 |
+| Electron 升级后二进制兼容性 | 低 | OpenFang 是独立进程，不依赖 Electron runtime |
+
+---
+
+## 与旧方案的关键差异总结
+
+| 项目 | 旧方案 (v1) | 新方案 (v2) |
+|------|-------------|-------------|
+| 进程管理者 | Python launcher.py | Electron main process |
+| 启动方式 | 串行 (Python → OpenFang) | 并行 (Electron 同时 spawn 两者) |
+| 生命周期耦合 | Python 崩 = OpenFang 崩 | 互相独立 |
+| launcher.py 改动 | 新增 OpenFangProcessManager | 无改动 |
+| N.E.K.O.-PC 改动 | 无 | 新增 OpenFangManager |
+| Python adapter 职责 | 通信 + 进程管理 | 仅通信 |
+| 端口传递 | 环境变量 | port_config.json (复用现有机制) |
+| 总套壳层数 | 3 层 | 2 层 |
