@@ -300,8 +300,8 @@
                 S.proactiveNewsChatEnabled = settings.proactiveNewsChatEnabled ?? false;
                 S.proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? false;
                 S.proactivePersonalChatEnabled = settings.proactivePersonalChatEnabled ?? false;
-                S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? false;
-                S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? false;
+                S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? true;
+                S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? true;
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
@@ -363,6 +363,10 @@
                     S.proactiveVisionEnabled = true;
                     console.log('首次启动：检测到中国地区用户，已自动开启自主视觉');
                 }
+
+                // 首次启动默认开启音乐/meme搭话
+                S.proactiveMusicEnabled = true;
+                S.proactiveMemeEnabled = true;
 
                 console.log('未找到保存的设置，使用默认值');
                 window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
