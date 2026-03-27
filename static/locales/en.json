@@ -672,7 +672,37 @@
             "step": "StepFun",
             "silicon": "SiliconFlow (Good Value, Recommended)",
             "gemini": "Gemini (Google, High Intelligence, not available in China)",
-            "kimi": "Kimi (Moonshot, Available in China, Long Context)"
+            "kimi": "Kimi (Moonshot, Available in China, Long Context)",
+            "deepseek": "DeepSeek",
+            "doubao": "ByteDance (Doubao)",
+            "minimax": "MiniMax (Domestic)",
+            "minimax_intl": "MiniMax (International)",
+            "grok": "Grok (xAI)"
+        },
+        "coreApiAutoFillHint": "Key auto-filled from API Key Book, or enter directly",
+        "assistApiSelectLabel": "Assist API Provider",
+        "assistApiKeyLabel": "Assist API Key",
+        "assistApiAutoFillHint": "Key auto-filled from API Key Book, or enter directly",
+        "keyBookTitle": "API Key Book",
+        "keyBookDescription": "Manage all API Keys in one place. Keys are auto-filled when switching providers in Core/Assist API, and keys entered there are auto-saved back here.",
+        "keyBookPlaceholder": "Loading API provider config...",
+        "providerLabel": "Provider",
+        "customModelProviderFollowCore": "Follow Core API",
+        "customModelProviderFollowAssist": "Follow Assist API",
+        "customModelProviderCustom": "Custom",
+        "keyBook": {
+            "qwen": "Alibaba (Qwen)",
+            "openai": "OpenAI",
+            "deepseek": "DeepSeek",
+            "glm": "Zhipu (GLM)",
+            "step": "StepFun (Step)",
+            "silicon": "SiliconFlow",
+            "gemini": "Gemini (Google)",
+            "kimi": "Moonshot (Kimi)",
+            "doubao": "ByteDance (Doubao)",
+            "minimax": "MiniMax (Domestic)",
+            "minimax_intl": "MiniMax (International)",
+            "grok": "Grok (xAI)"
         },
         "freeVersionNoApiKey": "Free version does not require API Key",
         "pleaseEnterApiKey": "Please enter your API Key",
@@ -1451,6 +1481,7 @@
             "enabled": "{{name}} Enabled",
             "disabled": "{{name}} Disabled",
             "enableFailed": "{{name}} Enable Failed",
+            "openfang": "Virtual Machine",
             "userPluginAdapting": "User Plugin (Developing)",
             "moltbotAdapting": "OpenClaw (Developing)",
             "chatSettings": "Chat Settings",
@@ -1463,7 +1494,9 @@
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
             "frameRateHigh": "60fps",
-            "mouseTracking": "Mouse Tracking"
+            "mouseTracking": "Mouse Tracking",
+            "fullscreenTracking": "Fullscreen Tracking",
+            "localTracking": "Local Tracking"
         }
     },
     "subtitle": {

@@ -1015,7 +1015,7 @@ class ConfigManager:
 
         - cosyvoice: tts_custom 配置的 api_key
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
-        - minimax_intl: ASSIST_API_KEY_MINIMAX → MINIMAX_INTL_API_KEY fallback
+        - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
         """
         if provider == 'cosyvoice':
             tts_config = self.get_model_api_config('tts_custom')
@@ -1023,31 +1023,46 @@ class ConfigManager:
             return key or None
         if provider in ('minimax', 'minimax_intl'):
             core_config = self.get_core_config()
-            key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+            if provider == 'minimax_intl':
+                key = (core_config.get('ASSIST_API_KEY_MINIMAX_INTL') or '').strip()
+            else:
+                key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
             if not key:
-                from utils.minimax_api_keys import MINIMAX_API_KEY, MINIMAX_INTL_API_KEY
-                fallback = MINIMAX_INTL_API_KEY if provider == 'minimax_intl' else MINIMAX_API_KEY
-                key = (fallback or '').strip()
+                try:
+                    import utils.minimax_api_keys as _mm_keys
+                    fallback = getattr(_mm_keys, 'MINIMAX_INTL_API_KEY', None) if provider == 'minimax_intl' else getattr(_mm_keys, 'MINIMAX_API_KEY', None)
+                    key = (fallback or '').strip()
+                except ImportError:
+                    logger.debug("utils.minimax_api_keys not found, no fallback MiniMax keys available")
             return key or None
         return None
 
     def _get_minimax_storage_keys(self) -> list[str]:
         """返回当前 MiniMax API Key 对应的 voice_storage key 列表。
 
-        只返回与当前 ASSIST_API_KEY_MINIMAX 匹配的 bucket，避免跨账户混用。
+        通过 get_tts_api_key 获取已解析的 key（含 env fallback），
+        分别为国服和国际服生成 bucket 前缀。
         """
-        core_config = self.get_core_config()
-        minimax_api_key = (
-            (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
-            or (core_config.get('MINIMAX_API_KEY') or '').strip()
-            or (core_config.get('MINIMAX_INTL_API_KEY') or '').strip()
-        )
-        if not minimax_api_key:
-            return []
-        suffix = minimax_api_key[-8:] if len(minimax_api_key) >= 8 else minimax_api_key
-        expected = [f'__MINIMAX__{suffix}', f'__MINIMAX_INTL__{suffix}']
         voice_storage = self.load_voice_storage()
-        return [k for k in expected if k in voice_storage]
+        result = []
+
+        # 国服 key → __MINIMAX__{suffix}
+        cn_key = self.get_tts_api_key('minimax')
+        if cn_key:
+            suffix = cn_key[-8:] if len(cn_key) >= 8 else cn_key
+            bucket = f'__MINIMAX__{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+
+        # 国际服 key → __MINIMAX_INTL__{suffix}
+        intl_key = self.get_tts_api_key('minimax_intl')
+        if intl_key:
+            suffix = intl_key[-8:] if len(intl_key) >= 8 else intl_key
+            bucket = f'__MINIMAX_INTL__{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+
+        return result
 
     @staticmethod
     def _infer_provider_from_storage_key(storage_key: str) -> str:
@@ -1519,7 +1534,12 @@ class ConfigManager:
             'ASSIST_API_KEY_STEP': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_SILICON': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_GEMINI': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_KIMI': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_DEEPSEEK': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_DOUBAO': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_MINIMAX': '',
+            'ASSIST_API_KEY_MINIMAX_INTL': '',
+            'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
             'IS_FREE_VERSION': False,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
@@ -1572,7 +1592,11 @@ class ConfigManager:
         config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
+        config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
+        config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or config['CORE_API_KEY']
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']

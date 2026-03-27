@@ -21,6 +21,7 @@
         primaryColor: '#667eea',
         secondaryColor: '#764ba2',
         defaultVolume: 0.5,
+        volumeStep: 0.05,
         // 自动销毁时长配置 (ms)
         timeouts: {
             ended: 21000,  // 自然播放结束
@@ -37,9 +38,23 @@
     // --- 状态追踪：用于 5 秒去重 与 进度条清理 ---
     let lastPlayedMusicUrl = null;
     let lastMusicPlayTime = 0;
-    
+
+    // 全局监听管理
+    let managedWindowListeners = [];
+    const addManagedListener = (type, listener, options) => {
+        window.addEventListener(type, listener, options);
+        managedWindowListeners.push({ type, listener, options });
+    };
+    const clearManagedListeners = () => {
+        managedWindowListeners.forEach(({ type, listener, options }) => {
+            window.removeEventListener(type, listener, options);
+        });
+        managedWindowListeners = [];
+    };
+
     // 全局拖拽清理引用
     let currentDragHandlers = null;
+    let currentVolumeDragHandlers = null;
 
     // --- 2. 原始工具函数 (完全保留所有域名白名单) ---
     const isSafeUrl = (url) => {
@@ -112,6 +127,7 @@
         return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     };
 
+
     const destroyMusicPlayer = (removeDOM = true, fullTeardown = false, updateToken = false) => {
         // 重要：销毁播放器意味着取消所有正在进行的异步加载令牌
         // 只有在 fullTeardown (手动关闭) 或明确要求时才更新 token
@@ -135,7 +151,14 @@
         if (localPlayer && typeof localPlayer.pause === 'function') {
             localPlayer.pause();
         }
-
+        if (currentDragHandlers && typeof currentDragHandlers.cleanup === 'function') {
+            currentDragHandlers.cleanup();
+            currentDragHandlers = null;
+        }
+        if (currentVolumeDragHandlers && typeof currentVolumeDragHandlers.cleanup === 'function') {
+            currentVolumeDragHandlers.cleanup();
+            currentVolumeDragHandlers = null;
+        }
         if (fullTeardown) {
             // 【核心修复】调整顺序：先调用外部销毁逻辑，再清理本地引用
             // 理由：APlayer/main.js 的 destroyAPlayer 依赖 window.aplayer 进行清理
@@ -145,7 +168,6 @@
             } else if (localPlayer && typeof localPlayer.destroy === 'function') {
                 localPlayer.destroy();
             }
-
             localPlayer = null;
             window.aplayer = null;
             if (window.aplayerInjected) window.aplayerInjected.aplayer = null;
@@ -154,10 +176,7 @@
             if (localPlayer && typeof localPlayer.destroy === 'function') {
                 try {
                     localPlayer._destroying = true;
-                    if (currentDragHandlers && typeof currentDragHandlers.cleanup === 'function') {
-                        currentDragHandlers.cleanup();
-                        currentDragHandlers = null;
-                    }
+                    clearManagedListeners();
                     localPlayer.destroy();
                 } catch (e) {
                     console.warn('[Music UI] Error during local player destroy:', e);
@@ -182,6 +201,7 @@
                     bar.remove();
                 }
             }
+            clearManagedListeners();
         }
         currentPlayingTrack = null;
     };
@@ -294,6 +314,15 @@
                     <div class="music-bar-artist"></div>
                 </div>
                 <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
+                <div class="music-bar-volume-container">
+                    <button type="button" class="music-bar-volume-btn" aria-label="Volume" title="Volume">🔊</button>
+                    <div class="music-bar-volume-slider-wrapper">
+                        <div class="music-bar-volume-slider">
+                            <div class="music-bar-volume-slider-fill"></div>
+                            <div class="music-bar-volume-slider-handle"></div>
+                        </div>
+                    </div>
+                </div>
                 <button type="button" class="music-bar-close" aria-label="Close" title="Close">✕</button>
                 <div class="aplayer-internal-container" style="display: none;"></div>
             `;
@@ -372,7 +401,7 @@
                 window.aplayer = localPlayer;
                 if (!window.aplayerInjected) window.aplayerInjected = {};
                 window.aplayerInjected.aplayer = localPlayer;
-                
+
                 // --- 绑定核心事件 (仅在初始化时绑定一次) ---
                 // 【核心修复】使用闭包固定当前的播放器实例
                 const boundPlayer = localPlayer;
@@ -403,21 +432,21 @@
                 boundPlayer.on('error', (err) => {
                     if (boundPlayer._destroying) return;
                     console.error('[Music UI] APlayer error:', err);
-                    
+
                     const tokenAtEvent = boundPlayer._latestToken;
                     boundPlayer._loadError = true;
-                    
+
                     setTimeout(() => {
                         if (tokenAtEvent !== latestMusicRequestToken) return;
                         if (autoplayBlocked) return;
                         if (boundPlayer._destroying) return;
-                        
+
                         let errorDetail = '播放失败，音频源可能已失效';
                         if (err && err.message) errorDetail = err.message;
-                        
+
                         showErrorToast('music.playError', errorDetail);
                         updatePlayBtnState(false);
-                        
+
                         if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                         autoDestroyTimer = setTimeout(() => {
                             if (tokenAtEvent === latestMusicRequestToken) {
@@ -436,15 +465,116 @@
                     e.preventDefault();
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     if (typeof window.setMusicUserDriven === 'function') window.setMusicUserDriven();
-                    
+
                     if (boundPlayer._loadError) {
                         destroyMusicPlayer(true, true, true);
                         return;
                     }
-                    
+
                     if (boundPlayer.audio.ended) boundPlayer.seek(0);
                     boundPlayer.toggle();
                 };
+
+                // --- 音量控制逻辑 ---
+                const volumeContainer = musicBar.querySelector('.music-bar-volume-container');
+                const volumeBtn = musicBar.querySelector('.music-bar-volume-btn');
+                const volumeSliderWrapper = musicBar.querySelector('.music-bar-volume-slider-wrapper');
+                const volumeSlider = musicBar.querySelector('.music-bar-volume-slider');
+                const volumeFill = musicBar.querySelector('.music-bar-volume-slider-fill');
+                const volumeHandle = musicBar.querySelector('.music-bar-volume-slider-handle');
+
+                const updateVolumeUI = (vol) => {
+                    const percent = vol * 100;
+                    volumeFill.style.height = percent + '%';
+                    volumeHandle.style.bottom = percent + '%';
+
+                    if (vol === 0) volumeBtn.textContent = '🔇';
+                    else if (vol < 0.5) volumeBtn.textContent = '🔉';
+                    else volumeBtn.textContent = '🔊';
+
+                    const volText = window.t ? window.t('music.volume', { defaultValue: '音量: ' }) + Math.round(percent) + '%' : '音量: ' + Math.round(percent) + '%';
+                    volumeBtn.setAttribute('title', volText);
+                };
+
+                // 初始化音量 UI
+                updateVolumeUI(boundPlayer.volume());
+
+                volumeBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    volumeContainer.classList.toggle('expanded');
+                };
+
+                let isDraggingVolume = false;
+                const adjustVolume = (e) => {
+                    const rect = volumeSlider.getBoundingClientRect();
+
+                    let clientY;
+                    if (e.clientY !== undefined) {
+                        clientY = e.clientY;
+                    } else if (e.touches && e.touches.length > 0) {
+                        clientY = e.touches[0].clientY;
+                    } else {
+                        boundPlayer.volume(MUSIC_CONFIG.defaultVolume);
+                        updateVolumeUI(MUSIC_CONFIG.defaultVolume);
+                        return;
+                    }
+
+                    let y = rect.bottom - clientY;
+                    let per = Math.max(0, Math.min(y, rect.height)) / rect.height;
+                    boundPlayer.volume(per);
+                    updateVolumeUI(per);
+                };
+
+                currentVolumeDragHandlers = {
+                    cleanup: () => {
+                        window.removeEventListener('mousemove', adjustVolume);
+                        window.removeEventListener('mouseup', stopVolumeDrag);
+                        window.removeEventListener('touchmove', adjustVolume);
+                        window.removeEventListener('touchend', stopVolumeDrag);
+                        window.removeEventListener('touchcancel', stopVolumeDrag);
+                        isDraggingVolume = false;
+                    }
+                };
+
+                const stopVolumeDrag = (e) => {
+                    if (!isDraggingVolume) return;
+                    // 拖拽结束时，直接调用清理工具
+                    if (currentVolumeDragHandlers) currentVolumeDragHandlers.cleanup();
+                };
+
+                volumeSliderWrapper.onmousedown = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    isDraggingVolume = true;
+                    adjustVolume(e);
+                    // 直接使用原生绑定
+                    window.addEventListener('mousemove', adjustVolume);
+                    window.addEventListener('mouseup', stopVolumeDrag);
+                };
+
+                volumeSliderWrapper.ontouchstart = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    isDraggingVolume = true;
+                    adjustVolume(e);
+                    window.addEventListener('touchmove', adjustVolume);
+                    window.addEventListener('touchend', stopVolumeDrag);
+                    window.addEventListener('touchcancel', stopVolumeDrag);
+                };
+
+                // 点击外部收起音量
+                const closeVolumeOnOutsideClick = (e) => {
+                    if (volumeContainer.classList.contains('expanded') && !volumeContainer.contains(e.target)) {
+                        volumeContainer.classList.remove('expanded');
+                    }
+                };
+                addManagedListener('mousedown', closeVolumeOnOutsideClick);
+
+                // 同步 APlayer 的音量变化
+                boundPlayer.on('volumechange', () => {
+                    updateVolumeUI(boundPlayer.volume());
+                });
 
                 // 进度更新与拖拽 (保持原有逻辑)
                 let isDragging = false;
@@ -467,19 +597,19 @@
                     // 修复细节：判断 0 的写法，防止 clientX 为 0 时误触 fallback
                     const clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
                     let x = clientX - rect.left;
-                    
+
                     x = Math.max(0, Math.min(x, rect.width));
                     const per = x / rect.width;
                     if (progressFill) progressFill.style.width = (per * 100) + '%';
                     if (timeCurrent && localPlayer.audio.duration) timeCurrent.textContent = formatTime(per * localPlayer.audio.duration);
                 };
                 const stopDrag = (e) => {
-                    if (!isDragging) return; 
+                    if (!isDragging) return;
                     isDragging = false;
                     // 【核心修复】必须先移除全局监听，然后再执行可能的 early return (CodeRabbit 建议)
-                    window.removeEventListener('mousemove', handleProgressMove); 
+                    window.removeEventListener('mousemove', handleProgressMove);
                     window.removeEventListener('mouseup', stopDrag);
-                    window.removeEventListener('touchmove', handleProgressMove); 
+                    window.removeEventListener('touchmove', handleProgressMove);
                     window.removeEventListener('touchend', stopDrag);
 
                     const rect = progressContainer.getBoundingClientRect();
@@ -487,11 +617,11 @@
 
                     const clientX = e.clientX !== undefined ? e.clientX : (e.changedTouches && e.changedTouches[0] ? e.changedTouches[0].clientX : 0);
                     let x = clientX - rect.left;
-                    
+
                     const per = Math.max(0, Math.min(x, rect.width)) / rect.width;
                     if (boundPlayer.audio.duration) boundPlayer.seek(per * boundPlayer.audio.duration);
                 };
-                
+
                 // 记录全局引用以便销毁时清理
                 currentDragHandlers = {
                     cleanup: () => {
@@ -499,6 +629,7 @@
                         window.removeEventListener('mouseup', stopDrag);
                         window.removeEventListener('touchmove', handleProgressMove);
                         window.removeEventListener('touchend', stopDrag);
+                        window.removeEventListener('touchcancel', stopDrag);
                         isDragging = false;
                     }
                 };
@@ -513,6 +644,7 @@
                     isDragging = true; handleProgressMove(e);
                     window.addEventListener('mousemove', handleProgressMove); window.addEventListener('mouseup', stopDrag);
                     window.addEventListener('touchmove', handleProgressMove); window.addEventListener('touchend', stopDrag);
+                    window.addEventListener('touchcancel', stopDrag);
                 };
 
                 // 自动播放拦截器：精确区分“被拦截”与“加载失败”
@@ -536,7 +668,7 @@
                                     autoplayBlocked = true;
                                     updatePlayBtnState(false);
                                     showErrorToast('music.autoplayBlocked', '由于浏览器限制，已拦截自动播放。请点击页面任意位置恢复，或点击此处。');
-                                    
+
                                     // 自动播放被拦截视为“未播放”，保持 24 秒销毁计时
                                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                                     autoDestroyTimer = setTimeout(() => {
@@ -568,6 +700,9 @@
                     };
                     window.addEventListener('mousedown', startOnInteraction, { once: true });
                     window.addEventListener('touchstart', startOnInteraction, { once: true });
+                    // 这些 once 监听器也会被管理，虽然它们会自动移除
+                    managedWindowListeners.push({ type: 'mousedown', listener: startOnInteraction, options: { once: true } });
+                    managedWindowListeners.push({ type: 'touchstart', listener: startOnInteraction, options: { once: true } });
                 }
             } else {
                 // --- 复用模式下的切歌逻辑 ---

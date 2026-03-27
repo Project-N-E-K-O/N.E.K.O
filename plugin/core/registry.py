@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import hashlib
 import importlib
 import inspect
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Callable, Type, Optional, Iterable, cast
@@ -25,6 +27,11 @@ try:
     import tomllib  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
+
+try:
+    from importlib import metadata as importlib_metadata
+except ImportError:  # pragma: no cover
+    import importlib_metadata  # type: ignore[no-redef]
 
 from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
 from plugin._types.version import SDK_VERSION
@@ -49,11 +56,13 @@ from plugin.core.dependency import (
 try:
     from packaging.version import Version, InvalidVersion
     from packaging.specifiers import SpecifierSet, InvalidSpecifier
+    from packaging.requirements import Requirement
 except ImportError:  # pragma: no cover
     Version = None  # type: ignore
     InvalidVersion = Exception  # type: ignore
     SpecifierSet = None  # type: ignore
     InvalidSpecifier = Exception  # type: ignore
+    Requirement = None  # type: ignore
 
 
 # SimpleEntryMeta 已删除，统一使用 sdk/events.py 中的 EventMeta
@@ -74,6 +83,7 @@ class PluginContext:
     sdk_conflicts_list: List[str]
     enabled: bool
     auto_start: bool
+    python_requirements: List[str] = field(default_factory=list)
 
 
 # Mapping from (plugin_id, entry_id) -> actual python method name on the instance.
@@ -81,6 +91,173 @@ plugin_entry_method_map: Dict[tuple, str] = {}
 
 
 # _parse_specifier, _version_matches 已移动到 dependency.py
+
+_REQ_NAME_SPLIT_RE = re.compile(r"[<>=!~;\[\s]")
+
+
+def _canonicalize_dist_name(name: str) -> str:
+    """Canonicalize package/distribution names per PEP 503."""
+    return re.sub(r"[-_.]+", "-", name).lower().strip()
+
+
+def _parse_requirement_name(requirement: str) -> Optional[str]:
+    """Parse distribution name from requirement spec."""
+    text = str(requirement or "").strip()
+    if not text:
+        return None
+    if Requirement is not None:
+        try:
+            parsed = Requirement(text)
+            return str(parsed.name).strip() or None
+        except Exception:
+            logger.opt(exception=True).debug(
+                "Failed to parse requirement '{}' with packaging.Requirement; falling back to loose parser",
+                text,
+            )
+    # fallback parser for loose specs when packaging is unavailable
+    head = _REQ_NAME_SPLIT_RE.split(text, maxsplit=1)[0].strip()
+    return head or None
+
+
+def _collect_plugin_python_requirements(
+    conf: Dict[str, Any],
+    toml_path: Path,
+    logger: Any,
+    plugin_id: str,
+) -> List[str]:
+    """Collect plugin Python dependencies from plugin.toml and requirements.txt."""
+    collected: List[str] = []
+    seen: set[str] = set()
+
+    def _add_req(item: Any, source: str) -> None:
+        if not isinstance(item, str):
+            logger.warning(
+                "Plugin {}: python dependency in {} must be string, got {}; skipping",
+                plugin_id,
+                source,
+                type(item).__name__,
+            )
+            return
+        req_text = item.strip()
+        if not req_text or req_text.startswith("#"):
+            return
+        key = req_text.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        collected.append(req_text)
+
+    plugin_section = conf.get("plugin")
+    if isinstance(plugin_section, dict):
+        deps = plugin_section.get("dependencies")
+        if deps is not None:
+            if not isinstance(deps, list):
+                logger.warning(
+                    "Plugin {}: [plugin].dependencies should be a list of strings; got {}",
+                    plugin_id,
+                    type(deps).__name__,
+                )
+            else:
+                for dep in deps:
+                    _add_req(dep, "[plugin].dependencies")
+
+    req_file = toml_path.parent / "requirements.txt"
+    if req_file.exists():
+        try:
+            for raw_line in req_file.read_text(encoding="utf-8").splitlines():
+                line = raw_line.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                _add_req(line, "requirements.txt")
+        except OSError as exc:
+            logger.warning(
+                "Plugin {}: failed to read {}: {}",
+                plugin_id,
+                req_file,
+                exc,
+            )
+
+    return collected
+
+
+def _find_missing_python_requirements(requirements: List[str]) -> List[str]:
+    """Return unsatisfied requirement specs based on installed distributions."""
+    if not requirements:
+        return []
+
+    installed: dict[str, Optional[str]] = {}
+    try:
+        for dist in importlib_metadata.distributions():
+            version_text: Optional[str] = None
+            dist_version = getattr(dist, "version", None)
+            if isinstance(dist_version, str) and dist_version.strip():
+                version_text = dist_version.strip()
+            else:
+                meta_version = dist.metadata.get("Version")
+                if isinstance(meta_version, str) and meta_version.strip():
+                    version_text = meta_version.strip()
+
+            dist_name = dist.metadata.get("Name")
+            if isinstance(dist_name, str) and dist_name.strip():
+                installed[_canonicalize_dist_name(dist_name)] = version_text
+
+            dist_attr_name = getattr(dist, "name", None)
+            if isinstance(dist_attr_name, str) and dist_attr_name.strip():
+                installed.setdefault(_canonicalize_dist_name(dist_attr_name), version_text)
+    except Exception as e:
+        logger.warning("Failed to enumerate installed distributions, "
+                        "dependency checks will be skipped: {}", e)
+        return []
+
+    missing: List[str] = []
+    seen_missing: set[str] = set()
+    for req in requirements:
+        req_text = str(req or "").strip()
+        if not req_text:
+            continue
+
+        parsed_requirement = None
+        req_name = None
+        if Requirement is not None:
+            try:
+                parsed_requirement = Requirement(req_text)
+                req_name = str(parsed_requirement.name).strip() or None
+                marker = getattr(parsed_requirement, "marker", None)
+                if marker is not None:
+                    try:
+                        if not bool(marker.evaluate()):
+                            continue
+                    except Exception:
+                        pass
+            except Exception:
+                parsed_requirement = None
+
+        if req_name is None:
+            req_name = _parse_requirement_name(req_text)
+        if not req_name:
+            continue
+
+        canon = _canonicalize_dist_name(req_name)
+        installed_version = installed.get(canon)
+        if installed_version is not None and parsed_requirement is not None and Version is not None:
+            specifier = getattr(parsed_requirement, "specifier", None)
+            if specifier:
+                try:
+                    if Version(installed_version) in specifier:
+                        continue
+                except Exception:
+                    pass
+            else:
+                continue
+        elif canon in installed:
+            continue
+
+        missing_key = req_text.lower()
+        if missing_key in seen_missing:
+            continue
+        seen_missing.add(missing_key)
+        missing.append(req_text)
+    return missing
 
 
 
@@ -848,8 +1025,10 @@ def _parse_single_plugin_config(
     if not is_compatible:
         return None
     
-    # 解析依赖
+    # 解析插件间依赖
     dependencies = _parse_plugin_dependencies(conf, logger, pid)
+    # 解析 Python 运行时依赖（第三方包）
+    python_requirements = _collect_plugin_python_requirements(conf, toml_path, logger, pid)
     
     return PluginContext(
         pid=pid,
@@ -864,6 +1043,7 @@ def _parse_single_plugin_config(
         sdk_conflicts_list=sdk_conflicts_list,
         enabled=enabled_val,
         auto_start=auto_start_val,
+        python_requirements=python_requirements,
     )
 
 
@@ -1178,6 +1358,104 @@ def _load_disabled_plugin(
                 state.plugins[resolved_id] = meta
 
 
+def _register_failed_plugin(
+    ctx: PluginContext,
+    logger: Any,
+    *,
+    plugin_id: Optional[str],
+    entries_preview: Optional[List[Dict[str, Any]]] = None,
+    error_type: str,
+    error_message: str,
+    error_phase: str,
+) -> None:
+    """
+    注册加载失败的插件元数据（仅可见，不可运行）。
+
+    Args:
+        ctx: 插件上下文
+        logger: 日志记录器
+        plugin_id: 注册用插件 ID（允许与 ctx.pid 不同，如冲突重命名后）
+        entries_preview: 已提取的入口预览；若未提供则回退到 FailedPluginStub 提取
+        error_type: 错误类型
+        error_message: 错误信息
+        error_phase: 失败阶段（dependency_check/import/start_process 等）
+    """
+    pid = plugin_id or ctx.pid
+    existing_meta: Optional[Dict[str, Any]] = None
+    with state.acquire_plugins_read_lock():
+        raw_meta = state.plugins.get(pid)
+        if isinstance(raw_meta, dict):
+            existing_meta = dict(raw_meta)
+
+    same_config_registered = False
+    if existing_meta is not None:
+        existing_config_path = existing_meta.get("config_path")
+        if isinstance(existing_config_path, str) and existing_config_path:
+            try:
+                same_config_registered = Path(existing_config_path).resolve() == ctx.toml_path.resolve()
+            except (OSError, RuntimeError):
+                same_config_registered = existing_config_path == str(ctx.toml_path)
+
+    if same_config_registered:
+        with state.acquire_plugin_hosts_read_lock():
+            existing_host = state.plugin_hosts.get(pid)
+        if existing_host is not None and hasattr(existing_host, "is_alive") and existing_host.is_alive():
+            logger.info(
+                "Plugin {} from {} is already registered and running, skipping duplicate failed registration",
+                pid, ctx.toml_path,
+            )
+            return
+
+    provided_entries_preview = entries_preview
+    if provided_entries_preview is None:
+        provided_entries_preview = _extract_entries_preview(
+            pid,
+            cls=type("FailedPluginStub", (), {}),
+            conf=ctx.conf,
+            pdata=ctx.pdata,
+        )
+
+    plugin_meta = _build_plugin_meta(
+        pid, ctx.pdata,
+        sdk_supported_str=ctx.sdk_supported_str,
+        sdk_recommended_str=ctx.sdk_recommended_str,
+        sdk_untested_str=ctx.sdk_untested_str,
+        sdk_conflicts_list=ctx.sdk_conflicts_list,
+        dependencies=ctx.dependencies,
+    )
+
+    resolved_id = register_plugin(
+        plugin_meta,
+        logger,
+        config_path=ctx.toml_path,
+        entry_point=ctx.entry,
+    )
+    if resolved_id is None:
+        return
+
+    with state.acquire_plugins_write_lock():
+        meta = state.plugins.get(resolved_id)
+        if isinstance(meta, dict):
+            meta["runtime_enabled"] = bool(ctx.enabled)
+            meta["runtime_auto_start"] = bool(ctx.auto_start)
+            meta["runtime_load_state"] = "failed"
+            meta["runtime_load_error_type"] = str(error_type or "LoadFailed")
+            meta["runtime_load_error_message"] = str(error_message or "Unknown load error")
+            meta["runtime_load_error_phase"] = str(error_phase or "unknown")
+            meta["runtime_load_error_time"] = datetime.now(timezone.utc).isoformat()
+            meta["entries_preview"] = provided_entries_preview
+            state.plugins[resolved_id] = meta
+    state.invalidate_snapshot_cache("plugins")
+
+    logger.warning(
+        "Plugin {} registered as load_failed (phase={}, error_type={}): {}",
+        resolved_id,
+        error_phase,
+        error_type,
+        error_message,
+    )
+
+
 def _load_extension_plugin(
     ctx: PluginContext,
     logger: Any,
@@ -1257,11 +1535,28 @@ def _load_adapter_plugin(
     adapter_conf = ctx.conf.get("adapter", {})
     adapter_mode = adapter_conf.get("mode", "hybrid")
     entries_preview: List[Dict[str, Any]] = []
+    scanned_metadata_registered = False
+    scanned_class_name: Optional[str] = None
+    module_path: Optional[str] = None
+    class_name: Optional[str] = None
     
     logger.info(
         "Loading adapter '{}' (mode={})",
         pid, adapter_mode,
     )
+
+    def _rollback_scanned_metadata() -> None:
+        nonlocal scanned_metadata_registered
+        if not scanned_metadata_registered:
+            return
+        logger.debug(
+            "Adapter {}: removing scanned static metadata for entry='{}' class='{}'",
+            pid,
+            entry,
+            scanned_class_name or class_name or "unknown",
+        )
+        _remove_scanned_metadata(pid)
+        scanned_metadata_registered = False
 
     try:
         module_path, class_name = entry.split(":", 1)
@@ -1270,6 +1565,8 @@ def _load_adapter_plugin(
         if isinstance(cls, type):
             entries_preview = _extract_entries_preview(pid, cls, conf, pdata)
             scan_static_metadata(pid, cls, conf, pdata)
+            scanned_metadata_registered = True
+            scanned_class_name = cls.__name__
     except Exception:
         logger.debug("Adapter {}: failed to extract entries preview", pid, exc_info=True)
     
@@ -1302,9 +1599,29 @@ def _load_adapter_plugin(
         
     except (OSError, RuntimeError) as e:
         logger.error("Failed to start adapter process for {}: {}", pid, e, exc_info=True)
+        _rollback_scanned_metadata()
+        _register_failed_plugin(
+            ctx,
+            logger,
+            plugin_id=pid,
+            entries_preview=entries_preview,
+            error_type=type(e).__name__,
+            error_message=str(e),
+            error_phase="start_process",
+        )
         return None
     except Exception:
         logger.exception("Unexpected error starting adapter process for {}", pid)
+        _rollback_scanned_metadata()
+        _register_failed_plugin(
+            ctx,
+            logger,
+            plugin_id=pid,
+            entries_preview=entries_preview,
+            error_type="UnexpectedStartProcessError",
+            error_message=f"Unexpected error starting adapter process for {pid}",
+            error_phase="start_process",
+        )
         return None
     
     # 注册插件元数据
@@ -1515,6 +1832,7 @@ def load_plugins_from_roots(
         
         # 依赖检查（可通过配置禁用）
         dependency_check_failed = False
+        dependency_check_error: Optional[str] = None
         if PLUGIN_ENABLE_DEPENDENCY_CHECK and dependencies:
             logger.debug("Plugin {}: checking {} dependency(ies)...", pid, len(dependencies))
             for dep in dependencies:
@@ -1526,6 +1844,7 @@ def load_plugins_from_roots(
                         pid, error_msg
                     )
                     dependency_check_failed = True
+                    dependency_check_error = str(error_msg) if error_msg else "dependency check failed"
                     break
                 logger.debug("Plugin {}: dependency '{}' check passed", pid, getattr(dep, 'id', getattr(dep, 'entry', getattr(dep, 'custom_event', 'unknown'))))
             if not dependency_check_failed:
@@ -1541,6 +1860,33 @@ def load_plugins_from_roots(
         
         if dependency_check_failed:
             logger.debug("Plugin {}: skipping due to failed dependency check", pid)
+            _register_failed_plugin(
+                ctx,
+                logger,
+                plugin_id=pid,
+                error_type="DependencyCheckFailed",
+                error_message=dependency_check_error or "Plugin dependency check failed",
+                error_phase="dependency_check",
+            )
+            continue
+
+        unsatisfied_python_requirements = _find_missing_python_requirements(ctx.python_requirements)
+        if unsatisfied_python_requirements:
+            logger.error(
+                "Plugin {}: unsatisfied Python dependencies: {}. "
+                "Please install them in current runtime environment "
+                "(declared in plugin.toml [plugin].dependencies and/or plugin requirements.txt).",
+                pid,
+                unsatisfied_python_requirements,
+            )
+            _register_failed_plugin(
+                ctx,
+                logger,
+                plugin_id=pid,
+                error_type="MissingPythonDependencies",
+                error_message=f"Unsatisfied Python dependencies: {unsatisfied_python_requirements}",
+                error_phase="python_requirements",
+            )
             continue
 
         # 检查插件是否已经加载
@@ -1592,12 +1938,36 @@ def load_plugins_from_roots(
             cls: Type[Any] = getattr(mod, class_name)
         except (ImportError, ModuleNotFoundError) as e:
             logger.error("Failed to import module '{}' for plugin {}: {}", module_path, pid, e, exc_info=True)
+            _register_failed_plugin(
+                ctx,
+                logger,
+                plugin_id=pid,
+                error_type=type(e).__name__,
+                error_message=str(e),
+                error_phase="import_module",
+            )
             continue
         except AttributeError as e:
             logger.error("Class '{}' not found in module '{}' for plugin {}: {}", class_name, module_path, pid, e, exc_info=True)
+            _register_failed_plugin(
+                ctx,
+                logger,
+                plugin_id=pid,
+                error_type="AttributeError",
+                error_message=f"Class '{class_name}' not found in module '{module_path}'",
+                error_phase="import_class",
+            )
             continue
         except Exception:
             logger.exception("Unexpected error importing plugin class {} for plugin {}", entry, pid)
+            _register_failed_plugin(
+                ctx,
+                logger,
+                plugin_id=pid,
+                error_type="UnexpectedImportError",
+                error_message=f"Unexpected error importing plugin class {entry}",
+                error_phase="import_module",
+            )
             continue
 
         host = None
@@ -1661,9 +2031,25 @@ def load_plugins_from_roots(
                     continue
             except (OSError, RuntimeError) as e:
                 logger.error("Failed to start process for plugin {}: {}", pid, e, exc_info=True)
+                _register_failed_plugin(
+                    ctx,
+                    logger,
+                    plugin_id=pid,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    error_phase="start_process",
+                )
                 continue
             except Exception:
                 logger.exception("Unexpected error starting process for plugin {}", pid)
+                _register_failed_plugin(
+                    ctx,
+                    logger,
+                    plugin_id=pid,
+                    error_type="UnexpectedStartProcessError",
+                    error_message=f"Unexpected error starting process for plugin {pid}",
+                    error_phase="start_process",
+                )
                 continue
 
         scan_static_metadata(pid, cls, conf, pdata)
@@ -1739,6 +2125,7 @@ def load_plugins_from_roots(
                     existing_host = state.plugin_hosts.pop(pid)
             if existing_host is not None:
                 _shutdown_host_safely(existing_host, logger, pid)
+            _remove_scanned_metadata(pid)
             logger.debug("Plugin {} removed from plugin_hosts due to duplicate detection", pid)
             continue
         

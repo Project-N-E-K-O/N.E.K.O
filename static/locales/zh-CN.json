@@ -672,7 +672,37 @@
             "step": "阶跃星辰 (StepFun)",
             "silicon": "硅基流动 (SiliconFlow，性价比高，推荐⭐)",
             "gemini": "Gemini（谷歌，智能极高，国内版不支持）",
-            "kimi": "Kimi（月之暗面，国内可用，支持长上下文）"
+            "kimi": "Kimi（月之暗面，国内可用，支持长上下文）",
+            "deepseek": "DeepSeek",
+            "doubao": "豆包（字节跳动）",
+            "minimax": "MiniMax（国服）",
+            "minimax_intl": "MiniMax（国际服）",
+            "grok": "Grok（xAI）"
+        },
+        "coreApiAutoFillHint": "Key从API管理簿自动填充，也可在此直接输入",
+        "assistApiSelectLabel": "辅助API服务商",
+        "assistApiKeyLabel": "辅助API Key",
+        "assistApiAutoFillHint": "Key从API管理簿自动填充，也可在此直接输入",
+        "keyBookTitle": "API 管理簿",
+        "keyBookDescription": "统一管理所有API Key。核心API和辅助API切换服务商时会自动从此处读取Key，在核心/辅助区域输入的Key也会自动回写到此处。",
+        "keyBookPlaceholder": "请先加载API服务商配置",
+        "providerLabel": "服务商",
+        "customModelProviderFollowCore": "跟随核心API",
+        "customModelProviderFollowAssist": "跟随辅助API",
+        "customModelProviderCustom": "自定义",
+        "keyBook": {
+            "qwen": "阿里（Qwen）",
+            "openai": "OpenAI",
+            "deepseek": "DeepSeek",
+            "glm": "智谱（GLM）",
+            "step": "阶跃星辰（Step）",
+            "silicon": "硅基流动（SiliconFlow）",
+            "gemini": "Gemini（Google）",
+            "kimi": "Kimi（月之暗面）",
+            "doubao": "豆包（字节跳动）",
+            "minimax": "MiniMax（国服）",
+            "minimax_intl": "MiniMax（国际服）",
+            "grok": "Grok（xAI）"
         },
         "freeVersionNoApiKey": "免费版无需API Key",
         "pleaseEnterApiKey": "请输入您的API Key",
@@ -1451,6 +1481,7 @@
             "enabled": "{{name}}已开启",
             "disabled": "{{name}}已关闭",
             "enableFailed": "{{name}}开启失败",
+            "openfang": "虚拟机",
             "userPluginAdapting": "用户插件（开发中）",
             "moltbotAdapting": "OpenClaw（开发中）",
             "chatSettings": "对话设置",
@@ -1463,7 +1494,9 @@
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
             "frameRateHigh": "60fps",
-            "mouseTracking": "跟踪鼠标"
+            "mouseTracking": "跟踪鼠标",
+            "fullscreenTracking": "全屏跟踪",
+            "localTracking": "局部跟踪"
         }
     },
     "subtitle": {

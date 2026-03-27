@@ -94,6 +94,10 @@ def _resolve_plugin_status(
     plugin_meta: Mapping[str, object],
     running_plugin_ids: set[str],
 ) -> str:
+    runtime_load_state_obj = plugin_meta.get("runtime_load_state")
+    if isinstance(runtime_load_state_obj, str) and runtime_load_state_obj == "failed":
+        return "load_failed"
+
     plugin_type = plugin_meta.get("type")
     if plugin_type == "extension":
         runtime_enabled = _to_bool(plugin_meta.get("runtime_enabled"), default=True)
