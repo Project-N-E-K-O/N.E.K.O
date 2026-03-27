@@ -58,6 +58,12 @@
         #chat-container.minimized * {
             -webkit-app-region: no-drag !important;
         }
+        /* 折叠球拖拽中：禁用呼吸动画和 box-shadow，减少透明窗口 setBounds 重绘开销 */
+        #chat-container.minimized.dragging {
+            animation: none !important;
+            box-shadow: 0 0 8px rgba(68, 183, 254, 0.6) !important;
+            transition: none !important;
+        }
         #chat-container.minimized::before {
             border-radius: 50% !important;
             background: rgba(68, 183, 254, 0.15) !important;
@@ -275,15 +281,23 @@
         var resizing = false;
 
         // ---- 滚动辅助 ----
+        // 在 scroll 事件中持续跟踪是否处于底部附近，
+        // MutationObserver / resize 回调使用缓存值而非重新计算，
+        // 避免 DOM 变更后 scrollHeight 已增大导致 isNearBottom() 误判。
+        var wasNearBottom = true;
         function isNearBottom() {
             if (!wrap) return true;
             return wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
         }
         function scrollToBottom(instant) {
-            if (!wrap || !isNearBottom()) return;
+            if (!wrap || !wasNearBottom) return;
             wrap.scrollTo({ top: wrap.scrollHeight, behavior: instant ? 'instant' : 'smooth' });
+            wasNearBottom = true;
         }
         if (wrap) {
+            wrap.addEventListener('scroll', function() {
+                wasNearBottom = isNearBottom();
+            });
             new MutationObserver(function() { scrollToBottom(resizing); })
                 .observe(wrap, { childList: true, subtree: true });
         }
@@ -303,6 +317,7 @@
         var _pendingBounds = null;
         var _expandMax = null;
         var _cleanupTimer = 0;
+        var _cleanupListener = null;
         var anchorSX = 0, anchorSY = 0;
         var snapBounds = null;
 
@@ -329,6 +344,11 @@
             root.style.setProperty('--neko-resize-h', snapBounds.h + 'px');
             root.classList.add('neko-resizing');
 
+            // 移除上一轮残留的 cleanup 监听，防止新拖拽期间误触清理
+            if (_cleanupListener) {
+                window.removeEventListener('resize', _cleanupListener);
+                _cleanupListener = null;
+            }
             if (_cleanupTimer) { clearTimeout(_cleanupTimer); _cleanupTimer = 0; }
 
             // 异步获取工作区，预扩展窗口至工作区最大可用空间
@@ -386,6 +406,7 @@
             var doCleanup = function() {
                 if (_cleanupTimer) { clearTimeout(_cleanupTimer); _cleanupTimer = 0; }
                 window.removeEventListener('resize', doCleanup);
+                _cleanupListener = null;
                 // 用双 rAF 保证浏览器已将窗口尺寸更新到 DOM
                 requestAnimationFrame(function() {
                     requestAnimationFrame(function() {
@@ -395,6 +416,7 @@
                     });
                 });
             };
+            _cleanupListener = doCleanup;
             window.addEventListener('resize', doCleanup);
             _cleanupTimer = setTimeout(doCleanup, 300);
 
@@ -425,6 +447,8 @@
             _ballMoved = false;
             _ballSX = e.screenX;
             _ballSY = e.screenY;
+            // 拖拽期间禁用呼吸动画等昂贵效果，大幅减少透明窗口 setBounds 的重绘开销
+            box.classList.add('dragging');
             // 将 mousedown 时刻的精确 screen 坐标传给主进程，消除 IPC 延迟偏差
             W.dragStart(e.screenX, e.screenY);
         });
@@ -443,9 +467,13 @@
         document.addEventListener('mouseup', function() {
             if (!_ballDragging) return;
             _ballDragging = false;
+            box.classList.remove('dragging');
             W.dragStop();
             if (!_ballMoved && collapsed && !animating) {
                 expandChat();
+            } else if (_ballMoved && collapsed) {
+                // 拖拽结束后检测出界并回弹
+                checkBoundsAndSnap();
             }
         });
 
@@ -521,6 +549,9 @@
 
                 W.getWorkArea().then(function(wa) {
                     if (wa) {
+                        // 钳制尺寸到工作区，防止在更小屏幕上展开溢出
+                        w = Math.min(w, wa.width);
+                        h = Math.min(h, wa.height);
                         newX = Math.max(wa.x, Math.min(wa.x + wa.width - w, newX));
                         newY = Math.max(wa.y, Math.min(wa.y + wa.height - h, newY));
                     }

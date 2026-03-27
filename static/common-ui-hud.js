@@ -1556,6 +1556,7 @@ window.AgentHUD._setupDragging = function (hud) {
         
         #live2d-btn-return {
             animation: returnButtonBreathing 2s ease-in-out infinite;
+            will-change: box-shadow;
         }
         
         #live2d-btn-return:hover {

@@ -1191,6 +1191,7 @@ button * {
     border-radius: 50%;
     transition: none;
     animation: breathingGlow 2s ease-in-out infinite;
+    will-change: box-shadow;
 }
 
 #chat-container.minimized #chat-header {
@@ -1232,6 +1233,28 @@ button * {
 
 #chat-container.minimized #toggle-chat-btn:hover {
     transform: none;
+}
+
+/* 拖动中：禁用昂贵的视觉效果，使用 transform 走 GPU 合成 */
+#chat-container.dragging {
+    transition: none !important;
+    animation: none !important;
+    will-change: transform;
+    transform-origin: 0 0;
+}
+
+#chat-container.dragging::before {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    transition: none !important;
+}
+
+#chat-container.dragging #toggle-chat-btn {
+    transition: none !important;
+}
+
+#chat-container.dragging * {
+    animation: none !important;
 }
 
 #chat-container.minimized #toggle-chat-btn img {

@@ -230,6 +230,8 @@ class LLMSessionManager:
         self.tts_pending_chunks = []  # 待处理的TTS文本chunk: [(speech_id, text), ...]
         self.tts_cache_lock = asyncio.Lock()  # 保护缓存的锁
         self._last_tts_respawn_time: float = 0.0  # 上次 respawn 时间戳，用于 12 秒冷却
+        self._tts_respawn_task: Optional[asyncio.Task] = None  # 延迟重试 Task，end_session 时取消
+        self._last_tts_error_code: str = ''  # 上次 TTS 错误码
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -2691,6 +2693,12 @@ class LLMSessionManager:
             tts_request_queue_ref = self.tts_request_queue
             tts_response_queue_ref = self.tts_response_queue
 
+        # 取消 TTS 延迟重试任务并清理错误码
+        if self._tts_respawn_task and not self._tts_respawn_task.done():
+            self._tts_respawn_task.cancel()
+            self._tts_respawn_task = None
+        self._last_tts_error_code = ''
+
         logger.info("End Session: Starting cleanup...")
         self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
 
@@ -2919,6 +2927,7 @@ class LLMSessionManager:
                         async with self.tts_cache_lock:
                             self.tts_ready = ready_flag
                         if ready_flag:
+                            self._last_tts_error_code = ''
                             logger.info("✅ 收到TTS运行时就绪信号，开始刷新缓存文本")
                             await self._flush_tts_pending_chunks()
                         else:
@@ -2929,12 +2938,16 @@ class LLMSessionManager:
                                 logger.warning(f"⚠️ TTS 未就绪且上次错误为 {_last_code}，跳过自动重试")
                             else:
                                 logger.warning("⚠️ 收到TTS未就绪信号，12秒后尝试重新拉起Worker")
+                                # 取消之前的延迟重试任务（如有）
+                                if self._tts_respawn_task and not self._tts_respawn_task.done():
+                                    self._tts_respawn_task.cancel()
                                 async def _delayed_respawn():
                                     await asyncio.sleep(13)
-                                    if not self.tts_ready:
-                                        logger.info("🔄 TTS 延迟重试：尝试重新拉起 Worker...")
-                                        self._respawn_tts_worker()
-                                asyncio.ensure_future(_delayed_respawn())
+                                    if not self.is_active or self.tts_ready:
+                                        return
+                                    logger.info("🔄 TTS 延迟重试：尝试重新拉起 Worker...")
+                                    self._respawn_tts_worker()
+                                self._tts_respawn_task = asyncio.ensure_future(_delayed_respawn())
                         continue
                     elif data[0] == "__error__":
                         error_msg = data[1]

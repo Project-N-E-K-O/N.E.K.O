@@ -1024,12 +1024,26 @@ class VRMManager {
 
         let width, height;
 
-        // 多窗口模式下（Pet 窗口可能被缩小），使用屏幕分辨率而非窗口/容器大小
-        // 防止窗口 resize 导致 renderer 缩小、模型变形
+        // 多窗口模式下（Pet 窗口可能被缩小），渲染缓冲区使用屏幕分辨率保持模型质量，
+        // 但 camera.aspect 和 CSS 使用实际可见尺寸，
+        // 确保 getBoundingClientRect 返回正确值、鼠标 NDC 计算不偏移。
         if (window.__NEKO_MULTI_WINDOW__) {
-            width = window.screen.width || 1920;
-            height = window.screen.height || 1080;
-        } else if (this.container && this.container.clientWidth > 0 && this.container.clientHeight > 0) {
+            const screenWidth = window.screen.width || 1920;
+            const screenHeight = window.screen.height || 1080;
+            const visibleWidth = (this.container && this.container.clientWidth > 0)
+                ? this.container.clientWidth : (window.innerWidth || screenWidth);
+            const visibleHeight = (this.container && this.container.clientHeight > 0)
+                ? this.container.clientHeight : (window.innerHeight || screenHeight);
+
+            this.camera.aspect = visibleWidth / visibleHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setSize(screenWidth, screenHeight, false);
+            this.renderer.domElement.style.width = visibleWidth + 'px';
+            this.renderer.domElement.style.height = visibleHeight + 'px';
+            return;
+        }
+
+        if (this.container && this.container.clientWidth > 0 && this.container.clientHeight > 0) {
             width = this.container.clientWidth;
             height = this.container.clientHeight;
         } else {

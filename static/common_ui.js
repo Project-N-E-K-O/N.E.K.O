@@ -538,6 +538,11 @@ if (toggleBtn) {
     let startMouseY = 0; // 开始拖动时的鼠标Y位置
     let startContainerLeft = 0; // 开始拖动时容器的left值
     let startContainerBottom = 0; // 开始拖动时容器的bottom值
+    let cachedEffectiveWidth = 0; // 拖动开始时缓存的宽度（避免拖动中反复触发 reflow）
+    let cachedEffectiveHeight = 0; // 拖动开始时缓存的高度
+    let dragRAFId = null; // 拖动时的 requestAnimationFrame ID
+    let pendingDragClientX = 0; // 待处理的鼠标位置
+    let pendingDragClientY = 0;
 
     // 拖动回弹配置（多屏幕切换时使用）
     const CHAT_SNAP_CONFIG = {
@@ -698,6 +703,8 @@ if (toggleBtn) {
     function startDrag(e, skipPreventDefault = false) {
         isDragging = true;
         hasMoved = false;
+        // 设置全局拖拽标志，供 preload 等跳过昂贵操作
+        if (window.DragHelpers) window.DragHelpers.isDragging = true;
         dragStartedFromToggleBtn = (e.target === toggleBtn || toggleBtn.contains(e.target));
 
         // 获取初始鼠标/触摸位置
@@ -713,9 +720,19 @@ if (toggleBtn) {
         startContainerLeft = parseFloat(computedStyle.left) || 0;
         startContainerBottom = parseFloat(computedStyle.bottom) || 0;
 
-        console.log('[Drag Start] Mouse:', clientX, clientY, 'Container:', startContainerLeft, startContainerBottom);
+        // 缓存拖动期间不变的尺寸，避免每次 mousemove 触发 reflow
+        cachedEffectiveWidth = chatContainer.offsetWidth;
+        cachedEffectiveHeight = chatContainer.offsetHeight;
+        if (isCollapsed() && toggleBtn) {
+            const toggleRect = toggleBtn.getBoundingClientRect();
+            if (toggleRect.width > 0 && toggleRect.height > 0) {
+                cachedEffectiveWidth = toggleRect.width;
+                cachedEffectiveHeight = toggleRect.height;
+            }
+        }
 
-        // 添加拖动样式
+        // 添加拖动样式（禁用 backdrop-filter 等昂贵效果）
+        chatContainer.classList.add('dragging');
         chatContainer.style.cursor = 'grabbing';
         if (chatHeader) chatHeader.style.cursor = 'grabbing';
 
@@ -730,6 +747,46 @@ if (toggleBtn) {
         }
     }
 
+    // 计算边界限制后的位移量
+    function clampedDragDelta() {
+        const deltaX = pendingDragClientX - startMouseX;
+        const deltaY = pendingDragClientY - startMouseY;
+
+        const newLeft = startContainerLeft + deltaX;
+        const newBottom = startContainerBottom - deltaY;
+
+        const maxLeft = window.innerWidth - cachedEffectiveWidth;
+        const maxBottomRaw = window.innerHeight - cachedEffectiveHeight;
+        const topBoundary = CHAT_SNAP_CONFIG.margin;
+        const maxBottom = Math.max(0, maxBottomRaw - topBoundary);
+
+        const clampedLeft = Math.max(0, Math.min(maxLeft, newLeft));
+        const clampedBottom = Math.max(0, Math.min(maxBottom, newBottom));
+
+        return {
+            tx: clampedLeft - startContainerLeft,
+            ty: -(clampedBottom - startContainerBottom), // transform Y 轴向下为正
+            finalLeft: clampedLeft,
+            finalBottom: clampedBottom
+        };
+    }
+
+    // 实际执行位置更新（在 rAF 回调中调用，避免跳帧）
+    // 使用 transform: translate() 移动，完全跳过 layout，仅走 GPU 合成
+    function applyDragPosition() {
+        dragRAFId = null;
+        const { tx, ty } = clampedDragDelta();
+        chatContainer.style.transform = `translate(${tx}px, ${ty}px)`;
+    }
+
+    // 拖动结束时，将 transform 位移落实到 left/bottom，并清除 transform
+    function commitDragPosition() {
+        const { finalLeft, finalBottom } = clampedDragDelta();
+        chatContainer.style.transform = '';
+        chatContainer.style.left = finalLeft + 'px';
+        chatContainer.style.bottom = finalBottom + 'px';
+    }
+
     // 移动中
     function onDragMove(e) {
         if (!isDragging) return;
@@ -737,44 +794,31 @@ if (toggleBtn) {
         const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
         const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
 
-        // 计算鼠标的位移
+        // 检查是否真的移动了（移动距离超过5px）
         const deltaX = clientX - startMouseX;
         const deltaY = clientY - startMouseY;
-
-        // 检查是否真的移动了（移动距离超过5px）
-        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-
-        if (distance > 5) {
+        if (!hasMoved && (deltaX * deltaX + deltaY * deltaY) > 25) {
             hasMoved = true;
         }
 
-        // 立即更新位置：初始位置 + 鼠标位移
-        const newLeft = startContainerLeft + deltaX;
-        // 注意：Y轴向下为正，但bottom值向上为正，所以要减去deltaY
-        const newBottom = startContainerBottom - deltaY;
-
-        // 限制在视口内
-        let effectiveWidth = chatContainer.offsetWidth;
-        let effectiveHeight = chatContainer.offsetHeight;
-        if (isCollapsed() && toggleBtn) {
-            const toggleRect = toggleBtn.getBoundingClientRect();
-            if (toggleRect.width > 0 && toggleRect.height > 0) {
-                effectiveWidth = toggleRect.width;
-                effectiveHeight = toggleRect.height;
-            }
+        // 记录最新鼠标位置，通过 rAF 合并更新，避免每个 mousemove 都触发重绘
+        pendingDragClientX = clientX;
+        pendingDragClientY = clientY;
+        if (!dragRAFId) {
+            dragRAFId = requestAnimationFrame(applyDragPosition);
         }
-        const maxLeft = window.innerWidth - effectiveWidth;
-        const maxBottomRaw = window.innerHeight - effectiveHeight;
-        const topBoundary = CHAT_SNAP_CONFIG.margin;
-        const maxBottom = Math.max(0, maxBottomRaw - topBoundary);
-
-        chatContainer.style.left = Math.max(0, Math.min(maxLeft, newLeft)) + 'px';
-        chatContainer.style.bottom = Math.max(0, Math.min(maxBottom, newBottom)) + 'px';
     }
 
     // 结束拖动
     function endDrag() {
         if (isDragging) {
+            // 取消待执行的 rAF，将 transform 位移落实到 left/bottom
+            if (dragRAFId) {
+                cancelAnimationFrame(dragRAFId);
+                dragRAFId = null;
+            }
+            commitDragPosition();
+
             const wasDragging = isDragging;
             const didMove = hasMoved;
             const fromToggleBtn = dragStartedFromToggleBtn;
@@ -782,15 +826,17 @@ if (toggleBtn) {
             isDragging = false;
             hasMoved = false;
             dragStartedFromToggleBtn = false;
+            chatContainer.classList.remove('dragging');
             chatContainer.style.cursor = '';
             if (chatHeader) chatHeader.style.cursor = '';
 
-            // 拖拽结束后恢复按钮的 pointer-events（使用 live2d-ui-drag.js 中的共享工具函数）
+            // 清除全局拖拽标志
+            if (window.DragHelpers) window.DragHelpers.isDragging = false;
+
+            // 拖拽结束后恢复按钮的 pointer-events
             if (window.DragHelpers) {
                 window.DragHelpers.restoreButtonPointerEvents();
             }
-
-            console.log('[Drag End] Moved:', didMove, 'FromToggleBtn:', fromToggleBtn);
 
             // 如果发生了移动，标记 justDragged 以阻止后续的 click 事件
             if (didMove && fromToggleBtn) {

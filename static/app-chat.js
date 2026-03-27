@@ -108,8 +108,8 @@
                     createGeminiBubble(s);
                     // 仅在用户已处于底部附近时自动滚动
                     var _wrap = chatContainer.parentElement;
-                    if (!_wrap || _wrap.scrollHeight - _wrap.scrollTop - _wrap.clientHeight < 60) {
-                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    if (_wrap && _wrap.scrollHeight - _wrap.scrollTop - _wrap.clientHeight < 60) {
+                        _wrap.scrollTop = _wrap.scrollHeight;
                     }
                     window._lastBubbleTime = Date.now();
                 }
@@ -619,8 +619,8 @@
         }
         // 仅在用户已处于底部附近时自动滚动
         var _wrap = chatContainer.parentElement;
-        if (!_wrap || _wrap.scrollHeight - _wrap.scrollTop - _wrap.clientHeight < 60) {
-            chatContainer.scrollTop = chatContainer.scrollHeight;
+        if (_wrap && _wrap.scrollHeight - _wrap.scrollTop - _wrap.clientHeight < 60) {
+            _wrap.scrollTop = _wrap.scrollHeight;
         }
     }
 
