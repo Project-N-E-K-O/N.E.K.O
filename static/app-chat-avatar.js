@@ -9,6 +9,7 @@
     const S = window.appState;
 
     let isCapturing = false;
+    let pendingAutoCapture = false;
     let activeCaptureToken = 0;
     let cachedPreview = null;
     let autoCaptureTimer = null;
@@ -187,7 +188,12 @@
         const skipInputCheck = options.skipInputCheck === true;
         const silent = options.silent === true;
 
-        if (isCapturing) return;
+        if (isCapturing) {
+            if (skipInputCheck && silent) {
+                pendingAutoCapture = true;
+            }
+            return;
+        }
         if (!skipInputCheck && !isInlinePreviewAvailable()) {
             if (typeof window.showStatusToast === 'function') {
                 window.showStatusToast(
@@ -245,6 +251,10 @@
             if (token === activeCaptureToken) {
                 isCapturing = false;
                 setLoadingState(false);
+                if (pendingAutoCapture) {
+                    pendingAutoCapture = false;
+                    scheduleAutoCapture('pending-retry');
+                }
             }
         }
     }
@@ -258,6 +268,7 @@
             return;
         }
         if (lastScheduledCacheKey === cacheKey && isCapturing) {
+            pendingAutoCapture = true;
             return;
         }
 
