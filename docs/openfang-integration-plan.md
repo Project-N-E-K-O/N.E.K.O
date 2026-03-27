@@ -6,7 +6,7 @@
 
 ### 架构总览
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                   Electron (N.E.K.O.-PC)                        │
 │                                                                 │
@@ -37,7 +37,7 @@
 
 ### 对比旧方案
 
-```
+```text
 ❌ 旧: Electron → Python → OpenFang (三层套娃，生命周期耦合)
 ✅ 新: Electron ──┬── Python (现有)     两个平级子进程
                   └── OpenFang (新增)    独立生命周期
@@ -52,7 +52,7 @@
 **目标**: 将 OpenFang ~32MB 二进制嵌入 N.E.K.O.-PC 的发行包，用户无需手动安装。
 
 **打包位置**:
-```
+```text
 N.E.K.O.-PC/
 ├── resources/
 │   ├── openfang/
@@ -1020,7 +1020,7 @@ async def openfang_sync_config():
 
 ### 4.1 API Key 下发流程
 
-```
+```text
 用户在 NEKO 前端设置 API Key
     ↓
 main_server 保存到 api_providers.json
@@ -1063,7 +1063,7 @@ OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
 
 在 NEKO 的设置 Web UI 中新增 OpenFang 配置区:
 
-```
+```text
 ┌─────────────────────────────────────────┐
 │ OpenFang Agent 执行后端                  │
 │                                         │
@@ -1085,7 +1085,7 @@ OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
 
 在 NEKO 聊天界面中，当 OpenFang 执行任务时显示:
 
-```
+```text
 ┌─────────────────────────────────────────┐
 │ OpenFang 正在执行...                     │
 │                                         │
@@ -1103,7 +1103,7 @@ OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
 
 ### 6.1 权限隔离
 
-```
+```text
 NEKO (宿主环境)               OpenFang (受控环境)
 ──────────────────            ──────────────────
 GUI 操作: ✅                  GUI 访问: ❌

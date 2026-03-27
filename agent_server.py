@@ -2426,7 +2426,7 @@ def _patch_malformed_tool_calls(data: dict) -> None:
             msg.pop("refusal", None)
             msg.pop("tool_calls", None)  # 确保没有 tool_calls
             choice["finish_reason"] = "stop"
-            print(f"[LLM Proxy] Converted malformed_function_call to text intent")
+            print("[LLM Proxy] Converted malformed_function_call to text intent")
 
         # 确保 message.content 存在（有些 API 返回 null）
         if "content" not in msg:

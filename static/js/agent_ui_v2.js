@@ -157,7 +157,7 @@
                 m.checked = false;
             });
             sync(master);
-            [keyboard, browser, userPlugin].forEach(list => {
+            [keyboard, browser, userPlugin, openfang].forEach(list => {
                 list.forEach(cb => {
                     cb.disabled = true;
                     cb.checked = false;
@@ -184,7 +184,7 @@
                 m.title = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
             });
             sync(master);
-            [keyboard, browser, userPlugin].forEach(list => {
+            [keyboard, browser, userPlugin, openfang].forEach(list => {
                 list.forEach(cb => {
                     cb.checked = false;
                     cb.disabled = true;
