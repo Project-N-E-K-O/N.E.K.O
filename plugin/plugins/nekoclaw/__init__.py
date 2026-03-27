@@ -4,7 +4,7 @@ NekoClaw Plugin
 N.E.K.O 的 NekoClaw 能力插件。
 负责把用户任务转发给本地或远端 NekoClaw 服务，并将回复结果回传给插件调用方。
 这是一个同步委托插件：只有在收到 NekoClaw 的最终 `reply` 后，本次插件调用才算完成。
-如果判断需要调用本插件，NEKO 不应先向用户宣称“已完成”“已经交给 NekoClaw 处理”或类似中间态结论，
+如果判断需要调用本插件，NEKO 不应先向用户宣称"已完成”"已经交给 NekoClaw 处理”或类似中间态结论，
 而应等待插件返回实际结果后，再基于返回内容向用户作答。
 
 使用说明：
@@ -117,7 +117,7 @@ class NekoclawPlugin(NekoPluginBase):
         - `meta`：透传给服务端的额外元信息。
         """
         sender_id = sender_id or self._default_sender_id
-        session_id = session_id or f"neko_session_{sender_id}"
+        session_id = session_id or "neko_session"
 
         payload_meta = dict(meta or {})
         payload_meta.setdefault("reply_timeout", self._timeout)
@@ -154,7 +154,7 @@ class NekoclawPlugin(NekoPluginBase):
 
         约束：
         - 只有包含非空 `reply` 的结果才视为成功完成
-        - 若服务端尚未给出最终文本，则返回错误，避免上层把“已调用插件”误当成“已完成任务”
+        - 若服务端尚未给出最终文本，则返回错误，避免上层把"已调用插件”误当成"已完成任务”
         """
         reply_obj = result.get("reply")
         reply = reply_obj.strip() if isinstance(reply_obj, str) else ""
@@ -170,9 +170,10 @@ class NekoclawPlugin(NekoPluginBase):
             "适用场景：用户有需要实际执行的任务、需要调用外部工具或服务、希望获取额外能力（如搜索、操作、分析）的请求。"
             "只要用户有具体的任务意图，即应调用此插件。NekoClaw 会自主处理后返回结果，NEKO 再用自己的语气转述给用户。"
             "这是同步调用：调用后必须等待插件返回 `reply` 才能回答用户。"
-            "不要在调用后立刻告诉用户“已完成”“已经交给 NekoClaw 处理”“正在处理完成中”等中间态结论；"
+            "不要在调用后立刻告诉用户「已完成」「已经交给 NekoClaw 处理」「正在处理完成中」等中间态结论；"
             "只有收到插件返回的最终结果后，才能向用户确认执行结果。"
             "支持会话上下文，可指定 sender_id 区分不同用户。"
+            "【重要】收到 reply 后，如果其中包含文件路径或 URL，必须在回复中明确告知用户这些路径或链接。"
         ),
         input_schema={
             "type": "object",
@@ -238,7 +239,7 @@ class NekoclawPlugin(NekoPluginBase):
             "向 NekoClaw 发送文本和图片消息并获取回复。"
             "图片可通过 URL 或本地文件路径提供。"
             "这是同步调用：必须等待 NekoClaw 返回最终 `reply` 后，NEKO 才能回答用户。"
-            "禁止把“已经发给 NekoClaw”当成最终答复返回给用户。"
+            "禁止把「已经发给 NekoClaw」当成最终答复返回给用户。"
         ),
         input_schema={
             "type": "object",

@@ -172,6 +172,15 @@ def parse_plugin_result(
     if not isinstance(run_data, dict):
         return fallback
 
+    # Fallback for reply-style plugins such as nekoclaw: even if the caller
+    # failed to propagate llm_result_fields metadata, still surface the actual
+    # returned reply instead of collapsing to a generic "done" message.
+    reply_val = run_data.get("reply")
+    if isinstance(reply_val, str):
+        reply_text = reply_val.strip()
+        if reply_text:
+            return _truncate(reply_text)
+
     if not llm_result_fields:
         return fallback
 

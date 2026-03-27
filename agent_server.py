@@ -613,6 +613,7 @@ async def _emit_task_result(
     summary: str,
     detail: str = "",
     error_message: str = "",
+    direct_reply: bool = False,
 ) -> None:
     """Emit a structured task_result event to main_server."""
     if success:
@@ -635,6 +636,7 @@ async def _emit_task_result(
         summary=summary[:_SUMMARY_LIMIT],
         detail=detail[:_DETAIL_LIMIT] if detail else "",
         error_message=error_message[:_ERROR_LIMIT] if error_message else "",
+        direct_reply=direct_reply,
         timestamp=_now_iso(),
     )
 
@@ -1276,6 +1278,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                         success=True,
                                         summary=summary[:500],
                                         detail=detail,
+                                        direct_reply=False,  # nekoclaw 结果通过 LLM 转述后返回
                                     )
                                 except Exception as emit_err:
                                     logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
@@ -2107,6 +2110,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         summary=summary[:500],
                         detail=detail if res.success else "",
                         error_message=(detail or str(res.error or ""))[:500] if not res.success else "",
+                        direct_reply=False,  # nekoclaw 结果通过 LLM 转述后返回
                     )
                 elif not res.success:
                     info["error"] = (detail or str(res.error or ""))[:500]

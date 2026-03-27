@@ -254,6 +254,86 @@ class DirectTaskExecutor:
                 lines.extend(param_desc)
         
         return "\n".join(lines)
+
+    def _extract_latest_user_intent(self, conversation: str) -> str:
+        """Extract the latest user request from formatted conversation text."""
+        user_intent = ""
+        conv_lines = conversation.splitlines()
+        for line in conv_lines:
+            if line.startswith("LATEST_USER_REQUEST:"):
+                user_intent = line[len("LATEST_USER_REQUEST:"):].strip()
+                break
+
+        if not user_intent:
+            for line in reversed(conv_lines):
+                if line.startswith("user:") or line.startswith("User:"):
+                    user_intent = line[5:].strip()
+                    break
+        return user_intent
+
+    def _find_plugin_entry(self, plugins: Any, plugin_id: str, preferred_entry: str) -> tuple[Optional[dict], Optional[dict]]:
+        """Find a plugin and a usable entry, falling back to the first declared entry."""
+        iterable = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
+        for _, plugin in iterable:
+            if not isinstance(plugin, dict) or plugin.get("id") != plugin_id:
+                continue
+            entries = plugin.get("entries") or []
+            if not isinstance(entries, list):
+                return plugin, None
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("id") == preferred_entry:
+                    return plugin, entry
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("id"):
+                    return plugin, entry
+            return plugin, None
+        return None, None
+
+    def _rule_assess_nekoclaw(self, conversation: str, plugins: Any) -> Optional[UserPluginDecision]:
+        """Hard-match obvious execution requests to nekoclaw before LLM assessment."""
+        user_intent = self._extract_latest_user_intent(conversation)
+        if not user_intent:
+            return None
+
+        plugin_meta, entry_meta = self._find_plugin_entry(plugins, "nekoclaw", "chat")
+        if not plugin_meta:
+            return None
+
+        text = user_intent.lower()
+        web_action_markers = (
+            "打开", "进入", "访问", "search", "搜索", "百度", "谷歌", "google",
+            "浏览器", "网页", "网站", "screenshot", "截图", "截屏", "保存", "本地",
+        )
+        explicit_action_verbs = (
+            "帮我", "请", "去", "执行", "操作", "打开", "搜索", "截图", "保存",
+            "open ", "search ", "save ", "take a screenshot", "capture",
+        )
+
+        has_web_marker = any(marker in user_intent or marker in text for marker in web_action_markers)
+        has_action_verb = any(marker in user_intent or marker in text for marker in explicit_action_verbs)
+        if not (has_web_marker and has_action_verb):
+            return None
+
+        entry_id = (entry_meta or {}).get("id") or "chat"
+        task_description = f"Use nekoclaw to execute the user's browser/screenshot task: {user_intent[:120]}"
+        logger.info("[UserPlugin Rule] Matched nekoclaw hard-route for intent: %s", user_intent[:200])
+
+        # 系统提示词：附加到用户意图前
+        system_hint = (
+            "[系统指令] 如果任务涉及保存文件，除非用户明确指定路径，否则默认保存到桌面；"
+            "如果需要打开浏览器处理任务，不要使用无头模式。"
+        )
+        enhanced_text = f"{system_hint}\n\n用户任务：{user_intent}"
+
+        return UserPluginDecision(
+            has_task=True,
+            can_execute=True,
+            task_description=task_description,
+            plugin_id="nekoclaw",
+            entry_id=entry_id,
+            plugin_args={"text": enhanced_text},
+            reason="rule_matched_nekoclaw_web_action",
+        )
     
     async def _assess_computer_use(
         self, 
@@ -519,6 +599,10 @@ Do NOT route to OpenFang:
         except Exception:
             logger.debug("[UserPlugin] Failed to check plugins validity", exc_info=True)
             return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Invalid plugins")
+
+        rule_decision = self._rule_assess_nekoclaw(conversation, plugins)
+        if rule_decision is not None:
+            return rule_decision
     
         # 构建插件描述供 LLM 参考（包含 id, description, input_schema 以及 entries 列表）
         lines = []
@@ -618,18 +702,7 @@ VERY IMPORTANT:
 - If the user's intent does not clearly match any plugin's described functionality, set has_task=false.
 Return only the JSON object, nothing else.
 """
-        user_intent = ""
-        conv_lines = conversation.splitlines()
-        for line in conv_lines:
-            if line.startswith("LATEST_USER_REQUEST:"):
-                user_intent = line[len("LATEST_USER_REQUEST:"):].strip()
-                break
-        
-        if not user_intent:
-            for line in reversed(conv_lines):
-                if line.startswith("user:") or line.startswith("User:"):
-                    user_intent = line[5:].strip()
-                    break
+        user_intent = self._extract_latest_user_intent(conversation)
 
         user_prompt = f"Conversation:\n{conversation}\n\nUser intent (one-line): {user_intent}"
 
@@ -815,13 +888,25 @@ Return only the JSON object, nothing else.
                         decision["can_execute"] = False
                         decision["reason"] = f"entry_id '{final_eid}' not found in plugin '{final_pid}'"
 
+                # 如果是 nekoclaw 插件，增强 text 参数添加系统指令
+                plugin_args = decision.get("plugin_args")
+                final_pid = decision.get("plugin_id")
+                if final_pid == "nekoclaw" and isinstance(plugin_args, dict):
+                    original_text = plugin_args.get("text", "")
+                    if original_text:
+                        system_hint = (
+                            "[系统指令] 如果任务涉及保存文件，除非用户明确指定路径，否则默认保存到桌面；"
+                            "如果需要打开浏览器处理任务，不要使用无头模式。"
+                        )
+                        plugin_args["text"] = f"{system_hint}\n\n用户任务：{original_text}"
+
                 return UserPluginDecision(
                     has_task=decision.get("has_task", False),
                     can_execute=decision.get("can_execute", False),
                     task_description=decision.get("task_description", ""),
                     plugin_id=decision.get("plugin_id"),
                     entry_id=final_eid,
-                    plugin_args=decision.get("plugin_args"),
+                    plugin_args=plugin_args,
                     reason=decision.get("reason", "")
                 )
                 
