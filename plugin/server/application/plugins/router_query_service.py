@@ -49,6 +49,18 @@ def _build_status_index(raw_statuses: object) -> dict[str, str]:
     return status_index
 
 
+def _resolve_plugin_status(
+    *,
+    plugin_meta: Mapping[str, object],
+    plugin_id: str,
+    status_by_plugin: Mapping[str, str],
+) -> str:
+    runtime_load_state_obj = plugin_meta.get("runtime_load_state")
+    if isinstance(runtime_load_state_obj, str) and runtime_load_state_obj == "failed":
+        return "load_failed"
+    return status_by_plugin.get(plugin_id, "unknown")
+
+
 def _parse_event_key(key: str) -> tuple[str | None, str | None, str | None]:
     if ":" in key:
         parts = key.split(":", 2)
@@ -190,7 +202,11 @@ def _query_plugins_sync(filters: Mapping[str, object] | None) -> list[dict[str, 
             if name_contains not in plugin_id.lower() and name_contains not in name_text and name_contains not in description_text:
                 continue
 
-        status_value = status_by_plugin.get(plugin_id, "unknown")
+        status_value = _resolve_plugin_status(
+            plugin_meta=plugin_meta,
+            plugin_id=plugin_id,
+            status_by_plugin=status_by_plugin,
+        )
         if status_filter is not None and status_value not in status_filter:
             continue
 
