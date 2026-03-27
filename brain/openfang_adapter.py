@@ -207,6 +207,7 @@ class OpenFangAdapter:
         session_id: Optional[str] = None,
         on_progress: Optional[Callable] = None,
         timeout: float = 300.0,
+        local_task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         向 OpenFang 提交任务并等待结果。
@@ -228,7 +229,7 @@ class OpenFangAdapter:
 
             # 方案 B：通过 A2A 协议（路由到默认 agent）
             print("[OpenFang DEBUG] Using A2A fallback")
-            return await self._send_via_a2a(instruction, session_id, on_progress, timeout)
+            return await self._send_via_a2a(instruction, session_id, on_progress, timeout, local_task_id=local_task_id)
 
         except httpx.HTTPStatusError as e:
             self.last_error = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
@@ -350,6 +351,7 @@ class OpenFangAdapter:
         session_id: Optional[str],
         on_progress: Optional[Callable],
         timeout: float,
+        local_task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """通过 A2A 协议提交任务（路由到 OpenFang 默认 agent）。"""
         # OpenFang A2A reads message from request["params"]["message"]["parts"]
@@ -379,8 +381,12 @@ class OpenFangAdapter:
             of_task_id = task_data["id"]
 
         self._active_tasks[of_task_id] = of_task_id
+        if local_task_id:
+            self._active_tasks[local_task_id] = of_task_id
         result = await self._poll_task(of_task_id, on_progress, timeout=timeout)
         self._active_tasks.pop(of_task_id, None)
+        if local_task_id:
+            self._active_tasks.pop(local_task_id, None)
         print(f"[OpenFang DEBUG] A2A poll result: status={result.status}, result_len={len(result.result or '')}, error={result.error}")
 
         return {
@@ -390,7 +396,16 @@ class OpenFangAdapter:
             "agent_name": result.agent_name,
             "artifacts": result.artifacts,
             "error": result.error,
+            "remote_task_id": of_task_id,
         }
+
+    def register_local_task(self, local_id: str, remote_id: str) -> None:
+        """注册本地 task_id 到远程 OpenFang task_id 的映射，供 cancel 使用。"""
+        self._active_tasks[local_id] = remote_id
+
+    def unregister_local_task(self, local_id: str) -> None:
+        """移除本地 task_id 映射。"""
+        self._active_tasks.pop(local_id, None)
 
     async def cancel_running(self, task_id: Optional[str] = None) -> None:
         """取消正在运行的任务。task_id=None 时取消所有。"""

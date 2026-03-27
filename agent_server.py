@@ -1531,6 +1531,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             of_res = await Modules.openfang.run_instruction(
                                 result.task_description,
                                 session_id=of_session.session_id,
+                                local_task_id=of_task_id,
                             )
                             logger.info("[OpenFang] Task completed: success=%s, agent=%s, result_len=%d, steps=%s, artifacts_count=%d",
                                         of_res.get("success"), of_res.get("agent_name"),
@@ -2181,6 +2182,15 @@ async def cancel_task(task_id: str):
             Modules.browser_use.cancel_running()
         info["status"] = "cancelled"
         info["error"] = "Cancelled by user"
+    elif task_type == "openfang":
+        if Modules.openfang:
+            try:
+                await Modules.openfang.cancel_running(task_id)
+            except Exception as e:
+                logger.warning("[OpenFang] cancel_running failed for %s: %s", task_id, e)
+            Modules.openfang.unregister_local_task(task_id)
+        info["status"] = "cancelled"
+        info["error"] = "Cancelled by user"
     else:
         info["status"] = "cancelled"
         info["error"] = "Cancelled by user"
@@ -2294,12 +2304,15 @@ async def openfang_llm_proxy(request: Request, path: str):
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
             if is_stream:
-                # 流式：逐行转发，每行尝试补全 usage
+                # 流式：先发 HEAD 获取状态码，再 stream body
+                _upstream_status = {"code": 200}
+
                 async def _stream_with_patch():
                     async with client.stream(
                         request.method, target_url,
                         content=body, headers=forward_headers,
                     ) as upstream:
+                        _upstream_status["code"] = upstream.status_code
                         async for line in upstream.aiter_lines():
                             if line.startswith("data: ") and line != "data: [DONE]":
                                 try:
@@ -2311,8 +2324,12 @@ async def openfang_llm_proxy(request: Request, path: str):
                                     logger.debug("[LLM Proxy] failed to parse streaming chunk", exc_info=True)
                             yield line + "\n"
 
+                # 注意: generator 延迟执行，status_code 在首次 yield 后才准确;
+                # 对 SSE 场景客户端通常只关注 2xx vs non-2xx，此处尽力传播
+                gen = _stream_with_patch()
                 return StarletteStreamingResponse(
-                    _stream_with_patch(),
+                    gen,
+                    status_code=_upstream_status["code"],
                     media_type="text/event-stream",
                 )
             else:
@@ -2511,7 +2528,8 @@ async def openfang_run(payload: Dict[str, Any]):
         try:
             Modules.task_registry[task_id] = {
                 "id": task_id, "type": "openfang", "status": "running",
-                "instruction": instruction, "start_time": datetime.now(timezone.utc).isoformat(),
+                "params": {"instruction": instruction},
+                "start_time": datetime.now(timezone.utc).isoformat(),
             }
             # Emit initial running event with full task object
             try:
@@ -2540,6 +2558,7 @@ async def openfang_run(payload: Dict[str, Any]):
                 instruction=instruction,
                 session_id=payload.get("conversation_id"),
                 on_progress=_on_progress,
+                local_task_id=task_id,
             )
             final_status = "completed" if result.get("success") else "failed"
             Modules.task_registry[task_id]["status"] = final_status
@@ -2782,6 +2801,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
             adapter = Modules.openfang
             if adapter and adapter.init_ok:
                 Modules.agent_flags["openfang_enabled"] = True
+                _set_capability("openfang", True, "")
             elif adapter:
                 # init_ok 为 False，尝试重新连接
                 ok = await asyncio.to_thread(adapter.check_connectivity)
