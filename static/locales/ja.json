@@ -1449,7 +1449,7 @@
             "enabled": "{{name}}を有効にしました",
             "disabled": "{{name}}を無効にしました",
             "enableFailed": "{{name}}の有効化に失敗しました",
-            "openfang": "OpenFang エージェント",
+            "openfang": "仮想マシン",
             "userPluginAdapting": "ユーザープラグイン（開発中）",
             "moltbotAdapting": "OpenClaw（開発中）",
             "chatSettings": "チャット設定",

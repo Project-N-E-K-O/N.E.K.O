@@ -1449,7 +1449,7 @@
             "enabled": "{{name}}已开启",
             "disabled": "{{name}}已关闭",
             "enableFailed": "{{name}}开启失败",
-            "openfang": "OpenFang 智能体",
+            "openfang": "虚拟机",
             "userPluginAdapting": "用户插件（开发中）",
             "moltbotAdapting": "OpenClaw（开发中）",
             "chatSettings": "对话设置",

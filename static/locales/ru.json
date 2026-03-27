@@ -1449,7 +1449,7 @@
             "enabled": "{{name}} Включен",
             "disabled": "{{name}} Отключен",
             "enableFailed": "{{name}} Ошибка включения",
-            "openfang": "OpenFang Агент",
+            "openfang": "Виртуальная машина",
             "userPluginAdapting": "Пользовательский плагин (В разработке)",
             "moltbotAdapting": "OpenClaw (В разработке)",
             "animationSettings": "Настройки анимации",

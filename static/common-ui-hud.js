@@ -159,7 +159,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
         },
         {
             id: 'agent-openfang',
-            label: window.t ? window.t('settings.toggles.openfang') : 'OpenFang',
+            label: window.t ? window.t('settings.toggles.openfang') : '虚拟机',
             labelKey: 'settings.toggles.openfang',
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'

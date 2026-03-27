@@ -43,7 +43,7 @@
             computer_use_enabled: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
             browser_use_enabled: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
             user_plugin_enabled: window.t ? window.t('settings.toggles.userPlugin') : '用户插件',
-            openfang_enabled: window.t ? window.t('settings.toggles.openfang') : 'OpenFang',
+            openfang_enabled: window.t ? window.t('settings.toggles.openfang') : '虚拟机',
         };
         return map[key] || key;
     };

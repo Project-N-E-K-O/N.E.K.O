@@ -1592,7 +1592,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 await _emit_task_result(
                                     lanlan_name, channel="openfang", task_id=of_task_id,
                                     success=False,
-                                    summary=f'OpenFang 任务 "{result.task_description}" 已取消',
+                                    summary=f'虚拟机任务 "{result.task_description}" 已取消',
                                     error_message=cancel_msg,
                                 )
                             except Exception:
@@ -1617,7 +1617,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 await _emit_task_result(
                                     lanlan_name, channel="openfang", task_id=of_task_id,
                                     success=False,
-                                    summary=f'OpenFang 任务 "{result.task_description}" 执行异常',
+                                    summary=f'虚拟机任务 "{result.task_description}" 执行异常',
                                     error_message=str(e),
                                 )
                             except Exception:
@@ -2533,7 +2533,7 @@ async def openfang_run(payload: Dict[str, Any]):
     if not instruction:
         return JSONResponse({"error": "instruction required"}, status_code=400)
     if not Modules.openfang or not Modules.openfang.init_ok:
-        return JSONResponse({"error": "OpenFang not available"}, status_code=503)
+        return JSONResponse({"error": "VM agent not available"}, status_code=503)
 
     task_id = f"of_{uuid.uuid4().hex[:12]}"
 
