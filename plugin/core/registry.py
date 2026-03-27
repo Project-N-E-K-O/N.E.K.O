@@ -1361,6 +1361,7 @@ def _register_failed_plugin(
     logger: Any,
     *,
     plugin_id: Optional[str],
+    entries_preview: Optional[List[Dict[str, Any]]] = None,
     error_type: str,
     error_message: str,
     error_phase: str,
@@ -1372,6 +1373,7 @@ def _register_failed_plugin(
         ctx: 插件上下文
         logger: 日志记录器
         plugin_id: 注册用插件 ID（允许与 ctx.pid 不同，如冲突重命名后）
+        entries_preview: 已提取的入口预览；若未提供则回退到 FailedPluginStub 提取
         error_type: 错误类型
         error_message: 错误信息
         error_phase: 失败阶段（dependency_check/import/start_process 等）
@@ -1401,15 +1403,15 @@ def _register_failed_plugin(
                 pid, ctx.toml_path,
             )
             return
-    elif _check_plugin_already_registered(pid, ctx.toml_path, logger):
-        return
 
-    entries_preview = _extract_entries_preview(
-        pid,
-        cls=type("FailedPluginStub", (), {}),
-        conf=ctx.conf,
-        pdata=ctx.pdata,
-    )
+    provided_entries_preview = entries_preview
+    if provided_entries_preview is None:
+        provided_entries_preview = _extract_entries_preview(
+            pid,
+            cls=type("FailedPluginStub", (), {}),
+            conf=ctx.conf,
+            pdata=ctx.pdata,
+        )
 
     plugin_meta = _build_plugin_meta(
         pid, ctx.pdata,
@@ -1439,7 +1441,7 @@ def _register_failed_plugin(
             meta["runtime_load_error_message"] = str(error_message or "Unknown load error")
             meta["runtime_load_error_phase"] = str(error_phase or "unknown")
             meta["runtime_load_error_time"] = datetime.now(timezone.utc).isoformat()
-            meta["entries_preview"] = entries_preview
+            meta["entries_preview"] = provided_entries_preview
             state.plugins[resolved_id] = meta
     state.invalidate_snapshot_cache("plugins")
 
@@ -1600,6 +1602,7 @@ def _load_adapter_plugin(
             ctx,
             logger,
             plugin_id=pid,
+            entries_preview=entries_preview,
             error_type=type(e).__name__,
             error_message=str(e),
             error_phase="start_process",
@@ -1612,6 +1615,7 @@ def _load_adapter_plugin(
             ctx,
             logger,
             plugin_id=pid,
+            entries_preview=entries_preview,
             error_type="UnexpectedStartProcessError",
             error_message=f"Unexpected error starting adapter process for {pid}",
             error_phase="start_process",
