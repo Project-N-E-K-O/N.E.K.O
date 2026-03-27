@@ -655,49 +655,6 @@
         }, metrics);
     }
 
-    function getLive2dHeadRect(model, metrics) {
-        const internalModel = model?.internalModel;
-        const rawHitAreas = internalModel?.hitAreas;
-        if (!rawHitAreas || typeof rawHitAreas !== 'object') {
-            return null;
-        }
-
-        const entries = Object.keys(rawHitAreas)
-            .map((key) => rawHitAreas[key])
-            .filter((item) => item && Number.isInteger(item.index));
-
-        if (entries.length === 0) {
-            return null;
-        }
-
-        const matchers = [
-            /(^|[^a-z])face([^a-z]|$)/i,
-            /(^|[^a-z])head([^a-z]|$)/i,
-            /hitareaface/i,
-            /hitareahead/i,
-            /顔|脸|頭/
-        ];
-
-        const preferredEntry = entries.find((entry) => {
-            const haystack = String(entry.name || entry.id || '').toLowerCase();
-            return matchers.some((matcher) => matcher.test(haystack));
-        });
-
-        if (!preferredEntry) {
-            return null;
-        }
-
-        const logicalHeadRect = getLive2dDrawableLogicalRect(internalModel, preferredEntry.index);
-        const logicalModelRect = getLive2dModelLogicalRect(model);
-        const modelBoundsCss = sanitizeCssRect(model.getBounds(), metrics);
-        const rect = mapLive2dLogicalRectToCss(logicalHeadRect, logicalModelRect, modelBoundsCss, metrics);
-        if (!logicalHeadRect || !logicalModelRect || !rect) {
-            return null;
-        }
-
-        return rect;
-    }
-
     function getLive2dHeadRectInfo(model, metrics) {
         const internalModel = model?.internalModel;
         const rawHitAreas = internalModel?.hitAreas;
@@ -738,8 +695,7 @@
 
         return {
             rect,
-            mode,
-            name: String(preferredEntry.name || preferredEntry.id || '')
+            mode
         };
     }
 
@@ -920,7 +876,7 @@
             for (let pass = 0; pass < 3; pass += 1) {
                 renderer.render(tempStage);
 
-                const headRect = getLive2dHeadRect(model, viewportMetrics);
+                const headRect = getLive2dHeadRectInfo(model, viewportMetrics)?.rect || null;
                 const bounds = sanitizeCssRect(model.getBounds(), viewportMetrics);
                 const activeHeadRect = headRect || {
                     x: bounds.x + bounds.width * 0.28,
@@ -937,7 +893,7 @@
                     renderer.render(tempStage);
                 }
 
-                const adjustedHeadRect = getLive2dHeadRect(model, viewportMetrics) || activeHeadRect;
+                const adjustedHeadRect = getLive2dHeadRectInfo(model, viewportMetrics)?.rect || activeHeadRect;
                 const adjustedHeadCenterX = adjustedHeadRect.x + adjustedHeadRect.width / 2;
                 const adjustedHeadCenterY = adjustedHeadRect.y + adjustedHeadRect.height * 0.42;
 
