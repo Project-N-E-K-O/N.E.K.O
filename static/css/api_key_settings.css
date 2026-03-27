@@ -102,7 +102,7 @@ opacity: 1;
 .close-btn:active:not(:disabled) {
 transform: scale(0.95);
 }
-        
+
 .container-header h2::before {
 content: attr(data-text);
 position: absolute;
@@ -113,30 +113,30 @@ height: 100%;
 z-index: -1;
 color: var(--button-text-stroke-color);
 -webkit-text-stroke: 1px var(--button-text-stroke-color);
-text-shadow: 
-2px 0 0 var(--button-text-stroke-color), 
-0 2px 0 var(--button-text-stroke-color), 
--2px 0 0 var(--button-text-stroke-color), 
+text-shadow:
+2px 0 0 var(--button-text-stroke-color),
+0 2px 0 var(--button-text-stroke-color),
+-2px 0 0 var(--button-text-stroke-color),
 0 -2px 0 var(--button-text-stroke-color),
-1.4px 1.4px 0 var(--button-text-stroke-color), 
--1.4px 1.4px 0 var(--button-text-stroke-color), 
-1.4px -1.4px 0 var(--button-text-stroke-color), 
+1.4px 1.4px 0 var(--button-text-stroke-color),
+-1.4px 1.4px 0 var(--button-text-stroke-color),
+1.4px -1.4px 0 var(--button-text-stroke-color),
 -1.4px -1.4px 0 var(--button-text-stroke-color),
-1.8px 0.8px 0 var(--button-text-stroke-color), 
--1.8px 0.8px 0 var(--button-text-stroke-color), 
-1.8px -0.8px 0 var(--button-text-stroke-color), 
+1.8px 0.8px 0 var(--button-text-stroke-color),
+-1.8px 0.8px 0 var(--button-text-stroke-color),
+1.8px -0.8px 0 var(--button-text-stroke-color),
 -1.8px -0.8px 0 var(--button-text-stroke-color),
-0.8px 1.8px 0 var(--button-text-stroke-color), 
--0.8px 1.8px 0 var(--button-text-stroke-color), 
-0.8px -1.8px 0 var(--button-text-stroke-color), 
+0.8px 1.8px 0 var(--button-text-stroke-color),
+-0.8px 1.8px 0 var(--button-text-stroke-color),
+0.8px -1.8px 0 var(--button-text-stroke-color),
 -0.8px -1.8px 0 var(--button-text-stroke-color),
-1px 0 0 var(--button-text-stroke-color), 
--1px 0 0 var(--button-text-stroke-color), 
-0 1px 0 var(--button-text-stroke-color), 
+1px 0 0 var(--button-text-stroke-color),
+-1px 0 0 var(--button-text-stroke-color),
+0 1px 0 var(--button-text-stroke-color),
 0 -1px 0 var(--button-text-stroke-color);
 white-space: nowrap;
 }
-        
+
 .container-header h2::after {
 content: attr(data-text);
 position: absolute;
@@ -183,32 +183,6 @@ margin-bottom: 16px;
     color: #40C5F1;
     margin-bottom: 8px;
     font-size: 1.1rem;
-}
-
-/* 高级选项区域内的标签样式 - 保持一致 */
-#advanced-options .field-row label,
-#advanced-options .field-row label span,
-#advanced-options .field-row label span[data-i18n],
-#advanced-options .field-row label > span,
-#advanced-options label[for="coreApiSelect"] span,
-#advanced-options label[for="assistApiSelect"] span {
-    font-weight: bold !important;
-    color: #40C5F1 !important;
-    font-size: 1.1rem !important;
-}
-
-/* 核心API和辅助API下拉菜单的文字颜色 - 与其他文字一致 */
-#advanced-options #coreApiSelect,
-#advanced-options #assistApiSelect {
-    color: #40C5F1 !important;
-    font-weight: normal !important;
-}
-
-/* 下拉菜单选项的文字颜色 */
-#advanced-options #coreApiSelect option,
-#advanced-options #assistApiSelect option {
-    color: #40C5F1 !important;
-    font-weight: normal !important;
 }
 
 .field-row label em {
@@ -324,31 +298,31 @@ color: #0c5460;
 border: 1px solid #bee5eb;
 }
 
-#status { 
-position: fixed; 
-top: 50%; 
-left: 50%; 
-transform: translate(-50%, -50%); 
-padding: 16px 32px; 
-border-radius: 12px; 
-display: none; 
-z-index: 10001; 
-box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15); 
-font-weight: 500; 
-animation: statusFadeIn 0.3s ease; 
-white-space: nowrap; 
-} 
+#status {
+position: fixed;
+top: 50%;
+left: 50%;
+transform: translate(-50%, -50%);
+padding: 16px 32px;
+border-radius: 12px;
+display: none;
+z-index: 10001;
+box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+font-weight: 500;
+animation: statusFadeIn 0.3s ease;
+white-space: nowrap;
+}
 
-@keyframes statusFadeIn { 
-from { 
-    opacity: 0; 
-    transform: translate(-50%, -50%) scale(0.9); 
-} 
-to { 
-    opacity: 1; 
-    transform: translate(-50%, -50%) scale(1); 
-} 
-} 
+@keyframes statusFadeIn {
+from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.9);
+}
+to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+}
+}
 
 #status.success {
 background: #d4edda;
@@ -366,7 +340,7 @@ border: 1px solid #f5c6cb;
 background: #ffffff;
 color: rgba(64, 197, 241, 0.85);
 border: 1px solid #b3e5fc;
-border-radius: 24px; /* 增加圆角 */
+border-radius: 24px;
 padding: 8px 8px;
 font-weight: normal;
 line-height: 1.5;
@@ -376,81 +350,6 @@ align-items: center;
 gap: 8px;
 min-height: 48px;
 }
-
-/* 高级选项按钮样式 - 参考返回主页按钮 */
-#advanced-toggle-btn {
-    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-    background-color: transparent !important;
-    border: none !important;
-    border-radius: 999px !important;
-    height: auto;
-    min-height: 54px;
-    padding: 12px 25px 12px 60px !important;
-    color: white;
-    font-weight: bold;
-    display: inline-flex !important;
-    align-items: center;
-    justify-content: center;
-    text-align: left !important;
-    width: auto !important;
-    min-width: 240px;
-    max-width: 100%;
-    position: relative;
-    cursor: pointer;
-    user-select: none;
-    transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
-    margin-bottom: 8px;
-    box-sizing: border-box;
-}
-
-#advanced-toggle-btn .dropdown-icon {
-    display: block !important;
-    position: absolute;
-    left: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 10;
-    flex-shrink: 0;
-    pointer-events: none;
-    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-    width: 44px;
-    height: 44px;
-    transition: transform 0.2s;
-}
-
-#advanced-toggle-btn span {
-    position: relative;
-    z-index: 20;
-    margin: 0 !important;
-    padding: 0 !important;
-    flex: 1;
-    font-size: var(--button-text-size);
-    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    color: transparent;
-    font-weight: bold;
-    white-space: nowrap;
-    line-height: 1.2;
-}
-
-#advanced-toggle-btn:hover:not(:disabled) {
-background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat;
-background-color: transparent;
-opacity: 0.9;
-transform: translateY(-1px);
-box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
-}
-
-#advanced-toggle-btn:active:not(:disabled) {
-background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-background-color: transparent !important;
-transform: translateY(1px) scale(0.98) !important;
-box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
-opacity: 0.95 !important;
-}
-
 
 /* 保存设置按钮样式 - 与高级选项按钮一致 */
 #save-settings-btn {
@@ -528,7 +427,7 @@ opacity: 0.95 !important;
 .api-key-info {
     background: #e8f4f8;
     border: 1px solid #b3e5fc;
-    border-radius: 24px; /* 增加圆角 */
+    border-radius: 24px;
     padding: 16px 24px;
     margin-bottom: 24px;
 }
@@ -681,21 +580,6 @@ position: fixed;
 background: #333;
 }
 
-/* 高级选项区域卡片样式 */
-#advanced-options {
-    background: #f0f9ff;
-    border: 1px solid #b3e5fc;
-    border-radius: 24px;
-    padding: 24px;
-    margin-top: 16px;
-}
-
-/* 确保高级选项区域内的输入框和下拉框保持白色背景，形成层次感 */
-#advanced-options .field-row input,
-#advanced-options .field-row select {
-background: #ffffff;
-}
-
 /* 自定义API配置区域 - 无外框样式 */
 #custom-api-section {
 margin-top: 8px;
@@ -781,6 +665,12 @@ box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
 opacity: 0.95 !important;
 }
 
+/* Rotated state for collapsible buttons */
+#custom-api-toggle-btn.rotated .dropdown-icon,
+#key-book-toggle-btn.rotated .dropdown-icon {
+    transform: translateY(-50%) rotate(180deg);
+}
+
 /* 启用自定义API配置开关样式 */
 .custom-api-toggle-wrapper {
 position: relative;
@@ -791,10 +681,10 @@ margin-top: 0;
 .custom-api-toggle-btn {
     display: inline-flex;
     align-items: center;
-    padding: 10px 30px 10px 15px; /* 增加内边距 */
+    padding: 10px 30px 10px 15px;
     background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
     border: none;
-    border-radius: 999px; /* 改为药丸形 */
+    border-radius: 999px;
     cursor: pointer;
     transition: all 0.3s ease;
     user-select: none;
@@ -892,7 +782,7 @@ transition: all 0.3s ease-in-out;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 20px; /* 增加内边距 */
+    padding: 12px 20px;
     background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
     border-bottom: 1px solid rgba(255, 255, 255, 0.2);
     cursor: pointer;
@@ -958,7 +848,8 @@ border-bottom: none;
     font-size: 0.95rem;
 }
 
-.model-content .field-row input {
+.model-content .field-row input,
+.model-content .field-row select {
     max-width: 600px;
     margin-top: 8px;
     border-radius: 50px;
@@ -967,7 +858,8 @@ border-bottom: none;
     font-size: 0.9rem;
 }
 
-.model-content .field-row input:focus {
+.model-content .field-row input:focus,
+.model-content .field-row select:focus {
     border-color: #40C5F1;
     background: #fff;
 }
@@ -1125,7 +1017,7 @@ input:checked + .slider:before {
 }
 
 .gsv-voice-card.selected::after {
-    content: '✓';
+    content: '\2713';
     position: absolute;
     top: 4px;
     right: 6px;
@@ -1205,6 +1097,142 @@ input:checked + .slider:before {
     color: #fff;
 }
 
+/* ============ Key Book Section ============ */
+#key-book-section {
+    margin-top: 0;
+}
+
+#key-book-toggle-btn {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    height: auto;
+    min-height: 54px;
+    padding: 12px 25px 12px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 240px;
+    max-width: 100%;
+    position: relative;
+    cursor: pointer;
+    user-select: none;
+    transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+    margin-bottom: 8px;
+    box-sizing: border-box;
+}
+
+#key-book-toggle-btn .dropdown-icon {
+    display: block !important;
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+    width: 44px;
+    height: 44px;
+    transition: transform 0.2s;
+}
+
+#key-book-toggle-btn span {
+    position: relative;
+    z-index: 20;
+    margin: 0 !important;
+    padding: 0 !important;
+    flex: 1;
+    font-size: var(--button-text-size);
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    font-weight: bold;
+    white-space: nowrap;
+    line-height: 1.2;
+}
+
+#key-book-toggle-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
+}
+
+#key-book-toggle-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+#key-book-inputs {
+    padding: 16px;
+    background: #f0f9ff;
+    border-radius: 12px;
+    border: 1px solid #d0e8ff;
+}
+
+/* Key Book Row - compact layout */
+.key-book-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+.key-book-row label {
+    min-width: 140px;
+    font-size: 0.9em;
+    flex-shrink: 0;
+    color: #40C5F1;
+    font-weight: bold;
+}
+.key-book-row input {
+    flex: 1;
+    max-width: 600px;
+    padding: 8px 16px;
+    border-radius: 50px;
+    border: 2px solid #b3e5fc;
+    font-size: 0.9rem;
+    font-family: 'Courier New', monospace;
+    color: #40C5F1;
+    background: #fff;
+    transition: all 0.2s ease;
+    box-sizing: border-box;
+}
+.key-book-row input:focus {
+    outline: none;
+    border-color: #40C5F1;
+    box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.15);
+}
+.key-book-row input::placeholder {
+    font-size: 0.85rem;
+    color: #b3e5fc;
+}
+
+/* Readonly auto-filled inputs */
+.field-row input[readonly],
+.key-book-row input[readonly],
+.model-content .field-row input[readonly] {
+    background: #f0f0f0;
+    color: #666;
+    border: 1px dashed #ccc;
+}
+.field-row input[readonly]:focus,
+.key-book-row input[readonly]:focus {
+    box-shadow: none;
+}
+
+/* Responsive */
 @media (max-width: 800px) {
 .container {
 padding: 20px 16px;
@@ -1224,21 +1252,30 @@ font-size: 0.8em;
     flex: 0 1 130px;
     min-width: 110px;
 }
+
+.key-book-row {
+    flex-direction: column;
+    align-items: flex-start;
+}
+.key-book-row input {
+    max-width: 100%;
+    width: 100%;
+}
 }
 
 
 .save-button-box{
-    position: fixed;      
-    bottom: 0;            
+    position: fixed;
+    bottom: 0;
     left: 0;
     right: 0;
     z-index: 999;
-    display: flex;        
-    justify-content: center; 
-    padding: 20px 0;      
-    pointer-events: none; 
+    display: flex;
+    justify-content: center;
+    padding: 20px 0;
+    pointer-events: none;
 }
 .save-button-box > div {
-    pointer-events: auto; 
-    padding: 0 24px;      
+    pointer-events: auto;
+    padding: 0 24px;
 }

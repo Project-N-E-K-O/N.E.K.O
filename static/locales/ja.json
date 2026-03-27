@@ -670,7 +670,37 @@
             "step": "StepFun",
             "silicon": "SiliconFlow（高コスパ、推奨）",
             "gemini": "Gemini（Google、高知能、中国国内版非対応）",
-            "kimi": "Kimi（Moonshot、中国国内利用可、ロングコンテキスト対応）"
+            "kimi": "Kimi（Moonshot、中国国内利用可、ロングコンテキスト対応）",
+            "deepseek": "DeepSeek",
+            "doubao": "ByteDance（Doubao）",
+            "minimax": "MiniMax（国内版）",
+            "minimax_intl": "MiniMax（国際版）",
+            "grok": "Grok（xAI）"
+        },
+        "coreApiAutoFillHint": "API管理簿からキーが自動入力されます。直接入力も可能です",
+        "assistApiSelectLabel": "アシストAPIプロバイダー",
+        "assistApiKeyLabel": "アシストAPIキー",
+        "assistApiAutoFillHint": "API管理簿からキーが自動入力されます。直接入力も可能です",
+        "keyBookTitle": "API管理簿",
+        "keyBookDescription": "すべてのAPIキーを一元管理。コア/アシストAPIのプロバイダー切替時にここからキーが自動入力され、入力したキーもここに自動保存されます。",
+        "keyBookPlaceholder": "APIプロバイダー設定を読み込み中...",
+        "providerLabel": "プロバイダー",
+        "customModelProviderFollowCore": "コアAPIに従う",
+        "customModelProviderFollowAssist": "アシストAPIに従う",
+        "customModelProviderCustom": "カスタム",
+        "keyBook": {
+            "qwen": "Alibaba（Qwen）",
+            "openai": "OpenAI",
+            "deepseek": "DeepSeek",
+            "glm": "Zhipu（GLM）",
+            "step": "StepFun（Step）",
+            "silicon": "SiliconFlow",
+            "gemini": "Gemini（Google）",
+            "kimi": "Moonshot（Kimi）",
+            "doubao": "ByteDance（Doubao）",
+            "minimax": "MiniMax（国内版）",
+            "minimax_intl": "MiniMax（国際版）",
+            "grok": "Grok（xAI）"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",
         "pleaseEnterApiKey": "APIキーを入力してください",
@@ -1462,7 +1492,9 @@
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
             "frameRateHigh": "60fps",
-            "mouseTracking": "マウス追跡"
+            "mouseTracking": "マウス追跡",
+            "fullscreenTracking": "フルスクリーン追跡",
+            "localTracking": "ローカル追跡"
         }
     },
     "subtitle": {

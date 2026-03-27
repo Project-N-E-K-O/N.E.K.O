@@ -670,7 +670,37 @@
             "step": "StepFun",
             "silicon": "SiliconFlow (Выгодно)",
             "gemini": "Gemini (Google, недоступен в Китае)",
-            "kimi": "Kimi (Moonshot AI, доступен в Китае, поддерживает длинный контекст)"
+            "kimi": "Kimi (Moonshot AI, доступен в Китае, поддерживает длинный контекст)",
+            "deepseek": "DeepSeek",
+            "doubao": "ByteDance (Doubao)",
+            "minimax": "MiniMax (внутренний)",
+            "minimax_intl": "MiniMax (международный)",
+            "grok": "Grok (xAI)"
+        },
+        "coreApiAutoFillHint": "Ключ автоматически заполняется из справочника API, можно ввести вручную",
+        "assistApiSelectLabel": "Провайдер вспомогательного API",
+        "assistApiKeyLabel": "Ключ вспомогательного API",
+        "assistApiAutoFillHint": "Ключ автоматически заполняется из справочника API, можно ввести вручную",
+        "keyBookTitle": "Справочник API",
+        "keyBookDescription": "Управление всеми API-ключами в одном месте. Ключи автоматически подставляются при смене провайдера в основном/вспомогательном API, а введённые ключи автоматически сохраняются сюда.",
+        "keyBookPlaceholder": "Загрузка конфигурации провайдеров API...",
+        "providerLabel": "Провайдер",
+        "customModelProviderFollowCore": "Следовать за основным API",
+        "customModelProviderFollowAssist": "Следовать за вспомогательным API",
+        "customModelProviderCustom": "Пользовательский",
+        "keyBook": {
+            "qwen": "Alibaba (Qwen)",
+            "openai": "OpenAI",
+            "deepseek": "DeepSeek",
+            "glm": "Zhipu (GLM)",
+            "step": "StepFun (Step)",
+            "silicon": "SiliconFlow",
+            "gemini": "Gemini (Google)",
+            "kimi": "Moonshot (Kimi)",
+            "doubao": "ByteDance (Doubao)",
+            "minimax": "MiniMax (внутренний)",
+            "minimax_intl": "MiniMax (международный)",
+            "grok": "Grok (xAI)"
         },
         "freeVersionNoApiKey": "Бесплатная версия не требует API Key",
         "pleaseEnterApiKey": "Введите ваш API Key",
@@ -1462,7 +1492,9 @@
             "renderQualityHigh": "Высокое",
             "renderQualityLow": "Низкое",
             "renderQualityMedium": "Среднее",
-            "mouseTracking": "Отслеживание мыши"
+            "mouseTracking": "Отслеживание мыши",
+            "fullscreenTracking": "Полноэкранное отслеживание",
+            "localTracking": "Локальное отслеживание"
         }
     },
     "subtitle": {
