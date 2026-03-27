@@ -2682,6 +2682,13 @@ class LLMSessionManager:
                 logger.info("⏭️ end_session: expected_session stale (pre-check), skipping")
                 return
 
+            # 尽早取消 TTS 延迟重试任务并清理错误码（持锁状态下），
+            # 防止 _init_renew_status 期间 respawn task 触发无效重试
+            if self._tts_respawn_task and not self._tts_respawn_task.done():
+                self._tts_respawn_task.cancel()
+                self._tts_respawn_task = None
+            self._last_tts_error_code = ''
+
         await self._init_renew_status()
 
         async with self.lock:
@@ -2703,12 +2710,6 @@ class LLMSessionManager:
             tts_thread_ref = self.tts_thread
             tts_request_queue_ref = self.tts_request_queue
             tts_response_queue_ref = self.tts_response_queue
-
-        # 取消 TTS 延迟重试任务并清理错误码
-        if self._tts_respawn_task and not self._tts_respawn_task.done():
-            self._tts_respawn_task.cancel()
-            self._tts_respawn_task = None
-        self._last_tts_error_code = ''
 
         logger.info("End Session: Starting cleanup...")
         self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
@@ -2968,26 +2969,46 @@ class LLMSessionManager:
                         error_msg = data[1]
                         error_msg_text = str(error_msg)
                         logger.error(f"TTS Worker Error: {error_msg}")
-                        error_msg_lower = error_msg_text.lower()
-                        # 识别配额限制
-                        if '欠费' in error_msg_lower or 'standing' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_ARREARS"})
-                            self._last_tts_error_code = 'API_ARREARS'
-                        elif 'quota' in error_msg_lower or 'time limit' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_QUOTA_TIME"})
-                            self._last_tts_error_code = 'API_QUOTA_TIME'
-                        elif '429' in error_msg_lower or 'too many' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_RATE_LIMIT"})
-                            self._last_tts_error_code = 'API_RATE_LIMIT'
-                        elif 'policy violation' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": error_msg_text}})
-                            self._last_tts_error_code = 'API_POLICY_VIOLATION'
-                        elif '1008' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
-                            self._last_tts_error_code = 'API_1008_FALLBACK'
+
+                        # 优先尝试从结构化 JSON 中提取明确的 code 字段
+                        _known_codes = {
+                            'API_ARREARS', 'API_QUOTA_TIME', 'API_RATE_LIMIT',
+                            'API_POLICY_VIOLATION', 'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
+                        }
+                        _parsed_code = None
+                        try:
+                            _parsed = json.loads(error_msg_text)
+                            if isinstance(_parsed, dict):
+                                _candidate = _parsed.get('code', '')
+                                if isinstance(_candidate, str) and _candidate in _known_codes:
+                                    _parsed_code = _candidate
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+                        if _parsed_code:
+                            user_msg = json.dumps({"code": _parsed_code, "details": {"msg": error_msg_text}})
+                            self._last_tts_error_code = _parsed_code
                         else:
-                            user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
-                            self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
+                            # 回退到关键词匹配
+                            error_msg_lower = error_msg_text.lower()
+                            if '欠费' in error_msg_lower or 'standing' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_ARREARS"})
+                                self._last_tts_error_code = 'API_ARREARS'
+                            elif 'quota' in error_msg_lower or 'time limit' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_QUOTA_TIME"})
+                                self._last_tts_error_code = 'API_QUOTA_TIME'
+                            elif '429' in error_msg_lower or 'too many' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_RATE_LIMIT"})
+                                self._last_tts_error_code = 'API_RATE_LIMIT'
+                            elif 'policy violation' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": error_msg_text}})
+                                self._last_tts_error_code = 'API_POLICY_VIOLATION'
+                            elif '1008' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
+                                self._last_tts_error_code = 'API_1008_FALLBACK'
+                            else:
+                                user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
+                                self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
                         asyncio.create_task(self.send_status(user_msg))
                         continue
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
