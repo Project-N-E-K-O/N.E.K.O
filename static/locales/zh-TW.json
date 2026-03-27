@@ -523,7 +523,9 @@
         "clearAll": "清空全部",
         "screenshotAlt": "截圖 {{index}}",
         "screenshotTitle": "點擊查看截圖 {{index}}",
-        "removeScreenshot": "移除此截圖"
+        "removeScreenshot": "移除此截圖",
+        "avatarPreview": "顯示當前頭像",
+        "avatarPreviewLabel": "當前頭像"
     },
     "voiceControl": {
         "startVoice": "開始語音",
@@ -670,7 +672,37 @@
             "step": "階躍星辰 (StepFun)",
             "silicon": "矽基流動 (SiliconFlow，性價比高，推薦⭐)",
             "gemini": "Gemini（谷歌，智能極高，國內版不支持）",
-            "kimi": "Kimi（月之暗面，國內可用，支持長上下文）"
+            "kimi": "Kimi（月之暗面，國內可用，支持長上下文）",
+            "deepseek": "DeepSeek",
+            "doubao": "豆包（字節跳動）",
+            "minimax": "MiniMax（國服）",
+            "minimax_intl": "MiniMax（國際服）",
+            "grok": "Grok（xAI）"
+        },
+        "coreApiAutoFillHint": "Key從API管理簿自動填充，也可在此直接輸入",
+        "assistApiSelectLabel": "輔助API服務商",
+        "assistApiKeyLabel": "輔助API Key",
+        "assistApiAutoFillHint": "Key從API管理簿自動填充，也可在此直接輸入",
+        "keyBookTitle": "API 管理簿",
+        "keyBookDescription": "統一管理所有API Key。核心API和輔助API切換服務商時會自動從此處讀取Key，在核心/輔助區域輸入的Key也會自動回寫到此處。",
+        "keyBookPlaceholder": "請先載入API服務商配置",
+        "providerLabel": "服務商",
+        "customModelProviderFollowCore": "跟隨核心API",
+        "customModelProviderFollowAssist": "跟隨輔助API",
+        "customModelProviderCustom": "自訂",
+        "keyBook": {
+            "qwen": "阿里（Qwen）",
+            "openai": "OpenAI",
+            "deepseek": "DeepSeek",
+            "glm": "智譜（GLM）",
+            "step": "階躍星辰（Step）",
+            "silicon": "矽基流動（SiliconFlow）",
+            "gemini": "Gemini（Google）",
+            "kimi": "Kimi（月之暗面）",
+            "doubao": "豆包（字節跳動）",
+            "minimax": "MiniMax（國服）",
+            "minimax_intl": "MiniMax（國際服）",
+            "grok": "Grok（xAI）"
         },
         "freeVersionNoApiKey": "免費版無需API Key",
         "pleaseEnterApiKey": "請輸入您的API Key",
@@ -1462,7 +1494,9 @@
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
             "frameRateHigh": "60fps",
-            "mouseTracking": "跟蹤滑鼠"
+            "mouseTracking": "跟蹤滑鼠",
+            "fullscreenTracking": "全屏跟蹤",
+            "localTracking": "局部跟蹤"
         }
     },
     "subtitle": {

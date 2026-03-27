@@ -840,12 +840,15 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 distance = ellipseDistance <= 1 ? 0 : (ellipseDistance - 1) * Math.min(ellipseRadiusX, ellipseRadiusY);
             }
 
-            // 额外检查：鼠标必须在模型可见区域附近
+            // 检查是否启用了全屏跟踪
+            const isFullscreenTracking = this.isFullscreenTrackingEnabled ? this.isFullscreenTrackingEnabled() : false;
+
+            // 额外检查：鼠标必须在模型可见区域附近（除非启用全屏跟踪）
             const isPointerNearVisibleModel = pointer.x >= bounds.left - threshold && pointer.x <= bounds.right + threshold &&
                                               pointer.y >= Math.max(bounds.top, 0) - threshold && pointer.y <= Math.min(bounds.bottom, window.innerHeight) + threshold;
-            
-            // 如果鼠标不在屏幕内或不在模型可见区域附近，视为远离模型
-            if (!isPointerNearVisibleModel) {
+
+            // 如果鼠标不在屏幕内或不在模型可见区域附近，且未启用全屏跟踪，则视为远离模型
+            if (!isPointerNearVisibleModel && !isFullscreenTracking) {
                 this.isFocusing = false;
                 startHideTimer();
                 setLockedHoverFade(false);
@@ -856,21 +859,17 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             setLockedHoverFade(shouldFade);
 
             const canvasEl = document.getElementById('live2d-canvas');
+
             if (distance < threshold) {
                 showButtons();
                 if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
                     canvasEl.style.cursor = 'grab';
                 }
-                // 只有当鼠标在模型附近时才调用 focus，避免 Electron 透明窗口中的全局跟踪问题
-                // 同时检查鼠标跟踪是否启用
                 const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
                 if (this.isFocusing) {
                     if (isMouseTrackingEnabled) {
                         model.focus(pointer.x, pointer.y);
                     } else {
-                        // 鼠标跟踪禁用时，清除 focusController 外部输入
-                        // 头部仍可按 updateNaturalMovements（呼吸、轻微摆动等）自主运动，
-                        // 但不受鼠标移动、拖拽等外部因素影响
                         if (model.internalModel && model.internalModel.focusController) {
                             const fc = model.internalModel.focusController;
                             fc.targetX = 0;
@@ -878,8 +877,21 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                         }
                     }
                 }
+            } else if (isFullscreenTracking) {
+                if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
+                    canvasEl.style.cursor = 'grab';
+                }
+                const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
+                if (isMouseTrackingEnabled) {
+                    model.focus(pointer.x, pointer.y);
+                } else {
+                    if (model.internalModel && model.internalModel.focusController) {
+                        const fc = model.internalModel.focusController;
+                        fc.targetX = 0;
+                        fc.targetY = 0;
+                    }
+                }
             } else {
-                // 鼠标离开模型区域，启动隐藏定时器
                 this.isFocusing = false;
                 if (canvasEl && !(model.interactive && model.dragging)) {
                     canvasEl.style.cursor = '';

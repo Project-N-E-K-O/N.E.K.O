@@ -523,7 +523,9 @@
         "clearAll": "모두 지우기",
         "screenshotAlt": "스크린샷 {{index}}",
         "screenshotTitle": "스크린샷을 보려면 클릭하세요. {{index}}",
-        "removeScreenshot": "이 스크린샷 삭제"
+        "removeScreenshot": "이 스크린샷 삭제",
+        "avatarPreview": "현재 아바타 표시",
+        "avatarPreviewLabel": "현재 아바타"
     },
     "voiceControl": {
         "startVoice": "음성 시작",
@@ -670,7 +672,37 @@
             "step": "스텝펀",
             "silicon": "SiliconFlow(좋은 가치, 권장)",
             "gemini": "Gemini(Google, High Intelligence, 중국에서는 사용할 수 없음)",
-            "kimi": "Kimi(Moonshot, 중국 내 사용 가능, 긴 컨텍스트 지원)"
+            "kimi": "Kimi(Moonshot, 중국 내 사용 가능, 긴 컨텍스트 지원)",
+            "deepseek": "DeepSeek",
+            "doubao": "ByteDance(Doubao)",
+            "minimax": "MiniMax(국내 서버)",
+            "minimax_intl": "MiniMax(국제 서버)",
+            "grok": "Grok(xAI)"
+        },
+        "coreApiAutoFillHint": "API 관리 대장에서 키가 자동 입력됩니다. 직접 입력도 가능합니다",
+        "assistApiSelectLabel": "보조 API 제공업체",
+        "assistApiKeyLabel": "보조 API 키",
+        "assistApiAutoFillHint": "API 관리 대장에서 키가 자동 입력됩니다. 직접 입력도 가능합니다",
+        "keyBookTitle": "API 관리 대장",
+        "keyBookDescription": "모든 API 키를 한 곳에서 관리합니다. 코어/보조 API에서 제공업체를 전환할 때 여기서 키가 자동 입력되며, 입력한 키도 여기에 자동 저장됩니다.",
+        "keyBookPlaceholder": "API 제공업체 설정 로딩 중...",
+        "providerLabel": "제공업체",
+        "customModelProviderFollowCore": "코어 API 따르기",
+        "customModelProviderFollowAssist": "보조 API 따르기",
+        "customModelProviderCustom": "사용자 정의",
+        "keyBook": {
+            "qwen": "Alibaba(Qwen)",
+            "openai": "OpenAI",
+            "deepseek": "DeepSeek",
+            "glm": "Zhipu(GLM)",
+            "step": "StepFun(Step)",
+            "silicon": "SiliconFlow",
+            "gemini": "Gemini(Google)",
+            "kimi": "Moonshot(Kimi)",
+            "doubao": "ByteDance(Doubao)",
+            "minimax": "MiniMax(국내 서버)",
+            "minimax_intl": "MiniMax(국제 서버)",
+            "grok": "Grok(xAI)"
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",
         "pleaseEnterApiKey": "API 키를 입력하세요.",
@@ -1462,7 +1494,9 @@
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
             "frameRateHigh": "60fps",
-            "mouseTracking": "마우스 추적"
+            "mouseTracking": "마우스 추적",
+            "fullscreenTracking": "전체 화면 추적",
+            "localTracking": "로컬 추적"
         }
     },
     "subtitle": {
