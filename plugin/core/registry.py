@@ -204,7 +204,9 @@ def _find_missing_python_requirements(requirements: List[str]) -> List[str]:
             dist_attr_name = getattr(dist, "name", None)
             if isinstance(dist_attr_name, str) and dist_attr_name.strip():
                 installed.setdefault(_canonicalize_dist_name(dist_attr_name), version_text)
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to enumerate installed distributions, "
+                        "dependency checks will be skipped: {}", e)
         return []
 
     missing: List[str] = []
