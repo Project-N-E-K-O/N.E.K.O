@@ -39,6 +39,19 @@
     let lastPlayedMusicUrl = null;
     let lastMusicPlayTime = 0;
     
+    // 全局监听管理
+    let managedWindowListeners = [];
+    const addManagedListener = (type, listener, options) => {
+        window.addEventListener(type, listener, options);
+        managedWindowListeners.push({ type, listener, options });
+    };
+    const clearManagedListeners = () => {
+        managedWindowListeners.forEach(({ type, listener, options }) => {
+            window.removeEventListener(type, listener, options);
+        });
+        managedWindowListeners = [];
+    };
+
     // 全局拖拽清理引用
     let currentDragHandlers = null;
 
@@ -159,6 +172,7 @@
                         currentDragHandlers.cleanup();
                         currentDragHandlers = null;
                     }
+                    clearManagedListeners();
                     localPlayer.destroy();
                 } catch (e) {
                     console.warn('[Music UI] Error during local player destroy:', e);
@@ -183,6 +197,7 @@
                     bar.remove();
                 }
             }
+            clearManagedListeners();
         }
         currentPlayingTrack = null;
     };
@@ -460,6 +475,7 @@
                 const volumeContainer = musicBar.querySelector('.music-bar-volume-container');
                 const volumeBtn = musicBar.querySelector('.music-bar-volume-btn');
                 const volumeSliderWrapper = musicBar.querySelector('.music-bar-volume-slider-wrapper');
+                const volumeSlider = musicBar.querySelector('.music-bar-volume-slider');
                 const volumeFill = musicBar.querySelector('.music-bar-volume-slider-fill');
                 const volumeHandle = musicBar.querySelector('.music-bar-volume-slider-handle');
 
@@ -487,7 +503,7 @@
 
                 let isDraggingVolume = false;
                 const adjustVolume = (e) => {
-                    const rect = volumeSliderWrapper.getBoundingClientRect();
+                    const rect = volumeSlider.getBoundingClientRect();
                     const clientY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
                     let y = rect.bottom - clientY;
                     let per = Math.max(0, Math.min(y, rect.height)) / rect.height;
@@ -503,6 +519,14 @@
                     window.removeEventListener('mouseup', stopVolumeDrag);
                     window.removeEventListener('touchmove', adjustVolume);
                     window.removeEventListener('touchend', stopVolumeDrag);
+                    
+                    // 从 managedWindowListeners 中移除对应的项
+                    managedWindowListeners = managedWindowListeners.filter(item => 
+                        !(item.type === 'mousemove' && item.listener === adjustVolume) &&
+                        !(item.type === 'mouseup' && item.listener === stopVolumeDrag) &&
+                        !(item.type === 'touchmove' && item.listener === adjustVolume) &&
+                        !(item.type === 'touchend' && item.listener === stopVolumeDrag)
+                    );
                 };
 
                 volumeSliderWrapper.onmousedown = (e) => {
@@ -510,8 +534,8 @@
                     e.stopPropagation();
                     isDraggingVolume = true;
                     adjustVolume(e);
-                    window.addEventListener('mousemove', adjustVolume);
-                    window.addEventListener('mouseup', stopVolumeDrag);
+                    addManagedListener('mousemove', adjustVolume);
+                    addManagedListener('mouseup', stopVolumeDrag);
                 };
 
                 volumeSliderWrapper.ontouchstart = (e) => {
@@ -519,8 +543,8 @@
                     e.stopPropagation();
                     isDraggingVolume = true;
                     adjustVolume(e);
-                    window.addEventListener('touchmove', adjustVolume);
-                    window.addEventListener('touchend', stopVolumeDrag);
+                    addManagedListener('touchmove', adjustVolume);
+                    addManagedListener('touchend', stopVolumeDrag);
                 };
 
                 // 点击外部收起音量
@@ -529,7 +553,7 @@
                         volumeContainer.classList.remove('expanded');
                     }
                 };
-                window.addEventListener('mousedown', closeVolumeOnOutsideClick);
+                addManagedListener('mousedown', closeVolumeOnOutsideClick);
                 
                 // 同步 APlayer 的音量变化
                 boundPlayer.on('volumechange', () => {
@@ -658,6 +682,9 @@
                     };
                     window.addEventListener('mousedown', startOnInteraction, { once: true });
                     window.addEventListener('touchstart', startOnInteraction, { once: true });
+                    // 这些 once 监听器也会被管理，虽然它们会自动移除
+                    managedWindowListeners.push({ type: 'mousedown', listener: startOnInteraction, options: { once: true } });
+                    managedWindowListeners.push({ type: 'touchstart', listener: startOnInteraction, options: { once: true } });
                 }
             } else {
                 // --- 复用模式下的切歌逻辑 ---
