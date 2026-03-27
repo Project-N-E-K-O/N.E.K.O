@@ -454,7 +454,8 @@ async function loadApiProviders() {
                         if (pk === 'free') return;
                         _apiKeyRegistry[pk] = {
                             label: allProviders[pk].name || pk,
-                            restricted: (pk === 'openai' || pk === 'gemini')
+                            restricted: (pk === 'openai' || pk === 'gemini'),
+                            config_field: allProviders[pk].config_field || `${pk}_api_key`
                         };
                     });
                 }
@@ -634,8 +635,15 @@ async function loadCurrentApiKey() {
             Object.keys(_apiKeyRegistry).forEach(providerKey => {
                 if (providerKey === 'free') return;
                 const dataField = _apiKeyRegistry[providerKey].config_field;
-                if (dataField && data.hasOwnProperty(dataField)) {
-                    syncKeyToBook(providerKey, data[dataField]);
+                if (!dataField || !data.hasOwnProperty(dataField)) return;
+                const val = data[dataField];
+                // Skip empty-string values for the current core provider so we
+                // don't overwrite the valid key synced from data.api_key above.
+                if (val === '' && providerKey === data.coreApi) return;
+                // Only sync non-empty values; empty strings from the backend
+                // usually mean "not configured" rather than "intentionally cleared".
+                if (val !== '') {
+                    syncKeyToBook(providerKey, val);
                 }
             });
 
@@ -1389,8 +1397,15 @@ function updateAssistApiRecommendation() {
         // 禁用辅助API选择框，强制为免费版
         assistApiSelect.disabled = true;
         assistApiSelect.value = 'free';
-        // Dispatch change so follow_assist model slots are recomputed
-        assistApiSelect.dispatchEvent(new Event('change'));
+        // Directly recompute follow_assist slots instead of dispatching a change
+        // event, which would re-enter updateAssistApiRecommendation() recursively.
+        autoFillAssistApiKey();
+        MODEL_TYPES.forEach(mt => {
+            const sel = document.getElementById(`${mt}ModelProvider`);
+            if (sel && sel.value === 'follow_assist') {
+                onCustomModelProviderChange(mt);
+            }
+        });
     } else {
         if (apiKeyInput) {
             apiKeyInput.disabled = false;
@@ -1422,8 +1437,13 @@ function updateAssistApiRecommendation() {
                 if (validOpt) assistApiSelect.value = validOpt.value;
             }
             autoFillAssistApiKey();
-            // Dispatch change so follow_assist model slots are recomputed
-            assistApiSelect.dispatchEvent(new Event('change'));
+            // Directly recompute follow_assist slots (avoid redundant handler call)
+            MODEL_TYPES.forEach(mt => {
+                const sel = document.getElementById(`${mt}ModelProvider`);
+                if (sel && sel.value === 'follow_assist') {
+                    onCustomModelProviderChange(mt);
+                }
+            });
         }
     }
 
@@ -1432,7 +1452,9 @@ function updateAssistApiRecommendation() {
 }
 
 // 自动填充核心API Key到核心API Key输入框
-function autoFillCoreApiKey() {
+// force=true: always overwrite (used on actual core provider change)
+// force=false (default): skip if user has already typed a non-empty value
+function autoFillCoreApiKey(force) {
     const coreApiSelect = document.getElementById('coreApiSelect');
     const apiKeyInput = document.getElementById('apiKeyInput');
 
@@ -1441,6 +1463,12 @@ function autoFillCoreApiKey() {
     const selectedCoreApi = coreApiSelect.value;
 
     if (selectedCoreApi === 'free') {
+        return;
+    }
+
+    // When not forced (e.g. called from updateAssistApiRecommendation),
+    // preserve any unsaved user edits in apiKeyInput.
+    if (!force && apiKeyInput.value !== '' && !isFreeVersionText(apiKeyInput.value)) {
         return;
     }
 
@@ -1719,7 +1747,7 @@ async function initializePage() {
             }
 
             updateAssistApiRecommendation();
-            autoFillCoreApiKey();
+            autoFillCoreApiKey(true);
             autoFillAssistApiKey();
         }
 
@@ -1727,7 +1755,7 @@ async function initializePage() {
         if (coreApiSelect) {
             coreApiSelect.addEventListener('change', function () {
                 updateAssistApiRecommendation();
-                autoFillCoreApiKey();
+                autoFillCoreApiKey(true);
                 // Recompute all follow_core model slots
                 MODEL_TYPES.forEach(mt => {
                     const sel = document.getElementById(`${mt}ModelProvider`);
