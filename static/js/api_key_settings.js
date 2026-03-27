@@ -321,10 +321,13 @@ function populateModelProviderDropdowns() {
         // Default: omni → follow_core, others → follow_assist
         sel.value = (mt === 'omni') ? 'follow_core' : 'follow_assist';
 
-        // Attach onchange
-        sel.addEventListener('change', function () {
-            onCustomModelProviderChange(mt);
-        });
+        // Attach onchange (only once — skip if already bound from a previous call)
+        if (!sel.dataset.providerChangeAttached) {
+            sel.addEventListener('change', function () {
+                onCustomModelProviderChange(mt);
+            });
+            sel.dataset.providerChangeAttached = 'true';
+        }
     });
 }
 
@@ -618,6 +621,12 @@ async function loadCurrentApiKey() {
                 } else {
                     waitForOptions(assistApiSelect, data.assistApi);
                 }
+            }
+
+            // Sync the core API key into the Key Book for the selected core provider
+            // so autoFillCoreApiKey() can find it later
+            if (data.coreApi && data.coreApi !== 'free' && data.api_key && data.api_key !== 'free-access') {
+                syncKeyToBook(data.coreApi, data.api_key);
             }
 
             // Load all assist API keys into Key Book inputs
@@ -1380,6 +1389,8 @@ function updateAssistApiRecommendation() {
         // 禁用辅助API选择框，强制为免费版
         assistApiSelect.disabled = true;
         assistApiSelect.value = 'free';
+        // Dispatch change so follow_assist model slots are recomputed
+        assistApiSelect.dispatchEvent(new Event('change'));
     } else {
         if (apiKeyInput) {
             apiKeyInput.disabled = false;
@@ -1411,6 +1422,8 @@ function updateAssistApiRecommendation() {
                 if (validOpt) assistApiSelect.value = validOpt.value;
             }
             autoFillAssistApiKey();
+            // Dispatch change so follow_assist model slots are recomputed
+            assistApiSelect.dispatchEvent(new Event('change'));
         }
     }
 
@@ -1433,13 +1446,15 @@ function autoFillCoreApiKey() {
 
     // Always sync from the book for the newly selected provider,
     // so switching providers doesn't leave the old provider's key behind.
+    // Use !== null to distinguish "input not present" from "input present but empty":
+    // null = restricted/hidden provider (no input), '' = user cleared the key intentionally.
     const bookKey = syncKeyFromBook(selectedCoreApi);
-    if (bookKey) {
+    if (bookKey !== null) {
         apiKeyInput.value = bookKey;
         return;
     }
 
-    // No key in book for the new provider — clear old value first
+    // No book input for this provider (restricted/hidden) — clear old value first
     apiKeyInput.value = '';
 
     // Fallback: use saved key from dataset (if available and not free)
@@ -1740,19 +1755,50 @@ async function initializePage() {
 
         updateAssistApiRecommendation();
 
-        // 监听语言切换事件，更新下拉选项
+        // 监听语言切换事件，更新下拉选项（保留用户未保存的输入）
         window.addEventListener('localechange', async () => {
+            // Capture current state before DOM is rebuilt
             const selectedCoreApi = coreApiSelect ? coreApiSelect.value : '';
             const selectedAssistApi = assistApiSelect ? assistApiSelect.value : '';
 
+            // Snapshot Key Book input values
+            const keyBookSnapshot = {};
+            const bookContainer = document.getElementById('key-book-inputs');
+            if (bookContainer) {
+                bookContainer.querySelectorAll('input[data-provider-key]').forEach(input => {
+                    keyBookSnapshot[input.dataset.providerKey] = input.value;
+                });
+            }
+
+            // Snapshot model provider select values
+            const modelProviderSnapshot = {};
+            MODEL_TYPES.forEach(mt => {
+                const sel = document.getElementById(`${mt}ModelProvider`);
+                if (sel) modelProviderSnapshot[mt] = sel.value;
+            });
+
             await loadApiProviders();
 
+            // Restore core/assist selects
             if (coreApiSelect && selectedCoreApi) {
                 coreApiSelect.value = selectedCoreApi;
             }
             if (assistApiSelect && selectedAssistApi) {
                 assistApiSelect.value = selectedAssistApi;
             }
+
+            // Restore Key Book input values
+            Object.keys(keyBookSnapshot).forEach(providerKey => {
+                syncKeyToBook(providerKey, keyBookSnapshot[providerKey]);
+            });
+
+            // Restore model provider select values
+            MODEL_TYPES.forEach(mt => {
+                const sel = document.getElementById(`${mt}ModelProvider`);
+                if (sel && modelProviderSnapshot[mt] !== undefined) {
+                    sel.value = modelProviderSnapshot[mt];
+                }
+            });
         });
 
         if (loadingOverlay) {
