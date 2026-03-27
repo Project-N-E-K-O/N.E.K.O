@@ -1299,6 +1299,19 @@ function renderCatgirls() {
         const actionsDiv = document.createElement('div');
         actionsDiv.className = 'catgirl-actions';
 
+        // 导出角色卡按钮
+        const exportBtn = document.createElement('button');
+        exportBtn.className = 'btn sm export';
+        exportBtn.id = 'export-btn-' + key;
+        exportBtn.style.background = '#40C5F1';
+        exportBtn.style.minWidth = '120px';
+        exportBtn.style.marginRight = '8px';
+        const exportIconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;margin-right:4px;vertical-align:middle;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+        const exportText = (window.t && typeof window.t === 'function') ? `${exportIconSvg}<span data-i18n="character.exportCard">${window.t('character.exportCard')}</span>` : `${exportIconSvg}导出角色卡`;
+        exportBtn.innerHTML = exportText;
+        exportBtn.addEventListener('click', function () { exportCharacterCard(key); });
+        actionsDiv.appendChild(exportBtn);
+
         const switchBtn = document.createElement('button');
         switchBtn.className = 'btn sm';
         switchBtn.id = 'switch-btn-' + key;
@@ -1308,14 +1321,14 @@ function renderCatgirls() {
         const switchText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/star.png" alt="" class="star-icon"> <span data-i18n="character.switchCatgirl">${window.t('character.switchCatgirl')}</span>` : '<img src="/static/icons/star.png" alt="" class="star-icon"> 切换猫娘';
         switchBtn.innerHTML = switchText;
         switchBtn.addEventListener('click', function () { switchCatgirl(key); });
-        
+
         if (window._currentCatgirl && key === window._currentCatgirl) {
             const currentText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/star.png" alt="" class="star-icon"> <span data-i18n="character.currentCatgirl">${window.t('character.currentCatgirl')}</span>` : '<img src="/static/icons/star.png" alt="" class="star-icon"> 当前猫娘';
             switchBtn.innerHTML = currentText;
             switchBtn.style.color = '#fff';
             switchBtn.disabled = true;
         }
-        
+
         actionsDiv.appendChild(switchBtn);
 
         const deleteBtn = document.createElement('button');
@@ -2962,6 +2975,115 @@ function setupPageEventListeners() {
             showCatgirlForm(null);
         });
     }
+
+    // 导入角色卡按钮
+    const importCardBtn = document.getElementById('import-chara-card-btn');
+    const importCardInput = document.getElementById('import-chara-card-input');
+    if (importCardBtn && importCardInput) {
+        importCardBtn.addEventListener('click', function () {
+            importCardInput.click();
+        });
+        importCardInput.addEventListener('change', handleImportCharacterCard);
+    }
+}
+
+// 处理导入角色卡
+async function handleImportCharacterCard(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    // 重置 input 以便可以重复选择同一文件
+    event.target.value = '';
+
+    // 检查文件类型
+    if (!file.type.startsWith('image/') && !file.name.endsWith('.png')) {
+        const errorText = window.t ? window.t('character.importInvalidFile') : '请选择有效的PNG图片文件';
+        await showAlert(errorText);
+        return;
+    }
+
+    try {
+        // 显示加载提示
+        const loadingText = window.t ? window.t('character.importingCard') : '正在导入角色卡...';
+        showAutoSaveToast();
+        if (autoSaveToastElement) {
+            autoSaveToastElement.querySelector('span').textContent = loadingText;
+            autoSaveToastElement.classList.add('visible');
+        }
+
+        // 读取文件数据
+        const arrayBuffer = await file.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+
+        // 查找 NEKOCHARA 标记
+        const marker = new TextEncoder().encode('NEKOCHARA\x00');
+        let markerIndex = -1;
+        for (let i = uint8Array.length - marker.length; i >= 0; i--) {
+            let found = true;
+            for (let j = 0; j < marker.length; j++) {
+                if (uint8Array[i + j] !== marker[j]) {
+                    found = false;
+                    break;
+                }
+            }
+            if (found) {
+                markerIndex = i;
+                break;
+            }
+        }
+
+        if (markerIndex === -1) {
+            throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+        }
+
+        // 读取 ZIP 大小（标记前的 8 字节）
+        const zipSizeBytes = uint8Array.slice(markerIndex - 8, markerIndex);
+        const zipSize = new DataView(zipSizeBytes.buffer).getUint32(0, true);
+
+        // 提取 ZIP 数据
+        const zipStart = markerIndex - 8 - zipSize;
+        const zipData = uint8Array.slice(zipStart, markerIndex - 8);
+
+        // 创建 FormData 发送到后端
+        const formData = new FormData();
+        const zipBlob = new Blob([zipData], { type: 'application/zip' });
+        formData.append('zip_file', zipBlob, 'character_data.zip');
+
+        // 调用后端 API 导入角色卡
+        const response = await fetch('/api/characters/import-card', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: '导入失败' }));
+            throw new Error(errorData.error || `HTTP ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        // 显示成功提示
+        const successText = window.t ? window.t('character.importCardSuccess', { name: result.character_name }) : `角色卡 "${result.character_name}" 导入成功`;
+        if (autoSaveToastElement) {
+            autoSaveToastElement.querySelector('span').textContent = successText;
+            setTimeout(() => {
+                if (autoSaveToastElement) {
+                    autoSaveToastElement.classList.remove('visible');
+                }
+            }, 2000);
+        }
+
+        // 刷新角色列表
+        await loadCharacterData();
+
+    } catch (error) {
+        console.error('导入角色卡失败:', error);
+        const errorText = window.t ? window.t('character.importCardFailed', { error: error.message }) : `导入角色卡失败: ${error.message}`;
+        await showAlert(errorText);
+        if (autoSaveToastElement) {
+            autoSaveToastElement.classList.remove('visible');
+        }
+    }
 }
 
 // 页面加载时拉取数据，并在后台异步扫描工坊角色卡
@@ -3227,6 +3349,114 @@ async function closeCharaManagerPage() {
                 }
             }, 100);
         }
+    }
+}
+
+// 导出角色卡函数
+async function exportCharacterCard(catgirlName) {
+    try {
+        // 显示加载提示
+        const loadingText = window.t ? window.t('character.exportingCard') : '正在导出角色卡...';
+        showAutoSaveToast();
+        if (autoSaveToastElement) {
+            autoSaveToastElement.querySelector('span').textContent = loadingText;
+            autoSaveToastElement.classList.add('visible');
+        }
+
+        // 调用后端API导出角色卡
+        const response = await fetch(`/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export`, {
+            method: 'GET'
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: '导出失败' }));
+            throw new Error(errorData.error || `HTTP ${response.status}`);
+        }
+
+        // 获取导出的PNG数据
+        const blob = await response.blob();
+
+        // 从 Content-Disposition 头解析文件名
+        // 优先使用 filename* (RFC 5987 编码), 回退到 filename
+        const contentDisposition = response.headers.get('Content-Disposition');
+        let filename = `${catgirlName}_角色卡.png`; // 默认文件名
+
+        if (contentDisposition) {
+            // 尝试匹配 filename*=UTF-8''url_encoded_filename
+            const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+            if (filenameStarMatch) {
+                try {
+                    filename = decodeURIComponent(filenameStarMatch[1]);
+                } catch (e) {
+                    console.warn('解码 filename* 失败:', e);
+                }
+            } else {
+                // 尝试匹配 filename="filename"
+                const filenameMatch = contentDisposition.match(/filename="([^"]+)"/i);
+                if (filenameMatch) {
+                    filename = filenameMatch[1];
+                }
+            }
+        }
+
+        // 尝试使用 File System Access API 让用户选择保存位置
+        // 如果不支持，则回退到传统的下载方式
+        try {
+            if ('showSaveFilePicker' in window) {
+                // 提取建议的文件名（不含扩展名）
+                const suggestedName = filename.replace(/\.png$/i, '');
+
+                const fileHandle = await window.showSaveFilePicker({
+                    suggestedName: filename,
+                    types: [{
+                        description: 'PNG 图片',
+                        accept: { 'image/png': ['.png'] }
+                    }]
+                });
+
+                const writable = await fileHandle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+            } else {
+                // 回退到传统的下载方式
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+            }
+        } catch (saveError) {
+            // 用户取消或保存失败，回退到传统下载方式
+            if (saveError.name !== 'AbortError') {
+                console.warn('保存文件失败，使用传统下载方式:', saveError);
+            }
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+        }
+
+        // 显示成功提示
+        const successText = window.t ? window.t('character.exportCardSuccess') : '角色卡导出成功';
+        if (autoSaveToastElement) {
+            autoSaveToastElement.querySelector('span').textContent = successText;
+            setTimeout(() => {
+                if (autoSaveToastElement) {
+                    autoSaveToastElement.classList.remove('visible');
+                }
+            }, 2000);
+        }
+    } catch (error) {
+        console.error('导出角色卡失败:', error);
+        const errorText = window.t ? window.t('character.exportCardFailed', { error: error.message }) : `导出角色卡失败: ${error.message}`;
+        await showAlert(errorText);
     }
 }
 

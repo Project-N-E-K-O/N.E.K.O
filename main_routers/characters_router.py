@@ -17,7 +17,7 @@ import base64
 import hashlib
 from datetime import datetime
 from fastapi import APIRouter, Request, File, UploadFile, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import httpx
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer
@@ -1437,29 +1437,37 @@ async def add_catgirl(request: Request):
         return JSONResponse({'success': False, 'error': err}, status_code=400)
     data = _filter_mutable_catgirl_fields(raw_data)
     data['档案名'] = str(profile_name).strip()
-    
+
     _config_manager = get_config_manager()
     characters = _config_manager.load_characters()
     key = data['档案名']
+
+    # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)
     if key in characters.get('猫娘', {}):
-        return JSONResponse({'success': False, 'error': '该猫娘已存在'}, status_code=400)
-    
+        base_name = key
+        counter = 1
+        while f"{base_name}({counter})" in characters.get('猫娘', {}):
+            counter += 1
+        key = f"{base_name}({counter})"
+        data['档案名'] = key
+        logger.info(f'猫娘名称冲突，已重命名为: {key}')
+
     if '猫娘' not in characters:
         characters['猫娘'] = {}
-    
+
     # 创建猫娘数据，只保存非空字段
     catgirl_data = {}
     for k, v in data.items():
         if k != '档案名':
             if v:  # 只保存非空字段
                 catgirl_data[k] = v
-    
+
     characters['猫娘'][key] = catgirl_data
     _config_manager.save_characters(characters)
     initialize_character_data = get_initialize_character_data()
     # 自动重新加载配置
     await initialize_character_data()
-    
+
     # 通知记忆服务器重新加载配置
     try:
             async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
@@ -1474,8 +1482,8 @@ async def add_catgirl(request: Request):
                 logger.warning(f"⚠️ 记忆服务器重新加载配置失败，状态码: {resp.status_code}")
     except Exception as e:
         logger.warning(f"⚠️ 通知记忆服务器重新加载配置时出错: {e}（不影响角色创建）")
-    
-    return {"success": True}
+
+    return {"success": True, "character_name": key}
 
 
 @router.put('/catgirl/{name}')
@@ -2655,3 +2663,398 @@ async def save_character_card(request: Request):
     except Exception as e:
         logger.error(f"保存角色卡到characters.json失败: {e}")
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.get('/catgirl/{name}/export')
+async def export_catgirl_card(name: str):
+    """导出猫娘角色卡为PNG图片（包含模型和设定的压缩包数据）
+
+    导出流程：
+    1. 获取猫娘的设定数据
+    2. 如果使用了非默认模型，将模型文件打包到压缩包
+    3. 将压缩包数据拼接到PNG图片中
+    4. 返回PNG图片供下载
+
+    注意：默认模型(mao_pro)不会被包含在导出中
+    """
+    import zipfile
+    import tempfile
+    import shutil
+    from pathlib import Path
+    from urllib.parse import quote
+
+    try:
+        _config_manager = get_config_manager()
+        characters = _config_manager.load_characters()
+
+        if name not in characters.get('猫娘', {}):
+            return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+
+        catgirl_data = characters['猫娘'][name]
+
+        # 创建临时目录
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            zip_path = temp_path / 'character_data.zip'
+
+            # 创建压缩包（使用UTF-8编码支持中文文件名）
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                # 1. 添加角色设定JSON
+                chara_json = {
+                    '档案名': name,
+                    **{k: v for k, v in catgirl_data.items() if not k.startswith('_')}
+                }
+                zf.writestr('character.json', json.dumps(chara_json, ensure_ascii=False, indent=2))
+
+                # 2. 检查并添加模型文件
+                model_type = get_reserved(catgirl_data, 'avatar', 'model_type', default='live2d', legacy_keys=('model_type',))
+                model_added = False
+
+                if model_type == 'live2d':
+                    # 获取Live2D模型路径
+                    live2d_path = get_reserved(
+                        catgirl_data,
+                        'avatar',
+                        'live2d',
+                        'model_path',
+                        default='',
+                        legacy_keys=('live2d',)
+                    )
+
+                    if live2d_path and live2d_path.strip():
+                        # 解析模型名称
+                        live2d_name = live2d_path.replace('\\', '/').rstrip('/')
+                        if live2d_name.endswith('.model3.json'):
+                            live2d_name = live2d_name.split('/')[-2] if '/' in live2d_name else live2d_name.replace('.model3.json', '')
+                        else:
+                            live2d_name = live2d_name.split('/')[-1]
+
+                        # 检查是否是默认模型
+                        if live2d_name == 'mao_pro':
+                            logger.info(f'猫娘 {name} 使用的是默认模型 mao_pro，跳过模型打包')
+                        else:
+                            # 查找模型目录
+                            model_dir, _ = find_model_directory(live2d_name)
+                            if model_dir and os.path.exists(model_dir):
+                                # 检查是否是用户导入的模型
+                                if is_user_imported_model(model_dir, _config_manager):
+                                    # 添加模型文件到压缩包
+                                    model_files_added = 0
+                                    for root, dirs, files in os.walk(model_dir):
+                                        for file in files:
+                                            file_path = Path(root) / file
+                                            arc_name = f"model/{live2d_name}/{file_path.relative_to(model_dir)}"
+                                            zf.write(file_path, arc_name)
+                                            model_files_added += 1
+                                    logger.info(f'已添加模型 {live2d_name} 的 {model_files_added} 个文件到压缩包')
+                                    model_added = True
+                                else:
+                                    logger.warning(f'模型 {live2d_name} 不是用户导入的模型，跳过打包')
+                            else:
+                                logger.warning(f'找不到模型目录: {live2d_name}')
+
+                elif model_type in ('vrm', 'live3d'):
+                    # 处理VRM/MMD模型
+                    vrm_path = get_reserved(catgirl_data, 'avatar', 'vrm', 'model_path', default='')
+                    mmd_path = get_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', default='')
+
+                    active_model_path = vrm_path or mmd_path
+                    if active_model_path and active_model_path.strip():
+                        # 解析模型路径
+                        active_model_path = active_model_path.replace('\\', '/')
+                        if active_model_path.startswith('/user_vrm/'):
+                            model_file_name = active_model_path.replace('/user_vrm/', '')
+                            model_full_path = _config_manager.vrm_dir / model_file_name
+                        elif active_model_path.startswith('/user_mmd/'):
+                            model_file_name = active_model_path.replace('/user_mmd/', '')
+                            model_full_path = _config_manager.mmd_dir / model_file_name
+                        else:
+                            model_full_path = None
+
+                        if model_full_path and model_full_path.exists():
+                            arc_name = f"model/{model_full_path.name}"
+                            zf.write(model_full_path, arc_name)
+                            logger.info(f'已添加VRM/MMD模型到压缩包: {model_full_path.name}')
+                            model_added = True
+                        else:
+                            logger.warning(f'找不到VRM/MMD模型文件: {active_model_path}')
+
+                # 3. 添加元数据文件
+                metadata = {
+                    'version': '1.0',
+                    'export_time': datetime.now().isoformat(),
+                    'character_name': name,
+                    'model_included': model_added,
+                    'model_type': model_type
+                }
+                zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
+
+            # 4. 创建PNG图片（纯白图片作为基础）
+            from PIL import Image
+
+            # 创建一个512x512的纯白图片
+            img = Image.new('RGB', (512, 512), color='white')
+            png_path = temp_path / 'character_card.png'
+            img.save(png_path, 'PNG')
+
+            # 5. 将压缩包数据拼接到PNG图片
+            # 使用PNG的尾部追加数据的方式（类似某些图片隐写技术）
+            with open(png_path, 'rb') as f:
+                png_data = f.read()
+
+            with open(zip_path, 'rb') as f:
+                zip_data = f.read()
+
+            # 组合数据：PNG数据 + ZIP数据 + 8字节ZIP大小（用于解析时定位）
+            combined_data = png_data + zip_data + len(zip_data).to_bytes(8, 'little')
+
+            # 添加标记，方便识别这是一个角色卡图片
+            marker = b'NEKOCHARA\x00'
+            combined_data = combined_data + marker
+
+            # 6. 返回图片文件
+            # 使用档案名作为文件名，并进行安全编码
+            from urllib.parse import quote
+
+            # 清理档案名：移除不安全的文件系统字符，但保留中文
+            safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '·', '•') or '\u4e00' <= c <= '\u9fff').strip()
+            if not safe_name:
+                safe_name = "character_card"
+
+            # 构建文件名：档案名.png
+            original_filename = f"{safe_name}.png"
+
+            # 对文件名进行 RFC 5987 编码（UTF-8 + URL 编码）
+            # 这样浏览器可以正确显示中文文件名
+            encoded_filename = quote(original_filename, safe='')
+
+            # 构建 Content-Disposition 头
+            # filename*=UTF-8'' 语法允许使用 URL 编码的 UTF-8 字符
+            content_disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
+
+            # X-Filename 头必须使用 ASCII 字符
+            try:
+                ascii_filename = original_filename.encode('ascii').decode('ascii')
+            except UnicodeEncodeError:
+                # 如果包含非 ASCII 字符，使用安全的 ASCII 文件名
+                ascii_filename = "character_card.png"
+
+            return Response(
+                content=combined_data,
+                media_type='image/png',
+                headers={
+                    'Content-Disposition': content_disposition,
+                    'X-Filename': ascii_filename
+                }
+            )
+
+    except Exception as e:
+        logger.exception(f"导出角色卡失败: {e}")
+        return JSONResponse({'success': False, 'error': f'导出失败: {str(e)}'}, status_code=500)
+
+
+@router.post('/import-card')
+async def import_character_card(zip_file: UploadFile = File(...)):
+    """导入角色卡（从PNG图片中提取的ZIP文件）
+
+    导入流程：
+    1. 接收ZIP文件数据
+    2. 解压并读取角色设定JSON
+    3. 如果有模型文件，解压到用户模型目录
+    4. 将角色设定添加到characters.json
+    5. 返回导入结果
+    """
+    import zipfile
+    import tempfile
+    import shutil
+    from pathlib import Path
+
+    temp_dir = None
+    try:
+        # 创建临时目录
+        temp_dir = tempfile.mkdtemp()
+        temp_path = Path(temp_dir)
+        zip_path = temp_path / 'imported.zip'
+
+        # 保存上传的ZIP文件
+        with open(zip_path, 'wb') as f:
+            content = await zip_file.read()
+            f.write(content)
+
+        # 解压ZIP文件
+        extract_path = temp_path / 'extracted'
+        extract_path.mkdir()
+
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            zf.extractall(extract_path)
+
+        # 读取角色设定
+        character_json_path = extract_path / 'character.json'
+        if not character_json_path.exists():
+            return JSONResponse({'success': False, 'error': '角色卡文件损坏：缺少character.json'}, status_code=400)
+
+        with open(character_json_path, 'r', encoding='utf-8') as f:
+            character_data = json.load(f)
+
+        character_name = character_data.get('档案名', '未命名角色')
+
+        # 读取元数据
+        metadata_path = extract_path / 'metadata.json'
+        metadata = {}
+        if metadata_path.exists():
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+
+        _config_manager = get_config_manager()
+        characters = _config_manager.load_characters()
+
+        # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)
+        if character_name in characters.get('猫娘', {}):
+            # 生成新名称
+            base_name = character_name
+            counter = 1
+            while f"{base_name}({counter})" in characters.get('猫娘', {}):
+                counter += 1
+            character_name = f"{base_name}({counter})"
+            character_data['档案名'] = character_name
+
+        # 处理模型文件
+        model_dir = extract_path / 'model'
+        imported_model_info = None  # 记录导入的模型信息，用于自动使用
+
+        if model_dir.exists() and model_dir.is_dir():
+            model_type = metadata.get('model_type', 'live2d')
+
+            for model_item in model_dir.iterdir():
+                if model_item.is_dir():
+                    # Live2D 模型（文件夹形式）
+                    original_model_name = model_item.name
+
+                    # 检查模型是否已存在，如果存在则使用 Windows 风格的命名 (x)
+                    model_name = original_model_name
+                    target_model_dir = _config_manager.live2d_dir / model_name
+                    counter = 1
+
+                    while target_model_dir.exists():
+                        model_name = f"{original_model_name}({counter})"
+                        target_model_dir = _config_manager.live2d_dir / model_name
+                        counter += 1
+
+                    # 复制模型文件
+                    shutil.copytree(model_item, target_model_dir)
+                    logger.info(f'已导入Live2D模型: {original_model_name} -> {model_name}')
+
+                    # 记录导入的模型信息
+                    imported_model_info = {
+                        'type': 'live2d',
+                        'name': model_name,
+                        'original_name': original_model_name
+                    }
+
+                elif model_item.is_file():
+                    # VRM/MMD 模型（文件形式）
+                    model_file = model_item
+                    original_model_name = model_file.stem  # 不含扩展名的文件名
+                    model_ext = model_file.suffix.lower()
+
+                    if model_ext == '.vrm':
+                        # VRM 模型
+                        # 检查模型是否已存在，如果存在则使用 Windows 风格的命名 (x)
+                        model_name = original_model_name
+                        target_model_path = _config_manager.vrm_dir / f"{model_name}{model_ext}"
+                        counter = 1
+
+                        while target_model_path.exists():
+                            model_name = f"{original_model_name}({counter})"
+                            target_model_path = _config_manager.vrm_dir / f"{model_name}{model_ext}"
+                            counter += 1
+
+                        shutil.copy2(model_file, target_model_path)
+                        logger.info(f'已导入VRM模型: {original_model_name} -> {model_name}')
+
+                        # 记录导入的模型信息
+                        imported_model_info = {
+                            'type': 'vrm',
+                            'name': model_name,
+                            'original_name': original_model_name,
+                            'path': f'/user_vrm/{model_name}{model_ext}'
+                        }
+
+                    elif model_ext in ('.pmx', '.pmd', '.zip'):
+                        # MMD 模型
+                        # 检查模型是否已存在，如果存在则使用 Windows 风格的命名 (x)
+                        model_name = original_model_name
+                        target_model_path = _config_manager.mmd_dir / f"{model_name}{model_ext}"
+                        counter = 1
+
+                        while target_model_path.exists():
+                            model_name = f"{original_model_name}({counter})"
+                            target_model_path = _config_manager.mmd_dir / f"{model_name}{model_ext}"
+                            counter += 1
+
+                        shutil.copy2(model_file, target_model_path)
+                        logger.info(f'已导入MMD模型: {original_model_name} -> {model_name}')
+
+                        # 记录导入的模型信息
+                        imported_model_info = {
+                            'type': 'mmd',
+                            'name': model_name,
+                            'original_name': original_model_name,
+                            'path': f'/user_mmd/{model_name}{model_ext}'
+                        }
+
+            # 自动给猫娘使用导入的模型
+            # 使用 _reserved 字段存储模型配置（这是系统内部使用的字段）
+            if imported_model_info:
+                character_data['_reserved'] = character_data.get('_reserved', {})
+                character_data['_reserved']['avatar'] = character_data['_reserved'].get('avatar', {})
+
+                if imported_model_info['type'] == 'live2d':
+                    model_name = imported_model_info['name']
+                    character_data['_reserved']['avatar']['live2d'] = {
+                        'model_path': f'{model_name}/{model_name}.model3.json'
+                    }
+                    character_data['_reserved']['avatar']['model_type'] = 'live2d'
+                    logger.info(f'已自动为角色 {character_name} 设置Live2D模型: {model_name}')
+
+                elif imported_model_info['type'] == 'vrm':
+                    character_data['_reserved']['avatar']['vrm'] = {
+                        'model_path': imported_model_info['path']
+                    }
+                    character_data['_reserved']['avatar']['model_type'] = 'vrm'
+                    logger.info(f'已自动为角色 {character_name} 设置VRM模型: {imported_model_info["name"]}')
+
+                elif imported_model_info['type'] == 'mmd':
+                    character_data['_reserved']['avatar']['mmd'] = {
+                        'model_path': imported_model_info['path']
+                    }
+                    character_data['_reserved']['avatar']['model_type'] = 'live3d'
+                    logger.info(f'已自动为角色 {character_name} 设置MMD模型: {imported_model_info["name"]}')
+
+        # 添加角色到characters.json
+        if '猫娘' not in characters:
+            characters['猫娘'] = {}
+
+        # 移除档案名键（因为已经用作字典键）
+        chara_data_to_save = {k: v for k, v in character_data.items() if k != '档案名'}
+        characters['猫娘'][character_name] = chara_data_to_save
+
+        # 保存到文件
+        _config_manager.save_characters(characters)
+
+        return JSONResponse({
+            'success': True,
+            'character_name': character_name,
+            'message': f'角色卡 "{character_name}" 导入成功'
+        })
+
+    except zipfile.BadZipFile:
+        logger.error("导入角色卡失败：无效的ZIP文件")
+        return JSONResponse({'success': False, 'error': '无效的角色卡文件格式'}, status_code=400)
+    except Exception as e:
+        logger.exception(f"导入角色卡失败: {e}")
+        return JSONResponse({'success': False, 'error': f'导入失败: {str(e)}'}, status_code=500)
+    finally:
+        # 清理临时目录
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)

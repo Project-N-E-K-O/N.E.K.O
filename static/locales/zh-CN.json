@@ -1329,7 +1329,20 @@
         "autoSaveError": "保存设定失败",
         "saveMasterError": "保存主人设定失败",
         "autoSaved": "已自动保存设定",
-        "autoSaveFailed": "自动保存失败，请手动保存后再关闭页面"
+        "autoSaveFailed": "自动保存失败，请手动保存后再关闭页面",
+        "exportCard": "导出角色卡",
+        "exportingCard": "正在导出角色卡...",
+        "exportCardSuccess": "角色卡导出成功",
+        "exportCardFailed": "导出角色卡失败: {{error}}",
+        "exportUsingDefaultModel": "当前使用的是默认模型，无法导出模型文件",
+        "exportNoModelFound": "未找到模型文件",
+        "exportModelNotUserImported": "只有用户导入的模型才能被打包导出",
+        "importCard": "导入角色卡",
+        "importingCard": "正在导入角色卡...",
+        "importCardSuccess": "角色卡 \"{{name}}\" 导入成功",
+        "importCardFailed": "导入角色卡失败: {{error}}",
+        "importInvalidFile": "请选择有效的PNG图片文件",
+        "importNoMarker": "该图片不是有效的角色卡文件"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",
