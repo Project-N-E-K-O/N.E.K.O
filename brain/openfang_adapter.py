@@ -347,7 +347,15 @@ class OpenFangAdapter:
 
                 print(f"[OpenFang DEBUG] Direct message final result_text len={len(result_text)}, first 200: {result_text[:200]}")
 
-                success = resp.status_code == 200 and bool(result_text)
+                # 判断成功：信任 HTTP 状态码 + 显式 status 字段 + error 字段
+                has_error = bool(data.get("error")) if isinstance(data, dict) else False
+                task_status = data.get("status", "") if isinstance(data, dict) else ""
+                if task_status in ("completed", "done", "finished", "success"):
+                    success = not has_error
+                elif has_error:
+                    success = False
+                else:
+                    success = resp.status_code == 200
                 logger.info("[OpenFang] Direct message completed: agent=%s, len=%d, success=%s",
                             agent_id, len(result_text), success)
 
@@ -444,11 +452,15 @@ class OpenFangAdapter:
         self._active_tasks.pop(local_id, None)
 
     async def cancel_running(self, task_id: Optional[str] = None) -> None:
-        """取消正在运行的任务。task_id=None 时取消所有。"""
-        if task_id and task_id in self._active_tasks:
+        """取消正在运行的任务。task_id=None 时取消所有；提供 task_id 但未找到则 no-op。"""
+        if task_id is None:
+            targets = list(self._active_tasks.values())
+        elif task_id in self._active_tasks:
             targets = [self._active_tasks[task_id]]
         else:
-            targets = list(self._active_tasks.values())
+            # task_id 提供了但不在映射中，不要误杀其他任务
+            logger.debug("[OpenFang] cancel_running: task_id=%s not found in active_tasks, no-op", task_id)
+            return
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             for of_id in targets:
@@ -692,8 +704,8 @@ class OpenFangAdapter:
         if "[default_model]" in content:
             # Replace existing [default_model] section (up to next section or EOF)
             content = re.sub(
-                r'\[default_model\][^\[]*',
-                dm_block + "\n",
+                r'(\[default_model\][\s\S]*?)(?=\n\[|$)',
+                dm_block.rstrip() + "\n",
                 content,
                 count=1,
             )
@@ -704,8 +716,8 @@ class OpenFangAdapter:
         pu_block = f'[provider_urls]\n{provider} = "{effective_url}"\n'
         if "[provider_urls]" in content:
             content = re.sub(
-                r'\[provider_urls\][^\[]*',
-                pu_block + "\n",
+                r'(\[provider_urls\][\s\S]*?)(?=\n\[|$)',
+                pu_block.rstrip() + "\n",
                 content,
                 count=1,
             )
