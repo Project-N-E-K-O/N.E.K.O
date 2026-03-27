@@ -1403,4 +1403,5 @@ Return only the JSON object, nothing else.
         )
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
-        """保留接口兼容性，MCP 已移除，始终返回空。""
+        """保留接口兼容性，MCP 已移除，始终返回空。"""
+        return {}

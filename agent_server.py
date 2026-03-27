@@ -1582,6 +1582,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                     error_message=cancel_msg,
                                 )
                             except Exception:
+                                logger.debug("[OpenFang] emit_task_result(cancelled) failed: task_id=%s", of_task_id, exc_info=True)
                                 pass
                             try:
                                 await _emit_main_event(
@@ -1591,6 +1592,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                           "error": cancel_msg, "session_id": of_session.session_id},
                                 )
                             except Exception:
+                                logger.debug("[OpenFang] emit task_update(cancelled) failed: task_id=%s", of_task_id, exc_info=True)
                                 pass
                             raise
                         except Exception as e:
@@ -1607,6 +1609,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                     error_message=str(e),
                                 )
                             except Exception:
+                                logger.debug("[OpenFang] emit_task_result(failed) failed: task_id=%s", of_task_id, exc_info=True)
                                 pass
                             try:
                                 await _emit_main_event(
@@ -1617,6 +1620,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                           "session_id": of_session.session_id},
                                 )
                             except Exception:
+                                logger.debug("[OpenFang] emit task_update(failed) failed: task_id=%s", of_task_id, exc_info=True)
                                 pass
 
                     of_task = asyncio.create_task(_run_openfang_dispatch())
@@ -1645,6 +1649,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 error_message=str(e)[:500],
             )
         except Exception:
+            logger.debug("[TaskExecutor] emit notification failed", exc_info=True)
             pass
 
 @app.on_event("startup")
@@ -1721,6 +1726,7 @@ async def startup():
                 if _os.path.exists(_cfg):
                     _os.utime(_cfg, None)  # touch to trigger fswatch
             except Exception:
+                logger.debug("[OpenFang] failed to touch config file for fswatch", exc_info=True)
                 pass
             await asyncio.sleep(5)
 
@@ -2283,6 +2289,7 @@ async def openfang_llm_proxy(request: Request, path: str):
             req_json = json.loads(body)
             is_stream = req_json.get("stream", False)
         except Exception:
+            logger.debug("[LLM Proxy] failed to parse request body for stream detection", exc_info=True)
             pass
 
     try:
@@ -2302,6 +2309,7 @@ async def openfang_llm_proxy(request: Request, path: str):
                                     yield f"data: {json.dumps(chunk)}\n\n"
                                     continue
                                 except Exception:
+                                    logger.debug("[LLM Proxy] failed to parse streaming chunk", exc_info=True)
                                     pass
                             yield line + "\n"
 

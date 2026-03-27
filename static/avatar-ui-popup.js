@@ -2101,4 +2101,52 @@ const AvatarPopupMixin = {
                 };
 
                 audioInputs.forEach((device, index) => {
-                    const deviceLabel = device.
+                    const deviceLabel = device.label || (window.t ? window.t('microphone.deviceLabel', { index: index + 1 }) : `麦克风 ${index + 1}`);
+                    addOption(deviceLabel, device.deviceId);
+                });
+
+            } catch (e) {
+                console.error('获取麦克风失败', e);
+                const errDiv = document.createElement('div');
+                errDiv.textContent = window.t ? window.t('microphone.accessFailed') : '无法访问麦克风';
+                popup.appendChild(errDiv);
+            }
+        };
+
+        // 新增方法连接
+        ManagerProto._createCharacterSettingsSidePanel = function () {
+            return createCharacterSettingsSidePanel(this, prefix);
+        };
+
+        ManagerProto._createSidePanelMenuItem = function (item) {
+            return createSidePanelMenuItem(this, prefix, item);
+        };
+
+        ManagerProto._createSettingsLinkItem = function (item, popup) {
+            return createSettingsLinkItem(this, prefix, item, popup);
+        };
+
+        // 存储字符菜单项配置
+        if (options.characterMenuItems) {
+            ManagerProto._characterMenuItems = options.characterMenuItems;
+        }
+
+        // 存储回调函数
+        if (options.onQualityChange) {
+            ManagerProto._onQualityChange = options.onQualityChange;
+        }
+        if (options.onMouseTrackingToggle) {
+            ManagerProto._onMouseTrackingToggle = options.onMouseTrackingToggle;
+        }
+        if (options.getMouseTrackingState) {
+            ManagerProto._getMouseTrackingState = options.getMouseTrackingState;
+        }
+
+        // 允许系统特定的覆盖
+        if (options.overrides) {
+            Object.assign(ManagerProto, options.overrides);
+        }
+    }
+};
+
+window.AvatarPopupMixin = AvatarPopupMixin;
