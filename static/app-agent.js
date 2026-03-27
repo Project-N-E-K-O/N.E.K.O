@@ -1572,11 +1572,13 @@
         const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
         const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
         const userPlugin = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
+        const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang']);
 
         const domMaster = masterCheckbox ? masterCheckbox.checked : false;
         const domChild = (keyboardCheckbox && keyboardCheckbox.checked)
             || (browserCheckbox && browserCheckbox.checked)
-            || (userPlugin && userPlugin.checked);
+            || (userPlugin && userPlugin.checked)
+            || (openfangCheckbox && openfangCheckbox.checked);
 
         const snap = window._agentStatusSnapshot;
         const machineFlags = window.agentStateMachine ? window.agentStateMachine._cachedFlags : null;
@@ -1588,8 +1590,8 @@
         if (window.agent_ui_v2_state && window.agent_ui_v2_state.optimistic) {
             const opt = window.agent_ui_v2_state.optimistic;
             if ('agent_enabled' in opt) optMaster = !!opt.agent_enabled;
-            if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt) {
-                optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled;
+            if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt || 'openfang_enabled' in opt) {
+                optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled || !!opt.openfang_enabled;
             }
         }
 
@@ -1600,7 +1602,7 @@
 
         if (!isUiInteractive) {
             isMasterOn = optMaster !== undefined ? optMaster : (flags && !!flags.agent_enabled);
-            isChildOn = optChild !== undefined ? optChild : (flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled));
+            isChildOn = optChild !== undefined ? optChild : (flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openfang_enabled));
         } else {
             isMasterOn = optMaster !== undefined ? optMaster : domMaster;
             isChildOn = optChild !== undefined ? optChild : domChild;

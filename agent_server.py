@@ -22,12 +22,13 @@ from utils.logger_config import setup_logging, ThrottledLogger
 # Configure logging as early as possible so import-time failures are persisted.
 logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
 
-from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
+from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT, OPENFANG_BASE_URL
 from utils.config_manager import get_config_manager
 from main_logic.agent_event_bus import AgentServerEventBridge
 try:
     from brain.computer_use import ComputerUseAdapter
     from brain.browser_use_adapter import BrowserUseAdapter
+    from brain.openfang_adapter import OpenFangAdapter
     from brain.deduper import TaskDeduper
     from brain.task_executor import DirectTaskExecutor
     from brain.agent_session import get_session_manager
@@ -48,6 +49,7 @@ app = FastAPI(title="N.E.K.O Tool Server")
 class Modules:
     computer_use: ComputerUseAdapter | None = None
     browser_use: BrowserUseAdapter | None = None
+    openfang: OpenFangAdapter | None = None
     deduper: TaskDeduper | None = None
     task_executor: DirectTaskExecutor | None = None
     user_plugin_app: FastAPI | None = None
@@ -70,7 +72,7 @@ class Modules:
     active_browser_use_task_id: Optional[str] = None
     active_browser_use_bg_task: Optional[asyncio.Task] = None
     # Agent feature flags (controlled by UI)
-    agent_flags: Dict[str, Any] = {"computer_use_enabled": False, "browser_use_enabled": False, "user_plugin_enabled": False}
+    agent_flags: Dict[str, Any] = {"computer_use_enabled": False, "browser_use_enabled": False, "user_plugin_enabled": False, "openfang_enabled": False}
     # Notification queue for frontend (one-time messages)
     notification: Optional[str] = None
     # 使用统一的速率限制日志记录器（业务逻辑层面）
@@ -85,6 +87,7 @@ class Modules:
         "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "user_plugin": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
+        "openfang": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
     }
     _background_tasks: ClassVar[set] = set()
     _persistent_tasks: ClassVar[set] = set()
@@ -546,6 +549,8 @@ def _set_capability(name: str, ready: bool, reason: str = "") -> None:
             return "AGENT_NO_PLUGINS_FOUND"
         if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
             return "AGENT_PLUGIN_SERVER_ERROR"
+        if "openfang" in lower or "daemon" in lower:
+            return "AGENT_OPENFANG_DAEMON_UNREACHABLE"
         if "unreachable" in lower or "连接失败" in text or "connectivity" in lower:
             return "AGENT_LLM_UNREACHABLE"
         return "AGENT_LLM_UNREACHABLE"
@@ -1486,7 +1491,160 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 bu_task.add_done_callback(_cleanup_bu_task)
             else:
                 logger.warning("[BrowserUse] Task requires BrowserUse but it is disabled")
-        
+
+        elif result.execution_method == 'openfang':
+            if Modules.agent_flags.get("openfang_enabled", False) and Modules.openfang:
+                dup, matched = await _is_duplicate_task(result.task_description, lanlan_name)
+                if not dup:
+                    sm = get_session_manager()
+                    of_session = sm.get_or_create(None, "openfang")
+                    of_session.add_task(result.task_description)
+
+                    of_task_id = str(uuid.uuid4())
+                    of_start = _now_iso()
+                    of_info = {
+                        "id": of_task_id,
+                        "type": "openfang",
+                        "status": "running",
+                        "start_time": of_start,
+                        "params": {"instruction": result.task_description},
+                        "lanlan_name": lanlan_name,
+                        "session_id": of_session.session_id,
+                        "result": None,
+                        "error": None,
+                    }
+                    Modules.task_registry[of_task_id] = of_info
+
+                    try:
+                        await _emit_main_event(
+                            "task_update", lanlan_name,
+                            task={"id": of_task_id, "status": "running", "type": "openfang",
+                                  "start_time": of_start,
+                                  "params": {"instruction": result.task_description},
+                                  "session_id": of_session.session_id},
+                        )
+                    except Exception as e:
+                        logger.debug("[OpenFang] emit task_update(running) failed: task_id=%s error=%s", of_task_id, e)
+
+                    async def _run_openfang_dispatch():
+                        try:
+                            of_res = await Modules.openfang.run_instruction(
+                                result.task_description,
+                                session_id=of_session.session_id,
+                                local_task_id=of_task_id,
+                            )
+                            logger.info("[OpenFang] Task completed: success=%s, agent=%s, result_len=%d, steps=%s, artifacts_count=%d",
+                                        of_res.get("success"), of_res.get("agent_name"),
+                                        len(str(of_res.get("result", ""))),
+                                        of_res.get("steps"),
+                                        len(of_res.get("artifacts") or []))
+                            logger.debug("[OpenFang] ====== RAW RESULT (debug) ======")
+                            logger.debug("[OpenFang] keys=%s", list(of_res.keys()))
+                            logger.debug("[OpenFang] result (first 500): %s", str(of_res.get("result", ""))[:500])
+                            logger.debug("[OpenFang] error: %s", of_res.get("error"))
+                            logger.debug("[OpenFang] artifacts=%s", of_res.get("artifacts"))
+                            logger.debug("[OpenFang] ==============================")
+                            success = of_res.get("success", False)
+                            of_result_text = of_res.get("result", "") or ""
+                            of_error_text = of_res.get("error", "") or ""
+                            _lang = _rp_lang(None)
+                            _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
+                            summary = _rp_phrase('cu_task_done', _lang, desc=result.task_description, status=_done, detail=of_result_text[:300]) if of_result_text else \
+                                      _rp_phrase('cu_task_desc_only', _lang, desc=result.task_description, status=_done)
+                            of_session.complete_task(of_result_text or summary, success)
+                            of_info["status"] = "completed" if success else "failed"
+                            of_info["end_time"] = _now_iso()
+                            of_info["result"] = of_res
+                            if not success:
+                                of_info["error"] = (of_error_text or of_result_text)[:500]
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="openfang",
+                                task_id=of_task_id,
+                                success=success,
+                                summary=summary,
+                                detail=of_result_text if success else "",
+                                error_message=of_error_text if not success else "",
+                            )
+                            try:
+                                await _emit_main_event(
+                                    "task_update", lanlan_name,
+                                    task={"id": of_task_id, "status": of_info["status"],
+                                          "type": "openfang", "start_time": of_start, "end_time": _now_iso(),
+                                          "error": of_info.get("error"),
+                                          "session_id": of_session.session_id},
+                                )
+                            except Exception as emit_err:
+                                logger.debug("[OpenFang] emit task_update(terminal) failed: task_id=%s error=%s", of_task_id, emit_err)
+                        except asyncio.CancelledError as e:
+                            cancel_msg = str(e)[:500] if str(e) else "cancelled"
+                            # Best-effort remote cancel
+                            try:
+                                if Modules.openfang:
+                                    await Modules.openfang.cancel_running(of_task_id)
+                                    Modules.openfang.unregister_local_task(of_task_id)
+                            except Exception as cancel_err:
+                                logger.debug("[OpenFang] remote cancel failed for %s: %s", of_task_id, cancel_err)
+                            of_info["status"] = "cancelled"
+                            of_info["error"] = cancel_msg
+                            of_session.complete_task(cancel_msg, success=False)
+                            try:
+                                await _emit_task_result(
+                                    lanlan_name, channel="openfang", task_id=of_task_id,
+                                    success=False,
+                                    summary=f'虚拟机任务 "{result.task_description}" 已取消',
+                                    error_message=cancel_msg,
+                                )
+                            except Exception:
+                                logger.debug("[OpenFang] emit_task_result(cancelled) failed: task_id=%s", of_task_id, exc_info=True)
+                            try:
+                                await _emit_main_event(
+                                    "task_update", lanlan_name,
+                                    task={"id": of_task_id, "status": "cancelled", "type": "openfang",
+                                          "start_time": of_start, "end_time": _now_iso(),
+                                          "error": cancel_msg, "session_id": of_session.session_id},
+                                )
+                            except Exception:
+                                logger.debug("[OpenFang] emit task_update(cancelled) failed: task_id=%s", of_task_id, exc_info=True)
+                            raise
+                        except Exception as e:
+                            logger.warning(f"[OpenFang] Task failed: {e}")
+                            of_info["status"] = "failed"
+                            of_info["end_time"] = _now_iso()
+                            of_info["error"] = str(e)[:500]
+                            of_session.complete_task(str(e), success=False)
+                            try:
+                                await _emit_task_result(
+                                    lanlan_name, channel="openfang", task_id=of_task_id,
+                                    success=False,
+                                    summary=f'虚拟机任务 "{result.task_description}" 执行异常',
+                                    error_message=str(e),
+                                )
+                            except Exception:
+                                logger.debug("[OpenFang] emit_task_result(failed) failed: task_id=%s", of_task_id, exc_info=True)
+                            try:
+                                await _emit_main_event(
+                                    "task_update", lanlan_name,
+                                    task={"id": of_task_id, "status": "failed", "type": "openfang",
+                                          "start_time": of_start, "end_time": _now_iso(),
+                                          "error": str(e)[:500],
+                                          "session_id": of_session.session_id},
+                                )
+                            except Exception:
+                                logger.debug("[OpenFang] emit task_update(failed) failed: task_id=%s", of_task_id, exc_info=True)
+
+                    of_task = asyncio.create_task(_run_openfang_dispatch())
+                    Modules.task_async_handles[of_task_id] = of_task
+                    Modules._background_tasks.add(of_task)
+                    def _cleanup_of_task(_t, _tid=of_task_id):
+                        Modules._background_tasks.discard(_t)
+                        Modules.task_async_handles.pop(_tid, None)
+                    of_task.add_done_callback(_cleanup_of_task)
+                else:
+                    logger.info(f"[OpenFang] Duplicate task detected, matched with {matched}")
+            else:
+                logger.warning("[OpenFang] ⚠️ Task requires OpenFang but it is disabled or unavailable")
+
         else:
             logger.info(f"[TaskExecutor] No suitable execution method: {result.reason}")
     
@@ -1501,7 +1659,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 error_message=str(e)[:500],
             )
         except Exception:
-            pass
+            logger.debug("[TaskExecutor] emit notification failed", exc_info=True)
 
 @app.on_event("startup")
 async def startup():
@@ -1541,6 +1699,77 @@ async def startup():
         await _start_embedded_user_plugin_server()
     except Exception as e:
         logger.warning(f"[Agent] Failed to start embedded user plugin server: {e}")
+    # ── OpenFang 后台初始化 (仅通信层，进程由 Electron 管理) ──
+    async def _init_openfang_background():
+        """等待 OpenFang daemon 连通 + 同步配置 + 注册执行 Agent。"""
+        try:
+            adapter = OpenFangAdapter(base_url=OPENFANG_BASE_URL)
+            Modules.openfang = adapter
+            Modules.task_executor.openfang = adapter
+
+            # 等待 OpenFang 就绪 (由 Electron 并行启动，通常 <1s)
+            # check_connectivity 是同步 httpx 调用，用 to_thread 避免阻塞 event loop
+            for _attempt in range(30):
+                ok = await asyncio.to_thread(adapter.check_connectivity)
+                if ok:
+                    break
+                await asyncio.sleep(1)
+
+            if not adapter.init_ok:
+                logger.warning("[OpenFang] not reachable after 30s")
+                _set_capability("openfang", False, "OPENFANG_DAEMON_UNREACHABLE")
+                return
+
+            # 同步 API Key + 写 config.toml（允许失败 — 用户可能尚未配置 Key）
+            try:
+                await adapter.sync_config()
+            except Exception as e:
+                logger.warning("[OpenFang] sync_config failed (non-fatal): %s", e)
+
+            # 等待 OpenFang 检测并 reload config.toml
+            # OpenFang 用文件监听检测 config 变化，但 reload 可能有延迟
+            try:
+                import os as _os
+                _home = _os.environ.get("HOME") or _os.environ.get("USERPROFILE") or ""
+                _cfg = _os.path.join(_home, ".openfang", "config.toml")
+                if _os.path.exists(_cfg):
+                    _os.utime(_cfg, None)  # touch to trigger fswatch
+            except Exception:
+                logger.debug("[OpenFang] failed to touch config file for fswatch", exc_info=True)
+            await asyncio.sleep(5)
+
+            # 拉取可用工具列表
+            try:
+                await adapter.fetch_tools_list()
+            except Exception as e:
+                logger.warning("[OpenFang] fetch_tools_list failed (non-fatal): %s", e)
+
+            # 注册无人格执行 Agent（允许失败 — 连通即可用）
+            # manifest 中直接带 api_key + provider=openai，不依赖环境变量
+            try:
+                print("[OpenFang DEBUG] Calling push_agent_manifest...")
+                agent_id = await adapter.push_agent_manifest()
+                print(f"[OpenFang DEBUG] push_agent_manifest returned: {agent_id}")
+                print(f"[OpenFang DEBUG] adapter._executor_agent_id = {adapter._executor_agent_id}")
+            except Exception as e:
+                import traceback
+                logger.warning("[OpenFang] push_agent_manifest failed (non-fatal): %s", e)
+                print(f"[OpenFang DEBUG] push_agent_manifest EXCEPTION: {e}")
+                print(f"[OpenFang DEBUG] push_agent_manifest traceback:\n{traceback.format_exc()}")
+                agent_id = None
+
+            # 只要 daemon 连通就标记 ready，不强制要求 agent 注册成功
+            _set_capability("openfang", True, "")
+            logger.info("[OpenFang] Ready (init_ok=%s, agent=%s, tools=%d)",
+                        adapter.init_ok, agent_id, adapter._cached_tools_count or 0)
+        except Exception as exc:
+            logger.error("[OpenFang] background init failed: %s", exc)
+            _set_capability("openfang", False, str(exc))
+
+    _of_task = asyncio.create_task(_init_openfang_background())
+    Modules._persistent_tasks.add(_of_task)
+    _of_task.add_done_callback(Modules._persistent_tasks.discard)
+
     # Both CUA and BrowserUse share the agent LLM — default to "not connected"
     # and probe in background.  The single check updates both capability caches.
     _set_capability("computer_use", False, "connectivity check pending")
@@ -1549,6 +1778,7 @@ async def startup():
     # is NOT started here — it syncs with user_plugin_enabled (default OFF).
     # The lifecycle starts on-demand when the user toggles the plugin flag ON.
     _set_capability("user_plugin", True, "")
+    # OpenFang capability 由 _init_openfang_background() 管理，不在此处覆盖
     _llm_probe_task = asyncio.create_task(_fire_agent_llm_connectivity_check())
     Modules._persistent_tasks.add(_llm_probe_task)
     _llm_probe_task.add_done_callback(Modules._persistent_tasks.discard)
@@ -1959,6 +2189,15 @@ async def cancel_task(task_id: str):
             Modules.browser_use.cancel_running()
         info["status"] = "cancelled"
         info["error"] = "Cancelled by user"
+    elif task_type == "openfang":
+        if Modules.openfang:
+            try:
+                await Modules.openfang.cancel_running(task_id)
+            except Exception as e:
+                logger.warning("[OpenFang] cancel_running failed for %s: %s", task_id, e)
+            Modules.openfang.unregister_local_task(task_id)
+        info["status"] = "cancelled"
+        info["error"] = "Cancelled by user"
     else:
         info["status"] = "cancelled"
         info["error"] = "Cancelled by user"
@@ -2016,6 +2255,404 @@ async def complete_deferred_task(task_id: str):
     return {"ok": True}
 
 
+# ── OpenFang LLM Proxy ──────────────────────────────────────
+# OpenFang 的 Rust LLM driver 严格要求 OpenAI 格式的 completion_tokens 等字段。
+# lanlan.app 的 API 可能不返回这些字段，导致 OpenFang parse error。
+# 此代理拦截 LLM 请求，转发到真实 API，并在响应中补全缺失字段。
+
+from fastapi import Request
+from starlette.responses import StreamingResponse as StarletteStreamingResponse
+
+@app.api_route("/openfang-llm-proxy/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def openfang_llm_proxy(request: Request, path: str):
+    """
+    透明代理：OpenFang → 此端点 → lanlan.app（或用户配置的 agent API）。
+    在响应中补全 OpenAI 兼容性字段 (completion_tokens, prompt_tokens 等)。
+    """
+    # 获取真实 API 地址
+    cm = get_config_manager()
+    agent_cfg = cm.get_model_api_config('agent')
+    real_base_url = (agent_cfg.get("base_url") or "").strip().rstrip("/")
+    real_api_key = (agent_cfg.get("api_key") or "").strip()
+
+    if not real_base_url:
+        return JSONResponse({"error": "Agent API base_url not configured"}, status_code=502)
+
+    # 智能拼接 URL：避免 /v1/v1 双重路径
+    # OpenFang 调用：proxy_base/v1/chat/completions → path="v1/chat/completions"
+    # 如果 real_base_url 已含 /v1，则去掉 path 中的 /v1 前缀
+    if real_base_url.rstrip("/").endswith("/v1") and path.startswith("v1/"):
+        path = path[3:]  # 去掉 "v1/"
+    target_url = f"{real_base_url}/{path}"
+    # 保留原始请求的 query string
+    qs = request.url.query
+    if qs:
+        target_url = f"{target_url}?{qs}"
+
+    print(f"[LLM Proxy] path={path}, real_base_url={real_base_url}, target_url={target_url}")
+
+    # 读取请求体
+    body = await request.body()
+
+    # 构建转发请求头（保留 Content-Type，替换 Authorization）
+    forward_headers = {}
+    ct = request.headers.get("content-type")
+    if ct:
+        forward_headers["Content-Type"] = ct
+    if real_api_key:
+        forward_headers["Authorization"] = f"Bearer {real_api_key}"
+
+    # 检查是否请求流式
+    is_stream = False
+    if body:
+        try:
+            req_json = json.loads(body)
+            is_stream = req_json.get("stream", False)
+        except Exception:
+            logger.debug("[LLM Proxy] failed to parse request body for stream detection", exc_info=True)
+
+    try:
+        if is_stream:
+            # 流式：手动管理 client 生命周期（generator 延迟消费，不能用 async with）
+            client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0))
+            try:
+                upstream_resp = await client.send(
+                    client.build_request(request.method, target_url, content=body, headers=forward_headers),
+                    stream=True,
+                )
+            except Exception:
+                await client.aclose()
+                raise
+            upstream_status = upstream_resp.status_code
+
+            async def _stream_with_patch():
+                try:
+                    async for line in upstream_resp.aiter_lines():
+                        if line.startswith("data: ") and line != "data: [DONE]":
+                            try:
+                                chunk = json.loads(line[6:])
+                                _patch_openai_response(chunk)
+                                yield f"data: {json.dumps(chunk)}\n\n"
+                                continue
+                            except Exception:
+                                logger.debug("[LLM Proxy] failed to parse streaming chunk", exc_info=True)
+                        yield line + "\n"
+                finally:
+                    await upstream_resp.aclose()
+                    await client.aclose()
+
+            return StarletteStreamingResponse(
+                _stream_with_patch(),
+                status_code=upstream_status,
+                media_type="text/event-stream",
+            )
+        else:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+                # 非流式：一次性读取并 patch
+                resp = await client.request(
+                    request.method, target_url,
+                    content=body, headers=forward_headers,
+                )
+                logger.info("[LLM Proxy] upstream response: status=%s, len=%d", resp.status_code, len(resp.content))
+                logger.debug("[LLM Proxy] upstream body (first 500): %s", resp.text[:500])
+                # 尝试 JSON patch
+                try:
+                    data = resp.json()
+                    _patch_openai_response(data)
+                    return JSONResponse(data, status_code=resp.status_code)
+                except Exception:
+                    # 非 JSON 响应原样返回 (使用 raw Response 避免二次编码)
+                    from starlette.responses import Response as RawResponse
+                    return RawResponse(
+                        content=resp.content,
+                        status_code=resp.status_code,
+                        media_type=resp.headers.get("content-type", "application/octet-stream"),
+                    )
+    except httpx.TimeoutException:
+        return JSONResponse({"error": "Upstream API timeout"}, status_code=504)
+    except Exception as e:
+        logger.warning("[LLM Proxy] upstream error: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+
+def _patch_openai_response(data: dict) -> None:
+    """
+    全面修补 OpenAI 兼容响应，解决 OpenFang 严格解析的兼容性问题：
+    1. 补全 usage 字段 (completion_tokens 等)
+    2. 修复 malformed_function_call → 标准 tool_calls 格式
+    3. 确保 message.content 不为 None
+    """
+    if not isinstance(data, dict):
+        return
+
+    _patch_usage(data)
+    _patch_malformed_tool_calls(data)
+
+
+def _patch_usage(data: dict) -> None:
+    """补全缺失的 usage 字段。"""
+    if not isinstance(data, dict):
+        return
+
+    usage = data.get("usage")
+    if usage is None:
+        data["usage"] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        return
+
+    if not isinstance(usage, dict):
+        return
+
+    if "prompt_tokens" not in usage:
+        usage["prompt_tokens"] = 0
+    if "completion_tokens" not in usage:
+        usage["completion_tokens"] = 0
+    if "total_tokens" not in usage:
+        usage["total_tokens"] = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+
+    for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        if usage.get(k) is None:
+            usage[k] = 0
+
+
+def _patch_malformed_tool_calls(data: dict) -> None:
+    """
+    修复 Gemini/OpenRouter 返回的 malformed_function_call 响应。
+
+    问题：某些模型通过 OpenRouter 时不支持标准 OpenAI function calling，
+    输出 `call:tool_name{json_args}` 格式放在 refusal 字段中。
+    OpenFang 期望标准的 tool_calls 格式。
+
+    修复：解析 refusal 中的工具调用，转换为标准 tool_calls 数组。
+    """
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        return
+
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+
+        finish_reason = choice.get("finish_reason", "")
+        msg = choice.get("message", {})
+        if not isinstance(msg, dict):
+            continue
+
+        refusal = msg.get("refusal", "")
+
+        # 检测 malformed function call
+        # 某些模型 (Gemini via OpenRouter) 不支持 OpenAI-style function calling round-trip:
+        # 即使我们把 malformed call 转成标准 tool_calls，下一轮提交 tool result 时
+        # 模型会报 thought_signature 错误。
+        # 正确做法：不转 tool_calls，而是提取工具调用意图转为文本内容，
+        # 让 OpenFang 用文本模式回复（不走 tool use 循环）。
+        if finish_reason == "malformed_function_call" and refusal:
+            # 解析 call:tool_name{args} 提取意图，作为文本指令
+            intent_text = _extract_tool_intent_as_text(refusal)
+            msg["content"] = intent_text
+            msg.pop("refusal", None)
+            msg.pop("tool_calls", None)  # 确保没有 tool_calls
+            choice["finish_reason"] = "stop"
+            print("[LLM Proxy] Converted malformed_function_call to text intent")
+
+        # 确保 message.content 为非 null 字符串（有些 API 返回 null 或缺失该字段）
+        if "content" not in msg or msg["content"] is None:
+            msg["content"] = ""
+
+
+def _extract_tool_intent_as_text(refusal_text: str) -> str:
+    """
+    从 malformed function call 中提取工具调用意图，转换为自然语言文本。
+
+    例如:
+    输入: "Malformed function call: call:web_search{queries:["中国到日本 机票价格"]}"
+    输出: "I'll search for: 中国到日本 机票价格, China to Japan flight prices..."
+
+    这样 OpenFang 可以把这段文字作为 agent 的回复，而不是尝试执行一个不兼容的 tool call。
+    """
+    import re as _re
+
+    cleaned = refusal_text.replace("Malformed function call: ", "").strip()
+
+    # 提取 call:name{args} 中的 args 部分
+    pattern = r'call:(\w+)\s*(\{.*\})'
+    match = _re.search(pattern, cleaned, _re.DOTALL)
+
+    if not match:
+        return f"I attempted to perform an action but encountered a compatibility issue. Let me provide what I know instead.\n\nContext: {cleaned[:300]}"
+
+    tool_name = match.group(1)
+    args_raw = match.group(2)
+
+    # 尝试提取可读的参数内容
+    # 常见格式: {queries:["q1","q2",...]} 或 {query:"..."}
+    readable_args = []
+    # 提取引号中的字符串
+    strings = _re.findall(r'"([^"]*)"', args_raw)
+    if strings:
+        readable_args = strings[:5]  # 最多取5个
+
+    tool_descriptions = {
+        "web_search": "search the web for",
+        "web_fetch": "fetch the web page",
+        "file_read": "read the file",
+        "file_write": "write to a file",
+        "shell_exec": "run a command",
+        "browser_navigate": "navigate to",
+    }
+    action = tool_descriptions.get(tool_name, f"use {tool_name} for")
+
+    if readable_args:
+        args_text = ", ".join(readable_args)
+        return (
+            f"I wanted to {action}: {args_text}\n\n"
+            f"However, due to a model compatibility issue with tool calling, "
+            f"I cannot execute this tool directly. "
+            f"Based on my knowledge, let me provide what information I can about this topic."
+        )
+    else:
+        return (
+            f"I attempted to {action}, but encountered a compatibility issue.\n\n"
+            f"Let me provide what information I can based on my existing knowledge."
+        )
+
+
+# ── OpenFang endpoints ──────────────────────────────────────
+
+@app.get("/openfang/availability")
+async def openfang_availability():
+    """检查 OpenFang 可用性。"""
+    if not Modules.openfang:
+        return {"enabled": False, "ready": False, "reason": "adapter 未加载"}
+    return Modules.openfang.is_available()
+
+
+@app.post("/openfang/run")
+async def openfang_run(payload: Dict[str, Any]):
+    """直接通过 OpenFang 执行任务 (绕过路由决策)。"""
+    instruction = payload.get("instruction")
+    if not instruction:
+        return JSONResponse({"error": "instruction required"}, status_code=400)
+    if not Modules.openfang or not Modules.openfang.init_ok:
+        return JSONResponse({"error": "VM agent not available"}, status_code=503)
+
+    task_id = f"of_{uuid.uuid4().hex[:12]}"
+
+    _lanlan = payload.get("lanlan_name")
+
+    async def _run():
+        try:
+            Modules.task_registry[task_id] = {
+                "id": task_id, "type": "openfang", "status": "running",
+                "params": {"instruction": instruction},
+                "lanlan_name": _lanlan,
+                "session_id": payload.get("conversation_id"),
+                "start_time": datetime.now(timezone.utc).isoformat(),
+            }
+            # Emit initial running event with full task object
+            try:
+                await _emit_main_event(
+                    "task_update", _lanlan,
+                    task_id=task_id, channel="openfang",
+                    task=Modules.task_registry[task_id],
+                )
+            except Exception:
+                logger.debug("[OpenFang] initial task_update emit failed", exc_info=True)
+
+            def _on_progress(info):
+                try:
+                    reg = Modules.task_registry.get(task_id, {})
+                    reg["status"] = info.get("status", reg.get("status", "running"))
+                    reg["elapsed"] = info.get("elapsed", 0)
+                    asyncio.create_task(_emit_main_event(
+                        "task_update", _lanlan,
+                        task_id=task_id, channel="openfang",
+                        task=reg,
+                    ))
+                except Exception as e:
+                    logger.debug("[OpenFang] _on_progress emit failed: %s", e)
+
+            result = await Modules.openfang.run_instruction(
+                instruction=instruction,
+                session_id=payload.get("conversation_id"),
+                on_progress=_on_progress,
+                local_task_id=task_id,
+            )
+            final_status = "completed" if result.get("success") else "failed"
+            reg = Modules.task_registry[task_id]
+            reg["status"] = final_status
+            reg["result"] = result
+            reg["end_time"] = datetime.now(timezone.utc).isoformat()
+            _r = result if isinstance(result, dict) else {}
+            _success = _r.get("success", False)
+            _result_text = _r.get("result", "") or ""
+            _error_text = _r.get("error", "") or ""
+            if not _success:
+                reg["error"] = _error_text
+
+            await _emit_task_result(
+                _lanlan,
+                channel="openfang",
+                task_id=task_id,
+                success=_success,
+                summary=_result_text[:500],
+                detail=_result_text,
+                error_message=_error_text,
+            )
+            # Terminal task_update so HUD transitions out of running
+            try:
+                await _emit_main_event(
+                    "task_update", _lanlan,
+                    task_id=task_id, channel="openfang",
+                    task=reg,
+                )
+            except Exception:
+                logger.debug("[OpenFang] terminal task_update emit failed", exc_info=True)
+        except Exception as e:
+            logger.error("[OpenFang] Task %s failed: %s", task_id, e)
+            reg = Modules.task_registry[task_id]
+            reg["status"] = "failed"
+            reg["error"] = str(e)
+            reg["end_time"] = datetime.now(timezone.utc).isoformat()
+            try:
+                await _emit_task_result(
+                    _lanlan,
+                    channel="openfang",
+                    task_id=task_id,
+                    success=False,
+                    summary="",
+                    error_message=str(e),
+                )
+            except Exception:
+                logger.debug("[OpenFang] terminal task_result emit failed", exc_info=True)
+            try:
+                await _emit_main_event(
+                    "task_update", _lanlan,
+                    task_id=task_id, channel="openfang",
+                    task=reg,
+                )
+            except Exception:
+                logger.debug("[OpenFang] terminal task_update emit failed", exc_info=True)
+
+    bg = asyncio.create_task(_run())
+    Modules.task_async_handles[task_id] = bg
+    Modules._background_tasks.add(bg)
+    def _cleanup_of_bg(_t, _tid=task_id):
+        Modules._background_tasks.discard(_t)
+        Modules.task_async_handles.pop(_tid, None)
+    bg.add_done_callback(_cleanup_of_bg)
+
+    return {"success": True, "task_id": task_id, "status": "running"}
+
+
+@app.post("/openfang/sync_config")
+async def openfang_sync_config():
+    """手动触发 API Key 配置同步到 OpenFang。"""
+    if not Modules.openfang:
+        return {"success": False, "error": "adapter 未加载"}
+    ok = await Modules.openfang.sync_config()
+    return {"success": ok}
+
+
 @app.get("/capabilities")
 async def capabilities():
     return {"success": True, "capabilities": {}}
@@ -2058,14 +2695,17 @@ async def set_agent_flags(payload: Dict[str, Any]):
     changed = False
     old_flags = dict(Modules.agent_flags)
     old_analyzer_enabled = bool(Modules.analyzer_enabled)
-    if gate.get("ready") is not True and any(x is True for x in (cf, bf, uf)):
+    of = (payload or {}).get("openfang_enabled")
+    if gate.get("ready") is not True and any(x is True for x in (cf, bf, uf, of)):
         Modules.agent_flags["computer_use_enabled"] = False
         Modules.agent_flags["browser_use_enabled"] = False
         Modules.agent_flags["user_plugin_enabled"] = False
+        Modules.agent_flags["openfang_enabled"] = False
         first_reason = (gate.get('reasons') or ['AGENT_ENDPOINT_NOT_CONFIGURED'])[0]
         _set_capability("computer_use", False, first_reason)
         _set_capability("browser_use", False, first_reason)
         _set_capability("user_plugin", False, first_reason)
+        _set_capability("openfang", False, first_reason)
         await _ensure_plugin_lifecycle_stopped()
         Modules.notification = None
         if Modules.agent_flags != old_flags:
@@ -2198,6 +2838,30 @@ async def set_agent_flags(payload: Dict[str, Any]):
     except Exception:
         pass
 
+    # 4. Handle OpenFang Flag
+    if isinstance(of, bool):
+        if of:
+            adapter = Modules.openfang
+            if adapter and adapter.init_ok:
+                Modules.agent_flags["openfang_enabled"] = True
+                _set_capability("openfang", True, "")
+            elif adapter:
+                # init_ok 为 False，尝试重新连接
+                ok = await asyncio.to_thread(adapter.check_connectivity)
+                if ok:
+                    _set_capability("openfang", True, "")
+                    Modules.agent_flags["openfang_enabled"] = True
+                    logger.info("[Agent] OpenFang re-connected on toggle")
+                else:
+                    Modules.agent_flags["openfang_enabled"] = False
+                    _set_capability("openfang", False, "OPENFANG_DAEMON_UNREACHABLE")
+                    logger.warning("[Agent] Cannot enable OpenFang: not connected (%s)", adapter.last_error)
+            else:
+                Modules.agent_flags["openfang_enabled"] = False
+                logger.warning("[Agent] Cannot enable OpenFang: adapter not initialized")
+        else:
+            Modules.agent_flags["openfang_enabled"] = False
+
     changed = Modules.agent_flags != old_flags or bool(Modules.analyzer_enabled) != old_analyzer_enabled
     if changed:
         _bump_state_revision()
@@ -2222,6 +2886,7 @@ async def agent_command(payload: Dict[str, Any]):
             Modules.agent_flags["computer_use_enabled"] = False
             Modules.agent_flags["browser_use_enabled"] = False
             Modules.agent_flags["user_plugin_enabled"] = False
+            Modules.agent_flags["openfang_enabled"] = False
             _set_capability("user_plugin", True, "")
             await admin_control({"action": "end_all"})
             await _ensure_plugin_lifecycle_stopped()
@@ -2233,7 +2898,7 @@ async def agent_command(payload: Dict[str, Any]):
     if command == "set_flag":
         key = (payload or {}).get("key")
         value = bool((payload or {}).get("value"))
-        if key not in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}:
+        if key not in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled", "openfang_enabled"}:
             raise HTTPException(400, "invalid flag key")
         t_set = time.perf_counter()
         await set_agent_flags({"lanlan_name": lanlan_name, key: value})

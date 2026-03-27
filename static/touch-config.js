@@ -169,209 +169,14 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
     
     const floatingWindow = createTouchConfigFloatingWindow({
         title: window.t('live2d.touchAnim.title', '触摸动画配置'),
-        showCloseButton: false
+        showCloseButton: true
     })
     
     const container = floatingWindow.getContentContainer()
     
-    const style = document.createElement("style")
-    style.textContent = `
-        .hitarea-config {
-            max-height: 500px;
-            overflow-y: auto;
-        }
-        .hitarea-item {
-            margin-bottom: 20px;
-            padding: 15px;
-            background: #f5f5f5;
-            border-radius: 8px;
-            border-left:4px solid #40C5F1;
-        }
-        .hitarea-title {
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 12px;
-            font-size: 14px;
-        }
-        .hitarea-section {
-            margin-bottom: 10px;
-        }
-        .hitarea-label {
-            display: block;
-            font-size: 12px;
-            color: #666;
-            margin-bottom: 6px;
-        }
-        .custom-multiselect {
-            position: relative;
-            width: 100%;
-        }
-        .multiselect-header {
-            width: 90%;
-            padding: 12px 16px;
-            background: white;
-            border: 2px solid #ddd;
-            border-radius: 8px;
-            color: #40C5F1;
-            font-size: 14px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            min-height: 46px;
-            user-select: none;
-        }
-        .multiselect-header:hover {
-            border-color: #40C5F1;
-            transform: translateY(-1px);
-        }
-        .multiselect-header::after {
-            content: '';
-            width: 12px;
-            height: 12px;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: center;
-            transition: transform 0.2s ease;
-        }
-        .custom-multiselect.active .multiselect-header::after {
-            transform: rotate(180deg);
-        }
-        .multiselect-options {
-            position: absolute;
-            top: calc(100% + 8px);
-            left: 0;
-            width: 100%;
-            background: white;
-            border: 2px solid #ddd;
-            border-radius: 8px;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-            z-index: 100;
-            max-height: 250px;
-            overflow-y: auto;
-            display: none;
-            padding: 8px;
-            scrollbar-width: thin;
-            scrollbar-color: #96e8ff #f0f8ff;
-        }
-        .multiselect-options::-webkit-scrollbar {
-            width: 8px;
-        }
-        .multiselect-options::-webkit-scrollbar-track {
-            background: #f0f8ff;
-            border-radius: 4px;
-        }
-        .multiselect-options::-webkit-scrollbar-thumb {
-            background: #96e8ff;
-            border-radius: 4px;
-        }
-        .multiselect-options::-webkit-scrollbar-thumb:hover {
-            background: #7dd3ff;
-        }
-        .custom-multiselect.active .multiselect-options {
-            display: block;
-        }
-        .multiselect-item {
-            padding: 10px 12px;
-            border-radius: 6px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            transition: background 0.2s ease;
-            font-size: 13px;
-            color: #333;
-        }
-        .multiselect-item:hover {
-            background: #e3f4ff;
-        }
-        .multiselect-item input[type="checkbox"] {
-            width: 16px;
-            height: 16px;
-            cursor: pointer;
-            accent-color: #40C5F1;
-        }
-        .multiselect-item span {
-            flex: 1;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .multiselect-header .selected-text {
-            flex: 1;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 4px;
-            overflow: hidden;
-            max-height: 70px;
-        }
-        .selected-tag {
-            background: #e3f4ff;
-            color: #22b3ff;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 11px;
-            border: 1px solid #b3e5fc;
-            white-space: nowrap;
-            max-width: 120px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .multiselect-header .selected-count {
-            background: #40C5F1;
-            color: white;
-            padding: 2px 8px;
-            border-radius: 10px;
-            font-size: 12px;
-            margin-left: 8px;
-            flex-shrink: 0;
-        }
-        .hitarea-buttons {
-            display: flex;
-            gap: 10px;
-            margin-top: 20px;
-        }
-        .hitarea-btn {
-            flex: 1;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s ease;
-        }
-        .hitarea-btn-primary {
-            background: #40C5F1;
-            color: white;
-        }
-        .hitarea-btn-primary:hover {
-            background: #22b3ff;
-            transform: translateY(-1px);
-        }
-        .hitarea-btn-secondary {
-            background: white;
-            color: #40C5F1;
-            border: 1px solid #40C5F1;
-        }
-        .hitarea-btn-secondary:hover {
-            background: #f0f8ff;
-        }
-    `
-    container.appendChild(style)
-    
     const nowmodle = window.live2dManager?.modelName || '';
     const TouchSet = window.live2dManager?.touchSet?.[nowmodle] || {};
     
-    const closeButton = document.createElement("button")
-    closeButton.className = "hitarea-btn hitarea-btn-secondary"
-    closeButton.textContent = window.t('live2d.touchAnim.close', '关闭')
-    closeButton.style.cssText = `
-        order: 999;
-        margin-top: 20px;
-    `
-
     const cleanupMultiselect = () => {
         document.removeEventListener('click', closeAllMultiselects);
     };
@@ -384,15 +189,9 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
         cleanupMultiselect()
         console.log("[TouchSet] 配置窗口已关闭")
     }
-    closeButton.onclick = function(){
-        floatingWindow.close()
-    }
-    
-    container.appendChild(closeButton)
     
     const configDiv = document.createElement("div")
     configDiv.className = "hitarea-config"
-    configDiv.id = configDiv.className
     
     const hitAreasCopy = [...hitAreas]
     const defaultHitArea = { id: "default", Name: "default" }
@@ -535,8 +334,32 @@ function createMultiSelect(type, options, selectedValues = [], hitAreaId){
     
     header.onclick = function(e){
         e.stopPropagation()
+        const isActive = multiselect.classList.contains("active")
+        
+        if (!isActive) {
+            const headerRect = header.getBoundingClientRect()
+            const spaceBelow = window.innerHeight - headerRect.bottom
+            const optionsHeight = 250
+            
+            if (spaceBelow < optionsHeight) {
+                multiselect.classList.add("open-up")
+            } else {
+                multiselect.classList.remove("open-up")
+            }
+        }
+        
         multiselect.classList.toggle("active")
-        header.setAttribute("aria-expanded", multiselect.classList.contains("active"))
+        header.setAttribute("aria-expanded", !isActive)
+        
+        if (!isActive) {
+            requestAnimationFrame(() => {
+                if (optionsDiv.scrollHeight > optionsDiv.clientHeight) {
+                    optionsDiv.classList.add('has-scrollbar')
+                } else {
+                    optionsDiv.classList.remove('has-scrollbar')
+                }
+            })
+        }
     }
     
     updateMultiSelectHeader(multiselect)
@@ -576,19 +399,7 @@ function showSaveIndicator() {
     if (!indicator) {
         indicator = document.createElement('div')
         indicator.id = 'touch-set-save-indicator'
-        indicator.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: #4CAF50;
-            color: white;
-            padding: 10px 20px;
-            border-radius: 6px;
-            font-size: 14px;
-            z-index: 10001;
-            opacity: 0;
-            transition: opacity 0.3s ease;
-        `
+        indicator.textContent = window.t('live2d.touchAnim.saved', '已保存')
         document.body.appendChild(indicator)
     }
     
@@ -620,7 +431,6 @@ function updateMultiSelectHeader(multiselect){
 }
 
 function createTouchConfigFloatingWindow(options = {}){
-    // console.error("createTouchConfigFloatingWindow()")
     const {
         title = "HitArea 信息",
         content = null,
@@ -628,76 +438,39 @@ function createTouchConfigFloatingWindow(options = {}){
     } = options
 
     const overlay = document.createElement("div")
-    overlay.style.cssText = `
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(0, 0, 0, 0.5);
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        z-index: 10000;
-    `
+    overlay.className = "touch-config-overlay"
     
     const modal = document.createElement("div")
-    modal.style.cssText = `
-        background: white;
-        padding: 30px;
-        border-radius: 10px;
-        max-width: 500px;
-        width: 90%;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-        font-family: Arial, sans-serif;
-    `
+    modal.className = "touch-config-window"
+    
+    const header = document.createElement("div")
+    header.className = "touch-config-header"
     
     const titleElement = document.createElement("h3")
     titleElement.textContent = title
-    titleElement.style.cssText = `
-        margin: 0 0 20px 0;
-        color: #333;
-    `
-    modal.appendChild(titleElement)
+    titleElement.dataset.text = title
+    header.appendChild(titleElement)
+    
+    if (showCloseButton) {
+        const closeButton = document.createElement("button")
+        closeButton.className = "touch-config-close"
+        closeButton.innerHTML = '<img src="/static/icons/close_button.png" alt="关闭">'
+        closeButton.onclick = function(){
+            windowObj.close()
+        }
+        header.appendChild(closeButton)
+    }
+    
+    modal.appendChild(header)
     
     const contentContainer = document.createElement("div")
-    contentContainer.style.cssText = `
-        display: flex;
-        flex-direction: column;
-        line-height: 1.6;
-        color: #555;
-    `
+    contentContainer.className = "touch-config-content"
     modal.appendChild(contentContainer)
     
     if (content) {
         const contentDiv = document.createElement("div")
         contentDiv.innerHTML = content
         contentContainer.appendChild(contentDiv)
-    }
-    
-    if (showCloseButton) {
-        const closeButton = document.createElement("button")
-        closeButton.textContent = "关闭"
-        closeButton.style.cssText = `
-            padding: 10px 20px;
-            background: #007bff;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 14px;
-            margin-top: 20px;
-        `
-        closeButton.onmouseover = function(){
-            this.style.background = "#0056b3"
-        }
-        closeButton.onmouseout = function(){
-            this.style.background = "#007bff"
-        }
-        closeButton.onclick = function(){
-            document.body.removeChild(overlay)
-        }
-        contentContainer.appendChild(closeButton)
     }
     
     overlay.appendChild(modal)
@@ -715,6 +488,7 @@ function createTouchConfigFloatingWindow(options = {}){
         },
         setTitle: function(text){
             titleElement.textContent = text
+            titleElement.dataset.text = text
         }
     }
 
