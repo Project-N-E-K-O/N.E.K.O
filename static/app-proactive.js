@@ -401,7 +401,7 @@
                                 cover: musicLink.cover
                             };
                             console.log('[ProactiveChat] 发送音乐消息:', track);
-                            var dispatchResult = window.dispatchMusicPlay(track, { source: 'proactive' });
+                            var dispatchResult = await window.dispatchMusicPlay(track, { source: 'proactive' });
 
                             // 仅在成功派发（非拦截）时标记，以便在聊天区域隐藏对应链接
                             if (dispatchResult !== false) {
