@@ -101,7 +101,8 @@ class ReflectionEngine:
 
         Called during proactive chat. Returns newly created reflections.
         """
-        from config.prompts_memory import reflection_prompt
+        from config.prompts_memory import get_reflection_prompt
+        from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
 
         unabsorbed = self._fact_store.get_unabsorbed_facts(lanlan_name)
@@ -112,6 +113,7 @@ class ReflectionEngine:
         master_name = name_mapping.get('human', '主人')
 
         facts_text = "\n".join(f"- {f['text']} (importance: {f.get('importance', 5)})" for f in unabsorbed)
+        reflection_prompt = get_reflection_prompt(get_global_language())
         prompt = reflection_prompt.replace('{FACTS}', facts_text)
         prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)
         prompt = prompt.replace('{MASTER_NAME}', master_name)
@@ -199,8 +201,16 @@ class ReflectionEngine:
         id_to_text = {r['id']: r.get('text', '') for r in reflections}
 
         for rid in reflection_ids:
-            already = any(s.get('reflection_id') == rid for s in surfaced)
-            if not already:
+            # If already surfaced, refresh timestamp and clear feedback for re-check
+            found = False
+            for s in surfaced:
+                if s.get('reflection_id') == rid:
+                    s['surfaced_at'] = now
+                    s['text'] = id_to_text.get(rid, s.get('text', ''))
+                    s['feedback'] = None  # re-enable feedback collection
+                    found = True
+                    break
+            if not found:
                 surfaced.append({
                     'reflection_id': rid,
                     'text': id_to_text.get(rid, ''),
@@ -214,7 +224,8 @@ class ReflectionEngine:
 
         Returns list of {reflection_id, feedback} dicts.
         """
-        from config.prompts_memory import reflection_feedback_prompt
+        from config.prompts_memory import get_reflection_feedback_prompt
+        from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
 
         surfaced = self.load_surfaced(lanlan_name)
@@ -227,7 +238,7 @@ class ReflectionEngine:
         )
         messages_text = "\n".join(user_messages)
 
-        prompt = reflection_feedback_prompt.format(
+        prompt = get_reflection_feedback_prompt(get_global_language()).format(
             reflections=reflections_text,
             messages=messages_text,
         )
@@ -254,11 +265,14 @@ class ReflectionEngine:
             logger.warning(f"[Reflection] 反馈检查失败: {e}")
             return []
 
-        # Update surfaced records
+        # Update surfaced records (whitelist valid feedback values)
+        _VALID_FEEDBACK = {'confirmed', 'denied', 'ignored'}
         for fb in feedbacks:
+            if not isinstance(fb, dict):
+                continue
             rid = fb.get('reflection_id')
             feedback = fb.get('feedback')
-            if rid and feedback:
+            if rid and feedback in _VALID_FEEDBACK:
                 for s in surfaced:
                     if s.get('reflection_id') == rid:
                         s['feedback'] = feedback

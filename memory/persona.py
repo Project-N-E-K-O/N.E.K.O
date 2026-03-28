@@ -47,35 +47,39 @@ import unicodedata as _ud
 _SPLIT_RE = _re.compile(r'[，。、！？；：\u201c\u201d\u2018\u2019（）()\[\]{}<>《》【】\s,.!?;:\-\u2014\u2026\xb7\u3000]+')
 
 
-def _is_mentioned(fact_text: str, response_text: str) -> bool:
-    """判断 response 中是否"提及"了某条 persona 事实。
+def _extract_keywords(text: str) -> set[str]:
+    """从文本提取关键词/n-gram，支持 CJK 和拉丁文。
 
-    支持 CJK 和拉丁文：
     - 拉丁文按空格分词，保留 len>=2 的 token
     - CJK 文本生成 2-gram 和 3-gram 滑动窗口
     """
-    if not fact_text or not response_text:
-        return False
-
-    segments = _SPLIT_RE.split(fact_text)
+    segments = _SPLIT_RE.split(text)
     keywords: set[str] = set()
 
     for seg in segments:
         seg = seg.strip()
         if not seg:
             continue
-        # Check if segment is CJK-dominant
-        cjk_count = sum(1 for ch in seg if '\u4e00' <= ch <= '\u9fff' or '\u3040' <= ch <= '\u30ff' or '\uac00' <= ch <= '\ud7af')
+        cjk_count = sum(
+            1 for ch in seg
+            if '\u4e00' <= ch <= '\u9fff' or '\u3040' <= ch <= '\u30ff' or '\uac00' <= ch <= '\ud7af'
+        )
         if cjk_count > len(seg) / 2:
-            # CJK: generate n-grams (2 and 3)
             for n in (2, 3):
                 for i in range(len(seg) - n + 1):
-                    keywords.add(seg[i:i+n])
+                    keywords.add(seg[i:i + n])
         else:
-            # Latin/mixed: keep token if len>=2
             if len(seg) >= 2:
                 keywords.add(seg)
 
+    return keywords
+
+
+def _is_mentioned(fact_text: str, response_text: str) -> bool:
+    """判断 response 中是否"提及"了某条 persona 事实。"""
+    if not fact_text or not response_text:
+        return False
+    keywords = _extract_keywords(fact_text)
     if not keywords:
         return False
     return any(kw in response_text for kw in keywords)
@@ -230,18 +234,18 @@ class PersonaManager:
 
     @staticmethod
     def _texts_may_contradict(old_text: str, new_text: str) -> bool:
-        """Lightweight keyword-overlap heuristic for contradiction detection."""
+        """Lightweight keyword-overlap heuristic for contradiction detection.
+
+        Uses the same CJK-aware tokenization as _is_mentioned.
+        """
         if not old_text or not new_text:
             return False
-        old_words = set(old_text.replace('，', ' ').replace('。', ' ').split())
-        new_words = set(new_text.replace('，', ' ').replace('。', ' ').split())
-        old_words = {w for w in old_words if len(w) >= 2}
-        new_words = {w for w in new_words if len(w) >= 2}
-        if not old_words or not new_words:
+        old_kw = _extract_keywords(old_text)
+        new_kw = _extract_keywords(new_text)
+        if not old_kw or not new_kw:
             return False
-        overlap = old_words & new_words
-        # If more than 40% keywords overlap, they might be about the same topic
-        ratio = len(overlap) / min(len(old_words), len(new_words))
+        overlap = old_kw & new_kw
+        ratio = len(overlap) / min(len(old_kw), len(new_kw))
         return ratio >= 0.4
 
     # ── contradiction queue ──────────────────────────────────────────
@@ -325,6 +329,8 @@ class PersonaManager:
         persona = self.ensure_persona(name)
         resolved = 0
         for result in results:
+            if not isinstance(result, dict):
+                continue
             try:
                 idx = int(result.get('index', -1))
                 if idx < 0 or idx >= len(corrections):
