@@ -1,5 +1,5 @@
 # --- Stage 1: Build plugin manager frontend ---
-FROM node:20-slim AS frontend-builder
+FROM node:24-slim AS frontend-builder
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
