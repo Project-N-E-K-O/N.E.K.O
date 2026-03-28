@@ -55,12 +55,12 @@ class ReflectionEngine:
     # ── file paths ───────────────────────────────────────────────────
 
     def _reflections_path(self, name: str) -> str:
-        self._config_manager.ensure_memory_directory()
-        return os.path.join(str(self._config_manager.memory_dir), f'reflections_{name}.json')
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'reflections.json')
 
     def _surfaced_path(self, name: str) -> str:
-        self._config_manager.ensure_memory_directory()
-        return os.path.join(str(self._config_manager.memory_dir), f'surfaced_{name}.json')
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'surfaced.json')
 
     # ── persistence ──────────────────────────────────────────────────
 

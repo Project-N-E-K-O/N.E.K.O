@@ -28,9 +28,9 @@ class TimeIndexedMemory:
                 if lanlan_name in time_store:
                     db_path = time_store[lanlan_name]
                 else:
+                    from memory import ensure_character_dir
                     config_mgr = get_config_manager()
-                    config_mgr.ensure_memory_directory()
-                    db_path = os.path.join(str(config_mgr.memory_dir), f'time_indexed_{lanlan_name}')
+                    db_path = os.path.join(ensure_character_dir(config_mgr.memory_dir, lanlan_name), 'time_indexed.db')
                     logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
 
             self.db_paths[lanlan_name] = db_path

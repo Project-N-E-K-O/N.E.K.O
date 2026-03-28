@@ -234,10 +234,21 @@ async def startup_event_handler():
     except Exception as e:
         logger.warning(f"[Memory] Token tracker init failed: {e}")
 
-    # 自动迁移 settings → persona（如 persona 文件不存在）
+    # 文件结构迁移：memory_dir/{type}_{name}.json → memory_dir/{name}/{type}.json
     try:
+        from memory import migrate_to_character_dirs
         character_data = _config_manager.load_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
+        _config_manager.ensure_memory_directory()
+        migrate_to_character_dirs(_config_manager.memory_dir, catgirl_names)
+    except Exception as e:
+        logger.warning(f"[Memory] 角色目录迁移失败: {e}")
+
+    # 自动迁移 settings → persona（如 persona 文件不存在）
+    try:
+        if not catgirl_names:
+            character_data = _config_manager.load_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
         for name in catgirl_names:
             persona_manager.ensure_persona(name)
         logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")

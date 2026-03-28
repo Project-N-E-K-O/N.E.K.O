@@ -97,12 +97,12 @@ class PersonaManager:
     # ── file paths ───────────────────────────────────────────────────
 
     def _persona_path(self, name: str) -> str:
-        self._config_manager.ensure_memory_directory()
-        return os.path.join(str(self._config_manager.memory_dir), f'persona_{name}.json')
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'persona.json')
 
     def _corrections_path(self, name: str) -> str:
-        self._config_manager.ensure_memory_directory()
-        return os.path.join(str(self._config_manager.memory_dir), f'persona_corrections_{name}.json')
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'persona_corrections.json')
 
     # ── CRUD ─────────────────────────────────────────────────────────
 
@@ -139,8 +139,14 @@ class PersonaManager:
 
     def _migrate_from_settings(self, name: str, persona: dict) -> None:
         """One-time migration from legacy settings_{name}.json to persona format."""
-        self._config_manager.ensure_memory_directory()
-        settings_path = os.path.join(str(self._config_manager.memory_dir), f'settings_{name}.json')
+        from memory import ensure_character_dir
+        char_dir = ensure_character_dir(self._config_manager.memory_dir, name)
+        settings_path = os.path.join(char_dir, 'settings.json')
+        # 也检查旧路径（迁移前）
+        if not os.path.exists(settings_path):
+            old_path = os.path.join(str(self._config_manager.memory_dir), f'settings_{name}.json')
+            if os.path.exists(old_path):
+                settings_path = old_path
         if not os.path.exists(settings_path):
             return
         try:
