@@ -3536,7 +3536,7 @@ async function exportCharacterCard(catgirlName) {
                     // 更新加载提示
                     if (autoSaveToastElement) {
                         autoSaveToastElement.querySelector('span').textContent = window.t
-                            ? window.t('character.capturingPortrait', '正在捕获立绘...')
+                            ? window.t('character.capturingPortrait') || '正在捕获立绘...'
                             : '正在捕获立绘...';
                     }
 
@@ -3580,11 +3580,11 @@ async function exportCharacterCard(catgirlName) {
                 formData.append('include_model', 'true');
 
                 // 更新加载提示
-                if (autoSaveToastElement) {
-                    autoSaveToastElement.querySelector('span').textContent = window.t
-                        ? window.t('character.generatingCard', '正在生成角色卡...')
-                        : '正在生成角色卡...';
-                }
+                    if (autoSaveToastElement) {
+                        autoSaveToastElement.querySelector('span').textContent = window.t
+                            ? window.t('character.generatingCard') || '正在生成角色卡...'
+                            : '正在生成角色卡...';
+                    }
 
                 response = await fetch(`/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export-with-portrait`, {
                     method: 'POST',

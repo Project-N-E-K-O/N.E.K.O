@@ -3064,7 +3064,11 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                 return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
             if not isinstance(character_data, dict):
                 return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
-            name_error = _validate_profile_name(character_data.get('档案名'))
+            character_data.pop('_reserved', None)
+            character_data.pop('voice_id', None)
+            character_name = str(character_data.get('档案名', '')).strip()
+            character_data['档案名'] = character_name
+            name_error = _validate_profile_name(character_name)
             if name_error:
                 return JSONResponse({'success': False, 'error': f'角色名称无效: {name_error}'}, status_code=400)
             metadata = {'encrypted': True, 'model_included': False}
@@ -3309,10 +3313,9 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                         logger.info(f'已自动为角色 {character_name} 设置Live2D模型: {model_name}, 文件: {model3_filename}')
 
                     elif imported_model_info['type'] == 'vrm':
-                        # 保留现有的 vrm 设置（捏脸、动画等），只更新 model_path
-                        character_data['_reserved']['avatar']['vrm'] = character_data['_reserved']['avatar'].get('vrm', {})
-                        character_data['_reserved']['avatar']['vrm']['model_path'] = imported_model_info['path']
-                        character_data['_reserved']['avatar']['model_type'] = 'vrm'
+                        character_data['_reserved']['avatar']['live3d'] = character_data['_reserved']['avatar'].get('live3d', {})
+                        character_data['_reserved']['avatar']['live3d']['model_path'] = imported_model_info['path']
+                        character_data['_reserved']['avatar']['model_type'] = 'live3d'
                         logger.info(f'已自动为角色 {character_name} 设置VRM模型: {imported_model_info["name"]}')
 
                     elif imported_model_info['type'] == 'mmd':
@@ -3406,12 +3409,13 @@ async def export_catgirl_with_portrait(
                     if key in ('cursor_follow', 'physics', 'voice_id'):
                         continue
                     if key == '_reserved' and isinstance(value, dict):
-                        avatar = value.get('avatar', {})
+                        reserved_copy = copy.deepcopy(value)
+                        avatar = reserved_copy.get('avatar', {})
                         if not keep_model_paths:
-                            for model_type in ('live2d', 'vrm', 'mmd'):
-                                if model_type in avatar:
-                                    avatar.pop('model_path', None)
-                        result[key] = value
+                            for model_type in ('live2d', 'vrm', 'mmd', 'live3d'):
+                                if model_type in avatar and isinstance(avatar[model_type], dict):
+                                    avatar[model_type].pop('model_path', None)
+                        result[key] = _filter_export_fields(reserved_copy, keep_model_paths)
                     elif isinstance(value, dict):
                         result[key] = _filter_export_fields(value, keep_model_paths)
                     elif isinstance(value, list):
