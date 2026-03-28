@@ -1,0 +1,10 @@
+[plugin]
+id = "web_radio"
+name = "极简电台"
+description = "一个展示如何跨进程推流的示例插件"
+version = "1.0.0"
+author = { name = "N.E.K.O Team" }
+entry = "plugins.web_radio:WebRadioPlugin"
+
+[plugin.sdk]
+recommended = ">=0.1.0"
