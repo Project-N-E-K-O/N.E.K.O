@@ -202,3 +202,84 @@ class TimeIndexedMemory:
                 {"start_time": start_time, "end_time": end_time}
             )
             return result.fetchall()
+
+    # ── FTS5 事实索引 ─────────────────────────────────────────────
+
+    FACTS_FTS_TABLE = "facts_fts"
+
+    def _ensure_fts_table(self, lanlan_name: str) -> None:
+        """确保 FTS5 虚拟表存在。unicode61 分词器对中文做字级别索引，零依赖。"""
+        if not self._ensure_engine_exists(lanlan_name):
+            return
+        try:
+            with self.engines[lanlan_name].connect() as conn:
+                conn.execute(text(
+                    f"CREATE VIRTUAL TABLE IF NOT EXISTS {self.FACTS_FTS_TABLE} "
+                    f"USING fts5(fact_id, content, tokenize='unicode61')"
+                ))
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"[TimeIndexedMemory] 创建 FTS5 表失败: {e}")
+
+    def index_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
+        """将事实插入 FTS5 索引。"""
+        if not self._ensure_engine_exists(lanlan_name):
+            return
+        self._ensure_fts_table(lanlan_name)
+        try:
+            with self.engines[lanlan_name].connect() as conn:
+                # 先检查是否已存在
+                result = conn.execute(
+                    text(f"SELECT fact_id FROM {self.FACTS_FTS_TABLE} WHERE fact_id = :fid"),
+                    {"fid": fact_id}
+                )
+                if result.fetchone():
+                    return  # 已索引
+                conn.execute(
+                    text(f"INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) VALUES(:fid, :content)"),
+                    {"fid": fact_id, "content": content}
+                )
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"[TimeIndexedMemory] 索引事实失败: {e}")
+
+    def search_facts(self, lanlan_name: str, query: str, limit: int = 10) -> list[tuple[str, float]]:
+        """通过 FTS5 BM25 搜索事实。返回 [(fact_id, bm25_score), ...]。
+
+        BM25 分数为负值，越接近 0 越相关。
+        """
+        if not self._ensure_engine_exists(lanlan_name):
+            return []
+        self._ensure_fts_table(lanlan_name)
+        try:
+            # 转义 FTS5 特殊字符
+            safe_query = query.replace('"', '""')
+            with self.engines[lanlan_name].connect() as conn:
+                result = conn.execute(
+                    text(
+                        f"SELECT fact_id, bm25({self.FACTS_FTS_TABLE}) as score "
+                        f"FROM {self.FACTS_FTS_TABLE} "
+                        f'WHERE {self.FACTS_FTS_TABLE} MATCH :query '
+                        f"ORDER BY score LIMIT :limit"
+                    ),
+                    {"query": safe_query, "limit": limit}
+                )
+                return [(row[0], row[1]) for row in result.fetchall()]
+        except Exception as e:
+            logger.debug(f"[TimeIndexedMemory] FTS5 搜索失败（可能是查询为空或语法）: {e}")
+            return []
+
+    def delete_fact_from_index(self, lanlan_name: str, fact_id: str) -> None:
+        """从 FTS5 索引中移除事实。"""
+        if not self._ensure_engine_exists(lanlan_name):
+            return
+        self._ensure_fts_table(lanlan_name)
+        try:
+            with self.engines[lanlan_name].connect() as conn:
+                conn.execute(
+                    text(f"DELETE FROM {self.FACTS_FTS_TABLE} WHERE fact_id = :fid"),
+                    {"fid": fact_id}
+                )
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"[TimeIndexedMemory] 删除 FTS5 索引失败: {e}")

@@ -7,7 +7,7 @@ from config import CHARACTER_RESERVED_FIELDS
 from utils.config_manager import get_config_manager
 from utils.token_tracker import set_call_type
 from utils.file_utils import atomic_write_json
-from config.prompts_sys import settings_extractor_prompt, settings_verifier_prompt
+from config.prompts_memory import settings_extractor_prompt, settings_verifier_prompt
 
 
 class ImportantSettingsManager:
