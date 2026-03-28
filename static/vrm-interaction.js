@@ -505,8 +505,16 @@ class VRMInteraction {
             this.manager.isLocked = locked;
         }
 
-        if (!locked && typeof this._setLockedHoverFade === 'function') {
-            this._setLockedHoverFade(false);
+        if (!locked) {
+            // 解锁时清除待定的 fade 定时器，防止竞态
+            if (this._fadeDelayTimer) {
+                clearTimeout(this._fadeDelayTimer);
+                this._fadeDelayTimer = null;
+            }
+            this._hasEnteredRange = false;
+            if (typeof this._setLockedHoverFade === 'function') {
+                this._setLockedHoverFade(false);
+            }
         }
 
         // 不再修改 pointerEvents，改用逻辑拦截
