@@ -1341,8 +1341,14 @@
         "importingCard": "キャラクターカードをインポート中...",
         "importCardSuccess": "キャラクターカード「{{name}}」のインポートに成功しました",
         "importCardFailed": "キャラクターカードのインポートに失敗しました: {{error}}",
-        "importInvalidFile": "有効なPNG画像ファイルを選択してください",
-        "importNoMarker": "この画像は有効なキャラクターカードファイルではありません"
+        "importInvalidFile": "有効なPNG画像ファイルまたは.nekocfg設定ファイルを選択してください",
+        "importNoMarker": "この画像は有効なキャラクターカードファイルではありません",
+        "exportOptions": "エクスポート方法を選択",
+        "exportOptionsDesc": "エクスポートする内容を選択してください：",
+        "exportFull": "キャラクターカードをエクスポート",
+        "exportSettingsOnly": "設定のみエクスポート",
+        "exportingSettings": "設定をエクスポート中...",
+        "exportSettingsSuccess": "設定のエクスポートに成功しました"
     },
     "app": {
         "welcomeBack": "{{name}}が戻りました！",

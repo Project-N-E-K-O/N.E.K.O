@@ -1341,8 +1341,14 @@
         "importingCard": "正在导入角色卡...",
         "importCardSuccess": "角色卡 \"{{name}}\" 导入成功",
         "importCardFailed": "导入角色卡失败: {{error}}",
-        "importInvalidFile": "请选择有效的PNG图片文件",
-        "importNoMarker": "该图片不是有效的角色卡文件"
+        "importInvalidFile": "请选择有效的PNG图片文件或.nekocfg设定文件",
+        "importNoMarker": "该图片不是有效的角色卡文件",
+        "exportOptions": "选择导出方式",
+        "exportOptionsDesc": "请选择要导出的内容：",
+        "exportFull": "导出角色卡",
+        "exportSettingsOnly": "仅导出设定",
+        "exportingSettings": "正在导出设定...",
+        "exportSettingsSuccess": "设定导出成功"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",

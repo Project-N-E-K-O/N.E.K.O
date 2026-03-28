@@ -2995,9 +2995,12 @@ async function handleImportCharacterCard(event) {
     // 重置 input 以便可以重复选择同一文件
     event.target.value = '';
 
-    // 检查文件类型
-    if (!file.type.startsWith('image/') && !file.name.endsWith('.png')) {
-        const errorText = window.t ? window.t('character.importInvalidFile') : '请选择有效的PNG图片文件';
+    // 检查文件类型（支持 PNG 图片和 .nekocfg 加密文件）
+    const isNekoFile = file.name.endsWith('.nekocfg');
+    const isPngFile = file.type.startsWith('image/') || file.name.endsWith('.png');
+
+    if (!isNekoFile && !isPngFile) {
+        const errorText = window.t ? window.t('character.importInvalidFile') : '请选择有效的PNG图片文件或.nekocfg设定文件';
         await showAlert(errorText);
         return;
     }
@@ -3013,41 +3016,49 @@ async function handleImportCharacterCard(event) {
 
         // 读取文件数据
         const arrayBuffer = await file.arrayBuffer();
-        const uint8Array = new Uint8Array(arrayBuffer);
+        let fileData;
 
-        // 查找 NEKOCHARA 标记
-        const marker = new TextEncoder().encode('NEKOCHARA\x00');
-        let markerIndex = -1;
-        for (let i = uint8Array.length - marker.length; i >= 0; i--) {
-            let found = true;
-            for (let j = 0; j < marker.length; j++) {
-                if (uint8Array[i + j] !== marker[j]) {
-                    found = false;
+        if (isNekoFile) {
+            // .nekocfg 文件直接发送加密数据
+            fileData = new Uint8Array(arrayBuffer);
+        } else {
+            // PNG 文件需要提取 ZIP 数据
+            const uint8Array = new Uint8Array(arrayBuffer);
+
+            // 查找 NEKOCHARA 标记
+            const marker = new TextEncoder().encode('NEKOCHARA\x00');
+            let markerIndex = -1;
+            for (let i = uint8Array.length - marker.length; i >= 0; i--) {
+                let found = true;
+                for (let j = 0; j < marker.length; j++) {
+                    if (uint8Array[i + j] !== marker[j]) {
+                        found = false;
+                        break;
+                    }
+                }
+                if (found) {
+                    markerIndex = i;
                     break;
                 }
             }
-            if (found) {
-                markerIndex = i;
-                break;
+
+            if (markerIndex === -1) {
+                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
             }
+
+            // 读取 ZIP 大小（标记前的 8 字节）
+            const zipSizeBytes = uint8Array.slice(markerIndex - 8, markerIndex);
+            const zipSize = new DataView(zipSizeBytes.buffer).getUint32(0, true);
+
+            // 提取 ZIP 数据
+            const zipStart = markerIndex - 8 - zipSize;
+            fileData = uint8Array.slice(zipStart, markerIndex - 8);
         }
-
-        if (markerIndex === -1) {
-            throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-        }
-
-        // 读取 ZIP 大小（标记前的 8 字节）
-        const zipSizeBytes = uint8Array.slice(markerIndex - 8, markerIndex);
-        const zipSize = new DataView(zipSizeBytes.buffer).getUint32(0, true);
-
-        // 提取 ZIP 数据
-        const zipStart = markerIndex - 8 - zipSize;
-        const zipData = uint8Array.slice(zipStart, markerIndex - 8);
 
         // 创建 FormData 发送到后端
         const formData = new FormData();
-        const zipBlob = new Blob([zipData], { type: 'application/zip' });
-        formData.append('zip_file', zipBlob, 'character_data.zip');
+        const blob = new Blob([fileData], { type: isNekoFile ? 'application/octet-stream' : 'application/zip' });
+        formData.append('zip_file', blob, isNekoFile ? file.name : 'character_data.zip');
 
         // 调用后端 API 导入角色卡
         const response = await fetch('/api/characters/import-card', {
@@ -3352,9 +3363,99 @@ async function closeCharaManagerPage() {
     }
 }
 
+// 显示导出选项弹窗
+function showExportOptionsModal(catgirlName) {
+    return new Promise((resolve) => {
+        const title = window.t ? window.t('character.exportOptions') : '选择导出方式';
+        const message = window.t ? window.t('character.exportOptionsDesc') : '请选择要导出的内容：';
+
+        // 创建遮罩层
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+
+        // 创建对话框
+        const dialog = document.createElement('div');
+        dialog.className = 'modal-dialog';
+
+        // 创建标题
+        const header = document.createElement('div');
+        header.className = 'modal-header';
+        const titleEl = document.createElement('h3');
+        titleEl.className = 'modal-title';
+        titleEl.textContent = title;
+        header.appendChild(titleEl);
+        dialog.appendChild(header);
+
+        // 创建内容
+        const body = document.createElement('div');
+        body.className = 'modal-body';
+        body.textContent = message;
+        dialog.appendChild(body);
+
+        // 创建按钮区域
+        const footer = document.createElement('div');
+        footer.className = 'modal-footer';
+
+        // 取消按钮
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'modal-btn modal-btn-secondary';
+        cancelBtn.textContent = window.t ? window.t('common.cancel') : '取消';
+        cancelBtn.onclick = () => {
+            closeModal();
+            resolve(null);
+        };
+        footer.appendChild(cancelBtn);
+
+        // 仅导出设定按钮
+        const settingsBtn = document.createElement('button');
+        settingsBtn.className = 'modal-btn modal-btn-secondary';
+        settingsBtn.textContent = window.t ? window.t('character.exportSettingsOnly') : '仅导出设定';
+        settingsBtn.onclick = () => {
+            closeModal();
+            resolve('settings-only');
+        };
+        footer.appendChild(settingsBtn);
+
+        // 导出角色卡按钮
+        const exportBtn = document.createElement('button');
+        exportBtn.className = 'modal-btn modal-btn-primary';
+        exportBtn.textContent = window.t ? window.t('character.exportFull') : '导出角色卡';
+        exportBtn.onclick = () => {
+            closeModal();
+            resolve('full');
+        };
+        footer.appendChild(exportBtn);
+
+        dialog.appendChild(footer);
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+
+        // 关闭函数
+        function closeModal() {
+            if (overlay.parentNode) {
+                overlay.parentNode.removeChild(overlay);
+            }
+        }
+
+        // 点击遮罩关闭
+        overlay.onclick = (e) => {
+            if (e.target === overlay) {
+                closeModal();
+                resolve(null);
+            }
+        };
+    });
+}
+
 // 导出角色卡函数
 async function exportCharacterCard(catgirlName) {
     try {
+        // 显示导出选项弹窗
+        const exportType = await showExportOptionsModal(catgirlName);
+        if (!exportType) {
+            return; // 用户取消
+        }
+
         // 显示加载提示
         const loadingText = window.t ? window.t('character.exportingCard') : '正在导出角色卡...';
         showAutoSaveToast();
@@ -3363,8 +3464,12 @@ async function exportCharacterCard(catgirlName) {
             autoSaveToastElement.classList.add('visible');
         }
 
-        // 调用后端API导出角色卡
-        const response = await fetch(`/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export`, {
+        // 根据导出类型调用不同API
+        const apiEndpoint = exportType === 'full'
+            ? `/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export`
+            : `/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export-settings`;
+
+        const response = await fetch(apiEndpoint, {
             method: 'GET'
         });
 
@@ -3373,13 +3478,13 @@ async function exportCharacterCard(catgirlName) {
             throw new Error(errorData.error || `HTTP ${response.status}`);
         }
 
-        // 获取导出的PNG数据
+        // 获取导出的数据
         const blob = await response.blob();
 
         // 从 Content-Disposition 头解析文件名
         // 优先使用 filename* (RFC 5987 编码), 回退到 filename
         const contentDisposition = response.headers.get('Content-Disposition');
-        let filename = `${catgirlName}_角色卡.png`; // 默认文件名
+        let filename = exportType === 'full' ? `${catgirlName}_角色卡.png` : `${catgirlName}_设定.nekocfg`; // 默认文件名
 
         if (contentDisposition) {
             // 尝试匹配 filename*=UTF-8''url_encoded_filename
@@ -3401,16 +3506,17 @@ async function exportCharacterCard(catgirlName) {
 
         // 尝试使用 File System Access API 让用户选择保存位置
         // 如果不支持，则回退到传统的下载方式
+        let saveCancelled = false;
         try {
             if ('showSaveFilePicker' in window) {
-                // 提取建议的文件名（不含扩展名）
-                const suggestedName = filename.replace(/\.png$/i, '');
-
                 const fileHandle = await window.showSaveFilePicker({
                     suggestedName: filename,
-                    types: [{
+                    types: exportType === 'full' ? [{
                         description: 'PNG 图片',
                         accept: { 'image/png': ['.png'] }
+                    }] : [{
+                        description: 'NEKO 设定文件',
+                        accept: { 'application/octet-stream': ['.nekocfg'] }
                     }]
                 });
 
@@ -3429,10 +3535,16 @@ async function exportCharacterCard(catgirlName) {
                 window.URL.revokeObjectURL(url);
             }
         } catch (saveError) {
-            // 用户取消或保存失败，回退到传统下载方式
-            if (saveError.name !== 'AbortError') {
-                console.warn('保存文件失败，使用传统下载方式:', saveError);
+            // 用户取消保存
+            if (saveError.name === 'AbortError') {
+                saveCancelled = true;
+                if (autoSaveToastElement) {
+                    autoSaveToastElement.classList.remove('visible');
+                }
+                return; // 真正取消，不显示成功提示
             }
+            // 其他错误，回退到传统下载方式
+            console.warn('保存文件失败，使用传统下载方式:', saveError);
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
@@ -3441,6 +3553,11 @@ async function exportCharacterCard(catgirlName) {
             a.click();
             document.body.removeChild(a);
             window.URL.revokeObjectURL(url);
+        }
+
+        // 如果用户取消了保存，不显示成功提示
+        if (saveCancelled) {
+            return;
         }
 
         // 显示成功提示

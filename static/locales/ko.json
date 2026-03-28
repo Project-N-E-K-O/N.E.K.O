@@ -1341,8 +1341,14 @@
         "importingCard": "캐릭터 카드를 가져오는 중...",
         "importCardSuccess": "캐릭터 카드 \"{{name}}\" 가져오기 성공",
         "importCardFailed": "캐릭터 카드 가져오기 실패: {{error}}",
-        "importInvalidFile": "유효한 PNG 이미지 파일을 선택하세요",
-        "importNoMarker": "이 이미지는 유효한 캐릭터 카드 파일이 아닙니다"
+        "importInvalidFile": "유효한 PNG 이미지 파일 또는 .nekocfg 설정 파일을 선택하세요",
+        "importNoMarker": "이 이미지는 유효한 캐릭터 카드 파일이 아닙니다",
+        "exportOptions": "낳출 방법 선택",
+        "exportOptionsDesc": "낳출할 내용을 선택하세요：",
+        "exportFull": "캐릭터 카드 낳출",
+        "exportSettingsOnly": "설정만 낳출",
+        "exportingSettings": "설정 낳출 중...",
+        "exportSettingsSuccess": "설정 낳출 성공"
     },
     "app": {
         "welcomeBack": "{{name}}이 돌아왔습니다!",

@@ -1341,8 +1341,14 @@
         "importingCard": "Importing character card...",
         "importCardSuccess": "Character card \"{{name}}\" imported successfully",
         "importCardFailed": "Failed to import character card: {{error}}",
-        "importInvalidFile": "Please select a valid PNG image file",
-        "importNoMarker": "This image is not a valid character card file"
+        "importInvalidFile": "Please select a valid PNG image file or .nekocfg settings file",
+        "importNoMarker": "This image is not a valid character card file",
+        "exportOptions": "Select Export Method",
+        "exportOptionsDesc": "Please select what to export:",
+        "exportFull": "Export Character Card",
+        "exportSettingsOnly": "Export Settings Only",
+        "exportingSettings": "Exporting settings...",
+        "exportSettingsSuccess": "Settings exported successfully"
     },
     "app": {
         "welcomeBack": "{{name}} is back!",
