@@ -947,9 +947,9 @@ class VRMInteraction {
         };
         this._setLockedHoverFade = setLockedHoverFade;
 
-        // 鼠标静止检测：1秒延迟变淡
-        let _fadeDelayTimer = null;
-        let _hasEnteredRange = false;
+        // 鼠标静止检测：1秒延迟变淡（使用实例属性以便 cleanup 访问）
+        this._fadeDelayTimer = null;
+        this._hasEnteredRange = false;
 
         // 初始化缓存
         this.updateModelBoundsCache();
@@ -1190,21 +1190,21 @@ class VRMInteraction {
             const isInRange = this.checkLocked() && distance < hoverFadeThreshold;
             if (isInRange) {
                 // 鼠标在范围内
-                if (!_hasEnteredRange && !_fadeDelayTimer) {
+                if (!this._hasEnteredRange && !this._fadeDelayTimer) {
                     // 首次进入，开始1秒计时
-                    _hasEnteredRange = true;
-                    _fadeDelayTimer = setTimeout(() => {
+                    this._hasEnteredRange = true;
+                    this._fadeDelayTimer = setTimeout(() => {
                         setLockedHoverFade(true);
                     }, 1000);
                 }
                 // 已进入过或计时中，不做额外操作
             } else {
                 // 鼠标离开范围，清除计时器并恢复
-                if (_fadeDelayTimer) {
-                    clearTimeout(_fadeDelayTimer);
-                    _fadeDelayTimer = null;
+                if (this._fadeDelayTimer) {
+                    clearTimeout(this._fadeDelayTimer);
+                    this._fadeDelayTimer = null;
                 }
-                _hasEnteredRange = false;
+                this._hasEnteredRange = false;
                 setLockedHoverFade(false);
             }
 
@@ -1286,10 +1286,11 @@ class VRMInteraction {
             clearTimeout(this._hideButtonsTimer);
             this._hideButtonsTimer = null;
         }
-        if (_fadeDelayTimer) {
-            clearTimeout(_fadeDelayTimer);
-            _fadeDelayTimer = null;
+        if (this._fadeDelayTimer) {
+            clearTimeout(this._fadeDelayTimer);
+            this._fadeDelayTimer = null;
         }
+        this._hasEnteredRange = false;
         // 清理 RAF 标志
         if (this._floatingButtonsPendingFrame !== null) {
             cancelAnimationFrame(this._floatingButtonsPendingFrame);

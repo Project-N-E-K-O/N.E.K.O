@@ -677,6 +677,8 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     // 鼠标静止检测：1秒延迟变淡
     let _fadeDelayTimer = null;
     let _hasEnteredRange = false;
+    let _lastFadeMouseX = null;
+    let _lastFadeMouseY = null;
 
     // 方法1：监听 PIXI 模型的 pointerover/pointerout 事件（适用于 Electron 透明窗口）
     model.on('pointerover', () => {
@@ -813,6 +815,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                     clearTimeout(_fadeDelayTimer);
                     _fadeDelayTimer = null;
                 }
+                _hasEnteredRange = false;
                 setLockedHoverFade(false);
                 return;
             }
@@ -898,8 +901,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     // 保存新的监听器引用
     this._mouseTrackingListener = onPointerMove;
 
-    // 使用 window 监听鼠标移动
+    // 使用 window 监听鼠标移动（pointermove + mousemove 兜底，兼容 Electron poller 的 mousemove）
     window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('mousemove', onPointerMove);
 
     // 监听浮动按钮容器的鼠标进入/离开事件
     // 延迟设置，因为按钮容器可能还没创建
