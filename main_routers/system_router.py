@@ -30,15 +30,15 @@ from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from config import get_extra_body, MEMORY_SERVER_PORT
-from config.prompts_sys import (
-    emotion_analysis_prompt,
+from config.prompts_sys import _loc
+from config.prompts_memory import emotion_analysis_prompt, PROACTIVE_FOLLOWUP_HEADER
+from config.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
     get_proactive_music_unknown_track_name,
     get_proactive_music_failsafe_hint,
     get_proactive_music_strict_constraint,
     get_proactive_format_sections,
-    _loc,
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
     RECENT_PROACTIVE_TIME_LABELS, RECENT_PROACTIVE_CHANNEL_LABELS,
     BEGIN_GENERATE,
@@ -1986,6 +1986,42 @@ async def proactive_chat(request: Request):
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(lanlan_name, proactive_lang)
 
+        # ========== 3.5 反思 + 回调话题（融合主动搭话，几乎免费） ==========
+        # 认知框架：Facts → Reflection(pending) → 主动搭话自然提及 → 用户反馈 → Persona
+        followup_topics_prompt = ""
+        _surfaced_reflection_ids = []  # 记录本次搭话提及了哪些 pending 反思
+        _reflection_engine = None
+        _persona_mgr = None
+        try:
+            from memory import ReflectionEngine, FactStore, PersonaManager
+            _fact_store = FactStore()
+            _persona_mgr = PersonaManager()
+            _reflection_engine = ReflectionEngine(_fact_store, _persona_mgr)
+
+            # 1. 自动确认 >=3天 无反对的 pending 反思 → 晋升 persona
+            _auto_confirmed = _reflection_engine.auto_confirm_stale(lanlan_name)
+            if _auto_confirmed:
+                print(f"[{lanlan_name}] 自动确认 {_auto_confirmed} 条过期反思到 persona")
+
+            # 2. 异步反思（>=3 条新事实才触发 LLM 调用）
+            _reflection_result = await _reflection_engine.reflect(lanlan_name)
+            if _reflection_result:
+                print(f"[{lanlan_name}] 反思完成(pending): {_reflection_result['text'][:50]}...")
+
+            # 3. 获取回调话题候选（list[dict]，带 id）
+            #    注意：此处只获取候选，不标记为 surfaced。
+            #    surfaced 标记在 Phase 2 生成回复后才做。
+            _followup_topics = _reflection_engine.get_followup_topics(lanlan_name)
+            if _followup_topics:
+                followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
+                for topic in _followup_topics:
+                    followup_topics_prompt += f"- {topic['text']}\n"
+                    if topic.get('id'):
+                        _surfaced_reflection_ids.append(topic['id'])
+                print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
+        except Exception as e:
+            logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
+
         # ========== 4. 获取 LLM 配置 ==========
         try:
             correction_config = _config_manager.get_model_api_config('correction')
@@ -2264,13 +2300,18 @@ async def proactive_chat(request: Request):
 
         # 只要有至少一个任务就发起 LLM 调用
         unified_parsed: dict = {'web': None, 'music_keyword': None, 'meme_keyword': None}
+        # 先定义 enriched_memory_context 保证后续引用不报 UnboundLocalError
+        enriched_memory_context = memory_context
+        if followup_topics_prompt:
+            enriched_memory_context = memory_context + "\n" + followup_topics_prompt
+
         if has_web_task or has_music_task or has_meme_task:
             try:
-                from config.prompts_sys import build_unified_phase1_prompt
+                from config.prompts_proactive import build_unified_phase1_prompt
                 unified_prompt = build_unified_phase1_prompt(
                     proactive_lang,
                     merged_content=merged_web_content if has_web_task else None,
-                    memory_context=memory_context,
+                    memory_context=enriched_memory_context,
                     recent_chats_section=proactive_chat_history_prompt,
                     music_ctx={'lanlan_name': lanlan_name, 'master_name': master_name_current} if has_music_task else None,
                     meme_enabled=has_meme_task,
@@ -2567,13 +2608,15 @@ async def proactive_chat(request: Request):
 
         # 静动分离：generate_prompt 作为静态 SystemMessage（可被缓存），
         # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
+        # 使用 enriched_memory_context（含回调话题）而非原始 memory_context
+        phase2_memory_context = enriched_memory_context if followup_topics_prompt else memory_context
         generate_prompt = get_proactive_generate_prompt(
             proactive_lang, music_playing_hint,
             has_music=bool(music_section), has_meme=bool(meme_section),
         ).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
-            memory_context=memory_context,
+            memory_context=phase2_memory_context,
             recent_chats_section=proactive_chat_history_prompt,
             screen_section=screen_section,
             external_section=external_section,
@@ -2785,7 +2828,20 @@ async def proactive_chat(request: Request):
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
-        
+
+        # 后台长期记忆维护（同步，轻量操作）
+        try:
+            # 保存本次搭话实际提及的 pending 反思 ID（供下次 /process 做反馈检查）
+            if _reflection_engine is not None and _surfaced_reflection_ids:
+                _reflection_engine.record_surfaced(lanlan_name, _surfaced_reflection_ids)
+                print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")
+
+            # 记录 persona 提及次数（疲劳跟踪）
+            if _persona_mgr is not None:
+                _persona_mgr.record_mentions(lanlan_name, response_text)
+        except Exception as e:
+            logger.debug(f"[{lanlan_name}] 长期记忆后处理失败（不影响主流程）: {e}")
+
         # 【逻辑优化】精准的话题去重记录：仅当链接真正被加入 source_links 时才记录已使用
         def _is_link_selected(selected_link):
             if not selected_link:
