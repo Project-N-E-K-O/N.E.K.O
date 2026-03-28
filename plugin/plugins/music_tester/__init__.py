@@ -70,7 +70,10 @@ class MusicTesterPlugin(NekoPluginBase):
             }
         }
     )
-    async def test_normal(self, url: str, **_):
+    async def test_normal(self, url: str = "", **_):
+        if not url:
+            return Err("请提供测试 URL")
+
         self.push_message(
             source=self.plugin_id,
             message_type="music_play_url",
@@ -80,4 +83,4 @@ class MusicTesterPlugin(NekoPluginBase):
                 "artist": "N.E.K.O Tester"
             }
         )
-        return Ok({"status": "sent"})
+        return Ok({"status": "sent", "url": url})
