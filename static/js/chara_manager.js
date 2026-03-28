@@ -10,7 +10,7 @@ const ALLOWED_ORIGINS = [window.location.origin];
 let autoSaveToastTimer = null;
 let autoSaveToastElement = null;
 
-function showAutoSaveToast() {
+function showAutoSaveToast(disableAutoHide = false) {
     if (!autoSaveToastElement) {
         autoSaveToastElement = document.createElement('div');
         autoSaveToastElement.className = 'auto-save-toast';
@@ -19,18 +19,35 @@ function showAutoSaveToast() {
     } else {
         autoSaveToastElement.querySelector('span').textContent = window.t ? window.t('character.autoSaved') : '已自动保存设定';
     }
-    
+
     autoSaveToastElement.classList.add('visible');
-    
+
     if (autoSaveToastTimer) {
         clearTimeout(autoSaveToastTimer);
+        autoSaveToastTimer = null;
     }
-    
-    autoSaveToastTimer = setTimeout(() => {
-        if (autoSaveToastElement) {
-            autoSaveToastElement.classList.remove('visible');
-        }
-    }, 2000);
+
+    if (!disableAutoHide) {
+        autoSaveToastTimer = setTimeout(() => {
+            if (autoSaveToastElement) {
+                autoSaveToastElement.classList.remove('visible');
+            }
+        }, 2000);
+    }
+}
+
+function hideAutoSaveToast() {
+    if (autoSaveToastElement) {
+        autoSaveToastElement.classList.remove('visible');
+    }
+    if (autoSaveToastTimer) {
+        clearTimeout(autoSaveToastTimer);
+        autoSaveToastTimer = null;
+    }
+}
+
+function showPersistentAutoSaveToast() {
+    showAutoSaveToast(true);
 }
 
 // 存储输入框原始值的 WeakMap
@@ -1299,21 +1316,21 @@ function renderCatgirls() {
         const actionsDiv = document.createElement('div');
         actionsDiv.className = 'catgirl-actions';
 
-        // 只在当前猫娘的卡片上显示导出角色卡按钮
         const isCurrentCatgirl = window._currentCatgirl && key === window._currentCatgirl;
-        if (isCurrentCatgirl) {
-            const exportBtn = document.createElement('button');
-            exportBtn.className = 'btn sm export';
-            exportBtn.id = 'export-btn-' + key;
-            exportBtn.style.background = '#40C5F1';
-            exportBtn.style.minWidth = '120px';
-            exportBtn.style.marginRight = '8px';
-            const exportIconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;margin-right:4px;vertical-align:middle;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
-            const exportText = (window.t && typeof window.t === 'function') ? `${exportIconSvg}<span data-i18n="character.exportCard">${window.t('character.exportCard')}</span>` : `${exportIconSvg}导出角色卡`;
-            exportBtn.innerHTML = exportText;
-            exportBtn.addEventListener('click', function () { exportCharacterCard(key); });
-            actionsDiv.appendChild(exportBtn);
+        const exportBtn = document.createElement('button');
+        exportBtn.className = 'btn sm export';
+        exportBtn.id = 'export-btn-' + key;
+        exportBtn.style.background = '#40C5F1';
+        exportBtn.style.minWidth = '120px';
+        exportBtn.style.marginRight = '8px';
+        if (!isCurrentCatgirl) {
+            exportBtn.style.display = 'none';
         }
+        const exportIconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;margin-right:4px;vertical-align:middle;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+        const exportText = (window.t && typeof window.t === 'function') ? `${exportIconSvg}<span data-i18n="character.exportCard">${window.t('character.exportCard')}</span>` : `${exportIconSvg}导出角色卡`;
+        exportBtn.innerHTML = exportText;
+        exportBtn.addEventListener('click', function () { exportCharacterCard(key); });
+        actionsDiv.appendChild(exportBtn);
 
         const switchBtn = document.createElement('button');
         switchBtn.className = 'btn sm';
@@ -2894,14 +2911,14 @@ window.addEventListener('unload', sendBeacon);
 // 更新切换按钮状态
 function updateSwitchButtons() {
     const thisReqId = ++updateSwitchButtonsReqId;
-    
+
     fetch('/api/characters/current_catgirl')
         .then(response => response.json())
         .then(data => {
             if (thisReqId !== updateSwitchButtonsReqId) {
                 return;
             }
-            
+
             const currentCatgirl = data.current_catgirl || undefined;
             window._currentCatgirl = currentCatgirl;
             const catgirls = characterData['猫娘'] || {};
@@ -2925,6 +2942,15 @@ function updateSwitchButtons() {
                         switchBtn.style.minWidth = '120px';
                         switchBtn.disabled = false;
                         if (block) block.classList.remove('current');
+                    }
+                }
+
+                const exportBtn = document.getElementById(`export-btn-${name}`);
+                if (exportBtn) {
+                    if (name === currentCatgirl) {
+                        exportBtn.style.display = '';
+                    } else {
+                        exportBtn.style.display = 'none';
                     }
                 }
             });
@@ -3011,10 +3037,9 @@ async function handleImportCharacterCard(event) {
     try {
         // 显示加载提示
         const loadingText = window.t ? window.t('character.importingCard') : '正在导入角色卡...';
-        showAutoSaveToast();
+        showPersistentAutoSaveToast();
         if (autoSaveToastElement) {
             autoSaveToastElement.querySelector('span').textContent = loadingText;
-            autoSaveToastElement.classList.add('visible');
         }
 
         // 读取文件数据
@@ -3049,12 +3074,24 @@ async function handleImportCharacterCard(event) {
                 throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
             }
 
+            if (markerIndex < 8) {
+                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+            }
+
             // 读取 ZIP 大小（标记前的 8 字节）
             const zipSizeBytes = uint8Array.slice(markerIndex - 8, markerIndex);
             const zipSize = new DataView(zipSizeBytes.buffer).getUint32(0, true);
 
+            if (zipSize <= 0 || zipSize > uint8Array.length) {
+                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+            }
+
             // 提取 ZIP 数据
             const zipStart = markerIndex - 8 - zipSize;
+            if (zipStart < 0 || zipStart + zipSize > markerIndex - 8) {
+                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+            }
+
             fileData = uint8Array.slice(zipStart, markerIndex - 8);
         }
 
@@ -3080,12 +3117,8 @@ async function handleImportCharacterCard(event) {
         const successText = window.t ? window.t('character.importCardSuccess', { name: result.character_name }) : `角色卡 "${result.character_name}" 导入成功`;
         if (autoSaveToastElement) {
             autoSaveToastElement.querySelector('span').textContent = successText;
-            setTimeout(() => {
-                if (autoSaveToastElement) {
-                    autoSaveToastElement.classList.remove('visible');
-                }
-            }, 2000);
         }
+        setTimeout(hideAutoSaveToast, 2000);
 
         // 刷新角色列表
         await loadCharacterData();
@@ -3094,9 +3127,7 @@ async function handleImportCharacterCard(event) {
         console.error('导入角色卡失败:', error);
         const errorText = window.t ? window.t('character.importCardFailed', { error: error.message }) : `导入角色卡失败: ${error.message}`;
         await showAlert(errorText);
-        if (autoSaveToastElement) {
-            autoSaveToastElement.classList.remove('visible');
-        }
+        hideAutoSaveToast();
     }
 }
 
@@ -3464,10 +3495,9 @@ async function exportCharacterCard(catgirlName) {
         const loadingText = exportType === 'settings-only'
             ? (window.t ? window.t('character.exportingSettings') : '正在导出设定...')
             : (window.t ? window.t('character.exportingCard') : '正在导出角色卡...');
-        showAutoSaveToast();
+        showPersistentAutoSaveToast();
         if (autoSaveToastElement) {
             autoSaveToastElement.querySelector('span').textContent = loadingText;
-            autoSaveToastElement.classList.add('visible');
         }
 
         let response;
@@ -3653,12 +3683,8 @@ async function exportCharacterCard(catgirlName) {
 
         if (autoSaveToastElement) {
             autoSaveToastElement.querySelector('span').textContent = successText;
-            setTimeout(() => {
-                if (autoSaveToastElement) {
-                    autoSaveToastElement.classList.remove('visible');
-                }
-            }, 2000);
         }
+        setTimeout(hideAutoSaveToast, 2000);
     } catch (error) {
         console.error('导出角色卡失败:', error);
         let errorText;
@@ -3670,10 +3696,7 @@ async function exportCharacterCard(catgirlName) {
             errorText = window.t ? window.t('character.exportCardFailed', { error: error.message }) : `导出失败: ${error.message}`;
         }
         await showAlert(errorText);
-
-        if (autoSaveToastElement) {
-            autoSaveToastElement.classList.remove('visible');
-        }
+        hideAutoSaveToast();
     }
 }
 

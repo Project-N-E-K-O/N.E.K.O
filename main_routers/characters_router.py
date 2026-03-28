@@ -24,6 +24,7 @@ import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
+from .workshop_router import _ugc_sync_lock
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.config_manager import get_reserved, set_reserved, flatten_reserved
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
@@ -2757,7 +2758,7 @@ async def export_catgirl_card(name: str):
                                 if is_user_imported_model(model_dir, _config_manager):
                                     # 添加模型文件到压缩包
                                     model_files_added = 0
-                                    for root, dirs, files in os.walk(model_dir):
+                                    for root, _dirs, files in os.walk(model_dir):
                                         for file in files:
                                             file_path = Path(root) / file
                                             arc_name = f"model/{live2d_name}/{file_path.relative_to(model_dir)}"
@@ -2790,7 +2791,7 @@ async def export_catgirl_card(name: str):
 
                                 # 添加整个模型文件夹到压缩包
                                 model_files_added = 0
-                                for root, dirs, files in os.walk(model_parent_dir):
+                                for root, _dirs, files in os.walk(model_parent_dir):
                                     for file in files:
                                         file_path = Path(root) / file
                                         arc_name = f"model/{model_folder_name}/{file_path.relative_to(model_parent_dir)}"
@@ -2843,10 +2844,10 @@ async def export_catgirl_card(name: str):
                 # 尝试使用系统默认字体，支持中文
                 font_size = 36
                 font = ImageFont.truetype("msyh.ttc", font_size)  # 微软雅黑
-            except:
+            except (OSError, IOError):
                 try:
                     font = ImageFont.truetype("simhei.ttf", font_size)  # 黑体
-                except:
+                except (OSError, IOError):
                     font = ImageFont.load_default()
 
             # 计算文字位置（左侧居中偏上）
@@ -2933,11 +2934,15 @@ async def export_catgirl_settings_only(name: str):
     """
     from urllib.parse import quote
 
-    # 简单的异或加密密钥（可以根据需要修改）
+    # XOR混淆密钥（仅用于防止意外编辑，非安全加密）
     XOR_KEY = b'NEKOCHARA2024'
 
-    def xor_encrypt(data: bytes, key: bytes) -> bytes:
-        """使用异或加密/解密数据"""
+    def xor_obfuscate(data: bytes, key: bytes) -> bytes:
+        """使用XOR进行简单的数据混淆/还原（仅用于防止意外编辑，非安全加密）
+
+        注意：这不是真正的加密，只是简单的可逆混淆，用于防止用户意外编辑。
+        如果需要真正的安全保护，应使用其他加密方案。
+        """
         return bytes(data[i] ^ key[i % len(key)] for i in range(len(data)))
 
     try:
@@ -2973,7 +2978,7 @@ async def export_catgirl_settings_only(name: str):
         json_data = json.dumps(chara_json, ensure_ascii=False, indent=2).encode('utf-8')
 
         # 加密JSON数据
-        encrypted_data = xor_encrypt(json_data, XOR_KEY)
+        encrypted_data = xor_obfuscate(json_data, XOR_KEY)
 
         # 构建文件名
         safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '·', '•') or '\u4e00' <= c <= '\u9fff').strip()
@@ -3018,11 +3023,14 @@ async def import_character_card(zip_file: UploadFile = File(...)):
     import shutil
     from pathlib import Path
 
-    # 简单的异或加密密钥（与导出时相同）
+    # XOR混淆密钥（与导出时相同，用于防止意外编辑）
     XOR_KEY = b'NEKOCHARA2024'
 
-    def xor_decrypt(data: bytes, key: bytes) -> bytes:
-        """使用异或解密数据"""
+    def xor_deobfuscate(data: bytes, key: bytes) -> bytes:
+        """使用XOR进行数据还原（与xor_obfuscate相同的操作，用于命名一致性）
+
+        注意：这不是真正的解密，只是简单的可逆混淆还原。
+        """
         return bytes(data[i] ^ key[i % len(key)] for i in range(len(data)))
 
     temp_dir = None
@@ -3032,10 +3040,14 @@ async def import_character_card(zip_file: UploadFile = File(...)):
         temp_path = Path(temp_dir)
         zip_path = temp_path / 'imported.zip'
 
-        # 保存上传的文件
-        with open(zip_path, 'wb') as f:
-            content = await zip_file.read()
-            f.write(content)
+        # 保存上传的文件（使用流式读取并限制大小）
+        try:
+            file_buffer = await _read_limited_stream(zip_file, MAX_UPLOAD_SIZE)
+            with open(zip_path, 'wb') as f:
+                f.write(file_buffer.getvalue())
+        except _UploadTooLargeError as e:
+            logger.warning(f"[导入角色卡] 文件过大: {e}")
+            return JSONResponse({'success': False, 'error': str(e)}, status_code=400)
 
         # 检查是否是加密的 .nekocfg 文件（直接是加密数据，不是ZIP）
         is_neko_file = zip_file.filename and zip_file.filename.endswith('.nekocfg')
@@ -3044,16 +3056,32 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             # 直接解密 .nekocfg 文件
             with open(zip_path, 'rb') as f:
                 encrypted_data = f.read()
-            decrypted_data = xor_decrypt(encrypted_data, XOR_KEY)
+            decrypted_data = xor_deobfuscate(encrypted_data, XOR_KEY)
             character_data = json.loads(decrypted_data.decode('utf-8'))
             metadata = {'encrypted': True, 'model_included': False}
         else:
-            # 解压ZIP文件（PNG角色卡格式）
+            # 解压ZIP文件（PNG角色卡格式）- 使用安全的解压方式防止 Zip Slip 攻击
             extract_path = temp_path / 'extracted'
             extract_path.mkdir()
 
             with zipfile.ZipFile(zip_path, 'r') as zf:
-                zf.extractall(extract_path)
+                for member in zf.namelist():
+                    member_path = Path(member)
+                    if member_path.is_absolute() or '..' in member_path.parts or '\\' in member:
+                        logger.warning(f"[导入角色卡] 跳过不安全的路径: {member}")
+                        continue
+                    dest_path = extract_path / member_path
+                    try:
+                        dest_path.resolve().relative_to(extract_path.resolve())
+                    except ValueError:
+                        logger.warning(f"[导入角色卡] 跳过路径验证失败: {member}")
+                        continue
+                    if member.endswith('/'):
+                        dest_path.mkdir(parents=True, exist_ok=True)
+                    else:
+                        dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(member) as src, open(dest_path, 'wb') as dst:
+                            dst.write(src.read())
 
             # 读取角色设定（支持加密和非加密格式）
             character_json_path = extract_path / 'character.json'
@@ -3067,7 +3095,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                 # 加密格式，需要解密
                 with open(character_json_encrypted_path, 'rb') as f:
                     encrypted_data = f.read()
-                decrypted_data = xor_decrypt(encrypted_data, XOR_KEY)
+                decrypted_data = xor_deobfuscate(encrypted_data, XOR_KEY)
                 character_data = json.loads(decrypted_data.decode('utf-8'))
             else:
                 return JSONResponse({'success': False, 'error': '角色卡文件损坏：缺少character.json'}, status_code=400)
@@ -3082,122 +3110,144 @@ async def import_character_card(zip_file: UploadFile = File(...)):
         character_name = character_data.get('档案名', '未命名角色')
 
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
 
-        # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)
-        if character_name in characters.get('猫娘', {}):
-            # 生成新名称
-            base_name = character_name
-            counter = 1
-            while f"{base_name}({counter})" in characters.get('猫娘', {}):
-                counter += 1
-            character_name = f"{base_name}({counter})"
-            character_data['档案名'] = character_name
+        async with _ugc_sync_lock:
+            characters = _config_manager.load_characters()
 
-        # 处理模型文件（仅当不是 .nekocfg 文件时）
-        imported_model_info = None  # 记录导入的模型信息，用于自动使用
+            # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)
+            if character_name in characters.get('猫娘', {}):
+                # 生成新名称
+                base_name = character_name
+                counter = 1
+                while f"{base_name}({counter})" in characters.get('猫娘', {}):
+                    counter += 1
+                character_name = f"{base_name}({counter})"
+                character_data['档案名'] = character_name
 
-        if not is_neko_file:
-            model_dir = extract_path / 'model'
-            if model_dir.exists() and model_dir.is_dir():
-                model_type = metadata.get('model_type', 'live2d')
+            # 处理模型文件（仅当不是 .nekocfg 文件时）
+            imported_model_info = None  # 记录导入的模型信息，用于自动使用
 
-                for model_item in model_dir.iterdir():
-                    if model_item.is_dir():
-                        # 检查是 Live2D 还是 MMD 模型文件夹
-                        # MMD 模型文件夹通常包含 .pmx, .pmd 文件
-                        has_mmd_file = any(f.suffix.lower() in ('.pmx', '.pmd') for f in model_item.iterdir() if f.is_file())
-                        # Live2D 模型文件夹通常包含 .model3.json 文件
-                        has_live2d_file = any(f.suffix.lower() == '.model3.json' for f in model_item.iterdir() if f.is_file())
+            def _find_model3_json(directory):
+                """递归查找 .model3.json 文件"""
+                for item in directory.iterdir():
+                    if item.is_file() and item.name.lower().endswith('.model3.json'):
+                        return item
+                    elif item.is_dir():
+                        result = _find_model3_json(item)
+                        if result:
+                            return result
+                return None
 
-                        if has_mmd_file:
-                            # MMD 模型（文件夹形式，包含贴图等依赖文件）
-                            original_model_name = model_item.name
+            if not is_neko_file:
+                model_dir = extract_path / 'model'
+                if model_dir.exists() and model_dir.is_dir():
+                    model_type = metadata.get('model_type', 'live2d')
 
-                            # 检查模型是否已存在，如果存在则使用 Windows 风格的命名 (x)
-                            model_name = original_model_name
-                            target_model_dir = _config_manager.mmd_dir / model_name
-                            counter = 1
+                    for model_item in model_dir.iterdir():
+                        if model_item.is_dir():
+                            # 检查是 Live2D 还是 MMD 模型文件夹
+                            # MMD 模型文件夹通常包含 .pmx, .pmd 文件
+                            has_mmd_file = any(f.suffix.lower() in ('.pmx', '.pmd') for f in model_item.iterdir() if f.is_file())
+                            # Live2D 模型文件夹通常包含 .model3.json 文件（递归搜索）
+                            model3_file = _find_model3_json(model_item)
+                            has_live2d_file = model3_file is not None
 
-                            while target_model_dir.exists():
-                                model_name = f"{original_model_name}({counter})"
+                            if has_mmd_file:
+                                # MMD 模型（文件夹形式，包含贴图等依赖文件）
+                                original_model_name = model_item.name
+
+                                # 检查模型是否已存在，如果存在则使用 Windows 风格的命名 (x)
+                                model_name = original_model_name
                                 target_model_dir = _config_manager.mmd_dir / model_name
-                                counter += 1
+                                counter = 1
 
-                            # 复制整个模型文件夹
-                            shutil.copytree(model_item, target_model_dir)
-                            logger.info(f'已导入MMD模型文件夹: {original_model_name} -> {model_name}')
+                                while target_model_dir.exists():
+                                    model_name = f"{original_model_name}({counter})"
+                                    target_model_dir = _config_manager.mmd_dir / model_name
+                                    counter += 1
 
-                            # 查找文件夹中的主模型文件（.pmx 或 .pmd）
-                            main_model_file = None
-                            for f in target_model_dir.iterdir():
-                                if f.is_file() and f.suffix.lower() in ('.pmx', '.pmd'):
-                                    main_model_file = f
-                                    break
+                                # 复制整个模型文件夹
+                                shutil.copytree(model_item, target_model_dir)
+                                logger.info(f'已导入MMD模型文件夹: {original_model_name} -> {model_name}')
 
-                            if main_model_file:
+                                # 查找文件夹中的主模型文件（.pmx 或 .pmd）
+                                main_model_file = None
+                                for f in target_model_dir.iterdir():
+                                    if f.is_file() and f.suffix.lower() in ('.pmx', '.pmd'):
+                                        main_model_file = f
+                                        break
+
+                                if main_model_file:
+                                    imported_model_info = {
+                                        'type': 'mmd',
+                                        'name': model_name,
+                                        'original_name': original_model_name,
+                                        'path': f'/user_mmd/{model_name}/{main_model_file.name}'
+                                    }
+                                else:
+                                    logger.warning(f'MMD模型文件夹中没有找到主模型文件: {model_name}')
+
+                            elif has_live2d_file:
+                                # Live2D 模型（文件夹形式）
+                                original_model_name = model_item.name
+
+                                # 检查模型是否已存在，如果存在则使用 Windows 风格的命名 (x)
+                                model_name = original_model_name
+                                target_model_dir = _config_manager.live2d_dir / model_name
+                                counter = 1
+
+                                while target_model_dir.exists():
+                                    model_name = f"{original_model_name}({counter})"
+                                    target_model_dir = _config_manager.live2d_dir / model_name
+                                    counter += 1
+
+                                # 复制模型文件
+                                shutil.copytree(model_item, target_model_dir)
+                                logger.info(f'已导入Live2D模型: {original_model_name} -> {model_name}')
+
+                                # 查找复制后的 .model3.json 文件
+                                model3_file = _find_model3_json(target_model_dir)
+                                model3_filename = model3_file.name if model3_file else f'{model_name}.model3.json'
+                                logger.info(f'找到 Live2D 模型文件: {model3_filename}')
+
+                                # 记录导入的模型信息
                                 imported_model_info = {
-                                    'type': 'mmd',
+                                    'type': 'live2d',
                                     'name': model_name,
                                     'original_name': original_model_name,
-                                    'path': f'/user_mmd/{model_name}/{main_model_file.name}'
+                                    'model3_filename': model3_filename
                                 }
-                            else:
-                                logger.warning(f'MMD模型文件夹中没有找到主模型文件: {model_name}')
 
-                        elif has_live2d_file:
-                            # Live2D 模型（文件夹形式）
-                            original_model_name = model_item.name
+                        elif model_item.is_file():
+                            # VRM 模型（文件形式）
+                            model_file = model_item
+                            original_model_name = model_file.stem  # 不含扩展名的文件名
+                            model_ext = model_file.suffix.lower()
 
-                            # 检查模型是否已存在，如果存在则使用 Windows 风格的命名 (x)
-                            model_name = original_model_name
-                            target_model_dir = _config_manager.live2d_dir / model_name
-                            counter = 1
-
-                            while target_model_dir.exists():
-                                model_name = f"{original_model_name}({counter})"
-                                target_model_dir = _config_manager.live2d_dir / model_name
-                                counter += 1
-
-                            # 复制模型文件
-                            shutil.copytree(model_item, target_model_dir)
-                            logger.info(f'已导入Live2D模型: {original_model_name} -> {model_name}')
-
-                            # 记录导入的模型信息
-                            imported_model_info = {
-                                'type': 'live2d',
-                                'name': model_name,
-                                'original_name': original_model_name
-                            }
-
-                    elif model_item.is_file():
-                        # VRM 模型（文件形式）
-                        model_file = model_item
-                        original_model_name = model_file.stem  # 不含扩展名的文件名
-                        model_ext = model_file.suffix.lower()
-
-                        if model_ext == '.vrm':
-                            # VRM 模型
-                            # 检查模型是否已存在，如果存在则使用 Windows 风格的命名 (x)
-                            model_name = original_model_name
-                            target_model_path = _config_manager.vrm_dir / f"{model_name}{model_ext}"
-                            counter = 1
-
-                            while target_model_path.exists():
-                                model_name = f"{original_model_name}({counter})"
+                            if model_ext == '.vrm':
+                                # VRM 模型
+                                # 检查模型是否已存在，如果存在则使用 Windows 风格的命名 (x)
+                                model_name = original_model_name
                                 target_model_path = _config_manager.vrm_dir / f"{model_name}{model_ext}"
-                                counter += 1
+                                counter = 1
 
-                            shutil.copy2(model_file, target_model_path)
-                            logger.info(f'已导入VRM模型: {original_model_name} -> {model_name}')
+                                while target_model_path.exists():
+                                    model_name = f"{original_model_name}({counter})"
+                                    target_model_path = _config_manager.vrm_dir / f"{model_name}{model_ext}"
+                                    counter += 1
 
-                            # 记录导入的模型信息
-                            imported_model_info = {
-                                'type': 'vrm',
-                                'name': model_name,
-                                'original_name': original_model_name,
-                                'path': f'/user_vrm/{model_name}{model_ext}'
-                            }
+                                shutil.copy2(model_file, target_model_path)
+                                logger.info(f'已导入VRM模型: {original_model_name} -> {model_name}')
+
+                                # 记录导入的模型信息
+                                imported_model_info = {
+                                    'type': 'vrm',
+                                    'name': model_name,
+                                    'original_name': original_model_name,
+                                    'path': f'/user_vrm/{model_name}{model_ext}'
+                                }
+                else:
+                    logger.warning(f"[导入角色卡] model 目录不存在或不是目录: {model_dir}")
 
                 # 自动给猫娘使用导入的模型
                 # 使用 _reserved 字段存储模型配置（这是系统内部使用的字段）
@@ -3207,11 +3257,12 @@ async def import_character_card(zip_file: UploadFile = File(...)):
 
                     if imported_model_info['type'] == 'live2d':
                         model_name = imported_model_info['name']
+                        model3_filename = imported_model_info.get('model3_filename', f'{model_name}.model3.json')
                         # 保留现有的 live2d 设置，只更新 model_path
                         character_data['_reserved']['avatar']['live2d'] = character_data['_reserved']['avatar'].get('live2d', {})
-                        character_data['_reserved']['avatar']['live2d']['model_path'] = f'{model_name}/{model_name}.model3.json'
+                        character_data['_reserved']['avatar']['live2d']['model_path'] = f'{model_name}/{model3_filename}'
                         character_data['_reserved']['avatar']['model_type'] = 'live2d'
-                        logger.info(f'已自动为角色 {character_name} 设置Live2D模型: {model_name}')
+                        logger.info(f'已自动为角色 {character_name} 设置Live2D模型: {model_name}, 文件: {model3_filename}')
 
                     elif imported_model_info['type'] == 'vrm':
                         # 保留现有的 vrm 设置（捏脸、动画等），只更新 model_path
@@ -3226,17 +3277,19 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                         character_data['_reserved']['avatar']['mmd']['model_path'] = imported_model_info['path']
                         character_data['_reserved']['avatar']['model_type'] = 'live3d'
                         logger.info(f'已自动为角色 {character_name} 设置MMD模型: {imported_model_info["name"]}')
+                else:
+                    logger.warning(f"[导入角色卡] 没有找到可导入的模型")
 
-        # 添加角色到characters.json
-        if '猫娘' not in characters:
-            characters['猫娘'] = {}
+            # 添加角色到characters.json
+            if '猫娘' not in characters:
+                characters['猫娘'] = {}
 
-        # 移除档案名键（因为已经用作字典键）
-        chara_data_to_save = {k: v for k, v in character_data.items() if k != '档案名'}
-        characters['猫娘'][character_name] = chara_data_to_save
+            # 移除档案名键（因为已经用作字典键）
+            chara_data_to_save = {k: v for k, v in character_data.items() if k != '档案名'}
+            characters['猫娘'][character_name] = chara_data_to_save
 
-        # 保存到文件
-        _config_manager.save_characters(characters)
+            # 保存到文件
+            _config_manager.save_characters(characters)
 
         return JSONResponse({
             'success': True,
@@ -3314,7 +3367,7 @@ async def export_catgirl_with_portrait(
                             if model_dir and os.path.exists(model_dir):
                                 if is_user_imported_model(model_dir, _config_manager):
                                     model_files_added = 0
-                                    for root, dirs, files in os.walk(model_dir):
+                                    for root, _dirs, files in os.walk(model_dir):
                                         for file in files:
                                             file_path = Path(root) / file
                                             arc_name = f"model/{live2d_name}/{file_path.relative_to(model_dir)}"
@@ -3336,7 +3389,7 @@ async def export_catgirl_with_portrait(
                                 model_parent_dir = model_full_path.parent
                                 model_folder_name = model_parent_dir.name
                                 model_files_added = 0
-                                for root, dirs, files in os.walk(model_parent_dir):
+                                for root, _dirs, files in os.walk(model_parent_dir):
                                     for file in files:
                                         file_path = Path(root) / file
                                         arc_name = f"model/{model_folder_name}/{file_path.relative_to(model_parent_dir)}"
@@ -3367,10 +3420,23 @@ async def export_catgirl_with_portrait(
             }
             zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
 
-        # 2. 读取立绘图片
-        portrait_data = await portrait.read()
+        # 2. 读取立绘图片（带大小限制和验证）
+        MAX_PORTRAIT_SIZE = 50 * 1024 * 1024  # 50 MB
+        portrait_data = await portrait.read(MAX_PORTRAIT_SIZE + 1)
+        if len(portrait_data) > MAX_PORTRAIT_SIZE:
+            return JSONResponse({'success': False, 'error': f'图片大小超过限制 ({MAX_PORTRAIT_SIZE // (1024 * 1024)} MB)'}, status_code=400)
+
         logger.info(f"[导出角色卡] 接收到立绘图片，大小: {len(portrait_data)} bytes")
-        portrait_img = Image.open(io.BytesIO(portrait_data))
+
+        try:
+            Image.MAX_IMAGE_PIXELS = 100_000_000  # 限制最大像素数防止解压炸弹
+            portrait_img = Image.open(io.BytesIO(portrait_data))
+            portrait_img.verify()
+            portrait_img = Image.open(io.BytesIO(portrait_data))  # verify()后需要重新打开
+        except Exception as e:
+            logger.warning(f"[导出角色卡] 图片验证失败: {e}")
+            return JSONResponse({'success': False, 'error': f'无效的图片文件: {str(e)}'}, status_code=400)
+
         logger.info(f"[导出角色卡] 立绘图片尺寸: {portrait_img.size}, 模式: {portrait_img.mode}")
 
         # 转换为RGBA模式（确保透明通道）
@@ -3406,7 +3472,8 @@ async def export_catgirl_with_portrait(
                 font = ImageFont.truetype(font_name, size)
                 logger.info(f"[导出角色卡] 使用字体: {font_name}")
                 break
-            except:
+            except Exception as e:
+                logger.warning(f"[导出角色卡] 字体加载失败: {font_name}, 错误: {e}")
                 continue
 
         if font is None:
