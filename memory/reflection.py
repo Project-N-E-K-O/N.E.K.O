@@ -283,10 +283,10 @@ class ReflectionEngine:
                 })
         self.save_surfaced(lanlan_name, surfaced)
 
-    async def check_feedback(self, lanlan_name: str, user_messages: list[str]) -> list[dict]:
+    async def check_feedback(self, lanlan_name: str, user_messages: list[str]) -> list[dict] | None:
         """Check if user's recent messages confirm/deny surfaced reflections.
 
-        Returns list of {reflection_id, feedback} dicts.
+        Returns list of {reflection_id, feedback} dicts, or None on LLM/processing failure.
         """
         from config.prompts_memory import get_reflection_feedback_prompt
         from utils.language_utils import get_global_language

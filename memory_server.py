@@ -330,17 +330,20 @@ def _extract_ai_response(messages: list) -> str:
 
 
 def _extract_user_messages(messages: list) -> list[str]:
-    """从消息列表中提取用户消息文本。"""
+    """从消息列表中提取用户消息文本（跳过空白）。"""
     user_msgs = []
     for m in messages:
         if getattr(m, 'type', '') == 'human':
             content = getattr(m, 'content', '')
             if isinstance(content, str):
-                user_msgs.append(content)
+                if content.strip():
+                    user_msgs.append(content)
             elif isinstance(content, list):
                 for part in content:
                     if isinstance(part, dict) and part.get('type') == 'text':
-                        user_msgs.append(part.get('text', ''))
+                        text = part.get('text', '').strip()
+                        if text:
+                            user_msgs.append(text)
     return user_msgs
 
 
