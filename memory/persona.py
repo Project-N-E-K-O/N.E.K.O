@@ -367,7 +367,15 @@ class PersonaManager:
         if resolved:
             self.save_persona(name, persona)
             # Only remove processed corrections, keep unprocessed ones
-            processed_indices = {int(r.get('index', -1)) for r in results if r.get('index') is not None}
+            processed_indices: set[int] = set()
+            for r in results:
+                raw_idx = r.get('index')
+                if raw_idx is None:
+                    continue
+                try:
+                    processed_indices.add(int(raw_idx))
+                except (ValueError, TypeError):
+                    continue
             remaining = [c for i, c in enumerate(corrections) if i not in processed_indices]
             atomic_write_json(self._corrections_path(name), remaining,
                               indent=2, ensure_ascii=False)

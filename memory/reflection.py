@@ -82,9 +82,13 @@ class ReflectionEngine:
         if os.path.exists(path):
             try:
                 with open(path, encoding='utf-8') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, OSError):
-                pass
+                    data = json.load(f)
+                if isinstance(data, list):
+                    # Filter to dicts only; drop corrupted entries
+                    return [item for item in data if isinstance(item, dict)]
+                logger.warning(f"[Reflection] surfaced 文件不是列表，忽略: {path}")
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"[Reflection] 加载 surfaced 失败: {e}")
         return []
 
     def save_surfaced(self, name: str, surfaced: list[dict]) -> None:
@@ -337,7 +341,24 @@ class ReflectionEngine:
 
         if promoted:
             self.save_reflections(lanlan_name, reflections)
-            # Clean up surfaced records for auto-promoted reflections
-            for rid in promoted_ids:
-                self._mark_surfaced_handled(lanlan_name, rid, 'auto_confirmed')
+            # Batch-mark surfaced records (single load/save)
+            self._batch_mark_surfaced_handled(lanlan_name, promoted_ids, 'auto_confirmed')
         return promoted
+
+    def _batch_mark_surfaced_handled(
+        self, lanlan_name: str, reflection_ids: list[str], feedback: str,
+    ) -> None:
+        """Mark multiple surfaced records as handled in a single I/O round-trip."""
+        if not reflection_ids:
+            return
+        surfaced = self.load_surfaced(lanlan_name)
+        id_set = set(reflection_ids)
+        changed = False
+        now = datetime.now().isoformat()
+        for s in surfaced:
+            if s.get('reflection_id') in id_set and s.get('feedback') is None:
+                s['feedback'] = feedback
+                s['feedback_at'] = now
+                changed = True
+        if changed:
+            self.save_surfaced(lanlan_name, surfaced)
