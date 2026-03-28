@@ -8,7 +8,7 @@ import asyncio
 import logging
 from openai import APIConnectionError, InternalServerError, RateLimitError
 
-from config.prompts_sys import recent_history_manager_prompt, detailed_recent_history_manager_prompt, further_summarize_prompt, history_review_prompt
+from config.prompts_memory import recent_history_manager_prompt, detailed_recent_history_manager_prompt, further_summarize_prompt, history_review_prompt
 
 # Setup logger
 from utils.file_utils import atomic_write_json

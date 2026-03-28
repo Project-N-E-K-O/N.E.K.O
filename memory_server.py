@@ -2,7 +2,10 @@
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from memory import CompressedRecentHistoryManager, ImportantSettingsManager, TimeIndexedMemory
+from memory import (
+    CompressedRecentHistoryManager, ImportantSettingsManager, TimeIndexedMemory,
+    FactStore, PersonaManager, ReflectionEngine,
+)
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 import json
@@ -10,11 +13,13 @@ import uvicorn
 from utils.llm_client import convert_to_messages
 from uuid import uuid4
 from config import MEMORY_SERVER_PORT
-from config.prompts_sys import (
-    _loc, INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
+from config.prompts_sys import _loc
+from config.prompts_memory import (
+    INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
     CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, CHAT_GAP_CURRENT_TIME,
     ELAPSED_TIME_HM, ELAPSED_TIME_H,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
+    PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
 )
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
@@ -61,8 +66,11 @@ def validate_lanlan_name(name: str) -> str:
 # 初始化组件
 _config_manager = get_config_manager()
 recent_history_manager = CompressedRecentHistoryManager()
-settings_manager = ImportantSettingsManager()
+settings_manager = ImportantSettingsManager()  # 保留兼容，逐步迁移
 time_manager = TimeIndexedMemory(recent_history_manager)
+fact_store = FactStore(time_indexed_memory=time_manager)
+persona_manager = PersonaManager()
+reflection_engine = ReflectionEngine(fact_store, persona_manager)
 
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
@@ -73,7 +81,7 @@ async def reload_memory_components():
     使用锁保护重新加载操作，确保原子性交换，避免竞态条件。
     先创建所有新实例，然后原子性地交换引用。
     """
-    global recent_history_manager, settings_manager, time_manager
+    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine
     async with _reload_lock:
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
         try:
@@ -81,11 +89,17 @@ async def reload_memory_components():
             new_recent = CompressedRecentHistoryManager()
             new_settings = ImportantSettingsManager()
             new_time = TimeIndexedMemory(new_recent)
-            
+            new_facts = FactStore(time_indexed_memory=new_time)
+            new_persona = PersonaManager()
+            new_reflection = ReflectionEngine(new_facts, new_persona)
+
             # 然后原子性地交换引用
             recent_history_manager = new_recent
             settings_manager = new_settings
             time_manager = new_time
+            fact_store = new_facts
+            persona_manager = new_persona
+            reflection_engine = new_reflection
             
             logger.info("[MemoryServer] ✅ 记忆组件配置重新加载完成")
             return True
@@ -128,6 +142,16 @@ async def startup_event_handler():
     except Exception as e:
         logger.warning(f"[Memory] Token tracker init failed: {e}")
 
+    # 自动迁移 settings → persona（如 persona 文件不存在）
+    try:
+        character_data = _config_manager.load_characters()
+        catgirl_names = list(character_data.get('猫娘', {}).keys())
+        for name in catgirl_names:
+            persona_manager.ensure_persona(name)
+        logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
+    except Exception as e:
+        logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
+
 
 @app.on_event("shutdown")
 async def shutdown_event_handler():
@@ -167,6 +191,54 @@ async def _run_review_in_background(lanlan_name: str):
         if lanlan_name in correction_cancel_flags:
             correction_cancel_flags[lanlan_name].clear()
 
+async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
+    """后台异步：事实提取 + 反馈检查。失败静默跳过。
+
+    认知框架：Facts → Reflection(pending) → 反馈确认 → Persona
+    """
+    try:
+        # 1. 事实提取
+        await fact_store.extract_facts(messages, lanlan_name)
+    except Exception as e:
+        logger.warning(f"[MemoryServer] 事实提取失败: {e}")
+
+    try:
+        # 2. 检查用户对之前 surfaced 反思的反馈
+        surfaced = reflection_engine.load_surfaced(lanlan_name)
+        pending_surfaced = [s for s in surfaced if s.get('feedback') is None]
+        if pending_surfaced:
+            user_msgs = []
+            for m in messages:
+                if getattr(m, 'type', '') == 'human':
+                    content = getattr(m, 'content', '')
+                    if isinstance(content, str):
+                        user_msgs.append(content)
+                    elif isinstance(content, list):
+                        for part in content:
+                            if isinstance(part, dict) and part.get('type') == 'text':
+                                user_msgs.append(part.get('text', ''))
+            if user_msgs:
+                feedbacks = await reflection_engine.check_feedback(lanlan_name, user_msgs)
+                for fb in feedbacks:
+                    rid = fb.get('reflection_id')
+                    feedback = fb.get('feedback')
+                    if feedback == 'confirmed':
+                        reflection_engine.confirm_promotion(lanlan_name, rid)
+                    elif feedback == 'denied':
+                        reflection_engine.reject_promotion(lanlan_name, rid)
+                    # ignored → 保持 pending
+    except Exception as e:
+        logger.warning(f"[MemoryServer] 反馈检查失败: {e}")
+
+    try:
+        # 3. 审视矛盾队列（如果有 pending corrections）
+        resolved = await persona_manager.resolve_corrections(lanlan_name)
+        if resolved:
+            logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
+    except Exception as e:
+        logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
+
+
 @app.post("/cache/{lanlan_name}")
 async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
@@ -202,13 +274,14 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         input_history = convert_to_messages(json.loads(request.input_history))
         logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
         await recent_history_manager.update_history(input_history, lanlan_name)
-        """
-        下面屏蔽了两个模块，因为这两个模块需要消耗token，但当前版本实用性近乎于0。尤其是，Qwen与GPT等旗舰模型相比性能差距过大。
-        """
+        # 旧模块已禁用（性能不足）：
         # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
         # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
         await time_manager.store_conversation(uid, input_history, lanlan_name)
-        
+
+        # 异步事实提取（不阻塞返回，失败静默跳过）
+        asyncio.create_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
+
         # 在后台启动review_history任务
         if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
             # 如果已有任务在运行，取消它
@@ -245,9 +318,13 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
         input_history = convert_to_messages(json.loads(request.input_history))
         logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
         await recent_history_manager.update_history(input_history, lanlan_name, detailed=True)
+        # 旧模块已禁用：
         # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
         # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
         await time_manager.store_conversation(uid, input_history, lanlan_name)
+
+        # 异步事实提取
+        asyncio.create_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
         
         # 在后台启动review_history任务
         if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
@@ -319,9 +396,21 @@ def get_settings(lanlan_name: str):
     except Exception as e:
         logger.error(f"检查角色配置失败: {e}")
         return f"{lanlan_name}记得{{}}"
-    
+
+    # 优先使用 persona markdown 渲染，回退到旧 settings 格式
+    persona_md = persona_manager.render_persona_markdown(lanlan_name)
+    if persona_md:
+        return persona_md
+    # 兼容回退
     result = f"{lanlan_name}记得{json.dumps(settings_manager.get_settings(lanlan_name), ensure_ascii=False)}"
     return result
+
+
+@app.get("/get_persona/{lanlan_name}")
+def get_persona(lanlan_name: str):
+    """返回完整 persona JSON（供 UI / memory_browser 使用）。"""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    return persona_manager.get_persona(lanlan_name)
 
 @app.post("/reload")
 async def reload_config():
@@ -398,14 +487,23 @@ async def new_dialog(lanlan_name: str):
     master_name, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
     name_mapping['ai'] = lanlan_name
     _lang = get_global_language()
-    result = (
-        _loc(INNER_THOUGHTS_HEADER, _lang).format(name=lanlan_name)
-        + _loc(INNER_THOUGHTS_BODY, _lang).format(
-            name=lanlan_name,
-            master=master_name,
-            settings=json.dumps(settings_manager.get_settings(lanlan_name), ensure_ascii=False),
-            time=get_timestamp(),
-        )
+
+    # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
+    # pending 反思也注入上下文，标注为"待确认的印象"
+    pending_reflections = reflection_engine.get_pending_reflections(lanlan_name)
+    result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
+    persona_md = persona_manager.render_persona_markdown(lanlan_name, pending_reflections)
+    if persona_md:
+        result += persona_md
+    else:
+        # 兼容回退：使用旧 settings
+        result += f"{lanlan_name}记得{json.dumps(settings_manager.get_settings(lanlan_name), ensure_ascii=False)}\n"
+
+    # ── [动态部分] 内心活动（每次变化） ──
+    result += _loc(INNER_THOUGHTS_HEADER, _lang).format(name=lanlan_name)
+    result += _loc(INNER_THOUGHTS_DYNAMIC, _lang).format(
+        name=lanlan_name,
+        time=get_timestamp(),
     )
 
     # ── 距上次聊天间隔提示 ──
