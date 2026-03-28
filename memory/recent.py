@@ -8,7 +8,11 @@ import asyncio
 import logging
 from openai import APIConnectionError, InternalServerError, RateLimitError
 
-from config.prompts_memory import recent_history_manager_prompt, detailed_recent_history_manager_prompt, further_summarize_prompt, history_review_prompt
+from config.prompts_memory import (
+    get_recent_history_manager_prompt, get_detailed_recent_history_manager_prompt,
+    get_further_summarize_prompt, get_history_review_prompt,
+)
+from utils.language_utils import get_global_language
 
 # Setup logger
 from utils.file_utils import atomic_write_json
@@ -185,9 +189,9 @@ class CompressedRecentHistoryManager:
             lines.append(line)
         messages_text = "\n".join(lines)
         if not detailed:
-            prompt = recent_history_manager_prompt.replace("%s", messages_text)
+            prompt = get_recent_history_manager_prompt(get_global_language()).replace("%s", messages_text)
         else:
-            prompt = detailed_recent_history_manager_prompt % messages_text
+            prompt = get_detailed_recent_history_manager_prompt(get_global_language()) % messages_text
 
         retries = 0
         max_retries = 3
@@ -244,7 +248,7 @@ class CompressedRecentHistoryManager:
                 set_call_type("memory_compression")
                 llm = self._get_llm()
                 try:
-                    response_content = (await llm.ainvoke(further_summarize_prompt % initial_summary)).content
+                    response_content = (await llm.ainvoke(get_further_summarize_prompt(get_global_language()) % initial_summary)).content
                 finally:
                     await llm.aclose()
                 response_content = str(response_content).strip()
@@ -368,7 +372,7 @@ class CompressedRecentHistoryManager:
             try:
                 # 使用LLM审阅历史记录
                 set_call_type("memory_review")
-                prompt = history_review_prompt % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
+                prompt = get_history_review_prompt(get_global_language()) % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
                 review_llm = self._get_review_llm()
                 try:
                     response_content = (await review_llm.ainvoke(prompt)).content

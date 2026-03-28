@@ -575,10 +575,10 @@ INNER_THOUGHTS_BODY = {
 # ---------- Inner thoughts dynamic part (split from INNER_THOUGHTS_BODY) ----------
 INNER_THOUGHTS_DYNAMIC = {
     'zh': '现在时间是{time}。开始聊天前，{name}又在脑海内整理了近期发生的事情。\n',
-    'en': "The current time is {time}. Before the conversation begins, {name} is mentally reviewing recent events.\n",
-    'ja': '現在の時刻は{time}です。会話を始める前に、{name}は最近の出来事を頭の中で整理しています。\n',
-    'ko': '현재 시간은 {time}입니다. 대화를 시작하기 전에 {name}은 최근 있었던 일들을 마음속으로 정리하고 있습니다.\n',
-    'ru': 'Текущее время: {time}. Перед началом разговора {name} мысленно перебирает последние события.\n',
+    'en': "The current time is {time}. 开始聊天前，{name}又在脑海内整理了近期发生的事情。\n",
+    'ja': '現在の時刻は{time}です。開始聊天前，{name}又在脑海内整理了近期发生的事情。\n',
+    'ko': '현재 시간은 {time}입니다. 开始聊天前，{name}又在脑海内整理了近期发生的事情。\n',
+    'ru': 'Текущее время: {time}. 开始聊天前，{name}又在脑海内整理了近期发生的事情。\n',
 }
 
 # =====================================================================

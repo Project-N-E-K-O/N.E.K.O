@@ -2008,15 +2008,17 @@ async def proactive_chat(request: Request):
             if _reflection_result:
                 print(f"[{lanlan_name}] 反思完成(pending): {_reflection_result['text'][:50]}...")
 
-            # 3. 获取回调话题（list[dict]，带 reflection_id）
+            # 3. 获取回调话题候选（list[dict]，带 id）
+            #    注意：此处只获取候选，不标记为 surfaced。
+            #    surfaced 标记在 Phase 2 生成回复后才做。
             _followup_topics = _reflection_engine.get_followup_topics(lanlan_name)
             if _followup_topics:
                 followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
                 for topic in _followup_topics:
                     followup_topics_prompt += f"- {topic['text']}\n"
-                    if topic.get('reflection_id'):
-                        _surfaced_reflection_ids.append(topic['reflection_id'])
-                print(f"[{lanlan_name}] 回调话题: {len(_followup_topics)} 条 (pending反思: {len(_surfaced_reflection_ids)})")
+                    if topic.get('id'):
+                        _surfaced_reflection_ids.append(topic['id'])
+                print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
 
@@ -2605,13 +2607,15 @@ async def proactive_chat(request: Request):
 
         # 静动分离：generate_prompt 作为静态 SystemMessage（可被缓存），
         # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
+        # 使用 enriched_memory_context（含回调话题）而非原始 memory_context
+        phase2_memory_context = enriched_memory_context if followup_topics_prompt else memory_context
         generate_prompt = get_proactive_generate_prompt(
             proactive_lang, music_playing_hint,
             has_music=bool(music_section), has_meme=bool(meme_section),
         ).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
-            memory_context=memory_context,
+            memory_context=phase2_memory_context,
             recent_chats_section=proactive_chat_history_prompt,
             screen_section=screen_section,
             external_section=external_section,
@@ -2826,13 +2830,7 @@ async def proactive_chat(request: Request):
 
         # 后台长期记忆维护（同步，轻量操作）
         try:
-            # 事实衰减 GC
-            if _fact_store is not None:
-                archived = _fact_store.run_decay(lanlan_name)
-                if archived:
-                    print(f"[{lanlan_name}] 事实衰减: 归档 {archived} 条")
-
-            # 保存本次搭话提及的 pending 反思 ID（供下次 /process 做反馈检查）
+            # 保存本次搭话实际提及的 pending 反思 ID（供下次 /process 做反馈检查）
             if _reflection_engine is not None and _surfaced_reflection_ids:
                 _reflection_engine.record_surfaced(lanlan_name, _surfaced_reflection_ids)
                 print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")

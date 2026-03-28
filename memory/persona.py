@@ -40,19 +40,42 @@ SIMILARITY_THRESHOLD = 0.6           # 余弦相似度(如有embedding)或关键
 AUTO_CONFIRM_DAYS = 3                # pending reflection N 天无反对 → 自动晋升
 
 
+import re as _re
+import unicodedata as _ud
+
+# Split on any CJK/Latin punctuation, symbols, whitespace
+_SPLIT_RE = _re.compile(r'[，。、！？；：\u201c\u201d\u2018\u2019（）()\[\]{}<>《》【】\s,.!?;:\-\u2014\u2026\xb7\u3000]+')
+
+
 def _is_mentioned(fact_text: str, response_text: str) -> bool:
     """判断 response 中是否"提及"了某条 persona 事实。
 
-    使用关键词重叠: 从 fact 中取长度 >= 2 的词，检查 response 中是否包含。
+    支持 CJK 和拉丁文：
+    - 拉丁文按空格分词，保留 len>=2 的 token
+    - CJK 文本生成 2-gram 和 3-gram 滑动窗口
     """
     if not fact_text or not response_text:
         return False
-    # 简单策略：fact 中每个长度>=2的连续子串，在 response 中出现即视为提及
-    keywords = set()
-    for segment in fact_text.replace('，', ' ').replace('。', ' ').replace('、', ' ').split():
-        seg = segment.strip()
-        if len(seg) >= 2:
-            keywords.add(seg)
+
+    segments = _SPLIT_RE.split(fact_text)
+    keywords: set[str] = set()
+
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        # Check if segment is CJK-dominant
+        cjk_count = sum(1 for ch in seg if '\u4e00' <= ch <= '\u9fff' or '\u3040' <= ch <= '\u30ff' or '\uac00' <= ch <= '\ud7af')
+        if cjk_count > len(seg) / 2:
+            # CJK: generate n-grams (2 and 3)
+            for n in (2, 3):
+                for i in range(len(seg) - n + 1):
+                    keywords.add(seg[i:i+n])
+        else:
+            # Latin/mixed: keep token if len>=2
+            if len(seg) >= 2:
+                keywords.add(seg)
+
     if not keywords:
         return False
     return any(kw in response_text for kw in keywords)
@@ -343,9 +366,12 @@ class PersonaManager:
 
         if resolved:
             self.save_persona(name, persona)
-            atomic_write_json(self._corrections_path(name), [],
+            # Only remove processed corrections, keep unprocessed ones
+            processed_indices = {int(r.get('index', -1)) for r in results if r.get('index') is not None}
+            remaining = [c for i, c in enumerate(corrections) if i not in processed_indices]
+            atomic_write_json(self._corrections_path(name), remaining,
                               indent=2, ensure_ascii=False)
-            logger.info(f"[Persona] {name}: 批量审视完成 {resolved} 条矛盾")
+            logger.info(f"[Persona] {name}: 批量审视完成 {resolved} 条矛盾，剩余 {len(remaining)} 条")
         return resolved
 
     # ── 提及疲劳：记录 + 更新 suppress ───────────────────────────
@@ -442,6 +468,8 @@ class PersonaManager:
         Suppressed entries are rendered in a separate "暂不主动提及" section,
         NOT in their original sections. suppress has highest priority.
         """
+        # Refresh suppressions before rendering so expired cooldowns are released
+        self.update_suppressions(name)
         persona = self.ensure_persona(name)
         _, _, _, _, name_mapping, _, _, _, _ = self._config_manager.get_character_data()
         master_name = name_mapping.get('human', '主人')

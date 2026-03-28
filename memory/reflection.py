@@ -156,6 +156,12 @@ class ReflectionEngine:
         logger.info(f"[Reflection] {lanlan_name}: 合成了新反思: {reflection_text[:50]}...")
         return [reflection]
 
+    # alias for backward compat (system_router calls .reflect())
+    async def reflect(self, lanlan_name: str) -> dict | None:
+        """Alias for synthesize_reflections. Returns first reflection or None."""
+        results = await self.synthesize_reflections(lanlan_name)
+        return results[0] if results else None
+
     # ── feedback lifecycle ───────────────────────────────────────────
 
     def get_pending_reflections(self, lanlan_name: str) -> list[dict]:
@@ -166,32 +172,38 @@ class ReflectionEngine:
     def get_followup_topics(self, lanlan_name: str) -> list[dict]:
         """Get pending reflections suitable for natural mention in proactive chat.
 
-        Returns reflections and records them as "surfaced" so we can later
-        check user feedback.
+        Returns candidates only — does NOT persist anything.
+        Call record_surfaced() after the reply is actually sent.
         """
         pending = self.get_pending_reflections(lanlan_name)
         if not pending:
             return []
+        return pending[:2]
 
-        # Only surface up to 2 reflections per proactive chat
-        to_surface = pending[:2]
+    def record_surfaced(self, lanlan_name: str, reflection_ids: list[str]) -> None:
+        """Record which reflections were actually mentioned in proactive chat.
 
-        # Record as surfaced
+        Called AFTER the reply is sent, not during candidate selection.
+        """
+        if not reflection_ids:
+            return
         surfaced = self.load_surfaced(lanlan_name)
         now = datetime.now().isoformat()
-        for r in to_surface:
-            # Don't re-surface if already surfaced recently
-            already = any(s.get('reflection_id') == r['id'] for s in surfaced)
+
+        # Load reflection texts for reference
+        reflections = self.load_reflections(lanlan_name)
+        id_to_text = {r['id']: r.get('text', '') for r in reflections}
+
+        for rid in reflection_ids:
+            already = any(s.get('reflection_id') == rid for s in surfaced)
             if not already:
                 surfaced.append({
-                    'reflection_id': r['id'],
-                    'text': r['text'],
+                    'reflection_id': rid,
+                    'text': id_to_text.get(rid, ''),
                     'surfaced_at': now,
                     'feedback': None,
                 })
         self.save_surfaced(lanlan_name, surfaced)
-
-        return to_surface
 
     async def check_feedback(self, lanlan_name: str, user_messages: list[str]) -> list[dict]:
         """Check if user's recent messages confirm/deny surfaced reflections.

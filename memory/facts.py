@@ -31,7 +31,7 @@ logger = get_module_logger(__name__, "Memory")
 class FactStore:
     """Manages raw fact extraction, deduplication, and persistence."""
 
-    def __init__(self, *, time_indexed_memory: TimeIndexedMemory):
+    def __init__(self, *, time_indexed_memory: TimeIndexedMemory | None = None):
         self._config_manager = get_config_manager()
         self._time_indexed = time_indexed_memory
         self._facts: dict[str, list[dict]] = {}  # {lanlan_name: [fact, ...]}
@@ -138,7 +138,10 @@ class FactStore:
             text = fact.get('text', '').strip()
             if not text:
                 continue
-            importance = fact.get('importance', 5)
+            try:
+                importance = int(fact.get('importance', 5))
+            except (ValueError, TypeError):
+                importance = 5
             if importance < 5:
                 continue
 
@@ -148,16 +151,15 @@ class FactStore:
                 continue
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
-            similar = self._time_indexed.search_facts(lanlan_name, text, limit=3)
-            is_dup = False
-            for fid, score in similar:
-                # BM25 score is negative; very close to 0 means poor match,
-                # very negative means strong match. Threshold -5 is "very similar".
-                if score < -5:
-                    is_dup = True
-                    break
-            if is_dup:
-                continue
+            if self._time_indexed is not None:
+                similar = self._time_indexed.search_facts(lanlan_name, text, limit=3)
+                is_dup = False
+                for fid, score in similar:
+                    if score < -5:
+                        is_dup = True
+                        break
+                if is_dup:
+                    continue
 
             fact_entry = {
                 'id': f"fact_{datetime.now().strftime('%Y%m%d%H%M%S')}_{content_hash[:8]}",
@@ -174,7 +176,8 @@ class FactStore:
             new_facts.append(fact_entry)
 
             # Index in FTS5
-            self._time_indexed.index_fact(lanlan_name, fact_entry['id'], text)
+            if self._time_indexed is not None:
+                self._time_indexed.index_fact(lanlan_name, fact_entry['id'], text)
 
         if new_facts:
             self.save_facts(lanlan_name)

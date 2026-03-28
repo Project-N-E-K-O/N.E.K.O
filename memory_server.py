@@ -114,6 +114,24 @@ enable_shutdown = False
 # 全局变量用于管理correction任务
 correction_tasks = {}  # {lanlan_name: asyncio.Task}
 correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
+# 强引用注册表：防止 fire-and-forget task 被 GC
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_background_task(coro) -> asyncio.Task:
+    """Create a background task with strong reference + exception logging."""
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+
+    def _on_done(t: asyncio.Task):
+        _BACKGROUND_TASKS.discard(t)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc:
+                logger.warning(f"[MemoryServer] 后台任务异常: {exc}")
+
+    task.add_done_callback(_on_done)
+    return task
 
 @app.post("/shutdown")
 async def shutdown_memory_server():
@@ -280,7 +298,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         await time_manager.store_conversation(uid, input_history, lanlan_name)
 
         # 异步事实提取（不阻塞返回，失败静默跳过）
-        asyncio.create_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
+        _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
 
         # 在后台启动review_history任务
         if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
@@ -324,7 +342,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
         await time_manager.store_conversation(uid, input_history, lanlan_name)
 
         # 异步事实提取
-        asyncio.create_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
+        _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
         
         # 在后台启动review_history任务
         if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
