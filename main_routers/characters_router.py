@@ -3056,8 +3056,12 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             # 直接解密 .nekocfg 文件
             with open(zip_path, 'rb') as f:
                 encrypted_data = f.read()
-            decrypted_data = xor_deobfuscate(encrypted_data, XOR_KEY)
-            character_data = json.loads(decrypted_data.decode('utf-8'))
+            try:
+                decrypted_data = xor_deobfuscate(encrypted_data, XOR_KEY)
+                character_data = json.loads(decrypted_data.decode('utf-8'))
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                logger.warning(f"[导入角色卡] 解析 .nekocfg 文件失败: {e}")
+                return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
             if not isinstance(character_data, dict):
                 return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
             name_error = _validate_profile_name(character_data.get('档案名'))
@@ -3108,8 +3112,12 @@ async def import_character_card(zip_file: UploadFile = File(...)):
 
             if character_json_path.exists():
                 # 非加密格式
-                with open(character_json_path, 'r', encoding='utf-8') as f:
-                    character_data = json.load(f)
+                try:
+                    with open(character_json_path, 'r', encoding='utf-8') as f:
+                        character_data = json.load(f)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"[导入角色卡] 解析 character.json 失败: {e}")
+                    return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
                 if not isinstance(character_data, dict):
                     return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
                 name_error = _validate_profile_name(character_data.get('档案名'))
@@ -3117,10 +3125,14 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                     return JSONResponse({'success': False, 'error': f'角色名称无效: {name_error}'}, status_code=400)
             elif character_json_encrypted_path.exists():
                 # 加密格式，需要解密
-                with open(character_json_encrypted_path, 'rb') as f:
-                    encrypted_data = f.read()
-                decrypted_data = xor_deobfuscate(encrypted_data, XOR_KEY)
-                character_data = json.loads(decrypted_data.decode('utf-8'))
+                try:
+                    with open(character_json_encrypted_path, 'rb') as f:
+                        encrypted_data = f.read()
+                    decrypted_data = xor_deobfuscate(encrypted_data, XOR_KEY)
+                    character_data = json.loads(decrypted_data.decode('utf-8'))
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    logger.warning(f"[导入角色卡] 解析加密 character.json 失败: {e}")
+                    return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
                 if not isinstance(character_data, dict):
                     return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
                 name_error = _validate_profile_name(character_data.get('档案名'))
@@ -3323,6 +3335,11 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             # 保存到文件
             _config_manager.save_characters(characters)
 
+            # 刷新内存中的角色数据，确保磁盘和内存同步
+            initialize_character_data = get_initialize_character_data()
+            if initialize_character_data:
+                await initialize_character_data()
+
         return JSONResponse({
             'success': True,
             'character_name': character_name,
@@ -3379,10 +3396,34 @@ async def export_catgirl_with_portrait(
         # 1. 创建ZIP压缩包（包含角色设定和模型）
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             # 准备角色设定JSON
-            chara_json = {
-                '档案名': name,
-                **catgirl_data
-            }
+            export_data = {'档案名': name, **catgirl_data}
+
+            # 过滤掉运行时字段
+            def _filter_export_fields(data, keep_model_paths=False):
+                """导出时过滤字段"""
+                result = {}
+                for key, value in data.items():
+                    if key in ('cursor_follow', 'physics', 'voice_id'):
+                        continue
+                    if key == '_reserved' and isinstance(value, dict):
+                        avatar = value.get('avatar', {})
+                        if not keep_model_paths:
+                            for model_type in ('live2d', 'vrm', 'mmd'):
+                                if model_type in avatar:
+                                    avatar.pop('model_path', None)
+                        result[key] = value
+                    elif isinstance(value, dict):
+                        result[key] = _filter_export_fields(value, keep_model_paths)
+                    elif isinstance(value, list):
+                        result[key] = [
+                            _filter_export_fields(item, keep_model_paths) if isinstance(item, dict) else item
+                            for item in value
+                        ]
+                    else:
+                        result[key] = value
+                return result
+
+            chara_json = _filter_export_fields(export_data, keep_model_paths=include_model)
             zf.writestr('character.json', json.dumps(chara_json, ensure_ascii=False, indent=2))
 
             # 如果需要包含模型，添加模型文件

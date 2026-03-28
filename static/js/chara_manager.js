@@ -10,15 +10,17 @@ const ALLOWED_ORIGINS = [window.location.origin];
 let autoSaveToastTimer = null;
 let autoSaveToastElement = null;
 
-function showAutoSaveToast(disableAutoHide = false) {
+function showAutoSaveToast(disableAutoHide = false, customMessage = null) {
     if (!autoSaveToastElement) {
         autoSaveToastElement = document.createElement('div');
         autoSaveToastElement.className = 'auto-save-toast';
-        autoSaveToastElement.innerHTML = `<span data-i18n="character.autoSaved">${window.t ? window.t('character.autoSaved') : '已自动保存设定'}</span>`;
+        autoSaveToastElement.innerHTML = '<span></span>';
         document.body.appendChild(autoSaveToastElement);
-    } else {
-        autoSaveToastElement.querySelector('span').textContent = window.t ? window.t('character.autoSaved') : '已自动保存设定';
     }
+
+    const defaultText = window.t ? window.t('character.autoSaved') : '已自动保存设定';
+    const displayText = customMessage !== null ? customMessage : defaultText;
+    autoSaveToastElement.querySelector('span').textContent = displayText;
 
     autoSaveToastElement.classList.add('visible');
 
@@ -3124,10 +3126,7 @@ async function handleImportCharacterCard(event) {
 
         // 显示成功提示
         const successText = window.t ? window.t('character.importCardSuccess', { name: result.character_name }) : `角色卡 "${result.character_name}" 导入成功`;
-        if (autoSaveToastElement) {
-            autoSaveToastElement.querySelector('span').textContent = successText;
-        }
-        showAutoSaveToast();
+        showAutoSaveToast(false, successText);
 
         // 刷新角色列表
         await loadCharacterData();
@@ -3635,7 +3634,6 @@ async function exportCharacterCard(catgirlName) {
         }
 
         // 尝试使用 File System Access API 让用户选择保存位置
-        let saveCancelled = false;
         try {
             if ('showSaveFilePicker' in window) {
                 const fileHandle = await window.showSaveFilePicker({
@@ -3664,7 +3662,6 @@ async function exportCharacterCard(catgirlName) {
             }
         } catch (saveError) {
             if (saveError.name === 'AbortError') {
-                saveCancelled = true;
                 if (autoSaveToastElement) {
                     autoSaveToastElement.classList.remove('visible');
                 }
@@ -3681,19 +3678,12 @@ async function exportCharacterCard(catgirlName) {
             window.URL.revokeObjectURL(url);
         }
 
-        if (saveCancelled) {
-            return;
-        }
-
         // 显示成功提示
         const successText = exportType === 'settings-only'
             ? (window.t ? window.t('character.exportSettingsSuccess') : '设定导出成功')
             : (window.t ? window.t('character.exportCardSuccess') : '角色卡导出成功');
 
-        if (autoSaveToastElement) {
-            autoSaveToastElement.querySelector('span').textContent = successText;
-        }
-        showAutoSaveToast();
+        showAutoSaveToast(false, successText);
     } catch (error) {
         console.error('导出角色卡失败:', error);
         let errorText;
