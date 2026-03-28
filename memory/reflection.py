@@ -278,7 +278,7 @@ class ReflectionEngine:
                 surfaced.append({
                     'reflection_id': rid,
                     'text': id_to_text.get(rid, ''),
-                    'surfaced_at': now,
+                    'surfaced_at': now_str,
                     'feedback': None,
                 })
         self.save_surfaced(lanlan_name, surfaced)
@@ -327,7 +327,7 @@ class ReflectionEngine:
                 feedbacks = [feedbacks]
         except Exception as e:
             logger.warning(f"[Reflection] 反馈检查失败: {e}")
-            return []
+            return None  # 区别于 []（无反馈），None 表示调用失败
 
         # Update surfaced records (whitelist valid feedback values)
         _VALID_FEEDBACK = {'confirmed', 'denied', 'ignored'}

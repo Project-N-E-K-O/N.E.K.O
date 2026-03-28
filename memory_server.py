@@ -204,8 +204,13 @@ async def _periodic_rebuttal_loop():
         try:
             character_data = _config_manager.load_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
-            now = datetime.now()
-            for name in catgirl_names:
+        except Exception as e:
+            logger.debug(f"[Rebuttal] 加载角色列表失败: {e}")
+            continue
+
+        now = datetime.now()
+        for name in catgirl_names:
+            try:
                 confirmed = reflection_engine.get_confirmed_reflections(name)
                 if not confirmed:
                     continue
@@ -244,8 +249,8 @@ async def _periodic_rebuttal_loop():
                         if rid:
                             reflection_engine.reject_promotion(name, rid)
                             logger.info(f"[Rebuttal] {name}: confirmed 反思被反驳: {rid}")
-        except Exception as e:
-            logger.debug(f"[Rebuttal] 定期反驳检查失败: {e}")
+            except Exception as e:
+                logger.debug(f"[Rebuttal] {name}: 处理失败，跳过: {e}")
 
 
 @app.on_event("startup")
@@ -367,19 +372,23 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
             user_msgs = _extract_user_messages(messages)
             if user_msgs:
                 feedbacks = await reflection_engine.check_feedback(lanlan_name, user_msgs)
-                # 收集 LLM 返回的 denied IDs
-                denied_ids = {
-                    fb.get('reflection_id')
-                    for fb in feedbacks
-                    if isinstance(fb, dict) and fb.get('feedback') == 'denied'
-                }
-                for s in pending_surfaced:
-                    rid = s.get('reflection_id')
-                    if rid in denied_ids:
-                        reflection_engine.reject_promotion(lanlan_name, rid)
-                    else:
-                        # 宽松确认：用户有回复 + 未被 denied → 自动 confirm
-                        reflection_engine.confirm_promotion(lanlan_name, rid)
+                if feedbacks is None:
+                    # LLM 调用失败，跳过本轮（不误 confirm）
+                    pass
+                else:
+                    # 收集 LLM 返回的 denied IDs
+                    denied_ids = {
+                        fb.get('reflection_id')
+                        for fb in feedbacks
+                        if isinstance(fb, dict) and fb.get('feedback') == 'denied'
+                    }
+                    for s in pending_surfaced:
+                        rid = s.get('reflection_id')
+                        if rid in denied_ids:
+                            reflection_engine.reject_promotion(lanlan_name, rid)
+                        else:
+                            # 宽松确认：用户有回复 + 未被 denied → 自动 confirm
+                            reflection_engine.confirm_promotion(lanlan_name, rid)
     except Exception as e:
         logger.warning(f"[MemoryServer] 反馈检查失败: {e}")
 
@@ -550,8 +559,12 @@ def get_settings(lanlan_name: str):
         logger.error(f"检查角色配置失败: {e}")
         return f"{lanlan_name}记得{{}}"
 
-    # 优先使用 persona markdown 渲染，回退到旧 settings 格式
-    persona_md = persona_manager.render_persona_markdown(lanlan_name)
+    # 优先使用 persona markdown 渲染（与 /new_dialog 保持一致），回退到旧 settings 格式
+    pending_reflections = reflection_engine.get_pending_reflections(lanlan_name)
+    confirmed_reflections = reflection_engine.get_confirmed_reflections(lanlan_name)
+    persona_md = persona_manager.render_persona_markdown(
+        lanlan_name, pending_reflections, confirmed_reflections,
+    )
     if persona_md:
         return persona_md
     # 兼容回退
