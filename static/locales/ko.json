@@ -1348,7 +1348,10 @@
         "exportFull": "캐릭터 카드 낳출",
         "exportSettingsOnly": "설정만 낳출",
         "exportingSettings": "설정 낳출 중...",
-        "exportSettingsSuccess": "설정 낳출 성공"
+        "exportSettingsSuccess": "설정 낳출 성공",
+        "exportSettingsFailed": "설정 낳출 실패: {{error}}",
+        "capturingPortrait": "스탠딩 이미지 캡처 중...",
+        "generatingCard": "캐릭터 카드 생성 중..."
     },
     "app": {
         "welcomeBack": "{{name}}이 돌아왔습니다!",

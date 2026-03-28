@@ -21,7 +21,11 @@
         quality: 0.92,
         includeBlob: false,
         includeDataUrl: false,
-        modelType: null
+        modelType: null,
+        // 新增：裁剪模式
+        // 'headshot' - 头像模式（默认，聚焦头部）
+        // 'portrait' - 立绘模式（全身或大半身）
+        cropMode: 'headshot'
     });
 
     function clamp(value, min, max) {
@@ -1000,6 +1004,13 @@
             },
             getCropRect(ctx, options) {
                 const metrics = getCanvasMetrics(ctx.canvas);
+                // 立绘模式：返回全身包围盒
+                if (options.cropMode === 'portrait') {
+                    const bounds = ctx.model.getBounds();
+                    const padding = 0.05;
+                    return clampRectToCanvas(expandRect(bounds, padding), metrics);
+                }
+                // 头像模式：使用原有逻辑
                 return clampRectToCanvas(
                     applyPadding(buildLive2dHeadshotRect(ctx.model, metrics, options), options),
                     metrics
@@ -1067,6 +1078,13 @@
                 const metrics = getCanvasMetrics(ctx.canvas);
                 ctx.model.vrm.scene.updateMatrixWorld(true);
                 const subjectRect = computeProjectedBoxCss(ctx.model.vrm.scene, ctx.manager.camera, metrics, THREE);
+
+                // 立绘模式：返回全身包围盒
+                if (options.cropMode === 'portrait') {
+                    const padding = 0.05;
+                    return clampRectToCanvas(expandRect(subjectRect, padding), metrics);
+                }
+
                 const headAnchor = getVrmHeadAnchor(ctx.model, ctx.manager.camera, metrics, THREE);
 
                 let portraitRect;
@@ -1201,6 +1219,13 @@
                 const metrics = getCanvasMetrics(ctx.canvas);
                 ctx.model.mesh.updateMatrixWorld(true);
                 const subjectRect = computeProjectedBoxCss(ctx.model.mesh, ctx.manager.camera, metrics, THREE);
+
+                // 立绘模式：返回全身包围盒
+                if (options.cropMode === 'portrait') {
+                    const padding = 0.05;
+                    return clampRectToCanvas(expandRect(subjectRect, padding), metrics);
+                }
+
                 const headAnchor = findMmdHeadAnchor(ctx.model.mesh, ctx.manager.camera, metrics, THREE);
 
                 let portraitRect;
@@ -1381,11 +1406,24 @@
         return result.dataUrl;
     }
 
+    // 检查是否可以捕获头像/立绘
+    function canCapture() {
+        try {
+            const modelType = normalizeModelType();
+            const adapter = getAdapter(modelType);
+            adapter.getContext();
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
     const api = {
         normalizeModelType,
         capture,
         captureToBlob,
-        captureToDataURL
+        captureToDataURL,
+        canCapture
     };
 
     global.avatarPortrait = api;

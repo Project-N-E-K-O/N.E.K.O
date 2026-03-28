@@ -1348,7 +1348,10 @@
         "exportFull": "导出角色卡",
         "exportSettingsOnly": "仅导出设定",
         "exportingSettings": "正在导出设定...",
-        "exportSettingsSuccess": "设定导出成功"
+        "exportSettingsSuccess": "设定导出成功",
+        "exportSettingsFailed": "导出设定失败: {{error}}",
+        "capturingPortrait": "正在捕获立绘...",
+        "generatingCard": "正在生成角色卡..."
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",

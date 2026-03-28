@@ -11,6 +11,7 @@ Handles character (catgirl) management endpoints including:
 import json
 import io
 import os
+import shutil
 import asyncio
 import copy
 import base64
@@ -2825,11 +2826,42 @@ async def export_catgirl_card(name: str):
                 }
                 zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
 
-            # 4. 创建PNG图片（纯白图片作为基础）
-            from PIL import Image
+            # 4. 创建PNG图片（长方形角色卡样式）
+            from PIL import Image, ImageDraw, ImageFont
 
-            # 创建一个512x512的纯白图片
-            img = Image.new('RGB', (512, 512), color='white')
+            # 创建长方形图片 (宽:高 = 3:4)
+            width, height = 600, 800
+            img = Image.new('RGB', (width, height), color='#E8F4F8')  # 淡蓝色背景
+            draw = ImageDraw.Draw(img)
+
+            # 顶部1/6区域使用深蓝色
+            header_height = height // 6
+            draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
+
+            # 在顶部左侧添加角色名称
+            try:
+                # 尝试使用系统默认字体，支持中文
+                font_size = 36
+                font = ImageFont.truetype("msyh.ttc", font_size)  # 微软雅黑
+            except:
+                try:
+                    font = ImageFont.truetype("simhei.ttf", font_size)  # 黑体
+                except:
+                    font = ImageFont.load_default()
+
+            # 计算文字位置（左侧居中偏上）
+            text = name
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+
+            # 文字位置：左侧留边距，垂直居中
+            text_x = 30
+            text_y = (header_height - text_height) // 2 - bbox[1]
+
+            # 绘制白色文字
+            draw.text((text_x, text_y), text, fill='white', font=font)
+
             png_path = temp_path / 'character_card.png'
             img.save(png_path, 'PNG')
 
@@ -3220,5 +3252,259 @@ async def import_character_card(zip_file: UploadFile = File(...)):
         return JSONResponse({'success': False, 'error': f'导入失败: {str(e)}'}, status_code=500)
     finally:
         # 清理临时目录
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@router.post('/catgirl/{name}/export-with-portrait')
+async def export_catgirl_with_portrait(
+    name: str,
+    portrait: UploadFile = File(...),
+    include_model: bool = Form(True)
+):
+    """导出角色卡（包含立绘图片）
+
+    导出流程：
+    1. 接收前端传来的立绘图片
+    2. 将立绘合成到角色卡模板上
+    3. 打包角色设定和模型文件（可选）
+    4. 返回合成的PNG角色卡
+    """
+    import zipfile
+    import tempfile
+    from pathlib import Path
+    from urllib.parse import quote
+    from PIL import Image, ImageDraw, ImageFont
+
+    temp_dir = None
+    try:
+        _config_manager = get_config_manager()
+        characters = _config_manager.load_characters()
+
+        if name not in characters.get('猫娘', {}):
+            return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+
+        catgirl_data = characters['猫娘'][name]
+
+        # 创建临时目录
+        temp_dir = tempfile.mkdtemp()
+        temp_path = Path(temp_dir)
+        zip_path = temp_path / 'character_data.zip'
+
+        # 1. 创建ZIP压缩包（包含角色设定和模型）
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # 准备角色设定JSON
+            chara_json = {
+                '档案名': name,
+                **catgirl_data
+            }
+            zf.writestr('character.json', json.dumps(chara_json, ensure_ascii=False, indent=2))
+
+            # 如果需要包含模型，添加模型文件
+            model_added = False
+            model_type = get_reserved(catgirl_data, 'avatar', 'model_type', default='live2d')
+
+            if include_model:
+                if model_type == 'live2d':
+                    live2d_path = get_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', default='')
+                    if live2d_path and live2d_path.strip():
+                        live2d_name = live2d_path.split('/')[0] if '/' in live2d_path else live2d_path.replace('.model3.json', '')
+                        if live2d_name and live2d_name != 'mao_pro':
+                            model_dir, _ = find_model_directory(live2d_name)
+                            if model_dir and os.path.exists(model_dir):
+                                if is_user_imported_model(model_dir, _config_manager):
+                                    model_files_added = 0
+                                    for root, dirs, files in os.walk(model_dir):
+                                        for file in files:
+                                            file_path = Path(root) / file
+                                            arc_name = f"model/{live2d_name}/{file_path.relative_to(model_dir)}"
+                                            zf.write(file_path, arc_name)
+                                            model_files_added += 1
+                                    logger.info(f'已添加模型 {live2d_name} 的 {model_files_added} 个文件到压缩包')
+                                    model_added = True
+
+                elif model_type in ('vrm', 'live3d'):
+                    vrm_path = get_reserved(catgirl_data, 'avatar', 'vrm', 'model_path', default='')
+                    mmd_path = get_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', default='')
+
+                    if mmd_path and mmd_path.strip():
+                        mmd_path = mmd_path.replace('\\', '/')
+                        if mmd_path.startswith('/user_mmd/'):
+                            model_file_name = mmd_path.replace('/user_mmd/', '')
+                            model_full_path = _config_manager.mmd_dir / model_file_name
+                            if model_full_path and model_full_path.exists():
+                                model_parent_dir = model_full_path.parent
+                                model_folder_name = model_parent_dir.name
+                                model_files_added = 0
+                                for root, dirs, files in os.walk(model_parent_dir):
+                                    for file in files:
+                                        file_path = Path(root) / file
+                                        arc_name = f"model/{model_folder_name}/{file_path.relative_to(model_parent_dir)}"
+                                        zf.write(file_path, arc_name)
+                                        model_files_added += 1
+                                logger.info(f'已添加MMD模型文件夹 {model_folder_name} 的 {model_files_added} 个文件到压缩包')
+                                model_added = True
+
+                    elif vrm_path and vrm_path.strip():
+                        vrm_path = vrm_path.replace('\\', '/')
+                        if vrm_path.startswith('/user_vrm/'):
+                            model_file_name = vrm_path.replace('/user_vrm/', '')
+                            model_full_path = _config_manager.vrm_dir / model_file_name
+                            if model_full_path and model_full_path.exists():
+                                arc_name = f"model/{model_full_path.name}"
+                                zf.write(model_full_path, arc_name)
+                                logger.info(f'已添加VRM模型到压缩包: {model_full_path.name}')
+                                model_added = True
+
+            # 添加元数据文件
+            metadata = {
+                'version': '1.0',
+                'export_time': datetime.now().isoformat(),
+                'character_name': name,
+                'model_included': model_added,
+                'model_type': model_type,
+                'has_portrait': True
+            }
+            zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
+
+        # 2. 读取立绘图片
+        portrait_data = await portrait.read()
+        logger.info(f"[导出角色卡] 接收到立绘图片，大小: {len(portrait_data)} bytes")
+        portrait_img = Image.open(io.BytesIO(portrait_data))
+        logger.info(f"[导出角色卡] 立绘图片尺寸: {portrait_img.size}, 模式: {portrait_img.mode}")
+
+        # 转换为RGBA模式（确保透明通道）
+        if portrait_img.mode != 'RGBA':
+            portrait_img = portrait_img.convert('RGBA')
+
+        # 3. 创建角色卡模板
+        width, height = 600, 800
+        card_img = Image.new('RGBA', (width, height), color='#E8F4F8')
+        draw = ImageDraw.Draw(card_img)
+
+        # 顶部1/6区域使用深蓝色
+        header_height = height // 6
+        draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
+
+        # 在顶部左侧添加角色名称
+        # 尝试使用更美观的字体，并加粗显示
+        font_size = 42  # 增大字体
+        font = None
+
+        # 尝试多种中文字体，按优先级排序
+        font_candidates = [
+            ("msyhbd.ttc", font_size),      # 微软雅黑粗体
+            ("Microsoft YaHei Bold.ttf", font_size),  # 微软雅黑粗体（另一种名称）
+            ("simhei.ttf", font_size),      # 黑体
+            ("simsun.ttc", font_size),      # 宋体
+            ("msyh.ttc", font_size),        # 微软雅黑常规
+            ("Microsoft YaHei.ttf", font_size),  # 微软雅黑（另一种名称）
+        ]
+
+        for font_name, size in font_candidates:
+            try:
+                font = ImageFont.truetype(font_name, size)
+                logger.info(f"[导出角色卡] 使用字体: {font_name}")
+                break
+            except:
+                continue
+
+        if font is None:
+            font = ImageFont.load_default()
+            logger.warning("[导出角色卡] 使用默认字体")
+
+        text = name
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        text_x = 40  # 稍微增加左边距
+        text_y = (header_height - text_height) // 2 - bbox[1]
+
+        # 添加文字阴影效果增加可读性
+        shadow_offset = 2
+        draw.text((text_x + shadow_offset, text_y + shadow_offset), text, fill='#00000040', font=font)  # 半透明黑色阴影
+        draw.text((text_x, text_y), text, fill='white', font=font)  # 白色文字
+
+        # 4. 合成立绘到角色卡
+        # 立绘区域：顶部蓝色区域下方到卡片底部，左右留边距
+        portrait_area_x = 20
+        portrait_area_y = header_height + 20
+        portrait_area_width = width - 40
+        portrait_area_height = height - header_height - 40
+        logger.info(f"[导出角色卡] 立绘区域: ({portrait_area_x}, {portrait_area_y}, {portrait_area_width}, {portrait_area_height})")
+
+        # 计算缩放比例，保持比例，居中填充
+        portrait_width, portrait_height = portrait_img.size
+        target_aspect = portrait_area_width / portrait_area_height
+        source_aspect = portrait_width / portrait_height
+        logger.info(f"[导出角色卡] 立绘原始尺寸: {portrait_width}x{portrait_height}, 目标比例: {target_aspect:.2f}, 源比例: {source_aspect:.2f}")
+
+        if source_aspect > target_aspect:
+            # 源更宽，以高度为准
+            new_height = portrait_area_height
+            new_width = int(new_height * source_aspect)
+        else:
+            # 源更高，以宽度为准
+            new_width = portrait_area_width
+            new_height = int(new_width / source_aspect)
+
+        # 调整立绘大小
+        portrait_resized = portrait_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        logger.info(f"[导出角色卡] 立绘调整后尺寸: {new_width}x{new_height}")
+
+        # 计算居中位置
+        paste_x = portrait_area_x + (portrait_area_width - new_width) // 2
+        paste_y = portrait_area_y + (portrait_area_height - new_height) // 2
+        logger.info(f"[导出角色卡] 立绘粘贴位置: ({paste_x}, {paste_y})")
+
+        # 粘贴立绘（使用alpha通道）
+        card_img.paste(portrait_resized, (paste_x, paste_y), portrait_resized)
+        logger.info("[导出角色卡] 立绘粘贴完成")
+
+        # 转换为RGB模式（PNG不支持RGBA的某些特性）
+        final_img = Image.new('RGB', (width, height), color='#E8F4F8')
+        final_img.paste(card_img, (0, 0), card_img)
+
+        # 5. 保存PNG图片
+        png_path = temp_path / 'character_card.png'
+        final_img.save(png_path, 'PNG')
+
+        # 6. 将压缩包数据拼接到PNG图片
+        with open(png_path, 'rb') as f:
+            png_data = f.read()
+
+        with open(zip_path, 'rb') as f:
+            zip_data = f.read()
+
+        combined_data = png_data + zip_data + len(zip_data).to_bytes(8, 'little')
+        marker = b'NEKOCHARA\x00'
+        combined_data = combined_data + marker
+
+        # 7. 返回图片文件
+        safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '·', '•') or '\u4e00' <= c <= '\u9fff').strip()
+        if not safe_name:
+            safe_name = "character_card"
+        original_filename = f"{safe_name}.png"
+        encoded_filename = quote(original_filename, safe='')
+        content_disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
+
+        try:
+            ascii_filename = original_filename.encode('ascii').decode('ascii')
+        except UnicodeEncodeError:
+            ascii_filename = "character_card.png"
+
+        return Response(
+            content=combined_data,
+            media_type='image/png',
+            headers={
+                'Content-Disposition': content_disposition,
+                'X-Filename': ascii_filename
+            }
+        )
+
+    except Exception as e:
+        logger.exception(f"导出带立绘的角色卡失败: {e}")
+        return JSONResponse({'success': False, 'error': f'导出失败: {str(e)}'}, status_code=500)
+    finally:
         if temp_dir and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)

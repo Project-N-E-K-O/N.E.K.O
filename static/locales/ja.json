@@ -1348,7 +1348,10 @@
         "exportFull": "キャラクターカードをエクスポート",
         "exportSettingsOnly": "設定のみエクスポート",
         "exportingSettings": "設定をエクスポート中...",
-        "exportSettingsSuccess": "設定のエクスポートに成功しました"
+        "exportSettingsSuccess": "設定のエクスポートに成功しました",
+        "exportSettingsFailed": "設定のエクスポートに失敗しました: {{error}}",
+        "capturingPortrait": "立ち絵をキャプチャ中...",
+        "generatingCard": "キャラクターカードを生成中..."
     },
     "app": {
         "welcomeBack": "{{name}}が戻りました！",

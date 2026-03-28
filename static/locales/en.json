@@ -1348,7 +1348,10 @@
         "exportFull": "Export Character Card",
         "exportSettingsOnly": "Export Settings Only",
         "exportingSettings": "Exporting settings...",
-        "exportSettingsSuccess": "Settings exported successfully"
+        "exportSettingsSuccess": "Settings exported successfully",
+        "exportSettingsFailed": "Failed to export settings: {{error}}",
+        "capturingPortrait": "Capturing portrait...",
+        "generatingCard": "Generating character card..."
     },
     "app": {
         "welcomeBack": "{{name}} is back!",

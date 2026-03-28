@@ -1348,7 +1348,10 @@
         "exportFull": "Экспортировать карту персонажа",
         "exportSettingsOnly": "Только настройки",
         "exportingSettings": "Экспорт настроек...",
-        "exportSettingsSuccess": "Настройки успешно экспортированы"
+        "exportSettingsSuccess": "Настройки успешно экспортированы",
+        "exportSettingsFailed": "Ошибка экспорта настроек: {{error}}",
+        "capturingPortrait": "Захват портрета...",
+        "generatingCard": "Создание карты персонажа..."
     },
     "app": {
         "welcomeBack": "{{name}} вернулась!",
