@@ -28,6 +28,7 @@ import re
 import asyncio
 import logging
 import argparse
+from datetime import datetime
 from utils.frontend_utils import get_timestamp
 
 # 配置日志
@@ -150,23 +151,64 @@ async def shutdown_memory_server():
         return {"status": "error", "message": str(e)}
 
 REBUTTAL_CHECK_INTERVAL = 300  # 5 分钟
+_last_rebuttal_check: dict[str, datetime] = {}  # per-character 上次检查时间戳
+
+
+def _extract_user_messages_from_rows(rows: list) -> list[str]:
+    """从 time_indexed SQL 查询结果中提取用户消息文本。
+
+    rows: [(session_id, message_json), ...]
+    message_json 是 langchain SQLChatMessageHistory 存储的 JSON 字符串。
+    """
+    user_msgs = []
+    for _, msg_json in rows:
+        try:
+            msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
+            if isinstance(msg, dict) and msg.get('type') == 'human':
+                content = msg.get('data', {}).get('content', '')
+                if isinstance(content, str) and content.strip():
+                    user_msgs.append(content)
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return user_msgs
+
 
 async def _periodic_rebuttal_loop():
-    """每 5 分钟检查 confirmed reflections 是否被近期对话反驳。"""
+    """每 5 分钟检查 confirmed reflections 是否被近期对话反驳。
+
+    通过 time_indexed SQL 查询上次检查之后的所有新对话消息，
+    确保不遗漏任何未消费的用户回复。
+    """
+    from datetime import timedelta as _td
+
     while True:
         await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
         try:
             character_data = _config_manager.load_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
+            now = datetime.now()
             for name in catgirl_names:
                 confirmed = reflection_engine.get_confirmed_reflections(name)
                 if not confirmed:
                     continue
-                # 取最近对话中的用户消息
-                recent = recent_history_manager.get_recent_history(name)
-                user_msgs = _extract_user_messages(recent[-10:] if len(recent) > 10 else recent)
+
+                # 确定查询起始时间：上次检查时间 or 1小时前（首次）
+                start_time = _last_rebuttal_check.get(
+                    name, now - _td(hours=1)
+                )
+                rows = time_manager.retrieve_original_by_timeframe(
+                    name, start_time, now,
+                )
+                if not rows:
+                    _last_rebuttal_check[name] = now
+                    continue
+
+                user_msgs = _extract_user_messages_from_rows(rows)
+                _last_rebuttal_check[name] = now  # 标记已消费
+
                 if not user_msgs:
                     continue
+
                 # 复用 check_feedback 判断反驳
                 feedbacks = await reflection_engine.check_feedback_for_confirmed(
                     name, confirmed, user_msgs,
