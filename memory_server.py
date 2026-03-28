@@ -169,6 +169,7 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
 
     rows: [(session_id, message_json), ...]
     message_json 是 langchain SQLChatMessageHistory 存储的 JSON 字符串。
+    content 可能是 str 或 list[{type, text}]，与 _extract_user_messages 对齐。
     """
     user_msgs = []
     for _, msg_json in rows:
@@ -176,8 +177,15 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
             if isinstance(msg, dict) and msg.get('type') == 'human':
                 content = msg.get('data', {}).get('content', '')
-                if isinstance(content, str) and content.strip():
-                    user_msgs.append(content)
+                if isinstance(content, str):
+                    if content.strip():
+                        user_msgs.append(content)
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get('type') == 'text':
+                            text = part.get('text', '')
+                            if text.strip():
+                                user_msgs.append(text)
         except (json.JSONDecodeError, TypeError):
             continue
     return user_msgs
@@ -214,15 +222,22 @@ async def _periodic_rebuttal_loop():
                     continue
 
                 user_msgs = _extract_user_messages_from_rows(rows)
-                _last_rebuttal_check[name] = now  # 标记已消费
-
                 if not user_msgs:
+                    _last_rebuttal_check[name] = now
                     continue
 
                 # 复用 check_feedback 判断反驳
-                feedbacks = await reflection_engine.check_feedback_for_confirmed(
-                    name, confirmed, user_msgs,
-                )
+                try:
+                    feedbacks = await reflection_engine.check_feedback_for_confirmed(
+                        name, confirmed, user_msgs,
+                    )
+                except Exception as fb_err:
+                    # LLM 调用失败 → 不推进窗口，下次重试这批消息
+                    logger.warning(f"[Rebuttal] {name}: 反驳检查 LLM 调用失败，保留窗口待重试: {fb_err}")
+                    continue
+
+                # 成功才推进窗口
+                _last_rebuttal_check[name] = now
                 for fb in feedbacks:
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
                         rid = fb.get('reflection_id')

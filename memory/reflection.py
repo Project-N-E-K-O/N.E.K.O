@@ -92,8 +92,10 @@ class ReflectionEngine:
                     data = json.load(f)
                 if isinstance(data, list):
                     all_on_disk = [r for r in data if isinstance(r, dict)]
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                # 读取失败 → 中止保存，避免覆盖磁盘上的 promoted/denied 条目
+                logger.warning(f"[Reflection] {name}: 读取现有 reflections 失败，中止保存以保护归档数据: {e}")
+                return
 
         # Build id→entry map from active list
         active_ids = {r['id'] for r in reflections if 'id' in r}
