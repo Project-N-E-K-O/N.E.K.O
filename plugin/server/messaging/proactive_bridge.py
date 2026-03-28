@@ -183,7 +183,10 @@ class ProactiveBridge:
                 except Exception as e:
                     logger.warning("proactive bridge push failed: {}", e)
         finally:
-
+            try:
+                sub_sock.close(linger=0)
+            except Exception:
+                pass
             try:
                 push_sock.close(linger=0)
             except Exception:
