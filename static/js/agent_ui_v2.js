@@ -277,15 +277,18 @@
                 ? state.openclawReady
                 : capabilityReady(snap, 'openclaw_enabled');
             const reason = state.openclawReason || capabilityReason(snap, 'openclaw_enabled');
-            const canUse = effectiveAnalyzerEnabled && ready;
+            const disabledByPending = state.pending.has('openclaw_enabled');
+            const canUse = effectiveAnalyzerEnabled && ready && !disabledByPending;
             const openclawName = window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw';
             const optimisticVal = Object.prototype.hasOwnProperty.call(state.optimistic, 'openclaw_enabled')
                 ? !!state.optimistic['openclaw_enabled']
                 : !!flags['openclaw_enabled'];
             openclaw.forEach(cb => {
-                cb.checked = optimisticVal && canUse;
-                cb.disabled = !!state.globalBusy || !effectiveAnalyzerEnabled || !ready;
-                if (canUse) {
+                cb.checked = disabledByPending ? false : (optimisticVal && canUse);
+                cb.disabled = !!state.globalBusy || disabledByPending || !effectiveAnalyzerEnabled || !ready;
+                if (disabledByPending) {
+                    cb.title = window.t ? window.t('settings.toggles.checking') : '切换中...';
+                } else if (canUse) {
                     cb.title = openclawName;
                 } else if (!effectiveAnalyzerEnabled) {
                     cb.title = window.t ? window.t('settings.toggles.masterRequired', { name: openclawName }) : '\u8bf7\u5148\u5f00\u542fAgent\u603b\u5f00\u5173';

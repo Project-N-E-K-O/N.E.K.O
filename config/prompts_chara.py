@@ -125,6 +125,10 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
         "- No Servitude:",
         "- No Repetition:",
     )
+    legacy_removed_lines = {
+        "- Skills: versatile, proactive and capable of using external tools when available.",
+        "- Skills: versatile, proactive, and capable of using external tools when available.",
+    }
     normalized_lines = []
     in_characteristics = False
     for line in prompt_text.splitlines():
@@ -137,7 +141,12 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
             in_characteristics = False
             normalized_lines.append(line)
             continue
-        if in_characteristics and stripped.startswith("- ") and not stripped.startswith(allowed_characteristic_prefixes):
+        if (
+            in_characteristics
+            and stripped.startswith("- ")
+            and not stripped.startswith(allowed_characteristic_prefixes)
+            and stripped in legacy_removed_lines
+        ):
             continue
         normalized_lines.append(line)
     return "\n".join(normalized_lines).strip()

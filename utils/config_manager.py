@@ -8,6 +8,7 @@ import os
 import json
 import shutil
 import threading
+import math
 from datetime import date
 from copy import deepcopy
 from pathlib import Path
@@ -1609,7 +1610,10 @@ class ConfigManager:
             config['OPENCLAW_URL'] = openclaw_url.strip()
         try:
             openclaw_timeout = core_cfg.get('openclawTimeout', config['OPENCLAW_TIMEOUT'])
-            config['OPENCLAW_TIMEOUT'] = float(openclaw_timeout)
+            openclaw_timeout = float(openclaw_timeout)
+            if not math.isfinite(openclaw_timeout) or openclaw_timeout <= 0:
+                raise ValueError("openclawTimeout must be a positive finite number")
+            config['OPENCLAW_TIMEOUT'] = openclaw_timeout
         except (TypeError, ValueError):
             config['OPENCLAW_TIMEOUT'] = 300.0
         openclaw_sender = core_cfg.get('openclawDefaultSenderId')

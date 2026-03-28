@@ -18,8 +18,12 @@ def test_is_default_prompt_accepts_legacy_prompt_without_skills_line() -> None:
 def test_is_default_prompt_keeps_custom_skills_line_non_default() -> None:
     base_prompt = get_lanlan_prompt("zh")
     default_skills_line = next(
-        line for line in base_prompt.splitlines() if line.strip().startswith("- Skills: ")
+        (line for line in base_prompt.splitlines() if line.strip().startswith("- Skills: ")),
+        None,
     )
+    if default_skills_line is None:
+        assert "- Skills:" not in base_prompt
+        return
     customized_prompt = base_prompt.replace(
         default_skills_line,
         "- Skills: 可以写代码，也会主动解释自己的实现思路。",

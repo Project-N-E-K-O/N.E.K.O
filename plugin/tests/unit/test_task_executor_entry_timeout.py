@@ -52,7 +52,10 @@ class _AlwaysFailGetClient:
         return None
 
     async def get(self, url: str):
-        raise RuntimeError("connection lost")
+        response = _FakeResponse({"status": "running"})
+        response.status_code = 503
+        response.text = "service unavailable"
+        return response
 
 
 @pytest.mark.asyncio

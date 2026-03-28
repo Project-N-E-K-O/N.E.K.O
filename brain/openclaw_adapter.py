@@ -50,15 +50,18 @@ class OpenClawAdapter:
             logger.debug("[OpenClaw] Failed to load config, using defaults: %s", exc)
             cfg = {}
 
-        raw_url = cfg.get("OPENCLAW_URL")
+        raw_url = cfg.get("OPENCLAW_URL", cfg.get("openclawUrl"))
         if isinstance(raw_url, str) and raw_url.strip():
             self.base_url = raw_url.strip().rstrip("/")
         else:
             self.base_url = DEFAULT_OPENCLAW_URL
 
-        self.timeout = _normalize_timeout(cfg.get("OPENCLAW_TIMEOUT", DEFAULT_TIMEOUT), DEFAULT_TIMEOUT)
+        self.timeout = _normalize_timeout(
+            cfg.get("OPENCLAW_TIMEOUT", cfg.get("openclawTimeout", DEFAULT_TIMEOUT)),
+            DEFAULT_TIMEOUT,
+        )
         self.http_timeout = max(self.timeout + 15.0, self.timeout)
-        raw_sender = cfg.get("OPENCLAW_DEFAULT_SENDER_ID")
+        raw_sender = cfg.get("OPENCLAW_DEFAULT_SENDER_ID", cfg.get("openclawDefaultSenderId"))
         self.default_sender_id = raw_sender.strip() if isinstance(raw_sender, str) and raw_sender.strip() else "neko_user"
 
     def is_available(self) -> Dict[str, Any]:
@@ -166,6 +169,10 @@ class OpenClawAdapter:
         except Exception as exc:
             self.last_error = f"OpenClaw connection failed: {exc}"
             return {"success": False, "error": self.last_error}
+
+        if not isinstance(data, dict):
+            self.last_error = "OpenClaw returned a non-object JSON response"
+            return {"success": False, "error": self.last_error, "raw": data}
 
         reply = data.get("reply")
         reply_text = reply.strip() if isinstance(reply, str) else ""

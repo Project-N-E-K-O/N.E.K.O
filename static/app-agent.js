@@ -636,7 +636,7 @@
 
                         // User plugin flag sync
                         if (agentUserPluginCheckbox && !agentUserPluginCheckbox._processing) {
-                            const flagEnabled = flags.openclaw_enabled || false;
+                            const flagEnabled = flags.user_plugin_enabled || false;
                             const isAvailable = capabilityCheckFailed
                                 ? agentUserPluginCheckbox.checked
                                 : (capabilityResults['user_plugin_enabled'] !== false);
@@ -660,7 +660,7 @@
                         }
 
                         if (agentOpenClawCheckbox && !agentOpenClawCheckbox._processing) {
-                            const flagEnabled = flags.user_plugin_enabled || false;
+                            const flagEnabled = flags.openclaw_enabled || false;
                             const isAvailable = capabilityCheckFailed
                                 ? agentOpenClawCheckbox.checked
                                 : (capabilityResults['openclaw_enabled'] !== false);
@@ -1641,6 +1641,7 @@
         const domChild = (keyboardCheckbox && keyboardCheckbox.checked)
             || (browserCheckbox && browserCheckbox.checked)
             || (userPlugin && userPlugin.checked)
+            || (openclawCheckbox && openclawCheckbox.checked)
             || (openfangCheckbox && openfangCheckbox.checked);
 
         const snap = window._agentStatusSnapshot;
@@ -1725,6 +1726,10 @@
             if (userPluginCheckbox) {
                 userPluginCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            }
+            if (openclawCheckbox) {
+                openclawCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
+                openclawCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
 
             checkAndToggleTaskHUD();

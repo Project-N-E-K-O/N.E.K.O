@@ -568,11 +568,15 @@ class LLMSessionManager:
                             {"role": self.lanlan_name, "text": text})
                     elif self.message_cache_for_new_session[-1]['role'] == self.lanlan_name:
                         self.message_cache_for_new_session[-1]['text'] += text
+                return True
+            return False
 
         except WebSocketDisconnect:
             logger.info("Frontend disconnected.")
+            return False
         except Exception as e:
             logger.error(f"💥 WS Send Lanlan Response Error: {e}")
+            return False
         
     async def handle_silence_timeout(self, *, expected_session=None):
         """处理语音输入静默超时：自动关闭session但保持live2d显示"""

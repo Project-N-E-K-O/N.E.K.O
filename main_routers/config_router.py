@@ -501,6 +501,9 @@ async def get_core_config_api():
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
             "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),
+            "openclawUrl": core_cfg.get('openclawUrl'),
+            "openclawTimeout": core_cfg.get('openclawTimeout'),
+            "openclawDefaultSenderId": core_cfg.get('openclawDefaultSenderId'),
             "enableCustomApi": core_cfg.get('enableCustomApi', False),
             # 自定义API相关字段（Provider / Url / Id / ApiKey per model type）
             **{

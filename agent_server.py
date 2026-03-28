@@ -24,6 +24,7 @@ logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
 
 from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT, OPENFANG_BASE_URL
 from utils.config_manager import get_config_manager
+from utils.language_utils import get_global_language
 from main_logic.agent_event_bus import AgentServerEventBridge
 try:
     from brain.computer_use import ComputerUseAdapter
@@ -117,6 +118,19 @@ _task_registry_last_cleanup: float = 0.0
 PLUGIN_DISPLAY_NAME_ALIASES: Dict[str, str] = {
     "openclaw": "OpenClaw",
 }
+
+
+def _default_openclaw_task_description() -> str:
+    lang = str(get_global_language() or "").lower()
+    if lang.startswith("zh"):
+        return "OpenClaw 处理中..."
+    if lang.startswith("ja"):
+        return "OpenClaw is processing..."
+    if lang.startswith("ko"):
+        return "OpenClaw is processing..."
+    if lang.startswith("ru"):
+        return "OpenClaw is processing..."
+    return "OpenClaw is processing..."
 
 
 def _cleanup_task_registry() -> List[Dict[str, Any]]:
@@ -1389,7 +1403,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 instruction = ""
                 if isinstance(result.tool_args, dict):
                     instruction = str(result.tool_args.get("instruction") or "")
-                task_params = {"description": result.task_description or "OpenClaw 处理中..."}
+                task_params = {"description": result.task_description or _default_openclaw_task_description()}
                 Modules.task_registry[result.task_id] = {
                     "id": result.task_id,
                     "type": "openclaw",

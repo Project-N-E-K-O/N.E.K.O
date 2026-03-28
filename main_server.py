@@ -311,8 +311,7 @@ async def _handle_agent_event(event: dict):
                     delivered = False
                     if detail_text and hasattr(mgr, "send_lanlan_response"):
                         try:
-                            await mgr.send_lanlan_response(detail_text, True)
-                            delivered = True
+                            delivered = bool(await mgr.send_lanlan_response(detail_text, True))
                         except Exception as e:
                             logger.warning("[EventBus] direct task_result reply failed: %s", e)
                     if delivered and hasattr(mgr, "handle_proactive_complete"):
@@ -391,18 +390,8 @@ async def _handle_agent_event(event: dict):
                     await ws.send_json(task_payload)
                 except Exception as e:
                     logger.warning("[EventBus] task_update send failed for lanlan=%s: %s", lanlan, e)
-                    # Try broadcast to all connected sessions as fallback
-                    delivered = await _broadcast_to_all_connected(task_payload)
-                    if delivered > 0:
-                        logger.info("[EventBus] task_update broadcasted to %d sessions after send failure", delivered)
             else:
-                # WebSocket not connected, broadcast to all connected sessions
-                logger.warning("[EventBus] task_update: WebSocket not connected for lanlan=%s, broadcasting to all", lanlan)
-                delivered = await _broadcast_to_all_connected(task_payload)
-                if delivered > 0:
-                    logger.info("[EventBus] task_update broadcasted to %d sessions", delivered)
-                else:
-                    logger.warning("[EventBus] task_update dropped: no connected WebSocket sessions")
+                logger.warning("[EventBus] task_update dropped: WebSocket not connected for lanlan=%s", lanlan)
     except Exception as e:
         logger.debug(f"handle_agent_event error: {e}")
 
