@@ -523,7 +523,9 @@
         "clearAll": "Clear All",
         "screenshotAlt": "Screenshot {{index}}",
         "screenshotTitle": "Click to view screenshot {{index}}",
-        "removeScreenshot": "Remove this screenshot"
+        "removeScreenshot": "Remove this screenshot",
+        "avatarPreview": "Show current avatar",
+        "avatarPreviewLabel": "Current avatar"
     },
     "voiceControl": {
         "startVoice": "Start Voice",

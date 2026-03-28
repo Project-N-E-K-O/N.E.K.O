@@ -523,7 +523,9 @@
         "clearAll": "모두 지우기",
         "screenshotAlt": "스크린샷 {{index}}",
         "screenshotTitle": "스크린샷을 보려면 클릭하세요. {{index}}",
-        "removeScreenshot": "이 스크린샷 삭제"
+        "removeScreenshot": "이 스크린샷 삭제",
+        "avatarPreview": "현재 아바타 표시",
+        "avatarPreviewLabel": "현재 아바타"
     },
     "voiceControl": {
         "startVoice": "음성 시작",

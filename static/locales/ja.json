@@ -523,7 +523,9 @@
         "clearAll": "すべてクリア",
         "screenshotAlt": "スクリーンショット {{index}}",
         "screenshotTitle": "クリックしてスクリーンショット {{index}} を表示",
-        "removeScreenshot": "このスクリーンショットを削除"
+        "removeScreenshot": "このスクリーンショットを削除",
+        "avatarPreview": "現在のアバターを表示",
+        "avatarPreviewLabel": "現在のアバター"
     },
     "voiceControl": {
         "startVoice": "音声開始",

@@ -1039,6 +1039,13 @@ class VRMManager {
                 }
             }
 
+            window.dispatchEvent(new CustomEvent('vrm-model-loaded', {
+                detail: {
+                    modelUrl,
+                    model: this.currentModel
+                }
+            }));
+
             showAndFadeIn();
         } else if (this._isLoadTokenActive(loadToken)) {
             this._loadState = 'idle';

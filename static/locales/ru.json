@@ -523,7 +523,9 @@
         "clearAll": "Очистить всё",
         "screenshotAlt": "Скриншот {{index}}",
         "screenshotTitle": "Нажмите для просмотра скриншота {{index}}",
-        "removeScreenshot": "Удалить этот скриншот"
+        "removeScreenshot": "Удалить этот скриншот",
+        "avatarPreview": "Показать текущий аватар",
+        "avatarPreviewLabel": "Текущий аватар"
     },
     "voiceControl": {
         "startVoice": "Начать голос",
