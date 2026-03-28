@@ -164,7 +164,9 @@ class PersonaManager:
 
                 for k, v in facts_list.items():
                     if v and str(v).strip():
-                        target.append(self._normalize_entry(f"{k}: {v}"))
+                        entry = self._normalize_entry(f"{k}: {v}")
+                        entry['protected'] = True  # 角色 JSON 来源，不可 suppress
+                        target.append(entry)
 
             logger.info(f"[Persona] {name}: 从 settings 迁移了 persona 数据")
         except Exception as e:
@@ -189,6 +191,7 @@ class PersonaManager:
             'recent_mentions': [],      # 窗口内提及时间戳列表
             'suppress': False,          # 是否被抑制
             'suppressed_at': None,      # suppress 开始时间
+            'protected': False,         # 硬编码 setting 迁移的条目，不可 suppress
         }
         if isinstance(entry, str):
             d = dict(defaults)
@@ -406,6 +409,8 @@ class PersonaManager:
         for entry in self._collect_all_entries(persona):
             if not isinstance(entry, dict):
                 continue
+            if entry.get('protected'):
+                continue  # 硬编码条目不参与 suppress 计数
             if not _is_mentioned(entry.get('text', ''), response_text):
                 continue
 
@@ -478,7 +483,8 @@ class PersonaManager:
 
     # ── rendering ────────────────────────────────────────────────────
 
-    def render_persona_markdown(self, name: str, pending_reflections: list[dict] | None = None) -> str:
+    def render_persona_markdown(self, name: str, pending_reflections: list[dict] | None = None,
+                                   confirmed_reflections: list[dict] | None = None) -> str:
         """Render persona as markdown for LLM context injection.
 
         Suppressed entries are rendered in a separate "暂不主动提及" section,
@@ -530,6 +536,19 @@ class PersonaManager:
                 sections.append(
                     f"### {ai_name}最近的印象（还不太确定）\n"
                     + "\n".join(pending_lines)
+                )
+
+        # Confirmed reflections (软 persona：比 pending 更稳固，但仍可修正)
+        if confirmed_reflections:
+            confirmed_lines = []
+            for r in confirmed_reflections:
+                text = r.get('text', '')
+                if text and not self._is_suppressed_text(persona, text):
+                    confirmed_lines.append(f"- {text}")
+            if confirmed_lines:
+                sections.append(
+                    f"### {ai_name}比较确定的印象\n"
+                    + "\n".join(confirmed_lines)
                 )
 
         # Suppressed section (記得但别主动提)
