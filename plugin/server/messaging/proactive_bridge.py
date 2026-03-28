@@ -114,8 +114,6 @@ class ProactiveBridge:
                     continue
 
                 payload = event.get("payload") if isinstance(event, dict) else None
-                if not isinstance(payload, dict):
-                    continue
 
                 if not isinstance(payload, dict):
                     continue
@@ -137,7 +135,7 @@ class ProactiveBridge:
                     if not content:
                         continue
 
-                    forward_event = {
+                    proactive_event = {
                         "event_type": "proactive_message",
                         "lanlan_name": metadata.get("target_lanlan") or None,
                         "text": content,
@@ -152,7 +150,7 @@ class ProactiveBridge:
                 
                 # -------- 2. Music Allowlist Add --------
                 elif msg_type == "music_allowlist_add":
-                    forward_event = {
+                    proactive_event = {
                         "event_type": "music_allowlist_add",
                         "domains": metadata.get("domains", []),
                         "source": plugin_id,
@@ -161,7 +159,7 @@ class ProactiveBridge:
 
                 # -------- 3. Music Direct Play --------
                 elif msg_type == "music_play_url":
-                    forward_event = {
+                    proactive_event = {
                         "event_type": "music_play_url",
                         "url": metadata.get("url"),
                         "name": metadata.get("name"),
@@ -173,19 +171,16 @@ class ProactiveBridge:
                     continue
 
                 try:
-                    push_sock.send_json(forward_event, zmq.NOBLOCK)
+                    push_sock.send_json(proactive_event, zmq.NOBLOCK)
                     logger.info(
                         "proactive bridge forwarded: plugin={} type={}",
                         plugin_id,
-                        forward_event.get("event_type"),
+                        proactive_event.get("event_type"),
                     )
                 except Exception as e:
                     logger.warning("proactive bridge push failed: {}", e)
         finally:
-            try:
-                sub_sock.close(linger=0)
-            except Exception:
-                pass
+
             try:
                 push_sock.close(linger=0)
             except Exception:
