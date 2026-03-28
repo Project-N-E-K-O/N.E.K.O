@@ -64,8 +64,18 @@ def validate_lanlan_name(name: str) -> str:
         raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
     return name
 
-# 初始化组件
+# 初始化组件（迁移必须在实例化之前，否则旧路径文件找不到）
 _config_manager = get_config_manager()
+try:
+    from memory import migrate_to_character_dirs
+    _config_manager.ensure_memory_directory()
+    _char_data = _config_manager.load_characters()
+    _catgirl_names = list(_char_data.get('猫娘', {}).keys())
+    migrate_to_character_dirs(_config_manager.memory_dir, _catgirl_names)
+    del _char_data, _catgirl_names
+except Exception as _e:
+    logger.warning(f"[Memory] 模块级目录迁移失败: {_e}")
+
 recent_history_manager = CompressedRecentHistoryManager()
 settings_manager = ImportantSettingsManager()  # 保留兼容，逐步迁移
 time_manager = TimeIndexedMemory(recent_history_manager)
@@ -234,21 +244,11 @@ async def startup_event_handler():
     except Exception as e:
         logger.warning(f"[Memory] Token tracker init failed: {e}")
 
-    # 文件结构迁移：memory_dir/{type}_{name}.json → memory_dir/{name}/{type}.json
+    # 自动迁移 settings → persona（如 persona 文件不存在）
+    # 注：目录结构迁移已在模块级完成（在组件实例化之前）
     try:
-        from memory import migrate_to_character_dirs
         character_data = _config_manager.load_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
-        _config_manager.ensure_memory_directory()
-        migrate_to_character_dirs(_config_manager.memory_dir, catgirl_names)
-    except Exception as e:
-        logger.warning(f"[Memory] 角色目录迁移失败: {e}")
-
-    # 自动迁移 settings → persona（如 persona 文件不存在）
-    try:
-        if not catgirl_names:
-            character_data = _config_manager.load_characters()
-            catgirl_names = list(character_data.get('猫娘', {}).keys())
         for name in catgirl_names:
             persona_manager.ensure_persona(name)
         logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
