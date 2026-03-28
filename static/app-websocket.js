@@ -1085,6 +1085,23 @@
                                 }
                             });
                     }
+                // -------- music allowlist add --------
+                } else if (response.type === 'music_allowlist_add') {
+                    if (window.MusicPluginAPI && response.domains) {
+                        console.log('[Music] Received allowlist update from backend:', response.domains);
+                        window.MusicPluginAPI.addAllowlist(response.domains);
+                    }
+
+                // -------- music play url --------
+                } else if (response.type === 'music_play_url') {
+                    if (response.url && typeof window.dispatchMusicPlay === 'function') {
+                        console.log('[Music] Received direct play command from backend:', response.url);
+                        window.dispatchMusicPlay({
+                            name: response.name || 'Plugin Music',
+                            artist: response.artist || 'External',
+                            url: response.url
+                        });
+                    }
 
                 // -------- repetition_warning --------
                 } else if (response.type === 'repetition_warning') {

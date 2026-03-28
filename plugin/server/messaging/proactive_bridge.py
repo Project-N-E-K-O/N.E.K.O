@@ -117,54 +117,67 @@ class ProactiveBridge:
                 if not isinstance(payload, dict):
                     continue
 
-                if payload.get("message_type") != "proactive_notification":
+                if not isinstance(payload, dict):
                     continue
 
-                raw_content = payload.get("content")
-                # 通过 result_parser 确保 content 不含原始 JSON
-                try:
-                    from brain.result_parser import parse_push_message_content
-                    content = parse_push_message_content(raw_content)
-                except Exception:
-                    content = str(raw_content or "").strip()
-
-                raw_str = str(raw_content or "")
-                if content != raw_str.strip():
-                    logger.info(
-                        "proactive bridge: content parsed: '{}' → '{}'",
-                        raw_str[:120], content[:120],
-                    )
-                else:
-                    logger.info(
-                        "proactive bridge: content passthrough: '{}'",
-                        content[:120],
-                    )
-
-                if not content:
-                    continue
-
-                metadata = payload.get("metadata") or {}
+                msg_type = payload.get("message_type")
                 plugin_id = payload.get("plugin_id", "")
+                metadata = payload.get("metadata") or {}
 
-                proactive_event = {
-                    "event_type": "proactive_message",
-                    "lanlan_name": metadata.get("target_lanlan") or None,
-                    "text": content,
-                    "summary": content,
-                    "detail": content,
-                    "channel": f"plugin:{plugin_id}" if plugin_id else "plugin",
-                    "task_id": metadata.get("task_id", ""),
-                    "success": True,
-                    "status": "completed",
-                    "timestamp": payload.get("time", ""),
-                }
+                # -------- 1. Proactive Spoken Notification --------
+                if msg_type == "proactive_notification":
+                    raw_content = payload.get("content")
+                    # 通过 result_parser 确保 content 不含原始 JSON
+                    try:
+                        from brain.result_parser import parse_push_message_content
+                        content = parse_push_message_content(raw_content)
+                    except Exception:
+                        content = str(raw_content or "").strip()
+
+                    if not content:
+                        continue
+
+                    forward_event = {
+                        "event_type": "proactive_message",
+                        "lanlan_name": metadata.get("target_lanlan") or None,
+                        "text": content,
+                        "summary": content,
+                        "detail": content,
+                        "channel": f"plugin:{plugin_id}" if plugin_id else "plugin",
+                        "task_id": metadata.get("task_id", ""),
+                        "success": True,
+                        "status": "completed",
+                        "timestamp": payload.get("time", ""),
+                    }
+                
+                # -------- 2. Music Allowlist Add --------
+                elif msg_type == "music_allowlist_add":
+                    forward_event = {
+                        "event_type": "music_allowlist_add",
+                        "domains": metadata.get("domains", []),
+                        "source": plugin_id,
+                        "timestamp": payload.get("time", "")
+                    }
+
+                # -------- 3. Music Direct Play --------
+                elif msg_type == "music_play_url":
+                    forward_event = {
+                        "event_type": "music_play_url",
+                        "url": metadata.get("url"),
+                        "name": metadata.get("name"),
+                        "artist": metadata.get("artist"),
+                        "source": plugin_id,
+                        "timestamp": payload.get("time", "")
+                    }
+                else:
+                    continue
 
                 try:
-                    push_sock.send_json(proactive_event, zmq.NOBLOCK)
+                    push_sock.send_json(forward_event, zmq.NOBLOCK)
                     logger.info(
-                        "proactive bridge forwarded: plugin={} content={}",
+                        "proactive bridge forwarded: plugin={} type={}",
                         plugin_id,
-                        content[:80],
+                        forward_event.get("event_type"),
                     )
                 except Exception as e:
                     logger.warning("proactive bridge push failed: {}", e)

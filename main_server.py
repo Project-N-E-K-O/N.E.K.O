@@ -244,6 +244,41 @@ async def _handle_agent_event(event: dict):
                     except Exception:
                         pass
             return
+
+        # --- Music Global Broadcasts (Must come before early 'if not mgr' returns) ---
+        elif event_type == "music_allowlist_add":
+            # Music allowlist is a global UI state, broadcast to all active sessions
+            targets = [mgr] if mgr else list(session_manager.values())
+            for target_mgr in targets:
+                if target_mgr and target_mgr.websocket and hasattr(target_mgr.websocket, "send_json"):
+                    try:
+                        await target_mgr.websocket.send_json({
+                            "type": "music_allowlist_add",
+                            "domains": event.get("domains") or event.get("metadata", {}).get("domains", [])
+                        })
+                    except Exception as e:
+                        logger.debug("[EventBus] music_allowlist_add broadcast failed: %s", e)
+            if targets:
+                logger.info("[EventBus] music_allowlist_add broadcasted to %d sessions", len(targets))
+            return
+
+        elif event_type == "music_play_url":
+            # Music playback is a global UI action, broadcast to all active sessions
+            targets = [mgr] if mgr else list(session_manager.values())
+            for target_mgr in targets:
+                if target_mgr and target_mgr.websocket and hasattr(target_mgr.websocket, "send_json"):
+                    try:
+                        await target_mgr.websocket.send_json({
+                            "type": "music_play_url",
+                            "url": event.get("url"),
+                            "name": event.get("name") or "Plugin Music",
+                            "artist": event.get("artist") or "External"
+                        })
+                    except Exception as e:
+                        logger.debug("[EventBus] music_play_url broadcast failed: %s", e)
+            if targets:
+                logger.info("[EventBus] music_play_url broadcasted to %d sessions", len(targets))
+            return
         if not mgr and event_type in ("proactive_message", "task_result"):
             # No target session found — drop the event entirely.
             # Do NOT broadcast text to other sessions to prevent cross-session leaks.

@@ -122,7 +122,12 @@
 
     // ======================== 音乐播放调度 ========================
 
-    window.dispatchMusicPlay = function (trackInfo, options) {
+    /**
+     * 向音频组件派发播放请求 [Async Ready]
+     * @param {Object} trackInfo
+     * @param {Object} options 
+     */
+    window.dispatchMusicPlay = async function (trackInfo, options) {
         options = options || {};
 
         // 拦截逻辑：如果是主动搭话触发的切歌，且当前正在放歌，则拦截
@@ -139,7 +144,7 @@
         var currentDispatchId = ++_musicDispatchId;
 
         if (window.sendMusicMessage) {
-            var accepted = window.sendMusicMessage(trackInfo);
+            var accepted = await window.sendMusicMessage(trackInfo);
             return accepted; // 返回布尔值表示是否成功派发
         } else {
             console.warn('[MusicDispatch] sendMusicMessage \u5C1A\u672A\u5C31\u7EEA\uFF0C\u542F\u52A8\u7B49\u5F85 (ID: ' + currentDispatchId + ')...');
