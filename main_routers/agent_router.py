@@ -15,7 +15,6 @@ from utils.logger_config import get_module_logger
 from fastapi import APIRouter, Request, Body
 from fastapi.responses import JSONResponse, RedirectResponse
 import httpx
-from plugin.config import load_plugin_config
 from .shared_state import get_session_manager, get_config_manager
 from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from main_logic.agent_event_bus import publish_session_event
@@ -74,6 +73,8 @@ async def update_agent_flags(request: Request):
             # Forward user_plugin_enabled as well so agent_server receives UI toggles
             if 'user_plugin_enabled' in flags:
                 forward_payload['user_plugin_enabled'] = bool(flags['user_plugin_enabled'])
+            if 'openclaw_enabled' in flags:
+                forward_payload['openclaw_enabled'] = bool(flags['openclaw_enabled'])
             if forward_payload:
                 client = _get_http_client()
                 r = await client.post(f"{TOOL_SERVER_BASE}/agent/flags", json=forward_payload, timeout=0.7)
@@ -81,7 +82,13 @@ async def update_agent_flags(request: Request):
                     raise Exception(f"tool_server responded {r.status_code}")
         except Exception as e:
             # On failure, reset flags in core to safe state (include user_plugin flag)
-            mgr.update_agent_flags({'agent_enabled': False, 'computer_use_enabled': False, 'browser_use_enabled': False, 'user_plugin_enabled': False})
+            mgr.update_agent_flags({
+                'agent_enabled': False,
+                'computer_use_enabled': False,
+                'browser_use_enabled': False,
+                'user_plugin_enabled': False,
+                'openclaw_enabled': False,
+            })
             return JSONResponse({"success": False, "error": f"tool_server forward failed: {e}"}, status_code=502)
         return {"success": True, "is_free_version": _config_manager.is_free_version()}
     except Exception as e:
@@ -147,10 +154,11 @@ async def post_agent_command(request: Request):
                     "computer_use_enabled": False,
                     "browser_use_enabled": False,
                     "user_plugin_enabled": False,
+                    "openclaw_enabled": False,
                 })
         elif mgr and command == "set_flag":
             key = data.get("key")
-            if key in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}:
+            if key in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled", "openclaw_enabled"}:
                 mgr.update_agent_flags({key: bool(data.get("value"))})
 
         t_proxy = time.perf_counter()
@@ -254,35 +262,17 @@ async def proxy_up_availability():
         return JSONResponse({"ready": False, "reasons": [f"proxy error: {e}"]}, status_code=502)
 
 
-DEFAULT_NEKOCLAW_CHANNEL_URL = "http://127.0.0.1:8089"
-
-
-def _get_nekoclaw_channel_url() -> str:
+@router.get('/openclaw/availability')
+async def openclaw_availability():
+    """检查 OpenClaw Agent 能力是否可用"""
     try:
-        payload = load_plugin_config("nekoclaw", validate=False)
-        config_obj = payload.get("config") if isinstance(payload, dict) else None
-        nekoclaw_cfg = config_obj.get("nekoclaw") if isinstance(config_obj, dict) else None
-        url = nekoclaw_cfg.get("url") if isinstance(nekoclaw_cfg, dict) else None
-        if isinstance(url, str) and url.strip():
-            return url.rstrip("/")
-    except Exception as exc:
-        logger.debug("[AgentRouter] Failed to load nekoclaw plugin config for availability check: {}", exc)
-    return DEFAULT_NEKOCLAW_CHANNEL_URL
-
-
-@router.get('/nekoclaw/availability')
-async def nekoclaw_availability():
-    """检查 NekoClaw Channel 是否可用"""
-    try:
-        channel_url = _get_nekoclaw_channel_url()
         client = _get_http_client()
-        r = await client.get(f"{channel_url}/health", timeout=1.5)
-        if r.is_success:
-            return {"ready": True, "reasons": [f"NekoClaw channel reachable ({channel_url})"]}
-        else:
-            return {"ready": False, "reasons": [f"NekoClaw channel responded {r.status_code} ({channel_url})"]}
+        r = await client.get(f"{TOOL_SERVER_BASE}/openclaw/availability", timeout=1.5)
+        if not r.is_success:
+            return JSONResponse({"ready": False, "reasons": [f"tool_server responded {r.status_code}"]}, status_code=502)
+        return r.json()
     except Exception as e:
-        return {"ready": False, "reasons": [f"NekoClaw channel unavailable: {e}"]}
+        return JSONResponse({"ready": False, "reasons": [f"proxy error: {e}"]}, status_code=502)
 
 
 @router.get('/browser_use/availability')
@@ -356,4 +346,3 @@ async def proxy_admin_control(payload: dict = Body(...)):
             "success": False,
             "error": f"Failed to execute admin control: {str(e)}"
         }, status_code=500)
-

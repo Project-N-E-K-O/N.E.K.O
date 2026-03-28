@@ -39,12 +39,12 @@ async def test_execute_trigger_treats_metadata_timeout_zero_as_no_timeout(
     monkeypatch.setattr(
         module.state,
         "get_event_handlers_snapshot_cached",
-        lambda timeout=1.0: {"nekoclaw.run": handler},
+        lambda timeout=1.0: {"dummy_plugin.run": handler},
     )
 
     response = await module._execute_trigger(
         host=host,
-        plugin_id="nekoclaw",
+        plugin_id="dummy_plugin",
         entry_id="run",
         args={},
         trace_id="trace-1",
@@ -71,12 +71,12 @@ async def test_execute_trigger_treats_ctx_timeout_zero_as_no_timeout(
     monkeypatch.setattr(
         module.state,
         "get_event_handlers_snapshot_cached",
-        lambda timeout=1.0: {"nekoclaw.run": handler},
+        lambda timeout=1.0: {"dummy_plugin.run": handler},
     )
 
     response = await module._execute_trigger(
         host=host,
-        plugin_id="nekoclaw",
+        plugin_id="dummy_plugin",
         entry_id="run",
         args={"_ctx": {"entry_timeout": 0}},
         trace_id="trace-2",

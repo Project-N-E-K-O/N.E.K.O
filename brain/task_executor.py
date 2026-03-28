@@ -16,6 +16,7 @@ from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 from .computer_use import ComputerUseAdapter
 from .browser_use_adapter import BrowserUseAdapter
+from .openclaw_adapter import OpenClawAdapter
 from .openfang_adapter import OpenFangAdapter
 
 logger = get_module_logger(__name__, "Agent")
@@ -81,7 +82,7 @@ class TaskResult:
     task_id: str
     has_task: bool = False
     task_description: str = ""
-    execution_method: str = "none"  # "computer_use" | "browser_use" | "user_plugin" | "openfang" | "none"
+    execution_method: str = "none"  # "computer_use" | "browser_use" | "user_plugin" | "openclaw" | "openfang" | "none"
     success: bool = False
     result: Any = None
     error: Optional[str] = None
@@ -130,15 +131,27 @@ class OpenFangDecision:
     reason: str = ""
 
 
+@dataclass
+class OpenClawDecision:
+    """OpenClaw 独立 Agent 执行决策"""
+    has_task: bool = False
+    can_execute: bool = False
+    task_description: str = ""
+    instruction: str = ""
+    reason: str = ""
+
+
 class DirectTaskExecutor:
     """
     直接任务执行器：并行评估 BrowserUse / ComputerUse / UserPlugin 可行性并执行
     """
     
     def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None,
+                 openclaw: Optional[OpenClawAdapter] = None,
                  openfang: Optional[OpenFangAdapter] = None):
         self.computer_use = computer_use or ComputerUseAdapter()
         self.browser_use = browser_use
+        self.openclaw = openclaw
         self.openfang: Optional[OpenFangAdapter] = openfang
         self._config_manager = get_config_manager()
         self.plugin_list = []
@@ -289,14 +302,17 @@ class DirectTaskExecutor:
             return plugin, None
         return None, None
 
-    def _rule_assess_nekoclaw(self, conversation: str, plugins: Any) -> Optional[UserPluginDecision]:
-        """Hard-match obvious execution requests to nekoclaw before LLM assessment."""
+    def _build_openclaw_instruction(self, user_intent: str) -> str:
+        system_hint = (
+            "[系统指令] 如果任务涉及保存文件，除非用户明确指定路径，否则默认保存到桌面；"
+            "如果需要打开浏览器处理任务，不要使用无头模式。"
+        )
+        return f"{system_hint}\n\n用户任务：{user_intent}"
+
+    def _rule_assess_openclaw(self, conversation: str) -> Optional[OpenClawDecision]:
+        """Hard-match obvious execution requests to OpenClaw before other assessments."""
         user_intent = self._extract_latest_user_intent(conversation)
         if not user_intent:
-            return None
-
-        plugin_meta, entry_meta = self._find_plugin_entry(plugins, "nekoclaw", "chat")
-        if not plugin_meta:
             return None
 
         text = user_intent.lower()
@@ -314,25 +330,15 @@ class DirectTaskExecutor:
         if not (has_web_marker and has_action_verb):
             return None
 
-        entry_id = (entry_meta or {}).get("id") or "chat"
-        task_description = f"Use nekoclaw to execute the user's browser/screenshot task: {user_intent[:120]}"
-        logger.info("[UserPlugin Rule] Matched nekoclaw hard-route for intent: %s", user_intent[:200])
+        task_description = f"Use openclaw to execute the user's browser/screenshot task: {user_intent[:120]}"
+        logger.info("[OpenClaw Rule] Matched hard-route for intent: %s", user_intent[:200])
 
-        # 系统提示词：附加到用户意图前
-        system_hint = (
-            "[系统指令] 如果任务涉及保存文件，除非用户明确指定路径，否则默认保存到桌面；"
-            "如果需要打开浏览器处理任务，不要使用无头模式。"
-        )
-        enhanced_text = f"{system_hint}\n\n用户任务：{user_intent}"
-
-        return UserPluginDecision(
+        return OpenClawDecision(
             has_task=True,
             can_execute=True,
             task_description=task_description,
-            plugin_id="nekoclaw",
-            entry_id=entry_id,
-            plugin_args={"text": enhanced_text},
-            reason="rule_matched_nekoclaw_web_action",
+            instruction=self._build_openclaw_instruction(user_intent),
+            reason="rule_matched_openclaw_web_action",
         )
     
     async def _assess_computer_use(
@@ -600,10 +606,6 @@ Do NOT route to OpenFang:
             logger.debug("[UserPlugin] Failed to check plugins validity", exc_info=True)
             return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Invalid plugins")
 
-        rule_decision = self._rule_assess_nekoclaw(conversation, plugins)
-        if rule_decision is not None:
-            return rule_decision
-    
         # 构建插件描述供 LLM 参考（包含 id, description, input_schema 以及 entries 列表）
         lines = []
         try:
@@ -888,17 +890,7 @@ Return only the JSON object, nothing else.
                         decision["can_execute"] = False
                         decision["reason"] = f"entry_id '{final_eid}' not found in plugin '{final_pid}'"
 
-                # 如果是 nekoclaw 插件，增强 text 参数添加系统指令
                 plugin_args = decision.get("plugin_args")
-                final_pid = decision.get("plugin_id")
-                if final_pid == "nekoclaw" and isinstance(plugin_args, dict):
-                    original_text = plugin_args.get("text", "")
-                    if original_text:
-                        system_hint = (
-                            "[系统指令] 如果任务涉及保存文件，除非用户明确指定路径，否则默认保存到桌面；"
-                            "如果需要打开浏览器处理任务，不要使用无头模式。"
-                        )
-                        plugin_args["text"] = f"{system_hint}\n\n用户任务：{original_text}"
 
                 return UserPluginDecision(
                     has_task=decision.get("has_task", False),
@@ -942,13 +934,14 @@ Return only the JSON object, nothing else.
         browser_use_enabled = agent_flags.get("browser_use_enabled", False)
         user_plugin_enabled = agent_flags.get("user_plugin_enabled", False)
         openfang_enabled = agent_flags.get("openfang_enabled", False)
+        openclaw_enabled = agent_flags.get("openclaw_enabled", False)
 
         logger.debug(
-            "[TaskExecutor] analyze_and_execute: task_id=%s lanlan=%s flags={cu=%s, bu=%s, up=%s, of=%s}",
-            task_id, lanlan_name, computer_use_enabled, browser_use_enabled, user_plugin_enabled, openfang_enabled,
+            "[TaskExecutor] analyze_and_execute: task_id=%s lanlan=%s flags={cu=%s, bu=%s, up=%s, nk=%s, of=%s}",
+            task_id, lanlan_name, computer_use_enabled, browser_use_enabled, user_plugin_enabled, openclaw_enabled, openfang_enabled,
         )
 
-        if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled and not openfang_enabled:
+        if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled and not openclaw_enabled and not openfang_enabled:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
         
@@ -992,7 +985,11 @@ Return only the JSON object, nothing else.
         cu_decision = None
         bu_decision = None
         up_decision = None
+        nk_decision = None
         of_decision = None
+
+        if openclaw_enabled:
+            nk_decision = self._rule_assess_openclaw(conversation)
 
         # user plugin 支路（由外部 provider 提供插件列表）
         plugins = []
@@ -1012,13 +1009,15 @@ Return only the JSON object, nothing else.
         if computer_use_enabled and cu_available:
             assessment_tasks.append(('cu', self._assess_computer_use(conversation, cu_available)))
         
-        if not assessment_tasks:
+        if not assessment_tasks and not (isinstance(nk_decision, OpenClawDecision) and nk_decision.has_task):
             logger.debug("[TaskExecutor] No assessment tasks to run")
             return None
         
         # 并行执行所有评估
-        logger.info(f"[TaskExecutor] Running {len(assessment_tasks)} assessments in parallel...")
-        results = await asyncio.gather(*[task[1] for task in assessment_tasks], return_exceptions=True)
+        results = []
+        if assessment_tasks:
+            logger.info(f"[TaskExecutor] Running {len(assessment_tasks)} assessments in parallel...")
+            results = await asyncio.gather(*[task[1] for task in assessment_tasks], return_exceptions=True)
         
         # 收集结果（安全访问，先过滤异常）
         for i, (task_type, _) in enumerate(assessment_tasks):
@@ -1041,7 +1040,22 @@ Return only the JSON object, nothing else.
                 logger.info(f"[BrowserUse] has_task={getattr(bu_decision,'has_task',None)}, can_execute={getattr(bu_decision,'can_execute',None)}, reason={getattr(bu_decision,'reason',None)}")
         
         # 决策逻辑
-        # 1. UserPlugin — 只返回 Decision，不执行（与 CU/BU 一致，由 agent_server dispatch）
+        # 1. OpenClaw
+        if isinstance(nk_decision, OpenClawDecision) and nk_decision.has_task:
+            if not nk_decision.can_execute:
+                return TaskResult(task_id=task_id, has_task=False, reason=nk_decision.reason)
+            logger.info("[TaskExecutor] ✅ Using OpenClaw: %s", nk_decision.task_description)
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=nk_decision.task_description,
+                execution_method='openclaw',
+                success=False,
+                tool_args={"instruction": nk_decision.instruction},
+                reason=nk_decision.reason,
+            )
+
+        # 2. UserPlugin — 只返回 Decision，不执行（与 CU/BU 一致，由 agent_server dispatch）
         #    can_execute is a hard requirement; if false, refuse and return has_task=False.
         if isinstance(up_decision, UserPluginDecision) and up_decision.has_task and up_decision.plugin_id and up_decision.entry_id:
             if not up_decision.can_execute:
@@ -1068,7 +1082,7 @@ Return only the JSON object, nothing else.
                 reason=up_decision.reason
             )
 
-        # 2. OpenFang (沙箱保护 + 丰富工具集，优先于直接操作宿主的 BrowserUse/ComputerUse)
+        # 3. OpenFang (沙箱保护 + 丰富工具集，优先于直接操作宿主的 BrowserUse/ComputerUse)
         if isinstance(of_decision, OpenFangDecision) and of_decision.has_task and of_decision.can_execute:
             logger.info("[TaskExecutor] Using OpenFang: %s", of_decision.task_description)
             return TaskResult(
@@ -1080,7 +1094,7 @@ Return only the JSON object, nothing else.
                 reason=of_decision.reason,
             )
 
-        # 3. BrowserUse
+        # 4. BrowserUse
         if bu_decision and bu_decision.has_task and bu_decision.can_execute:
             logger.info(f"[TaskExecutor] ✅ Using BrowserUse: {bu_decision.task_description}")
             return TaskResult(
@@ -1092,7 +1106,7 @@ Return only the JSON object, nothing else.
                 reason=bu_decision.reason
             )
 
-        # 4. ComputerUse
+        # 5. ComputerUse
         if cu_decision and cu_decision.has_task and cu_decision.can_execute:
             logger.info(f"[TaskExecutor] Using ComputerUse: {cu_decision.task_description}")
             return TaskResult(
@@ -1112,6 +1126,8 @@ Return only the JSON object, nothing else.
             reason_parts.append(f"BrowserUse: {bu_decision.reason}")
         if isinstance(up_decision, UserPluginDecision):
             reason_parts.append(f"UserPlugin: {up_decision.reason}")
+        if isinstance(nk_decision, OpenClawDecision):
+            reason_parts.append(f"OpenClaw: {nk_decision.reason}")
         if isinstance(of_decision, OpenFangDecision):
             reason_parts.append(f"OpenFang: {of_decision.reason}")
 
@@ -1119,6 +1135,7 @@ Return only the JSON object, nothing else.
             (bu_decision and bu_decision.has_task)
             or (cu_decision and cu_decision.has_task)
             or (isinstance(up_decision, UserPluginDecision) and up_decision.has_task)
+            or (isinstance(nk_decision, OpenClawDecision) and nk_decision.has_task)
             or (isinstance(of_decision, OpenFangDecision) and of_decision.has_task)
         )
         if has_any_task:
@@ -1128,6 +1145,8 @@ Return only the JSON object, nothing else.
                 task_desc = bu_decision.task_description
             elif isinstance(up_decision, UserPluginDecision) and up_decision.has_task:
                 task_desc = up_decision.task_description
+            elif isinstance(nk_decision, OpenClawDecision) and nk_decision.has_task:
+                task_desc = nk_decision.task_description
             elif isinstance(of_decision, OpenFangDecision) and of_decision.has_task:
                 task_desc = of_decision.task_description
             else:

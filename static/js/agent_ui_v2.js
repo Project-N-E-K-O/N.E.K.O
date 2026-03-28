@@ -4,7 +4,7 @@
  * 包含状态快照、变更通知、繁忙状态等
  */
 (function () {
-    const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openfang_enabled'];
+    const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openclaw_enabled', 'openfang_enabled'];
 
     const state = {
         snapshot: null,
@@ -17,8 +17,8 @@
         globalBusy: false,
         optimistic: {},
         busyTimer: null,
-        nekoclawReady: null,
-        nekoclawReason: '',
+        openclawReady: null,
+        openclawReason: '',
     };
     
     // 暴露状态供 app.js 等外部脚本使用乐观更新检测
@@ -32,7 +32,7 @@
         browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser'),
         userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin'),
         openfang: getEls('live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang'),
-        nekoclaw: getEls('live2d-agent-nekoclaw', 'vrm-agent-nekoclaw', 'mmd-agent-nekoclaw'),
+        openclaw: getEls('live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw'),
         status: getEls('live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status'),
     });
     const sync = (cbs) => {
@@ -46,6 +46,7 @@
             computer_use_enabled: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
             browser_use_enabled: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
             user_plugin_enabled: window.t ? window.t('settings.toggles.userPlugin') : '用户插件',
+            openclaw_enabled: window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw',
             openfang_enabled: window.t ? window.t('settings.toggles.openfang') : '虚拟机',
         };
         return map[key] || key;
@@ -76,6 +77,7 @@
             computer_use_enabled: 'computer_use',
             browser_use_enabled: 'browser_use',
             user_plugin_enabled: 'user_plugin',
+            openclaw_enabled: 'openclaw',
             openfang_enabled: 'openfang',
         };
         const cap = caps[map[key]];
@@ -88,30 +90,31 @@
             computer_use_enabled: 'computer_use',
             browser_use_enabled: 'browser_use',
             user_plugin_enabled: 'user_plugin',
+            openclaw_enabled: 'openclaw',
             openfang_enabled: 'openfang',
         };
         const cap = caps[map[key]];
         return (cap && cap.reason) || '';
     };
 
-    async function refreshNekoclawAvailability() {
+    async function refreshOpenClawAvailability() {
         try {
-            const r = await fetch('/api/agent/nekoclaw/availability');
+            const r = await fetch('/api/agent/openclaw/availability');
             if (!r.ok) {
-                state.nekoclawReady = null;
-                state.nekoclawReason = `status ${r.status}`;
-                if (state.snapshot) render('nekoclaw-refresh-error');
+                state.openclawReady = null;
+                state.openclawReason = `status ${r.status}`;
+                if (state.snapshot) render('openclaw-refresh-error');
                 return false;
             }
             const payload = await r.json();
-            state.nekoclawReady = !!payload.ready;
-            state.nekoclawReason = Array.isArray(payload.reasons) ? String(payload.reasons[0] || '') : '';
-            if (state.snapshot) render('nekoclaw-refresh');
-            return state.nekoclawReady;
+            state.openclawReady = !!payload.ready;
+            state.openclawReason = Array.isArray(payload.reasons) ? String(payload.reasons[0] || '') : '';
+            if (state.snapshot) render('openclaw-refresh');
+            return state.openclawReady;
         } catch (e) {
-            state.nekoclawReady = null;
-            state.nekoclawReason = String(e && e.message ? e.message : e || '');
-            if (state.snapshot) render('nekoclaw-refresh-error');
+            state.openclawReady = null;
+            state.openclawReason = String(e && e.message ? e.message : e || '');
+            if (state.snapshot) render('openclaw-refresh-error');
             return false;
         }
     }
@@ -173,7 +176,7 @@
     }
 
     function render(source = 'render') {
-        const { master, keyboard, browser, userPlugin, openfang, nekoclaw } = el();
+        const { master, keyboard, browser, userPlugin, openfang, openclaw } = el();
         if (!master.length) return;
         const snap = state.snapshot;
         if (!snap) {
@@ -182,7 +185,7 @@
                 m.checked = false;
             });
             sync(master);
-            [keyboard, browser, userPlugin, openfang, nekoclaw].forEach(list => {
+            [keyboard, browser, userPlugin, openfang, openclaw].forEach(list => {
                 list.forEach(cb => {
                     cb.disabled = true;
                     cb.checked = false;
@@ -209,7 +212,7 @@
                 m.title = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
             });
             sync(master);
-            [keyboard, browser, userPlugin, openfang, nekoclaw].forEach(list => {
+            [keyboard, browser, userPlugin, openfang, openclaw].forEach(list => {
                 list.forEach(cb => {
                     cb.checked = false;
                     cb.disabled = true;
@@ -269,31 +272,28 @@
             sync(list);
         });
 
-        // NekoClaw toggle mirrors user_plugin_enabled (same underlying flag)
-        if (nekoclaw.length) {
-            const channelReady = typeof state.nekoclawReady === 'boolean'
-                ? state.nekoclawReady
-                : capabilityReady(snap, 'user_plugin_enabled');
-            const userReady = capabilityReady(snap, 'user_plugin_enabled');
-            const ready = channelReady && userReady;
-            const reason = state.nekoclawReason || capabilityReason(snap, 'user_plugin_enabled');
+        if (openclaw.length) {
+            const ready = typeof state.openclawReady === 'boolean'
+                ? state.openclawReady
+                : capabilityReady(snap, 'openclaw_enabled');
+            const reason = state.openclawReason || capabilityReason(snap, 'openclaw_enabled');
             const canUse = effectiveAnalyzerEnabled && ready;
-            const nekoclawName = window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw';
-            const optimisticVal = Object.prototype.hasOwnProperty.call(state.optimistic, 'user_plugin_enabled')
-                ? !!state.optimistic['user_plugin_enabled']
-                : !!flags['user_plugin_enabled'];
-            nekoclaw.forEach(cb => {
+            const openclawName = window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw';
+            const optimisticVal = Object.prototype.hasOwnProperty.call(state.optimistic, 'openclaw_enabled')
+                ? !!state.optimistic['openclaw_enabled']
+                : !!flags['openclaw_enabled'];
+            openclaw.forEach(cb => {
                 cb.checked = optimisticVal && canUse;
                 cb.disabled = !!state.globalBusy || !effectiveAnalyzerEnabled || !ready;
                 if (canUse) {
-                    cb.title = nekoclawName;
+                    cb.title = openclawName;
                 } else if (!effectiveAnalyzerEnabled) {
-                    cb.title = window.t ? window.t('settings.toggles.masterRequired', { name: nekoclawName }) : '\u8bf7\u5148\u5f00\u542fAgent\u603b\u5f00\u5173';
+                    cb.title = window.t ? window.t('settings.toggles.masterRequired', { name: openclawName }) : '\u8bf7\u5148\u5f00\u542fAgent\u603b\u5f00\u5173';
                 } else {
-                    cb.title = reason || (window.t ? window.t('settings.toggles.unavailable', { name: nekoclawName }) : `${nekoclawName}\u4e0d\u53ef\u7528`);
+                    cb.title = reason || (window.t ? window.t('settings.toggles.unavailable', { name: openclawName }) : `${openclawName}\u4e0d\u53ef\u7528`);
                 }
             });
-            sync(nekoclaw);
+            sync(openclaw);
         }
 
         const anyPending = Object.values(snap.capabilities || {}).some(
@@ -321,7 +321,7 @@
     }
 
     function bindEvents() {
-        const { master, keyboard, browser, userPlugin, openfang, nekoclaw } = el();
+        const { master, keyboard, browser, userPlugin, openfang, openclaw } = el();
         if (!master.length) return;
         const clearProcessing = (cbs) => {
             (Array.isArray(cbs) ? cbs : [cbs]).forEach(cb => {
@@ -425,47 +425,45 @@
         bindFlag(userPlugin, 'user_plugin_enabled');
         bindFlag(openfang, 'openfang_enabled');
 
-        // NekoClaw: availability check + set user_plugin_enabled via sendCommand
-        nekoclaw.forEach(cb => {
+        openclaw.forEach(cb => {
             cb.addEventListener('change', async (e) => {
-                if (state.suppressChange) { clearProcessing(nekoclaw); return; }
+                if (state.suppressChange) { clearProcessing(openclaw); return; }
                 const value = !!e.target.checked;
-                const nekoclawName = window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw';
+                const openclawName = window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw';
                 if (value) {
-                    const channelReady = await refreshNekoclawAvailability();
-                    const userReady = state.snapshot ? capabilityReady(state.snapshot, 'user_plugin_enabled') : true;
-                    if (!(channelReady && userReady)) {
+                    const ready = await refreshOpenClawAvailability();
+                    if (!ready) {
                         state.suppressChange = true;
-                        nekoclaw.forEach(c => { c.checked = false; });
+                        openclaw.forEach(c => { c.checked = false; });
                         state.suppressChange = false;
-                        sync(nekoclaw);
-                        clearProcessing(nekoclaw);
+                        sync(openclaw);
+                        clearProcessing(openclaw);
                         if (typeof window.showStatusToast === 'function') {
-                            window.showStatusToast(window.t ? window.t('settings.toggles.unavailable', { name: nekoclawName }) : `${nekoclawName}\u4e0d\u53ef\u7528`, 2500);
+                            window.showStatusToast(window.t ? window.t('settings.toggles.unavailable', { name: openclawName }) : `${openclawName}\u4e0d\u53ef\u7528`, 2500);
                         }
                         return;
                     }
                 }
-                state.pending.add('user_plugin_enabled');
-                state.optimistic['user_plugin_enabled'] = value;
+                state.pending.add('openclaw_enabled');
+                state.optimistic['openclaw_enabled'] = value;
                 setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '\u5df2\u63a5\u53d7\u64cd\u4f5c\uff0c\u5207\u6362\u4e2d...');
                 render('command');
                 try {
-                    await sendCommand('set_flag', { key: 'user_plugin_enabled', value });
+                    await sendCommand('set_flag', { key: 'openclaw_enabled', value });
                     await fetchSnapshot().catch(() => {});
                 } catch (err) {
-                    state.pending.delete('user_plugin_enabled');
+                    state.pending.delete('openclaw_enabled');
                     state.optimistic = {};
                     setGlobalBusy(false);
                     fetchSnapshot().catch(() => {});
                     if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(`${nekoclawName}\u5207\u6362\u5931\u8d25: ${err.message}`, 2500);
+                        window.showStatusToast(`${openclawName}\u5207\u6362\u5931\u8d25: ${err.message}`, 2500);
                     }
                     return;
                 } finally {
-                    clearProcessing(nekoclaw);
+                    clearProcessing(openclaw);
                 }
-                state.pending.delete('user_plugin_enabled');
+                state.pending.delete('openclaw_enabled');
                 state.optimistic = {};
                 setGlobalBusy(false);
                 render('command');
@@ -475,7 +473,7 @@
         window.addEventListener('live2d-agent-popup-opening', async () => {
             state.popupOpen = true;
             render('popup');
-            refreshNekoclawAvailability().catch(() => {});
+            refreshOpenClawAvailability().catch(() => {});
             if (!state.snapshot) {
                 await fetchSnapshot().catch(() => render('popup'));
                 return;

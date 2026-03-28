@@ -165,9 +165,9 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         },
         {
-            id: 'agent-nekoclaw',
-            label: window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw',
-            labelKey: 'settings.toggles.nekoclawConnect',
+            id: 'agent-openclaw',
+            label: window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw',
+            labelKey: 'settings.toggles.openclawConnect',
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         }

@@ -26,27 +26,14 @@ def test_is_default_prompt_keeps_custom_skills_line_non_default() -> None:
     )
     assert is_default_prompt(customized_prompt) is False
 
-
-def test_get_nekoclaw_channel_url_prefers_plugin_config(monkeypatch) -> None:
-    monkeypatch.setattr(
-        agent_router_module,
-        "load_plugin_config",
-        lambda plugin_id, validate=False: {
-            "plugin_id": plugin_id,
-            "config": {"nekoclaw": {"url": "http://10.0.0.2:18089/"}},
-        },
-    )
-    assert agent_router_module._get_nekoclaw_channel_url() == "http://10.0.0.2:18089"
-
-
-def test_get_nekoclaw_channel_url_falls_back_to_default(monkeypatch) -> None:
-    monkeypatch.setattr(agent_router_module, "load_plugin_config", lambda *args, **kwargs: {})
-    assert agent_router_module._get_nekoclaw_channel_url() == agent_router_module.DEFAULT_NEKOCLAW_CHANNEL_URL
-
-
-def test_get_nekoclaw_channel_url_handles_load_exception(monkeypatch) -> None:
-    def _boom(*args, **kwargs):
-        raise RuntimeError("load failed")
-
-    monkeypatch.setattr(agent_router_module, "load_plugin_config", _boom)
-    assert agent_router_module._get_nekoclaw_channel_url() == agent_router_module.DEFAULT_NEKOCLAW_CHANNEL_URL
+def test_agent_router_exports_openclaw_availability_proxy() -> None:
+    paths = {
+        path
+        for path in (
+            getattr(route, "path", None)
+            for route in getattr(agent_router_module.router, "routes", [])
+        )
+        if isinstance(path, str)
+    }
+    assert "/api/agent/openclaw/availability" not in paths
+    assert "/openclaw/availability" in paths

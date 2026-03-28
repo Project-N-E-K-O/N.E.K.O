@@ -60,7 +60,7 @@ async def test_execute_user_plugin_treats_entry_timeout_zero_as_no_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executor = object.__new__(DirectTaskExecutor)
-    executor.plugin_list = [{"id": "nekoclaw", "entries": [{"id": "run", "timeout": 0}]}]
+    executor.plugin_list = [{"id": "dummy_plugin", "entries": [{"id": "run", "timeout": 0}]}]
     _FakeAsyncClient.last_post_json = None
 
     observed: dict[str, object] = {}
@@ -82,7 +82,7 @@ async def test_execute_user_plugin_treats_entry_timeout_zero_as_no_timeout(
 
     result = await executor._execute_user_plugin(
         "task-1",
-        plugin_id="nekoclaw",
+        plugin_id="dummy_plugin",
         plugin_args={},
         entry_id="run",
     )
@@ -99,7 +99,7 @@ async def test_execute_user_plugin_honors_ctx_entry_timeout_zero_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executor = object.__new__(DirectTaskExecutor)
-    executor.plugin_list = [{"id": "nekoclaw", "entries": [{"id": "run", "timeout": 120}]}]
+    executor.plugin_list = [{"id": "dummy_plugin", "entries": [{"id": "run", "timeout": 120}]}]
     _FakeAsyncClient.last_post_json = None
 
     observed: dict[str, object] = {}
@@ -120,7 +120,7 @@ async def test_execute_user_plugin_honors_ctx_entry_timeout_zero_override(
 
     result = await executor._execute_user_plugin(
         "task-2",
-        plugin_id="nekoclaw",
+        plugin_id="dummy_plugin",
         plugin_args={"_ctx": {"entry_timeout": 0}},
         entry_id="run",
     )

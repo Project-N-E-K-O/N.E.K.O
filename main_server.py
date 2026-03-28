@@ -306,7 +306,7 @@ async def _handle_agent_event(event: dict):
         if event_type in ("task_result", "proactive_message"):
             text = (event.get("text") or "").strip()
             if text:
-                if event_type == "task_result" and event.get("direct_reply"):
+                if event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()
                     delivered = False
                     if detail_text and hasattr(mgr, "send_lanlan_response"):

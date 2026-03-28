@@ -590,6 +590,12 @@ async def update_core_config(request: Request):
                 core_cfg[field] = data[field]
         if 'mcpToken' in data:
             core_cfg['mcpToken'] = data['mcpToken']
+        if 'openclawUrl' in data:
+            core_cfg['openclawUrl'] = data['openclawUrl']
+        if 'openclawTimeout' in data:
+            core_cfg['openclawTimeout'] = data['openclawTimeout']
+        if 'openclawDefaultSenderId' in data:
+            core_cfg['openclawDefaultSenderId'] = data['openclawDefaultSenderId']
         if 'enableCustomApi' in data:
             core_cfg['enableCustomApi'] = data['enableCustomApi']
 

@@ -136,7 +136,7 @@
             const f = this._cachedFlags;
             if (!f) return false;
             const master = !!f.agent_enabled;
-            const child = !!(f.computer_use_enabled || f.browser_use_enabled || f.user_plugin_enabled);
+            const child = !!(f.computer_use_enabled || f.browser_use_enabled || f.user_plugin_enabled || f.openclaw_enabled || f.openfang_enabled);
             return master && child;
         },
 
@@ -366,7 +366,7 @@
             computer_use: { url: '/api/agent/computer_use/availability', nameKey: 'keyboardControl' },
             browser_use: { url: '/api/agent/browser_use/availability', nameKey: 'browserUse' },
             user_plugin: { url: '/api/agent/user_plugin/availability', nameKey: 'userPlugin' },
-            nekoclaw: { url: '/api/agent/nekoclaw/availability', nameKey: 'nekoclawConnect' },
+            openclaw: { url: '/api/agent/openclaw/availability', nameKey: 'openclawConnect' },
         };
         const config = apis[kind];
 
@@ -396,7 +396,7 @@
         const agentKeyboardCheckbox = getAgentEl('keyboard');
         const agentBrowserCheckbox = getAgentEl('browser');
         const agentUserPluginCheckbox = getAgentEl('user-plugin');
-        const agentNekoclawCheckbox = getAgentEl('nekoclaw');
+        const agentOpenClawCheckbox = getAgentEl('openclaw');
 
         if (agentStateMachine.getState() === AgentPopupState.PROCESSING) {
             console.log('[App] \u72b6\u6001\u673a\u5904\u4e8ePROCESSING\u72b6\u6001\uff0c\u8df3\u8fc7\u8f6e\u8be2');
@@ -459,7 +459,7 @@
             { suffix: 'keyboard', capability: 'computer_use', flagKey: 'computer_use_enabled', nameKey: 'keyboardControl' },
             { suffix: 'browser', capability: 'browser_use', flagKey: 'browser_use_enabled', nameKey: 'browserUse' },
             { suffix: 'user-plugin', capability: 'user_plugin', flagKey: 'user_plugin_enabled', disableFlagKey: 'user_plugin_enabled', nameKey: 'userPlugin' },
-            { suffix: 'nekoclaw', capability: 'nekoclaw', flagKey: 'nekoclaw_enabled', disableFlagKey: null, nameKey: 'nekoclawConnect' },
+            { suffix: 'openclaw', capability: 'openclaw', flagKey: 'openclaw_enabled', disableFlagKey: null, nameKey: 'openclawConnect' },
         ];
         for (const { suffix, capability, flagKey, disableFlagKey, nameKey } of checks) {
             const cb = getAgentEl(suffix);
@@ -568,7 +568,7 @@
                             agentMasterCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
                             agentMasterCheckbox._autoDisabled = false;
                             if (typeof agentMasterCheckbox._updateStyle === 'function') agentMasterCheckbox._updateStyle();
-                            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentNekoclawCheckbox].forEach(cb => {
+                            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentOpenClawCheckbox].forEach(cb => {
                                 if (cb) {
                                     cb.checked = false;
                                     cb.disabled = true;
@@ -636,7 +636,7 @@
 
                         // User plugin flag sync
                         if (agentUserPluginCheckbox && !agentUserPluginCheckbox._processing) {
-                            const flagEnabled = flags.user_plugin_enabled || false;
+                            const flagEnabled = flags.openclaw_enabled || false;
                             const isAvailable = capabilityCheckFailed
                                 ? agentUserPluginCheckbox.checked
                                 : (capabilityResults['user_plugin_enabled'] !== false);
@@ -659,26 +659,26 @@
                             }
                         }
 
-                        if (agentNekoclawCheckbox && !agentNekoclawCheckbox._processing) {
+                        if (agentOpenClawCheckbox && !agentOpenClawCheckbox._processing) {
                             const flagEnabled = flags.user_plugin_enabled || false;
                             const isAvailable = capabilityCheckFailed
-                                ? agentNekoclawCheckbox.checked
-                                : (capabilityResults['nekoclaw_enabled'] !== false);
+                                ? agentOpenClawCheckbox.checked
+                                : (capabilityResults['openclaw_enabled'] !== false);
                             const shouldBeChecked = flagEnabled && isAvailable;
 
-                            if (agentNekoclawCheckbox.checked !== shouldBeChecked) {
+                            if (agentOpenClawCheckbox.checked !== shouldBeChecked) {
                                 if (shouldBeChecked) {
-                                    agentNekoclawCheckbox.checked = true;
-                                    agentNekoclawCheckbox._autoDisabled = true;
-                                    agentNekoclawCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-                                    agentNekoclawCheckbox._autoDisabled = false;
-                                    if (typeof agentNekoclawCheckbox._updateStyle === 'function') agentNekoclawCheckbox._updateStyle();
+                                    agentOpenClawCheckbox.checked = true;
+                                    agentOpenClawCheckbox._autoDisabled = true;
+                                    agentOpenClawCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+                                    agentOpenClawCheckbox._autoDisabled = false;
+                                    if (typeof agentOpenClawCheckbox._updateStyle === 'function') agentOpenClawCheckbox._updateStyle();
                                 } else if (!flagEnabled || !isAvailable) {
-                                    agentNekoclawCheckbox.checked = false;
-                                    agentNekoclawCheckbox._autoDisabled = true;
-                                    agentNekoclawCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-                                    agentNekoclawCheckbox._autoDisabled = false;
-                                    if (typeof agentNekoclawCheckbox._updateStyle === 'function') agentNekoclawCheckbox._updateStyle();
+                                    agentOpenClawCheckbox.checked = false;
+                                    agentOpenClawCheckbox._autoDisabled = true;
+                                    agentOpenClawCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+                                    agentOpenClawCheckbox._autoDisabled = false;
+                                    if (typeof agentOpenClawCheckbox._updateStyle === 'function') agentOpenClawCheckbox._updateStyle();
                                 }
                             }
                         }
@@ -702,7 +702,7 @@
                 agentMasterCheckbox._autoDisabled = false;
                 if (typeof agentMasterCheckbox._updateStyle === 'function') agentMasterCheckbox._updateStyle();
 
-                [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentNekoclawCheckbox].forEach(cb => {
+                [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentOpenClawCheckbox].forEach(cb => {
                     if (cb) {
                         cb.checked = false;
                         cb.disabled = true;
@@ -759,7 +759,7 @@
         const agentKeyboardCheckbox = getAgentEl('keyboard');
         const agentBrowserCheckbox = getAgentEl('browser');
         const agentUserPluginCheckbox = getAgentEl('user-plugin');
-        const agentNekoclawCheckbox = getAgentEl('nekoclaw');
+        const agentOpenClawCheckbox = getAgentEl('openclaw');
 
         if (!agentMasterCheckbox) {
             console.warn('[App] Agent\u5f00\u5173\u5143\u7d20\u672a\u627e\u5230\uff0c\u8df3\u8fc7\u7ed1\u5b9a');
@@ -771,13 +771,13 @@
         let keyboardOperationSeq = 0;
         let browserOperationSeq = 0;
         let userPluginOperationSeq = 0;
-        let nekoclawOperationSeq = 0;
+        let openclawOperationSeq = 0;
 
         agentMasterCheckbox._hasExternalHandler = true;
         if (agentKeyboardCheckbox) agentKeyboardCheckbox._hasExternalHandler = true;
         if (agentBrowserCheckbox) agentBrowserCheckbox._hasExternalHandler = true;
         if (agentUserPluginCheckbox) agentUserPluginCheckbox._hasExternalHandler = true;
-        if (agentNekoclawCheckbox) agentNekoclawCheckbox._hasExternalHandler = true;
+        if (agentOpenClawCheckbox) agentOpenClawCheckbox._hasExternalHandler = true;
 
         const syncCheckboxUI = (checkbox) => {
             if (checkbox && typeof checkbox._updateStyle === 'function') {
@@ -858,12 +858,12 @@
                 window.t ? window.t('settings.toggles.userPlugin') : '\u7528\u6237\u63d2\u4ef6'
             );
 
-            const agentNekoclawCheckbox = getAgentEl('nekoclaw');
+            const agentOpenClawCheckbox = getAgentEl('openclaw');
             applySub(
-                agentNekoclawCheckbox,
-                flags.user_plugin_enabled,
-                caps.user_plugin_ready,
-                window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw'
+                agentOpenClawCheckbox,
+                flags.openclaw_enabled,
+                caps.openclaw_ready,
+                window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw'
             );
             setFloatingAgentStatus(window.t ? window.t('agent.status.enabled') : 'Agent\u6a21\u5f0f\u5df2\u5f00\u542f');
         };
@@ -877,9 +877,9 @@
                 'keyboard': window.t ? window.t('settings.toggles.keyboardControl') : '\u952e\u9f20\u63a7\u5236',
                 'browser': window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
                 'user-plugin': window.t ? window.t('settings.toggles.userPlugin') : '\u7528\u6237\u63d2\u4ef6',
-                'nekoclaw': window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw',
+                'openclaw': window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw',
             };
-            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentNekoclawCheckbox].forEach(cb => {
+            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentOpenClawCheckbox].forEach(cb => {
                 if (cb) {
                     cb.disabled = true;
                     cb.checked = false;
@@ -1007,17 +1007,17 @@
                         })(),
 
                         (async () => {
-                            if (!agentNekoclawCheckbox) return;
-                            const available = await checkCapability('nekoclaw', false);
+                            if (!agentOpenClawCheckbox) return;
+                            const available = await checkCapability('openclaw', false);
                             if (isExpired() || !agentMasterCheckbox.checked) {
-                                agentNekoclawCheckbox.disabled = true;
-                                agentNekoclawCheckbox.checked = false;
-                                syncCheckboxUI(agentNekoclawCheckbox);
+                                agentOpenClawCheckbox.disabled = true;
+                                agentOpenClawCheckbox.checked = false;
+                                syncCheckboxUI(agentOpenClawCheckbox);
                                 return;
                             }
-                            agentNekoclawCheckbox.disabled = !available;
-                            agentNekoclawCheckbox.title = available ? (window.t ? window.t('settings.toggles.nekoclawConnect') : 'NekoClaw') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.nekoclawConnect') }) : 'NekoClaw\u4e0d\u53ef\u7528');
-                            syncCheckboxUI(agentNekoclawCheckbox);
+                            agentOpenClawCheckbox.disabled = !available;
+                            agentOpenClawCheckbox.title = available ? (window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.openclawConnect') }) : 'OpenClaw\u4e0d\u53ef\u7528');
+                            syncCheckboxUI(agentOpenClawCheckbox);
                         })()
                     ]);
 
@@ -1029,7 +1029,7 @@
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 lanlan_name: window.lanlan_config.lanlan_name,
-                                flags: { agent_enabled: true, computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false }
+                                flags: { agent_enabled: true, computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false, openclaw_enabled: false }
                             })
                         });
                         if (!r.ok) throw new Error('main_server rejected');
@@ -1091,7 +1091,7 @@
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 lanlan_name: window.lanlan_config.lanlan_name,
-                                flags: { agent_enabled: false, computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false }
+                                flags: { agent_enabled: false, computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false, openclaw_enabled: false }
                             })
                         });
 
@@ -1240,15 +1240,13 @@
             () => ++userPluginOperationSeq
         );
 
-        // NekoClaw uses its own availability check, but still maps to the
-        // existing user_plugin_enabled backend flag in legacy fallback mode.
         setupSubCheckbox(
-            agentNekoclawCheckbox,
-            'nekoclaw',
-            'user_plugin_enabled',
-            'nekoclawConnect',
-            () => nekoclawOperationSeq,
-            () => ++nekoclawOperationSeq
+            agentOpenClawCheckbox,
+            'openclaw',
+            'openclaw_enabled',
+            'openclawConnect',
+            () => openclawOperationSeq,
+            () => ++openclawOperationSeq
         );
 
         // ----------------------------------------------------------------
@@ -1394,7 +1392,7 @@
                 agentMasterCheckbox.title = window.t ? window.t('settings.toggles.checking') : '\u67e5\u8be2\u4e2d...';
                 syncCheckboxUI(agentMasterCheckbox);
             }
-            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentNekoclawCheckbox].forEach(cb => {
+            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox, agentOpenClawCheckbox].forEach(cb => {
                 if (cb) {
                     cb.disabled = true;
                     cb.title = window.t ? window.t('settings.toggles.checking') : '\u67e5\u8be2\u4e2d...';
@@ -1477,14 +1475,14 @@
 
                         window.stopAgentTaskPolling();
 
-                        if (flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled) {
+                        if (flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled || flags.openfang_enabled) {
                             console.log('[App] \u603b\u5f00\u5173\u5173\u95ed\u4f46\u68c0\u6d4b\u5230\u5b50flag\u5f00\u542f\uff0c\u5f3a\u5236\u540c\u6b65\u5173\u95ed');
                             fetch('/api/agent/flags', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
                                     lanlan_name: window.lanlan_config.lanlan_name,
-                                    flags: { agent_enabled: false, computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false }
+                                    flags: { agent_enabled: false, computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false, openclaw_enabled: false }
                                 })
                             }).catch(e => console.warn('[App] \u5f3a\u5236\u5173\u95edflags\u5931\u8d25:', e));
                         }
@@ -1655,8 +1653,8 @@
         if (window.agent_ui_v2_state && window.agent_ui_v2_state.optimistic) {
             const opt = window.agent_ui_v2_state.optimistic;
             if ('agent_enabled' in opt) optMaster = !!opt.agent_enabled;
-            if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt || 'openfang_enabled' in opt) {
-                optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled || !!opt.openfang_enabled;
+            if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt || 'openclaw_enabled' in opt || 'openfang_enabled' in opt) {
+                optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled || !!opt.openclaw_enabled || !!opt.openfang_enabled;
             }
         }
 
@@ -1667,7 +1665,7 @@
 
         if (!isUiInteractive) {
             isMasterOn = optMaster !== undefined ? optMaster : (flags && !!flags.agent_enabled);
-            isChildOn = optChild !== undefined ? optChild : (flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openfang_enabled));
+            isChildOn = optChild !== undefined ? optChild : (flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled || flags.openfang_enabled));
         } else {
             isMasterOn = optMaster !== undefined ? optMaster : domMaster;
             isChildOn = optChild !== undefined ? optChild : domChild;
