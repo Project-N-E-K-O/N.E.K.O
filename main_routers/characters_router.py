@@ -3064,8 +3064,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                 return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
             if not isinstance(character_data, dict):
                 return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
-            character_data.pop('_reserved', None)
-            character_data.pop('voice_id', None)
+            character_data = _filter_mutable_catgirl_fields(character_data)
             character_name = str(character_data.get('档案名', '')).strip()
             character_data['档案名'] = character_name
             name_error = _validate_profile_name(character_name)
@@ -3124,7 +3123,10 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                     return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
                 if not isinstance(character_data, dict):
                     return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
-                name_error = _validate_profile_name(character_data.get('档案名'))
+                character_data = _filter_mutable_catgirl_fields(character_data)
+                character_name = str(character_data.get('档案名', '')).strip()
+                character_data['档案名'] = character_name
+                name_error = _validate_profile_name(character_name)
                 if name_error:
                     return JSONResponse({'success': False, 'error': f'角色名称无效: {name_error}'}, status_code=400)
             elif character_json_encrypted_path.exists():
@@ -3139,7 +3141,10 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                     return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
                 if not isinstance(character_data, dict):
                     return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
-                name_error = _validate_profile_name(character_data.get('档案名'))
+                character_data = _filter_mutable_catgirl_fields(character_data)
+                character_name = str(character_data.get('档案名', '')).strip()
+                character_data['档案名'] = character_name
+                name_error = _validate_profile_name(character_name)
                 if name_error:
                     return JSONResponse({'success': False, 'error': f'角色名称无效: {name_error}'}, status_code=400)
             else:
@@ -3313,8 +3318,8 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                         logger.info(f'已自动为角色 {character_name} 设置Live2D模型: {model_name}, 文件: {model3_filename}')
 
                     elif imported_model_info['type'] == 'vrm':
-                        character_data['_reserved']['avatar']['live3d'] = character_data['_reserved']['avatar'].get('live3d', {})
-                        character_data['_reserved']['avatar']['live3d']['model_path'] = imported_model_info['path']
+                        character_data['_reserved']['avatar']['vrm'] = character_data['_reserved']['avatar'].get('vrm', {})
+                        character_data['_reserved']['avatar']['vrm']['model_path'] = imported_model_info['path']
                         character_data['_reserved']['avatar']['model_type'] = 'live3d'
                         logger.info(f'已自动为角色 {character_name} 设置VRM模型: {imported_model_info["name"]}')
 
