@@ -711,16 +711,18 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             // 模型已切换，清理监听器
             if (this._mouseTrackingListener) {
                 window.removeEventListener('pointermove', this._mouseTrackingListener);
+                window.removeEventListener('mousemove', this._mouseTrackingListener);
                 this._mouseTrackingListener = null;
             }
             return;
         }
-        
+
         // 检查模型是否仍在舞台上（防止模型被销毁或移除后仍然调用）
         if (!model.parent) {
             // 模型已被从舞台移除，清理监听器
             if (this._mouseTrackingListener) {
                 window.removeEventListener('pointermove', this._mouseTrackingListener);
+                window.removeEventListener('mousemove', this._mouseTrackingListener);
                 this._mouseTrackingListener = null;
             }
             return;
@@ -893,6 +895,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     // 清理旧的监听器
     if (this._mouseTrackingListener) {
         window.removeEventListener('pointermove', this._mouseTrackingListener);
+        window.removeEventListener('mousemove', this._mouseTrackingListener);
     }
     if (this._windowBlurListener) {
         window.removeEventListener('blur', this._windowBlurListener);
@@ -1383,6 +1386,7 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     // 清理鼠标跟踪监听器
     if (this._mouseTrackingListener) {
         window.removeEventListener('pointermove', this._mouseTrackingListener);
+        window.removeEventListener('mousemove', this._mouseTrackingListener);
         this._mouseTrackingListener = null;
     }
 
