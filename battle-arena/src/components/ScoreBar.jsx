@@ -1,5 +1,7 @@
 export default function ScoreBar({ score, maxScore = 300, side = 'left', label = '羁绊评分' }) {
-  const percent = Math.max(0, Math.min(100, (score / maxScore) * 100))
+  const safeScore = score ?? 0
+  const safeMaxScore = maxScore || 1
+  const percent = Math.max(0, Math.min(100, (safeScore / safeMaxScore) * 100))
 
   const barColor = side === 'left'
     ? 'from-purple-400 to-violet-500'
@@ -9,7 +11,7 @@ export default function ScoreBar({ score, maxScore = 300, side = 'left', label =
     <div className="w-full">
       <div className="flex justify-between items-center mb-1">
         <span className="text-xs text-gray-400 font-medium">{label}</span>
-        <span className="text-xs font-bold text-white">{score}</span>
+        <span className="text-xs font-bold text-white">{safeScore}</span>
       </div>
       <div className="w-full h-3 bg-black/40 rounded-full overflow-hidden border border-white/10">
         <div
