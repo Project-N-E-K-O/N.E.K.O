@@ -3058,18 +3058,36 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                 encrypted_data = f.read()
             decrypted_data = xor_deobfuscate(encrypted_data, XOR_KEY)
             character_data = json.loads(decrypted_data.decode('utf-8'))
+            if not isinstance(character_data, dict):
+                return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
+            name_error = _validate_profile_name(character_data.get('档案名'))
+            if name_error:
+                return JSONResponse({'success': False, 'error': f'角色名称无效: {name_error}'}, status_code=400)
             metadata = {'encrypted': True, 'model_included': False}
         else:
             # 解压ZIP文件（PNG角色卡格式）- 使用安全的解压方式防止 Zip Slip 攻击
+            MAX_TOTAL_UNCOMPRESSED = 500 * 1024 * 1024  # 500 MB 总解压大小限制
+            MAX_MEMBER_UNCOMPRESSED = 100 * 1024 * 1024  # 100 MB 单个文件大小限制
             extract_path = temp_path / 'extracted'
             extract_path.mkdir()
 
+            total_uncompressed_size = 0
             with zipfile.ZipFile(zip_path, 'r') as zf:
                 for member in zf.namelist():
                     member_path = Path(member)
                     if member_path.is_absolute() or '..' in member_path.parts or '\\' in member:
                         logger.warning(f"[导入角色卡] 跳过不安全的路径: {member}")
                         continue
+
+                    zip_info = zf.getinfo(member)
+                    member_size = zip_info.file_size
+                    if total_uncompressed_size + member_size > MAX_TOTAL_UNCOMPRESSED:
+                        logger.warning(f"[导入角色卡] 跳过文件，大小超出总限制: {member}")
+                        continue
+                    if member_size > MAX_MEMBER_UNCOMPRESSED:
+                        logger.warning(f"[导入角色卡] 跳过文件，单文件大小超限: {member}")
+                        continue
+
                     dest_path = extract_path / member_path
                     try:
                         dest_path.resolve().relative_to(extract_path.resolve())
@@ -3080,8 +3098,9 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                         dest_path.mkdir(parents=True, exist_ok=True)
                     else:
                         dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        total_uncompressed_size += member_size
                         with zf.open(member) as src, open(dest_path, 'wb') as dst:
-                            dst.write(src.read())
+                            shutil.copyfileobj(src, dst, length=8192)
 
             # 读取角色设定（支持加密和非加密格式）
             character_json_path = extract_path / 'character.json'
@@ -3091,12 +3110,22 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                 # 非加密格式
                 with open(character_json_path, 'r', encoding='utf-8') as f:
                     character_data = json.load(f)
+                if not isinstance(character_data, dict):
+                    return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
+                name_error = _validate_profile_name(character_data.get('档案名'))
+                if name_error:
+                    return JSONResponse({'success': False, 'error': f'角色名称无效: {name_error}'}, status_code=400)
             elif character_json_encrypted_path.exists():
                 # 加密格式，需要解密
                 with open(character_json_encrypted_path, 'rb') as f:
                     encrypted_data = f.read()
                 decrypted_data = xor_deobfuscate(encrypted_data, XOR_KEY)
                 character_data = json.loads(decrypted_data.decode('utf-8'))
+                if not isinstance(character_data, dict):
+                    return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
+                name_error = _validate_profile_name(character_data.get('档案名'))
+                if name_error:
+                    return JSONResponse({'success': False, 'error': f'角色名称无效: {name_error}'}, status_code=400)
             else:
                 return JSONResponse({'success': False, 'error': '角色卡文件损坏：缺少character.json'}, status_code=400)
 
@@ -3205,9 +3234,12 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                                 shutil.copytree(model_item, target_model_dir)
                                 logger.info(f'已导入Live2D模型: {original_model_name} -> {model_name}')
 
-                                # 查找复制后的 .model3.json 文件
+                                # 查找复制后的 .model3.json 文件，保留相对路径
                                 model3_file = _find_model3_json(target_model_dir)
-                                model3_filename = model3_file.name if model3_file else f'{model_name}.model3.json'
+                                if model3_file:
+                                    model3_filename = str(model3_file.relative_to(target_model_dir))
+                                else:
+                                    model3_filename = f'{model_name}.model3.json'
                                 logger.info(f'找到 Live2D 模型文件: {model3_filename}')
 
                                 # 记录导入的模型信息
@@ -3278,7 +3310,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                         character_data['_reserved']['avatar']['model_type'] = 'live3d'
                         logger.info(f'已自动为角色 {character_name} 设置MMD模型: {imported_model_info["name"]}')
                 else:
-                    logger.warning(f"[导入角色卡] 没有找到可导入的模型")
+                    logger.warning("[导入角色卡] 没有找到可导入的模型")
 
             # 添加角色到characters.json
             if '猫娘' not in characters:

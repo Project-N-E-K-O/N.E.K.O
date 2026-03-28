@@ -2953,6 +2953,15 @@ function updateSwitchButtons() {
                         exportBtn.style.display = 'none';
                     }
                 }
+
+                const hideBtn = block ? block.querySelector('.catgirl-hide') : null;
+                if (hideBtn) {
+                    if (name === currentCatgirl) {
+                        hideBtn.style.display = 'none';
+                    } else {
+                        hideBtn.style.display = '';
+                    }
+                }
             });
         })
         .catch(error => {
@@ -3118,7 +3127,7 @@ async function handleImportCharacterCard(event) {
         if (autoSaveToastElement) {
             autoSaveToastElement.querySelector('span').textContent = successText;
         }
-        setTimeout(hideAutoSaveToast, 2000);
+        showAutoSaveToast();
 
         // 刷新角色列表
         await loadCharacterData();
@@ -3684,7 +3693,7 @@ async function exportCharacterCard(catgirlName) {
         if (autoSaveToastElement) {
             autoSaveToastElement.querySelector('span').textContent = successText;
         }
-        setTimeout(hideAutoSaveToast, 2000);
+        showAutoSaveToast();
     } catch (error) {
         console.error('导出角色卡失败:', error);
         let errorText;
