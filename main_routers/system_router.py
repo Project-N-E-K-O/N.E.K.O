@@ -2300,13 +2300,14 @@ async def proactive_chat(request: Request):
 
         # 只要有至少一个任务就发起 LLM 调用
         unified_parsed: dict = {'web': None, 'music_keyword': None, 'meme_keyword': None}
+        # 先定义 enriched_memory_context 保证后续引用不报 UnboundLocalError
+        enriched_memory_context = memory_context
+        if followup_topics_prompt:
+            enriched_memory_context = memory_context + "\n" + followup_topics_prompt
+
         if has_web_task or has_music_task or has_meme_task:
             try:
                 from config.prompts_proactive import build_unified_phase1_prompt
-                # 将回调话题追加到 memory_context 中供 Phase 1 参考
-                enriched_memory_context = memory_context
-                if followup_topics_prompt:
-                    enriched_memory_context = memory_context + "\n" + followup_topics_prompt
                 unified_prompt = build_unified_phase1_prompt(
                     proactive_lang,
                     merged_content=merged_web_content if has_web_task else None,

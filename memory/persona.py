@@ -501,7 +501,7 @@ class PersonaManager:
         dynamics = persona.get('relationship', {}).get('dynamics', [])
         dynamics_lines = self._render_fact_entries(dynamics)
         if dynamics_lines:
-            sections.append(f"### 关系动态\n" + "\n".join(dynamics_lines))
+            sections.append("### 关系动态\n" + "\n".join(dynamics_lines))
 
         # Pending reflections (also exclude suppressed)
         if pending_reflections:

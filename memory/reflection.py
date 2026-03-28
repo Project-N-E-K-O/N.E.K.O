@@ -269,13 +269,13 @@ class ReflectionEngine:
             if r.get('id') == reflection_id:
                 r['status'] = 'confirmed'
                 r['confirmed_at'] = datetime.now().isoformat()
-                # Add to persona
                 self._persona_manager.add_fact(
                     lanlan_name, r['text'], entity='relationship'
                 )
                 logger.info(f"[Reflection] {lanlan_name}: 反思已晋升 persona: {r['text'][:50]}...")
                 break
         self.save_reflections(lanlan_name, reflections)
+        self._mark_surfaced_handled(lanlan_name, reflection_id, 'confirmed')
 
     def reject_promotion(self, lanlan_name: str, reflection_id: str) -> None:
         """Mark a reflection as denied — won't be promoted."""
@@ -287,6 +287,20 @@ class ReflectionEngine:
                 logger.info(f"[Reflection] {lanlan_name}: 反思被否定: {r['text'][:50]}...")
                 break
         self.save_reflections(lanlan_name, reflections)
+        self._mark_surfaced_handled(lanlan_name, reflection_id, 'denied')
+
+    def _mark_surfaced_handled(self, lanlan_name: str, reflection_id: str, feedback: str) -> None:
+        """Mark surfaced record as handled so check_feedback won't reprocess it."""
+        surfaced = self.load_surfaced(lanlan_name)
+        changed = False
+        now = datetime.now().isoformat()
+        for s in surfaced:
+            if s.get('reflection_id') == reflection_id and s.get('feedback') is None:
+                s['feedback'] = feedback
+                s['feedback_at'] = now
+                changed = True
+        if changed:
+            self.save_surfaced(lanlan_name, surfaced)
 
     def auto_promote_stale(self, lanlan_name: str) -> int:
         """Auto-promote pending reflections that have been pending for AUTO_CONFIRM_DAYS
@@ -297,6 +311,7 @@ class ReflectionEngine:
         reflections = self.load_reflections(lanlan_name)
         now = datetime.now()
         promoted = 0
+        promoted_ids: list[str] = []
 
         for r in reflections:
             if r.get('status') != 'pending':
@@ -315,10 +330,14 @@ class ReflectionEngine:
                         lanlan_name, r['text'], entity='relationship'
                     )
                     promoted += 1
+                    promoted_ids.append(r['id'])
                     logger.info(f"[Reflection] {lanlan_name}: 反思自动晋升({AUTO_CONFIRM_DAYS}天无反对): {r['text'][:50]}...")
             except (ValueError, TypeError):
                 continue
 
         if promoted:
             self.save_reflections(lanlan_name, reflections)
+            # Clean up surfaced records for auto-promoted reflections
+            for rid in promoted_ids:
+                self._mark_surfaced_handled(lanlan_name, rid, 'auto_confirmed')
         return promoted

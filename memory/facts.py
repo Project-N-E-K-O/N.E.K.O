@@ -16,7 +16,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from config import SETTING_PROPOSER_MODEL
-from config.prompts_memory import fact_extraction_prompt
+from config.prompts_memory import get_fact_extraction_prompt
+from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
@@ -92,7 +93,7 @@ class FactStore:
                 lines.append(f"{role} | {''.join(parts)}")
         conversation_text = "\n".join(lines)
 
-        prompt = fact_extraction_prompt.replace('{CONVERSATION}', conversation_text)
+        prompt = get_fact_extraction_prompt(get_global_language()).replace('{CONVERSATION}', conversation_text)
         prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)
         prompt = prompt.replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
 
