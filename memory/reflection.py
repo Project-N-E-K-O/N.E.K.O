@@ -138,7 +138,14 @@ class ReflectionEngine:
             if raw.startswith("```"):
                 raw = raw.replace("```json", "").replace("```", "").strip()
             result = json.loads(raw)
+            if not isinstance(result, dict):
+                logger.warning(f"[Reflection] LLM 返回非 dict: {type(result)}")
+                return []
             reflection_text = result.get('reflection', '')
+            if not isinstance(reflection_text, str):
+                logger.warning(f"[Reflection] reflection 字段非 str: {type(reflection_text)}")
+                return []
+            reflection_text = reflection_text.strip()
         except Exception as e:
             logger.warning(f"[Reflection] 合成失败: {e}")
             return []

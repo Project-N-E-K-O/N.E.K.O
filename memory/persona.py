@@ -123,8 +123,10 @@ class PersonaManager:
             try:
                 with open(path, encoding='utf-8') as f:
                     data = json.load(f)
-                self._personas[name] = data
-                return data
+                if isinstance(data, dict):
+                    self._personas[name] = data
+                    return data
+                logger.warning(f"[Persona] {name}: persona 文件不是 dict，忽略")
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[Persona] 加载失败: {e}")
 
