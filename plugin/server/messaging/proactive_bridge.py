@@ -164,7 +164,7 @@ class ProactiveBridge:
                         continue
                     proactive_event = {
                         "event_type": "music_play_url",
-                        "play_url": music_url,
+                        "url": music_url,
                         "name": metadata.get("name"),
                         "artist": metadata.get("artist"),
                         "source": plugin_id,
@@ -200,5 +200,5 @@ def start_proactive_bridge() -> None:
     _bridge.start()
 
 
-def stop_proactive_bridge() -> None:
+def stop_proactive_bridge() -> None: 
     _bridge.stop()
