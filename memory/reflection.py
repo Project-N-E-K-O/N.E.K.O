@@ -346,10 +346,11 @@ class ReflectionEngine:
 
     async def check_feedback_for_confirmed(
         self, lanlan_name: str, confirmed: list[dict], user_messages: list[str],
-    ) -> list[dict]:
+    ) -> list[dict] | None:
         """Check if recent user messages rebut any confirmed reflections.
 
         Used by periodic rebuttal check (every 5 min). Only returns 'denied' or 'ignored'.
+        Returns None on LLM/processing failure (same convention as check_feedback).
         """
         from config.prompts_memory import get_reflection_feedback_prompt
         from utils.language_utils import get_global_language
@@ -389,7 +390,7 @@ class ReflectionEngine:
             return feedbacks
         except Exception as e:
             logger.warning(f"[Reflection] 反驳检查失败: {e}")
-            return []
+            return None
 
     def confirm_promotion(self, lanlan_name: str, reflection_id: str) -> None:
         """Mark reflection as confirmed (soft persona). Does NOT write to persona yet.

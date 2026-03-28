@@ -232,13 +232,12 @@ async def _periodic_rebuttal_loop():
                     continue
 
                 # 复用 check_feedback 判断反驳
-                try:
-                    feedbacks = await reflection_engine.check_feedback_for_confirmed(
-                        name, confirmed, user_msgs,
-                    )
-                except Exception as fb_err:
+                feedbacks = await reflection_engine.check_feedback_for_confirmed(
+                    name, confirmed, user_msgs,
+                )
+                if feedbacks is None:
                     # LLM 调用失败 → 不推进窗口，下次重试这批消息
-                    logger.warning(f"[Rebuttal] {name}: 反驳检查 LLM 调用失败，保留窗口待重试: {fb_err}")
+                    logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留窗口待重试")
                     continue
 
                 # 成功才推进窗口
