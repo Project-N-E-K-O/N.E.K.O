@@ -252,6 +252,31 @@ async def _periodic_rebuttal_loop():
                 logger.debug(f"[Rebuttal] {name}: 处理失败，跳过: {e}")
 
 
+AUTO_PROMOTE_CHECK_INTERVAL = 300  # 5 分钟
+
+async def _periodic_auto_promote_loop():
+    """定期执行 auto_promote_stale：pending→confirmed→promoted 状态迁移。
+
+    确保即使用户长时间不触发主动搭话，confirmed 反思也能按时升格为 persona。
+    """
+    while True:
+        await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
+        try:
+            character_data = _config_manager.load_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[AutoPromote] 加载角色列表失败: {e}")
+            continue
+
+        for name in catgirl_names:
+            try:
+                transitions = reflection_engine.auto_promote_stale(name)
+                if transitions:
+                    logger.info(f"[AutoPromote] {name}: {transitions} 条状态迁移")
+            except Exception as e:
+                logger.debug(f"[AutoPromote] {name}: 处理失败: {e}")
+
+
 @app.on_event("startup")
 async def startup_event_handler():
     """应用启动时初始化"""
@@ -274,8 +299,9 @@ async def startup_event_handler():
     except Exception as e:
         logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
 
-    # 启动定期反驳检查任务（每 5 分钟）
+    # 启动定期后台任务
     _spawn_background_task(_periodic_rebuttal_loop())
+    _spawn_background_task(_periodic_auto_promote_loop())
 
 
 @app.on_event("shutdown")

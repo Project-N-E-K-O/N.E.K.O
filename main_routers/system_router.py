@@ -1998,10 +1998,10 @@ async def proactive_chat(request: Request):
             _persona_mgr = PersonaManager()
             _reflection_engine = ReflectionEngine(_fact_store, _persona_mgr)
 
-            # 1. 自动确认 >=3天 无反对的 pending 反思 → 晋升 persona
-            _auto_confirmed = _reflection_engine.auto_confirm_stale(lanlan_name)
-            if _auto_confirmed:
-                print(f"[{lanlan_name}] 自动确认 {_auto_confirmed} 条过期反思到 persona")
+            # 1. 自动状态迁移：pending→confirmed→promoted
+            _auto_transitions = _reflection_engine.auto_promote_stale(lanlan_name)
+            if _auto_transitions:
+                print(f"[{lanlan_name}] 自动迁移 {_auto_transitions} 条反思状态")
 
             # 2. 异步反思（>=3 条新事实才触发 LLM 调用）
             _reflection_result = await _reflection_engine.reflect(lanlan_name)

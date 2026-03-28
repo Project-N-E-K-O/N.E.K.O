@@ -485,10 +485,17 @@ class ReflectionEngine:
                 self._batch_mark_surfaced_handled(lanlan_name, promoted_ids, 'promoted')
         return transitions
 
+    # 允许从这些 feedback 状态转换到新状态（用于 promoted 覆盖 confirmed/auto_confirmed）
+    _UPGRADABLE_FEEDBACK = {None, 'confirmed', 'auto_confirmed'}
+
     def _batch_mark_surfaced_handled(
         self, lanlan_name: str, reflection_ids: list[str], feedback: str,
     ) -> None:
-        """Mark multiple surfaced records as handled in a single I/O round-trip."""
+        """Mark multiple surfaced records as handled in a single I/O round-trip.
+
+        Allows transitions from None/confirmed/auto_confirmed to the new feedback value,
+        so that promoted can overwrite confirmed/auto_confirmed.
+        """
         if not reflection_ids:
             return
         surfaced = self.load_surfaced(lanlan_name)
@@ -496,7 +503,7 @@ class ReflectionEngine:
         changed = False
         now = datetime.now().isoformat()
         for s in surfaced:
-            if s.get('reflection_id') in id_set and s.get('feedback') is None:
+            if s.get('reflection_id') in id_set and s.get('feedback') in self._UPGRADABLE_FEEDBACK:
                 s['feedback'] = feedback
                 s['feedback_at'] = now
                 changed = True
