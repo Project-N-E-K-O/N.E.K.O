@@ -118,59 +118,65 @@ class ProactiveBridge:
                 if not isinstance(payload, dict):
                     continue
 
-                msg_type = payload.get("message_type")
-                plugin_id = payload.get("plugin_id", "")
-                metadata = payload.get("metadata") or {}
+                try:
+                    msg_type = payload.get("message_type")
+                    plugin_id = payload.get("plugin_id", "")
+                    metadata = payload.get("metadata")
+                    if not isinstance(metadata, dict):
+                        metadata = {}
 
-                # -------- 1. Proactive Spoken Notification --------
-                if msg_type == "proactive_notification":
-                    raw_content = payload.get("content")
-                    # 通过 result_parser 确保 content 不含原始 JSON
-                    try:
-                        from brain.result_parser import parse_push_message_content
-                        content = parse_push_message_content(raw_content)
-                    except Exception:
-                        content = str(raw_content or "").strip()
+                    # -------- 1. Proactive Spoken Notification --------
+                    if msg_type == "proactive_notification":
+                        raw_content = payload.get("content")
+                        # 通过 result_parser 确保 content 不含原始 JSON
+                        try:
+                            from brain.result_parser import parse_push_message_content
+                            content = parse_push_message_content(raw_content)
+                        except Exception:
+                            content = str(raw_content or "").strip()
 
-                    if not content:
+                        if not content:
+                            continue
+
+                        proactive_event = {
+                            "event_type": "proactive_message",
+                            "lanlan_name": metadata.get("target_lanlan") or None,
+                            "text": content,
+                            "summary": content,
+                            "detail": content,
+                            "channel": f"plugin:{plugin_id}" if plugin_id else "plugin",
+                            "task_id": metadata.get("task_id", ""),
+                            "success": True,
+                            "status": "completed",
+                            "timestamp": payload.get("time", ""),
+                        }
+                    
+                    # -------- 2. Music Allowlist Add --------
+                    elif msg_type == "music_allowlist_add":
+                        proactive_event = {
+                            "event_type": "music_allowlist_add",
+                            "domains": metadata.get("domains", []),
+                            "source": plugin_id,
+                            "timestamp": payload.get("time", "")
+                        }
+
+                    # -------- 3. Music Direct Play --------
+                    elif msg_type == "music_play_url":
+                        music_url = metadata.get("url")
+                        if not music_url:
+                            continue
+                        proactive_event = {
+                            "event_type": "music_play_url",
+                            "url": music_url,
+                            "name": metadata.get("name"),
+                            "artist": metadata.get("artist"),
+                            "source": plugin_id,
+                            "timestamp": payload.get("time", "")
+                        }
+                    else:
                         continue
-
-                    proactive_event = {
-                        "event_type": "proactive_message",
-                        "lanlan_name": metadata.get("target_lanlan") or None,
-                        "text": content,
-                        "summary": content,
-                        "detail": content,
-                        "channel": f"plugin:{plugin_id}" if plugin_id else "plugin",
-                        "task_id": metadata.get("task_id", ""),
-                        "success": True,
-                        "status": "completed",
-                        "timestamp": payload.get("time", ""),
-                    }
-                
-                # -------- 2. Music Allowlist Add --------
-                elif msg_type == "music_allowlist_add":
-                    proactive_event = {
-                        "event_type": "music_allowlist_add",
-                        "domains": metadata.get("domains", []),
-                        "source": plugin_id,
-                        "timestamp": payload.get("time", "")
-                    }
-
-                # -------- 3. Music Direct Play --------
-                elif msg_type == "music_play_url":
-                    music_url = metadata.get("url")
-                    if not music_url:
-                        continue
-                    proactive_event = {
-                        "event_type": "music_play_url",
-                        "url": music_url,
-                        "name": metadata.get("name"),
-                        "artist": metadata.get("artist"),
-                        "source": plugin_id,
-                        "timestamp": payload.get("time", "")
-                    }
-                else:
+                except Exception as e:
+                    logger.error("Error processing proactive payload: {}", e)
                     continue
 
                 try:
