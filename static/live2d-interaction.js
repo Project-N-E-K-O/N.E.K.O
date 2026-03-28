@@ -674,43 +674,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         live2dContainer.classList.toggle('locked-hover-fade', shouldFade);
     };
 
-    // 跟踪 Ctrl 键状态（作为备用，主要从事件中直接读取）
-    let isCtrlPressed = false;
-
-    // 清理旧的键盘监听器（在添加新监听器之前）
-    if (this._ctrlKeyDownListener) {
-        window.removeEventListener('keydown', this._ctrlKeyDownListener);
-    }
-    if (this._ctrlKeyUpListener) {
-        window.removeEventListener('keyup', this._ctrlKeyUpListener);
-    }
-
-    // 监听 Ctrl 键按下/释放事件（用于在鼠标不在窗口内时也能检测）
-    const onKeyDown = (event) => {
-        // 检查是否按下 Ctrl 或 Cmd 键
-        if (event.ctrlKey || event.metaKey) {
-            isCtrlPressed = true;
-        }
-    };
-
-    const onKeyUp = (event) => {
-        // 检查 Ctrl 或 Cmd 键是否释放
-        if (!event.ctrlKey && !event.metaKey) {
-            isCtrlPressed = false;
-            // Ctrl/Cmd 键释放时，如果正在变淡，立即取消变淡效果
-            if (lockedHoverFadeActive) {
-                setLockedHoverFade(false);
-            }
-        }
-    };
-
-    // 添加全局键盘事件监听
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-
-    // 保存监听器引用以便清理
-    this._ctrlKeyDownListener = onKeyDown;
-    this._ctrlKeyUpListener = onKeyUp;
+    // 鼠标静止检测：1秒延迟变淡
+    let _fadeDelayTimer = null;
+    let _hasEnteredRange = false;
 
     // 方法1：监听 PIXI 模型的 pointerover/pointerout 事件（适用于 Electron 透明窗口）
     model.on('pointerover', () => {
@@ -725,17 +691,6 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     // 方法2：同时保留 window 的 pointermove 监听（适用于普通浏览器）
     const onPointerMove = (event) => {
         if (!this._isModelReadyForInteraction) return;
-        // 更新 Ctrl 键状态：综合事件中的状态和本地状态
-        // 如果是真实事件，更新本地状态；如果是模拟事件，本地状态保持不变（除非事件里带了 Ctrl）
-        if (event.isTrusted) {
-            isCtrlPressed = event.ctrlKey || event.metaKey;
-        } else if (event.ctrlKey || event.metaKey) {
-            // 如果模拟事件带了 Ctrl 键，也更新本地状态以供后续逻辑使用
-            isCtrlPressed = true;
-        }
-
-        // 最终用于变淡判断的 Ctrl 状态
-        const ctrlKeyPressed = event.ctrlKey || event.metaKey || isCtrlPressed;
 
         // 检查模型是否存在，防止切换模型时出现错误
         if (!model) {
@@ -851,12 +806,37 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             if (!isPointerNearVisibleModel && !isFullscreenTracking) {
                 this.isFocusing = false;
                 startHideTimer();
+                // 鼠标离开范围，清除计时器并恢复
+                _lastFadeMouseX = null;
+                _lastFadeMouseY = null;
+                if (_fadeDelayTimer) {
+                    clearTimeout(_fadeDelayTimer);
+                    _fadeDelayTimer = null;
+                }
                 setLockedHoverFade(false);
                 return;
             }
-            // 只有在锁定、按住 Ctrl 键且鼠标在模型附近时才变淡
-            const shouldFade = this.isLocked && ctrlKeyPressed && distance < HoverFadethreshold;
-            setLockedHoverFade(shouldFade);
+            // 鼠标静止1秒后变淡逻辑
+            const isInRange = this.isLocked && distance < HoverFadethreshold;
+            if (isInRange) {
+                // 鼠标在范围内
+                if (!_hasEnteredRange && !_fadeDelayTimer) {
+                    // 首次进入，开始1秒计时
+                    _hasEnteredRange = true;
+                    _fadeDelayTimer = setTimeout(() => {
+                        setLockedHoverFade(true);
+                    }, 1000);
+                }
+                // 已进入过或计时中，不做额外操作
+            } else {
+                // 鼠标离开范围，清除计时器并恢复
+                if (_fadeDelayTimer) {
+                    clearTimeout(_fadeDelayTimer);
+                    _fadeDelayTimer = null;
+                }
+                _hasEnteredRange = false;
+                setLockedHoverFade(false);
+            }
 
             const canvasEl = document.getElementById('live2d-canvas');
 
@@ -907,14 +887,6 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         }
     };
 
-    // 窗口失去焦点时重置 Ctrl 键状态和变淡效果
-    const onBlur = () => {
-        isCtrlPressed = false;
-        if (lockedHoverFadeActive) {
-            setLockedHoverFade(false);
-        }
-    };
-
     // 清理旧的监听器
     if (this._mouseTrackingListener) {
         window.removeEventListener('pointermove', this._mouseTrackingListener);
@@ -925,11 +897,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
     // 保存新的监听器引用
     this._mouseTrackingListener = onPointerMove;
-    this._windowBlurListener = onBlur;
 
-    // 使用 window 监听鼠标移动和窗口失去焦点
+    // 使用 window 监听鼠标移动
     window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('blur', onBlur);
 
     // 监听浮动按钮容器的鼠标进入/离开事件
     // 延迟设置，因为按钮容器可能还没创建
@@ -1410,22 +1380,6 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     if (this._mouseTrackingListener) {
         window.removeEventListener('pointermove', this._mouseTrackingListener);
         this._mouseTrackingListener = null;
-    }
-
-    // 清理键盘事件监听器
-    if (this._ctrlKeyDownListener) {
-        window.removeEventListener('keydown', this._ctrlKeyDownListener);
-        this._ctrlKeyDownListener = null;
-    }
-    if (this._ctrlKeyUpListener) {
-        window.removeEventListener('keyup', this._ctrlKeyUpListener);
-        this._ctrlKeyUpListener = null;
-    }
-
-    // 清理窗口失去焦点监听器
-    if (this._windowBlurListener) {
-        window.removeEventListener('blur', this._windowBlurListener);
-        this._windowBlurListener = null;
     }
 
     // resize 吸附监听器已移除（setupResizeSnapDetection 不再存在）

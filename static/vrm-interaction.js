@@ -939,7 +939,6 @@ class VRMInteraction {
         // CSS class 优先级低于内联样式，因此必须直接操作 style.opacity 才能生效
         const vrmContainer = document.getElementById('vrm-container');
         let lockedHoverFadeActive = false;
-        let isCtrlPressed = false;
         const setLockedHoverFade = (shouldFade) => {
             if (!vrmContainer) return;
             if (lockedHoverFadeActive === shouldFade) return;
@@ -947,6 +946,10 @@ class VRMInteraction {
             vrmContainer.style.opacity = shouldFade ? '0.12' : '1';
         };
         this._setLockedHoverFade = setLockedHoverFade;
+
+        // 鼠标静止检测：1秒延迟变淡
+        let _fadeDelayTimer = null;
+        let _hasEnteredRange = false;
 
         // 初始化缓存
         this.updateModelBoundsCache();
@@ -1183,12 +1186,29 @@ class VRMInteraction {
             // 使用缓存计算距离（避免重复的 Box3 计算）
             const distance = calculateDistanceToModel(mouseX, mouseY);
 
-            // 锁定 + Ctrl + 鼠标在模型附近 → 变淡（与 Live2D 侧逻辑一致）
-            const ctrlKeyPressed = isCtrlPressed;
-            const shouldFade = this.checkLocked() && ctrlKeyPressed && distance < hoverFadeThreshold;
-            setLockedHoverFade(shouldFade);
+            // 鼠标静止1秒后变淡逻辑
+            const isInRange = this.checkLocked() && distance < hoverFadeThreshold;
+            if (isInRange) {
+                // 鼠标在范围内
+                if (!_hasEnteredRange && !_fadeDelayTimer) {
+                    // 首次进入，开始1秒计时
+                    _hasEnteredRange = true;
+                    _fadeDelayTimer = setTimeout(() => {
+                        setLockedHoverFade(true);
+                    }, 1000);
+                }
+                // 已进入过或计时中，不做额外操作
+            } else {
+                // 鼠标离开范围，清除计时器并恢复
+                if (_fadeDelayTimer) {
+                    clearTimeout(_fadeDelayTimer);
+                    _fadeDelayTimer = null;
+                }
+                _hasEnteredRange = false;
+                setLockedHoverFade(false);
+            }
 
-            // 锁定状态下不处理按钮显示/隐藏
+            // 锁定状态下不处理按钮显示/隐藏，但淡化恢复仍需执行
             if (this.checkLocked()) return;
 
             if (shouldKeepUiVisible(mouseX, mouseY, distance)) {
@@ -1203,13 +1223,6 @@ class VRMInteraction {
             if (!this.manager.currentModel || !this.manager.currentModel.vrm) return;
             if (!this.manager.renderer || !this.manager.camera) return;
 
-            // 从事件更新 Ctrl 键状态（与 Live2D 侧一致）
-            if (event.isTrusted) {
-                isCtrlPressed = event.ctrlKey || event.metaKey;
-            } else if (event.ctrlKey || event.metaKey) {
-                isCtrlPressed = true;
-            }
-
             // 更新鼠标位置（轻量级操作）
             this._lastMouseX = event.clientX;
             this._lastMouseY = event.clientY;
@@ -1220,49 +1233,14 @@ class VRMInteraction {
             }
         };
 
-        // Ctrl 键跟踪（与 Live2D 侧 _ctrlKeyDownListener / _ctrlKeyUpListener 对齐）
-        const onKeyDown = (event) => {
-            if (event.ctrlKey || event.metaKey) {
-                isCtrlPressed = true;
-            }
-        };
-        const onKeyUp = (event) => {
-            if (!event.ctrlKey && !event.metaKey) {
-                isCtrlPressed = false;
-                if (lockedHoverFadeActive) {
-                    setLockedHoverFade(false);
-                }
-            }
-        };
-        const onBlur = () => {
-            isCtrlPressed = false;
-            if (lockedHoverFadeActive) {
-                setLockedHoverFade(false);
-            }
-        };
-
-        // 清理旧的键盘 / blur 监听器
-        if (this._vrmCtrlKeyDownListener) {
-            window.removeEventListener('keydown', this._vrmCtrlKeyDownListener);
-        }
-        if (this._vrmCtrlKeyUpListener) {
-            window.removeEventListener('keyup', this._vrmCtrlKeyUpListener);
-        }
-        if (this._vrmWindowBlurListener) {
-            window.removeEventListener('blur', this._vrmWindowBlurListener);
-        }
-
-        window.addEventListener('keydown', onKeyDown);
-        window.addEventListener('keyup', onKeyUp);
-        window.addEventListener('blur', onBlur);
-
+        
         canvas.addEventListener('mouseenter', onMouseEnter);
         canvas.addEventListener('pointermove', onPointerMove);
         canvas.addEventListener('mousemove', onPointerMove);
+        // 同时监听 window 级别事件，确保 poller 的 dispatch 事件能触发（用于 Electron 穿透模式下）
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('mousemove', onPointerMove);
 
-        this._vrmCtrlKeyDownListener = onKeyDown;
-        this._vrmCtrlKeyUpListener = onKeyUp;
-        this._vrmWindowBlurListener = onBlur;
         this._floatingButtonsMouseEnter = onMouseEnter;
         this._floatingButtonsPointerMove = onPointerMove;
 
@@ -1295,20 +1273,9 @@ class VRMInteraction {
         if (this._floatingButtonsPointerMove) {
             canvas.removeEventListener('pointermove', this._floatingButtonsPointerMove);
             canvas.removeEventListener('mousemove', this._floatingButtonsPointerMove);
+            window.removeEventListener('pointermove', this._floatingButtonsPointerMove);
+            window.removeEventListener('mousemove', this._floatingButtonsPointerMove);
             this._floatingButtonsPointerMove = null;
-        }
-        // 清理 Ctrl 键 / blur 监听器
-        if (this._vrmCtrlKeyDownListener) {
-            window.removeEventListener('keydown', this._vrmCtrlKeyDownListener);
-            this._vrmCtrlKeyDownListener = null;
-        }
-        if (this._vrmCtrlKeyUpListener) {
-            window.removeEventListener('keyup', this._vrmCtrlKeyUpListener);
-            this._vrmCtrlKeyUpListener = null;
-        }
-        if (this._vrmWindowBlurListener) {
-            window.removeEventListener('blur', this._vrmWindowBlurListener);
-            this._vrmWindowBlurListener = null;
         }
         // 清除变淡状态
         if (typeof this._setLockedHoverFade === 'function') {
@@ -1318,6 +1285,10 @@ class VRMInteraction {
         if (this._hideButtonsTimer) {
             clearTimeout(this._hideButtonsTimer);
             this._hideButtonsTimer = null;
+        }
+        if (_fadeDelayTimer) {
+            clearTimeout(_fadeDelayTimer);
+            _fadeDelayTimer = null;
         }
         // 清理 RAF 标志
         if (this._floatingButtonsPendingFrame !== null) {
