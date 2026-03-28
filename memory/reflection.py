@@ -68,7 +68,11 @@ class ReflectionEngine:
                 with open(path, encoding='utf-8') as f:
                     data = json.load(f)
                 if isinstance(data, list):
-                    return data
+                    return [
+                        item for item in data
+                        if isinstance(item, dict) and 'id' in item
+                    ]
+                logger.warning(f"[Reflection] reflections 文件不是列表，忽略: {path}")
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[Reflection] 加载失败: {e}")
         return []
