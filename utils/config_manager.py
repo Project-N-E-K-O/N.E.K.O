@@ -1354,9 +1354,11 @@ class ConfigManager:
             lanlan_prompt_map[name] = prompt_value
 
         memory_base = str(self.memory_dir)
-        time_store = {name: f'{memory_base}/time_indexed_{name}' for name in catgirl_names}
-        setting_store = {name: f'{memory_base}/settings_{name}.json' for name in catgirl_names}
-        recent_log = {name: f'{memory_base}/recent_{name}.json' for name in catgirl_names}
+        # 角色专属子目录: memory_dir/{name}/
+        import os as _os
+        time_store = {name: _os.path.join(memory_base, name, 'time_indexed.db') for name in catgirl_names}
+        setting_store = {name: _os.path.join(memory_base, name, 'settings.json') for name in catgirl_names}
+        recent_log = {name: _os.path.join(memory_base, name, 'recent.json') for name in catgirl_names}
 
         return (
             master_name,

@@ -8,7 +8,11 @@ import asyncio
 import logging
 from openai import APIConnectionError, InternalServerError, RateLimitError
 
-from config.prompts_sys import recent_history_manager_prompt, detailed_recent_history_manager_prompt, further_summarize_prompt, history_review_prompt
+from config.prompts_memory import (
+    get_recent_history_manager_prompt, get_detailed_recent_history_manager_prompt,
+    get_further_summarize_prompt, get_history_review_prompt,
+)
+from utils.language_utils import get_global_language
 
 # Setup logger
 from utils.file_utils import atomic_write_json
@@ -32,9 +36,8 @@ class CompressedRecentHistoryManager:
 
     def _get_default_path(self, lanlan_name: str) -> str:
         """统一获取默认路径，避免重复代码。"""
-        self._config_manager.ensure_memory_directory()
-        memory_base = str(self._config_manager.memory_dir)
-        return os.path.join(memory_base, f'recent_{lanlan_name}.json')
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, lanlan_name), 'recent.json')
 
     def _ensure_path_for_character(self, lanlan_name: str) -> str:
         """确保角色有有效的文件路径，返回路径。"""
@@ -185,9 +188,9 @@ class CompressedRecentHistoryManager:
             lines.append(line)
         messages_text = "\n".join(lines)
         if not detailed:
-            prompt = recent_history_manager_prompt.replace("%s", messages_text)
+            prompt = get_recent_history_manager_prompt(get_global_language()).replace("%s", messages_text)
         else:
-            prompt = detailed_recent_history_manager_prompt % messages_text
+            prompt = get_detailed_recent_history_manager_prompt(get_global_language()) % messages_text
 
         retries = 0
         max_retries = 3
@@ -244,7 +247,7 @@ class CompressedRecentHistoryManager:
                 set_call_type("memory_compression")
                 llm = self._get_llm()
                 try:
-                    response_content = (await llm.ainvoke(further_summarize_prompt % initial_summary)).content
+                    response_content = (await llm.ainvoke(get_further_summarize_prompt(get_global_language()) % initial_summary)).content
                 finally:
                     await llm.aclose()
                 response_content = str(response_content).strip()
@@ -368,7 +371,7 @@ class CompressedRecentHistoryManager:
             try:
                 # 使用LLM审阅历史记录
                 set_call_type("memory_review")
-                prompt = history_review_prompt % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
+                prompt = get_history_review_prompt(get_global_language()) % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
                 review_llm = self._get_review_llm()
                 try:
                     response_content = (await review_llm.ainvoke(prompt)).content
