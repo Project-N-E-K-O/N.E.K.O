@@ -22,9 +22,11 @@
     var state = {
         viewProps: null,
         messages: [],
+        composerAttachments: [],
         onMessageAction: null,
         onComposerImportImage: null,
         onComposerScreenshot: null,
+        onComposerRemoveAttachment: null,
         onComposerSubmit: null
     };
 
@@ -154,6 +156,7 @@
             chatWindowAriaLabel: getI18nText('chat.reactWindowAriaLabel', 'Neko chat window'),
             messageListAriaLabel: getI18nText('chat.messageListAriaLabel', 'Chat messages'),
             composerToolsAriaLabel: getI18nText('chat.composerToolsAriaLabel', 'Composer tools'),
+            composerAttachmentsAriaLabel: getI18nText('chat.pendingImagesAriaLabel', 'Pending attachments'),
             importImageButtonLabel: getI18nText('chat.importImage', '导入图片'),
             screenshotButtonLabel: isMobileWidth()
                 ? getI18nText('chat.takePhoto', '拍照')
@@ -162,6 +165,7 @@
             screenshotButtonAriaLabel: isMobileWidth()
                 ? getI18nText('chat.takePhotoAriaLabel', '拍照')
                 : getI18nText('chat.screenshotAriaLabel', '截图'),
+            removeAttachmentButtonAriaLabel: getI18nText('chat.removePendingImage', '移除图片'),
             streamingStatusLabel: getI18nText('chat.messageStreaming', '生成中'),
             failedStatusLabel: getI18nText('chat.messageFailed', '发送失败'),
             inputHint: getI18nText('chat.reactWindowInputHint', 'Enter 发送，Shift + Enter 换行')
@@ -261,9 +265,11 @@
     function buildRenderProps() {
         return Object.assign({}, ensureViewProps(), {
             messages: state.messages,
+            composerAttachments: state.composerAttachments,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
+            onComposerRemoveAttachment: handleComposerRemoveAttachment,
             onComposerSubmit: handleComposerSubmit
         });
     }
@@ -500,6 +506,22 @@
         dispatchHostEvent('screenshot', {});
     }
 
+    function handleComposerRemoveAttachment(attachmentId) {
+        if (typeof state.onComposerRemoveAttachment === 'function') {
+            try {
+                state.onComposerRemoveAttachment(String(attachmentId || ''));
+            } catch (error) {
+                console.error('[ReactChatWindow] onComposerRemoveAttachment failed:', error);
+            }
+        } else if (window.appButtons && typeof window.appButtons.removePendingAttachmentById === 'function') {
+            window.appButtons.removePendingAttachmentById(String(attachmentId || ''));
+        } else {
+            console.warn('[ReactChatWindow] no remove attachment handler available');
+        }
+
+        dispatchHostEvent('remove-attachment', { attachmentId: attachmentId });
+    }
+
     function setViewProps(nextViewProps) {
         state.viewProps = Object.assign({}, ensureViewProps(), nextViewProps || {});
         renderWindow();
@@ -515,6 +537,21 @@
         state.messages = sortMessages(normalized);
         renderWindow();
         return state.messages;
+    }
+
+    function setComposerAttachments(attachments) {
+        state.composerAttachments = Array.isArray(attachments)
+            ? attachments.map(function (attachment, index) {
+                if (!attachment || typeof attachment !== 'object' || !attachment.url) return null;
+                return {
+                    id: String(attachment.id || ('attachment-' + index)),
+                    url: String(attachment.url),
+                    alt: attachment.alt ? String(attachment.alt) : ''
+                };
+            }).filter(Boolean)
+            : [];
+        renderWindow();
+        return state.composerAttachments;
     }
 
     function appendMessage(message) {
@@ -562,7 +599,8 @@
             mounted: mounted,
             minimized: minimized,
             viewProps: Object.assign({}, ensureViewProps()),
-            messages: state.messages.map(cloneMessage)
+            messages: state.messages.map(cloneMessage),
+            composerAttachments: state.composerAttachments.slice()
         };
     }
 
@@ -712,6 +750,10 @@
         window.addEventListener(EVENT_PREFIX + 'set-view-props', function (event) {
             setViewProps(event.detail && event.detail.viewProps);
         });
+
+        window.addEventListener(EVENT_PREFIX + 'set-composer-attachments', function (event) {
+            setComposerAttachments(event.detail && event.detail.attachments);
+        });
     }
 
     function init() {
@@ -773,6 +815,7 @@
         closeWindow: closeWindow,
         setViewProps: setViewProps,
         setMessages: setMessages,
+        setComposerAttachments: setComposerAttachments,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,
@@ -786,6 +829,9 @@
         },
         setOnComposerScreenshot: function (handler) {
             state.onComposerScreenshot = typeof handler === 'function' ? handler : null;
+        },
+        setOnComposerRemoveAttachment: function (handler) {
+            state.onComposerRemoveAttachment = typeof handler === 'function' ? handler : null;
         },
         setOnComposerSubmit: function (handler) {
             state.onComposerSubmit = typeof handler === 'function' ? handler : null;

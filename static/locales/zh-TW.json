@@ -553,6 +553,9 @@
         "reactWindowInputHint": "Enter 發送，Shift + Enter 換行",
         "messageListAriaLabel": "聊天訊息列表",
         "composerToolsAriaLabel": "輸入工具列",
+        "pendingImagesAriaLabel": "待發送圖片",
+        "pendingImageAlt": "圖片 {{index}}",
+        "removePendingImage": "移除圖片",
         "emojiButtonAriaLabel": "表情",
         "attachmentButtonAriaLabel": "附件"
     },

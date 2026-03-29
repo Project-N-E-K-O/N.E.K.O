@@ -29,6 +29,7 @@
         const item = document.createElement('div');
         item.className = 'screenshot-item';
         item.dataset.index = S.screenshotCounter;
+        item.dataset.attachmentId = 'attachment-' + Date.now() + '-' + S.screenshotCounter;
 
         // Create thumbnail
         const img = document.createElement('img');
@@ -68,6 +69,7 @@
         // Update count and show container
         mod.updateScreenshotCount();
         screenshotThumbnailContainer.classList.add('show');
+        mod.syncPendingComposerAttachments();
 
         // Auto-scroll to latest screenshot
         setTimeout(function () {
@@ -89,6 +91,7 @@
         setTimeout(function () {
             item.remove();
             mod.updateScreenshotCount();
+            mod.syncPendingComposerAttachments();
 
             if (screenshotsList.children.length === 0) {
                 screenshotThumbnailContainer.classList.remove('show');
@@ -107,6 +110,27 @@
         screenshotCountEl.textContent = count;
     };
     window.updateScreenshotCount = mod.updateScreenshotCount;
+
+    mod.getPendingComposerAttachments = function getPendingComposerAttachments() {
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return [];
+
+        return Array.from(screenshotsList.children).map(function (item, index) {
+            var img = item.querySelector('.screenshot-thumbnail');
+            if (!img || !img.src) return null;
+            return {
+                id: String(item.dataset.attachmentId || item.dataset.index || ('attachment-' + index)),
+                url: img.src,
+                alt: img.alt || (window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '图片 ' + (index + 1))
+            };
+        }).filter(Boolean);
+    };
+
+    mod.syncPendingComposerAttachments = function syncPendingComposerAttachments() {
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerAttachments === 'function') {
+            window.reactChatWindowHost.setComposerAttachments(mod.getPendingComposerAttachments());
+        }
+    };
 
     mod.ensureImportImageInput = function ensureImportImageInput() {
         if (mod._importImageInput && mod._importImageInput.isConnected) {
@@ -183,6 +207,19 @@
     mod.openImageImportPicker = function openImageImportPicker() {
         var input = mod.ensureImportImageInput();
         input.click();
+    };
+
+    mod.removePendingAttachmentById = function removePendingAttachmentById(attachmentId) {
+        if (!attachmentId) return;
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return;
+        var items = Array.from(screenshotsList.children);
+        var target = items.find(function (item) {
+            return item.dataset.attachmentId === String(attachmentId);
+        });
+        if (target) {
+            mod.removeScreenshotFromList(target);
+        }
     };
 
     // ======================== Emotion analysis ========================
@@ -490,6 +527,7 @@
             screenshotsList.innerHTML = '';
             screenshotThumbnailContainer.classList.remove('show');
             mod.updateScreenshotCount();
+            mod.syncPendingComposerAttachments();
             S.screenshotCounter = 0;
 
             console.log(window.t('console.executingBranchJudgment'), isGoodbyeMode);
@@ -782,12 +820,15 @@
 
             // Send message
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                var sentImageUrls = [];
+
                 // Send screenshots first
                 if (hasScreenshots) {
                     var screenshotItems = Array.from(screenshotsList.children);
                     for (var i = 0; i < screenshotItems.length; i++) {
                         var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
                         if (img && img.src) {
+                            sentImageUrls.push(img.src);
                             S.socket.send(JSON.stringify({
                                 action: 'stream_data',
                                 data: img.src,
@@ -797,7 +838,9 @@
                     }
 
                     var screenshotItemCount = screenshotItems.length;
-                    window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true);
+                    window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true, {
+                        skipReactSync: true
+                    });
 
                     // Achievement: send image
                     if (window.unlockAchievement) {
@@ -810,6 +853,7 @@
                     screenshotsList.innerHTML = '';
                     screenshotThumbnailContainer.classList.remove('show');
                     mod.updateScreenshotCount();
+                    mod.syncPendingComposerAttachments();
                 }
 
                 // Then send text (if any)
@@ -831,7 +875,9 @@
                     if (!options.preserveInputValue) {
                         textInputBox.value = '';
                     }
-                    window.appendMessage(text, 'user', true);
+                    window.appendMessage(text, 'user', true, {
+                        skipReactSync: sentImageUrls.length > 0
+                    });
 
                     // Achievement: meow detection
                     if (window.incrementAchievementCounter) {
@@ -851,6 +897,13 @@
                         console.log(window.t('console.userFirstInputDetected'));
                         window.checkAndUnlockFirstDialogueAchievement();
                     }
+                }
+
+                if (window.appChat && typeof window.appChat.appendReactUserMessage === 'function' && sentImageUrls.length > 0) {
+                    window.appChat.appendReactUserMessage({
+                        text: text,
+                        imageUrls: sentImageUrls
+                    });
                 }
 
                 // Reset proactive chat timer
@@ -1009,6 +1062,7 @@
                 screenshotsList.innerHTML = '';
                 screenshotThumbnailContainer.classList.remove('show');
                 mod.updateScreenshotCount();
+                mod.syncPendingComposerAttachments();
             }
         });
 
@@ -1027,8 +1081,14 @@
                 return mod.captureScreenshotToPendingList();
             });
         }
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerRemoveAttachment === 'function') {
+            window.reactChatWindowHost.setOnComposerRemoveAttachment(function (attachmentId) {
+                return mod.removePendingAttachmentById(attachmentId);
+            });
+        }
 
         mod.ensureImportImageInput();
+        mod.syncPendingComposerAttachments();
     };
 
     window.appButtons = mod;

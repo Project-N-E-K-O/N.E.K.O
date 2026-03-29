@@ -88,4 +88,22 @@ describe('App', () => {
     expect(onComposerImportImage).toHaveBeenCalledTimes(1);
     expect(onComposerScreenshot).toHaveBeenCalledTimes(1);
   });
+
+  it('renders pending composer attachments and removes them through callback', () => {
+    const onComposerRemoveAttachment = vi.fn();
+
+    render(
+      <App
+        composerAttachments={[
+          { id: 'img-1', url: 'data:image/png;base64,aaa', alt: '截图 1' },
+        ]}
+        onComposerRemoveAttachment={onComposerRemoveAttachment}
+      />,
+    );
+
+    expect(screen.getByAltText('截图 1')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '移除图片: 截图 1' }));
+
+    expect(onComposerRemoveAttachment).toHaveBeenCalledWith('img-1');
+  });
 });

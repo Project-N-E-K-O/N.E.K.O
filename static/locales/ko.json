@@ -553,6 +553,9 @@
         "reactWindowInputHint": "Enter 로 전송하고 Shift + Enter 로 줄바꿈",
         "messageListAriaLabel": "채팅 메시지 목록",
         "composerToolsAriaLabel": "입력 도구 모음",
+        "pendingImagesAriaLabel": "전송 대기 이미지",
+        "pendingImageAlt": "이미지 {{index}}",
+        "removePendingImage": "이미지 제거",
         "emojiButtonAriaLabel": "이모지",
         "attachmentButtonAriaLabel": "첨부"
     },

@@ -553,6 +553,9 @@
         "reactWindowInputHint": "Enter для отправки, Shift + Enter для новой строки",
         "messageListAriaLabel": "Список сообщений чата",
         "composerToolsAriaLabel": "Инструменты ввода",
+        "pendingImagesAriaLabel": "Изображения к отправке",
+        "pendingImageAlt": "Изображение {{index}}",
+        "removePendingImage": "Удалить изображение",
         "emojiButtonAriaLabel": "Эмодзи",
         "attachmentButtonAriaLabel": "Вложение"
     },

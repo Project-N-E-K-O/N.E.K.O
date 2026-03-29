@@ -553,6 +553,9 @@
         "reactWindowInputHint": "Enter で送信、Shift + Enter で改行",
         "messageListAriaLabel": "チャットメッセージ一覧",
         "composerToolsAriaLabel": "入力ツールバー",
+        "pendingImagesAriaLabel": "送信待ち画像",
+        "pendingImageAlt": "画像 {{index}}",
+        "removePendingImage": "画像を削除",
         "emojiButtonAriaLabel": "絵文字",
         "attachmentButtonAriaLabel": "添付"
     },

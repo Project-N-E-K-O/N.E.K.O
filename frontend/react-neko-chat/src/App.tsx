@@ -5,12 +5,14 @@ import {
   type MessageAction,
   type ChatWindowSchemaProps,
   type ComposerSubmitPayload,
+  type ComposerAttachment,
 } from './message-schema';
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
   onComposerImportImage?: () => void;
   onComposerScreenshot?: () => void;
+  onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
 };
 
@@ -26,15 +28,19 @@ export default function App({
   chatWindowAriaLabel = 'Neko chat window',
   messageListAriaLabel = 'Chat messages',
   composerToolsAriaLabel = 'Composer tools',
+  composerAttachments = [],
+  composerAttachmentsAriaLabel = 'Pending attachments',
   importImageButtonLabel = '导入图片',
   screenshotButtonLabel = '截图',
   importImageButtonAriaLabel = '导入图片',
   screenshotButtonAriaLabel = '截图',
+  removeAttachmentButtonAriaLabel = '移除图片',
   streamingStatusLabel = '生成中',
   failedStatusLabel = '发送失败',
   onMessageAction,
   onComposerImportImage,
   onComposerScreenshot,
+  onComposerRemoveAttachment,
   onComposerSubmit,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
@@ -70,6 +76,28 @@ export default function App({
         </section>
 
         <footer className="composer-panel">
+          {composerAttachments.length > 0 ? (
+            <div className="composer-attachments" aria-label={composerAttachmentsAriaLabel}>
+              {composerAttachments.map((attachment) => (
+                <figure key={attachment.id} className="composer-attachment-card">
+                  <img
+                    className="composer-attachment-image"
+                    src={attachment.url}
+                    alt={attachment.alt || ''}
+                    loading="lazy"
+                  />
+                  <button
+                    className="composer-attachment-remove"
+                    type="button"
+                    aria-label={`${removeAttachmentButtonAriaLabel}: ${attachment.alt || attachment.id}`}
+                    onClick={() => onComposerRemoveAttachment?.(attachment.id)}
+                  >
+                    ×
+                  </button>
+                </figure>
+              ))}
+            </div>
+          ) : null}
           <div className="composer-toolbar" aria-label={composerToolsAriaLabel}>
             <button
               className="composer-tool-chip"

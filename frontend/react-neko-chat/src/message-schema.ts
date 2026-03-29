@@ -42,6 +42,12 @@ const buttonGroupBlockSchema = z.object({
   buttons: z.array(messageActionSchema),
 });
 
+const composerAttachmentSchema = z.object({
+  id: z.string().min(1),
+  url: z.string().min(1),
+  alt: z.string().optional(),
+});
+
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
   imageBlockSchema,
@@ -78,10 +84,13 @@ export const chatWindowPropsSchema = z.object({
   chatWindowAriaLabel: z.string().optional(),
   messageListAriaLabel: z.string().optional(),
   composerToolsAriaLabel: z.string().optional(),
+  composerAttachments: z.array(composerAttachmentSchema).optional(),
+  composerAttachmentsAriaLabel: z.string().optional(),
   importImageButtonLabel: z.string().optional(),
   screenshotButtonLabel: z.string().optional(),
   importImageButtonAriaLabel: z.string().optional(),
   screenshotButtonAriaLabel: z.string().optional(),
+  removeAttachmentButtonAriaLabel: z.string().optional(),
   streamingStatusLabel: z.string().optional(),
   failedStatusLabel: z.string().optional(),
   onMessageAction: z.function()
@@ -94,6 +103,10 @@ export const chatWindowPropsSchema = z.object({
     .optional(),
   onComposerScreenshot: z.function()
     .args()
+    .returns(z.void())
+    .optional(),
+  onComposerRemoveAttachment: z.function()
+    .args(z.string())
     .returns(z.void())
     .optional(),
   onComposerSubmit: z.function()
@@ -109,6 +122,7 @@ export type ImageBlock = z.infer<typeof imageBlockSchema>;
 export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
+export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ComposerSubmitPayload = z.infer<typeof composerSubmitSchema>;

@@ -210,6 +210,45 @@
         host.appendMessage(message);
     }
 
+    function appendReactUserMessage(payload) {
+        var host = getReactChatHost();
+        if (!host || typeof host.appendMessage !== 'function') return;
+
+        payload = payload || {};
+        var text = String(payload.text || '').trim();
+        var imageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls.filter(Boolean) : [];
+        if (!text && imageUrls.length === 0) return;
+
+        var author = getCurrentUserName();
+        var blocks = [];
+
+        if (text) {
+            blocks.push({
+                type: 'text',
+                text: text
+            });
+        }
+
+        imageUrls.forEach(function (url, index) {
+            blocks.push({
+                type: 'image',
+                url: String(url),
+                alt: (window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '图片 ' + (index + 1))
+            });
+        });
+
+        host.appendMessage({
+            id: nextReactMessageId('user'),
+            role: 'user',
+            author: author,
+            time: getCurrentTimeString(),
+            createdAt: Date.now(),
+            avatarLabel: author ? String(author).trim().slice(0, 1).toUpperCase() : undefined,
+            blocks: blocks,
+            status: 'sent'
+        });
+    }
+
     function updateReactTextMessage(element, role, author, text, status) {
         var host = getReactChatHost();
         if (!host || typeof host.updateMessage !== 'function' || !element) return;
@@ -571,8 +610,9 @@
     /**
      * 添加消息到聊天界面
      */
-    function appendMessage(text, sender, isNewMessage) {
+    function appendMessage(text, sender, isNewMessage, options) {
         if (typeof isNewMessage === 'undefined') isNewMessage = true;
+        options = options || {};
 
         var chatContainer = S.dom.chatContainer;
 
@@ -882,12 +922,14 @@
             var cleanedText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
             newDiv.textContent = "[" + getCurrentTimeString() + "] " + icon + " " + cleanedText;
             chatContainer.appendChild(newDiv);
-            appendReactTextMessage(
-                newDiv,
-                sender === 'user' ? 'user' : 'assistant',
-                sender === 'user' ? getCurrentUserName() : getCurrentAssistantName(),
-                newDiv.textContent
-            );
+            if (!options.skipReactSync) {
+                appendReactTextMessage(
+                    newDiv,
+                    sender === 'user' ? 'user' : 'assistant',
+                    sender === 'user' ? getCurrentUserName() : getCurrentAssistantName(),
+                    newDiv.textContent
+                );
+            }
 
             // 如果是Gemini消息，更新当前消息引用
             if (sender === 'gemini') {
@@ -919,6 +961,7 @@
     mod.createGeminiBubble = createGeminiBubble;
     mod.processRealisticQueue = processRealisticQueue;
     mod.appendMessage = appendMessage;
+    mod.appendReactUserMessage = appendReactUserMessage;
     mod.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
     mod.setReactMessageStatus = setReactMessageStatus;
     mod.ensureUserDisplayName = ensureUserDisplayName;

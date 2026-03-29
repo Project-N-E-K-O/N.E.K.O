@@ -553,6 +553,9 @@
         "reactWindowInputHint": "Press Enter to send, Shift + Enter for a new line",
         "messageListAriaLabel": "Chat messages",
         "composerToolsAriaLabel": "Composer tools",
+        "pendingImagesAriaLabel": "Pending images",
+        "pendingImageAlt": "Image {{index}}",
+        "removePendingImage": "Remove image",
         "emojiButtonAriaLabel": "Emoji",
         "attachmentButtonAriaLabel": "Attachment"
     },
