@@ -1516,6 +1516,7 @@
             "frameRateHigh": "60fps",
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
+            "frameRateUnlimited": "Без ограничений(VSync)",
             "renderQuality": "Качество рендеринга",
             "renderQualityHigh": "Высокое",
             "renderQualityLow": "Низкое",
