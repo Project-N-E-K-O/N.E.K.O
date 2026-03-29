@@ -430,53 +430,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         if model_type_str == 'vrm':
             model_type_str = 'live3d'
         
-        if model_type_str == 'vrm':
-            if not vrm_model:
-                return JSONResponse(
-                    content={
-                        'success': False,
-                        'error': '未提供VRM模型路径'
-                    },
-                    status_code=400
-                )
-            
-            # 验证 VRM 模型路径：只允许安全的路径前缀，拒绝 URL 方案和路径遍历
-            vrm_model_str = str(vrm_model).strip()
-            
-            # 检查是否包含 URL 方案
-            if '://' in vrm_model_str or vrm_model_str.startswith('data:'):
-                return JSONResponse(
-                    content={
-                        'success': False,
-                        'error': 'VRM模型路径不能包含URL方案'
-                    },
-                    status_code=400
-                )
-            
-            # 检查是否包含路径遍历（..）
-            if '..' in vrm_model_str:
-                return JSONResponse(
-                    content={
-                        'success': False,
-                        'error': 'VRM模型路径不能包含路径遍历（..）'
-                    },
-                    status_code=400
-                )
-            
-            # 检查是否以允许的前缀开头
-            allowed_prefixes = ['/user_vrm/', '/static/vrm/']
-            if not any(vrm_model_str.startswith(prefix) for prefix in allowed_prefixes):
-                return JSONResponse(
-                    content={
-                        'success': False,
-                        'error': 'VRM模型路径必须以 /user_vrm/ 或 /static/vrm/ 开头'
-                    },
-                    status_code=400
-                )
-            
-            # 使用验证后的值
-            vrm_model = vrm_model_str
-        elif model_type_str == 'live3d':
+        if model_type_str == 'live3d':
             # Live3D 模式：接受 VRM 或 MMD 模型
             if vrm_model and mmd_model:
                 return JSONResponse(content={'success': False, 'error': '不能同时提供VRM和MMD模型，请选择其中一个'}, status_code=400)
@@ -530,99 +484,7 @@ async def update_catgirl_l2d(name: str, request: Request):
             )
         
         # 切换模型类型时清理"另一套模型字段"，避免配置残留
-        if model_type_str == 'vrm':
-            set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'model_path', '')
-            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
-            
-            # 更新VRM模型设置
-            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', vrm_model)
-            set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'vrm')
-            
-            # 处理 vrm_animation：支持显式清空（传 null 或空字符串）
-            if 'vrm_animation' in data:
-                if vrm_animation is None or vrm_animation == '':
-                    set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
-                    logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model}，已清空动作")
-                else:
-                    # 验证 VRM 动画路径：只允许安全的路径前缀，拒绝 URL 方案和路径遍历
-                    vrm_animation_str = str(vrm_animation).strip()
-                    
-                    # 检查是否包含 URL 方案
-                    if '://' in vrm_animation_str or vrm_animation_str.startswith('data:'):
-                        return JSONResponse(
-                            content={
-                                'success': False,
-                                'error': 'VRM动画路径不能包含URL方案'
-                            },
-                            status_code=400
-                        )
-                    
-                    # 检查是否包含路径遍历（..）
-                    if '..' in vrm_animation_str:
-                        return JSONResponse(
-                            content={
-                                'success': False,
-                                'error': 'VRM动画路径不能包含路径遍历（..）'
-                            },
-                            status_code=400
-                        )
-                    
-                    # 检查是否以允许的前缀开头
-                    allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
-                    if not any(vrm_animation_str.startswith(prefix) for prefix in allowed_animation_prefixes):
-                        return JSONResponse(
-                            content={
-                                'success': False,
-                                'error': 'VRM动画路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'
-                            },
-                            status_code=400
-                        )
-                    
-                    # 使用验证后的值
-                    set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', vrm_animation_str)
-                    logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model} 和动作 {vrm_animation_str}")
-            else:
-                logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model}，动作字段未变更")
-            
-            # 处理 idle_animation：支持显式清空（传 null 或空字符串）
-            if 'idle_animation' in data:
-                if idle_animation is None or idle_animation == '':
-                    set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', None)
-                    logger.debug(f"已保存角色 {name} 的VRM待机动作已清空")
-                else:
-                    idle_animation_str = str(idle_animation).strip()
-                    
-                    if '://' in idle_animation_str or idle_animation_str.startswith('data:'):
-                        return JSONResponse(
-                            content={
-                                'success': False,
-                                'error': '待机动作路径不能包含URL方案'
-                            },
-                            status_code=400
-                        )
-                    
-                    if '..' in idle_animation_str:
-                        return JSONResponse(
-                            content={
-                                'success': False,
-                                'error': '待机动作路径不能包含路径遍历（..）'
-                            },
-                            status_code=400
-                        )
-                    
-                    allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
-                    if not any(idle_animation_str.startswith(prefix) for prefix in allowed_animation_prefixes):
-                        return JSONResponse(
-                            content={
-                                'success': False,
-                                'error': '待机动作路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'
-                            },
-                            status_code=400
-                        )
-                    
-                    set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', idle_animation_str)
-                    logger.debug(f"已保存角色 {name} 的VRM待机动作 {idle_animation_str}")
-        elif model_type_str == 'live3d':
+        if model_type_str == 'live3d':
             # Live3D 模式：清理 live2d 字段
             set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'model_path', '')
             set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
@@ -742,9 +604,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         await initialize_character_data()
         
         
-        if model_type_str == 'vrm':
-            message = f'已更新角色 {name} 的VRM模型为 {vrm_model}'
-        elif model_type_str == 'live3d':
+        if model_type_str == 'live3d':
             active_model = vrm_model or mmd_model
             sub_type = 'VRM' if vrm_model else 'MMD'
             message = f'已更新角色 {name} 的Live3D({sub_type})模型为 {active_model}'
