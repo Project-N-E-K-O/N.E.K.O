@@ -4,6 +4,7 @@
 """
 
 import json
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
@@ -98,7 +99,20 @@ class FileCredentialStore(ICredentialStore):
                 json.dump(credential.to_dict(), f, ensure_ascii=False, indent=2, default=str)
 
             # 设置文件权限为仅所有者可读写
-            file_path.chmod(0o600)
+            if sys.platform == "win32":
+                try:
+                    import subprocess
+                    username = subprocess.check_output(
+                        ["cmd", "/c", "echo", "%USERNAME%"], text=True
+                    ).strip()
+                    subprocess.run(
+                        ["icacls", str(file_path), "/inheritance:r", "/grant:r", f"{username}:F"],
+                        check=False, capture_output=True
+                    )
+                except Exception as e:
+                    logger.warning(f"设置凭据文件权限失败(Windows): {e}")
+            else:
+                file_path.chmod(0o600)
 
             logger.info(f"凭据已保存到: {file_path}")
         except Exception as e:

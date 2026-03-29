@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import webbrowser
 from pathlib import Path
 from typing import Any, Optional
@@ -50,8 +51,12 @@ class MijiaPlugin(NekoPluginBase):
         # 尝试加载已有凭据
         credential = await self._load_credential()
         if credential:
-            await self._init_api(credential)
-            self.logger.info("米家插件启动成功，已加载已有凭据")
+            try:
+                await self._init_api(credential)
+                self.logger.info("米家插件启动成功，已加载已有凭据")
+            except Exception as e:
+                self.logger.error(f"API初始化失败，插件将在未登录状态下运行: {e}")
+                asyncio.create_task(self._auto_open_config_page())
         else:
             self.logger.warning("未找到有效凭据，请在Web UI中登录")
             asyncio.create_task(self._auto_open_config_page())
@@ -84,8 +89,12 @@ class MijiaPlugin(NekoPluginBase):
         """插件关闭：清理资源"""
         self.logger.info("米家插件关闭")
         if self.api:
-            # 异步客户端无需显式关闭，但可释放资源
-            self.api = None
+            try:
+                await self.api.close()
+            except Exception as e:
+                self.logger.warning(f"关闭API客户端时出错: {e}")
+            finally:
+                self.api = None
         return Ok({"status": "stopped"})
 
     @lifecycle(id="config_change")
@@ -123,12 +132,38 @@ class MijiaPlugin(NekoPluginBase):
         self.credential_path.parent.mkdir(parents=True, exist_ok=True)
         self.credential_path.write_text(credential.model_dump_json())
         # 设置文件权限（仅所有者可读写）
-        self.credential_path.chmod(0o600)
+        import sys
+        if sys.platform == "win32":
+            try:
+                import subprocess
+                username = subprocess.check_output(
+                    ["cmd", "/c", "echo", "%USERNAME%"], text=True
+                ).strip()
+                path_str = str(self.credential_path)
+                # 先移除所有继承权限，再授权当前用户完全控制
+                subprocess.run(
+                    ["icacls", path_str, "/inheritance:r", "/grant:r", f"{username}:F"],
+                    check=False, capture_output=True
+                )
+            except Exception as e:
+                self.logger.warning(f"设置凭据文件权限失败(Windows): {e}")
+        else:
+            self.credential_path.chmod(0o600)
         self.logger.info("凭据已保存")
 
     async def _refresh_credential(self, credential: Credential) -> Optional[Credential]:
         if not self.auth_service:
             return None
+        try:
+            new_cred = await self.auth_service.async_refresh_credential(credential)
+            if new_cred:
+                await self._save_credential(new_cred)
+                self.logger.info("凭据刷新成功并已保存")
+            return new_cred
+        except Exception as e:
+            self.logger.error(f"刷新凭据失败: {e}")
+            return None
+
     def _parse_xiaomi_response(self, text: str) -> dict:
         """解析小米登录返回的 &&&START&&&{...} 格式"""
         marker = "&&&START&&&"
@@ -215,6 +250,7 @@ class MijiaPlugin(NekoPluginBase):
         """自动刷新凭据，避免过期"""
         if not self.api:
             return Ok({"skipped": "no_api"})
+        new_cred = None
         credential = self.api.credential
         if credential and not credential.is_expired():
             # 如果将在7天内过期，尝试刷新
@@ -226,7 +262,7 @@ class MijiaPlugin(NekoPluginBase):
                     self.logger.info("凭据刷新成功")
                 else:
                     self.logger.warning("凭据刷新失败，请手动登录")
-        return Ok({"refreshed": new_cred is not None if 'new_cred' in locals() else False})
+        return Ok({"refreshed": new_cred is not None})
 
     # ========== Web UI 端点（供前端调用） ==========
     
@@ -266,7 +302,7 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="list_homes",
         name="获取家庭列表",
-        description="获取用户的所有家庭",
+        description="列出当前账号下所有米家家庭及其 ID",
         llm_result_fields=["message"]
     )
     async def list_homes(self, **_):
@@ -296,16 +332,16 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="list_devices",
         name="获取设备列表",
-        description="获取指定家庭下的设备列表，并缓存到本地。如果不提供 home_id，将自动使用第一个可用家庭",
+        description="从服务器拉取设备列表并写入本地缓存，返回设备名称和在线状态概览",
         input_schema={
             "type": "object",
             "properties": {
-                "home_id": {"type": "string", "description": "家庭ID（可选，不提供则使用默认家庭）"},
-                "refresh": {"type": "boolean", "description": "是否强制刷新缓存（默认false）"}
+                "home_id": {"type": "string", "description": "家庭ID，留空则自动使用第一个家庭"},
+                "refresh": {"type": "boolean", "description": "是否强制刷新缓存，默认 false"}
             },
             "required": []
         },
-        llm_result_fields=["devices"]
+        llm_result_fields=["message"]
     )
     async def list_devices(self, home_id: str = None, refresh: bool = False, **_):
         """获取设备列表并缓存"""
@@ -316,8 +352,15 @@ class MijiaPlugin(NekoPluginBase):
             try:
                 with open(cache_path, 'r', encoding='utf-8') as f:
                     cached = json.load(f)
-                self.logger.info(f"从缓存读取设备列表: {len(cached.get('devices', []))} 个设备")
-                return Ok({"devices": cached.get('devices', []), "from_cache": True})
+                devices = cached.get('devices', [])
+                self.logger.info(f"从缓存读取设备列表: {len(devices)} 个设备")
+                # 构建友好消息（与网络请求分支保持一致）
+                lines = [f"📱 共有 {len(devices)} 个设备（缓存）:"]
+                for d in devices:
+                    status = "🟢" if d.get("is_online") else "🔴"
+                    lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
+                message = "\n".join(lines)
+                return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
             except Exception as e:
                 self.logger.warning(f"读取缓存失败: {e}")
         
@@ -410,11 +453,11 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="get_cached_devices",
         name="获取缓存的设备列表",
-        description="从本地缓存获取设备列表，无需网络请求。如果缓存不存在，会自动调用 list_devices 获取。返回的 devices 列表中，每个设备包含: did(设备ID，用于control_device), name(设备名称), model(设备型号), is_online(是否在线), room_id(房间ID), properties(属性列表，含siid/piid), actions(操作列表，含siid/aiid)",
+        description="读取本地缓存的设备列表，无网络请求，速度快。缓存不存在时自动调用 list_devices 获取",
         input_schema={
             "type": "object",
             "properties": {
-                "refresh": {"type": "boolean", "description": "是否强制刷新缓存（默认false）"}
+                "refresh": {"type": "boolean", "description": "是否强制刷新缓存，默认 false"}
             },
             "required": []
         },
@@ -448,7 +491,7 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="find_device_by_name",
         name="根据名称查找设备",
-        description="根据设备名称（或部分名称）从缓存中查找设备信息。返回的 devices 列表中，每个设备包含: did(设备ID，用于control_device的device_id参数), name(设备名称), model(设备型号), is_online(是否在线), properties(属性列表，含siid/piid), actions(操作列表，含siid/aiid)。注意：控制设备时需要使用 did 作为 device_id",
+        description="按名称模糊搜索设备，返回匹配设备的完整信息（did、properties、actions 等）",
         input_schema={
             "type": "object",
             "properties": {
@@ -502,11 +545,11 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="smart_control",
         name="智能控制设备",
-        description="一句话控制设备，如'打开插座'、'关闭灯'。自动搜索设备并执行",
+        description="用自然语言控制设备开关，如"打开插座"、"关闭灯"，自动匹配设备并执行",
         input_schema={
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "命令，如'打开插座'、'关闭灯'"}
+                "command": {"type": "string", "description": "控制命令，如"打开插座"、"关闭灯""}
             },
             "required": ["command"]
         },
@@ -530,11 +573,8 @@ class MijiaPlugin(NekoPluginBase):
         else:
             return Err(SdkError("请说'打开'或'关闭'"))
         
-        # 提取设备名
-        device_name = cmd
-        for k in ["打开", "开启", "开", "关闭", "关掉", "关"]:
-            device_name = device_name.replace(k, "")
-        device_name = device_name.strip()
+        # 提取设备名：按长词优先用正则移除关键词（避免短词误伤设备名中的字）
+        device_name = re.sub(r'打开|开启|关闭|关掉|开|关', '', cmd).strip()
         
         if not device_name:
             return Err(SdkError("请指定设备名，如'打开插座'"))
@@ -544,7 +584,7 @@ class MijiaPlugin(NekoPluginBase):
         # 查找设备
         result = await self.find_device_by_name(name=device_name)
         if result.is_err():
-            self.logger.error(f"查找设备失败")
+            self.logger.error(f"查找设备失败: {result.error}")
             return result
         
         devices = result.value.get("devices", [])
@@ -607,14 +647,14 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="control_device",
         name="控制设备属性",
-        description="设置设备的属性值（如开关、亮度等）。使用步骤：1. 先用 find_device_by_name 或 get_cached_devices 获取设备信息 2. 从返回的设备信息中获取 did 作为 device_id，从 properties 中获取 siid 和 piid 3. 调用此方法控制设备",
+        description="向设备写入属性值，用于精确控制开关、亮度、温度等属性",
         input_schema={
             "type": "object",
             "properties": {
-                "device_id": {"type": "string", "description": "设备ID（从 find_device_by_name 或 get_cached_devices 返回的设备信息中获取 did 字段）"},
-                "siid": {"type": "integer", "description": "服务ID（从设备信息的 properties 中获取）"},
-                "piid": {"type": "integer", "description": "属性ID（从设备信息的 properties 中获取）"},
-                "value": {"description": "属性值"}
+                "device_id": {"type": "string", "description": "设备 ID（did）"},
+                "siid": {"type": "integer", "description": "服务 ID"},
+                "piid": {"type": "integer", "description": "属性 ID"},
+                "value": {"description": "目标属性值"}
             },
             "required": ["device_id", "siid", "piid", "value"]
         },
@@ -645,14 +685,14 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="call_device_action",
         name="调用设备操作",
-        description="调用设备的操作（如开始清扫、暂停等）",
+        description="触发设备的预定义操作，如扫地机开始清扫、播放音乐等",
         input_schema={
             "type": "object",
             "properties": {
-                "device_id": {"type": "string", "description": "设备ID"},
-                "siid": {"type": "integer", "description": "服务ID"},
-                "aiid": {"type": "integer", "description": "操作ID"},
-                "params": {"type": "object", "description": "操作参数（可选）"}
+                "device_id": {"type": "string", "description": "设备 ID（did）"},
+                "siid": {"type": "integer", "description": "服务 ID"},
+                "aiid": {"type": "integer", "description": "操作 ID"},
+                "params": {"type": "object", "description": "操作参数，可选"}
             },
             "required": ["device_id", "siid", "aiid"]
         },
@@ -674,11 +714,11 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="execute_scene",
         name="执行智能场景",
-        description="执行指定的智能场景",
+        description="触发米家 App 中预设的智能场景",
         input_schema={
             "type": "object",
             "properties": {
-                "scene_id": {"type": "string", "description": "场景ID"}
+                "scene_id": {"type": "string", "description": "场景 ID"}
             },
             "required": ["scene_id"]
         },
@@ -704,13 +744,13 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="get_device_status",
         name="获取设备属性值",
-        description="获取设备的某个属性值。使用步骤：1. 先用 find_device_by_name 或 get_cached_devices 获取设备信息 2. 从 properties 中找到要查询的属性，获取 siid 和 piid 3. 调用此方法查询",
+        description="读取设备的单个属性当前值",
         input_schema={
             "type": "object",
             "properties": {
-                "device_id": {"type": "string", "description": "设备ID（did）"},
-                "siid": {"type": "integer", "description": "服务ID"},
-                "piid": {"type": "integer", "description": "属性ID"}
+                "device_id": {"type": "string", "description": "设备 ID（did）"},
+                "siid": {"type": "integer", "description": "服务 ID"},
+                "piid": {"type": "integer", "description": "属性 ID"}
             },
             "required": ["device_id", "siid", "piid"]
         },
@@ -743,7 +783,7 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="query_device_state",
         name="查询设备状态",
-        description="根据设备名称查询设备当前状态。自动查找设备并获取其所有可读属性的当前值。适用于：'查询插座状态'、'看看灯的状态'等",
+        description="按设备名称查询所有可读属性的当前值，返回格式化的状态汇总",
         input_schema={
             "type": "object",
             "properties": {
@@ -804,32 +844,40 @@ class MijiaPlugin(NekoPluginBase):
         try:
             results = await self.api.get_device_properties(requests)
             
+            # 用 (siid, piid) 建立索引，不依赖返回顺序
+            result_map = {}
+            for res in results:
+                key = (res.get("siid"), res.get("piid"))
+                result_map[key] = res
+            
             # 整理状态信息
             states = []
             lines = [f"📱 设备 '{device_name}' 当前状态："]
             lines.append("")
             
-            for i, res in enumerate(results):
-                if i < len(readable_props):
-                    prop = readable_props[i]
-                    prop_name = prop.get("name", f"属性{prop.get('piid')}")
-                    value = res.get("value")
-                    code = res.get("code", -1)
+            for prop in readable_props:
+                key = (prop.get("siid"), prop.get("piid"))
+                res = result_map.get(key)
+                if res is None:
+                    continue
+                prop_name = prop.get("name", f"属性{prop.get('piid')}")
+                value = res.get("value")
+                code = res.get("code", -1)
+                
+                if code == 0:
+                    # 格式化值
+                    if isinstance(value, bool):
+                        value_str = "✅ 开启" if value else "❌ 关闭"
+                    else:
+                        value_str = str(value)
                     
-                    if code == 0:
-                        # 格式化值
-                        if isinstance(value, bool):
-                            value_str = "✅ 开启" if value else "❌ 关闭"
-                        else:
-                            value_str = str(value)
-                        
-                        states.append({
-                            "name": prop_name,
-                            "value": value,
-                            "siid": prop.get("siid"),
-                            "piid": prop.get("piid")
-                        })
-                        lines.append(f"  • {prop_name}: {value_str}")
+                    states.append({
+                        "name": prop_name,
+                        "value": value,
+                        "siid": prop.get("siid"),
+                        "piid": prop.get("piid")
+                    })
+                    lines.append(f"  • {prop_name}: {value_str}")
             
             if not states:
                 lines.append("  （暂无可用状态数据）")
@@ -849,17 +897,17 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="get_device_spec",
         name="获取设备规格",
-        description="获取设备的详细规格（属性和操作列表），用于发现可控制的功能。使用步骤：1. 先调用 get_cached_devices 获取设备列表 2. 从设备信息中获取 model 字段 3. 调用此方法传入 model",
+        description="查询设备型号的完整规格，列出所有可控属性（含 siid/piid）和可调用操作（含 siid/aiid）",
         input_schema={
             "type": "object",
             "properties": {
-                "model": {"type": "string", "description": "设备型号（从 get_cached_devices 返回的设备信息中获取）"}
+                "model": {"type": "string", "description": "设备型号，如 cuco.plug.v3"}
             },
             "required": ["model"]
         },
         llm_result_fields=["message"]
     )
-    async def get_device_spec(self, model: str = None, **_):
+    async def get_device_spec(self, model: str, **_):
         if not self.api:
             return Err(SdkError("未登录"))
         if not model:

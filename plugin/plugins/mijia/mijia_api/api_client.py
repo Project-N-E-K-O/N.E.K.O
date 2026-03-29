@@ -778,3 +778,22 @@ class AsyncMijiaAPI:
         if self._cache_manager:
             import asyncio
             await asyncio.to_thread(self._cache_manager.clear)
+
+    async def close(self) -> None:
+        """关闭API客户端，释放底层HTTP连接池资源。
+
+        应在不再使用客户端时调用（如插件关闭时）。
+        """
+        import asyncio
+        try:
+            # 关闭底层 HttpClient（持有 httpx.Client 连接池）
+            http_client = getattr(self._device_service, '_http_client', None)
+            if http_client is None:
+                # 从 _device_repo 尝试获取
+                repo = getattr(self._device_service, '_device_repo', None)
+                if repo:
+                    http_client = getattr(repo, '_http_client', None) or getattr(repo, '_client', None)
+            if http_client and hasattr(http_client, 'close'):
+                await asyncio.to_thread(http_client.close)
+        except Exception:
+            pass  # 关闭时忽略错误

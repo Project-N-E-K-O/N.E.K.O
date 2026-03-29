@@ -34,6 +34,8 @@ class PropertyAccess(str, Enum):
     READ_ONLY = "read"
     WRITE_ONLY = "write"
     READ_WRITE = "read_write"
+    NOTIFY_READ = "notify_read"
+    NOTIFY_READ_WRITE = "notify_read_write"
 
 
 class Credential(BaseModel):
@@ -119,7 +121,12 @@ class DeviceProperty(BaseModel):
 
     def is_readable(self) -> bool:
         """是否可读"""
-        return self.access in [PropertyAccess.READ_ONLY, PropertyAccess.READ_WRITE]
+        return self.access in [
+            PropertyAccess.READ_ONLY,
+            PropertyAccess.READ_WRITE,
+            PropertyAccess.NOTIFY_READ,
+            PropertyAccess.NOTIFY_READ_WRITE,
+        ]
 
     def is_writable(self) -> bool:
         """是否可写"""
