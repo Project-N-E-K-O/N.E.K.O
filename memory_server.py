@@ -28,6 +28,7 @@ import re
 import asyncio
 import logging
 import argparse
+from datetime import datetime
 from utils.frontend_utils import get_timestamp
 
 # 配置日志
@@ -63,8 +64,18 @@ def validate_lanlan_name(name: str) -> str:
         raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
     return name
 
-# 初始化组件
+# 初始化组件（迁移必须在实例化之前，否则旧路径文件找不到）
 _config_manager = get_config_manager()
+try:
+    from memory import migrate_to_character_dirs
+    _config_manager.ensure_memory_directory()
+    _char_data = _config_manager.load_characters()
+    _catgirl_names = list(_char_data.get('猫娘', {}).keys())
+    migrate_to_character_dirs(_config_manager.memory_dir, _catgirl_names)
+    del _char_data, _catgirl_names
+except Exception as _e:
+    logger.warning(f"[Memory] 模块级目录迁移失败: {_e}")
+
 recent_history_manager = CompressedRecentHistoryManager()
 settings_manager = ImportantSettingsManager()  # 保留兼容，逐步迁移
 time_manager = TimeIndexedMemory(recent_history_manager)
@@ -149,6 +160,123 @@ async def shutdown_memory_server():
         logger.error(f"处理关闭信号时出错: {e}")
         return {"status": "error", "message": str(e)}
 
+REBUTTAL_CHECK_INTERVAL = 300  # 5 分钟
+_last_rebuttal_check: dict[str, datetime] = {}  # per-character 上次检查时间戳
+
+
+def _extract_user_messages_from_rows(rows: list) -> list[str]:
+    """从 time_indexed SQL 查询结果中提取用户消息文本。
+
+    rows: [(session_id, message_json), ...]
+    message_json 是 langchain SQLChatMessageHistory 存储的 JSON 字符串。
+    content 可能是 str 或 list[{type, text}]，与 _extract_user_messages 对齐。
+    """
+    user_msgs = []
+    for _, msg_json in rows:
+        try:
+            msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
+            if isinstance(msg, dict) and msg.get('type') == 'human':
+                content = msg.get('data', {}).get('content', '')
+                if isinstance(content, str):
+                    if content.strip():
+                        user_msgs.append(content)
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get('type') == 'text':
+                            text = part.get('text', '')
+                            if text.strip():
+                                user_msgs.append(text)
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return user_msgs
+
+
+async def _periodic_rebuttal_loop():
+    """每 5 分钟检查 confirmed reflections 是否被近期对话反驳。
+
+    通过 time_indexed SQL 查询上次检查之后的所有新对话消息，
+    确保不遗漏任何未消费的用户回复。
+    """
+    from datetime import timedelta as _td
+
+    while True:
+        await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
+        try:
+            character_data = _config_manager.load_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[Rebuttal] 加载角色列表失败: {e}")
+            continue
+
+        now = datetime.now()
+        for name in catgirl_names:
+            try:
+                confirmed = reflection_engine.get_confirmed_reflections(name)
+                if not confirmed:
+                    continue
+
+                # 确定查询起始时间：上次检查时间 or 1小时前（首次）
+                start_time = _last_rebuttal_check.get(
+                    name, now - _td(hours=1)
+                )
+                rows = time_manager.retrieve_original_by_timeframe(
+                    name, start_time, now,
+                )
+                if not rows:
+                    _last_rebuttal_check[name] = now
+                    continue
+
+                user_msgs = _extract_user_messages_from_rows(rows)
+                if not user_msgs:
+                    _last_rebuttal_check[name] = now
+                    continue
+
+                # 复用 check_feedback 判断反驳
+                feedbacks = await reflection_engine.check_feedback_for_confirmed(
+                    name, confirmed, user_msgs,
+                )
+                if feedbacks is None:
+                    # LLM 调用失败 → 不推进窗口，下次重试这批消息
+                    logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留窗口待重试")
+                    continue
+
+                # 成功才推进窗口
+                _last_rebuttal_check[name] = now
+                for fb in feedbacks:
+                    if isinstance(fb, dict) and fb.get('feedback') == 'denied':
+                        rid = fb.get('reflection_id')
+                        if rid:
+                            reflection_engine.reject_promotion(name, rid)
+                            logger.info(f"[Rebuttal] {name}: confirmed 反思被反驳: {rid}")
+            except Exception as e:
+                logger.debug(f"[Rebuttal] {name}: 处理失败，跳过: {e}")
+
+
+AUTO_PROMOTE_CHECK_INTERVAL = 300  # 5 分钟
+
+async def _periodic_auto_promote_loop():
+    """定期执行 auto_promote_stale：pending→confirmed→promoted 状态迁移。
+
+    确保即使用户长时间不触发主动搭话，confirmed 反思也能按时升格为 persona。
+    """
+    while True:
+        await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
+        try:
+            character_data = _config_manager.load_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[AutoPromote] 加载角色列表失败: {e}")
+            continue
+
+        for name in catgirl_names:
+            try:
+                transitions = reflection_engine.auto_promote_stale(name)
+                if transitions:
+                    logger.info(f"[AutoPromote] {name}: {transitions} 条状态迁移")
+            except Exception as e:
+                logger.debug(f"[AutoPromote] {name}: 处理失败: {e}")
+
+
 @app.on_event("startup")
 async def startup_event_handler():
     """应用启动时初始化"""
@@ -161,6 +289,7 @@ async def startup_event_handler():
         logger.warning(f"[Memory] Token tracker init failed: {e}")
 
     # 自动迁移 settings → persona（如 persona 文件不存在）
+    # 注：目录结构迁移已在模块级完成（在组件实例化之前）
     try:
         character_data = _config_manager.load_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
@@ -169,6 +298,10 @@ async def startup_event_handler():
         logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
     except Exception as e:
         logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
+
+    # 启动定期后台任务
+    _spawn_background_task(_periodic_rebuttal_loop())
+    _spawn_background_task(_periodic_auto_promote_loop())
 
 
 @app.on_event("shutdown")
@@ -209,10 +342,41 @@ async def _run_review_in_background(lanlan_name: str):
         if lanlan_name in correction_cancel_flags:
             correction_cancel_flags[lanlan_name].clear()
 
-async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
-    """后台异步：事实提取 + 反馈检查。失败静默跳过。
+def _extract_ai_response(messages: list) -> str:
+    """从消息列表中提取最后一条 AI 回复的文本。"""
+    for m in reversed(messages):
+        if getattr(m, 'type', '') == 'ai':
+            content = getattr(m, 'content', '')
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = [p.get('text', '') for p in content if isinstance(p, dict) and p.get('type') == 'text']
+                return ''.join(parts)
+    return ''
 
-    认知框架：Facts → Reflection(pending) → 反馈确认 → Persona
+
+def _extract_user_messages(messages: list) -> list[str]:
+    """从消息列表中提取用户消息文本（跳过空白）。"""
+    user_msgs = []
+    for m in messages:
+        if getattr(m, 'type', '') == 'human':
+            content = getattr(m, 'content', '')
+            if isinstance(content, str):
+                if content.strip():
+                    user_msgs.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get('type') == 'text':
+                        text = part.get('text', '').strip()
+                        if text:
+                            user_msgs.append(text)
+    return user_msgs
+
+
+async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
+    """后台异步：事实提取 + 反馈检查 + 复读嗅探。失败静默跳过。
+
+    认知框架：Facts → Reflection(pending→confirmed→promoted) → Persona
     """
     try:
         # 1. 事实提取
@@ -221,35 +385,43 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
         logger.warning(f"[MemoryServer] 事实提取失败: {e}")
 
     try:
-        # 2. 检查用户对之前 surfaced 反思的反馈
+        # 2. 全局复读嗅探：扫描 AI 回复中是否重复提及 persona 条目
+        ai_response = _extract_ai_response(messages)
+        if ai_response:
+            persona_manager.record_mentions(lanlan_name, ai_response)
+    except Exception as e:
+        logger.warning(f"[MemoryServer] 复读嗅探失败: {e}")
+
+    try:
+        # 3. 检查用户对之前 surfaced 反思的反馈（宽松确认）
         surfaced = reflection_engine.load_surfaced(lanlan_name)
         pending_surfaced = [s for s in surfaced if s.get('feedback') is None]
         if pending_surfaced:
-            user_msgs = []
-            for m in messages:
-                if getattr(m, 'type', '') == 'human':
-                    content = getattr(m, 'content', '')
-                    if isinstance(content, str):
-                        user_msgs.append(content)
-                    elif isinstance(content, list):
-                        for part in content:
-                            if isinstance(part, dict) and part.get('type') == 'text':
-                                user_msgs.append(part.get('text', ''))
+            user_msgs = _extract_user_messages(messages)
             if user_msgs:
                 feedbacks = await reflection_engine.check_feedback(lanlan_name, user_msgs)
-                for fb in feedbacks:
-                    rid = fb.get('reflection_id')
-                    feedback = fb.get('feedback')
-                    if feedback == 'confirmed':
-                        reflection_engine.confirm_promotion(lanlan_name, rid)
-                    elif feedback == 'denied':
-                        reflection_engine.reject_promotion(lanlan_name, rid)
-                    # ignored → 保持 pending
+                if feedbacks is None:
+                    # LLM 调用失败，跳过本轮（不误 confirm）
+                    pass
+                else:
+                    # 收集 LLM 返回的 denied IDs
+                    denied_ids = {
+                        fb.get('reflection_id')
+                        for fb in feedbacks
+                        if isinstance(fb, dict) and fb.get('feedback') == 'denied'
+                    }
+                    for s in pending_surfaced:
+                        rid = s.get('reflection_id')
+                        if rid in denied_ids:
+                            reflection_engine.reject_promotion(lanlan_name, rid)
+                        else:
+                            # 宽松确认：用户有回复 + 未被 denied → 自动 confirm
+                            reflection_engine.confirm_promotion(lanlan_name, rid)
     except Exception as e:
         logger.warning(f"[MemoryServer] 反馈检查失败: {e}")
 
     try:
-        # 3. 审视矛盾队列（如果有 pending corrections）
+        # 4. 审视矛盾队列（如果有 pending corrections）
         resolved = await persona_manager.resolve_corrections(lanlan_name)
         if resolved:
             logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
@@ -415,8 +587,12 @@ def get_settings(lanlan_name: str):
         logger.error(f"检查角色配置失败: {e}")
         return f"{lanlan_name}记得{{}}"
 
-    # 优先使用 persona markdown 渲染，回退到旧 settings 格式
-    persona_md = persona_manager.render_persona_markdown(lanlan_name)
+    # 优先使用 persona markdown 渲染（与 /new_dialog 保持一致），回退到旧 settings 格式
+    pending_reflections = reflection_engine.get_pending_reflections(lanlan_name)
+    confirmed_reflections = reflection_engine.get_confirmed_reflections(lanlan_name)
+    persona_md = persona_manager.render_persona_markdown(
+        lanlan_name, pending_reflections, confirmed_reflections,
+    )
     if persona_md:
         return persona_md
     # 兼容回退
@@ -507,10 +683,13 @@ async def new_dialog(lanlan_name: str):
     _lang = get_global_language()
 
     # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
-    # pending 反思也注入上下文，标注为"待确认的印象"
+    # pending + confirmed 反思也注入上下文（分区标注）
     pending_reflections = reflection_engine.get_pending_reflections(lanlan_name)
+    confirmed_reflections = reflection_engine.get_confirmed_reflections(lanlan_name)
     result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
-    persona_md = persona_manager.render_persona_markdown(lanlan_name, pending_reflections)
+    persona_md = persona_manager.render_persona_markdown(
+        lanlan_name, pending_reflections, confirmed_reflections,
+    )
     if persona_md:
         result += persona_md
     else:

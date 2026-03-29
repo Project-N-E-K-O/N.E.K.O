@@ -195,6 +195,49 @@ catgirl_names = []
 agent_event_bridge: MainServerAgentBridge | None = None
 
 
+def _is_websocket_connected(ws) -> bool:
+    """Check if a WebSocket is in CONNECTED state."""
+    if not ws:
+        return False
+    if not hasattr(ws, "client_state"):
+        return False
+    try:
+        return ws.client_state == ws.client_state.CONNECTED
+    except Exception:
+        return False
+
+
+def _select_fallback_session_manager():
+    """Return a single connected session manager as a safe fallback, if unambiguous."""
+    connected = []
+    for name, mgr in session_manager.items():
+        if not mgr:
+            continue
+        ws = getattr(mgr, "websocket", None)
+        if _is_websocket_connected(ws):
+            connected.append((name, mgr))
+    if len(connected) == 1:
+        return connected[0]
+    return None, None
+
+
+async def _broadcast_to_all_connected(event_payload: dict) -> int:
+    """Broadcast an event to all connected WebSocket sessions asynchronously."""
+    delivered_count = 0
+    # Take a snapshot to avoid RuntimeError from concurrent dict mutation
+    for name, mgr in list(session_manager.items()):
+        if not mgr:
+            continue
+        ws = getattr(mgr, "websocket", None)
+        if _is_websocket_connected(ws) and hasattr(ws, "send_json"):
+            try:
+                await ws.send_json(event_payload)
+                delivered_count += 1
+            except Exception as e:
+                logger.debug("[EventBus] broadcast to %s failed: %s", name, e)
+    return delivered_count
+
+
 async def _handle_agent_event(event: dict):
     """通过 ZeroMQ 接收 agent_server 事件，并分发到 core/websocket。"""
     try:
@@ -218,18 +261,14 @@ async def _handle_agent_event(event: dict):
             }
             if lanlan and lanlan in session_manager:
                 mgr = session_manager.get(lanlan)
-                if mgr and mgr.websocket and hasattr(mgr.websocket, "send_json"):
+                ws = getattr(mgr, "websocket", None) if mgr else None
+                if _is_websocket_connected(ws):
                     try:
-                        await mgr.websocket.send_json(payload)
-                    except Exception:
-                        pass
+                        await ws.send_json(payload)
+                    except Exception as e:
+                        logger.debug("[EventBus] agent_status_update send failed: %s", e)
             else:
-                for mgr in session_manager.values():
-                    if mgr and mgr.websocket and hasattr(mgr.websocket, "send_json"):
-                        try:
-                            await mgr.websocket.send_json(payload)
-                        except Exception:
-                            pass
+                await _broadcast_to_all_connected(payload)
             return
 
         # Resolve target session manager; fallback to broadcast if lanlan is unknown
@@ -237,12 +276,9 @@ async def _handle_agent_event(event: dict):
         if not mgr and event_type == "task_update":
             # Broadcast task_update to all connected sessions when lanlan is unresolvable
             task_payload = {"type": "agent_task_update", "task": event.get("task", {})}
-            for _mgr in session_manager.values():
-                if _mgr and _mgr.websocket and hasattr(_mgr.websocket, "send_json"):
-                    try:
-                        await _mgr.websocket.send_json(task_payload)
-                    except Exception:
-                        pass
+            delivered = await _broadcast_to_all_connected(task_payload)
+            if delivered == 0:
+                logger.warning("[EventBus] task_update broadcast: no connected WebSocket sessions")
             return
 
         # --- Music Global Broadcasts (Must come before early 'if not mgr' returns) ---
@@ -280,16 +316,48 @@ async def _handle_agent_event(event: dict):
                 logger.info("[EventBus] music_play_url broadcasted to %d sessions", len(targets))
             return
         if not mgr and event_type in ("proactive_message", "task_result"):
-            # No target session found — drop the event entirely.
-            # Do NOT broadcast text to other sessions to prevent cross-session leaks.
-            logger.info("[EventBus] %s dropped: no target session for lanlan=%s", event_type, lanlan)
-            return
+            fallback_name, fallback_mgr = _select_fallback_session_manager()
+            if fallback_mgr is not None:
+                mgr = fallback_mgr
+                logger.warning(
+                    "[EventBus] %s rerouted: lanlan=%s missing, fallback_session=%s",
+                    event_type,
+                    lanlan,
+                    fallback_name,
+                )
+            else:
+                # No target session found — drop the event entirely.
+                # Do NOT broadcast text to other sessions to prevent cross-session leaks.
+                logger.info(
+                    "[EventBus] %s dropped: no target session for lanlan=%s, active_sessions=%s",
+                    event_type,
+                    lanlan,
+                    list(session_manager.keys()),
+                )
+                return
         if not mgr:
             logger.info("[EventBus] %s dropped: no session_manager for lanlan=%s", event_type, lanlan)
             return
         if event_type in ("task_result", "proactive_message"):
             text = (event.get("text") or "").strip()
             if text:
+                if event.get("direct_reply"):
+                    detail_text = (event.get("detail") or text).strip()
+                    delivered = False
+                    if detail_text and hasattr(mgr, "send_lanlan_response"):
+                        try:
+                            delivered = bool(await mgr.send_lanlan_response(detail_text, True))
+                        except Exception as e:
+                            logger.warning("[EventBus] direct task_result reply failed: %s", e)
+                    if delivered and hasattr(mgr, "handle_proactive_complete"):
+                        try:
+                            await mgr.handle_proactive_complete()
+                        except Exception as e:
+                            logger.warning("[EventBus] direct task_result turn_end failed: %s", e)
+                    if delivered:
+                        logger.info("[EventBus] direct task_result reply delivered: %.60s", detail_text[:60])
+                        return
+
                 # Build structured callback and enqueue for LLM injection
                 cb_status = event.get("status") or ("completed" if event.get("success", True) else "failed")
                 callback = {
@@ -305,8 +373,16 @@ async def _handle_agent_event(event: dict):
                 }
                 mgr.enqueue_agent_callback(callback)
                 logger.info("[EventBus] %s enqueued callback, scheduling trigger_agent_callbacks", event_type)
-                mgr._pending_agent_callback_task = asyncio.create_task(mgr.trigger_agent_callbacks())
-                if mgr.websocket and hasattr(mgr.websocket, "send_json"):
+
+                # Create task with exception logging
+                async def _run_trigger_with_logging():
+                    try:
+                        await mgr.trigger_agent_callbacks()
+                    except Exception as e:
+                        logger.error("[EventBus] trigger_agent_callbacks task failed: %s", e)
+                mgr._pending_agent_callback_task = asyncio.create_task(_run_trigger_with_logging())
+                ws = getattr(mgr, "websocket", None)
+                if _is_websocket_connected(ws):
                     try:
                         notif = {
                             "type": "agent_notification",
@@ -317,14 +393,15 @@ async def _handle_agent_event(event: dict):
                         err_msg = event.get("error_message") or ""
                         if err_msg:
                             notif["error_message"] = err_msg[:500]
-                        await mgr.websocket.send_json(notif)
+                        await ws.send_json(notif)
                         logger.info("[EventBus] agent_notification sent to frontend: %.60s", text[:60])
                     except Exception as e:
                         logger.warning("[EventBus] agent_notification WS send failed: %s", e)
                 else:
-                    logger.warning("[EventBus] agent_notification: no websocket available")
+                    logger.warning("[EventBus] agent_notification: WebSocket not connected for lanlan=%s", lanlan)
         elif event_type == "agent_notification":
-            if mgr.websocket and hasattr(mgr.websocket, "send_json"):
+            ws = getattr(mgr, "websocket", None)
+            if _is_websocket_connected(ws):
                 try:
                     notif = {
                         "type": "agent_notification",
@@ -335,15 +412,21 @@ async def _handle_agent_event(event: dict):
                     err_msg = event.get("error_message") or ""
                     if err_msg:
                         notif["error_message"] = err_msg[:500]
-                    await mgr.websocket.send_json(notif)
+                    await ws.send_json(notif)
                 except Exception as e:
                     logger.debug("[EventBus] agent_notification send failed: %s", e)
+            else:
+                logger.debug("[EventBus] agent_notification: WebSocket not connected for lanlan=%s", lanlan)
         elif event_type == "task_update":
-            if mgr.websocket and hasattr(mgr.websocket, "send_json"):
+            task_payload = {"type": "agent_task_update", "task": event.get("task", {})}
+            ws = getattr(mgr, "websocket", None)
+            if _is_websocket_connected(ws):
                 try:
-                    await mgr.websocket.send_json({"type": "agent_task_update", "task": event.get("task", {})})
-                except Exception:
-                    pass
+                    await ws.send_json(task_payload)
+                except Exception as e:
+                    logger.warning("[EventBus] task_update send failed for lanlan=%s: %s", lanlan, e)
+            else:
+                logger.warning("[EventBus] task_update dropped: WebSocket not connected for lanlan=%s", lanlan)
     except Exception as e:
         logger.debug(f"handle_agent_event error: {e}")
 
@@ -1257,6 +1340,9 @@ if __name__ == "__main__":
         reload=False,
         proxy_headers=_behind_proxy,
         forwarded_allow_ips="*" if _behind_proxy else None,
+        # WebSocket keep-alive: send server-initiated pings every 20s, close if no pong within 60s
+        ws_ping_interval=20.0,
+        ws_ping_timeout=60.0,
     )
     server = uvicorn.Server(config)
     
