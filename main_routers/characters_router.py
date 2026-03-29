@@ -1468,8 +1468,17 @@ async def rename_master(old_name: str, request: Request):
         characters['主人']['档案名'] = new_name
         _config_manager.save_characters(characters)
 
-    initialize_character_data = get_initialize_character_data()
-    await initialize_character_data()
+    try:
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+    except Exception as e:
+        logger.error(f"重命名后重新加载配置失败: {e}")
+        return JSONResponse({
+            'success': False,
+            'status': 'partial_success',
+            'renamed': True,
+            'error': f'重命名成功但配置重载失败: {str(e)}'
+        }, status_code=500)
 
     return {"success": True}
 
