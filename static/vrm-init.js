@@ -531,6 +531,11 @@ async function initVRMModel() {
                         console.warn('[VRM Init] PIXI应用销毁时出现警告:', destroyError);
                     }
                     window.live2dManager.pixi_app = null;
+                    // 注销 initPIXI 注册的 resize 监听器，避免泄露和空引用报错
+                    if (window.live2dManager._screenChangeHandler) {
+                        window.removeEventListener('resize', window.live2dManager._screenChangeHandler);
+                        window.live2dManager._screenChangeHandler = null;
+                    }
                     window.live2dManager.isInitialized = false;
                 }
             } catch (cleanupError) {
