@@ -615,8 +615,7 @@ button * {
     width: min(1120px, calc(100vw - 40px));
     height: min(820px, calc(100vh - 48px));
     transform: translate(-50%, -50%);
-    display: grid;
-    grid-template-rows: auto 1fr;
+    display: block;
     border-radius: 18px;
     overflow: hidden;
     background: rgba(248, 250, 255, 0.96);
@@ -624,40 +623,43 @@ button * {
     pointer-events: auto;
 }
 
+#react-chat-window-shell.is-minimized {
+    width: 220px;
+    height: 56px;
+    border-radius: 16px;
+}
+
+#react-chat-window-shell.is-minimized #react-chat-window-root {
+    display: none;
+}
+
 #react-chat-window-shell.is-dragging {
     box-shadow: 0 36px 110px rgba(12, 20, 34, 0.36);
 }
 
-#react-chat-window-host-header {
+#react-chat-window-drag-handle {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 52px;
+    cursor: grab;
+    pointer-events: auto;
+    z-index: 3;
+}
+
+#react-chat-window-header-actions {
+    position: absolute;
+    top: 10px;
+    right: 12px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 14px 18px;
-    background: linear-gradient(180deg, rgba(255,255,255,0.94), rgba(243,247,253,0.96));
-    border-bottom: 1px solid rgba(89, 112, 149, 0.12);
-    cursor: grab;
-    user-select: none;
+    gap: 8px;
+    z-index: 4;
     pointer-events: auto;
 }
 
-#react-chat-window-title-group {
-    min-width: 0;
-    pointer-events: none;
-}
-
-#react-chat-window-title {
-    font-size: 0.98rem;
-    font-weight: 700;
-    color: #223049;
-}
-
-#react-chat-window-subtitle {
-    margin-top: 4px;
-    font-size: 0.82rem;
-    color: #78869d;
-}
-
+#reactChatWindowMinimizeButton,
 #reactChatWindowCloseButton {
     width: 34px;
     height: 34px;
@@ -671,13 +673,15 @@ button * {
     pointer-events: auto;
 }
 
+#reactChatWindowMinimizeButton:hover,
 #reactChatWindowCloseButton:hover {
     background: rgba(88, 108, 145, 0.12);
     color: #2b3851;
 }
 
 #react-chat-window-root {
-    min-height: 0;
+    width: 100%;
+    height: 100%;
     background: #eef3fb;
     pointer-events: auto;
 }
@@ -1855,7 +1859,7 @@ body.react-chat-window-dragging {
         border-radius: 14px;
     }
 
-    #react-chat-window-host-header {
+    #react-chat-window-drag-handle {
         cursor: default;
     }
 

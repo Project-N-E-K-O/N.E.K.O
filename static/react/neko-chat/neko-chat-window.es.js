@@ -21240,11 +21240,11 @@ function oT({
         /* @__PURE__ */ ct.jsx("div", { className: "window-avatar", children: "猫" }),
         /* @__PURE__ */ ct.jsxs("div", { children: [
           /* @__PURE__ */ ct.jsx("h1", { className: "window-title", children: W }),
-          /* @__PURE__ */ ct.jsx("p", { className: "window-subtitle", children: G })
+          G ? /* @__PURE__ */ ct.jsx("p", { className: "window-subtitle", children: G }) : null
         ] })
       ] }),
       /* @__PURE__ */ ct.jsxs("div", { className: "window-actions", "aria-label": "Window actions", children: [
-        /* @__PURE__ */ ct.jsx("span", { className: "window-status", children: A }),
+        A ? /* @__PURE__ */ ct.jsx("span", { className: "window-status", children: A }) : null,
         /* @__PURE__ */ ct.jsx("button", { className: "icon-button", type: "button", "aria-label": "Search", children: "🔍" }),
         /* @__PURE__ */ ct.jsx("button", { className: "icon-button", type: "button", "aria-label": "More", children: "⋯" })
       ] })

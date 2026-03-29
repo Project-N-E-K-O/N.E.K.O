@@ -15,6 +15,7 @@
     var loadedPromise = null;
     var mounted = false;
     var dragState = null;
+    var minimized = false;
 
     function $(id) {
         return document.getElementById(id);
@@ -33,7 +34,11 @@
     }
 
     function getHeader() {
-        return $('react-chat-window-host-header');
+        return $('react-chat-window-drag-handle');
+    }
+
+    function getMinimizeButton() {
+        return $('reactChatWindowMinimizeButton');
     }
 
     function getRoot() {
@@ -43,9 +48,9 @@
     function getChatProps() {
         var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || 'N.E.K.O';
         return {
-            title: lanlanName + ' Chat',
-            subtitle: 'QQ-style chat window preview',
-            status: 'Legacy Host Preview'
+            title: lanlanName,
+            subtitle: '',
+            status: ''
         };
     }
 
@@ -189,6 +194,25 @@
         return true;
     }
 
+    function setMinimized(nextMinimized) {
+        var shell = getShell();
+        if (!shell) return;
+
+        minimized = !!nextMinimized;
+        shell.classList.toggle('is-minimized', minimized);
+
+        var button = getMinimizeButton();
+        if (button) {
+            button.textContent = minimized ? '+' : '-';
+            button.setAttribute('aria-label', minimized ? '恢复新版聊天框' : '最小化新版聊天框');
+            button.title = minimized ? '恢复' : '最小化';
+        }
+    }
+
+    function toggleMinimized() {
+        setMinimized(!minimized);
+    }
+
     function openWindow() {
         var overlay = getOverlay();
         if (!overlay) return;
@@ -199,6 +223,7 @@
                     showToast('新版聊天框挂载失败', 3000);
                     return;
                 }
+                setMinimized(false);
                 overlay.hidden = false;
                 document.body.classList.add('react-chat-window-open');
                 restorePosition();
@@ -289,6 +314,7 @@
     function init() {
         var trigger = $('reactChatWindowButton');
         var closeButton = $('reactChatWindowCloseButton');
+        var minimizeButton = getMinimizeButton();
         var backdrop = $('react-chat-window-backdrop');
 
         if (trigger) {
@@ -296,6 +322,12 @@
         }
         if (closeButton) {
             closeButton.addEventListener('click', closeWindow);
+        }
+        if (minimizeButton) {
+            minimizeButton.addEventListener('click', function (event) {
+                event.stopPropagation();
+                toggleMinimized();
+            });
         }
         if (backdrop) {
             backdrop.addEventListener('click', closeWindow);

@@ -85,11 +85,11 @@ export default function App({
             <div className="window-avatar">猫</div>
             <div>
               <h1 className="window-title">{title}</h1>
-              <p className="window-subtitle">{subtitle}</p>
+              {subtitle ? <p className="window-subtitle">{subtitle}</p> : null}
             </div>
           </div>
           <div className="window-actions" aria-label="Window actions">
-            <span className="window-status">{status}</span>
+            {status ? <span className="window-status">{status}</span> : null}
             <button className="icon-button" type="button" aria-label="Search">
               🔍
             </button>
