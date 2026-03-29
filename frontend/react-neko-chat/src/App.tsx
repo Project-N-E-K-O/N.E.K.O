@@ -105,7 +105,13 @@ export default function App({
               aria-label={importImageButtonAriaLabel}
               onClick={() => onComposerImportImage?.()}
             >
-              {importImageButtonLabel}
+              <img
+                className="composer-tool-chip-icon"
+                src="/static/icons/upload_icon.png"
+                alt=""
+                aria-hidden="true"
+              />
+              <span>{importImageButtonLabel}</span>
             </button>
             <button
               className="composer-tool-chip"
@@ -113,7 +119,13 @@ export default function App({
               aria-label={screenshotButtonAriaLabel}
               onClick={() => onComposerScreenshot?.()}
             >
-              {screenshotButtonLabel}
+              <img
+                className="composer-tool-chip-icon"
+                src="/static/icons/screenshot_icon.png"
+                alt=""
+                aria-hidden="true"
+              />
+              <span>{screenshotButtonLabel}</span>
             </button>
           </div>
           <form className="composer" onSubmit={(event) => {
@@ -136,7 +148,21 @@ export default function App({
                   }}
                 />
               </label>
-              <button className="send-button" type="submit">{sendButtonLabel}</button>
+              <button className="send-button" type="submit">
+                <img
+                  className="send-button-paw"
+                  src="/static/icons/paw_ui.png"
+                  alt=""
+                  aria-hidden="true"
+                />
+                <img
+                  className="send-button-icon"
+                  src="/static/icons/send_icon.png"
+                  alt=""
+                  aria-hidden="true"
+                />
+                <span>{sendButtonLabel}</span>
+              </button>
             </div>
           </form>
         </footer>

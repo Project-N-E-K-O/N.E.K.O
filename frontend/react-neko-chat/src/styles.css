@@ -610,15 +610,15 @@ textarea {
 
 .composer-attachment-card {
   position: relative;
-  width: 84px;
-  height: 84px;
+  width: 90px;
+  height: 90px;
   margin: 0;
   flex: 0 0 auto;
-  border-radius: 14px;
+  border-radius: 8px;
   overflow: hidden;
-  border: 1px solid rgba(111, 129, 158, 0.16);
-  box-shadow: 0 8px 18px rgba(89, 108, 140, 0.08);
-  background: rgba(255, 255, 255, 0.94);
+  border: 2px solid #d7dde6;
+  box-shadow: 0 4px 10px rgba(89, 108, 140, 0.08);
+  background: #fff;
 }
 
 .composer-attachment-image {
@@ -630,48 +630,59 @@ textarea {
 
 .composer-attachment-remove {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 24px;
-  height: 24px;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
   border: 0;
   border-radius: 999px;
   color: #fff;
-  background: rgba(23, 31, 45, 0.72);
+  background: #dc3545;
   cursor: pointer;
-  font-size: 0.95rem;
+  font-size: 0.92rem;
+  font-weight: 700;
   line-height: 1;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 .composer-toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 38px;
+  min-height: 44px;
   flex-wrap: wrap;
 }
 
 .composer-tool-chip {
-  min-height: 34px;
-  padding: 0 12px;
-  border: 1px solid rgba(102, 126, 165, 0.2);
-  border-radius: 999px;
-  color: #37507a;
-  background: linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+  min-height: 42px;
+  padding: 8px 14px;
+  border: 2px solid #44b7fe;
+  border-radius: 8px;
+  color: #44b7fe;
+  background: #fff;
   cursor: pointer;
-  font-size: 0.82rem;
-  font-weight: 600;
-  transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+  font-size: 0.85rem;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  white-space: nowrap;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
 }
 
 .composer-tool-chip:hover {
-  background: linear-gradient(180deg, #f2f7ff 0%, #e4eeff 100%);
-  border-color: rgba(78, 111, 166, 0.34);
-  transform: translateY(-1px);
+  background: #f0f9ff;
+  border-color: #2ea0e0;
+  color: #2ea0e0;
 }
 
-.composer-tool-chip:active {
-  transform: translateY(0);
+.composer-tool-chip-icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  pointer-events: none;
 }
 
 .composer {
@@ -752,20 +763,51 @@ textarea {
 .send-button {
   min-width: 104px;
   height: 98px;
-  padding: 0 20px;
-  border: 0;
-  border-radius: 0 12px 12px 0;
+  padding: 0 18px;
+  border: 2px solid transparent;
+  border-radius: 0 8px 8px 0;
   color: #fff;
-  background: linear-gradient(135deg, #57b6f7 0%, #71c0fb 100%);
+  background: #44b7fe;
   cursor: pointer;
-  font-weight: 700;
-  font-size: 1rem;
-  box-shadow: 0 6px 14px rgba(97, 181, 246, 0.18);
+  font-weight: 500;
+  font-size: 0.92rem;
+  box-shadow: none;
   margin-left: -1px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  overflow: hidden;
 }
 
 .send-button:hover {
-  filter: brightness(1.03);
+  background: #2ea0e0;
+}
+
+.send-button-icon {
+  position: relative;
+  z-index: 1;
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.send-button-paw {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.send-button span {
+  position: relative;
+  z-index: 1;
 }
 
 @media (max-width: 820px) {
