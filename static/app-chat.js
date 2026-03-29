@@ -532,12 +532,59 @@
             return { sentences: sentences, rest: rest };
         }
 
+        function looksLikeStructuredRichText(text) {
+            var s = normalizeGeminiText(text || '');
+            return /```[\s\S]*```/.test(s)
+                || /(?:^|\n)```/.test(s)
+                || /\$\$[\s\S]*\$\$/.test(s)
+                || /(?<!\$)\$(?!\$)[^$\n]+(?<!\$)\$(?!\$)/.test(s)
+                || /(?:^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s)/.test(s)
+                || /(?:^|\n)\|.+\|.+(?:\n|\r\n)\|(?:[-: ]+\|){1,}/.test(s);
+        }
+
+        function renderStructuredGeminiMessage(fullText) {
+            var cleanFullText = normalizeGeminiText(fullText).replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
+            if (!cleanFullText) return;
+
+            if (!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0 ||
+                !window.currentGeminiMessage || !window.currentGeminiMessage.isConnected) {
+                var msgDiv = document.createElement('div');
+                msgDiv.classList.add('message', 'gemini');
+                msgDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanFullText;
+                chatContainer.appendChild(msgDiv);
+                appendReactTextMessage(msgDiv, 'assistant', 'Neko', msgDiv.textContent, 'streaming');
+
+                window.currentGeminiMessage = msgDiv;
+                window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
+                window.currentTurnGeminiBubbles.push(msgDiv);
+
+                checkAndShowSubtitlePrompt(cleanFullText);
+
+                if (isFirstAIResponse) {
+                    isFirstAIResponse = false;
+                    console.log(window.t('console.aiFirstReplyDetected'));
+                    checkAndUnlockFirstDialogueAchievement();
+                }
+                return;
+            }
+
+            var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /);
+            if (!timePrefix) {
+                timePrefix = "[" + getCurrentTimeString() + "] \u{1F380} ";
+            } else {
+                timePrefix = timePrefix[0];
+            }
+            window.currentGeminiMessage.textContent = timePrefix + cleanFullText;
+            updateReactTextMessage(window.currentGeminiMessage, 'assistant', 'Neko', window.currentGeminiMessage.textContent, 'streaming');
+        }
+
         // 维护"本轮 AI 回复"的完整文本（用于 turn end 时整段翻译/情感分析）
         if (sender === 'gemini') {
             if (isNewMessage) {
                 window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
                 window._geminiTurnFullText = '';
                 window._pendingMusicCommand = '';
+                window._structuredGeminiStreaming = false;
                 // ========== 重置本轮气泡追踪 ==========
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
@@ -585,6 +632,18 @@
             var prev = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
             var combined = prev + incoming;
             combined = combined.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+
+            var fullTurnText = (typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '')
+                .replace(/\[play_music:[^\]]*(\]|$)/g, '');
+
+            if (looksLikeStructuredRichText(fullTurnText) || looksLikeStructuredRichText(combined)) {
+                window._structuredGeminiStreaming = true;
+                window._realisticGeminiBuffer = combined;
+                window._realisticGeminiQueue = [];
+                renderStructuredGeminiMessage(fullTurnText || combined);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+                return;
+            }
 
             var splitResult = splitIntoSentences(combined);
             window._realisticGeminiBuffer = splitResult.rest;

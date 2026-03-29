@@ -787,6 +787,11 @@
                             window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
                         }
                         window._pendingMusicCommand = '';
+                        if (window._structuredGeminiStreaming) {
+                            window._realisticGeminiBuffer = '';
+                            window._structuredGeminiStreaming = false;
+                            return;
+                        }
                         var rest = typeof window._realisticGeminiBuffer === 'string'
                             ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
                             : '';
@@ -813,6 +818,10 @@
                             window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
                         }
                         window._pendingMusicCommand = '';
+                        if (window._structuredGeminiStreaming) {
+                            window._realisticGeminiBuffer = '';
+                            window._structuredGeminiStreaming = false;
+                        } else {
                         var rest = typeof window._realisticGeminiBuffer === 'string'
                             ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
                             : '';
@@ -825,6 +834,7 @@
                             if (typeof window.processRealisticQueue === 'function') {
                                 window.processRealisticQueue(window._realisticGeminiVersion || 0);
                             }
+                        }
                         }
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
