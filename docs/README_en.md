@@ -12,7 +12,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
-[![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)]()
+[![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
 [![QQ Group](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
@@ -58,11 +58,11 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 # The N.E.K.O. Project
 
-`Project N.E.K.O.` is an open-source driven AI companion platform. The core driver is **always open source** under MIT license — every contribution you make has the chance to ship in the official Steam and App Store releases.
+`Project N.E.K.O.` is an open-source-driven AI companion platform. The core driver is **always open source** under MIT license — every contribution you make has the chance to ship in the official Steam and App Store releases.
 
 ---
 
-#### 🚀 Current Status & Roadmap
+### 🚀 Current Status & Roadmap
 
 * **✅ Steam Workshop**: Live. Users can upload and share custom characters, models, and voice packs.
 * **🚧 [K.U.R.O.](https://github.com/Project-N-E-K-O/K.U.R.O)**: The first AI Native indie game built on the N.E.K.O. ecosystem, in development.
