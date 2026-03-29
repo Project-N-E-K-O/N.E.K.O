@@ -1107,14 +1107,17 @@ function toggleCustomApi() {
     const isFreeVersion = coreApiSelect && coreApiSelect.value === 'free';
 
     // 禁用或启用相关控件
+    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
     if (isFreeVersion) {
         if (assistApiSelect) assistApiSelect.disabled = true;
         if (apiKeyInput) apiKeyInput.disabled = true;
+        if (assistApiKeyInput) assistApiKeyInput.disabled = true;
         if (coreApiSelect) coreApiSelect.disabled = false;
     } else {
         if (coreApiSelect) coreApiSelect.disabled = false;
         if (assistApiSelect) assistApiSelect.disabled = false;
         if (apiKeyInput) apiKeyInput.disabled = false;
+        if (assistApiKeyInput) assistApiKeyInput.disabled = false;
     }
 
     // 控制自定义API容器的折叠状态
@@ -1506,12 +1509,18 @@ function updateAssistApiRecommendation() {
     const apiKeyInput = document.getElementById('apiKeyInput');
     const freeVersionHint = document.getElementById('freeVersionHint');
 
+    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
+
     if (selectedCoreApi === 'free') {
         if (apiKeyInput) {
             apiKeyInput.disabled = true;
             apiKeyInput.placeholder = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
             apiKeyInput.required = false;
             apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
+        }
+        if (assistApiKeyInput) {
+            assistApiKeyInput.disabled = true;
+            assistApiKeyInput.value = '';
         }
         if (freeVersionHint) {
             freeVersionHint.style.display = 'inline';
@@ -1537,6 +1546,9 @@ function updateAssistApiRecommendation() {
             if (isFreeVersionText(getRealKey(apiKeyInput))) {
                 setMaskedInput(apiKeyInput, '');
             }
+        }
+        if (assistApiKeyInput) {
+            assistApiKeyInput.disabled = false;
         }
         if (freeVersionHint) {
             freeVersionHint.style.display = 'none';
@@ -1857,11 +1869,13 @@ async function initializePage() {
         if (coreApiSelect && apiKeyInput && freeVersionHint) {
             const selectedCoreApi = coreApiSelect.value;
 
+            const assistApiKeyInputInit = document.getElementById('assistApiKeyInput');
             if (selectedCoreApi === 'free') {
                 apiKeyInput.disabled = true;
                 apiKeyInput.placeholder = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                 apiKeyInput.required = false;
                 apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
+                if (assistApiKeyInputInit) assistApiKeyInputInit.disabled = true;
                 freeVersionHint.style.display = 'inline';
             } else {
                 apiKeyInput.disabled = false;
@@ -1870,6 +1884,7 @@ async function initializePage() {
                 if (isFreeVersionText(getRealKey(apiKeyInput))) {
                     setMaskedInput(apiKeyInput, '');
                 }
+                if (assistApiKeyInputInit) assistApiKeyInputInit.disabled = false;
                 freeVersionHint.style.display = 'none';
             }
 
