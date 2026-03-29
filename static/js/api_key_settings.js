@@ -220,13 +220,15 @@ function renderKeyBook(registry, providers) {
 
         const label = document.createElement('label');
         label.setAttribute('data-i18n', `api.keyBook.${providerKey}`);
-        label.textContent = entry.label || providerKey;
+        const i18nKey = `api.keyBook.${providerKey}`;
+        const translated = window.t ? window.t(i18nKey) : null;
+        label.textContent = (translated && translated !== i18nKey) ? translated : (entry.label || providerKey);
         row.appendChild(label);
 
         const input = document.createElement('input');
         input.type = 'text';
         input.id = `keyBookInput_${providerKey}`;
-        input.placeholder = window.t ? window.t('api.keyBookInputPlaceholder') : 'Enter API Key';
+        input.placeholder = window.t ? window.t('api.keyBookKeyPlaceholder') : 'Enter API Key';
         input.dataset.providerKey = providerKey;
         row.appendChild(input);
 
@@ -349,6 +351,31 @@ function onCustomModelProviderChange(modelType) {
         modelIdInput.removeAttribute('readonly');
     }
 
+    /**
+     * 将 key 输入框设为 readonly 并显示管理簿提示 + 快捷跳转按钮
+     */
+    const setKeyReadonly = (input, value) => {
+        if (!input) return;
+        input.value = value || '';
+        input.setAttribute('readonly', 'readonly');
+        input.placeholder = window.t ? window.t('api.keyAutoFilledFromKeyBook') : 'Key从API管理簿自动填充';
+        ensureKeyBookLink(input);
+    };
+
+    /**
+     * 将 key 输入框恢复为可编辑状态
+     */
+    const setKeyEditable = (input) => {
+        if (!input) return;
+        input.removeAttribute('readonly');
+        // 恢复原始 placeholder
+        const origPlaceholder = input.getAttribute('data-i18n-placeholder');
+        if (origPlaceholder && window.t) {
+            input.placeholder = window.t(origPlaceholder);
+        }
+        removeKeyBookLink(input);
+    };
+
     if (provider === 'follow_core' || provider === 'follow_assist') {
         // Determine which provider to follow
         let sourceProviderKey;
@@ -361,8 +388,6 @@ function onCustomModelProviderChange(modelType) {
         }
 
         if (sourceProviderKey && sourceProviderKey !== 'free') {
-            // For omni model: always use core provider's data (WebSocket URL + key),
-            // even when dropdown says follow_assist, because omni needs wss://
             if (modelType === 'omni') {
                 const coreSelect = document.getElementById('coreApiSelect');
                 const coreProviderKey = coreSelect ? coreSelect.value : '';
@@ -371,39 +396,30 @@ function onCustomModelProviderChange(modelType) {
                     urlInput.value = coreProfile.core_url || '';
                     urlInput.setAttribute('readonly', 'readonly');
                 }
-                // Key also from core provider, not assist
                 const coreBookKey = syncKeyFromBook(coreProviderKey);
-                if (keyInput) {
-                    keyInput.value = coreBookKey || '';
-                    keyInput.setAttribute('readonly', 'readonly');
-                }
+                setKeyReadonly(keyInput, coreBookKey);
             } else {
-                // For non-omni: use the source provider's openrouter_url + key
                 const pInfo = _assistApiProviders[sourceProviderKey] || _coreApiProviders[sourceProviderKey] || {};
                 if (urlInput) {
                     urlInput.value = pInfo.openrouter_url || pInfo.core_url || '';
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const bookKey = syncKeyFromBook(sourceProviderKey);
-                if (keyInput) {
-                    keyInput.value = bookKey || '';
-                    keyInput.setAttribute('readonly', 'readonly');
-                }
+                setKeyReadonly(keyInput, bookKey);
             }
         } else {
             // free or empty
             if (urlInput) { urlInput.value = ''; urlInput.setAttribute('readonly', 'readonly'); }
-            if (keyInput) { keyInput.value = ''; keyInput.setAttribute('readonly', 'readonly'); }
+            setKeyReadonly(keyInput, '');
         }
     } else if (provider === 'custom') {
         // custom: remove readonly
         if (urlInput) urlInput.removeAttribute('readonly');
-        if (keyInput) keyInput.removeAttribute('readonly');
+        setKeyEditable(keyInput);
     } else {
         // Specific provider
         const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
         if (modelType === 'omni') {
-            // omni needs WebSocket URL
             const coreProfile = _coreApiProviders[provider] || {};
             if (urlInput) {
                 urlInput.value = coreProfile.core_url || pInfo.core_url || '';
@@ -416,11 +432,48 @@ function onCustomModelProviderChange(modelType) {
             }
         }
         const bookKey = syncKeyFromBook(provider);
-        if (keyInput) {
-            keyInput.value = bookKey || '';
-            keyInput.setAttribute('readonly', 'readonly');
-        }
+        setKeyReadonly(keyInput, bookKey);
     }
+}
+
+/**
+ * 在 key 输入框旁添加"前往管理簿"快捷按钮（如果还没有）
+ */
+function ensureKeyBookLink(input) {
+    if (!input) return;
+    const parent = input.parentElement;
+    if (!parent) return;
+    if (parent.querySelector('.key-book-shortcut')) return;
+
+    const link = document.createElement('a');
+    link.href = 'javascript:void(0)';
+    link.className = 'key-book-shortcut';
+    link.textContent = window.t ? window.t('api.goToKeyBook') : '前往管理簿';
+    link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
+    link.addEventListener('click', (e) => {
+        e.preventDefault();
+        // 展开 Key Book 区域并滚动到它
+        const options = document.getElementById('key-book-options');
+        const btn = document.getElementById('key-book-toggle-btn');
+        if (options && options.style.display === 'none') {
+            options.style.display = 'block';
+            if (btn) btn.classList.add('rotated');
+        }
+        const section = document.getElementById('key-book-section');
+        if (section) section.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    parent.appendChild(link);
+}
+
+/**
+ * 移除 key 输入框旁的"前往管理簿"快捷按钮
+ */
+function removeKeyBookLink(input) {
+    if (!input) return;
+    const parent = input.parentElement;
+    if (!parent) return;
+    const link = parent.querySelector('.key-book-shortcut');
+    if (link) link.remove();
 }
 
 // ==================== 加载API服务商选项 ====================
@@ -522,6 +575,9 @@ async function loadApiProviders() {
 
                 // 隐藏大陆用户不可用的 Key Book 输入行
                 hideRestrictedKeyBookInputs();
+
+                // 动态渲染的元素需要重新翻译
+                if (window.updatePageTexts) window.updatePageTexts();
 
                 // 填充模型服务商下拉框
                 populateModelProviderDropdowns();

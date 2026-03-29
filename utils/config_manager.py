@@ -1687,65 +1687,69 @@ class ConfigManager:
         
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
+            # API Key 字段：空字符串是合法值（本地服务商可能不需要 key），
+            # 因此不使用 or 回退，直接赋值。
+            # URL / Model ID 字段：空值回退到已有配置。
+
             # 文本对话模型 模型自定义配置映射
             if core_cfg.get('conversationModelApiKey') is not None:
-                config['CONVERSATION_MODEL_API_KEY'] = core_cfg.get('conversationModelApiKey', '') or config.get('CONVERSATION_MODEL_API_KEY', '')
+                config['CONVERSATION_MODEL_API_KEY'] = core_cfg.get('conversationModelApiKey', '')
             if core_cfg.get('conversationModelUrl') is not None:
                 config['CONVERSATION_MODEL_URL'] = core_cfg.get('conversationModelUrl', '') or config.get('CONVERSATION_MODEL_URL', '')
             if core_cfg.get('conversationModelId') is not None:
                 config['CONVERSATION_MODEL'] = core_cfg.get('conversationModelId', '') or config.get('CONVERSATION_MODEL', '')
-            
+
             # Summary（摘要）模型自定义配置映射
             if core_cfg.get('summaryModelApiKey') is not None:
-                config['SUMMARY_MODEL_API_KEY'] = core_cfg.get('summaryModelApiKey', '') or config.get('SUMMARY_MODEL_API_KEY', '')
+                config['SUMMARY_MODEL_API_KEY'] = core_cfg.get('summaryModelApiKey', '')
             if core_cfg.get('summaryModelUrl') is not None:
                 config['SUMMARY_MODEL_URL'] = core_cfg.get('summaryModelUrl', '') or config.get('SUMMARY_MODEL_URL', '')
             if core_cfg.get('summaryModelId') is not None:
                 config['SUMMARY_MODEL'] = core_cfg.get('summaryModelId', '') or config.get('SUMMARY_MODEL', '')
-            
+
             # Correction（纠错）模型自定义配置映射
             if core_cfg.get('correctionModelApiKey') is not None:
-                config['CORRECTION_MODEL_API_KEY'] = core_cfg.get('correctionModelApiKey', '') or config.get('CORRECTION_MODEL_API_KEY', '')
+                config['CORRECTION_MODEL_API_KEY'] = core_cfg.get('correctionModelApiKey', '')
             if core_cfg.get('correctionModelUrl') is not None:
                 config['CORRECTION_MODEL_URL'] = core_cfg.get('correctionModelUrl', '') or config.get('CORRECTION_MODEL_URL', '')
             if core_cfg.get('correctionModelId') is not None:
                 config['CORRECTION_MODEL'] = core_cfg.get('correctionModelId', '') or config.get('CORRECTION_MODEL', '')
-            
+
             # Emotion（情感分析）模型自定义配置映射
             if core_cfg.get('emotionModelApiKey') is not None:
-                config['EMOTION_MODEL_API_KEY'] = core_cfg.get('emotionModelApiKey', '') or config.get('EMOTION_MODEL_API_KEY', '')
+                config['EMOTION_MODEL_API_KEY'] = core_cfg.get('emotionModelApiKey', '')
             if core_cfg.get('emotionModelUrl') is not None:
                 config['EMOTION_MODEL_URL'] = core_cfg.get('emotionModelUrl', '') or config.get('EMOTION_MODEL_URL', '')
             if core_cfg.get('emotionModelId') is not None:
                 config['EMOTION_MODEL'] = core_cfg.get('emotionModelId', '') or config.get('EMOTION_MODEL', '')
-            
+
             # Vision（视觉）模型自定义配置映射
             if core_cfg.get('visionModelApiKey') is not None:
-                config['VISION_MODEL_API_KEY'] = core_cfg.get('visionModelApiKey', '') or config.get('VISION_MODEL_API_KEY', '')
+                config['VISION_MODEL_API_KEY'] = core_cfg.get('visionModelApiKey', '')
             if core_cfg.get('visionModelUrl') is not None:
                 config['VISION_MODEL_URL'] = core_cfg.get('visionModelUrl', '') or config.get('VISION_MODEL_URL', '')
             if core_cfg.get('visionModelId') is not None:
                 config['VISION_MODEL'] = core_cfg.get('visionModelId', '') or config.get('VISION_MODEL', '')
-            
+
             # Agent（智能体）模型自定义配置映射
             if core_cfg.get('agentModelApiKey') is not None:
-                config['AGENT_MODEL_API_KEY'] = core_cfg.get('agentModelApiKey', '') or config.get('AGENT_MODEL_API_KEY', '')
+                config['AGENT_MODEL_API_KEY'] = core_cfg.get('agentModelApiKey', '')
             if core_cfg.get('agentModelUrl') is not None:
                 config['AGENT_MODEL_URL'] = core_cfg.get('agentModelUrl', '') or config.get('AGENT_MODEL_URL', '')
             if core_cfg.get('agentModelId') is not None:
                 config['AGENT_MODEL'] = core_cfg.get('agentModelId', '') or config.get('AGENT_MODEL', '')
-            
+
             # Omni/Realtime（全模态/实时）模型自定义配置映射
             if core_cfg.get('omniModelApiKey') is not None:
-                config['REALTIME_MODEL_API_KEY'] = core_cfg.get('omniModelApiKey', '') or config.get('REALTIME_MODEL_API_KEY', '')
+                config['REALTIME_MODEL_API_KEY'] = core_cfg.get('omniModelApiKey', '')
             if core_cfg.get('omniModelUrl') is not None:
                 config['REALTIME_MODEL_URL'] = core_cfg.get('omniModelUrl', '') or config.get('REALTIME_MODEL_URL', '')
             if core_cfg.get('omniModelId') is not None:
                 config['REALTIME_MODEL'] = core_cfg.get('omniModelId', '') or config.get('REALTIME_MODEL', '')
-            
+
             # TTS 自定义配置映射
             if core_cfg.get('ttsModelApiKey') is not None:
-                config['TTS_MODEL_API_KEY'] = core_cfg.get('ttsModelApiKey', '') or config.get('TTS_MODEL_API_KEY', '')
+                config['TTS_MODEL_API_KEY'] = core_cfg.get('ttsModelApiKey', '')
             if core_cfg.get('ttsModelUrl') is not None:
                 config['TTS_MODEL_URL'] = core_cfg.get('ttsModelUrl', '') or config.get('TTS_MODEL_URL', '')
             if core_cfg.get('ttsModelId') is not None:
