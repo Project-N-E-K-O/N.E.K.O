@@ -1474,11 +1474,11 @@ async def rename_master(old_name: str, request: Request):
     except Exception as e:
         logger.error(f"重命名后重新加载配置失败: {e}")
         return JSONResponse({
-            'success': False,
-            'status': 'partial_success',
+            'success': True,
+            'partial_success': True,
             'renamed': True,
-            'error': f'重命名成功但配置重载失败: {str(e)}'
-        }, status_code=500)
+            'reload_error': str(e)
+        }, status_code=200)
 
     return {"success": True}
 
