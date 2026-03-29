@@ -612,11 +612,11 @@ button * {
     position: fixed;
     top: 50%;
     left: 50%;
-    width: min(1120px, calc(100vw - 40px));
-    height: min(820px, calc(100vh - 48px));
+    width: min(430px, calc(100vw - 22px));
+    height: min(860px, calc(100vh - 22px));
     transform: translate(-50%, -50%);
     display: block;
-    border-radius: 18px;
+    border-radius: 22px;
     overflow: hidden;
     background: rgba(248, 250, 255, 0.96);
     box-shadow: 0 30px 100px rgba(12, 20, 34, 0.3);

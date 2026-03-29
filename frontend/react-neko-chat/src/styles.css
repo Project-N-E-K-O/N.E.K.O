@@ -42,7 +42,7 @@ textarea {
   display: grid;
   grid-template-rows: auto 1fr auto;
   overflow: hidden;
-  background: #f3f6fb;
+  background: linear-gradient(180deg, #f7f9fc 0%, #f2f5fa 100%);
 }
 
 .window-topbar {
@@ -50,10 +50,10 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 58px;
-  padding: 10px 20px 8px;
+  min-height: 54px;
+  padding: 10px 14px 8px;
   border-bottom: 1px solid rgba(111, 129, 158, 0.16);
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.84);
 }
 
 .window-title-group {
@@ -73,10 +73,10 @@ textarea {
 }
 
 .window-avatar {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   color: #fff;
-  font-size: 1rem;
+  font-size: 0.92rem;
   font-weight: 700;
   background: linear-gradient(135deg, #3a72e8 0%, #6aa1ff 100%);
 }
@@ -86,8 +86,8 @@ textarea {
 }
 
 .window-avatar-image {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   object-fit: contain;
   image-rendering: -webkit-optimize-contrast;
   image-rendering: crisp-edges;
@@ -96,7 +96,7 @@ textarea {
 
 .window-title {
   margin: 0;
-  font-size: 1rem;
+  font-size: 0.96rem;
   font-weight: 700;
   line-height: 1.2;
   min-width: 0;
@@ -127,16 +127,16 @@ textarea {
 .chat-body {
   min-height: 0;
   padding: 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(245, 247, 251, 0.96));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(245, 247, 251, 0.98));
 }
 
 .message-list {
   height: 100%;
   overflow: auto;
-  padding: 14px 16px 18px;
+  padding: 12px 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .message-empty-state {
@@ -151,7 +151,7 @@ textarea {
 .message-row {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 8px;
 }
 
 .message-row-assistant,
@@ -172,9 +172,9 @@ textarea {
 }
 
 .avatar {
-  width: 30px;
-  height: 30px;
-  font-size: 0.8rem;
+  width: 28px;
+  height: 28px;
+  font-size: 0.76rem;
   font-weight: 700;
 }
 
@@ -203,7 +203,7 @@ textarea {
 }
 
 .message-stack {
-  max-width: min(74%, 760px);
+  max-width: min(86%, 320px);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -214,7 +214,7 @@ textarea {
   align-items: center;
   gap: 6px;
   color: #7e899a;
-  font-size: 0.76rem;
+  font-size: 0.72rem;
 }
 
 .message-author {
@@ -223,12 +223,12 @@ textarea {
 }
 
 .message-bubble {
-  padding: 10px 12px;
+  padding: 9px 11px;
   border-radius: 8px 16px 16px 16px;
-  box-shadow: 0 6px 18px rgba(53, 72, 104, 0.06);
+  box-shadow: 0 5px 14px rgba(53, 72, 104, 0.05);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   word-break: break-word;
 }
 
@@ -441,7 +441,7 @@ textarea {
 .composer-panel {
   display: grid;
   gap: 8px;
-  padding: 10px 12px 12px;
+  padding: 8px 10px 10px;
   border-top: 1px solid rgba(111, 129, 158, 0.16);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 249, 252, 1));
 }
@@ -474,9 +474,9 @@ textarea {
 .composer-input-shell {
   display: flex;
   align-items: center;
-  min-height: 48px;
-  padding: 0 16px;
-  border-radius: 18px;
+  min-height: 46px;
+  padding: 0 14px;
+  border-radius: 16px;
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid rgba(127, 144, 170, 0.16);
   box-shadow:
@@ -498,16 +498,16 @@ textarea {
 }
 
 .send-button {
-  min-width: 88px;
-  height: 48px;
-  padding: 0 18px;
+  min-width: 80px;
+  height: 46px;
+  padding: 0 16px;
   border: 0;
-  border-radius: 16px;
+  border-radius: 14px;
   color: #fff;
   background: linear-gradient(135deg, #57b6f7 0%, #71c0fb 100%);
   cursor: pointer;
   font-weight: 700;
-  box-shadow: 0 8px 18px rgba(97, 181, 246, 0.2);
+  box-shadow: 0 6px 14px rgba(97, 181, 246, 0.18);
 }
 
 .send-button:hover {
