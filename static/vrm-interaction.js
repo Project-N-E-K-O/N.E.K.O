@@ -938,15 +938,14 @@ class VRMInteraction {
         // 注意：vrm-core.js init 时设置了 container.style.opacity='1'（内联样式），
         // CSS class 优先级低于内联样式，因此必须直接操作 style.opacity 才能生效
         const vrmContainer = document.getElementById('vrm-container');
-        let lockedHoverFadeActive = false;
+        let ctrlFadeActive = false;      // Ctrl 按住淡化
+        let stationaryFadeActive = false; // 静止1秒淡化
         let isCtrlPressed = false;
 
         // 静止自动淡化：鼠标在模型范围内静止1秒后自动淡化
         this._vrmStationaryFadeTimer = null;
-        let _vrmLastStationaryX = -1;
-        let _vrmLastStationaryY = -1;
+        this._vrmHasEnteredHoverRange = false; // 是否已进入过模型范围
         const STATIONARY_FADE_DELAY = 1000;
-        const STATIONARY_MOVE_THRESHOLD = 8; // 鼠标移动超过8px视为移动
 
         const clearStationaryFadeTimer = () => {
             if (this._vrmStationaryFadeTimer !== null) {
@@ -955,13 +954,12 @@ class VRMInteraction {
             }
         };
 
-        const setLockedHoverFade = (shouldFade) => {
+        const applyFade = (forceFade) => {
             if (!vrmContainer) return;
-            if (lockedHoverFadeActive === shouldFade) return;
-            lockedHoverFadeActive = shouldFade;
+            const shouldFade = forceFade !== undefined ? forceFade : (ctrlFadeActive || stationaryFadeActive);
             vrmContainer.style.opacity = shouldFade ? '0.12' : '1';
         };
-        this._setLockedHoverFade = setLockedHoverFade;
+        this._setLockedHoverFade = applyFade;
 
         // 初始化缓存
         this.updateModelBoundsCache();
@@ -1190,7 +1188,7 @@ class VRMInteraction {
 
             // 如果鼠标在按钮或锁图标上，不变淡，直接显示
             if (isOverButtons || isOverLock) {
-                setLockedHoverFade(false);
+                applyFade(false);
                 showButtons();
                 return;
             }
@@ -1198,43 +1196,37 @@ class VRMInteraction {
             // 使用缓存计算距离（避免重复的 Box3 计算）
             const distance = calculateDistanceToModel(mouseX, mouseY);
 
-            // 检测鼠标是否静止（移动阈值内）
-            const dx = mouseX - _vrmLastStationaryX;
-            const dy = mouseY - _vrmLastStationaryY;
-            const isMouseStationary = dx * dx + dy * dy < STATIONARY_MOVE_THRESHOLD * STATIONARY_MOVE_THRESHOLD;
-            _vrmLastStationaryX = mouseX;
-            _vrmLastStationaryY = mouseY;
-
             // 静止自动淡化：锁定 + 鼠标在模型附近 + 静止超过1秒 → 变淡
             // Ctrl 按住淡化：锁定 + Ctrl + 鼠标在模型附近 → 变淡
             const ctrlKeyPressed = isCtrlPressed;
             const isNearModel = distance < hoverFadeThreshold;
 
-            // 静止时启动定时器，移动时清除定时器
+            // 静止时启动定时器，移出范围时清除
             if (this.checkLocked() && isNearModel) {
-                if (isMouseStationary) {
-                    if (this._vrmStationaryFadeTimer === null && !lockedHoverFadeActive) {
+                // 首次进入范围：设置标志并启动定时器
+                if (!this._vrmHasEnteredHoverRange) {
+                    this._vrmHasEnteredHoverRange = true;
+                    if (this._vrmStationaryFadeTimer === null && !stationaryFadeActive) {
                         this._vrmStationaryFadeTimer = setTimeout(() => {
-                            setLockedHoverFade(true);
+                            stationaryFadeActive = true;
+                            applyFade();
                         }, STATIONARY_FADE_DELAY);
                     }
-                } else {
-                    if (this._vrmStationaryFadeTimer !== null) {
-                        clearStationaryFadeTimer();
-                    }
                 }
+                // 已在范围内：移动时不重启定时器
             } else {
-                if (this._vrmStationaryFadeTimer !== null || lockedHoverFadeActive) {
+                // 移出范围：清除定时器并重置标志
+                if (this._vrmStationaryFadeTimer !== null || stationaryFadeActive) {
                     clearStationaryFadeTimer();
-                    setLockedHoverFade(false);
+                    stationaryFadeActive = false;
+                    applyFade();
                 }
+                this._vrmHasEnteredHoverRange = false;
             }
 
-            // 静止淡化：由定时器触发，移出模型范围自动恢复
-            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内
-            const shouldFadeByCtrl = this.checkLocked() && ctrlKeyPressed && isNearModel;
-            const shouldFade = shouldFadeByCtrl || (lockedHoverFadeActive && isNearModel);
-            setLockedHoverFade(shouldFade);
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化）
+            ctrlFadeActive = this.checkLocked() && ctrlKeyPressed && isNearModel;
+            applyFade();
 
             // 锁定状态下不处理按钮显示/隐藏
             if (this.checkLocked()) return;
@@ -1277,14 +1269,19 @@ class VRMInteraction {
         const onKeyUp = (event) => {
             if (!event.ctrlKey && !event.metaKey) {
                 isCtrlPressed = false;
-                if (lockedHoverFadeActive) {
-                    setLockedHoverFade(false);
-                }
+                // Ctrl 释放时重新计算淡化状态，让 stationaryFadeActive 有机会生效
+                ctrlFadeActive = false;
+                applyFade();
             }
         };
         const onBlur = () => {
             clearStationaryFadeTimer();
-            // blur 时不重置 lockedHoverFadeActive，让定时器接管
+            // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
+            if (stationaryFadeActive) {
+                stationaryFadeActive = false;
+                applyFade();
+            }
+            this._vrmHasEnteredHoverRange = false;
         };
         this._vrmClearStationaryFadeTimer = clearStationaryFadeTimer;
 

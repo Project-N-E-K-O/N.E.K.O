@@ -666,11 +666,11 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     };
 
     const live2dContainer = document.getElementById('live2d-container');
-    let lockedHoverFadeActive = false;
-    const setLockedHoverFade = (shouldFade) => {
+    let ctrlFadeActive = false;      // Ctrl 按住淡化
+    let stationaryFadeActive = false; // 静止1秒淡化
+    const applyFade = () => {
         if (!live2dContainer) return;
-        if (lockedHoverFadeActive === shouldFade) return;
-        lockedHoverFadeActive = shouldFade;
+        const shouldFade = ctrlFadeActive || stationaryFadeActive;
         live2dContainer.classList.toggle('locked-hover-fade', shouldFade);
     };
 
@@ -679,10 +679,8 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
     // 静止自动淡化：鼠标在模型范围内静止1秒后自动淡化
     this._stationaryFadeTimer = null;
-    let _lastStationaryX = -1;
-    let _lastStationaryY = -1;
+    this._hasEnteredHoverRange = false; // 是否已进入过模型范围
     const STATIONARY_FADE_DELAY = 1000;
-    const STATIONARY_MOVE_THRESHOLD = 8; // 鼠标移动超过8px视为移动
 
     const clearStationaryFadeTimer = () => {
         if (this._stationaryFadeTimer !== null) {
@@ -712,10 +710,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         // 检查 Ctrl 或 Cmd 键是否释放
         if (!event.ctrlKey && !event.metaKey) {
             isCtrlPressed = false;
-            // Ctrl/Cmd 键释放时，如果正在变淡，立即取消变淡效果
-            if (lockedHoverFadeActive) {
-                setLockedHoverFade(false);
-            }
+            // Ctrl 释放时重新计算淡化状态，让 stationaryFadeActive 有机会生效
+            ctrlFadeActive = false;
+            applyFade();
         }
     };
 
@@ -754,13 +751,17 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
         // 检查模型是否存在，防止切换模型时出现错误
         if (!model) {
-            setLockedHoverFade(false);
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
             return;
         }
 
         // 检查模型是否已被销毁或不在舞台上
         if (model.destroyed || !model.parent || !this.pixi_app || !this.pixi_app.stage) {
-            setLockedHoverFade(false);
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
             return;
         }
         
@@ -799,7 +800,6 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         if ((model.interactive && model.dragging) || this._isDraggingModel) {
             return;
         }
-
         // 如果已经点击了"请她离开"，特殊处理
         if (this._goodbyeClicked) {
             const lockIcon = document.getElementById('live2d-lock-icon');
@@ -816,7 +816,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             if (returnButtonContainer) {
                 returnButtonContainer.style.display = 'block';
             }
-            setLockedHoverFade(false);
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
             return;
         }
 
@@ -867,44 +869,40 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 this.isFocusing = false;
                 startHideTimer();
                 clearStationaryFadeTimer();
-                setLockedHoverFade(false);
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                applyFade();
                 return;
             }
 
-            // 检测鼠标是否静止（移动阈值内）
-            const dx = pointer.x - _lastStationaryX;
-            const dy = pointer.y - _lastStationaryY;
-            const isMouseStationary = dx * dx + dy * dy < STATIONARY_MOVE_THRESHOLD * STATIONARY_MOVE_THRESHOLD;
-            _lastStationaryX = pointer.x;
-            _lastStationaryY = pointer.y;
-
             const isNearModel = distance < HoverFadethreshold;
 
-            // 静止时启动定时器，移动时清除定时器
+            // 静止时启动定时器，移出范围时清除
             if (this.isLocked && isNearModel) {
-                if (isMouseStationary) {
-                    if (this._stationaryFadeTimer === null && !lockedHoverFadeActive) {
+                // 首次进入范围：设置标志并启动定时器
+                if (!this._hasEnteredHoverRange) {
+                    this._hasEnteredHoverRange = true;
+                    if (this._stationaryFadeTimer === null && !stationaryFadeActive) {
                         this._stationaryFadeTimer = setTimeout(() => {
-                            setLockedHoverFade(true);
+                            stationaryFadeActive = true;
+                            applyFade();
                         }, STATIONARY_FADE_DELAY);
                     }
-                } else {
-                    if (this._stationaryFadeTimer !== null) {
-                        clearStationaryFadeTimer();
-                    }
                 }
+                // 已在范围内：移动时不重启定时器，只更新位置
             } else {
-                if (this._stationaryFadeTimer !== null || lockedHoverFadeActive) {
+                // 移出范围：清除定时器并重置标志
+                if (this._stationaryFadeTimer !== null || stationaryFadeActive) {
                     clearStationaryFadeTimer();
-                    setLockedHoverFade(false);
+                    stationaryFadeActive = false;
+                    applyFade();
                 }
+                this._hasEnteredHoverRange = false;
             }
 
-            // 静止淡化：由定时器触发，移出模型范围自动恢复
-            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内
-            const shouldFadeByCtrl = this.isLocked && ctrlKeyPressed && isNearModel;
-            const shouldFade = shouldFadeByCtrl || (lockedHoverFadeActive && isNearModel);
-            setLockedHoverFade(shouldFade);
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化）
+            ctrlFadeActive = this.isLocked && ctrlKeyPressed && isNearModel;
+            applyFade();
 
             const canvasEl = document.getElementById('live2d-canvas');
 
@@ -959,7 +957,12 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     // 这样窗口重新获得焦点后，如果 Ctrl 仍被按住，淡化功能可以恢复
     const onBlur = () => {
         clearStationaryFadeTimer();
-        // blur 时不重置 lockedHoverFadeActive，让定时器接管
+        // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
+        if (stationaryFadeActive) {
+            stationaryFadeActive = false;
+            applyFade();
+        }
+        this._hasEnteredHoverRange = false;
     };
 
     // 清理旧的监听器
