@@ -1483,7 +1483,7 @@
             "enableFailed": "{{name}}の有効化に失敗しました",
             "openfang": "仮想マシン",
             "userPluginAdapting": "ユーザープラグイン（開発中）",
-            "moltbotAdapting": "OpenClaw（開発中）",
+            "openclawConnect": "OpenClaw",
             "chatSettings": "チャット設定",
             "animationSettings": "アニメーション設定",
             "renderQuality": "画質",

@@ -88,6 +88,7 @@ def test_main_agent_router_expected_proxy_endpoints_exist():
         "/tasks/{task_id}",
         "/computer_use/availability",
         "/browser_use/availability",
+        "/openclaw/availability",
         "/mcp/availability",
     }:
         assert expected in paths
@@ -102,6 +103,7 @@ def test_agent_server_expected_event_driven_endpoints_exist():
         "/tasks/{task_id}",
         "/computer_use/availability",
         "/browser_use/availability",
+        "/openclaw/availability",
     }:
         assert expected in paths
 
@@ -110,6 +112,7 @@ def test_agent_router_update_flags_keeps_user_plugin_forwarding():
     fn = _get_function_def("main_routers/agent_router.py", "update_agent_flags")
     literals = _gather_string_literals(fn)
     assert "user_plugin_enabled" in literals
+    assert "openclaw_enabled" in literals
     assert "/agent/flags" in literals
 
 
@@ -120,6 +123,7 @@ def test_agent_router_update_flags_has_safe_rollback_defaults():
         "computer_use_enabled",
         "browser_use_enabled",
         "user_plugin_enabled",
+        "openclaw_enabled",
     }
 
     found_rollback_dict = False
@@ -163,6 +167,34 @@ def test_task_executor_format_messages_marks_latest_user_request():
     output = executor._format_messages(conversation)
     assert "LATEST_USER_REQUEST: 帮我打开系统计算器" in output
     assert "assistant: 已经打开了" in output
+
+
+@pytest.mark.asyncio
+async def test_task_executor_routes_openclaw_as_independent_execution_method():
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    executor.computer_use = None
+    executor.browser_use = None
+    executor.openclaw = None
+    executor.openfang = None
+    executor.plugin_list = []
+    executor._external_plugin_provider = None
+
+    result = await executor.analyze_and_execute(
+        [{"role": "user", "text": "帮我打开浏览器搜索今天天气并截图保存到桌面"}],
+        agent_flags={
+            "computer_use_enabled": False,
+            "browser_use_enabled": False,
+            "user_plugin_enabled": False,
+            "openclaw_enabled": True,
+            "openfang_enabled": False,
+        },
+    )
+
+    assert result is not None
+    assert result.execution_method == "openclaw"
+    assert result.tool_args["instruction"].startswith("[系统指令]")
 
 
 def test_cross_server_analyze_request_no_http_fallback_endpoint():
