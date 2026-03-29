@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/export.ts","./src/main.tsx","./src/mount.tsx","./src/vite-env.d.ts"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/MessageBubble.tsx","./src/MessageList.tsx","./src/export.ts","./src/main.tsx","./src/message-schema.ts","./src/mount.tsx","./src/vite-env.d.ts"],"version":"5.9.3"}
