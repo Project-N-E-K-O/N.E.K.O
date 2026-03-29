@@ -220,7 +220,7 @@ function clearApiProviderSelects() {
 }
 
 // 等待下拉选项加载完成再设置值，避免单次 setTimeout 竞态
-function waitForOptions(select, targetValue, { maxAttempts = 20, interval = 50 } = {}) {
+function waitForOptions(select, targetValue, { maxAttempts = 20, interval = 50, onSuccess } = {}) {
     if (!select || !targetValue) return;
 
     let attempts = 0;
@@ -229,6 +229,10 @@ function waitForOptions(select, targetValue, { maxAttempts = 20, interval = 50 }
             const optionExists = Array.from(select.options).some(opt => opt.value === targetValue);
             if (optionExists) {
                 select.value = targetValue;
+                // 选项设置完成后执行回调
+                if (onSuccess && typeof onSuccess === 'function') {
+                    onSuccess();
+                }
                 return;
             }
         }
@@ -736,10 +740,8 @@ async function loadCurrentApiKey() {
                     // 有API Key时设置
                     setMaskedInput(apiKeyInput, data.api_key);
                     attachMaskBehavior(apiKeyInput);
-                } else if (!data.enableCustomApi) {
-                    // 自定义API未启用但没有API Key，尝试从Key Book自动填充
-                    autoFillCoreApiKey(true);
                 }
+                // autoFillCoreApiKey 将在 coreApiSelect.value 设置后调用
             }
             // 设置高级设定的值（确保下拉框已加载选项）
             if (data.coreApi && coreApiSelect) {
@@ -750,7 +752,21 @@ async function loadCurrentApiKey() {
                         coreApiSelect.value = data.coreApi;
                     }
                 } else {
-                    waitForOptions(coreApiSelect, data.coreApi);
+                    // 等待选项加载完成后再设置值
+                    waitForOptions(coreApiSelect, data.coreApi, {
+                        maxAttempts: 20,
+                        interval: 50,
+                        onSuccess: () => {
+                            // 选项加载并设置完成后，自动填充API Key
+                            if (!data.enableCustomApi && !data.api_key) {
+                                autoFillCoreApiKey(true);
+                            }
+                        }
+                    });
+                }
+                // 如果选项已存在（同步路径），也需要在这里自动填充
+                if (!data.enableCustomApi && !data.api_key) {
+                    autoFillCoreApiKey(true);
                 }
             }
             if (data.assistApi && assistApiSelect) {
