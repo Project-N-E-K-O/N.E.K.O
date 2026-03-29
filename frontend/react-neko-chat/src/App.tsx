@@ -10,7 +10,6 @@ export type ChatWindowProps = {
   messages?: ChatMessage[];
   inputPlaceholder?: string;
   sendButtonLabel?: string;
-  inputHint?: string;
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 
@@ -22,7 +21,6 @@ export default function App({
   messages = defaultMessages,
   inputPlaceholder = '文字聊天模式...回车发送，Shift+回车换行',
   sendButtonLabel = '发送',
-  inputHint = 'Enter 发送，Shift + Enter 换行',
   onMessageAction,
 }: ChatWindowProps) {
   return (
@@ -43,19 +41,18 @@ export default function App({
 
         <footer className="composer-panel">
           <div className="composer-toolbar" aria-label="Composer tools">
-            <button className="tool-button" type="button">😀</button>
-            <button className="tool-button" type="button">🖼</button>
-            <button className="tool-button" type="button">📎</button>
-            <button className="tool-button" type="button">⋯</button>
+            <button className="tool-button" type="button" aria-label="表情">☺</button>
+            <button className="tool-button" type="button" aria-label="附件">＋</button>
           </div>
           <form className="composer" onSubmit={(event) => event.preventDefault()}>
-            <textarea
-              className="composer-input"
-              placeholder={inputPlaceholder}
-              rows={4}
-            />
-            <div className="composer-footer">
-              <span className="composer-hint">{inputHint}</span>
+            <div className="composer-row">
+              <label className="composer-input-shell">
+                <textarea
+                  className="composer-input"
+                  placeholder={inputPlaceholder}
+                  rows={1}
+                />
+              </label>
               <button className="send-button" type="submit">{sendButtonLabel}</button>
             </div>
           </form>
