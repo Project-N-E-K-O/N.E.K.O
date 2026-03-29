@@ -813,8 +813,8 @@ async function loadCurrentApiKey() {
                         setMaskedInput(assistApiKeyInput, assistBookKey);
                         attachMaskBehavior(assistApiKeyInput);
                     } else if (!data.enableCustomApi) {
-                        // 自定义API未启用且Key Book中没有值，尝试自动填充
-                        autoFillAssistApiKey();
+                        // 自定义API未启用且Key Book中没有值，强制刷新
+                        autoFillAssistApiKey(true);
                     }
                 }
             }
@@ -1200,7 +1200,7 @@ function toggleCustomApi() {
     // 关闭自定义API时，自动填充已保存的API Key
     if (!isCustomEnabled) {
         autoFillCoreApiKey(true);
-        autoFillAssistApiKey();
+        autoFillAssistApiKey(true);
         updateAssistApiRecommendation();
     }
 }
@@ -1624,7 +1624,7 @@ function updateAssistApiRecommendation() {
                 const validOpt = Array.from(assistApiSelect.options).find(o => !o.disabled && o.value !== 'free');
                 if (validOpt) assistApiSelect.value = validOpt.value;
             }
-            autoFillAssistApiKey();
+            autoFillAssistApiKey(true);
             // Directly recompute follow_assist slots (avoid redundant handler call)
             MODEL_TYPES.forEach(mt => {
                 const sel = document.getElementById(`${mt}ModelProvider`);
@@ -1678,7 +1678,9 @@ function autoFillCoreApiKey(force) {
 }
 
 // Auto-fill assist API key from book
-function autoFillAssistApiKey() {
+// force=true: always overwrite (used on provider switch, disabling custom API, or init)
+// force=false (default): skip if user has already typed a non-empty value
+function autoFillAssistApiKey(force) {
     const assistApiSelect = document.getElementById('assistApiSelect');
     const assistApiKeyInput = document.getElementById('assistApiKeyInput');
     if (!assistApiSelect || !assistApiKeyInput) return;
@@ -1686,11 +1688,18 @@ function autoFillAssistApiKey() {
     const selectedAssistApi = assistApiSelect.value;
     if (selectedAssistApi === 'free') {
         setMaskedInput(assistApiKeyInput, '');
+        attachMaskBehavior(assistApiKeyInput);
         return;
     }
 
     const bookKey = syncKeyFromBook(selectedAssistApi);
-    // 仅在Key Book中有值时才填充，避免清空用户可能输入的值
+    // When forced (provider switch, disabling custom API, or init), clear input if no book key
+    if (force && (bookKey === null || bookKey === '')) {
+        setMaskedInput(assistApiKeyInput, '');
+        attachMaskBehavior(assistApiKeyInput);
+        return;
+    }
+    // Non-forced: only fill if book has a value
     if (bookKey !== null && bookKey !== '') {
         setMaskedInput(assistApiKeyInput, bookKey);
         attachMaskBehavior(assistApiKeyInput);
@@ -1937,7 +1946,7 @@ async function initializePage() {
 
             updateAssistApiRecommendation();
             autoFillCoreApiKey(true);
-            autoFillAssistApiKey();
+            autoFillAssistApiKey(true);
         }
 
         // CRITICAL: Core/Assist selector change handlers that recompute follow-provider model slots
@@ -1959,7 +1968,7 @@ async function initializePage() {
         if (assistApiSelect) {
             assistApiSelect.addEventListener('change', function () {
                 updateAssistApiRecommendation();
-                autoFillAssistApiKey();
+                autoFillAssistApiKey(true);
                 // Recompute all follow_assist model slots
                 MODEL_TYPES.forEach(mt => {
                     const sel = document.getElementById(`${mt}ModelProvider`);
