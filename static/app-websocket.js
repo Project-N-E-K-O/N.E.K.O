@@ -623,7 +623,7 @@
                     }
                     try {
                         var masterOn = !!flags.agent_enabled;
-                        var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled);
+                        var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled || flags.openfang_enabled);
                         if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function') {
                             window.startAgentTaskPolling();
                         }
@@ -1084,6 +1084,23 @@
                                     window.showStatusToast(failMsg3, 3000);
                                 }
                             });
+                    }
+                // -------- music allowlist add --------
+                } else if (response.type === 'music_allowlist_add') {
+                    if (window.MusicPluginAPI && response.domains) {
+                        console.log('[Music] Received allowlist update from backend:', response.domains);
+                        window.MusicPluginAPI.addAllowlist(response.domains);
+                    }
+
+                // -------- music play url --------
+                } else if (response.type === 'music_play_url') {
+                    if (response.url && typeof window.dispatchMusicPlay === 'function') {
+                        console.log('[Music] Received direct play command from backend:', response.url);
+                        window.dispatchMusicPlay({
+                            name: response.name || 'Plugin Music',
+                            artist: response.artist || 'External',
+                            url: response.url
+                        });
                     }
 
                 // -------- repetition_warning --------

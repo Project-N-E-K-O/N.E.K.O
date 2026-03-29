@@ -156,6 +156,20 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             labelKey: 'settings.toggles.userPlugin',
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
+        },
+        {
+            id: 'agent-openfang',
+            label: window.t ? window.t('settings.toggles.openfang') : '虚拟机',
+            labelKey: 'settings.toggles.openfang',
+            initialDisabled: true,
+            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
+        },
+        {
+            id: 'agent-openclaw',
+            label: window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw',
+            labelKey: 'settings.toggles.openclawConnect',
+            initialDisabled: true,
+            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         }
     ];
 
@@ -163,6 +177,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
         const toggleItem = this._createToggleItem(toggle, popup);
         popup.appendChild(toggleItem);
 
+        // 用户插件侧边面板
         if (toggle.id === 'agent-user-plugin' && typeof this._createSidePanelContainer === 'function') {
             const sidePanel = this._createSidePanelContainer();
             sidePanel.style.flexDirection = 'column';
@@ -233,48 +248,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             document.body.appendChild(sidePanel);
             this._attachSidePanelHover(toggleItem, sidePanel);
         }
-    });
 
-    // 添加适配中的按钮（不可选）
-    const adaptingItems = [
-        { labelKey: 'settings.toggles.moltbotAdapting', fallback: 'moltbot（开发中）' }
-    ];
-
-    adaptingItems.forEach(item => {
-        const adaptingItem = document.createElement('div');
-        Object.assign(adaptingItem.style, {
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '6px 8px',
-            borderRadius: '6px',
-            fontSize: '13px',
-            whiteSpace: 'nowrap',
-            opacity: '0.5',
-            cursor: 'not-allowed',
-            color: '#666'
-        });
-
-        const indicator = document.createElement('div');
-        Object.assign(indicator.style, {
-            width: '20px',
-            height: '20px',
-            borderRadius: '50%',
-            border: '2px solid #ccc',
-            backgroundColor: 'transparent',
-            flexShrink: '0'
-        });
-
-        const label = document.createElement('span');
-        label.textContent = window.t ? window.t(item.labelKey) : item.fallback;
-        label.setAttribute('data-i18n', item.labelKey);
-        label.style.userSelect = 'none';
-        label.style.fontSize = '13px';
-        label.style.color = '#999';
-
-        adaptingItem.appendChild(indicator);
-        adaptingItem.appendChild(label);
-        popup.appendChild(adaptingItem);
     });
 };
 

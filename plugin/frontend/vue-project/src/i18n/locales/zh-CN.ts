@@ -27,7 +27,8 @@ export default {
     darkMode: '深色模式',
     lightMode: '浅色模式',
     logoutConfirmTitle: '提示',
-    disconnected: '服务器已断开连接'
+    disconnected: '服务器已断开连接',
+    languageAuto: '自动'
   },
   nav: {
     dashboard: '仪表盘',
@@ -240,6 +241,7 @@ export default {
     running: '运行中',
     stopped: '已停止',
     crashed: '已崩溃',
+    loadFailed: '加载失败',
     loading: '加载中',
     disabled: '已禁用',
     injected: '已注入',
@@ -268,6 +270,7 @@ export default {
     stopFailed: '停止失败',
     reloadFailed: '重载失败',
     pluginDisabled: '插件已禁用，请先启用',
+    pluginLoadFailed: '插件加载失败，当前不可启动',
     confirmDisableExt: '确认禁用此扩展？宿主插件中的扩展功能将被卸载。',
     extensionDisabled: '扩展已禁用',
     extensionEnabled: '扩展已启用',
@@ -325,4 +328,3 @@ export default {
     titleSuffix: 'N.E.K.O 插件管理'
   }
 }
-

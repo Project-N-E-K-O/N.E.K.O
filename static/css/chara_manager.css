@@ -203,7 +203,7 @@ body .container-header {
 }
 
 #add-catgirl-btn {
-    margin-top: 12px;
+    margin-top: 0;
 }
 
 #hidden-catgirl-area {
@@ -692,6 +692,57 @@ body .container-header {
 
 .btn.sm.add {
     background: #40C5F1;
+}
+
+.btn.sm.export {
+    background: #40C5F1;
+    padding: 6px 12px;
+}
+
+.btn.sm.export:hover:not(:disabled) {
+    background: #17A7FF;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(64, 197, 241, 0.3);
+}
+
+.btn.sm.export:active:not(:disabled) {
+    background: #0D8FDB;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
+    opacity: 0.95;
+}
+
+.btn.sm.import {
+    background: #4CAF50;
+    padding: 6px 12px;
+}
+
+.btn.sm.import:hover:not(:disabled) {
+    background: #45a049;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);
+}
+
+.btn.sm.import:active:not(:disabled) {
+    background: #3d8b40;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(76, 175, 80, 0.2);
+    opacity: 0.95;
+}
+
+/* 猫娘操作行（新增猫娘和导入角色卡按钮） */
+.catgirl-actions-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.catgirl-actions-row .btn {
+    margin: 0;
+    vertical-align: middle;
 }
 
 /* 胶囊行内的按钮 */
