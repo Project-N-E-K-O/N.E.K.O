@@ -15,6 +15,75 @@ let _coreApiProviders = {};
 // 所有模型类型
 const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
 
+/**
+ * 遮蔽 API Key：只显示前6位和后6位，中间用 *** 替代。
+ * 短于14位的 key 原样返回（不够遮蔽）。
+ */
+function maskApiKey(key) {
+    if (!key || typeof key !== 'string') return key;
+    if (key.length < 14) return key;
+    const midLen = key.length - 12;
+    return key.slice(0, 6) + '*'.repeat(midLen) + key.slice(-6);
+}
+
+/**
+ * 将真实 key 写入 input 的 dataset，输入框显示遮蔽值。
+ */
+function setMaskedInput(input, realKey) {
+    if (!input) return;
+    if (!realKey) {
+        input.dataset.realKey = '';
+        input.value = '';
+        return;
+    }
+    input.dataset.realKey = realKey;
+    input.value = maskApiKey(realKey);
+}
+
+/**
+ * ⚠️ 重要：所有需要读取 API Key 真实值的地方，必须使用 getRealKey(input)
+ * 而不是 input.value。因为 input.value 可能是遮蔽后的值（如 sk-a04****6b53）。
+ * 真实 key 存储在 input.dataset.realKey 中，由 setMaskedInput() 写入。
+ * 新增读取 key 的代码时请务必使用此函数。
+ */
+function getRealKey(input) {
+    if (!input) return '';
+    // 聚焦中：用户可能正在编辑，优先使用当前 value
+    if (input === document.activeElement) {
+        return input.value.trim();
+    }
+    // 非聚焦：优先使用存储的真实 key（value 可能是遮蔽值）
+    if (input.dataset.realKey) {
+        return input.dataset.realKey;
+    }
+    // 防御：如果 value 全是星号，说明是遮蔽残留，返回空
+    const val = input.value.trim();
+    if (/\*{3,}/.test(val)) return '';
+    return val;
+}
+
+/**
+ * 为 API Key 输入框绑定 focus/blur 事件：聚焦时显示真实 key，失焦时遮蔽。
+ */
+function attachMaskBehavior(input) {
+    if (!input || input.dataset.maskAttached) return;
+    input.dataset.maskAttached = 'true';
+    input.addEventListener('focus', () => {
+        const real = input.dataset.realKey;
+        if (real) input.value = real;
+    });
+    input.addEventListener('blur', () => {
+        // 用户可能编辑了 value，同步回 realKey
+        const current = input.value.trim();
+        if (current) {
+            input.dataset.realKey = current;
+            input.value = maskApiKey(current);
+        } else {
+            input.dataset.realKey = '';
+        }
+    });
+}
+
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
 
@@ -220,14 +289,17 @@ function renderKeyBook(registry, providers) {
 
         const label = document.createElement('label');
         label.setAttribute('data-i18n', `api.keyBook.${providerKey}`);
-        label.textContent = entry.label || providerKey;
+        const i18nKey = `api.keyBook.${providerKey}`;
+        const translated = window.t ? window.t(i18nKey) : null;
+        label.textContent = (translated && translated !== i18nKey) ? translated : (entry.label || providerKey);
         row.appendChild(label);
 
         const input = document.createElement('input');
         input.type = 'text';
         input.id = `keyBookInput_${providerKey}`;
-        input.placeholder = window.t ? window.t('api.keyBookInputPlaceholder') : 'Enter API Key';
+        input.placeholder = window.t ? window.t('api.keyBookKeyPlaceholder') : 'Enter API Key';
         input.dataset.providerKey = providerKey;
+        attachMaskBehavior(input);
         row.appendChild(input);
 
         container.appendChild(row);
@@ -256,7 +328,8 @@ function toggleKeyBook() {
  */
 function syncKeyFromBook(providerKey) {
     const input = document.getElementById(`keyBookInput_${providerKey}`);
-    return input ? input.value.trim() : null;
+    if (!input) return null;
+    return getRealKey(input);
 }
 
 /**
@@ -265,7 +338,8 @@ function syncKeyFromBook(providerKey) {
 function syncKeyToBook(providerKey, keyValue) {
     const input = document.getElementById(`keyBookInput_${providerKey}`);
     if (input) {
-        input.value = keyValue || '';
+        setMaskedInput(input, keyValue || '');
+        attachMaskBehavior(input);
     }
 }
 
@@ -349,6 +423,34 @@ function onCustomModelProviderChange(modelType) {
         modelIdInput.removeAttribute('readonly');
     }
 
+    /**
+     * 将 key 输入框设为 readonly 并显示管理簿提示 + 快捷跳转按钮
+     */
+    const setKeyReadonly = (input, value) => {
+        if (!input) return;
+        setMaskedInput(input, value || '');
+        input.setAttribute('readonly', 'readonly');
+        input.placeholder = window.t ? window.t('api.keyAutoFilledFromKeyBook') : 'Key从API管理簿自动填充';
+        ensureKeyBookLink(input);
+    };
+
+    /**
+     * 将 key 输入框恢复为可编辑状态
+     */
+    const setKeyEditable = (input) => {
+        if (!input) return;
+        input.removeAttribute('readonly');
+        // 清除残留的遮蔽状态和遮蔽值，让用户从空白开始输入
+        input.dataset.realKey = '';
+        input.value = '';
+        // 恢复原始 placeholder
+        const origPlaceholder = input.getAttribute('data-i18n-placeholder');
+        if (origPlaceholder && window.t) {
+            input.placeholder = window.t(origPlaceholder);
+        }
+        removeKeyBookLink(input);
+    };
+
     if (provider === 'follow_core' || provider === 'follow_assist') {
         // Determine which provider to follow
         let sourceProviderKey;
@@ -361,8 +463,6 @@ function onCustomModelProviderChange(modelType) {
         }
 
         if (sourceProviderKey && sourceProviderKey !== 'free') {
-            // For omni model: always use core provider's data (WebSocket URL + key),
-            // even when dropdown says follow_assist, because omni needs wss://
             if (modelType === 'omni') {
                 const coreSelect = document.getElementById('coreApiSelect');
                 const coreProviderKey = coreSelect ? coreSelect.value : '';
@@ -371,39 +471,30 @@ function onCustomModelProviderChange(modelType) {
                     urlInput.value = coreProfile.core_url || '';
                     urlInput.setAttribute('readonly', 'readonly');
                 }
-                // Key also from core provider, not assist
                 const coreBookKey = syncKeyFromBook(coreProviderKey);
-                if (keyInput) {
-                    keyInput.value = coreBookKey || '';
-                    keyInput.setAttribute('readonly', 'readonly');
-                }
+                setKeyReadonly(keyInput, coreBookKey);
             } else {
-                // For non-omni: use the source provider's openrouter_url + key
                 const pInfo = _assistApiProviders[sourceProviderKey] || _coreApiProviders[sourceProviderKey] || {};
                 if (urlInput) {
                     urlInput.value = pInfo.openrouter_url || pInfo.core_url || '';
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const bookKey = syncKeyFromBook(sourceProviderKey);
-                if (keyInput) {
-                    keyInput.value = bookKey || '';
-                    keyInput.setAttribute('readonly', 'readonly');
-                }
+                setKeyReadonly(keyInput, bookKey);
             }
         } else {
             // free or empty
             if (urlInput) { urlInput.value = ''; urlInput.setAttribute('readonly', 'readonly'); }
-            if (keyInput) { keyInput.value = ''; keyInput.setAttribute('readonly', 'readonly'); }
+            setKeyReadonly(keyInput, '');
         }
     } else if (provider === 'custom') {
         // custom: remove readonly
         if (urlInput) urlInput.removeAttribute('readonly');
-        if (keyInput) keyInput.removeAttribute('readonly');
+        setKeyEditable(keyInput);
     } else {
         // Specific provider
         const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
         if (modelType === 'omni') {
-            // omni needs WebSocket URL
             const coreProfile = _coreApiProviders[provider] || {};
             if (urlInput) {
                 urlInput.value = coreProfile.core_url || pInfo.core_url || '';
@@ -416,11 +507,49 @@ function onCustomModelProviderChange(modelType) {
             }
         }
         const bookKey = syncKeyFromBook(provider);
-        if (keyInput) {
-            keyInput.value = bookKey || '';
-            keyInput.setAttribute('readonly', 'readonly');
-        }
+        setKeyReadonly(keyInput, bookKey);
     }
+}
+
+/**
+ * 在 key 输入框旁添加"前往管理簿"快捷按钮（如果还没有）
+ */
+function ensureKeyBookLink(input) {
+    if (!input) return;
+    const parent = input.parentElement;
+    if (!parent) return;
+    if (parent.querySelector('.key-book-shortcut')) return;
+
+    const link = document.createElement('a');
+    link.href = 'javascript:void(0)';
+    link.className = 'key-book-shortcut';
+    link.setAttribute('data-i18n', 'api.goToKeyBook');
+    link.textContent = window.t ? window.t('api.goToKeyBook') : '前往管理簿';
+    link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
+    link.addEventListener('click', (e) => {
+        e.preventDefault();
+        // 展开 Key Book 区域并滚动到它
+        const options = document.getElementById('key-book-options');
+        const btn = document.getElementById('key-book-toggle-btn');
+        if (options && options.style.display === 'none') {
+            options.style.display = 'block';
+            if (btn) btn.classList.add('rotated');
+        }
+        const section = document.getElementById('key-book-section');
+        if (section) section.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    parent.appendChild(link);
+}
+
+/**
+ * 移除 key 输入框旁的"前往管理簿"快捷按钮
+ */
+function removeKeyBookLink(input) {
+    if (!input) return;
+    const parent = input.parentElement;
+    if (!parent) return;
+    const link = parent.querySelector('.key-book-shortcut');
+    if (link) link.remove();
 }
 
 // ==================== 加载API服务商选项 ====================
@@ -458,7 +587,7 @@ async function loadApiProviders() {
                             (_, _sep, c) => c.toUpperCase());
                         _apiKeyRegistry[pk] = {
                             label: allProviders[pk].name || pk,
-                            restricted: (pk === 'openai' || pk === 'gemini'),
+                            restricted: allProviders[pk].restricted || false,
                             config_field: allProviders[pk].config_field || defaultField
                         };
                     });
@@ -523,6 +652,9 @@ async function loadApiProviders() {
                 // 隐藏大陆用户不可用的 Key Book 输入行
                 hideRestrictedKeyBookInputs();
 
+                // 动态渲染的元素需要重新翻译
+                if (window.updatePageTexts) window.updatePageTexts();
+
                 // 填充模型服务商下拉框
                 populateModelProviderDropdowns();
 
@@ -578,7 +710,7 @@ async function loadCurrentApiKey() {
                 if (data.api_key === 'free-access' || data.coreApi === 'free' || data.assistApi === 'free') {
                     showCurrentApiKey(window.t ? window.t('api.currentUsingFreeVersion') : '当前使用：免费版（无需API Key）', 'free-access', true);
                 } else {
-                    showCurrentApiKey(window.t ? window.t('api.currentApiKey', { key: data.api_key }) : `当前API Key: ${data.api_key}`, data.api_key, true);
+                    showCurrentApiKey(window.t ? window.t('api.currentApiKey', { key: maskApiKey(data.api_key) }) : `当前API Key: ${maskApiKey(data.api_key)}`, data.api_key, true);
                 }
             } else {
                 showCurrentApiKey(window.t ? window.t('api.currentNoApiKey') : '当前暂未设置API Key', '', false);
@@ -601,7 +733,8 @@ async function loadCurrentApiKey() {
                     // 免费版本：显示用户友好的文本
                     apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                 } else {
-                    apiKeyInput.value = data.api_key;
+                    setMaskedInput(apiKeyInput, data.api_key);
+                    attachMaskBehavior(apiKeyInput);
                 }
             }
             // 设置高级设定的值（确保下拉框已加载选项）
@@ -655,7 +788,8 @@ async function loadCurrentApiKey() {
             if (data.assistApi && data.assistApi !== 'free') {
                 const assistBookKey = syncKeyFromBook(data.assistApi);
                 if (assistApiKeyInput && assistBookKey) {
-                    assistApiKeyInput.value = assistBookKey;
+                    setMaskedInput(assistApiKeyInput, assistBookKey);
+                    attachMaskBehavior(assistApiKeyInput);
                 }
             }
 
@@ -988,14 +1122,17 @@ function toggleCustomApi() {
     const isFreeVersion = coreApiSelect && coreApiSelect.value === 'free';
 
     // 禁用或启用相关控件
+    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
     if (isFreeVersion) {
         if (assistApiSelect) assistApiSelect.disabled = true;
         if (apiKeyInput) apiKeyInput.disabled = true;
+        if (assistApiKeyInput) assistApiKeyInput.disabled = true;
         if (coreApiSelect) coreApiSelect.disabled = false;
     } else {
         if (coreApiSelect) coreApiSelect.disabled = false;
         if (assistApiSelect) assistApiSelect.disabled = false;
         if (apiKeyInput) apiKeyInput.disabled = false;
+        if (assistApiKeyInput) assistApiKeyInput.disabled = false;
     }
 
     // 控制自定义API容器的折叠状态
@@ -1104,8 +1241,8 @@ async function save_button_down(e) {
         }
     }
 
-    // 处理API Key
-    let apiKey = apiKeyInput.value ? apiKeyInput.value.trim() : '';
+    // 处理API Key（优先读取真实 key）
+    let apiKey = getRealKey(apiKeyInput);
     if (isFreeVersionText(apiKey)) {
         apiKey = '';
     }
@@ -1117,7 +1254,7 @@ async function save_button_down(e) {
 
     // Sync assist key to book (including empty string to clear)
     const assistKeyInput = document.getElementById('assistApiKeyInput');
-    const assistKeyVal = assistKeyInput ? assistKeyInput.value.trim() : '';
+    const assistKeyVal = getRealKey(assistKeyInput);
     if (assistApi && assistApi !== 'free') {
         syncKeyToBook(assistApi, assistKeyVal);
     }
@@ -1139,37 +1276,42 @@ async function save_button_down(e) {
         const el = document.getElementById(id);
         return el ? el.value.trim() : '';
     };
+    // API Key 字段可能被遮蔽，需要读取真实值
+    const getKeyVal = (id) => {
+        const el = document.getElementById(id);
+        return el ? getRealKey(el) : '';
+    };
 
     const conversationModelUrl = getVal('conversationModelUrl');
     const conversationModelId = getVal('conversationModelId');
-    const conversationModelApiKey = getVal('conversationModelApiKey');
+    const conversationModelApiKey = getKeyVal('conversationModelApiKey');
 
     const summaryModelUrl = getVal('summaryModelUrl');
     const summaryModelId = getVal('summaryModelId');
-    const summaryModelApiKey = getVal('summaryModelApiKey');
+    const summaryModelApiKey = getKeyVal('summaryModelApiKey');
 
     const correctionModelUrl = getVal('correctionModelUrl');
     const correctionModelId = getVal('correctionModelId');
-    const correctionModelApiKey = getVal('correctionModelApiKey');
+    const correctionModelApiKey = getKeyVal('correctionModelApiKey');
 
     const emotionModelUrl = getVal('emotionModelUrl');
     const emotionModelId = getVal('emotionModelId');
-    const emotionModelApiKey = getVal('emotionModelApiKey');
+    const emotionModelApiKey = getKeyVal('emotionModelApiKey');
 
     const visionModelUrl = getVal('visionModelUrl');
     const visionModelId = getVal('visionModelId');
-    const visionModelApiKey = getVal('visionModelApiKey');
+    const visionModelApiKey = getKeyVal('visionModelApiKey');
     const agentModelUrl = getVal('agentModelUrl');
     const agentModelId = getVal('agentModelId');
-    const agentModelApiKey = getVal('agentModelApiKey');
+    const agentModelApiKey = getKeyVal('agentModelApiKey');
 
     const omniModelUrl = getVal('omniModelUrl');
     const omniModelId = getVal('omniModelId');
-    const omniModelApiKey = getVal('omniModelApiKey');
+    const omniModelApiKey = getKeyVal('omniModelApiKey');
 
     let ttsModelUrl = getVal('ttsModelUrl');
     const ttsModelId = getVal('ttsModelId');
-    const ttsModelApiKey = getVal('ttsModelApiKey');
+    const ttsModelApiKey = getKeyVal('ttsModelApiKey');
     let ttsVoiceId = getVal('ttsVoiceId');
 
     // 检查 GPT-SoVITS v3 配置
@@ -1300,7 +1442,7 @@ async function saveApiKey(params) {
                     statusMessage = window.t ? window.t('api.saveSuccessReload') : 'API Key保存成功！配置已重新加载，新配置将在下次对话时生效。';
                 }
                 showStatus(statusMessage, 'success');
-                document.getElementById('apiKeyInput').value = '';
+                setMaskedInput(document.getElementById('apiKeyInput'), '');
 
                 // 清除本地Voice ID记录
                 await clearVoiceIds();
@@ -1387,12 +1529,18 @@ function updateAssistApiRecommendation() {
     const apiKeyInput = document.getElementById('apiKeyInput');
     const freeVersionHint = document.getElementById('freeVersionHint');
 
+    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
+
     if (selectedCoreApi === 'free') {
         if (apiKeyInput) {
             apiKeyInput.disabled = true;
             apiKeyInput.placeholder = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
             apiKeyInput.required = false;
             apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
+        }
+        if (assistApiKeyInput) {
+            assistApiKeyInput.disabled = true;
+            assistApiKeyInput.value = '';
         }
         if (freeVersionHint) {
             freeVersionHint.style.display = 'inline';
@@ -1415,9 +1563,12 @@ function updateAssistApiRecommendation() {
             apiKeyInput.disabled = false;
             apiKeyInput.placeholder = window.t ? window.t('api.pleaseEnterApiKey') : '请输入您的API Key';
             apiKeyInput.required = true;
-            if (isFreeVersionText(apiKeyInput.value)) {
-                apiKeyInput.value = '';
+            if (isFreeVersionText(getRealKey(apiKeyInput))) {
+                setMaskedInput(apiKeyInput, '');
             }
+        }
+        if (assistApiKeyInput) {
+            assistApiKeyInput.disabled = false;
         }
         if (freeVersionHint) {
             freeVersionHint.style.display = 'none';
@@ -1472,7 +1623,8 @@ function autoFillCoreApiKey(force) {
 
     // When not forced (e.g. called from updateAssistApiRecommendation),
     // preserve any unsaved user edits in apiKeyInput.
-    if (!force && apiKeyInput.value !== '' && !isFreeVersionText(apiKeyInput.value)) {
+    const currentReal = getRealKey(apiKeyInput);
+    if (!force && currentReal !== '' && !isFreeVersionText(currentReal)) {
         return;
     }
 
@@ -1482,19 +1634,21 @@ function autoFillCoreApiKey(force) {
     // null = restricted/hidden provider (no input), '' = user cleared the key intentionally.
     const bookKey = syncKeyFromBook(selectedCoreApi);
     if (bookKey !== null) {
-        apiKeyInput.value = bookKey;
+        setMaskedInput(apiKeyInput, bookKey);
+        attachMaskBehavior(apiKeyInput);
         return;
     }
 
     // No book input for this provider (restricted/hidden) — clear old value first
-    apiKeyInput.value = '';
+    setMaskedInput(apiKeyInput, '');
 
     // Fallback: use saved key from dataset (if available and not free)
     const currentApiKeyDiv = document.getElementById('current-api-key');
     if (currentApiKeyDiv && currentApiKeyDiv.dataset.hasKey === 'true') {
         const savedKey = currentApiKeyDiv.dataset.apiKey;
         if (savedKey && savedKey !== 'free-access') {
-            apiKeyInput.value = savedKey;
+            setMaskedInput(apiKeyInput, savedKey);
+            attachMaskBehavior(apiKeyInput);
         }
     }
 }
@@ -1507,12 +1661,13 @@ function autoFillAssistApiKey() {
 
     const selectedAssistApi = assistApiSelect.value;
     if (selectedAssistApi === 'free') {
-        assistApiKeyInput.value = '';
+        setMaskedInput(assistApiKeyInput, '');
         return;
     }
 
     const bookKey = syncKeyFromBook(selectedAssistApi);
-    assistApiKeyInput.value = bookKey || '';
+    setMaskedInput(assistApiKeyInput, bookKey || '');
+    attachMaskBehavior(assistApiKeyInput);
 }
 
 // Beacon功能 - 页面关闭时发送信号给服务器
@@ -1734,19 +1889,22 @@ async function initializePage() {
         if (coreApiSelect && apiKeyInput && freeVersionHint) {
             const selectedCoreApi = coreApiSelect.value;
 
+            const assistApiKeyInputInit = document.getElementById('assistApiKeyInput');
             if (selectedCoreApi === 'free') {
                 apiKeyInput.disabled = true;
                 apiKeyInput.placeholder = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                 apiKeyInput.required = false;
                 apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
+                if (assistApiKeyInputInit) assistApiKeyInputInit.disabled = true;
                 freeVersionHint.style.display = 'inline';
             } else {
                 apiKeyInput.disabled = false;
                 apiKeyInput.placeholder = window.t ? window.t('api.pleaseEnterApiKey') : '请输入您的API Key';
                 apiKeyInput.required = true;
-                if (isFreeVersionText(apiKeyInput.value)) {
-                    apiKeyInput.value = '';
+                if (isFreeVersionText(getRealKey(apiKeyInput))) {
+                    setMaskedInput(apiKeyInput, '');
                 }
+                if (assistApiKeyInputInit) assistApiKeyInputInit.disabled = false;
                 freeVersionHint.style.display = 'none';
             }
 
@@ -1793,12 +1951,12 @@ async function initializePage() {
             const selectedCoreApi = coreApiSelect ? coreApiSelect.value : '';
             const selectedAssistApi = assistApiSelect ? assistApiSelect.value : '';
 
-            // Snapshot Key Book input values
+            // Snapshot Key Book input values（读取真实 key，避免存遮蔽值）
             const keyBookSnapshot = {};
             const bookContainer = document.getElementById('key-book-inputs');
             if (bookContainer) {
                 bookContainer.querySelectorAll('input[data-provider-key]').forEach(input => {
-                    keyBookSnapshot[input.dataset.providerKey] = input.value;
+                    keyBookSnapshot[input.dataset.providerKey] = getRealKey(input);
                 });
             }
 
@@ -1824,11 +1982,12 @@ async function initializePage() {
                 syncKeyToBook(providerKey, keyBookSnapshot[providerKey]);
             });
 
-            // Restore model provider select values
+            // Restore model provider select values and replay derived state
             MODEL_TYPES.forEach(mt => {
                 const sel = document.getElementById(`${mt}ModelProvider`);
                 if (sel && modelProviderSnapshot[mt] !== undefined) {
                     sel.value = modelProviderSnapshot[mt];
+                    onCustomModelProviderChange(mt);
                 }
             });
         });
