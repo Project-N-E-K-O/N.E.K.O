@@ -587,7 +587,7 @@ async function loadApiProviders() {
                             (_, _sep, c) => c.toUpperCase());
                         _apiKeyRegistry[pk] = {
                             label: allProviders[pk].name || pk,
-                            restricted: (pk === 'openai' || pk === 'gemini' || pk === 'grok'),
+                            restricted: allProviders[pk].restricted || false,
                             config_field: allProviders[pk].config_field || defaultField
                         };
                     });
