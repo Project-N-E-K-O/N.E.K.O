@@ -728,13 +728,17 @@ async function loadCurrentApiKey() {
             }
 
             // 设置核心API Key输入框的值（重要：必须在显示提示后设置）
-            if (apiKeyInput && data.api_key) {
+            if (apiKeyInput) {
                 if (data.api_key === 'free-access' || data.coreApi === 'free' || data.assistApi === 'free') {
                     // 免费版本：显示用户友好的文本
                     apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
-                } else {
+                } else if (data.api_key) {
+                    // 有API Key时设置
                     setMaskedInput(apiKeyInput, data.api_key);
                     attachMaskBehavior(apiKeyInput);
+                } else if (!data.enableCustomApi) {
+                    // 自定义API未启用但没有API Key，尝试从Key Book自动填充
+                    autoFillCoreApiKey(true);
                 }
             }
             // 设置高级设定的值（确保下拉框已加载选项）
@@ -787,9 +791,15 @@ async function loadCurrentApiKey() {
             // Set assist key input from selected assist provider's book input
             if (data.assistApi && data.assistApi !== 'free') {
                 const assistBookKey = syncKeyFromBook(data.assistApi);
-                if (assistApiKeyInput && assistBookKey) {
-                    setMaskedInput(assistApiKeyInput, assistBookKey);
-                    attachMaskBehavior(assistApiKeyInput);
+                if (assistApiKeyInput) {
+                    if (assistBookKey) {
+                        // 有Key Book中的值时设置
+                        setMaskedInput(assistApiKeyInput, assistBookKey);
+                        attachMaskBehavior(assistApiKeyInput);
+                    } else if (!data.enableCustomApi) {
+                        // 自定义API未启用且Key Book中没有值，尝试自动填充
+                        autoFillAssistApiKey();
+                    }
                 }
             }
 
@@ -1170,6 +1180,13 @@ function toggleCustomApi() {
             freeVersionHint.style.display = 'none';
         }
     }
+
+    // 关闭自定义API时，自动填充已保存的API Key
+    if (!isCustomEnabled) {
+        autoFillCoreApiKey(true);
+        autoFillAssistApiKey();
+        updateAssistApiRecommendation();
+    }
 }
 
 // 自定义API折叠切换函数
@@ -1247,15 +1264,15 @@ async function save_button_down(e) {
         apiKey = '';
     }
 
-    // Sync core key to book
-    if (coreApi && coreApi !== 'free') {
+    // Sync core key to book (仅在API Key不为空时才同步，避免清空时破坏Key Book)
+    if (coreApi && coreApi !== 'free' && apiKey) {
         syncKeyToBook(coreApi, apiKey);
     }
 
-    // Sync assist key to book (including empty string to clear)
+    // Sync assist key to book (仅在API Key不为空时才同步，避免清空时破坏Key Book)
     const assistKeyInput = document.getElementById('assistApiKeyInput');
     const assistKeyVal = getRealKey(assistKeyInput);
-    if (assistApi && assistApi !== 'free') {
+    if (assistApi && assistApi !== 'free' && assistKeyVal) {
         syncKeyToBook(assistApi, assistKeyVal);
     }
 
@@ -1633,24 +1650,15 @@ function autoFillCoreApiKey(force) {
     // Use !== null to distinguish "input not present" from "input present but empty":
     // null = restricted/hidden provider (no input), '' = user cleared the key intentionally.
     const bookKey = syncKeyFromBook(selectedCoreApi);
-    if (bookKey !== null) {
+    // 仅在Key Book中有非空值时才填充，避免清空用户可能输入的值
+    if (bookKey !== null && bookKey !== '') {
         setMaskedInput(apiKeyInput, bookKey);
         attachMaskBehavior(apiKeyInput);
         return;
     }
 
-    // No book input for this provider (restricted/hidden) — clear old value first
-    setMaskedInput(apiKeyInput, '');
-
-    // Fallback: use saved key from dataset (if available and not free)
-    const currentApiKeyDiv = document.getElementById('current-api-key');
-    if (currentApiKeyDiv && currentApiKeyDiv.dataset.hasKey === 'true') {
-        const savedKey = currentApiKeyDiv.dataset.apiKey;
-        if (savedKey && savedKey !== 'free-access') {
-            setMaskedInput(apiKeyInput, savedKey);
-            attachMaskBehavior(apiKeyInput);
-        }
-    }
+    // No book input or empty value for this provider — do not overwrite input
+    // Key Book intentionally cleared (empty string) should be respected
 }
 
 // Auto-fill assist API key from book
@@ -1666,8 +1674,11 @@ function autoFillAssistApiKey() {
     }
 
     const bookKey = syncKeyFromBook(selectedAssistApi);
-    setMaskedInput(assistApiKeyInput, bookKey || '');
-    attachMaskBehavior(assistApiKeyInput);
+    // 仅在Key Book中有值时才填充，避免清空用户可能输入的值
+    if (bookKey !== null && bookKey !== '') {
+        setMaskedInput(assistApiKeyInput, bookKey);
+        attachMaskBehavior(assistApiKeyInput);
+    }
 }
 
 // Beacon功能 - 页面关闭时发送信号给服务器
