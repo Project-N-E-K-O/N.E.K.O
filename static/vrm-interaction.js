@@ -940,6 +940,34 @@ class VRMInteraction {
         const vrmContainer = document.getElementById('vrm-container');
         let lockedHoverFadeActive = false;
         let isCtrlPressed = false;
+
+        // 静止自动淡化：鼠标在模型范围内静止1秒后自动淡化
+        this._vrmStationaryFadeTimer = null;
+        let _vrmLastStationaryX = -1;
+        let _vrmLastStationaryY = -1;
+        const STATIONARY_FADE_DELAY = 1000;
+        const STATIONARY_MOVE_THRESHOLD = 8; // 鼠标移动超过8px视为移动
+        // 点击后短暂忽略移动触发的定时器清除，防止点击产生坐标偏移导致闪烁
+        let _vrmClickSuppressTimer = null;
+        const _vrmSuppressDuration = 200;
+
+        const clearStationaryFadeTimer = () => {
+            if (this._vrmStationaryFadeTimer !== null) {
+                clearTimeout(this._vrmStationaryFadeTimer);
+                this._vrmStationaryFadeTimer = null;
+            }
+        };
+
+        // 点击时设置抑制标志，防止点击坐标偏移导致淡化闪烁
+        const onMouseDown = () => {
+            if (_vrmClickSuppressTimer !== null) {
+                clearTimeout(_vrmClickSuppressTimer);
+            }
+            _vrmClickSuppressTimer = setTimeout(() => {
+                _vrmClickSuppressTimer = null;
+            }, _vrmSuppressDuration);
+        };
+
         const setLockedHoverFade = (shouldFade) => {
             if (!vrmContainer) return;
             if (lockedHoverFadeActive === shouldFade) return;
@@ -1183,9 +1211,42 @@ class VRMInteraction {
             // 使用缓存计算距离（避免重复的 Box3 计算）
             const distance = calculateDistanceToModel(mouseX, mouseY);
 
-            // 锁定 + Ctrl + 鼠标在模型附近 → 变淡（与 Live2D 侧逻辑一致）
+            // 检测鼠标是否静止（移动阈值内）
+            const dx = mouseX - _vrmLastStationaryX;
+            const dy = mouseY - _vrmLastStationaryY;
+            const isMouseStationary = dx * dx + dy * dy < STATIONARY_MOVE_THRESHOLD * STATIONARY_MOVE_THRESHOLD;
+            _vrmLastStationaryX = mouseX;
+            _vrmLastStationaryY = mouseY;
+
+            // 静止自动淡化：锁定 + 鼠标在模型附近 + 静止超过1秒 → 变淡
+            // Ctrl 按住淡化：锁定 + Ctrl + 鼠标在模型附近 → 变淡
             const ctrlKeyPressed = isCtrlPressed;
-            const shouldFade = this.checkLocked() && ctrlKeyPressed && distance < hoverFadeThreshold;
+            const isNearModel = distance < hoverFadeThreshold;
+
+            // 静止时启动定时器，移动时清除定时器（点击后200ms内忽略移动清除）
+            if (this.checkLocked() && isNearModel) {
+                if (isMouseStationary) {
+                    if (this._vrmStationaryFadeTimer === null && !lockedHoverFadeActive) {
+                        this._vrmStationaryFadeTimer = setTimeout(() => {
+                            setLockedHoverFade(true);
+                        }, STATIONARY_FADE_DELAY);
+                    }
+                } else {
+                    if (this._vrmStationaryFadeTimer !== null && _vrmClickSuppressTimer === null) {
+                        clearStationaryFadeTimer();
+                    }
+                }
+            } else {
+                if (this._vrmStationaryFadeTimer !== null || lockedHoverFadeActive) {
+                    clearStationaryFadeTimer();
+                    setLockedHoverFade(false);
+                }
+            }
+
+            // 静止淡化：由定时器触发，移出模型范围自动恢复
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内
+            const shouldFadeByCtrl = this.checkLocked() && ctrlKeyPressed && isNearModel;
+            const shouldFade = shouldFadeByCtrl || (lockedHoverFadeActive && isNearModel);
             setLockedHoverFade(shouldFade);
 
             // 锁定状态下不处理按钮显示/隐藏
@@ -1235,11 +1296,12 @@ class VRMInteraction {
             }
         };
         const onBlur = () => {
-            isCtrlPressed = false;
+            clearStationaryFadeTimer();
             if (lockedHoverFadeActive) {
                 setLockedHoverFade(false);
             }
         };
+        this._vrmClearStationaryFadeTimer = clearStationaryFadeTimer;
 
         // 清理旧的键盘 / blur 监听器
         if (this._vrmCtrlKeyDownListener) {
@@ -1259,12 +1321,14 @@ class VRMInteraction {
         canvas.addEventListener('mouseenter', onMouseEnter);
         canvas.addEventListener('pointermove', onPointerMove);
         canvas.addEventListener('mousemove', onPointerMove);
+        canvas.addEventListener('mousedown', onMouseDown);
 
         this._vrmCtrlKeyDownListener = onKeyDown;
         this._vrmCtrlKeyUpListener = onKeyUp;
         this._vrmWindowBlurListener = onBlur;
         this._floatingButtonsMouseEnter = onMouseEnter;
         this._floatingButtonsPointerMove = onPointerMove;
+        this._vrmMouseDownListener = onMouseDown;
 
         if (this.manager.currentModel && !this.checkLocked()) {
             setTimeout(() => {
@@ -1297,6 +1361,10 @@ class VRMInteraction {
             canvas.removeEventListener('mousemove', this._floatingButtonsPointerMove);
             this._floatingButtonsPointerMove = null;
         }
+        if (this._vrmMouseDownListener) {
+            canvas.removeEventListener('mousedown', this._vrmMouseDownListener);
+            this._vrmMouseDownListener = null;
+        }
         // 清理 Ctrl 键 / blur 监听器
         if (this._vrmCtrlKeyDownListener) {
             window.removeEventListener('keydown', this._vrmCtrlKeyDownListener);
@@ -1314,6 +1382,10 @@ class VRMInteraction {
         if (typeof this._setLockedHoverFade === 'function') {
             this._setLockedHoverFade(false);
             this._setLockedHoverFade = null;
+        }
+        if (this._vrmClearStationaryFadeTimer) {
+            this._vrmClearStationaryFadeTimer();
+            this._vrmClearStationaryFadeTimer = null;
         }
         if (this._hideButtonsTimer) {
             clearTimeout(this._hideButtonsTimer);
