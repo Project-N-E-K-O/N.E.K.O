@@ -431,7 +431,9 @@
         "noAvailableModelsError": "Нет доступных моделей",
         "tagsPlaceholderInput": "Введите теги, нажмите пробел для добавления",
         "prepareUploadFailedMessage": "Ошибка подготовки загрузки: {{error}}",
-        "noCharacterCardSelected": "Сначала выберите карточку персонажа"
+        "noCharacterCardSelected": "Сначала выберите карточку персонажа",
+        "steamNotRunningTitle": "Steam не запущен",
+        "steamNotRunningMessage": "Клиент Steam не запущен или не выполнен вход.\n\nДля работы Мастерской необходим клиент Steam:\n1. Скачайте и установите клиент Steam\n2. Запустите Steam и войдите в свой аккаунт\n3. Откройте эту страницу заново"
     },
     "dialogs": {
         "confirmLeave": "Подтвердить выход",
