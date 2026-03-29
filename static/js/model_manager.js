@@ -708,14 +708,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // ═══ 早期绑定"返回主页"按钮，确保即使初始化失败也能导航 ═══
     const _earlyBackBtn = document.getElementById('backToMainBtn');
+    const _earlyBackHandler = () => {
+        if (window.opener && !window.opener.closed) {
+            window.close();
+        } else {
+            window.location.href = '/';
+        }
+    };
     if (_earlyBackBtn) {
-        _earlyBackBtn.addEventListener('click', () => {
-            if (window.opener && !window.opener.closed) {
-                window.close();
-            } else {
-                window.location.href = '/';
-            }
-        }, { once: true });
+        _earlyBackBtn.addEventListener('click', _earlyBackHandler);
     }
 
   try {
@@ -5378,7 +5379,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // 返回主页/关闭按钮
+    // 返回主页/关闭按钮 — 移除早期安全网处理器，由完整逻辑接管
+    if (_earlyBackBtn && _earlyBackHandler) {
+        _earlyBackBtn.removeEventListener('click', _earlyBackHandler);
+    }
     backToMainBtn.addEventListener('click', async () => {
         // 检查是否有未保存的更改
         if (window.hasUnsavedChanges) {

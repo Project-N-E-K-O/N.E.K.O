@@ -519,9 +519,10 @@ async function initVRMModel() {
                     if (window.live2dManager.pixi_app.stage) {
                         window.live2dManager.pixi_app.stage.removeChildren();
                     }
-                    // 完全销毁PIXI应用释放WebGL上下文
+                    // 销毁PIXI应用释放WebGL上下文，但保留canvas元素在DOM中
+                    // 第一个参数传 false：不移除 canvas view，以便切回 Live2D 时复用
                     try {
-                        window.live2dManager.pixi_app.destroy(true, {
+                        window.live2dManager.pixi_app.destroy(false, {
                             children: true,
                             texture: true,
                             baseTexture: true
@@ -530,6 +531,7 @@ async function initVRMModel() {
                         console.warn('[VRM Init] PIXI应用销毁时出现警告:', destroyError);
                     }
                     window.live2dManager.pixi_app = null;
+                    window.live2dManager.isInitialized = false;
                 }
             } catch (cleanupError) {
                 console.warn('[VRM Init] Live2D清理时出现警告:', cleanupError);

@@ -1828,7 +1828,7 @@ function showCatgirlForm(key, container) {
         modelDisplayText = window.t ? window.t('character.modelNotSet') : '未设置';
     }
 
-    modelLink.textContent = modelDisplayText;
+    modelLink.textContent = modelDisplayText || (window.t ? window.t('character.modelNotSet') : '未设置');
     modelWrapper.appendChild(modelLink);
     foldContent.appendChild(modelWrapper);
     // voice_id row
