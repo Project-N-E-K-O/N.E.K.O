@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import SmartTextBlock from './SmartTextBlock';
 import {
   type ChatMessage,
   type MessageAction,
@@ -51,7 +52,7 @@ function MessageBlockView({
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 }) {
   if (block.type === 'text') {
-    return <div className="message-block message-block-text">{block.text}</div>;
+    return <SmartTextBlock text={block.text} />;
   }
 
   if (block.type === 'image') {
