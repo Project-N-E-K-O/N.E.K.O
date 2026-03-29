@@ -171,10 +171,20 @@ class PersonaManager:
         for section_key, inner_key in [('ai', 'facts'), ('user', 'facts'), ('relationship', 'dynamics')]:
             persona.setdefault(section_key, {}).setdefault(inner_key, [])
 
+        def _is_migratable(val) -> bool:
+            """仅排除 None、空白字符串、空容器；保留 0/False 等标量假值。"""
+            if val is None:
+                return False
+            if isinstance(val, str):
+                return bool(val.strip())
+            if isinstance(val, (list, dict, set, tuple)):
+                return len(val) > 0
+            return True  # int 0, bool False 等合法标量
+
         # ── 1. 从角色卡基础配置迁移 ──
         if name in lanlan_basic_config:
             ai_card = {k: v for k, v in lanlan_basic_config[name].items()
-                       if k not in excluded_fields and v}
+                       if k not in excluded_fields and _is_migratable(v)}
             for k, v in ai_card.items():
                 if isinstance(v, (dict, set, tuple)):
                     continue  # 跳过嵌套结构
@@ -187,7 +197,7 @@ class PersonaManager:
 
         if master_basic_config and isinstance(master_basic_config, dict):
             for k, v in master_basic_config.items():
-                if k not in excluded_fields and v:
+                if k not in excluded_fields and _is_migratable(v):
                     if isinstance(v, (dict, set, tuple)):
                         continue
                     if isinstance(v, list):
@@ -209,8 +219,10 @@ class PersonaManager:
                 with open(settings_path, encoding='utf-8') as f:
                     old_settings = json.load(f)
                 if isinstance(old_settings, dict):
-                    existing_texts = {e.get('text', '') for section in persona.values()
-                                      for e in (section.get('facts', []) + section.get('dynamics', []))}
+                    # 按 target section 分别去重，避免跨 section 误去重
+                    def _existing_texts_for(facts_list):
+                        return {e.get('text', '') for e in facts_list if isinstance(e, dict)}
+
                     for section_key, facts_dict in old_settings.items():
                         if not isinstance(facts_dict, dict):
                             continue
@@ -221,12 +233,13 @@ class PersonaManager:
                         else:
                             target = persona['relationship']['dynamics']
 
+                        seen = _existing_texts_for(target)
                         for k, v in facts_dict.items():
-                            if v and str(v).strip():
+                            if _is_migratable(v):
                                 text = f"{k}: {v}"
-                                if text not in existing_texts:
+                                if text not in seen:
                                     target.append(self._normalize_entry(text))
-                                    existing_texts.add(text)
+                                    seen.add(text)
                                     migrated_count += 1
             except Exception as e:
                 logger.warning(f"[Persona] {name}: settings.json 读取失败: {e}")
