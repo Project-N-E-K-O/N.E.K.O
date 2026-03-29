@@ -1807,14 +1807,17 @@ function showCatgirlForm(key, container) {
     modelLink.style.alignItems = 'center';
 
     // 显示当前模型（优先显示Live3D VRM/MMD，如果没有则显示Live2D）
-    // 辅助函数：检查模型路径是否有效（与 model_manager.js 保持一致）
-    function isValidModelPath(path) {
-        if (path === undefined || path === null) return false;
-        const strValue = String(path).trim();
-        if (strValue === '') return false;
-        if (strValue === 'undefined' || strValue === 'null') return false;
-        if (strValue.toLowerCase().includes('undefined') || strValue.toLowerCase().includes('null')) return false;
-        return true;
+    // 辅助函数：检查模型路径是否有效，返回验证后的字符串或空字符串
+    function validateModelPath(path) {
+        if (path === undefined || path === null) return '';
+        if (typeof path !== 'string') {
+            path = String(path);
+        }
+        const strValue = path.trim();
+        if (strValue === '') return '';
+        if (strValue === 'undefined' || strValue === 'null') return '';
+        if (strValue.toLowerCase().includes('undefined') || strValue.toLowerCase().includes('null')) return '';
+        return strValue;
     }
 
     const modelType = cat['model_type'] || 'live2d';
@@ -1822,17 +1825,19 @@ function showCatgirlForm(key, container) {
     const normalizedModelType = modelType === 'vrm' ? 'live3d' : modelType;
     let modelDisplayText = '';
 
-    if (normalizedModelType === 'live3d' && isValidModelPath(cat['mmd'])) {
+    const mmdPath = validateModelPath(cat['mmd']);
+    const vrmPath = validateModelPath(cat['vrm']);
+    const live2dPath = validateModelPath(cat['live2d']);
+
+    if (normalizedModelType === 'live3d' && mmdPath) {
         // live3d 模式下 MMD 优先（VRM 是旧字段，可能遗留非空值，与后端 _get_live3d_sub_type 一致）
-        const mmdPath = cat['mmd'];
         const mmdName = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
         modelDisplayText = mmdName;
-    } else if (normalizedModelType === 'live3d' && isValidModelPath(cat['vrm'])) {
-        const vrmPath = cat['vrm'];
+    } else if (normalizedModelType === 'live3d' && vrmPath) {
         const vrmName = (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '');
         modelDisplayText = vrmName;
-    } else if (isValidModelPath(cat['live2d'])) {
-        modelDisplayText = cat['live2d'];
+    } else if (live2dPath) {
+        modelDisplayText = live2dPath;
     } else {
         modelDisplayText = window.t ? window.t('character.modelNotSet') : '未设置';
     }
