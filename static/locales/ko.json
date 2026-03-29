@@ -1520,6 +1520,7 @@
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
             "frameRateHigh": "60fps",
+            "frameRateUnlimited": "무제한(VSync)",
             "mouseTracking": "마우스 추적",
             "fullscreenTracking": "전체 화면 추적",
             "localTracking": "로컬 추적"

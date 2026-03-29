@@ -1520,6 +1520,7 @@
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
             "frameRateHigh": "60fps",
+            "frameRateUnlimited": "无限制(VSync)",
             "mouseTracking": "跟踪鼠标",
             "fullscreenTracking": "全屏跟踪",
             "localTracking": "局部跟踪"
