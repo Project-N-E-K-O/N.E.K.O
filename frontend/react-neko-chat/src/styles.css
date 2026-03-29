@@ -81,6 +81,19 @@ textarea {
   background: linear-gradient(135deg, #3a72e8 0%, #6aa1ff 100%);
 }
 
+.window-avatar-image-shell {
+  background: transparent;
+}
+
+.window-avatar-image {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+  pointer-events: none;
+}
+
 .window-title {
   margin: 0;
   font-size: 1rem;

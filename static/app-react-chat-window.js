@@ -41,16 +41,54 @@
         return $('reactChatWindowMinimizeButton');
     }
 
+    function getMinimizeIcon() {
+        return $('reactChatWindowMinimizeIcon');
+    }
+
     function getRoot() {
         return $('react-chat-window-root');
     }
 
+    function getI18nText(key, fallback) {
+        if (typeof window.safeT === 'function') {
+            return window.safeT(key, fallback);
+        }
+
+        if (typeof window.t === 'function') {
+            try {
+                var translated = window.t(key, fallback);
+                if (translated && translated !== key) {
+                    return translated;
+                }
+            } catch (_) {}
+        }
+
+        return fallback;
+    }
+
     function getChatProps() {
-        var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || 'N.E.K.O';
+        var titleNode = $('chat-title');
+        var textInputBox = $('textInputBox');
+        var textSendButton = $('textSendButton');
+        var sendLabelNode = textSendButton ? textSendButton.querySelector('[data-i18n="chat.send"]') : null;
+        var titleText = (titleNode && titleNode.textContent && titleNode.textContent.trim())
+            || getI18nText('chat.title', '对话')
+            || '对话';
+        var draftPlaceholder = (textInputBox && textInputBox.getAttribute('placeholder'))
+            || getI18nText('chat.textInputPlaceholder', '文字聊天模式...回车发送，Shift+回车换行')
+            || '文字聊天模式...回车发送，Shift+回车换行';
+        var sendLabel = (sendLabelNode && sendLabelNode.textContent && sendLabelNode.textContent.trim())
+            || getI18nText('chat.send', '发送')
+            || '发送';
+
         return {
-            title: lanlanName,
+            title: titleText,
             subtitle: '',
-            status: ''
+            status: '',
+            iconSrc: '/static/icons/chat_icon.png',
+            draftPlaceholder: draftPlaceholder,
+            sendLabel: sendLabel,
+            composerHint: 'Enter ' + sendLabel + '，Shift + Enter 换行'
         };
     }
 
@@ -202,10 +240,14 @@
         shell.classList.toggle('is-minimized', minimized);
 
         var button = getMinimizeButton();
+        var icon = getMinimizeIcon();
         if (button) {
-            button.textContent = minimized ? '+' : '-';
             button.setAttribute('aria-label', minimized ? '恢复新版聊天框' : '最小化新版聊天框');
             button.title = minimized ? '恢复' : '最小化';
+        }
+        if (icon) {
+            icon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
+            icon.alt = minimized ? '恢复新版聊天框' : '最小化新版聊天框';
         }
     }
 

@@ -654,29 +654,40 @@ button * {
     right: 12px;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     z-index: 4;
     pointer-events: auto;
 }
 
 #reactChatWindowMinimizeButton,
 #reactChatWindowCloseButton {
-    width: 34px;
-    height: 34px;
+    width: 32px;
+    height: 32px;
     border: 0;
-    border-radius: 10px;
+    border-radius: 8px;
     background: transparent;
     color: #5f6c82;
-    font-size: 1.4rem;
-    line-height: 1;
+    font-size: 1.3rem;
+    line-height: 32px;
     cursor: pointer;
     pointer-events: auto;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 #reactChatWindowMinimizeButton:hover,
 #reactChatWindowCloseButton:hover {
     background: rgba(88, 108, 145, 0.12);
     color: #2b3851;
+}
+
+#reactChatWindowMinimizeButton img {
+    width: 32px;
+    height: 32px;
+    object-fit: cover;
+    pointer-events: none;
 }
 
 #react-chat-window-root {

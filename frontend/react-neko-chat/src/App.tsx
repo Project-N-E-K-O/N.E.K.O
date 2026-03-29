@@ -10,8 +10,11 @@ export type ChatWindowProps = {
   title?: string;
   subtitle?: string;
   status?: string;
+  iconSrc?: string;
   messages?: ChatWindowMessage[];
   draftPlaceholder?: string;
+  sendLabel?: string;
+  composerHint?: string;
 };
 
 const defaultMessages: ChatWindowMessage[] = [
@@ -74,29 +77,30 @@ export default function App({
   title = 'N.E.K.O Chat',
   subtitle = 'QQ-style chat window skeleton',
   status = 'Prototype Window',
+  iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
   draftPlaceholder = '输入消息，后续这里会接入真实发送逻辑...',
+  sendLabel = '发送',
+  composerHint = 'Enter 发送，Shift + Enter 换行',
 }: ChatWindowProps) {
   return (
     <main className="app-shell">
       <section className="chat-window" aria-label="Neko chat window">
         <header className="window-topbar">
           <div className="window-title-group">
-            <div className="window-avatar">猫</div>
+            <div className="window-avatar window-avatar-image-shell">
+              <img className="window-avatar-image" src={iconSrc} alt={title} />
+            </div>
             <div>
               <h1 className="window-title">{title}</h1>
               {subtitle ? <p className="window-subtitle">{subtitle}</p> : null}
             </div>
           </div>
-          <div className="window-actions" aria-label="Window actions">
-            {status ? <span className="window-status">{status}</span> : null}
-            <button className="icon-button" type="button" aria-label="Search">
-              🔍
-            </button>
-            <button className="icon-button" type="button" aria-label="More">
-              ⋯
-            </button>
-          </div>
+          {status ? (
+            <div className="window-actions" aria-label="Window status">
+              <span className="window-status">{status}</span>
+            </div>
+          ) : null}
         </header>
 
         <section className="chat-body">
@@ -121,8 +125,8 @@ export default function App({
               rows={4}
             />
             <div className="composer-footer">
-              <span className="composer-hint">Enter 发送，Shift + Enter 换行</span>
-              <button className="send-button" type="submit">发送</button>
+              <span className="composer-hint">{composerHint}</span>
+              <button className="send-button" type="submit">{sendLabel}</button>
             </div>
           </form>
         </footer>
