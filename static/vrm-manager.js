@@ -629,7 +629,7 @@ class VRMManager {
 
             // 帧率限制：根据 targetFrameRate 跳帧（0 = 不限帧，跟随 VSync）
             const now = performance.now();
-            const targetFps = window.targetFrameRate;
+            const targetFps = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
             if (targetFps > 0) {
                 const frameInterval = 1000 / targetFps;
                 if (now - this._lastRenderTime < frameInterval * 0.9) return;

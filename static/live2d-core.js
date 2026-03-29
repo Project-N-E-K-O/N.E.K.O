@@ -768,7 +768,7 @@ window.isMobileWidth = isMobileWidth;
 // 监听帧率变更事件
 window.addEventListener('neko-frame-rate-changed', (e) => {
     const fps = e.detail?.fps;
-    if (fps && window.live2dManager) {
+    if (fps != null && window.live2dManager) {
         window.live2dManager.setTargetFPS(fps);
     }
 });
