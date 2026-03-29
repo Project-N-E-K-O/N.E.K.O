@@ -41,7 +41,10 @@ function setMaskedInput(input, realKey) {
 }
 
 /**
- * 读取 input 中存储的真实 key（优先 dataset，否则 value）。
+ * ⚠️ 重要：所有需要读取 API Key 真实值的地方，必须使用 getRealKey(input)
+ * 而不是 input.value。因为 input.value 可能是遮蔽后的值（如 sk-a04****6b53）。
+ * 真实 key 存储在 input.dataset.realKey 中，由 setMaskedInput() 写入。
+ * 新增读取 key 的代码时请务必使用此函数。
  */
 function getRealKey(input) {
     if (!input) return '';
@@ -53,7 +56,10 @@ function getRealKey(input) {
     if (input.dataset.realKey) {
         return input.dataset.realKey;
     }
-    return input.value.trim();
+    // 防御：如果 value 全是星号，说明是遮蔽残留，返回空
+    const val = input.value.trim();
+    if (/\*{3,}/.test(val)) return '';
+    return val;
 }
 
 /**
@@ -434,8 +440,9 @@ function onCustomModelProviderChange(modelType) {
     const setKeyEditable = (input) => {
         if (!input) return;
         input.removeAttribute('readonly');
-        // 清除残留的遮蔽状态，让 getRealKey 使用用户新输入的 value
+        // 清除残留的遮蔽状态和遮蔽值，让用户从空白开始输入
         input.dataset.realKey = '';
+        input.value = '';
         // 恢复原始 placeholder
         const origPlaceholder = input.getAttribute('data-i18n-placeholder');
         if (origPlaceholder && window.t) {
@@ -580,7 +587,7 @@ async function loadApiProviders() {
                             (_, _sep, c) => c.toUpperCase());
                         _apiKeyRegistry[pk] = {
                             label: allProviders[pk].name || pk,
-                            restricted: (pk === 'openai' || pk === 'gemini'),
+                            restricted: (pk === 'openai' || pk === 'gemini' || pk === 'grok'),
                             config_field: allProviders[pk].config_field || defaultField
                         };
                     });
@@ -1975,11 +1982,12 @@ async function initializePage() {
                 syncKeyToBook(providerKey, keyBookSnapshot[providerKey]);
             });
 
-            // Restore model provider select values
+            // Restore model provider select values and replay derived state
             MODEL_TYPES.forEach(mt => {
                 const sel = document.getElementById(`${mt}ModelProvider`);
                 if (sel && modelProviderSnapshot[mt] !== undefined) {
                     sel.value = modelProviderSnapshot[mt];
+                    onCustomModelProviderChange(mt);
                 }
             });
         });
