@@ -545,11 +545,11 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="smart_control",
         name="智能控制设备",
-        description="用自然语言控制设备开关，如"打开插座"、"关闭灯"，自动匹配设备并执行",
+        description="用自然语言控制设备开关，如'打开插座'、'关闭灯'，自动匹配设备并执行",
         input_schema={
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "控制命令，如"打开插座"、"关闭灯""}
+                "command": {"type": "string", "description": "控制命令，如'打开插座'、'关闭灯'"}
             },
             "required": ["command"]
         },
