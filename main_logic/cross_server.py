@@ -275,32 +275,35 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 增量发送：只发 /cache 未覆盖的剩余消息，触发 LLM 结算
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 热重置：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
-                                if remaining:
+                                # 确定调用端点：有增量走 /renew，无增量走 /settle（补全摘要+时间戳）
+                                _renew_endpoint = "renew" if remaining else "settle"
+                                _renew_payload = remaining if remaining else chat_history
+                                if _renew_payload:
                                     try:
                                         async with aiohttp.ClientSession() as session:
                                             async with session.post(
-                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/renew/{lanlan_name}",
-                                                json={'input_history': json.dumps(remaining, indent=2, ensure_ascii=False)},
+                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/{_renew_endpoint}/{lanlan_name}",
+                                                json={'input_history': json.dumps(_renew_payload, indent=2, ensure_ascii=False)},
                                                 timeout=aiohttp.ClientTimeout(total=30.0)
                                             ) as response:
                                                 result = await response.json()
                                                 if result.get('status') == 'error':
                                                     err_detail = result.get('message', '未知错误')
-                                                    logger.error(f"[{lanlan_name}] 热重置记忆处理失败: {err_detail}")
+                                                    logger.error(f"[{lanlan_name}] 热重置记忆处理失败 ({_renew_endpoint}): {err_detail}")
                                                     if status_callback:
                                                         try:
                                                             status_callback(f"⚠️ 热重置记忆失败: {err_detail}")
                                                         except Exception:
                                                             pass
                                                 else:
-                                                    logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server")
+                                                    logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server ({_renew_endpoint})")
                                     except RuntimeError as e:
                                         if "shutdown" in str(e).lower() or "closed" in str(e).lower():
-                                            logger.info(f"[{lanlan_name}] 进程正在关闭，renew请求已取消")
+                                            logger.info(f"[{lanlan_name}] 进程正在关闭，{_renew_endpoint}请求已取消")
                                         else:
-                                            logger.exception(f"[{lanlan_name}] 调用 /renew API 失败: {type(e).__name__}: {e}")
+                                            logger.exception(f"[{lanlan_name}] 调用 /{_renew_endpoint} API 失败: {type(e).__name__}: {e}")
                                     except Exception as e:
-                                        logger.exception(f"[{lanlan_name}] 调用 /renew API 失败: {type(e).__name__}: {e}")
+                                        logger.exception(f"[{lanlan_name}] 调用 /{_renew_endpoint} API 失败: {type(e).__name__}: {e}")
                                 chat_history.clear()
                                 last_synced_index = 0
 
