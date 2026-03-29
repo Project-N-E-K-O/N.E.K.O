@@ -431,7 +431,9 @@
         "noAvailableModelsError": "没有可用的模型",
         "tagsPlaceholderInput": "输入标签，按空格添加",
         "prepareUploadFailedMessage": "准备上传失败: {{error}}",
-        "noCharacterCardSelected": "请先选择一个角色卡"
+        "noCharacterCardSelected": "请先选择一个角色卡",
+        "steamNotRunningTitle": "Steam 未运行",
+        "steamNotRunningMessage": "检测到Steam客户端未运行或未登录。\n\n创意工坊功能需要Steam客户端支持，请：\n1. 下载并安装Steam客户端\n2. 启动Steam并登录您的账号\n3. 重新打开此页面"
     },
     "dialogs": {
         "confirmLeave": "确认离开",

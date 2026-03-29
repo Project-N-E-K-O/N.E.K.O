@@ -431,7 +431,9 @@
         "noAvailableModelsError": "사용 가능한 모델이 없습니다",
         "tagsPlaceholderInput": "태그 입력, 스페이스로 추가",
         "prepareUploadFailedMessage": "업로드 준비 실패: {{error}}",
-        "noCharacterCardSelected": "먼저 캐릭터 카드를 선택해주세요"
+        "noCharacterCardSelected": "먼저 캐릭터 카드를 선택해주세요",
+        "steamNotRunningTitle": "Steam이 실행되지 않음",
+        "steamNotRunningMessage": "Steam 클라이언트가 실행되지 않거나 로그인되지 않았습니다.\n\n창작마당 기능을 사용하려면 Steam 클라이언트가 필요합니다:\n1. Steam 클라이언트를 다운로드하여 설치\n2. Steam을 실행하고 계정에 로그인\n3. 이 페이지를 다시 열어주세요"
     },
     "dialogs": {
         "confirmLeave": "휴가 확인",

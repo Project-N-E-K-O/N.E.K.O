@@ -431,7 +431,9 @@
         "noAvailableModelsError": "沒有可用的模型",
         "tagsPlaceholderInput": "輸入標籤，按空格添加",
         "prepareUploadFailedMessage": "準備上傳失敗: {{error}}",
-        "noCharacterCardSelected": "請先選擇一個角色卡"
+        "noCharacterCardSelected": "請先選擇一個角色卡",
+        "steamNotRunningTitle": "Steam 未運行",
+        "steamNotRunningMessage": "偵測到Steam用戶端未運行或未登入。\n\n創意工坊功能需要Steam用戶端支持，請：\n1. 下載並安裝Steam用戶端\n2. 啟動Steam並登入您的帳號\n3. 重新開啟此頁面"
     },
     "dialogs": {
         "confirmLeave": "確認離開",

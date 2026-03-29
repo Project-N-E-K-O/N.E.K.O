@@ -431,7 +431,9 @@
         "noAvailableModelsError": "No available models",
         "tagsPlaceholderInput": "Enter tags, press space to add",
         "prepareUploadFailedMessage": "Prepare upload failed: {{error}}",
-        "noCharacterCardSelected": "Please select a character card first"
+        "noCharacterCardSelected": "Please select a character card first",
+        "steamNotRunningTitle": "Steam Not Running",
+        "steamNotRunningMessage": "Steam client is not running or not logged in.\n\nWorkshop features require the Steam client. Please:\n1. Download and install the Steam client\n2. Launch Steam and log in to your account\n3. Reopen this page"
     },
     "dialogs": {
         "confirmLeave": "Confirm Leave",
