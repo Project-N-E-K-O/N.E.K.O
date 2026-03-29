@@ -156,6 +156,14 @@
             translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
         );
         setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
+        window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+            detail: {
+                cacheKey: cachedPreview.cacheKey,
+                dataUrl: cachedPreview.dataUrl,
+                modelType: cachedPreview.modelType,
+                capturedAt: cachedPreview.capturedAt
+            }
+        }));
     }
 
     function clearCachedPreview() {
@@ -164,6 +172,7 @@
         setPreviewImage('');
         setPreviewStatus(translateLabel('chat.avatarPreviewWaiting', '等待当前模型头像缓存生成'));
         setPreviewNote(translateLabel('chat.avatarPreviewHint', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
+        window.dispatchEvent(new CustomEvent('chat-avatar-preview-cleared'));
     }
 
     async function captureAvatarPreview() {
@@ -366,6 +375,20 @@
         clearCachedPreview();
         bindModelLoadListeners();
         scheduleAutoCapture('init');
+    };
+
+    mod.getCachedPreview = function getCachedPreview() {
+        return cachedPreview ? {
+            cacheKey: cachedPreview.cacheKey,
+            dataUrl: cachedPreview.dataUrl,
+            modelType: cachedPreview.modelType,
+            capturedAt: cachedPreview.capturedAt
+        } : null;
+    };
+
+    mod.getCurrentAvatarDataUrl = function getCurrentAvatarDataUrl() {
+        if (!hasUsableCachedPreview()) return '';
+        return cachedPreview.dataUrl || '';
     };
 
     window.appChatAvatar = mod;

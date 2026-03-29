@@ -40,6 +40,13 @@
         return window.reactChatWindowHost || null;
     }
 
+    function getAssistantAvatarUrl() {
+        if (!window.appChatAvatar || typeof window.appChatAvatar.getCurrentAvatarDataUrl !== 'function') {
+            return '';
+        }
+        return window.appChatAvatar.getCurrentAvatarDataUrl() || '';
+    }
+
     function nextReactMessageId(prefix) {
         _reactMessageSeq += 1;
         return (prefix || 'msg') + '-' + Date.now() + '-' + _reactMessageSeq;
@@ -62,6 +69,7 @@
     function buildReactTextMessage(messageId, role, author, timeText, text, status) {
         var cleanText = extractMessageText(text);
         if (!cleanText) return null;
+        var avatarUrl = role === 'assistant' ? getAssistantAvatarUrl() : '';
 
         return {
             id: messageId,
@@ -70,6 +78,7 @@
             time: timeText || getCurrentTimeString(),
             createdAt: Date.now(),
             avatarLabel: author ? String(author).trim().slice(0, 1).toUpperCase() : undefined,
+            avatarUrl: avatarUrl || undefined,
             blocks: [
                 {
                     type: 'text',
@@ -101,6 +110,7 @@
         host.updateMessage(messageId, {
             author: message.author,
             time: message.time,
+            avatarUrl: message.avatarUrl,
             blocks: message.blocks,
             status: status
         });
@@ -113,6 +123,22 @@
         var messageId = getOrAssignReactMessageId(element, role);
         host.updateMessage(messageId, {
             status: status
+        });
+    }
+
+    function refreshReactAssistantAvatars() {
+        var host = getReactChatHost();
+        if (!host || typeof host.getState !== 'function' || typeof host.updateMessage !== 'function') return;
+
+        var avatarUrl = getAssistantAvatarUrl();
+        var snapshot = host.getState();
+        if (!snapshot || !Array.isArray(snapshot.messages)) return;
+
+        snapshot.messages.forEach(function (message) {
+            if (!message || message.role !== 'assistant') return;
+            host.updateMessage(message.id, {
+                avatarUrl: avatarUrl || undefined
+            });
         });
     }
 
@@ -748,6 +774,9 @@
     window.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
     window.getCurrentTimeString = getCurrentTimeString;
     window.setReactMessageStatus = setReactMessageStatus;
+
+    window.addEventListener('chat-avatar-preview-updated', refreshReactAssistantAvatars);
+    window.addEventListener('chat-avatar-preview-cleared', refreshReactAssistantAvatars);
 
     // 音乐搜索纪元：向后兼容全局变量（原来定义在 app.js IIFE 外部的 currentMusicSearchEpoch）
     if (typeof window._musicSearchEpoch === 'undefined') {
