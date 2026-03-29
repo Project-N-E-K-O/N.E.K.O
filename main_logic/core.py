@@ -303,12 +303,12 @@ class LLMSessionManager:
 
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
-        
+
         # 如果是新消息的第一个chunk，清空TTS队列和缓存以打断之前的语音
         if is_first_chunk and self.use_tts:
             async with self.tts_cache_lock:
                 self.tts_pending_chunks.clear()
-            
+
             if self.tts_thread and self.tts_thread.is_alive():
                 # 清空响应队列中待发送的音频数据
                 while not self.tts_response_queue.empty():
@@ -316,7 +316,7 @@ class LLMSessionManager:
                         self.tts_response_queue.get_nowait()
                     except: # noqa
                         break
-        
+
         # 文本模式下，无论是否使用TTS，都要发送文本到前端显示
         await self.send_lanlan_response(text, is_first_chunk)
         
@@ -568,11 +568,15 @@ class LLMSessionManager:
                             {"role": self.lanlan_name, "text": text})
                     elif self.message_cache_for_new_session[-1]['role'] == self.lanlan_name:
                         self.message_cache_for_new_session[-1]['text'] += text
+                return True
+            return False
 
         except WebSocketDisconnect:
             logger.info("Frontend disconnected.")
+            return False
         except Exception as e:
             logger.error(f"💥 WS Send Lanlan Response Error: {e}")
+            return False
         
     async def handle_silence_timeout(self, *, expected_session=None):
         """处理语音输入静默超时：自动关闭session但保持live2d显示"""

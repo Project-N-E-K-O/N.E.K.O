@@ -8,6 +8,7 @@ import os
 import json
 import shutil
 import threading
+import math
 from datetime import date
 from copy import deepcopy
 from pathlib import Path
@@ -1563,6 +1564,9 @@ class ConfigManager:
             'REALTIME_MODEL_API_KEY': DEFAULT_REALTIME_MODEL_API_KEY,
             'TTS_MODEL_URL': DEFAULT_TTS_MODEL_URL,
             'TTS_MODEL_API_KEY': DEFAULT_TTS_MODEL_API_KEY,
+            'OPENCLAW_URL': "http://127.0.0.1:8089",
+            'OPENCLAW_TIMEOUT': 300.0,
+            'OPENCLAW_DEFAULT_SENDER_ID': "neko_user",
         }
 
         core_cfg = deepcopy(DEFAULT_CONFIG_DATA['core_config.json'])
@@ -1602,6 +1606,21 @@ class ConfigManager:
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
+
+        openclaw_url = core_cfg.get('openclawUrl')
+        if isinstance(openclaw_url, str) and openclaw_url.strip():
+            config['OPENCLAW_URL'] = openclaw_url.strip()
+        try:
+            openclaw_timeout = core_cfg.get('openclawTimeout', config['OPENCLAW_TIMEOUT'])
+            openclaw_timeout = float(openclaw_timeout)
+            if not math.isfinite(openclaw_timeout) or openclaw_timeout <= 0:
+                raise ValueError("openclawTimeout must be a positive finite number")
+            config['OPENCLAW_TIMEOUT'] = openclaw_timeout
+        except (TypeError, ValueError):
+            config['OPENCLAW_TIMEOUT'] = 300.0
+        openclaw_sender = core_cfg.get('openclawDefaultSenderId')
+        if isinstance(openclaw_sender, str) and openclaw_sender.strip():
+            config['OPENCLAW_DEFAULT_SENDER_ID'] = openclaw_sender.strip()
 
         core_api_profiles = get_core_api_profiles()
         assist_api_profiles = get_assist_api_profiles()
@@ -2374,4 +2393,3 @@ if __name__ == "__main__":
                 print(f"  {k}: {v}")
         else:
             print(f"{key}: {value}")
-
