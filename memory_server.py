@@ -125,8 +125,46 @@ enable_shutdown = False
 # 全局变量用于管理correction任务
 correction_tasks = {}  # {lanlan_name: asyncio.Task}
 correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
+# 每角色结算锁：首轮摘要期间阻塞 /new_dialog，确保热切换后读到最新数据
+_settle_locks: dict[str, asyncio.Lock] = {}
 # 强引用注册表：防止 fire-and-forget task 被 GC
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _get_settle_lock(lanlan_name: str) -> asyncio.Lock:
+    """获取指定角色的结算锁（懒创建）"""
+    if lanlan_name not in _settle_locks:
+        _settle_locks[lanlan_name] = asyncio.Lock()
+    return _settle_locks[lanlan_name]
+
+
+def _format_legacy_settings_as_text(settings: dict, lanlan_name: str) -> str:
+    """将旧版 settings JSON 转为自然语言格式，替代原始 json.dumps 输出。"""
+    if not settings:
+        return f"{lanlan_name}记得：（暂无记录）"
+
+    sections = []
+    for name, data in settings.items():
+        if not isinstance(data, dict) or not data:
+            continue
+        lines = []
+        for key, value in data.items():
+            if value is None or value == '' or value == []:
+                continue
+            if isinstance(value, list):
+                value_str = '、'.join(str(v) for v in value)
+            elif isinstance(value, dict):
+                parts = [f"{k}: {v}" for k, v in value.items() if v]
+                value_str = '、'.join(parts) if parts else str(value)
+            else:
+                value_str = str(value)
+            lines.append(f"- {key}：{value_str}")
+        if lines:
+            sections.append(f"关于{name}：\n" + "\n".join(lines))
+
+    if not sections:
+        return f"{lanlan_name}记得：（暂无记录）"
+    return f"{lanlan_name}记得：\n" + "\n".join(sections)
 
 
 def _spawn_background_task(coro) -> asyncio.Task:
@@ -507,15 +545,15 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
         uid = str(uuid4())
         input_history = convert_to_messages(json.loads(request.input_history))
         logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
-        await recent_history_manager.update_history(input_history, lanlan_name, detailed=True)
-        # 旧模块已禁用：
-        # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
-        # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
-        await time_manager.store_conversation(uid, input_history, lanlan_name)
+        # 首轮摘要带锁：阻塞 /new_dialog 直到摘要+时间戳写入完成
+        async with _get_settle_lock(lanlan_name):
+            await recent_history_manager.update_history(input_history, lanlan_name, detailed=True)
+            await time_manager.store_conversation(uid, input_history, lanlan_name)
 
+        # 以下操作在锁外执行，不阻塞 /new_dialog
         # 异步事实提取
         _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
-        
+
         # 在后台启动review_history任务
         if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
             # 如果已有任务在运行，取消它
@@ -532,6 +570,45 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
         return {"status": "processed"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@app.post("/settle/{lanlan_name}")
+async def settle_conversation(request: HistoryRequest, lanlan_name: str):
+    """结算已通过 /cache 缓存的对话：触发摘要压缩 + 时间戳写入 + 事实提取。
+
+    当 cross_server 的 renew session 发现增量为 0（所有消息已 /cache 过）时调用此端点。
+    /cache 只做 update_history(compress=False)，不触发 LLM 摘要和 time_manager 写入，
+    本端点补全这些操作。
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    global correction_tasks
+    try:
+        uid = str(uuid4())
+        input_history = convert_to_messages(json.loads(request.input_history))
+        logger.info(f"[MemoryServer] settle: 收到 {lanlan_name} 的结算请求，消息数: {len(input_history)}")
+
+        async with _get_settle_lock(lanlan_name):
+            if input_history:
+                await time_manager.store_conversation(uid, input_history, lanlan_name)
+            await recent_history_manager.update_history([], lanlan_name, detailed=True)
+
+        if input_history:
+            _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
+
+        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
+            correction_tasks[lanlan_name].cancel()
+            try:
+                await correction_tasks[lanlan_name]
+            except asyncio.CancelledError:
+                pass
+        task = asyncio.create_task(_run_review_in_background(lanlan_name))
+        correction_tasks[lanlan_name] = task
+
+        return {"status": "settled"}
+    except Exception as e:
+        logger.error(f"[MemoryServer] settle 失败: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
 
 @app.get("/get_recent_history/{lanlan_name}")
 def get_recent_history(lanlan_name: str):
@@ -595,8 +672,8 @@ def get_settings(lanlan_name: str):
     )
     if persona_md:
         return persona_md
-    # 兼容回退
-    result = f"{lanlan_name}记得{json.dumps(settings_manager.get_settings(lanlan_name), ensure_ascii=False)}"
+    # 兼容回退（自然语言格式）
+    return _format_legacy_settings_as_text(settings_manager.get_settings(lanlan_name), lanlan_name)
     return result
 
 
@@ -658,84 +735,84 @@ async def new_dialog(lanlan_name: str):
     except Exception as e:
         logger.error(f"检查角色配置失败: {e}")
         return PlainTextResponse("")
-    
-    # 中断正在进行的correction任务
-    if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
-        logger.info(f"🛑 收到new_dialog请求，中断 {lanlan_name} 的correction任务")
-        
-        # 设置取消标志
-        if lanlan_name in correction_cancel_flags:
-            correction_cancel_flags[lanlan_name].set()
-        
-        # 取消任务
-        correction_tasks[lanlan_name].cancel()
-        try:
-            await correction_tasks[lanlan_name]
-        except asyncio.CancelledError:
-            logger.info(f"✅ {lanlan_name} 的correction任务已成功中断")
-        except Exception as e:
-            logger.warning(f"⚠️ 中断 {lanlan_name} 的correction任务时出现异常: {e}")
-    
-    # 正则表达式：删除所有类型括号及其内容（包括[]、()、{}、<>、【】、（）等）
-    brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
-    master_name, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
-    name_mapping['ai'] = lanlan_name
-    _lang = get_global_language()
 
-    # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
+    # 等待 /renew 或 /settle 的首轮摘要完成，确保读到最新数据
+    async with _get_settle_lock(lanlan_name):
+        # 中断正在进行的correction任务
+        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
+            logger.info(f"🛑 收到new_dialog请求，中断 {lanlan_name} 的correction任务")
+
+            if lanlan_name in correction_cancel_flags:
+                correction_cancel_flags[lanlan_name].set()
+
+            correction_tasks[lanlan_name].cancel()
+            try:
+                await correction_tasks[lanlan_name]
+            except asyncio.CancelledError:
+                logger.info(f"✅ {lanlan_name} 的correction任务已成功中断")
+            except Exception as e:
+                logger.warning(f"⚠️ 中断 {lanlan_name} 的correction任务时出现异常: {e}")
+
+        # 正则表达式：删除所有类型括号及其内容（包括[]、()、{}、<>、【】、（）等）
+        brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
+        master_name, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
+        name_mapping['ai'] = lanlan_name
+        _lang = get_global_language()
+
+        # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
     # pending + confirmed 反思也注入上下文（分区标注）
-    pending_reflections = reflection_engine.get_pending_reflections(lanlan_name)
-    confirmed_reflections = reflection_engine.get_confirmed_reflections(lanlan_name)
-    result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
-    persona_md = persona_manager.render_persona_markdown(
-        lanlan_name, pending_reflections, confirmed_reflections,
-    )
-    if persona_md:
-        result += persona_md
-    else:
-        # 兼容回退：使用旧 settings
-        result += f"{lanlan_name}记得{json.dumps(settings_manager.get_settings(lanlan_name), ensure_ascii=False)}\n"
-
-    # ── [动态部分] 内心活动（每次变化） ──
-    result += _loc(INNER_THOUGHTS_HEADER, _lang).format(name=lanlan_name)
-    result += _loc(INNER_THOUGHTS_DYNAMIC, _lang).format(
-        name=lanlan_name,
-        time=get_timestamp(),
-    )
-
-    # ── 距上次聊天间隔提示 ──
-    try:
-        from datetime import datetime as _dt
-        last_time = time_manager.get_last_conversation_time(lanlan_name)
-        if last_time:
-            gap = _dt.now() - last_time
-            gap_seconds = gap.total_seconds()
-            if gap_seconds >= 3600:  # ≥ 1小时才显示
-                hours = int(gap_seconds // 3600)
-                minutes = int((gap_seconds % 3600) // 60)
-                if minutes:
-                    elapsed = _loc(ELAPSED_TIME_HM, _lang).format(h=hours, m=minutes)
-                else:
-                    elapsed = _loc(ELAPSED_TIME_H, _lang).format(h=hours)
-
-                if gap_seconds >= 18000:  # ≥ 5小时：当前时间 + 间隔 + 长间隔提示，不额外换行
-                    now_str = _dt.now().strftime("%Y-%m-%d %H:%M")
-                    result += _loc(CHAT_GAP_CURRENT_TIME, _lang).format(now=now_str)
-                    result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed)
-                    result += _loc(CHAT_GAP_LONG_HINT, _lang).format(name=lanlan_name, master=master_name) + "\n"
-                else:
-                    result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed) + "\n"
-    except Exception as e:
-        logger.warning(f"计算聊天间隔失败: {e}")
-
-    for i in recent_history_manager.get_recent_history(lanlan_name):
-        if isinstance(i.content, str):
-            cleaned_content = brackets_pattern.sub('', i.content).strip()
-            result += f"{name_mapping[i.type]} | {cleaned_content}\n"
+        pending_reflections = reflection_engine.get_pending_reflections(lanlan_name)
+        confirmed_reflections = reflection_engine.get_confirmed_reflections(lanlan_name)
+        result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
+        persona_md = persona_manager.render_persona_markdown(
+            lanlan_name, pending_reflections, confirmed_reflections,
+        )
+        if persona_md:
+            result += persona_md
         else:
-            texts = [brackets_pattern.sub('', j['text']).strip() for j in i.content if j['type'] == 'text']
-            result += f"{name_mapping[i.type]} | " + "\n".join(texts) + "\n"
-    return PlainTextResponse(result)
+            # 兼容回退：使用旧 settings（自然语言格式）
+            result += _format_legacy_settings_as_text(settings_manager.get_settings(lanlan_name), lanlan_name) + "\n"
+
+        # ── [动态部分] 内心活动（每次变化） ──
+        result += _loc(INNER_THOUGHTS_HEADER, _lang).format(name=lanlan_name)
+        result += _loc(INNER_THOUGHTS_DYNAMIC, _lang).format(
+            name=lanlan_name,
+            time=get_timestamp(),
+        )
+
+        # ── 距上次聊天间隔提示 ──
+        try:
+            from datetime import datetime as _dt
+            last_time = time_manager.get_last_conversation_time(lanlan_name)
+            if last_time:
+                gap = _dt.now() - last_time
+                gap_seconds = gap.total_seconds()
+                if gap_seconds >= 3600:  # ≥ 1小时才显示
+                    hours = int(gap_seconds // 3600)
+                    minutes = int((gap_seconds % 3600) // 60)
+                    if minutes:
+                        elapsed = _loc(ELAPSED_TIME_HM, _lang).format(h=hours, m=minutes)
+                    else:
+                        elapsed = _loc(ELAPSED_TIME_H, _lang).format(h=hours)
+
+                    if gap_seconds >= 18000:  # ≥ 5小时：当前时间 + 间隔 + 长间隔提示，不额外换行
+                        now_str = _dt.now().strftime("%Y-%m-%d %H:%M")
+                        result += _loc(CHAT_GAP_CURRENT_TIME, _lang).format(now=now_str)
+                        result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed)
+                        result += _loc(CHAT_GAP_LONG_HINT, _lang).format(name=lanlan_name, master=master_name) + "\n"
+                    else:
+                        result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed) + "\n"
+        except Exception as e:
+            logger.warning(f"计算聊天间隔失败: {e}")
+
+        for i in recent_history_manager.get_recent_history(lanlan_name):
+            if isinstance(i.content, str):
+                cleaned_content = brackets_pattern.sub('', i.content).strip()
+                result += f"{name_mapping[i.type]} | {cleaned_content}\n"
+            else:
+                texts = [brackets_pattern.sub('', j['text']).strip() for j in i.content if j['type'] == 'text']
+                result += f"{name_mapping[i.type]} | " + "\n".join(texts) + "\n"
+        return PlainTextResponse(result)
 
 if __name__ == "__main__":
     import threading
