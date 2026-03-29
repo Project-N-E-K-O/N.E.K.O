@@ -20,6 +20,14 @@ export default function App({
   messages = defaultMessages,
   inputPlaceholder = '输入消息...',
   sendButtonLabel = '发送',
+  emptyText = '聊天内容接入后会显示在这里。',
+  chatWindowAriaLabel = 'Neko chat window',
+  messageListAriaLabel = 'Chat messages',
+  composerToolsAriaLabel = 'Composer tools',
+  emojiButtonAriaLabel = '表情',
+  attachmentButtonAriaLabel = '附件',
+  streamingStatusLabel = '生成中',
+  failedStatusLabel = '发送失败',
   onMessageAction,
   onComposerSubmit,
 }: ChatWindowProps) {
@@ -34,7 +42,7 @@ export default function App({
 
   return (
     <main className="app-shell">
-      <section className="chat-window" aria-label="Neko chat window">
+      <section className="chat-window" aria-label={chatWindowAriaLabel}>
         <header className="window-topbar">
           <div className="window-title-group">
             <div className="window-avatar window-avatar-image-shell">
@@ -45,13 +53,20 @@ export default function App({
         </header>
 
         <section className="chat-body">
-          <MessageList messages={messages} onAction={onMessageAction} />
+          <MessageList
+            messages={messages}
+            emptyText={emptyText}
+            ariaLabel={messageListAriaLabel}
+            streamingStatusLabel={streamingStatusLabel}
+            failedStatusLabel={failedStatusLabel}
+            onAction={onMessageAction}
+          />
         </section>
 
         <footer className="composer-panel">
-          <div className="composer-toolbar" aria-label="Composer tools">
-            <button className="tool-button" type="button" aria-label="表情">☺</button>
-            <button className="tool-button" type="button" aria-label="附件">＋</button>
+          <div className="composer-toolbar" aria-label={composerToolsAriaLabel}>
+            <button className="tool-button" type="button" aria-label={emojiButtonAriaLabel}>☺</button>
+            <button className="tool-button" type="button" aria-label={attachmentButtonAriaLabel}>＋</button>
           </div>
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();

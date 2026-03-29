@@ -148,7 +148,15 @@
             iconSrc: '/static/icons/chat_icon.png',
             inputPlaceholder: inputPlaceholder,
             sendButtonLabel: sendButtonLabel,
-            inputHint: 'Enter ' + sendButtonLabel + '，Shift + Enter 换行'
+            emptyText: getI18nText('chat.emptyState', '聊天内容接入后会显示在这里。'),
+            chatWindowAriaLabel: getI18nText('chat.reactWindowAriaLabel', 'Neko chat window'),
+            messageListAriaLabel: getI18nText('chat.messageListAriaLabel', 'Chat messages'),
+            composerToolsAriaLabel: getI18nText('chat.composerToolsAriaLabel', 'Composer tools'),
+            emojiButtonAriaLabel: getI18nText('chat.emojiButtonAriaLabel', '表情'),
+            attachmentButtonAriaLabel: getI18nText('chat.attachmentButtonAriaLabel', '附件'),
+            streamingStatusLabel: getI18nText('chat.messageStreaming', '生成中'),
+            failedStatusLabel: getI18nText('chat.messageFailed', '发送失败'),
+            inputHint: getI18nText('chat.reactWindowInputHint', 'Enter 发送，Shift + Enter 换行')
         };
     }
 
@@ -526,12 +534,12 @@
         var button = getMinimizeButton();
         var icon = getMinimizeIcon();
         if (button) {
-            button.setAttribute('aria-label', minimized ? '恢复新版聊天框' : '最小化新版聊天框');
-            button.title = minimized ? '恢复' : '最小化';
+            button.setAttribute('aria-label', minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框'));
+            button.title = minimized ? getI18nText('chat.reactWindowRestoreShort', '恢复') : getI18nText('chat.reactWindowMinimizeShort', '最小化');
         }
         if (icon) {
             icon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
-            icon.alt = minimized ? '恢复新版聊天框' : '最小化新版聊天框';
+            icon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框');
         }
     }
 
@@ -546,7 +554,7 @@
         ensureBundleLoaded()
             .then(function () {
                 if (!mountWindow()) {
-                    showToast('新版聊天框挂载失败', 3000);
+                    showToast(getI18nText('chat.reactWindowMountFailed', '新版聊天框挂载失败'), 3000);
                     return;
                 }
                 setMinimized(false);
@@ -556,7 +564,7 @@
             })
             .catch(function (error) {
                 console.error('[ReactChatWindow] open failed:', error);
-                showToast('新版聊天框资源加载失败', 3500);
+                showToast(getI18nText('chat.reactWindowLoadFailed', '新版聊天框资源加载失败'), 3500);
             });
     }
 

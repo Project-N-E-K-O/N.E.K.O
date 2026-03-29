@@ -4,6 +4,9 @@ import { type ChatMessage, type MessageAction } from './message-schema';
 type MessageListProps = {
   messages: ChatMessage[];
   emptyText?: string;
+  ariaLabel?: string;
+  streamingStatusLabel?: string;
+  failedStatusLabel?: string;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 
@@ -23,23 +26,28 @@ function shouldGroupWithPrevious(current: ChatMessage, previous?: ChatMessage) {
 export default function MessageList({
   messages,
   emptyText = '聊天内容接入后会显示在这里。',
+  ariaLabel = 'Chat messages',
+  streamingStatusLabel = '生成中',
+  failedStatusLabel = '发送失败',
   onAction,
 }: MessageListProps) {
   if (messages.length === 0) {
     return (
-      <div className="message-list" aria-label="Chat messages">
+      <div className="message-list" aria-label={ariaLabel}>
         <div className="message-empty-state">{emptyText}</div>
       </div>
     );
   }
 
   return (
-    <div className="message-list" aria-label="Chat messages" data-message-list-kind="static">
+    <div className="message-list" aria-label={ariaLabel} data-message-list-kind="static">
       {messages.map((message, index) => (
         <MessageBubble
           key={message.id}
           message={message}
           isGroupedWithPrevious={shouldGroupWithPrevious(message, messages[index - 1])}
+          streamingStatusLabel={streamingStatusLabel}
+          failedStatusLabel={failedStatusLabel}
           onAction={onAction}
         />
       ))}
