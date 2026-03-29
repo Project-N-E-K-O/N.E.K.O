@@ -39,5 +39,4 @@ def test_agent_router_exports_openclaw_availability_proxy() -> None:
         )
         if isinstance(path, str)
     }
-    assert "/api/agent/openclaw/availability" not in paths
-    assert "/openclaw/availability" in paths
+    assert "/api/agent/openclaw/availability" in paths

@@ -113,6 +113,15 @@ class PersonaManager:
             'relationship': {'dynamics': []},
         }
 
+    def _is_persona_empty(self, persona: dict) -> bool:
+        """Check if all fact/dynamics lists are empty."""
+        for section in persona.values():
+            if isinstance(section, dict):
+                for lst in section.values():
+                    if isinstance(lst, list) and lst:
+                        return False
+        return True
+
     def ensure_persona(self, name: str) -> dict:
         """Load or create persona. Auto-migrate from legacy settings if needed."""
         if name in self._personas:
@@ -124,6 +133,9 @@ class PersonaManager:
                 with open(path, encoding='utf-8') as f:
                     data = json.load(f)
                 if isinstance(data, dict):
+                    if self._is_persona_empty(data):
+                        self._migrate_from_settings(name, data)
+                        self.save_persona(name, data)
                     self._personas[name] = data
                     return data
                 logger.warning(f"[Persona] {name}: persona 文件不是 dict，忽略")
@@ -138,45 +150,102 @@ class PersonaManager:
         return persona
 
     def _migrate_from_settings(self, name: str, persona: dict) -> None:
-        """One-time migration from legacy settings_{name}.json to persona format."""
+        """One-time migration from legacy settings + character card to persona format.
+
+        数据来源优先级：
+        1. lanlan_basic_config / master_basic_config（角色卡 JSON）
+        2. settings.json（LLM 从对话中提取的设定）
+        两者合并后写入 persona，角色卡来源的条目标记 protected=True。
+        """
         from memory import ensure_character_dir
+        from config import CHARACTER_RESERVED_FIELDS
+
+        _, _, master_basic_config, lanlan_basic_config, name_mapping, _, _, _, _ = (
+            self._config_manager.get_character_data()
+        )
+        master_name = name_mapping.get('human', '主人')
+        excluded_fields = set(CHARACTER_RESERVED_FIELDS)
+        migrated_count = 0
+
+        # 确保 persona 有完整的默认结构，防止 KeyError
+        for section_key, inner_key in [('ai', 'facts'), ('user', 'facts'), ('relationship', 'dynamics')]:
+            persona.setdefault(section_key, {}).setdefault(inner_key, [])
+
+        def _is_migratable(val) -> bool:
+            """仅排除 None、空白字符串、空容器；保留 0/False 等标量假值。"""
+            if val is None:
+                return False
+            if isinstance(val, str):
+                return bool(val.strip())
+            if isinstance(val, (list, dict, set, tuple)):
+                return len(val) > 0
+            return True  # int 0, bool False 等合法标量
+
+        # ── 1. 从角色卡基础配置迁移 ──
+        if name in lanlan_basic_config:
+            ai_card = {k: v for k, v in lanlan_basic_config[name].items()
+                       if k not in excluded_fields and _is_migratable(v)}
+            for k, v in ai_card.items():
+                if isinstance(v, (dict, set, tuple)):
+                    continue  # 跳过嵌套结构
+                if isinstance(v, list):
+                    v = '、'.join(str(item) for item in v)
+                entry = self._normalize_entry(f"{k}: {v}")
+                entry['protected'] = True
+                persona['ai']['facts'].append(entry)
+                migrated_count += 1
+
+        if master_basic_config and isinstance(master_basic_config, dict):
+            for k, v in master_basic_config.items():
+                if k not in excluded_fields and _is_migratable(v):
+                    if isinstance(v, (dict, set, tuple)):
+                        continue
+                    if isinstance(v, list):
+                        v = '、'.join(str(item) for item in v)
+                    entry = self._normalize_entry(f"{k}: {v}")
+                    entry['protected'] = True
+                    persona['user']['facts'].append(entry)
+                    migrated_count += 1
+
+        # ── 2. 从 settings.json 迁移（LLM 提取的设定）──
         char_dir = ensure_character_dir(self._config_manager.memory_dir, name)
         settings_path = os.path.join(char_dir, 'settings.json')
-        # 也检查旧路径（迁移前）
         if not os.path.exists(settings_path):
             old_path = os.path.join(str(self._config_manager.memory_dir), f'settings_{name}.json')
             if os.path.exists(old_path):
                 settings_path = old_path
-        if not os.path.exists(settings_path):
-            return
-        try:
-            with open(settings_path, encoding='utf-8') as f:
-                old_settings = json.load(f)
-            if not isinstance(old_settings, dict):
-                return
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, encoding='utf-8') as f:
+                    old_settings = json.load(f)
+                if isinstance(old_settings, dict):
+                    # 按 target section 分别去重，避免跨 section 误去重
+                    def _existing_texts_for(facts_list):
+                        return {e.get('text', '') for e in facts_list if isinstance(e, dict)}
 
-            _, _, _, _, name_mapping, _, _, _, _ = self._config_manager.get_character_data()
-            master_name = name_mapping.get('human', '主人')
+                    for section_key, facts_dict in old_settings.items():
+                        if not isinstance(facts_dict, dict):
+                            continue
+                        if section_key == master_name or section_key == name_mapping.get('human', ''):
+                            target = persona['user']['facts']
+                        elif section_key == name:
+                            target = persona['ai']['facts']
+                        else:
+                            target = persona['relationship']['dynamics']
 
-            for section_key, facts_list in old_settings.items():
-                if not isinstance(facts_list, dict):
-                    continue
-                if section_key == master_name or section_key == name_mapping.get('human', ''):
-                    target = persona['user']['facts']
-                elif section_key == name:
-                    target = persona['ai']['facts']
-                else:
-                    target = persona['relationship']['dynamics']
+                        seen = _existing_texts_for(target)
+                        for k, v in facts_dict.items():
+                            if _is_migratable(v):
+                                text = f"{k}: {v}"
+                                if text not in seen:
+                                    target.append(self._normalize_entry(text))
+                                    seen.add(text)
+                                    migrated_count += 1
+            except Exception as e:
+                logger.warning(f"[Persona] {name}: settings.json 读取失败: {e}")
 
-                for k, v in facts_list.items():
-                    if v and str(v).strip():
-                        entry = self._normalize_entry(f"{k}: {v}")
-                        entry['protected'] = True  # 角色 JSON 来源，不可 suppress
-                        target.append(entry)
-
-            logger.info(f"[Persona] {name}: 从 settings 迁移了 persona 数据")
-        except Exception as e:
-            logger.warning(f"[Persona] {name}: settings 迁移失败: {e}")
+        if migrated_count:
+            logger.info(f"[Persona] {name}: 迁移了 {migrated_count} 条 persona 数据（角色卡 + settings）")
 
     def save_persona(self, name: str, persona: dict | None = None) -> None:
         if persona is None:

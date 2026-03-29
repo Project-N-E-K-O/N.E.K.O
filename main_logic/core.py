@@ -1301,7 +1301,9 @@ class LLMSessionManager:
                     on_repetition_detected=self.handle_repetition_detected,
                     on_response_discarded=self.handle_response_discarded,
                     on_status_message=self.send_status,
-                    max_response_length=guard_max_length
+                    max_response_length=guard_max_length,
+                    lanlan_name=self.lanlan_name,
+                    master_name=self.master_name
                 )
                 new_session.on_proactive_done = self.handle_proactive_complete
             else:
@@ -1727,7 +1729,9 @@ class LLMSessionManager:
                     on_repetition_detected=self.handle_repetition_detected,
                     on_response_discarded=self.handle_response_discarded,
                     on_status_message=self.send_status,
-                    max_response_length=guard_max_length
+                    max_response_length=guard_max_length,
+                    lanlan_name=self.lanlan_name,
+                    master_name=self.master_name
                 )
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
