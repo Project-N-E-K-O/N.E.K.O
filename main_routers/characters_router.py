@@ -1064,7 +1064,11 @@ async def get_catgirl_voice_mode_status(name: str):
 async def rename_catgirl(old_name: str, request: Request):
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception as e:
+        logger.warning(f"解析猫娘重命名请求体失败: {e}")
+        return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
     new_name = data.get('new_name') if data else None
     if not new_name:
         return JSONResponse({'success': False, 'error': '新档案名不能为空'}, status_code=400)
@@ -1269,7 +1273,11 @@ async def reload_character_config():
 
 @router.post('/master')
 async def update_master(request: Request):
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception as e:
+        logger.warning(f"解析主人更新请求体失败: {e}")
+        return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
     if not data:
         return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
     profile_name = data.get('档案名')
@@ -1287,9 +1295,61 @@ async def update_master(request: Request):
     return {"success": True}
 
 
+@router.post('/master/{old_name}/rename')
+async def rename_master(old_name: str, request: Request):
+    """重命名主人档案"""
+    _config_manager = get_config_manager()
+    try:
+        data = await request.json()
+    except Exception as e:
+        logger.warning(f"解析主人重命名请求体失败: {e}")
+        return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
+    new_name = data.get('new_name') if data else None
+    if not new_name:
+        return JSONResponse({'success': False, 'error': '新档案名不能为空'}, status_code=400)
+
+    new_name = str(new_name).strip()
+    err = _validate_profile_name(new_name)
+    if err:
+        return JSONResponse({'success': False, 'error': err.replace('档案名', '新档案名')}, status_code=400)
+
+    async with _ugc_sync_lock:
+        characters = _config_manager.load_characters()
+        if '主人' not in characters or not characters['主人']:
+            return JSONResponse({'success': False, 'error': '主人档案不存在'}, status_code=404)
+
+        current_master = characters['主人'].get('档案名', '')
+        if current_master != old_name:
+            return JSONResponse({'success': False, 'error': '原主人档案名不匹配'}, status_code=400)
+
+        if new_name in characters.get('猫娘', {}):
+            return JSONResponse({'success': False, 'error': '新档案名与已有猫娘名称冲突'}, status_code=400)
+
+        characters['主人']['档案名'] = new_name
+        _config_manager.save_characters(characters)
+
+    try:
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+    except Exception as e:
+        logger.error(f"重命名后重新加载配置失败: {e}")
+        return JSONResponse({
+            'success': True,
+            'partial_success': True,
+            'renamed': True,
+            'reload_error': str(e)
+        }, status_code=200)
+
+    return {"success": True}
+
+
 @router.post('/catgirl')
 async def add_catgirl(request: Request):
-    raw_data = await request.json()
+    try:
+        raw_data = await request.json()
+    except Exception as e:
+        logger.warning(f"解析添加猫娘请求体失败: {e}")
+        return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
     if not raw_data:
         return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
 
@@ -1350,7 +1410,11 @@ async def add_catgirl(request: Request):
 
 @router.put('/catgirl/{name}')
 async def update_catgirl(name: str, request: Request):
-    raw_data = await request.json()
+    try:
+        raw_data = await request.json()
+    except Exception as e:
+        logger.warning(f"解析更新猫娘请求体失败: {e}")
+        return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
     if not raw_data:
         return JSONResponse({'success': False, 'error': '无数据'}, status_code=400)
 
