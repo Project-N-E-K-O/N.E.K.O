@@ -431,7 +431,9 @@
         "noAvailableModelsError": "利用可能なモデルがありません",
         "tagsPlaceholderInput": "タグを入力、スペースで追加",
         "prepareUploadFailedMessage": "アップロードの準備に失敗しました: {{error}}",
-        "noCharacterCardSelected": "先にキャラクターカードを選択してください"
+        "noCharacterCardSelected": "先にキャラクターカードを選択してください",
+        "steamNotRunningTitle": "Steamが実行されていません",
+        "steamNotRunningMessage": "Steamクライアントが実行されていないか、ログインしていません。\n\nワークショップ機能にはSteamクライアントが必要です：\n1. Steamクライアントをダウンロードしてインストール\n2. Steamを起動してアカウントにログイン\n3. このページを再度開いてください"
     },
     "dialogs": {
         "confirmLeave": "退出の確認",
