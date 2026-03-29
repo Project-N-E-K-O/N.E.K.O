@@ -1453,19 +1453,20 @@ async def rename_master(old_name: str, request: Request):
     if err:
         return JSONResponse({'success': False, 'error': err.replace('档案名', '新档案名')}, status_code=400)
 
-    characters = _config_manager.load_characters()
-    if '主人' not in characters or not characters['主人']:
-        return JSONResponse({'success': False, 'error': '主人档案不存在'}, status_code=404)
+    async with _ugc_sync_lock:
+        characters = _config_manager.load_characters()
+        if '主人' not in characters or not characters['主人']:
+            return JSONResponse({'success': False, 'error': '主人档案不存在'}, status_code=404)
 
-    current_master = characters['主人'].get('档案名', '')
-    if current_master != old_name:
-        return JSONResponse({'success': False, 'error': '原主人档案名不匹配'}, status_code=400)
+        current_master = characters['主人'].get('档案名', '')
+        if current_master != old_name:
+            return JSONResponse({'success': False, 'error': '原主人档案名不匹配'}, status_code=400)
 
-    if new_name in characters.get('猫娘', {}):
-        return JSONResponse({'success': False, 'error': '新档案名与已有猫娘名称冲突'}, status_code=400)
+        if new_name in characters.get('猫娘', {}):
+            return JSONResponse({'success': False, 'error': '新档案名与已有猫娘名称冲突'}, status_code=400)
 
-    characters['主人']['档案名'] = new_name
-    _config_manager.save_characters(characters)
+        characters['主人']['档案名'] = new_name
+        _config_manager.save_characters(characters)
 
     initialize_character_data = get_initialize_character_data()
     await initialize_character_data()
