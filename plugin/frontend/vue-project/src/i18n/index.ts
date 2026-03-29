@@ -36,7 +36,8 @@ function resolveLocaleFromBrowser(): AppLocale {
     if (langCode === 'ru') return 'ru'
     if (langCode === 'zh') {
       const upper = lang.toUpperCase()
-      if (upper.includes('TW') || upper.includes('HK') || upper.includes('MO') || upper.includes('HANT')) {
+      if (upper.includes('HANS')) return 'zh-CN'
+      if (upper.includes('HANT') || upper.includes('TW') || upper.includes('HK') || upper.includes('MO')) {
         return 'zh-TW'
       }
       return 'zh-CN'
