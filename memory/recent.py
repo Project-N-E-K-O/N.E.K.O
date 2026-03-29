@@ -36,9 +36,8 @@ class CompressedRecentHistoryManager:
 
     def _get_default_path(self, lanlan_name: str) -> str:
         """统一获取默认路径，避免重复代码。"""
-        self._config_manager.ensure_memory_directory()
-        memory_base = str(self._config_manager.memory_dir)
-        return os.path.join(memory_base, f'recent_{lanlan_name}.json')
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, lanlan_name), 'recent.json')
 
     def _ensure_path_for_character(self, lanlan_name: str) -> str:
         """确保角色有有效的文件路径，返回路径。"""

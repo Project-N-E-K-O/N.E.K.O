@@ -28,6 +28,7 @@ from main_logic.agent_event_bus import AgentServerEventBridge
 try:
     from brain.computer_use import ComputerUseAdapter
     from brain.browser_use_adapter import BrowserUseAdapter
+    from brain.openclaw_adapter import OpenClawAdapter
     from brain.openfang_adapter import OpenFangAdapter
     from brain.deduper import TaskDeduper
     from brain.task_executor import DirectTaskExecutor
@@ -49,6 +50,7 @@ app = FastAPI(title="N.E.K.O Tool Server")
 class Modules:
     computer_use: ComputerUseAdapter | None = None
     browser_use: BrowserUseAdapter | None = None
+    openclaw: OpenClawAdapter | None = None
     openfang: OpenFangAdapter | None = None
     deduper: TaskDeduper | None = None
     task_executor: DirectTaskExecutor | None = None
@@ -72,7 +74,13 @@ class Modules:
     active_browser_use_task_id: Optional[str] = None
     active_browser_use_bg_task: Optional[asyncio.Task] = None
     # Agent feature flags (controlled by UI)
-    agent_flags: Dict[str, Any] = {"computer_use_enabled": False, "browser_use_enabled": False, "user_plugin_enabled": False, "openfang_enabled": False}
+    agent_flags: Dict[str, Any] = {
+        "computer_use_enabled": False,
+        "browser_use_enabled": False,
+        "user_plugin_enabled": False,
+        "openclaw_enabled": False,
+        "openfang_enabled": False,
+    }
     # Notification queue for frontend (one-time messages)
     notification: Optional[str] = None
     # 使用统一的速率限制日志记录器（业务逻辑层面）
@@ -87,6 +95,7 @@ class Modules:
         "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "user_plugin": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
+        "openclaw": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "openfang": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
     }
     _background_tasks: ClassVar[set] = set()
@@ -104,6 +113,10 @@ PLUGIN_NAME_CACHE_TTL: float = 30.0  # 缓存 30 秒
 TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # 已完成任务保留 5 分钟
 DEFERRED_TASK_TIMEOUT: float = 3600.0  # deferred 任务超时 1 小时
 _task_registry_last_cleanup: float = 0.0
+
+
+def _default_openclaw_task_description() -> str:
+    return _rp_phrase('openclaw_processing', _rp_lang(None))
 
 
 def _cleanup_task_registry() -> List[Dict[str, Any]]:
@@ -605,6 +618,7 @@ async def _emit_task_result(
     summary: str,
     detail: str = "",
     error_message: str = "",
+    direct_reply: bool = False,
 ) -> None:
     """Emit a structured task_result event to main_server."""
     if success:
@@ -627,6 +641,7 @@ async def _emit_task_result(
         summary=summary[:_SUMMARY_LIMIT],
         detail=detail[:_DETAIL_LIMIT] if detail else "",
         error_message=error_message[:_ERROR_LIMIT] if error_message else "",
+        direct_reply=direct_reply,
         timestamp=_now_iso(),
     )
 
@@ -670,6 +685,10 @@ def _check_agent_api_gate() -> Dict[str, Any]:
         return {"ready": ok, "reasons": reasons, "is_free_version": cm.is_free_version()}
     except Exception as e:
         return {"ready": False, "reasons": [f"Agent API check failed: {e}"], "is_free_version": False}
+
+
+def _get_plugin_display_id(plugin_id: str) -> str:
+    return _get_plugin_friendly_name(plugin_id) or plugin_id
 
 
 async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payload) -> None:
@@ -1170,12 +1189,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 }
                 # Emit task_update (running) so AgentHUD shows a running card
                 try:
-                    await _emit_main_event(
-                        "task_update", lanlan_name,
-                        task={"id": result.task_id, "status": "running", "type": "user_plugin",
-                              "start_time": up_start,
-                              "params": task_params},
-                    )
+                    _initial_task_payload: Dict[str, Any] = {
+                        "id": result.task_id, "status": "running", "type": "user_plugin",
+                        "start_time": up_start,
+                        "params": task_params,
+                    }
+                    await _emit_main_event("task_update", lanlan_name, task=_initial_task_payload)
                 except Exception as emit_err:
                     logger.debug("[TaskExecutor] emit task_update(running) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
                 async def _on_plugin_progress(
@@ -1252,7 +1271,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
                             if not _suppress_reply:
                                 _lang = _rp_lang(None)
-                                summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
+                                display_id = _get_plugin_display_id(plugin_id)
+                                summary = _rp_phrase('plugin_done_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=display_id)
                                 try:
                                     await _emit_task_result(
                                         lanlan_name,
@@ -1261,6 +1281,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                         success=True,
                                         summary=summary[:500],
                                         detail=detail,
+                                        direct_reply=False,
                                     )
                                 except Exception as emit_err:
                                     logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
@@ -1269,7 +1290,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             if not _suppress_reply:
                                 _lang = _rp_lang(None)
                                 try:
-                                    _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
+                                    display_id = _get_plugin_display_id(plugin_id)
+                                    _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=display_id)
                                     await _emit_task_result(
                                         lanlan_name,
                                         channel="user_plugin",
@@ -1357,6 +1379,175 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 up_task.add_done_callback(_cleanup_up_task)
             else:
                 logger.warning("[UserPlugin] ⚠️ Task requires UserPlugin but it's disabled")
+        elif result.execution_method == 'openclaw':
+            if Modules.agent_flags.get("openclaw_enabled", False) and Modules.openclaw:
+                nk_start = _now_iso()
+                instruction = ""
+                if isinstance(result.tool_args, dict):
+                    instruction = str(result.tool_args.get("instruction") or "")
+                task_params = {"description": result.task_description or _default_openclaw_task_description()}
+                Modules.task_registry[result.task_id] = {
+                    "id": result.task_id,
+                    "type": "openclaw",
+                    "status": "running",
+                    "start_time": nk_start,
+                    "params": task_params,
+                    "lanlan_name": lanlan_name,
+                    "result": None,
+                    "error": None,
+                }
+                try:
+                    await _emit_main_event(
+                        "task_update",
+                        lanlan_name,
+                        task={
+                            "id": result.task_id,
+                            "status": "running",
+                            "type": "openclaw",
+                            "start_time": nk_start,
+                            "params": task_params,
+                        },
+                    )
+                except Exception as emit_err:
+                    logger.debug("[OpenClaw] emit task_update(running) failed: task_id=%s error=%s", result.task_id, emit_err)
+                try:
+                    await _emit_main_event(
+                        "proactive_message",
+                        lanlan_name,
+                        text="我试试",
+                        detail="我试试",
+                        direct_reply=True,
+                        timestamp=_now_iso(),
+                    )
+                except Exception as emit_err:
+                    logger.debug("[OpenClaw] emit proactive_message(ack) failed: task_id=%s error=%s", result.task_id, emit_err)
+                async def _run_openclaw_dispatch():
+                    try:
+                        nk_result = await Modules.openclaw.run_instruction(
+                            instruction,
+                            conversation_id=conversation_id,
+                            role_name=lanlan_name,
+                        )
+                        success = bool(nk_result.get("success"))
+                        reply = str(nk_result.get("reply") or "")
+                        _reg = Modules.task_registry.get(result.task_id)
+                        if _reg:
+                            _reg["status"] = "completed" if success else "failed"
+                            _reg["end_time"] = _now_iso()
+                            _reg["result"] = nk_result
+                            if not success:
+                                _reg["error"] = str(nk_result.get("error") or "")[:500]
+                        if success:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="openclaw",
+                                task_id=str(result.task_id or ""),
+                                success=True,
+                                summary=reply[:500] if reply else _rp_phrase('openclaw_done', _rp_lang(None)),
+                                detail=reply,
+                                direct_reply=False,
+                            )
+                        else:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="openclaw",
+                                task_id=str(result.task_id or ""),
+                                success=False,
+                                summary=_rp_phrase('openclaw_failed', _rp_lang(None)),
+                                error_message=str(nk_result.get("error") or "")[:500],
+                            )
+                        await _emit_main_event(
+                            "task_update",
+                            lanlan_name,
+                            task={
+                                "id": result.task_id,
+                                "status": "completed" if success else "failed",
+                                "type": "openclaw",
+                                "start_time": nk_start,
+                                "end_time": _now_iso(),
+                                "params": task_params,
+                                "error": str(nk_result.get("error") or "")[:500] if not success else None,
+                            },
+                        )
+                    except asyncio.CancelledError as e:
+                        cancel_msg = str(e)[:500] if str(e) else "cancelled"
+                        _reg = Modules.task_registry.get(result.task_id)
+                        if _reg:
+                            _reg["status"] = "cancelled"
+                            _reg["error"] = cancel_msg
+                        try:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="openclaw",
+                                task_id=str(result.task_id or ""),
+                                success=False,
+                                summary=_rp_phrase('openclaw_cancelled', _rp_lang(None)),
+                                error_message=cancel_msg,
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            await _emit_main_event(
+                                "task_update",
+                                lanlan_name,
+                                task={
+                                    "id": result.task_id,
+                                    "status": "cancelled",
+                                    "type": "openclaw",
+                                    "start_time": nk_start,
+                                    "end_time": _now_iso(),
+                                    "params": task_params,
+                                    "error": cancel_msg,
+                                },
+                            )
+                        except Exception:
+                            pass
+                        raise
+                    except Exception as e:
+                        logger.exception("[OpenClaw] dispatch failed: %s", e)
+                        _reg = Modules.task_registry.get(result.task_id)
+                        if _reg:
+                            _reg["status"] = "failed"
+                            _reg["error"] = str(e)[:500]
+                        try:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="openclaw",
+                                task_id=str(result.task_id or ""),
+                                success=False,
+                                summary=_rp_phrase('openclaw_dispatch_failed', _rp_lang(None)),
+                                error_message=str(e)[:500],
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            await _emit_main_event(
+                                "task_update",
+                                lanlan_name,
+                                task={
+                                    "id": result.task_id,
+                                    "status": "failed",
+                                    "type": "openclaw",
+                                    "start_time": nk_start,
+                                    "end_time": _now_iso(),
+                                    "params": task_params,
+                                    "error": str(e)[:500],
+                                },
+                            )
+                        except Exception:
+                            pass
+
+                nk_task = asyncio.create_task(_run_openclaw_dispatch())
+                Modules.task_async_handles[result.task_id] = nk_task
+                Modules._background_tasks.add(nk_task)
+
+                def _cleanup_nk_task(_t, _tid=result.task_id):
+                    Modules._background_tasks.discard(_t)
+                    Modules.task_async_handles.pop(_tid, None)
+
+                nk_task.add_done_callback(_cleanup_nk_task)
+            else:
+                logger.warning("[OpenClaw] ⚠️ Task requires OpenClaw but it's disabled")
         elif result.execution_method == 'browser_use':
             if Modules.agent_flags.get("browser_use_enabled", False) and Modules.browser_use:
                 sm = get_session_manager()
@@ -1674,7 +1865,12 @@ async def startup():
 
     os.environ["NEKO_PLUGIN_HOSTED_BY_AGENT"] = "true"
     Modules.computer_use = ComputerUseAdapter()
-    Modules.task_executor = DirectTaskExecutor(computer_use=Modules.computer_use, browser_use=None)
+    Modules.openclaw = OpenClawAdapter()
+    Modules.task_executor = DirectTaskExecutor(
+        computer_use=Modules.computer_use,
+        browser_use=None,
+        openclaw=Modules.openclaw,
+    )
     Modules.deduper = TaskDeduper()
     Modules.throttled_logger = ThrottledLogger(logger, interval=30.0)
     _rewire_computer_use_dependents()
@@ -2078,10 +2274,11 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     if not res.success:
                         info["error"] = (detail or str(res.error or ""))[:500]
                     _lang = _rp_lang(None)
+                    display_id = _get_plugin_display_id(plugin_id)
                     if res.success:
-                        summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
+                        summary = _rp_phrase('plugin_done_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=display_id)
                     else:
-                        summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
+                        summary = _rp_phrase('plugin_failed_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=display_id)
                     await _emit_task_result(
                         lanlan_name,
                         channel="user_plugin",
@@ -2090,6 +2287,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         summary=summary[:500],
                         detail=detail if res.success else "",
                         error_message=(detail or str(res.error or ""))[:500] if not res.success else "",
+                        direct_reply=False,
                     )
                 elif not res.success:
                     info["error"] = (detail or str(res.error or ""))[:500]
@@ -2526,6 +2724,23 @@ async def openfang_availability():
     return Modules.openfang.is_available()
 
 
+@app.get("/openclaw/availability")
+async def openclaw_availability():
+    if not Modules.openclaw:
+        return {"enabled": False, "ready": False, "reasons": ["adapter 未加载"]}
+    status = await asyncio.to_thread(Modules.openclaw.is_available)
+    ready = bool(status.get("ready")) if isinstance(status, dict) else False
+    reasons = status.get("reasons", []) if isinstance(status, dict) else []
+    _set_capability("openclaw", ready, reasons[0] if reasons else "")
+    if not ready and Modules.agent_flags.get("openclaw_enabled"):
+        Modules.agent_flags["openclaw_enabled"] = False
+        Modules.notification = json.dumps({
+            "code": "AGENT_OPENCLAW_CAPABILITY_LOST",
+            "details": {"reason_code": reasons[0] if reasons else "unknown"},
+        })
+    return status
+
+
 @app.post("/openfang/run")
 async def openfang_run(payload: Dict[str, Any]):
     """直接通过 OpenFang 执行任务 (绕过路由决策)。"""
@@ -2690,21 +2905,24 @@ async def set_agent_flags(payload: Dict[str, Any]):
     cf = (payload or {}).get("computer_use_enabled")
     bf = (payload or {}).get("browser_use_enabled")
     uf = (payload or {}).get("user_plugin_enabled")
+    nf = (payload or {}).get("openclaw_enabled")
     # Agent API gate: if any agent sub-feature is being enabled, gate must pass.
     gate = _check_agent_api_gate()
     changed = False
     old_flags = dict(Modules.agent_flags)
     old_analyzer_enabled = bool(Modules.analyzer_enabled)
     of = (payload or {}).get("openfang_enabled")
-    if gate.get("ready") is not True and any(x is True for x in (cf, bf, uf, of)):
+    if gate.get("ready") is not True and any(x is True for x in (cf, bf, uf, nf, of)):
         Modules.agent_flags["computer_use_enabled"] = False
         Modules.agent_flags["browser_use_enabled"] = False
         Modules.agent_flags["user_plugin_enabled"] = False
+        Modules.agent_flags["openclaw_enabled"] = False
         Modules.agent_flags["openfang_enabled"] = False
         first_reason = (gate.get('reasons') or ['AGENT_ENDPOINT_NOT_CONFIGURED'])[0]
         _set_capability("computer_use", False, first_reason)
         _set_capability("browser_use", False, first_reason)
         _set_capability("user_plugin", False, first_reason)
+        _set_capability("openclaw", False, first_reason)
         _set_capability("openfang", False, first_reason)
         await _ensure_plugin_lifecycle_stopped()
         Modules.notification = None
@@ -2714,6 +2932,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
         return {"success": True, "agent_flags": Modules.agent_flags}
 
     prev_up = Modules.agent_flags.get("user_plugin_enabled", False)
+    prev_nk = Modules.agent_flags.get("openclaw_enabled", False)
 
     # 1. Handle Computer Use Flag with Capability Check
     if isinstance(cf, bool):
@@ -2831,10 +3050,38 @@ async def set_agent_flags(payload: Dict[str, Any]):
             Modules._persistent_tasks.add(_bg)
             _bg.add_done_callback(Modules._persistent_tasks.discard)
 
+    if isinstance(nf, bool):
+        if nf:
+            adapter = Modules.openclaw
+            if not adapter:
+                Modules.agent_flags["openclaw_enabled"] = False
+                Modules.notification = json.dumps({"code": "AGENT_OPENCLAW_MODULE_NOT_LOADED"})
+            else:
+                status = await asyncio.to_thread(adapter.is_available)
+                ready = bool(status.get("ready")) if isinstance(status, dict) else False
+                reasons = status.get("reasons", []) if isinstance(status, dict) else []
+                _set_capability("openclaw", ready, reasons[0] if reasons else "")
+                if ready:
+                    Modules.agent_flags["openclaw_enabled"] = True
+                else:
+                    Modules.agent_flags["openclaw_enabled"] = False
+                    Modules.notification = json.dumps({
+                        "code": "AGENT_OPENCLAW_UNAVAILABLE",
+                        "details": {"reason_code": reasons[0] if reasons else "unknown"},
+                    })
+        else:
+            Modules.agent_flags["openclaw_enabled"] = False
+
     try:
         new_up = Modules.agent_flags.get("user_plugin_enabled", False)
         if prev_up != new_up:
             logger.info("[Agent] user_plugin_enabled toggled %s via /agent/flags", "ON" if new_up else "OFF")
+    except Exception:
+        pass
+    try:
+        new_nk = Modules.agent_flags.get("openclaw_enabled", False)
+        if prev_nk != new_nk:
+            logger.info("[Agent] openclaw_enabled toggled %s via /agent/flags", "ON" if new_nk else "OFF")
     except Exception:
         pass
 
@@ -2886,6 +3133,7 @@ async def agent_command(payload: Dict[str, Any]):
             Modules.agent_flags["computer_use_enabled"] = False
             Modules.agent_flags["browser_use_enabled"] = False
             Modules.agent_flags["user_plugin_enabled"] = False
+            Modules.agent_flags["openclaw_enabled"] = False
             Modules.agent_flags["openfang_enabled"] = False
             _set_capability("user_plugin", True, "")
             await admin_control({"action": "end_all"})
@@ -2898,7 +3146,7 @@ async def agent_command(payload: Dict[str, Any]):
     if command == "set_flag":
         key = (payload or {}).get("key")
         value = bool((payload or {}).get("value"))
-        if key not in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled", "openfang_enabled"}:
+        if key not in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled", "openclaw_enabled", "openfang_enabled"}:
             raise HTTPException(400, "invalid flag key")
         t_set = time.perf_counter()
         await set_agent_flags({"lanlan_name": lanlan_name, key: value})

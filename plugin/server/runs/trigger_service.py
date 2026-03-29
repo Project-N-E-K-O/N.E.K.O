@@ -13,9 +13,11 @@ from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
 from plugin.core.responses import fail, is_envelope, ok
+from plugin.sdk.shared.core.entry_runtime import resolve_entry_timeout
 from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
 
 logger = get_logger("server.runs.trigger")
+_TIMEOUT_UNSET = object()
 
 
 class TriggerResult(BaseModel):
@@ -25,6 +27,18 @@ class TriggerResult(BaseModel):
     args: dict[str, object] = Field(default_factory=dict)
     plugin_response: object = None
     received_at: str = ""
+
+
+def _normalize_timeout_value(value: object) -> float | None | object:
+    if value is _TIMEOUT_UNSET:
+        return _TIMEOUT_UNSET
+    if value is None:
+        return None
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return _TIMEOUT_UNSET
+    return timeout if timeout > 0 else None
 
 
 @runtime_checkable
@@ -37,7 +51,7 @@ class HostHealthContract(Protocol):
 
 @runtime_checkable
 class TriggerHostContract(Protocol):
-    async def trigger(self, entry_id: str, args: dict[str, object], timeout: float) -> object: ...
+    async def trigger(self, entry_id: str, args: dict[str, object], timeout: float | None) -> object: ...
 
     def health_check(self) -> HostHealthContract: ...
 
@@ -204,15 +218,52 @@ async def _execute_trigger(
     args: dict[str, object],
     trace_id: str,
 ) -> object:
+    resolved_timeout: float | None = PLUGIN_EXECUTION_TIMEOUT
     try:
-        response = await host.trigger(entry_id, args, timeout=PLUGIN_EXECUTION_TIMEOUT)
+        handlers_snapshot = state.get_event_handlers_snapshot_cached(timeout=1.0)
+        prefix_dot = f"{plugin_id}."
+        prefix_colon = f"{plugin_id}:plugin_entry:"
+        for event_key_obj, handler_obj in handlers_snapshot.items():
+            if not isinstance(event_key_obj, str):
+                continue
+            if not (event_key_obj.startswith(prefix_dot) or event_key_obj.startswith(prefix_colon)):
+                continue
+            meta = getattr(handler_obj, "meta", None)
+            if getattr(meta, "event_type", None) != "plugin_entry":
+                continue
+            if getattr(meta, "id", None) != entry_id:
+                continue
+            resolved_timeout = resolve_entry_timeout(meta, resolved_timeout)
+            break
+    except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        logger.debug(
+            "failed to resolve per-entry timeout for plugin {} entry {}: err_type={}, err={}",
+            plugin_id,
+            entry_id,
+            type(exc).__name__,
+            str(exc),
+        )
+
+    try:
+        ctx_obj = args.get("_ctx")
+        if isinstance(ctx_obj, Mapping):
+            requested_timeout = _normalize_timeout_value(
+                ctx_obj.get("entry_timeout", _TIMEOUT_UNSET),
+            )
+            if requested_timeout is not _TIMEOUT_UNSET:
+                resolved_timeout = requested_timeout
+    except Exception:
+        logger.debug("failed to read requested entry timeout from _ctx", exc_info=True)
+
+    try:
+        response = await host.trigger(entry_id, args, timeout=resolved_timeout)
         logger.debug("plugin trigger response received: plugin_id={}, entry_id={}", plugin_id, entry_id)
         return response
     except (TimeoutError, asyncio.TimeoutError):
         return fail(
             ErrorCode.TIMEOUT,
             "Plugin execution timed out",
-            details={"plugin_id": plugin_id, "entry_id": entry_id},
+            details={"plugin_id": plugin_id, "entry_id": entry_id, "timeout": resolved_timeout},
             retriable=True,
             trace_id=trace_id,
         )

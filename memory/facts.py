@@ -40,8 +40,8 @@ class FactStore:
     # ── persistence ──────────────────────────────────────────────────
 
     def _facts_path(self, name: str) -> str:
-        self._config_manager.ensure_memory_directory()
-        return os.path.join(str(self._config_manager.memory_dir), f'facts_{name}.json')
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts.json')
 
     def load_facts(self, name: str) -> list[dict]:
         path = self._facts_path(name)
