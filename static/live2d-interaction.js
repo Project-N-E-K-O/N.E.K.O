@@ -683,9 +683,6 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     let _lastStationaryY = -1;
     const STATIONARY_FADE_DELAY = 1000;
     const STATIONARY_MOVE_THRESHOLD = 8; // 鼠标移动超过8px视为移动
-    // 点击后短暂忽略移动触发的定时器清除，防止点击产生坐标偏移导致闪烁
-    this._clickSuppressTimer = null;
-    const _clickSuppressDuration = 200;
 
     const clearStationaryFadeTimer = () => {
         if (this._stationaryFadeTimer !== null) {
@@ -694,16 +691,6 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         }
     };
     this._clearStationaryFadeTimer = clearStationaryFadeTimer;
-
-    // 点击时设置抑制标志，防止点击坐标偏移导致淡化闪烁
-    const onPointerDown = () => {
-        if (this._clickSuppressTimer !== null) {
-            clearTimeout(this._clickSuppressTimer);
-        }
-        this._clickSuppressTimer = setTimeout(() => {
-            this._clickSuppressTimer = null;
-        }, _clickSuppressDuration);
-    };
 
     // 清理旧的键盘监听器（在添加新监听器之前）
     if (this._ctrlKeyDownListener) {
@@ -893,7 +880,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
             const isNearModel = distance < HoverFadethreshold;
 
-            // 静止时启动定时器，移动时清除定时器（点击后200ms内忽略移动清除）
+            // 静止时启动定时器，移动时清除定时器
             if (this.isLocked && isNearModel) {
                 if (isMouseStationary) {
                     if (this._stationaryFadeTimer === null && !lockedHoverFadeActive) {
@@ -902,7 +889,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                         }, STATIONARY_FADE_DELAY);
                     }
                 } else {
-                    if (this._stationaryFadeTimer !== null && this._clickSuppressTimer === null) {
+                    if (this._stationaryFadeTimer !== null) {
                         clearStationaryFadeTimer();
                     }
                 }
@@ -972,13 +959,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     // 这样窗口重新获得焦点后，如果 Ctrl 仍被按住，淡化功能可以恢复
     const onBlur = () => {
         clearStationaryFadeTimer();
-        if (lockedHoverFadeActive) {
-            setLockedHoverFade(false);
-        }
-        if (this._clickSuppressTimer !== null) {
-            clearTimeout(this._clickSuppressTimer);
-            this._clickSuppressTimer = null;
-        }
+        // blur 时不重置 lockedHoverFadeActive，让定时器接管
     };
 
     // 清理旧的监听器
@@ -992,12 +973,10 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     // 保存新的监听器引用
     this._mouseTrackingListener = onPointerMove;
     this._windowBlurListener = onBlur;
-    this._pointerDownListener = onPointerDown;
 
-    // 使用 window 监听鼠标移动和窗口失去/获得焦点
+    // 使用 window 监听鼠标移动和窗口失去焦点
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('blur', onBlur);
-    window.addEventListener('pointerdown', onPointerDown);
 
     // 监听浮动按钮容器的鼠标进入/离开事件
     // 延迟设置，因为按钮容器可能还没创建
@@ -1494,10 +1473,6 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     if (this._windowBlurListener) {
         window.removeEventListener('blur', this._windowBlurListener);
         this._windowBlurListener = null;
-    }
-    if (this._pointerDownListener) {
-        window.removeEventListener('pointerdown', this._pointerDownListener);
-        this._pointerDownListener = null;
     }
 
     // 清理静止淡化定时器

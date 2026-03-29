@@ -947,25 +947,12 @@ class VRMInteraction {
         let _vrmLastStationaryY = -1;
         const STATIONARY_FADE_DELAY = 1000;
         const STATIONARY_MOVE_THRESHOLD = 8; // 鼠标移动超过8px视为移动
-        // 点击后短暂忽略移动触发的定时器清除，防止点击产生坐标偏移导致闪烁
-        let _vrmClickSuppressTimer = null;
-        const _vrmSuppressDuration = 200;
 
         const clearStationaryFadeTimer = () => {
             if (this._vrmStationaryFadeTimer !== null) {
                 clearTimeout(this._vrmStationaryFadeTimer);
                 this._vrmStationaryFadeTimer = null;
             }
-        };
-
-        // 点击时设置抑制标志，防止点击坐标偏移导致淡化闪烁
-        const onMouseDown = () => {
-            if (_vrmClickSuppressTimer !== null) {
-                clearTimeout(_vrmClickSuppressTimer);
-            }
-            _vrmClickSuppressTimer = setTimeout(() => {
-                _vrmClickSuppressTimer = null;
-            }, _vrmSuppressDuration);
         };
 
         const setLockedHoverFade = (shouldFade) => {
@@ -1223,7 +1210,7 @@ class VRMInteraction {
             const ctrlKeyPressed = isCtrlPressed;
             const isNearModel = distance < hoverFadeThreshold;
 
-            // 静止时启动定时器，移动时清除定时器（点击后200ms内忽略移动清除）
+            // 静止时启动定时器，移动时清除定时器
             if (this.checkLocked() && isNearModel) {
                 if (isMouseStationary) {
                     if (this._vrmStationaryFadeTimer === null && !lockedHoverFadeActive) {
@@ -1232,7 +1219,7 @@ class VRMInteraction {
                         }, STATIONARY_FADE_DELAY);
                     }
                 } else {
-                    if (this._vrmStationaryFadeTimer !== null && _vrmClickSuppressTimer === null) {
+                    if (this._vrmStationaryFadeTimer !== null) {
                         clearStationaryFadeTimer();
                     }
                 }
@@ -1297,9 +1284,7 @@ class VRMInteraction {
         };
         const onBlur = () => {
             clearStationaryFadeTimer();
-            if (lockedHoverFadeActive) {
-                setLockedHoverFade(false);
-            }
+            // blur 时不重置 lockedHoverFadeActive，让定时器接管
         };
         this._vrmClearStationaryFadeTimer = clearStationaryFadeTimer;
 
@@ -1321,14 +1306,12 @@ class VRMInteraction {
         canvas.addEventListener('mouseenter', onMouseEnter);
         canvas.addEventListener('pointermove', onPointerMove);
         canvas.addEventListener('mousemove', onPointerMove);
-        canvas.addEventListener('mousedown', onMouseDown);
 
         this._vrmCtrlKeyDownListener = onKeyDown;
         this._vrmCtrlKeyUpListener = onKeyUp;
         this._vrmWindowBlurListener = onBlur;
         this._floatingButtonsMouseEnter = onMouseEnter;
         this._floatingButtonsPointerMove = onPointerMove;
-        this._vrmMouseDownListener = onMouseDown;
 
         if (this.manager.currentModel && !this.checkLocked()) {
             setTimeout(() => {
@@ -1360,10 +1343,6 @@ class VRMInteraction {
             canvas.removeEventListener('pointermove', this._floatingButtonsPointerMove);
             canvas.removeEventListener('mousemove', this._floatingButtonsPointerMove);
             this._floatingButtonsPointerMove = null;
-        }
-        if (this._vrmMouseDownListener) {
-            canvas.removeEventListener('mousedown', this._vrmMouseDownListener);
-            this._vrmMouseDownListener = null;
         }
         // 清理 Ctrl 键 / blur 监听器
         if (this._vrmCtrlKeyDownListener) {
