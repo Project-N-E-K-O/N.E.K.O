@@ -19,6 +19,7 @@
 
     // ======================== 模块级变量 ========================
     let _musicDispatchId = 0;
+    let _reactMessageSeq = 0;
 
     // 首次交互跟踪
     let isFirstUserInput = true;   // 跟踪是否为用户第一次输入
@@ -32,6 +33,86 @@
             hour: '2-digit',
             minute: '2-digit',
             second: '2-digit'
+        });
+    }
+
+    function getReactChatHost() {
+        return window.reactChatWindowHost || null;
+    }
+
+    function nextReactMessageId(prefix) {
+        _reactMessageSeq += 1;
+        return (prefix || 'msg') + '-' + Date.now() + '-' + _reactMessageSeq;
+    }
+
+    function getOrAssignReactMessageId(element, prefix) {
+        if (!element || element.nodeType !== Node.ELEMENT_NODE) return nextReactMessageId(prefix);
+        if (!element.dataset.reactChatMessageId) {
+            element.dataset.reactChatMessageId = nextReactMessageId(prefix);
+        }
+        return element.dataset.reactChatMessageId;
+    }
+
+    function extractMessageText(text) {
+        return String(text || '')
+            .replace(/^\[\d{2}:\d{2}:\d{2}\]\s+[\u{1F380}\u{1F4AC}]\s*/u, '')
+            .trim();
+    }
+
+    function buildReactTextMessage(messageId, role, author, timeText, text, status) {
+        var cleanText = extractMessageText(text);
+        if (!cleanText) return null;
+
+        return {
+            id: messageId,
+            role: role,
+            author: author,
+            time: timeText || getCurrentTimeString(),
+            createdAt: Date.now(),
+            avatarLabel: author ? String(author).trim().slice(0, 1).toUpperCase() : undefined,
+            blocks: [
+                {
+                    type: 'text',
+                    text: cleanText
+                }
+            ],
+            status: status
+        };
+    }
+
+    function appendReactTextMessage(element, role, author, text, status) {
+        var host = getReactChatHost();
+        if (!host || typeof host.appendMessage !== 'function') return;
+
+        var messageId = getOrAssignReactMessageId(element, role);
+        var message = buildReactTextMessage(messageId, role, author, getCurrentTimeString(), text, status);
+        if (!message) return;
+        host.appendMessage(message);
+    }
+
+    function updateReactTextMessage(element, role, author, text, status) {
+        var host = getReactChatHost();
+        if (!host || typeof host.updateMessage !== 'function' || !element) return;
+
+        var messageId = getOrAssignReactMessageId(element, role);
+        var message = buildReactTextMessage(messageId, role, author, getCurrentTimeString(), text, status);
+        if (!message) return;
+
+        host.updateMessage(messageId, {
+            author: message.author,
+            time: message.time,
+            blocks: message.blocks,
+            status: status
+        });
+    }
+
+    function setReactMessageStatus(element, role, status) {
+        var host = getReactChatHost();
+        if (!host || typeof host.updateMessage !== 'function' || !element) return;
+
+        var messageId = getOrAssignReactMessageId(element, role);
+        host.updateMessage(messageId, {
+            status: status
         });
     }
 
@@ -62,6 +143,7 @@
         const cleanSentence = (sentence || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
         messageDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanSentence;
         chatContainer.appendChild(messageDiv);
+        appendReactTextMessage(messageDiv, 'assistant', 'Neko', messageDiv.textContent);
         window.currentGeminiMessage = messageDiv;
 
         // ========== 追踪本轮气泡 ==========
@@ -502,6 +584,7 @@
                 messageDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanNewText;
 
                 chatContainer.appendChild(messageDiv);
+                appendReactTextMessage(messageDiv, 'assistant', 'Neko', messageDiv.textContent, 'streaming');
                 window.currentGeminiMessage = messageDiv;
 
                 // ========== 追踪本轮气泡 ==========
@@ -530,6 +613,7 @@
                     msgDiv.classList.add('message', 'gemini');
                     msgDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanText;
                     chatContainer.appendChild(msgDiv);
+                    appendReactTextMessage(msgDiv, 'assistant', 'Neko', msgDiv.textContent, 'streaming');
 
                     window.currentGeminiMessage = msgDiv;
                     window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
@@ -555,6 +639,7 @@
                     timePrefix = timePrefix[0];
                 }
                 window.currentGeminiMessage.textContent = timePrefix + fullText;
+                updateReactTextMessage(window.currentGeminiMessage, 'assistant', 'Neko', window.currentGeminiMessage.textContent, 'streaming');
 
                 
                 // 触发字幕检测逻辑（防抖）
@@ -601,6 +686,12 @@
             var cleanedText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
             newDiv.textContent = "[" + getCurrentTimeString() + "] " + icon + " " + cleanedText;
             chatContainer.appendChild(newDiv);
+            appendReactTextMessage(
+                newDiv,
+                sender === 'user' ? 'user' : 'assistant',
+                sender === 'user' ? 'You' : 'Neko',
+                newDiv.textContent
+            );
 
             // 如果是Gemini消息，更新当前消息引用
             if (sender === 'gemini') {
@@ -633,6 +724,7 @@
     mod.processRealisticQueue = processRealisticQueue;
     mod.appendMessage = appendMessage;
     mod.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
+    mod.setReactMessageStatus = setReactMessageStatus;
 
     /**
      * 标记用户已完成首次输入（供外部模块调用）
@@ -655,6 +747,7 @@
     window.processRealisticQueue = processRealisticQueue;
     window.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
     window.getCurrentTimeString = getCurrentTimeString;
+    window.setReactMessageStatus = setReactMessageStatus;
 
     // 音乐搜索纪元：向后兼容全局变量（原来定义在 app.js IIFE 外部的 currentMusicSearchEpoch）
     if (typeof window._musicSearchEpoch === 'undefined') {

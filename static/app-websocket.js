@@ -783,6 +783,9 @@
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
                     console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
                     try {
+                        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
+                            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
+                        }
                         window._pendingMusicCommand = '';
                         var rest = typeof window._realisticGeminiBuffer === 'string'
                             ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
@@ -806,6 +809,9 @@
                     console.log(window.t('console.turnEndReceived'));
                     // Flush remaining buffer
                     try {
+                        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
+                            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
+                        }
                         window._pendingMusicCommand = '';
                         var rest = typeof window._realisticGeminiBuffer === 'string'
                             ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
