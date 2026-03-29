@@ -112,7 +112,7 @@ EXPORT_INLINE_BINARY_MAX_BYTES = _get_int_env("NEKO_EXPORT_INLINE_BINARY_MAX_BYT
 RUN_TOKEN_SECRET = os.getenv("NEKO_RUN_TOKEN_SECRET", "dev-insecure-run-token-secret")
 RUN_TOKEN_TTL_SECONDS = _get_int_env("NEKO_RUN_TOKEN_TTL_SECONDS", 3600)
 # 单次 Run 的最大执行时间（秒），超时后自动标记为 timeout
-# Env: NEKO_RUN_EXECUTION_TIMEOUT, default=300.0 (5分钟)
+# Env: NEKO_RUN_EXECUTION_TIMEOUT, default=30.0 (5分钟)
 RUN_EXECUTION_TIMEOUT = _get_float_env("NEKO_RUN_EXECUTION_TIMEOUT", 300.0)
 # InMemoryRunStore 保留的已终止 Run 最大数量，超出后淘汰最旧的
 # Env: NEKO_RUN_STORE_MAX_COMPLETED, default=500
@@ -126,9 +126,9 @@ BLOB_UPLOAD_SESSION_TTL_SECONDS = _get_float_env("NEKO_BLOB_UPLOAD_SESSION_TTL_S
 # ========== 超时 & 轮询配置（秒） ==========
 
 # 单次插件入口执行的最大允许时间
-# Env: NEKO_PLUGIN_EXECUTION_TIMEOUT, default=300.0
+# Env: NEKO_PLUGIN_EXECUTION_TIMEOUT, default=30.0
 # 用于 SDK 层对长时间运行入口的保护（例如 HTTP 触发的入口）。
-PLUGIN_EXECUTION_TIMEOUT = _get_float_env("NEKO_PLUGIN_EXECUTION_TIMEOUT", 300.0)
+PLUGIN_EXECUTION_TIMEOUT = _get_float_env("NEKO_PLUGIN_EXECUTION_TIMEOUT", 30.0)
 
 # Host -> 插件进程 trigger 的等待超时
 # Env: NEKO_PLUGIN_TRIGGER_TIMEOUT, default=10.0

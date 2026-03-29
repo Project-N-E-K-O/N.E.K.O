@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLimitError
 import httpx
 from config import get_extra_body, USER_PLUGIN_SERVER_PORT
+from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
@@ -43,7 +44,7 @@ def _normalize_timeout_value(value: Any) -> float | None | object:
 
 
 def _resolve_plugin_entry_timeout(meta: Optional[Dict[str, Any]], entry: Optional[str]) -> float | None:
-    default_timeout = 300.0
+    default_timeout = PLUGIN_EXECUTION_TIMEOUT
     if not isinstance(meta, dict):
         return default_timeout
     entries = meta.get("entries")

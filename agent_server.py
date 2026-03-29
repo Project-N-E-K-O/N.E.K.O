@@ -24,7 +24,6 @@ logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
 
 from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT, OPENFANG_BASE_URL
 from utils.config_manager import get_config_manager
-from utils.language_utils import get_global_language
 from main_logic.agent_event_bus import AgentServerEventBridge
 try:
     from brain.computer_use import ComputerUseAdapter
@@ -115,22 +114,9 @@ TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # 已完成任务保留 5 分钟
 DEFERRED_TASK_TIMEOUT: float = 3600.0  # deferred 任务超时 1 小时
 _task_registry_last_cleanup: float = 0.0
 
-PLUGIN_DISPLAY_NAME_ALIASES: Dict[str, str] = {
-    "openclaw": "OpenClaw",
-}
-
 
 def _default_openclaw_task_description() -> str:
-    lang = str(get_global_language() or "").lower()
-    if lang.startswith("zh"):
-        return "OpenClaw 处理中..."
-    if lang.startswith("ja"):
-        return "OpenClaw is processing..."
-    if lang.startswith("ko"):
-        return "OpenClaw is processing..."
-    if lang.startswith("ru"):
-        return "OpenClaw is processing..."
-    return "OpenClaw is processing..."
+    return _rp_phrase('openclaw_processing', _rp_lang(None))
 
 
 def _cleanup_task_registry() -> List[Dict[str, Any]]:
@@ -236,10 +222,6 @@ def _get_plugin_friendly_name(plugin_id: str) -> str | None:
     并使用缓存减少请求次数。使用线程锁保证多线程安全。
     """
     global _plugin_name_cache, _plugin_name_cache_time
-
-    alias_name = PLUGIN_DISPLAY_NAME_ALIASES.get(plugin_id)
-    if alias_name:
-        return alias_name
 
     # 检查缓存（加锁读取）
     now = time.time()
@@ -1461,7 +1443,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 channel="openclaw",
                                 task_id=str(result.task_id or ""),
                                 success=True,
-                                summary=reply[:500] if reply else "OpenClaw 执行完成",
+                                summary=reply[:500] if reply else _rp_phrase('openclaw_done', _rp_lang(None)),
                                 detail=reply,
                                 direct_reply=False,
                             )
@@ -1471,7 +1453,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 channel="openclaw",
                                 task_id=str(result.task_id or ""),
                                 success=False,
-                                summary="OpenClaw 执行失败",
+                                summary=_rp_phrase('openclaw_failed', _rp_lang(None)),
                                 error_message=str(nk_result.get("error") or "")[:500],
                             )
                         await _emit_main_event(
@@ -1499,7 +1481,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 channel="openclaw",
                                 task_id=str(result.task_id or ""),
                                 success=False,
-                                summary="OpenClaw 任务已取消",
+                                summary=_rp_phrase('openclaw_cancelled', _rp_lang(None)),
                                 error_message=cancel_msg,
                             )
                         except Exception:
@@ -1533,7 +1515,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 channel="openclaw",
                                 task_id=str(result.task_id or ""),
                                 success=False,
-                                summary="OpenClaw 任务分发失败",
+                                summary=_rp_phrase('openclaw_dispatch_failed', _rp_lang(None)),
                                 error_message=str(e)[:500],
                             )
                         except Exception:
