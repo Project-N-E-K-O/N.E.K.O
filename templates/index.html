@@ -15,6 +15,7 @@
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/index.css">
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css">
     <!-- 暗色模式样式 -->
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <!-- 主题管理器（尽早加载以避免闪烁） -->
@@ -67,6 +68,15 @@
                         <path d="M5.5 19.25a6.5 6.5 0 0 1 13 0" />
                     </svg>
                     <span class="chat-header-btn-label" data-i18n="chat.avatarPreviewLabel"></span>
+                </button>
+                <button id="reactChatWindowButton" class="chat-header-action-btn chat-header-action-btn-react-window" type="button"
+                    title="打开新版聊天框" aria-label="打开新版聊天框">
+                    <svg class="chat-header-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4.75 6.75h14.5a1.5 1.5 0 0 1 1.5 1.5v7.5a1.5 1.5 0 0 1-1.5 1.5H4.75a1.5 1.5 0 0 1-1.5-1.5v-7.5a1.5 1.5 0 0 1 1.5-1.5Z" />
+                        <path d="M8 17.25v1.5h8v-1.5" />
+                        <path d="M3.25 10.25h17.5" />
+                    </svg>
+                    <span class="chat-header-btn-label">新版聊天框</span>
                 </button>
             </div>
             <div id="chatContainer"></div>
@@ -134,6 +144,19 @@
                     <circle cx="12" cy="12" r="1.2"/>
                 </svg>
             </div>
+        </div>
+    </div>
+    <div id="react-chat-window-overlay" hidden>
+        <div id="react-chat-window-backdrop"></div>
+        <div id="react-chat-window-shell" role="dialog" aria-modal="true" aria-labelledby="react-chat-window-title">
+            <div id="react-chat-window-host-header">
+                <div id="react-chat-window-title-group">
+                    <div id="react-chat-window-title">新版聊天框预览</div>
+                    <div id="react-chat-window-subtitle">React 单窗口骨架</div>
+                </div>
+                <button id="reactChatWindowCloseButton" type="button" aria-label="关闭新版聊天框">×</button>
+            </div>
+            <div id="react-chat-window-root"></div>
         </div>
     </div>
     <div id="live2d-container">
@@ -218,6 +241,8 @@
     <script src="/static/app-websocket.js"></script>
     <script src="/static/app-buttons.js"></script>
     <script src="/static/app.js"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js"></script>
+    <script src="/static/app-react-chat-window.js"></script>
 
     <script src="/static/subtitle.js"></script>
     
