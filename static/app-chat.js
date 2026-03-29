@@ -399,6 +399,8 @@
                 if (ch === '\n') return true;
                 // 连续标点只在最后一个标点处分段，避免 "！？"、"..." 被拆开
                 if (isPunctForBoundary(ch) && next && isPunctForBoundary(next)) return false;
+                // 流式输入：缓冲区末尾的标点暂不分段，等下一个 chunk 确认是否为连续标点
+                if (isPunctForBoundary(ch) && !next) return false;
                 if (ch === '\u3002' || ch === '\uFF01' || ch === '\uFF1F') return true;
                 if (ch === '!' || ch === '?') return true;
                 if (ch === '\u2026') return true;
