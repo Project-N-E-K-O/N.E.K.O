@@ -79,6 +79,56 @@
         return node && node.textContent ? node.textContent.trim() : '';
     }
 
+    function sanitizeDisplayName(value) {
+        if (value == null) return '';
+        return String(value).trim();
+    }
+
+    function getCurrentAssistantName() {
+        return sanitizeDisplayName(
+            (window.lanlan_config && window.lanlan_config.lanlan_name)
+            || window._currentCatgirl
+            || window.currentCatgirl
+        ) || 'Neko';
+    }
+
+    function getCurrentUserName() {
+        var candidates = [
+            window.master_display_name,
+            window.lanlan_config && window.lanlan_config.master_display_name,
+            window.master_nickname,
+            window.lanlan_config && window.lanlan_config.master_nickname,
+            window.master_name,
+            window.lanlan_config && window.lanlan_config.master_name,
+            window.currentUser && (window.currentUser.nickname || window.currentUser.display_name || window.currentUser.displayName || window.currentUser.username || window.currentUser.name),
+            window.userProfile && (window.userProfile.nickname || window.userProfile.display_name || window.userProfile.displayName || window.userProfile.username || window.userProfile.name),
+            window.appUser && (window.appUser.nickname || window.appUser.display_name || window.appUser.displayName || window.appUser.username || window.appUser.name),
+            window.username,
+            window.userName,
+            window.displayName,
+            window.nickname
+        ];
+
+        for (var i = 0; i < candidates.length; i += 1) {
+            var resolved = sanitizeDisplayName(candidates[i]);
+            if (resolved) return resolved;
+        }
+
+        try {
+            var storageKeys = ['nickname', 'displayName', 'userName', 'username'];
+            for (var j = 0; j < storageKeys.length; j += 1) {
+                var stored = sanitizeDisplayName(localStorage.getItem(storageKeys[j]));
+                if (stored) return stored;
+            }
+        } catch (_) {}
+
+        return 'You';
+    }
+
+    function getDefaultAuthorByRole(role) {
+        return role === 'user' ? getCurrentUserName() : getCurrentAssistantName();
+    }
+
     function createBaseViewProps() {
         var titleNode = $('chat-title');
         var textSendButton = $('textSendButton');
@@ -171,7 +221,7 @@
         return {
             id: String(message.id),
             role: message.role || 'assistant',
-            author: message.author || 'Neko',
+            author: sanitizeDisplayName(message.author) || getDefaultAuthorByRole(message.role || 'assistant'),
             time: time,
             createdAt: createdAt,
             avatarLabel: message.avatarLabel,

@@ -737,6 +737,14 @@
 
                 // Then send text (if any)
                 if (text) {
+                    if (window.appChat && typeof window.appChat.ensureUserDisplayName === 'function') {
+                        try {
+                            await window.appChat.ensureUserDisplayName();
+                        } catch (nameError) {
+                            console.warn('[Chat] preload user display name failed:', nameError);
+                        }
+                    }
+
                     S.socket.send(JSON.stringify({
                         action: 'stream_data',
                         data: text,

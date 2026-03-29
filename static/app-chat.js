@@ -20,6 +20,7 @@
     // ======================== 模块级变量 ========================
     let _musicDispatchId = 0;
     let _reactMessageSeq = 0;
+    let _userDisplayNamePromise = null;
 
     // 首次交互跟踪
     let isFirstUserInput = true;   // 跟踪是否为用户第一次输入
@@ -38,6 +39,115 @@
 
     function getReactChatHost() {
         return window.reactChatWindowHost || null;
+    }
+
+    function sanitizeDisplayName(value) {
+        if (value == null) return '';
+        var text = String(value).trim();
+        return text;
+    }
+
+    function getCurrentAssistantName() {
+        return sanitizeDisplayName(
+            (window.lanlan_config && window.lanlan_config.lanlan_name)
+            || window._currentCatgirl
+            || window.currentCatgirl
+        ) || 'Neko';
+    }
+
+    function getCurrentUserName() {
+        var candidates = [
+            window.master_display_name,
+            window.lanlan_config && window.lanlan_config.master_display_name,
+            window.master_nickname,
+            window.lanlan_config && window.lanlan_config.master_nickname,
+            window.master_name,
+            window.lanlan_config && window.lanlan_config.master_name,
+            window.currentUser && (window.currentUser.nickname || window.currentUser.display_name || window.currentUser.displayName || window.currentUser.username || window.currentUser.name),
+            window.userProfile && (window.userProfile.nickname || window.userProfile.display_name || window.userProfile.displayName || window.userProfile.username || window.userProfile.name),
+            window.appUser && (window.appUser.nickname || window.appUser.display_name || window.appUser.displayName || window.appUser.username || window.appUser.name),
+            window.username,
+            window.userName,
+            window.displayName,
+            window.nickname
+        ];
+
+        for (var i = 0; i < candidates.length; i += 1) {
+            var resolved = sanitizeDisplayName(candidates[i]);
+            if (resolved) return resolved;
+        }
+
+        try {
+            var storageKeys = ['nickname', 'displayName', 'userName', 'username'];
+            for (var j = 0; j < storageKeys.length; j += 1) {
+                var stored = sanitizeDisplayName(localStorage.getItem(storageKeys[j]));
+                if (stored) return stored;
+            }
+        } catch (_) {}
+
+        return 'You';
+    }
+
+    function getRoleDisplayName(role, fallbackAuthor) {
+        var resolvedFallback = sanitizeDisplayName(fallbackAuthor);
+        if (resolvedFallback) return resolvedFallback;
+        return role === 'user' ? getCurrentUserName() : getCurrentAssistantName();
+    }
+
+    function resolveMasterDisplayNameFromProfile(masterProfile) {
+        if (!masterProfile || typeof masterProfile !== 'object') return '';
+        var nickname = sanitizeDisplayName(masterProfile['昵称']);
+        if (nickname) {
+            var firstNickname = nickname.split(',')[0].split('，')[0].trim();
+            if (firstNickname) return firstNickname;
+        }
+        return sanitizeDisplayName(masterProfile['档案名']);
+    }
+
+    async function ensureUserDisplayName() {
+        if (getCurrentUserName() !== 'You') {
+            return getCurrentUserName();
+        }
+
+        if (_userDisplayNamePromise) {
+            return _userDisplayNamePromise;
+        }
+
+        _userDisplayNamePromise = (async function () {
+            try {
+                var response = await fetch('/api/characters?language=zh-CN', {
+                    credentials: 'same-origin'
+                });
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status);
+                }
+                var data = await response.json();
+                var masterProfile = data && data['主人'];
+                var displayName = resolveMasterDisplayNameFromProfile(masterProfile);
+                var profileName = masterProfile && sanitizeDisplayName(masterProfile['档案名']);
+                var nickname = masterProfile && sanitizeDisplayName(masterProfile['昵称']);
+
+                if (displayName) {
+                    window.master_display_name = displayName;
+                    window.master_name = profileName || displayName;
+                    window.master_profile_name = profileName || '';
+                    window.master_nickname = nickname || '';
+                    window.lanlan_config = window.lanlan_config || {};
+                    window.lanlan_config.master_display_name = displayName;
+                    window.lanlan_config.master_name = profileName || displayName;
+                    window.lanlan_config.master_profile_name = profileName || '';
+                    window.lanlan_config.master_nickname = nickname || '';
+                }
+                return displayName || getCurrentUserName();
+            } catch (error) {
+                console.warn('[Chat] ensureUserDisplayName failed:', error);
+                return getCurrentUserName();
+            } finally {
+                _userDisplayNamePromise = null;
+            }
+        })();
+
+        return _userDisplayNamePromise;
     }
 
     function getAssistantAvatarUrl() {
@@ -70,14 +180,15 @@
         var cleanText = extractMessageText(text);
         if (!cleanText) return null;
         var avatarUrl = role === 'assistant' ? getAssistantAvatarUrl() : '';
+        var resolvedAuthor = getRoleDisplayName(role, author);
 
         return {
             id: messageId,
             role: role,
-            author: author,
+            author: resolvedAuthor,
             time: timeText || getCurrentTimeString(),
             createdAt: Date.now(),
-            avatarLabel: author ? String(author).trim().slice(0, 1).toUpperCase() : undefined,
+            avatarLabel: resolvedAuthor ? String(resolvedAuthor).trim().slice(0, 1).toUpperCase() : undefined,
             avatarUrl: avatarUrl || undefined,
             blocks: [
                 {
@@ -169,7 +280,7 @@
         const cleanSentence = (sentence || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
         messageDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanSentence;
         chatContainer.appendChild(messageDiv);
-        appendReactTextMessage(messageDiv, 'assistant', 'Neko', messageDiv.textContent);
+        appendReactTextMessage(messageDiv, 'assistant', getCurrentAssistantName(), messageDiv.textContent);
         window.currentGeminiMessage = messageDiv;
 
         // ========== 追踪本轮气泡 ==========
@@ -552,7 +663,7 @@
                 msgDiv.classList.add('message', 'gemini');
                 msgDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanFullText;
                 chatContainer.appendChild(msgDiv);
-                appendReactTextMessage(msgDiv, 'assistant', 'Neko', msgDiv.textContent, 'streaming');
+                appendReactTextMessage(msgDiv, 'assistant', getCurrentAssistantName(), msgDiv.textContent, 'streaming');
 
                 window.currentGeminiMessage = msgDiv;
                 window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
@@ -575,7 +686,7 @@
                 timePrefix = timePrefix[0];
             }
             window.currentGeminiMessage.textContent = timePrefix + cleanFullText;
-            updateReactTextMessage(window.currentGeminiMessage, 'assistant', 'Neko', window.currentGeminiMessage.textContent, 'streaming');
+            updateReactTextMessage(window.currentGeminiMessage, 'assistant', getCurrentAssistantName(), window.currentGeminiMessage.textContent, 'streaming');
         }
 
         // 维护"本轮 AI 回复"的完整文本（用于 turn end 时整段翻译/情感分析）
@@ -669,7 +780,7 @@
                 messageDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanNewText;
 
                 chatContainer.appendChild(messageDiv);
-                appendReactTextMessage(messageDiv, 'assistant', 'Neko', messageDiv.textContent, 'streaming');
+                appendReactTextMessage(messageDiv, 'assistant', getCurrentAssistantName(), messageDiv.textContent, 'streaming');
                 window.currentGeminiMessage = messageDiv;
 
                 // ========== 追踪本轮气泡 ==========
@@ -698,7 +809,7 @@
                     msgDiv.classList.add('message', 'gemini');
                     msgDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanText;
                     chatContainer.appendChild(msgDiv);
-                    appendReactTextMessage(msgDiv, 'assistant', 'Neko', msgDiv.textContent, 'streaming');
+                    appendReactTextMessage(msgDiv, 'assistant', getCurrentAssistantName(), msgDiv.textContent, 'streaming');
 
                     window.currentGeminiMessage = msgDiv;
                     window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
@@ -724,7 +835,7 @@
                     timePrefix = timePrefix[0];
                 }
                 window.currentGeminiMessage.textContent = timePrefix + fullText;
-                updateReactTextMessage(window.currentGeminiMessage, 'assistant', 'Neko', window.currentGeminiMessage.textContent, 'streaming');
+                updateReactTextMessage(window.currentGeminiMessage, 'assistant', getCurrentAssistantName(), window.currentGeminiMessage.textContent, 'streaming');
 
                 
                 // 触发字幕检测逻辑（防抖）
@@ -774,7 +885,7 @@
             appendReactTextMessage(
                 newDiv,
                 sender === 'user' ? 'user' : 'assistant',
-                sender === 'user' ? 'You' : 'Neko',
+                sender === 'user' ? getCurrentUserName() : getCurrentAssistantName(),
                 newDiv.textContent
             );
 
@@ -810,6 +921,7 @@
     mod.appendMessage = appendMessage;
     mod.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
     mod.setReactMessageStatus = setReactMessageStatus;
+    mod.ensureUserDisplayName = ensureUserDisplayName;
 
     /**
      * 标记用户已完成首次输入（供外部模块调用）

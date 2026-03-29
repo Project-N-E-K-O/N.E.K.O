@@ -245,6 +245,67 @@
     <script src="/static/app-react-chat-window.js"></script>
 
     <script src="/static/subtitle.js"></script>
+
+    <script>
+        window.pageConfigReady = (async function loadPageConfig() {
+            try {
+                const urlParams = new URLSearchParams(window.location.search);
+                const lanlanNameFromUrl = urlParams.get('lanlan_name') || '';
+                const apiUrl = lanlanNameFromUrl
+                    ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
+                    : '/api/config/page_config';
+                const response = await fetch(apiUrl);
+                const data = await response.json();
+
+                if (data && data.success) {
+                    if (!window.lanlan_config || typeof window.lanlan_config !== 'object') {
+                        window.lanlan_config = {};
+                    }
+                    window.lanlan_config.lanlan_name = data.lanlan_name || lanlanNameFromUrl || window.lanlan_config.lanlan_name || '';
+                    window.lanlan_config.master_name = data.master_name || '';
+                    window.lanlan_config.master_profile_name = data.master_profile_name || '';
+                    window.lanlan_config.master_nickname = data.master_nickname || '';
+                    window.lanlan_config.master_display_name = data.master_display_name || data.master_nickname || data.master_name || '';
+                    window.master_name = data.master_name || '';
+                    window.master_profile_name = data.master_profile_name || '';
+                    window.master_nickname = data.master_nickname || '';
+                    window.master_display_name = data.master_display_name || data.master_nickname || data.master_name || '';
+                    return data;
+                }
+            } catch (error) {
+                console.warn('[Init] load page_config failed:', error);
+            }
+
+            if (!window.lanlan_config || typeof window.lanlan_config !== 'object') {
+                window.lanlan_config = {};
+            }
+            if (typeof window.lanlan_config.master_name !== 'string') {
+                window.lanlan_config.master_name = '';
+            }
+            if (typeof window.lanlan_config.master_profile_name !== 'string') {
+                window.lanlan_config.master_profile_name = '';
+            }
+            if (typeof window.lanlan_config.master_nickname !== 'string') {
+                window.lanlan_config.master_nickname = '';
+            }
+            if (typeof window.lanlan_config.master_display_name !== 'string') {
+                window.lanlan_config.master_display_name = window.lanlan_config.master_nickname || window.lanlan_config.master_name || '';
+            }
+            if (typeof window.master_name !== 'string') {
+                window.master_name = window.lanlan_config.master_name || '';
+            }
+            if (typeof window.master_profile_name !== 'string') {
+                window.master_profile_name = window.lanlan_config.master_profile_name || '';
+            }
+            if (typeof window.master_nickname !== 'string') {
+                window.master_nickname = window.lanlan_config.master_nickname || '';
+            }
+            if (typeof window.master_display_name !== 'string') {
+                window.master_display_name = window.lanlan_config.master_display_name || window.master_nickname || window.master_name || '';
+            }
+            return null;
+        })();
+    </script>
     
     <link rel="stylesheet" href="/static/css/touch-config.css">
     <script src="/static/touch-config.js"></script>
