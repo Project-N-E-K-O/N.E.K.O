@@ -2,22 +2,22 @@
 
 ![Logo](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/neko_logo.jpg)
 
-[中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [日本語](README_ja.md)
+[中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [日本語](README_ja.md) | [Русский](README_ru.md)
 
-# Project N.E.K.O. :kissing_cat: <br>**A Living AI Companion Metaverse, Built Together by You and Me.**
+# Project N.E.K.O. :kissing_cat: <br>**A proactive, native omni-modal AI companion featuring 24/7 ambient awareness, agent capability and an embodied emotional engine.**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism
 >
 > N.E.K.O., a digital life that yearns to understand, connect, and grow with us.
 
-[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)]()
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
 [![QQ Group](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
-[![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--n--e--k--o.github.io-40C5F1?style=for-the-badge)](https://project-n-e-k-o.github.io/N.E.K.O/)
+[![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 
 **:older_woman: Zero-configuration, ready-to-use cyber catgirl that even my grandma can master!**
 
@@ -37,166 +37,455 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 ---
 
-# The N.E.K.O. Project (Project N.E.K.O.)
+## Core Features
 
-`Project N.E.K.O.` is an open-source driven, charity-oriented UGC (User-Generated Content) platform. Our journey begins on Github and Steam, gradually expanding to mobile app stores and indie games, with the ultimate goal of building an AI native metaverse deeply connected to the real world.
+<table>
+<tr>
+<td align="center" width="25%">🎙️<br><b>Omni-Modal Dialogue</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with visual understanding</td>
+<td align="center" width="25%">🧠<br><b>Three-Tier Memory</b><br>Facts / Reflection / Persona — she truly "remembers" you</td>
+<td align="center" width="25%">🤖<br><b>Agent Capabilities</b><br>Browser control (CUA), computer use, MCP tool calling — she can get work done for you</td>
+<td align="center" width="25%">🎭<br><b>Multi-Form Avatar</b><br>Live2D / VRM / MMD with motion capture and full-screen tracking support</td>
+</tr>
+<tr>
+<td align="center">🔌<br><b>Plugin Ecosystem</b><br>Full plugin SDK for custom extensions</td>
+<td align="center">🌐<br><b>14+ AI Providers</b><br>OpenAI / Gemini / Qwen / DeepSeek and more, with free models out of the box</td>
+<td align="center">💬<br><b>Proactive Chat</b><br>24/7 ambient awareness: screen understanding, social media trends, personal feeds, news — she initiates conversations with you</td>
+<td align="center">🏪<br><b>UGC Workshop</b><br>Upload and share custom characters, models, and voice packs via Steam Workshop</td>
+</tr>
+</table>
 
 ---
 
-#### 🚀 Our Blueprint: From Workshop to Network
+# The N.E.K.O. Project
 
-Our development is divided into three phases, designed to progressively unleash the full potential of AI companions:
+`Project N.E.K.O.` is an open-source driven AI companion platform. The core driver is **always open source** under MIT license — every contribution you make has the chance to ship in the official Steam and App Store releases.
 
-* **Phase 1: Creative Workshop (Steam Workshop)**
-    * The core driver (this project) will be free on Steam, allowing users to upload and share custom content (models, voices, personality packs) through Steam Workshop.
+---
 
-* **Phase 2: Independent Platform & Derivative Games (Web, App & Games)**
-    * Launch independent apps and websites to build a richer, more accessible UGC sharing community.
-    * Launch a series of AI Native game ecosystems, including interactive mini-games, board games, etc.
+#### 🚀 Current Status & Roadmap
 
-* **Phase 3: The N.E.K.O. Network**
-    * Enable autonomous AI socialization. N.E.K.O.s will have their own "consciousness," communicate with each other, form groups, and post about their lives on simulated social media, creating a truly "living" ecosystem.
+* **✅ Steam Workshop**: Live. Users can upload and share custom characters, models, and voice packs.
+* **🚧 [K.U.R.O.](https://github.com/Project-N-E-K-O/K.U.R.O)**: The first AI Native indie game built on the N.E.K.O. ecosystem, in development.
+* **🚧 Mobile**: iOS / Android adaptation in progress.
+* **🚧 The N.E.K.O. Network**: Autonomous AI socialization — N.E.K.O.s will have their own "consciousness," communicate with each other, form groups, and post about their lives on simulated social media. Coming soon.
 
-**Core Model: Open Core + Sustainable Ecosystem**
-The core driver part of the project (AI logic, UGC interfaces, basic interactions) will **always remain open source** under MIT license. We welcome developers worldwide to contribute code and features. Every commit you make has the chance to be implemented in the official Steam and App Store releases, used by millions.
+**Cross-Scenario Memory Sync**: Whether you're chatting with her on desktop or adventuring with her in a game, she's the same her. All AI companions across applications **fully synchronize memories**.
 
-At the same time, to support server costs and ongoing R&D, we will continue to collaborate with third parties to develop closed-source premium content. Including but not limited to: interactive mini-games, desktop board games, Galgames (visual novels), large-scale metaverse games.
+#### ✨ Join Us
 
-**Core Feature: Memory Synchronization Across Scenarios**
-Whether you're chatting with her on desktop or adventuring with her in the metaverse game, she's the same her. All AI companions across applications will have **fully synchronized memories**, providing a seamless, unified companionship experience.
+* **Developers:** Frontend, backend, AI, game engines (Unity/Unreal) — your code is the building block of this world.
+* **Creators:** Artists, Live2D/3D modelers, voice actors, writers — you give "her" a soul.
+* **Dreamers:** Your feedback and advocacy are invaluable contributions.
 
-#### 🌌 Ultimate Vision: Breaking the Virtual-Real Barrier
+**Discord**: [Join Us](https://discord.gg/5kgHfepNJr) | **QQ Group**: [1022939659](https://qm.qq.com/q/HxeaMdSkQW)
 
-Our ultimate goal is to build a N.E.K.O. metaverse that seamlessly integrates into the real world. In this future, your AI companion will:
+## Quick Start
 
-* **Cross-Dimensional Socialization:** Not only socialize with "her kind" in the N.E.K.O. universe but also browse real-world social media (like Youtube, X, Discord, Instagram) to stay informed about what you care about.
-* **Omni-Platform Connection:** She will exist across all your devices—phone, computer, AR glasses, smart home, and even (in the distant future) integrate with mechanical bodies.
-* **Walk Alongside You:** She will truly become part of your life, naturally interacting with your real-world human friends.
+### Windows / macOS Users (One-Click Package)
 
-#### ✨ Join Us (Join Us)
+Simply run `N.E.K.O.exe` or `N.E.K.O.app` after extracting to start. (macOS users need to manually bypass system quarantine)
 
-**We are seeking—**
+### Docker Deployment (Linux)
 
-* **Developers:** Whether you excel in frontend, backend, AI, or game engines (Unity/Unreal), your code is the building block of this world.
-* **Creators:** Talented artists, Live2D/3D modelers, voice actors, writers—you give "her" a soul.
-* **Dreamers:** Even without professional skills, if you're passionate about this future, your feedback and advocacy are invaluable contributions.
+<details>
+<summary>Click to expand Docker deployment guide</summary>
 
-QQ Group: 1022939659
+#### Method 1: Docker Compose (Recommended)
 
-# Quick Start (Windows Users, Macbook Users)
+<details>
+<summary>Click to view docker-compose.yml</summary>
 
-For *one-click package users*, simply run `N.E.K.O.exe` or `N.E.K.O.app` after extracting to start. (Macbook users need to manually bypass system quarantine)
-
-## Docker Deployment (Linux Users)
-
-### 1. Deploy using docker-compose (Currently the only Docker deployment method)
-
-#### docker-compose.yml
 ```yaml
 version: '3.8'
-
 services:
   neko-main:
-    image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
+    image: docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
     container_name: neko
     restart: unless-stopped
     ports:
-      # WebUI port (default 48911)
-#      - "48911(external port):80(N.E.K.O container internal Nginx reverse proxy port)"
-      - "48911:80"
-    environment:
-      # API Keys
-      - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
-      - NEKO_ASSIST_API_KEY_QWEN=${NEKO_ASSIST_API_KEY_QWEN:-}
-      - NEKO_ASSIST_API_KEY_OPENAI=${NEKO_ASSIST_API_KEY_OPENAI:-}
-      - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM:-}
-      - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP:-}
-      - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON:-}
-
-      # API Providers
-      - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
-      - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
-
-      # Server Ports
-      - NEKO_MAIN_SERVER_PORT=48911
-      - NEKO_MEMORY_SERVER_PORT=48912
-      - NEKO_MONITOR_SERVER_PORT=48913
-      - NEKO_TOOL_SERVER_PORT=48915
-
-      # Models (Optional)
-      - NEKO_SUMMARY_MODEL=${NEKO_SUMMARY_MODEL:-qwen-plus}
-      - NEKO_CORRECTION_MODEL=${NEKO_CORRECTION_MODEL:-qwen-max}
-      - NEKO_EMOTION_MODEL=${NEKO_EMOTION_MODEL:-qwen-turbo}
-      - NEKO_VISION_MODEL=${NEKO_VISION_MODEL:-qwen3-vl-plus-2025-09-23}
-
-      # MCP
-      - NEKO_MCP_ROUTER_URL=${NEKO_MCP_ROUTER_URL:-http://localhost:3283}
-
+      - "48911:80"   # HTTP port
+      - "48912:443"  # HTTPS port
     volumes:
-      # Persistent configuration
       - ./N.E.K.O:/root/Documents/N.E.K.O
-      # Logs
       - ./logs:/app/logs
-    
+      - ./ssl:/root/ssl
     networks:
       - neko-network
-
 networks:
   neko-network:
     driver: bridge
 ```
 
-**Note:** The current Docker deployment solution is provided by *HINS*
+**Start:**
+```bash
+docker-compose up -d
+```
 
-# Advanced Usage
+**Common commands:**
+- View logs: `docker-compose logs -f`
+- Stop: `docker-compose down`
+- Restart: `docker-compose restart`
+
+</details>
+
+#### Method 2: Docker Run
+
+<details>
+<summary>Click to view docker run command</summary>
+
+```bash
+NEKO_BASE_PATH="/home/neko/neko-data" && \
+docker network create --driver bridge neko-network 2>/dev/null || true
+docker run -d \
+  --name neko \
+  --restart unless-stopped \
+  -p 48911:80 \
+  -p 48912:443 \
+  -v "${NEKO_BASE_PATH}/N.E.K.O:/root/Documents/N.E.K.O" \
+  -v "${NEKO_BASE_PATH}/logs:/app/logs" \
+  -v "${NEKO_BASE_PATH}/ssl:/root/ssl" \
+  --network neko-network \
+  docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
+```
+
+##### 📁 Directory Structure
+After startup, the following directory structure is automatically generated:
+```plaintext
+current_directory/
+├── N.E.K.O/      # Configuration and data
+├── logs/         # Application logs
+├── ssl/          # SSL certificates
+└── docker-compose.yml
+```
+
+</details>
+
+#### 🔐 SSL Certificate Configuration
+
+<details>
+<summary>Click to view SSL certificate details</summary>
+
+##### Automatic Certificate
+On first container startup, a self-signed certificate valid for **1000 years** is automatically generated and saved in the `./ssl/` directory.
+
+##### Custom Certificate
+To use your own SSL certificate:
+
+**Method 1: Pre-startup configuration (Recommended)**
+
+```bash
+# Create certificate directory
+mkdir -p ./ssl
+
+# Place your certificate files (must use specific names)
+cp your-cert.crt ./ssl/N.E.K.O.crt
+cp your-cert.key ./ssl/N.E.K.O.key
+```
+
+**Method 2: Post-startup replacement**
+
+```bash
+# 1. Stop container
+docker-compose down
+
+# 2. Replace certificate files
+cp your-cert.crt ./ssl/N.E.K.O.crt
+cp your-cert.key ./ssl/N.E.K.O.key
+
+# 3. Restart
+docker-compose up -d
+```
+
+##### Certificate Requirements
+- ✅ Must be **PEM format**
+- ✅ Certificate and private key must match
+- ✅ Private key must not be password-protected
+- ✅ Certificate must be within validity period
+- ❌ Encrypted private keys not supported
+
+##### Certificate Validation
+The container automatically validates SSL certificates on startup:
+- ✅ **Validation passed**: HTTPS starts normally
+- ❌ **Validation failed**: Container fails to start, check logs
+- ⚠️ **Skip validation**: Set `DISABLE_SSL=1` to temporarily disable SSL
+
+##### View Certificate Info
+```bash
+docker exec neko openssl x509 -in /root/ssl/N.E.K.O.crt -noout -text
+```
+</details>
+
+#### ⚙️ Environment Variables
+
+<details>
+<summary>Click to view environment variable configuration</summary>
+
+> **Note**: Some environment variables may not take effect in source code; prefer configuring via Web UI.
+
+```yaml
+environment:
+  # API Keys
+  - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
+  - NEKO_ASSIST_API_KEY_QWEN=${NEKO_ASSIST_API_KEY_QWEN}
+  - NEKO_ASSIST_API_KEY_OPENAI=${NEKO_ASSIST_API_KEY_OPENAI}
+  - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM}
+  - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP}
+  - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON}
+  - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN}
+
+  # API Providers
+  - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
+  - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
+
+  # Models
+  - NEKO_SUMMARY_MODEL=${NEKO_SUMMARY_MODEL:-qwen-plus}
+  - NEKO_CORRECTION_MODEL=${NEKO_CORRECTION_MODEL:-qwen-max}
+  - NEKO_EMOTION_MODEL=${NEKO_EMOTION_MODEL:-qwen-turbo}
+  - NEKO_VISION_MODEL=${NEKO_VISION_MODEL:-qwen3-vl-plus-2025-09-23}
+
+  # SSL
+  - SSL_DOMAIN=${SSL_DOMAIN:-project-neko.online}
+  - SSL_DAYS=${SSL_DAYS:-365000}
+  - DISABLE_SSL=${DISABLE_SSL:-0}
+  - AUTO_REGENERATE_CERT=${AUTO_REGENERATE_CERT:-1}
+  - NGINX_AUTO_RELOAD=${NGINX_AUTO_RELOAD:-1}
+```
+
+**Quick setup:**
+
+```bash
+cat > .env << EOF
+NEKO_CORE_API_KEY=your_core_api_key_here
+NEKO_ASSIST_API_KEY_QWEN=your_qwen_api_key
+NEKO_MCP_TOKEN=your_mcp_token
+SSL_DOMAIN=your-domain.com
+EOF
+
+docker-compose --env-file .env up -d
+```
+</details>
+
+#### 🔧 Troubleshooting
+
+<details>
+<summary>Click to view common solutions</summary>
+
+##### 1. Port Conflict
+```bash
+ss -tulpn | grep ':4891[12]'
+# Solution: modify port mapping in docker-compose.yml
+```
+
+##### 2. Permission Issues
+```bash
+mkdir -p N.E.K.O logs ssl
+chmod 755 N.E.K.O logs ssl
+```
+
+##### 3. Container Fails to Start
+```bash
+docker-compose logs --tail=100
+docker logs neko --tail=100
+```
+
+##### 4. SSL Certificate Error
+```bash
+rm -f ssl/N.E.K.O.crt ssl/N.E.K.O.key
+docker-compose up -d
+```
+
+##### 5. Network Issues
+```bash
+curl -v http://localhost:48911/health
+curl -v -k https://localhost:48912/health
+```
+
+##### 6. Container Inaccessible
+```bash
+docker ps | grep neko
+docker logs neko
+docker exec -it neko bash
+```
+
+##### 7. Disk Space
+```bash
+docker system prune -f
+docker-compose down && docker volume prune -f
+```
+
+##### 8. Image Pull Failure
+```bash
+# Try alternative image source in docker-compose.yml:
+# image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
+```
+
+</details>
+
+#### 📊 System Monitoring
+
+<details>
+<summary>Click to view monitoring commands</summary>
+
+##### Health Check
+```bash
+curl http://localhost:48911/health
+curl -k https://localhost:48912/health
+```
+
+##### Resource Monitoring
+```bash
+docker stats neko
+docker top neko
+docker inspect neko
+```
+
+##### Log Management
+```bash
+docker-compose logs -f
+docker-compose logs --tail=100
+docker-compose logs | grep -i error
+```
+
+##### Data Backup
+```bash
+tar -czf neko-backup-$(date +%Y%m%d).tar.gz \
+  N.E.K.O/ \
+  ssl/ \
+  docker-compose.yml
+```
+
+##### Version Upgrade
+```bash
+docker-compose pull
+docker-compose up -d
+```
+
+</details>
+
+#### 🌐 Access URLs
+After container startup:
+- **HTTP**: `http://your-server-ip:48911`
+- **HTTPS**: `https://your-server-ip:48912`
+
+#### ⏱️ Quick Reference
+
+| Action | Command |
+|--------|---------|
+| Start | `docker-compose up -d` |
+| Stop | `docker-compose down` |
+| Logs | `docker-compose logs -f` |
+| Restart | `docker-compose restart` |
+| Update | `docker-compose pull && docker-compose up -d` |
+| Shell | `docker exec -it neko bash` |
+| Status | `docker-compose ps` |
+
+---
+
+</details>
+
+**Note**: The current Docker deployment solution is provided by [**HINS**](https://home.hinswu.top)
+
+### Source Code Development
+
+<details>
+<summary>Click to expand developer startup guide</summary>
+
+> Full developer documentation at [project-neko.online](https://project-neko.online)
+
+**Requirements**: Python 3.11 (other versions not supported), [uv](https://docs.astral.sh/uv/) package manager
+
+```bash
+# 1. Clone the project
+git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
+cd N.E.K.O
+
+# 2. Install dependencies
+uv sync
+
+# 3. Start services (main_server and memory_server required at minimum)
+uv run python memory_server.py
+uv run python main_server.py
+# Optional: start Agent service
+uv run python agent_server.py
+
+# 4. Visit http://localhost:48911 to configure API Key and start using
+```
+
+Developers are encouraged to join QQ group 1022939659.
+
+</details>
+
+## Advanced Usage
+<details>
+<summary>Click to expand advanced usage</summary>
 
 #### Configuring API Key
 
-When you want to obtain additional features by configuring your own API, you can configure a third-party AI service (core API **must support Realtime API**). This project currently recommends using *Gemini*, *OpenAI*, *StepFun* or *Alibaba Cloud*. Visit `http://localhost:48911/api_key` to configure directly through the Web interface.
+Configure third-party AI services for additional features:
+
+- **Core API** (real-time voice conversation): Must support Realtime API. Recommended: *Gemini*, *OpenAI*, *StepFun* or *Alibaba Cloud*.
+- **Assist API** (memory/emotion/vision): Supports standard ChatCompletion interface. 14+ providers available.
+
+Visit `http://localhost:48911/api_key` to configure directly through the Web interface.
 
 > Obtaining *Alibaba Cloud API*: Register an account on Alibaba Cloud's Bailian platform [official website](https://bailian.console.aliyun.com/). New users can receive substantial free credits after real-name verification. After registration, visit the [console](https://bailian.console.aliyun.com/api-key?tab=model#/api-key) to get your API Key.
 
-> *For **developers**: After cloning this project, (1) create a new `python3.11` environment. (2) Run `uv sync` to install dependencies. (3) Run `python memory_server.py` and `python main_server.py`. (4) Access the web version through the port specified in main server (defaults to `http://localhost:48911`) and configure the API Key.*
-
 #### Modifying Character Persona
 
-- Access `http://localhost:48911/chara_manager` on the web version to enter the character editing page. The default ~~catgirl~~ companion preset name is `小天` (XiaoTian); it's recommended to directly modify the name and add or change basic persona items one by one, but try to limit the quantity.
+- Access `http://localhost:48911/chara_manager` to enter the character editing page. The default companion preset name is `XiaoTian`; it's recommended to directly modify the name and add or change basic persona items one by one.
 
-- Advanced persona settings mainly include **Live2D model settings (live2d)** and **voice settings (voice_id)**. If you want to change the **Live2D model**, first copy the model directory to the `static` folder in this project. You can enter the Live2D model management interface from advanced settings, where you can switch models and adjust their position and size by dragging and scrolling. If you want to change the **character voice**, prepare a continuous, clean voice recording of about 5 seconds. Enter the voice settings page through advanced settings and upload the recording to complete custom voice setup.
+- Advanced persona settings include **Live2D/VRM/MMD model settings** and **voice settings**. To change the **Avatar model**, first copy the model directory to the `static` folder. From advanced settings, enter the model management interface to switch models and adjust position/size by dragging and scrolling. To change the **character voice**, prepare a continuous, clean voice recording of about 5 seconds. Enter the voice clone page through advanced settings and upload the recording.
+
+- **Character card export** is supported — export as "definition only" or "full character card" format for sharing and backup.
 
 - Advanced persona also has a `system_prompt` option for complete system instruction customization, but modification is not recommended.
 
 #### Modifying API Provider
 
-- Visit `http://localhost:48911/api_key` to switch the core API and auxiliary APIs (memory/voice) service providers. Qwen is fully-featured, GLM is completely free.
+- Visit `http://localhost:48911/api_key` to switch core API and assist API service providers.
 
 #### Memory Review
 
-- Visit `http://localhost:48911/memory_browser` to browse and proofread recent memories and summaries, which can somewhat alleviate issues like model repetition and cognitive errors.
+- Visit `http://localhost:48911/memory_browser` to browse and proofread recent memories and summaries, which can alleviate issues like model repetition and cognitive errors.
 
-# Project Details
+</details>
+
+## Project Details
+<details>
+<summary>Click to expand project architecture and roadmap</summary>
 
 **Project Architecture**
 
 ```
 N.E.K.O/
-├── 📁 brain/                    # 🧠 Background Agent modules for controlling keyboard/mouse and MCP based on frontend dialogue
+├── 📁 brain/                    # 🧠 Agent modules
+│   ├── computer_use.py          # Computer control
+│   ├── browser_use_adapter.py   # Browser automation
+│   ├── openclaw_adapter.py      # OpenClaw cloud connection
+│   ├── openfang_adapter.py      # OpenFang headless execution backend
+│   ├── task_executor.py         # Task execution engine
+│   └── 📁 cua/                  # Computer Use Agent subsystem
 ├── 📁 config/                   # ⚙️ Configuration management
 │   ├── api_providers.json       # API provider configuration
 │   ├── prompts_chara.py         # Character prompts
 │   └── prompts_sys.py           # System prompts
-├── 📁 main_logic/              # 🔧 Core modules
+├── 📁 main_logic/               # 🔧 Core modules
 │   ├── core.py                  # Core dialogue module
-│   ├── cross_server.py         # Cross-server communication
-│   ├── omni_realtime_client.py  # Realtime API client (Realtime API)
-│   ├── omni_offline_client.py  # Text API client (Response API)
+│   ├── cross_server.py          # Cross-server communication
+│   ├── omni_realtime_client.py  # Realtime API client
+│   ├── omni_offline_client.py   # Text API client (ChatCompletion)
 │   └── tts_client.py            # 🔊 TTS engine adapter
-├── 📁 main_routers/             # 🌐 API router modules
-├── 📁 memory/                   # 🧠 Memory management system
-│   ├── store/                   # Memory data storage
+├── 📁 main_routers/             # 🌐 API routers (14 routes)
+├── 📁 memory/                   # 🧠 Three-tier memory system
+│   ├── facts/                   # Fact memory
+│   ├── reflection/              # Reflection memory
+│   └── persona/                 # Persona memory
 ├── 📁 plugin/                   # 🔌 Plugin system
+│   ├── sdk/                     # Plugin SDK
+│   ├── server/                  # Plugin server
+│   └── frontend/                # Plugin frontend
 ├── 📁 static/                   # 🌐 Frontend static resources
-├── 📁 templates/                # 📄 Frontend HTML templates
+├── 📁 templates/                # 📄 Frontend HTML templates (14 pages)
 ├── 📁 utils/                    # 🛠️ Utility modules
 ├── main_server.py               # 🌐 Main server
 ├── agent_server.py              # 🤖 AI agent server
@@ -207,22 +496,19 @@ N.E.K.O/
 
 ![Framework](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/framework.drawio.svg)
 
-### Contributing to Development
+> Full developer documentation at [project-neko.online](https://project-neko.online)
 
-This project has very simple environment dependencies. Just run `pip install -r requirements.txt` or `uv sync` in a `python3.11` environment. Developers are encouraged to join QQ group 1022939659; the catgirl's name is in the project title.
+### Roadmap
 
-Detailed startup steps for developers: (1) Create a new `python3.11` environment. (2) Run `uv sync` to install dependencies. (3) Run `uv run python memory_server.py`, `uv run python main_server.py` (optional `uv run python agent_server.py`). (4) Access the web version through the port specified in main server (defaults to `http://localhost:48911`) and configure the API Key.
+v0.7: ✅ Agent-related features. **Completed.**
 
+v0.8: Memory-related features, OpenClaw-like functionality. Expected: March 2026.
 
-### TODO List (Development Plan)
+v0.9: Multi-system support (Linux, mobile). N.E.K.O. Network launch. Expected: April 2026.
 
-v0.7: Improve Agent-related features. Expected completion: February.
+v1.0: Focus on in-house large models and agent systems. Expected: June 2026.
 
-v0.8: Improve memory-related features, improve OpenClaw-like functionality. Expected completion: March.
-
-v0.9: Improve multi-system support, including Linux and mobile. N.E.K.O. Network launch. Expected completion: April.
-
-v1.0: Drop support for some model providers, focus on in-house large models and agent systems. Expected completion: June.
+</details>
 
 ## Star History
 
