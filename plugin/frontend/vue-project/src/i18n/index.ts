@@ -18,26 +18,29 @@ const DEFAULT_LOCALE: AppLocale = 'zh-CN'
  * 根据浏览器语言自动匹配最合适的支持语言
  */
 function resolveLocaleFromBrowser(): AppLocale {
-  const browserLang = navigator.language
-  if (!browserLang) return DEFAULT_LOCALE
+  const languages = navigator.languages?.length ? navigator.languages : [navigator.language]
 
-  // 完全匹配
-  if (SUPPORTED_LOCALES.includes(browserLang as AppLocale)) {
-    return browserLang as AppLocale
-  }
+  for (const lang of languages) {
+    if (!lang) continue
 
-  // 按基础语言代码部分匹配
-  const langCode = browserLang.split('-')[0].toLowerCase()
-  if (langCode === 'en') return 'en-US'
-  if (langCode === 'ja') return 'ja'
-  if (langCode === 'ko') return 'ko'
-  if (langCode === 'ru') return 'ru'
-  if (langCode === 'zh') {
-    const upper = browserLang.toUpperCase()
-    if (upper.includes('TW') || upper.includes('HK') || upper.includes('HANT')) {
-      return 'zh-TW'
+    // 完全匹配
+    if (SUPPORTED_LOCALES.includes(lang as AppLocale)) {
+      return lang as AppLocale
     }
-    return 'zh-CN'
+
+    // 按基础语言代码部分匹配
+    const langCode = lang.split('-')[0].toLowerCase()
+    if (langCode === 'en') return 'en-US'
+    if (langCode === 'ja') return 'ja'
+    if (langCode === 'ko') return 'ko'
+    if (langCode === 'ru') return 'ru'
+    if (langCode === 'zh') {
+      const upper = lang.toUpperCase()
+      if (upper.includes('TW') || upper.includes('HK') || upper.includes('HANT')) {
+        return 'zh-TW'
+      }
+      return 'zh-CN'
+    }
   }
 
   return DEFAULT_LOCALE
