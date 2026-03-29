@@ -129,7 +129,16 @@ export default function MessageBubble({
       >
         <div className="system-chip">
           <span className="system-chip-time">{message.time}</span>
-          <span>{message.blocks.map((block) => (block.type === 'text' ? block.text : '')).join(' ')}</span>
+          <div className="system-chip-content">
+            {message.blocks.map((block, index) => (
+              <MessageBlockView
+                key={`${message.id}-${block.type}-${index}`}
+                block={block}
+                message={message}
+                onAction={onAction}
+              />
+            ))}
+          </div>
         </div>
       </article>
     );

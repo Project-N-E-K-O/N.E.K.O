@@ -408,6 +408,7 @@ textarea {
 .system-chip {
   max-width: min(82%, 640px);
   display: inline-flex;
+  align-items: center;
   flex-wrap: wrap;
   justify-content: center;
   gap: 8px;
@@ -420,6 +421,21 @@ textarea {
 
 .system-chip-time {
   color: #7f8ca0;
+}
+
+.system-chip-content {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.system-chip .message-block {
+  min-width: auto;
+}
+
+.system-chip .message-block-text {
+  white-space: normal;
 }
 
 .composer-panel {

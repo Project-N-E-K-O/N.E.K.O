@@ -12,6 +12,11 @@ function shouldGroupWithPrevious(current: ChatMessage, previous?: ChatMessage) {
   if (current.role !== previous.role) return false;
   if (current.author !== previous.author) return false;
   if (current.role === 'system') return false;
+  if (typeof current.createdAt === 'number' && typeof previous.createdAt === 'number') {
+    if (Math.abs(current.createdAt - previous.createdAt) > 5 * 60 * 1000) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -29,7 +34,7 @@ export default function MessageList({
   }
 
   return (
-    <div className="message-list" aria-label="Chat messages" data-virtual-list-ready="true">
+    <div className="message-list" aria-label="Chat messages" data-message-list-kind="static">
       {messages.map((message, index) => (
         <MessageBubble
           key={message.id}

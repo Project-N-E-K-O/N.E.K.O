@@ -54,6 +54,7 @@ export type ChatMessage = {
   role: ChatMessageRole;
   author: string;
   time: string;
+  createdAt?: number;
   avatarLabel?: string;
   avatarUrl?: string;
   blocks: MessageBlock[];

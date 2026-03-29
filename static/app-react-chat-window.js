@@ -2,9 +2,9 @@
  * app-react-chat-window.js
  * Host-side controller for the exported React chat window.
  * - Dynamically loads the React bundle if needed
- * - Opens/closes the overlay window
- * - Makes the shell draggable on desktop
- * - Persists and restores window position
+ * - Owns window open/close/minimize/drag state
+ * - Owns chat view props + messages state
+ * - Exposes a stable bridge for host code / IPC adapters
  */
 (function () {
     'use strict';
@@ -12,10 +12,18 @@
     var BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     var STORAGE_LEFT_KEY = 'neko.reactChatWindow.left';
     var STORAGE_TOP_KEY = 'neko.reactChatWindow.top';
+    var EVENT_PREFIX = 'react-chat-window:';
+
     var loadedPromise = null;
     var mounted = false;
     var dragState = null;
     var minimized = false;
+
+    var state = {
+        viewProps: null,
+        messages: [],
+        onMessageAction: null
+    };
 
     function $(id) {
         return document.getElementById(id);
@@ -70,7 +78,7 @@
         return node && node.textContent ? node.textContent.trim() : '';
     }
 
-    function getMountProps() {
+    function createBaseViewProps() {
         var titleNode = $('chat-title');
         var textInputBox = $('textInputBox');
         var textSendButton = $('textSendButton');
@@ -92,6 +100,103 @@
             sendButtonLabel: sendButtonLabel,
             inputHint: 'Enter ' + sendButtonLabel + '，Shift + Enter 换行'
         };
+    }
+
+    function ensureViewProps() {
+        if (!state.viewProps) {
+            state.viewProps = createBaseViewProps();
+        }
+        return state.viewProps;
+    }
+
+    function cloneMessage(message) {
+        if (!message || typeof message !== 'object') return null;
+        return {
+            id: message.id,
+            role: message.role,
+            author: message.author,
+            time: message.time,
+            createdAt: message.createdAt,
+            avatarLabel: message.avatarLabel,
+            avatarUrl: message.avatarUrl,
+            blocks: Array.isArray(message.blocks) ? message.blocks.map(function (block) {
+                if (!block || typeof block !== 'object') return null;
+                if (block.type === 'buttons' && Array.isArray(block.buttons)) {
+                    return {
+                        type: 'buttons',
+                        buttons: block.buttons.map(function (button) {
+                            return {
+                                id: button.id,
+                                label: button.label,
+                                action: button.action,
+                                variant: button.variant,
+                                disabled: !!button.disabled,
+                                payload: button.payload || undefined
+                            };
+                        }).filter(Boolean)
+                    };
+                }
+                return Object.assign({}, block);
+            }).filter(Boolean) : [],
+            actions: Array.isArray(message.actions) ? message.actions.map(function (action) {
+                return {
+                    id: action.id,
+                    label: action.label,
+                    action: action.action,
+                    variant: action.variant,
+                    disabled: !!action.disabled,
+                    payload: action.payload || undefined
+                };
+            }) : undefined,
+            status: message.status,
+            sortKey: message.sortKey
+        };
+    }
+
+    function normalizeMessage(rawMessage, fallbackSortKey) {
+        var message = cloneMessage(rawMessage);
+        if (!message || !message.id) return null;
+
+        var now = Date.now();
+        var createdAt = typeof message.createdAt === 'number' ? message.createdAt : now;
+        var time = message.time;
+        if (!time) {
+            try {
+                time = new Date(createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            } catch (_) {
+                time = '';
+            }
+        }
+
+        return {
+            id: String(message.id),
+            role: message.role || 'assistant',
+            author: message.author || 'Neko',
+            time: time,
+            createdAt: createdAt,
+            avatarLabel: message.avatarLabel,
+            avatarUrl: message.avatarUrl,
+            blocks: Array.isArray(message.blocks) ? message.blocks : [],
+            actions: Array.isArray(message.actions) ? message.actions : undefined,
+            status: message.status,
+            sortKey: typeof message.sortKey === 'number' ? message.sortKey : fallbackSortKey
+        };
+    }
+
+    function sortMessages(messages) {
+        return messages.slice().sort(function (a, b) {
+            var sortA = typeof a.sortKey === 'number' ? a.sortKey : (typeof a.createdAt === 'number' ? a.createdAt : 0);
+            var sortB = typeof b.sortKey === 'number' ? b.sortKey : (typeof b.createdAt === 'number' ? b.createdAt : 0);
+            if (sortA !== sortB) return sortA - sortB;
+            return String(a.id).localeCompare(String(b.id));
+        });
+    }
+
+    function buildRenderProps() {
+        return Object.assign({}, ensureViewProps(), {
+            messages: state.messages,
+            onMessageAction: handleMessageAction
+        });
     }
 
     function showToast(message, duration) {
@@ -233,9 +338,102 @@
         var mount = api && (api.mount || api.mountChatWindow);
         if (typeof mount !== 'function') return false;
 
-        mount(root, getMountProps());
+        mount(root, buildRenderProps());
         mounted = true;
         return true;
+    }
+
+    function renderWindow() {
+        var overlay = getOverlay();
+        if (!overlay || overlay.hidden) return;
+        mountWindow();
+    }
+
+    function dispatchHostEvent(name, detail) {
+        window.dispatchEvent(new CustomEvent(EVENT_PREFIX + name, { detail: detail }));
+    }
+
+    function handleMessageAction(message, action) {
+        var detail = {
+            message: message,
+            action: action
+        };
+
+        if (typeof state.onMessageAction === 'function') {
+            try {
+                state.onMessageAction(detail);
+            } catch (error) {
+                console.error('[ReactChatWindow] onMessageAction failed:', error);
+            }
+        }
+
+        dispatchHostEvent('action', detail);
+    }
+
+    function setViewProps(nextViewProps) {
+        state.viewProps = Object.assign({}, ensureViewProps(), nextViewProps || {});
+        renderWindow();
+        return state.viewProps;
+    }
+
+    function setMessages(messages) {
+        var normalized = Array.isArray(messages)
+            ? messages.map(function (message, index) {
+                return normalizeMessage(message, index);
+            }).filter(Boolean)
+            : [];
+        state.messages = sortMessages(normalized);
+        renderWindow();
+        return state.messages;
+    }
+
+    function appendMessage(message) {
+        var normalized = normalizeMessage(message, state.messages.length);
+        if (!normalized) return null;
+
+        state.messages = sortMessages(state.messages.concat([normalized]));
+        renderWindow();
+        return normalized;
+    }
+
+    function updateMessage(messageId, patch) {
+        var updatedMessage = null;
+
+        state.messages = state.messages.map(function (message, index) {
+            if (String(message.id) !== String(messageId)) return message;
+            updatedMessage = normalizeMessage(Object.assign({}, message, patch || {}), index);
+            return updatedMessage || message;
+        });
+
+        state.messages = sortMessages(state.messages);
+        renderWindow();
+        return updatedMessage;
+    }
+
+    function removeMessage(messageId) {
+        var beforeLength = state.messages.length;
+        state.messages = state.messages.filter(function (message) {
+            return String(message.id) !== String(messageId);
+        });
+        var changed = state.messages.length !== beforeLength;
+        if (changed) {
+            renderWindow();
+        }
+        return changed;
+    }
+
+    function clearMessages() {
+        state.messages = [];
+        renderWindow();
+    }
+
+    function getStateSnapshot() {
+        return {
+            mounted: mounted,
+            minimized: minimized,
+            viewProps: Object.assign({}, ensureViewProps()),
+            messages: state.messages.map(cloneMessage)
+        };
     }
 
     function setMinimized(nextMinimized) {
@@ -359,11 +557,40 @@
         document.addEventListener('touchcancel', stopDrag);
     }
 
+    function bindBridgeEvents() {
+        window.addEventListener(EVENT_PREFIX + 'set-messages', function (event) {
+            setMessages(event.detail && event.detail.messages);
+        });
+
+        window.addEventListener(EVENT_PREFIX + 'append-message', function (event) {
+            appendMessage(event.detail && event.detail.message);
+        });
+
+        window.addEventListener(EVENT_PREFIX + 'update-message', function (event) {
+            var detail = event.detail || {};
+            updateMessage(detail.messageId, detail.patch);
+        });
+
+        window.addEventListener(EVENT_PREFIX + 'remove-message', function (event) {
+            removeMessage(event.detail && event.detail.messageId);
+        });
+
+        window.addEventListener(EVENT_PREFIX + 'clear-messages', function () {
+            clearMessages();
+        });
+
+        window.addEventListener(EVENT_PREFIX + 'set-view-props', function (event) {
+            setViewProps(event.detail && event.detail.viewProps);
+        });
+    }
+
     function init() {
         var trigger = $('reactChatWindowButton');
         var closeButton = $('reactChatWindowCloseButton');
         var minimizeButton = getMinimizeButton();
         var backdrop = $('react-chat-window-backdrop');
+
+        ensureViewProps();
 
         if (trigger) {
             trigger.addEventListener('click', openWindow);
@@ -382,6 +609,7 @@
         }
 
         bindDragging();
+        bindBridgeEvents();
 
         window.addEventListener('keydown', function (event) {
             var overlay = getOverlay();
@@ -396,6 +624,11 @@
                 restorePosition();
             }
         });
+
+        window.addEventListener('localechange', function () {
+            state.viewProps = createBaseViewProps();
+            renderWindow();
+        });
     }
 
     if (document.readyState === 'loading') {
@@ -408,6 +641,16 @@
         ensureBundleLoaded: ensureBundleLoaded,
         openWindow: openWindow,
         closeWindow: closeWindow,
+        setViewProps: setViewProps,
+        setMessages: setMessages,
+        appendMessage: appendMessage,
+        updateMessage: updateMessage,
+        removeMessage: removeMessage,
+        clearMessages: clearMessages,
+        getState: getStateSnapshot,
+        setOnMessageAction: function (handler) {
+            state.onMessageAction = typeof handler === 'function' ? handler : null;
+        },
         isMounted: function () { return mounted; }
     };
 })();
