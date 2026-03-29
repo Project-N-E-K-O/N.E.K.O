@@ -3,17 +3,15 @@ import ReactDOM from 'react-dom/client';
 import App, { type ChatWindowProps } from './App';
 import './styles.css';
 
-type MountOptions = ChatWindowProps;
-
 const roots = new WeakMap<HTMLElement, ReactDOM.Root>();
 
-export function mountChatWindow(container: HTMLElement, options: MountOptions = {}) {
+export function mount(container: HTMLElement, props: ChatWindowProps = {}) {
   const existingRoot = roots.get(container);
 
   if (existingRoot) {
     existingRoot.render(
       <React.StrictMode>
-        <App {...options} />
+        <App {...props} />
       </React.StrictMode>,
     );
     return existingRoot;
@@ -22,16 +20,19 @@ export function mountChatWindow(container: HTMLElement, options: MountOptions = 
   const root = ReactDOM.createRoot(container);
   root.render(
     <React.StrictMode>
-      <App {...options} />
+      <App {...props} />
     </React.StrictMode>,
   );
   roots.set(container, root);
   return root;
 }
 
-export function unmountChatWindow(container: HTMLElement) {
+export function unmount(container: HTMLElement) {
   const root = roots.get(container);
   if (!root) return;
   root.unmount();
   roots.delete(container);
 }
+
+export const mountChatWindow = mount;
+export const unmountChatWindow = unmount;

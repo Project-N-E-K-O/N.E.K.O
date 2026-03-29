@@ -99,26 +99,9 @@ textarea {
   font-size: 1rem;
   font-weight: 700;
   line-height: 1.2;
-}
-
-.window-subtitle {
-  margin: 2px 0 0;
-  color: #748197;
-  font-size: 0.78rem;
-}
-
-.window-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.window-status {
-  padding: 4px 8px;
-  border-radius: 999px;
-  color: #2c65d4;
-  background: rgba(44, 101, 212, 0.1);
-  font-size: 0.76rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -154,6 +137,15 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.message-empty-state {
+  margin: auto;
+  padding: 10px 14px;
+  border-radius: 999px;
+  color: #6f7d91;
+  background: rgba(131, 148, 175, 0.14);
+  font-size: 0.78rem;
 }
 
 .message-row {
@@ -322,10 +314,6 @@ textarea {
 
   .window-topbar {
     padding: 8px 12px 6px;
-  }
-
-  .window-status {
-    display: none;
   }
 
   .message-stack {

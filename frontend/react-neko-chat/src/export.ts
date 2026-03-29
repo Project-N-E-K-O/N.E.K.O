@@ -1,6 +1,8 @@
-import { mountChatWindow, unmountChatWindow } from './mount';
+import { mount, mountChatWindow, unmount, unmountChatWindow } from './mount';
 
 const api = {
+  mount,
+  unmount,
   mountChatWindow,
   unmountChatWindow,
 };

@@ -66,29 +66,31 @@
         return fallback;
     }
 
-    function getChatProps() {
+    function getTextContent(node) {
+        return node && node.textContent ? node.textContent.trim() : '';
+    }
+
+    function getMountProps() {
         var titleNode = $('chat-title');
         var textInputBox = $('textInputBox');
         var textSendButton = $('textSendButton');
-        var sendLabelNode = textSendButton ? textSendButton.querySelector('[data-i18n="chat.send"]') : null;
-        var titleText = (titleNode && titleNode.textContent && titleNode.textContent.trim())
+        var sendButtonLabelNode = textSendButton ? textSendButton.querySelector('[data-i18n="chat.send"]') : null;
+        var title = getTextContent(titleNode)
             || getI18nText('chat.title', '对话')
             || '对话';
-        var draftPlaceholder = (textInputBox && textInputBox.getAttribute('placeholder'))
+        var inputPlaceholder = (textInputBox && textInputBox.getAttribute('placeholder'))
             || getI18nText('chat.textInputPlaceholder', '文字聊天模式...回车发送，Shift+回车换行')
             || '文字聊天模式...回车发送，Shift+回车换行';
-        var sendLabel = (sendLabelNode && sendLabelNode.textContent && sendLabelNode.textContent.trim())
+        var sendButtonLabel = getTextContent(sendButtonLabelNode)
             || getI18nText('chat.send', '发送')
             || '发送';
 
         return {
-            title: titleText,
-            subtitle: '',
-            status: '',
+            title: title,
             iconSrc: '/static/icons/chat_icon.png',
-            draftPlaceholder: draftPlaceholder,
-            sendLabel: sendLabel,
-            composerHint: 'Enter ' + sendLabel + '，Shift + Enter 换行'
+            inputPlaceholder: inputPlaceholder,
+            sendButtonLabel: sendButtonLabel,
+            inputHint: 'Enter ' + sendButtonLabel + '，Shift + Enter 换行'
         };
     }
 
@@ -99,7 +101,7 @@
     }
 
     function ensureBundleLoaded() {
-        if (window.NekoChatWindow && typeof window.NekoChatWindow.mountChatWindow === 'function') {
+        if (window.NekoChatWindow && (typeof window.NekoChatWindow.mount === 'function' || typeof window.NekoChatWindow.mountChatWindow === 'function')) {
             return Promise.resolve(window.NekoChatWindow);
         }
 
@@ -109,7 +111,7 @@
             var existing = document.querySelector('script[data-react-chat-window-bundle="true"]');
             if (existing) {
                 existing.addEventListener('load', function () {
-                    if (window.NekoChatWindow && typeof window.NekoChatWindow.mountChatWindow === 'function') {
+                    if (window.NekoChatWindow && (typeof window.NekoChatWindow.mount === 'function' || typeof window.NekoChatWindow.mountChatWindow === 'function')) {
                         resolve(window.NekoChatWindow);
                     } else {
                         reject(new Error('React chat bundle loaded but API is missing'));
@@ -127,7 +129,7 @@
             script.dataset.reactChatWindowBundle = 'true';
 
             script.onload = function () {
-                if (window.NekoChatWindow && typeof window.NekoChatWindow.mountChatWindow === 'function') {
+                if (window.NekoChatWindow && (typeof window.NekoChatWindow.mount === 'function' || typeof window.NekoChatWindow.mountChatWindow === 'function')) {
                     resolve(window.NekoChatWindow);
                 } else {
                     reject(new Error('React chat bundle loaded but API is missing'));
@@ -227,7 +229,11 @@
         var root = getRoot();
         if (!root) return false;
 
-        window.NekoChatWindow.mountChatWindow(root, getChatProps());
+        var api = window.NekoChatWindow;
+        var mount = api && (api.mount || api.mountChatWindow);
+        if (typeof mount !== 'function') return false;
+
+        mount(root, getMountProps());
         mounted = true;
         return true;
     }

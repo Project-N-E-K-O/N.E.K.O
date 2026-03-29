@@ -8,38 +8,14 @@ export type ChatWindowMessage = {
 
 export type ChatWindowProps = {
   title?: string;
-  subtitle?: string;
-  status?: string;
   iconSrc?: string;
   messages?: ChatWindowMessage[];
-  draftPlaceholder?: string;
-  sendLabel?: string;
-  composerHint?: string;
+  inputPlaceholder?: string;
+  sendButtonLabel?: string;
+  inputHint?: string;
 };
 
-const defaultMessages: ChatWindowMessage[] = [
-  {
-    id: 'assistant-1',
-    role: 'assistant',
-    author: 'Neko',
-    time: '22:14',
-    text: '新版聊天框骨架已经准备好了，接下来可以逐步迁移旧版消息和输入逻辑。',
-  },
-  {
-    id: 'user-1',
-    role: 'user',
-    author: 'You',
-    time: '22:15',
-    text: '先保留旧版实现，新版先把窗口结构、消息样式和挂载导出能力建起来。',
-  },
-  {
-    id: 'system-1',
-    role: 'system',
-    author: 'System',
-    time: '22:16',
-    text: '当前为静态演示窗口。后续将通过 host bridge 接入现有 websocket、IPC 和宿主页面能力。',
-  },
-];
+const defaultMessages: ChatWindowMessage[] = [];
 
 function MessageBubble({ message }: { message: ChatWindowMessage }) {
   if (message.role === 'system') {
@@ -75,13 +51,11 @@ function MessageBubble({ message }: { message: ChatWindowMessage }) {
 
 export default function App({
   title = 'N.E.K.O Chat',
-  subtitle = 'QQ-style chat window skeleton',
-  status = 'Prototype Window',
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
-  draftPlaceholder = '输入消息，后续这里会接入真实发送逻辑...',
-  sendLabel = '发送',
-  composerHint = 'Enter 发送，Shift + Enter 换行',
+  inputPlaceholder = '文字聊天模式...回车发送，Shift+回车换行',
+  sendButtonLabel = '发送',
+  inputHint = 'Enter 发送，Shift + Enter 换行',
 }: ChatWindowProps) {
   return (
     <main className="app-shell">
@@ -91,23 +65,19 @@ export default function App({
             <div className="window-avatar window-avatar-image-shell">
               <img className="window-avatar-image" src={iconSrc} alt={title} />
             </div>
-            <div>
-              <h1 className="window-title">{title}</h1>
-              {subtitle ? <p className="window-subtitle">{subtitle}</p> : null}
-            </div>
+            <h1 className="window-title">{title}</h1>
           </div>
-          {status ? (
-            <div className="window-actions" aria-label="Window status">
-              <span className="window-status">{status}</span>
-            </div>
-          ) : null}
         </header>
 
         <section className="chat-body">
           <div className="message-list" aria-label="Chat messages">
-            {messages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
-            ))}
+            {messages.length > 0 ? (
+              messages.map((message) => (
+                <MessageBubble key={message.id} message={message} />
+              ))
+            ) : (
+              <div className="message-empty-state">聊天内容接入后会显示在这里。</div>
+            )}
           </div>
         </section>
 
@@ -121,12 +91,12 @@ export default function App({
           <form className="composer" onSubmit={(event) => event.preventDefault()}>
             <textarea
               className="composer-input"
-              placeholder={draftPlaceholder}
+              placeholder={inputPlaceholder}
               rows={4}
             />
             <div className="composer-footer">
-              <span className="composer-hint">{composerHint}</span>
-              <button className="send-button" type="submit">{sendLabel}</button>
+              <span className="composer-hint">{inputHint}</span>
+              <button className="send-button" type="submit">{sendButtonLabel}</button>
             </div>
           </form>
         </footer>
