@@ -528,6 +528,58 @@ window._modelManagerLanlanName = new URLSearchParams(window.location.search).get
  */
 const ModelPathHelper = {
     /**
+     * 验证模型路径是否有效
+     * 拒绝 undefined/null 字符串、空值、以及包含 'undefined'/'null' 的字符串
+     * @param {*} path - 原始路径值
+     * @returns {string} 验证后的字符串，无效时返回空字符串
+     */
+    validatePath(path) {
+        if (path === undefined || path === null) return '';
+        if (typeof path !== 'string') {
+            path = String(path);
+        }
+        const trimmed = path.trim();
+        if (trimmed === '') return '';
+        if (trimmed === 'undefined' || trimmed === 'null') return '';
+        if (trimmed.toLowerCase().includes('undefined') || trimmed.toLowerCase().includes('null')) return '';
+        return trimmed;
+    },
+
+    /**
+     * 从模型数据中提取有效的 VRM 路径
+     * @param {Object} model - 模型数据对象
+     * @returns {Object} { path: string, isValid: boolean, filename: string }
+     */
+    extractVrmPath(model) {
+        if (!model || typeof model !== 'object') {
+            return { path: '', isValid: false, filename: '' };
+        }
+
+        // 优先检查 url 字段
+        let validPath = this.validatePath(model.url);
+        if (validPath) {
+            return { path: validPath, isValid: true, filename: model.filename || '' };
+        }
+
+        // 检查 path 字段
+        validPath = this.validatePath(model.path);
+        if (validPath) {
+            return { path: validPath, isValid: true, filename: model.filename || '' };
+        }
+
+        // 如果都没有，但有 filename，根据 location 构建路径
+        const validFilename = this.validatePath(model.filename);
+        if (validFilename) {
+            const builtPath = model.location === 'project'
+                ? `/static/vrm/${validFilename}`
+                : `/user_vrm/${validFilename}`;
+            return { path: builtPath, isValid: true, filename: validFilename };
+        }
+
+        return { path: '', isValid: false, filename: '' };
+    },
+
+    /**
      * 标准化模型路径
      * 处理 Windows 反斜杠、/user_vrm/ 前缀和本地文件路径
      * @param {string} rawPath - 原始路径
@@ -535,10 +587,8 @@ const ModelPathHelper = {
      * @returns {string} 标准化后的路径
      */
     normalizeModelPath(rawPath, type = 'model') {
-        if (!rawPath) return '';
-
-        // 确保 path 是字符串类型
-        let path = String(rawPath).trim();
+        const path = this.validatePath(rawPath);
+        if (!path) return '';
 
         // 如果已经是 URL 格式 (http/https) 或 Web 绝对路径 (/)，直接返回
         if (path.startsWith('http') || path.startsWith('/')) {
@@ -2416,42 +2466,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                 models.forEach(model => {
                     const option = document.createElement('option');
 
-                    // 严格检查 model.path，如果不存在或为字符串 "undefined"，根据 model.filename 构建路径
-                    let modelPath = model.path;
-                    let isValidPath = modelPath &&
-                        modelPath !== 'undefined' &&
-                        modelPath !== 'null' &&
-                        typeof modelPath === 'string' &&
-                        modelPath.trim() !== '' &&
-                        !modelPath.toLowerCase().includes('undefined') &&
-                        !modelPath.toLowerCase().includes('null');
+                    // 使用 ModelPathHelper 提取有效的 VRM 路径
+                    const { path: modelPath, isValid, filename } = ModelPathHelper.extractVrmPath(model);
 
-                    if (!isValidPath && model.filename) {
-                        // 使用 ModelPathHelper 标准化路径
-                        const filename = model.filename.trim();
-                        if (filename && filename !== 'undefined' && filename !== 'null' && !filename.toLowerCase().includes('undefined')) {
-                            modelPath = ModelPathHelper.normalizeModelPath(filename, 'model');
-                            isValidPath = true;
-                        }
-                    }
-
-                    // 如果仍然无效，跳过该模型
-                    if (!isValidPath) {
+                    // 如果无效，跳过该模型
+                    if (!isValid || !modelPath) {
                         console.warn('[模型管理] 跳过无效的 VRM 模型:', model);
                         return;
                     }
 
                     // 使用 ModelPathHelper 确保 data-path 属性永远是有效的 URL
-                    const validPath = modelPath.startsWith('/') || modelPath.startsWith('http')
-                        ? ModelPathHelper.normalizeModelPath(modelPath, 'model')
-                        : ModelPathHelper.normalizeModelPath(model.filename || modelPath.split(/[/\\]/).pop(), 'model');
+                    const validPath = ModelPathHelper.normalizeModelPath(modelPath, 'model');
 
-                    option.value = model.url || validPath;
+                    option.value = validPath;
                     option.setAttribute('data-path', validPath);
-                    if (model.filename) {
-                        option.setAttribute('data-filename', model.filename);
+                    if (filename) {
+                        option.setAttribute('data-filename', filename);
                     }
-                    option.textContent = model.name || model.filename || validPath;
+                    option.textContent = model.name || filename || validPath;
                     vrmModelSelect.appendChild(option);
                 });
                 vrmModelSelect.disabled = false;
@@ -3571,34 +3603,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 添加 VRM 模型
             vrmModels.forEach(model => {
-                let modelPath = model.path;
-                let isValidPath = modelPath &&
-                    modelPath !== 'undefined' &&
-                    modelPath !== 'null' &&
-                    typeof modelPath === 'string' &&
-                    modelPath.trim() !== '' &&
-                    !modelPath.toLowerCase().includes('undefined') &&
-                    !modelPath.toLowerCase().includes('null');
+                // 使用 ModelPathHelper 提取有效的 VRM 路径
+                const { path: modelPath, isValid, filename } = ModelPathHelper.extractVrmPath(model);
 
-                if (!isValidPath && model.filename) {
-                    const filename = model.filename.trim();
-                    if (filename && filename !== 'undefined' && filename !== 'null' && !filename.toLowerCase().includes('undefined')) {
-                        modelPath = ModelPathHelper.normalizeModelPath(filename, 'model');
-                        isValidPath = true;
-                    }
-                }
-                if (!isValidPath) return;
+                if (!isValid || !modelPath) return;
 
-                const validPath = modelPath.startsWith('/') || modelPath.startsWith('http')
-                    ? ModelPathHelper.normalizeModelPath(modelPath, 'model')
-                    : ModelPathHelper.normalizeModelPath(model.filename || modelPath.split(/[/\\]/).pop(), 'model');
+                const validPath = ModelPathHelper.normalizeModelPath(modelPath, 'model');
 
                 const option = document.createElement('option');
-                option.value = model.url || validPath;
+                option.value = validPath;
                 option.setAttribute('data-path', validPath);
                 option.setAttribute('data-sub-type', 'vrm');
-                if (model.filename) option.setAttribute('data-filename', model.filename);
-                const baseName = model.name || model.filename || validPath;
+                if (filename) option.setAttribute('data-filename', filename);
+                const baseName = model.name || filename || validPath;
                 option.textContent = baseName;
                 vrmModelSelect.appendChild(option);
             });
