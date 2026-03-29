@@ -2415,8 +2415,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 models.forEach(model => {
                     const option = document.createElement('option');
 
-                    // 严格检查 model.path，如果不存在或为字符串 "undefined"，根据 model.filename 构建路径
-                    let modelPath = model.path;
+                    // 严格检查 model.url 或 model.path，后端返回的是 url 字段
+                    let modelPath = model.url || model.path;
                     let isValidPath = modelPath &&
                         modelPath !== 'undefined' &&
                         modelPath !== 'null' &&
@@ -2425,11 +2425,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                         !modelPath.toLowerCase().includes('undefined') &&
                         !modelPath.toLowerCase().includes('null');
 
+                    // 如果 path 无效但有 filename，尝试使用 filename 构建路径
                     if (!isValidPath && model.filename) {
-                        // 使用 ModelPathHelper 标准化路径
                         const filename = model.filename.trim();
                         if (filename && filename !== 'undefined' && filename !== 'null' && !filename.toLowerCase().includes('undefined')) {
-                            modelPath = ModelPathHelper.normalizeModelPath(filename, 'model');
+                            // 优先使用 url，如果没有 url 则根据 location 判断路径前缀
+                            if (model.url) {
+                                modelPath = model.url;
+                            } else if (model.location === 'project') {
+                                modelPath = `/static/vrm/${filename}`;
+                            } else {
+                                modelPath = `/user_vrm/${filename}`;
+                            }
                             isValidPath = true;
                         }
                     }
@@ -3570,7 +3577,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 添加 VRM 模型
             vrmModels.forEach(model => {
-                let modelPath = model.path;
+                // 后端返回的是 url 字段，不是 path 字段
+                let modelPath = model.url || model.path;
                 let isValidPath = modelPath &&
                     modelPath !== 'undefined' &&
                     modelPath !== 'null' &&
@@ -3579,10 +3587,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                     !modelPath.toLowerCase().includes('undefined') &&
                     !modelPath.toLowerCase().includes('null');
 
+                // 如果 path 无效但有 filename，尝试使用 filename 构建路径
                 if (!isValidPath && model.filename) {
                     const filename = model.filename.trim();
                     if (filename && filename !== 'undefined' && filename !== 'null' && !filename.toLowerCase().includes('undefined')) {
-                        modelPath = ModelPathHelper.normalizeModelPath(filename, 'model');
+                        // 优先使用 url，如果没有 url 则根据 location 判断路径前缀
+                        if (model.url) {
+                            modelPath = model.url;
+                        } else if (model.location === 'project') {
+                            modelPath = `/static/vrm/${filename}`;
+                        } else {
+                            modelPath = `/user_vrm/${filename}`;
+                        }
                         isValidPath = true;
                     }
                 }
