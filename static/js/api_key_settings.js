@@ -220,7 +220,7 @@ function clearApiProviderSelects() {
 }
 
 // 等待下拉选项加载完成再设置值，避免单次 setTimeout 竞态
-function waitForOptions(select, targetValue, { maxAttempts = 20, interval = 50 } = {}) {
+function waitForOptions(select, targetValue, { maxAttempts = 20, interval = 50, onSuccess } = {}) {
     if (!select || !targetValue) return;
 
     let attempts = 0;
@@ -229,6 +229,10 @@ function waitForOptions(select, targetValue, { maxAttempts = 20, interval = 50 }
             const optionExists = Array.from(select.options).some(opt => opt.value === targetValue);
             if (optionExists) {
                 select.value = targetValue;
+                // 选项设置完成后执行回调
+                if (onSuccess && typeof onSuccess === 'function') {
+                    onSuccess();
+                }
                 return;
             }
         }
@@ -728,14 +732,16 @@ async function loadCurrentApiKey() {
             }
 
             // 设置核心API Key输入框的值（重要：必须在显示提示后设置）
-            if (apiKeyInput && data.api_key) {
+            if (apiKeyInput) {
                 if (data.api_key === 'free-access' || data.coreApi === 'free' || data.assistApi === 'free') {
                     // 免费版本：显示用户友好的文本
                     apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
-                } else {
+                } else if (data.api_key) {
+                    // 有API Key时设置
                     setMaskedInput(apiKeyInput, data.api_key);
                     attachMaskBehavior(apiKeyInput);
                 }
+                // autoFillCoreApiKey 将在 coreApiSelect.value 设置后调用
             }
             // 设置高级设定的值（确保下拉框已加载选项）
             if (data.coreApi && coreApiSelect) {
@@ -746,7 +752,21 @@ async function loadCurrentApiKey() {
                         coreApiSelect.value = data.coreApi;
                     }
                 } else {
-                    waitForOptions(coreApiSelect, data.coreApi);
+                    // 等待选项加载完成后再设置值
+                    waitForOptions(coreApiSelect, data.coreApi, {
+                        maxAttempts: 20,
+                        interval: 50,
+                        onSuccess: () => {
+                            // 选项加载并设置完成后，自动填充API Key
+                            if (!data.enableCustomApi && !data.api_key) {
+                                autoFillCoreApiKey(true);
+                            }
+                        }
+                    });
+                }
+                // 如果选项已存在（同步路径），也需要在这里自动填充
+                if (!data.enableCustomApi && !data.api_key) {
+                    autoFillCoreApiKey(true);
                 }
             }
             if (data.assistApi && assistApiSelect) {
@@ -787,9 +807,15 @@ async function loadCurrentApiKey() {
             // Set assist key input from selected assist provider's book input
             if (data.assistApi && data.assistApi !== 'free') {
                 const assistBookKey = syncKeyFromBook(data.assistApi);
-                if (assistApiKeyInput && assistBookKey) {
-                    setMaskedInput(assistApiKeyInput, assistBookKey);
-                    attachMaskBehavior(assistApiKeyInput);
+                if (assistApiKeyInput) {
+                    if (assistBookKey) {
+                        // 有Key Book中的值时设置
+                        setMaskedInput(assistApiKeyInput, assistBookKey);
+                        attachMaskBehavior(assistApiKeyInput);
+                    } else if (!data.enableCustomApi) {
+                        // 自定义API未启用且Key Book中没有值，强制刷新
+                        autoFillAssistApiKey(true);
+                    }
                 }
             }
 
@@ -1170,6 +1196,13 @@ function toggleCustomApi() {
             freeVersionHint.style.display = 'none';
         }
     }
+
+    // 关闭自定义API时，自动填充已保存的API Key
+    if (!isCustomEnabled) {
+        autoFillCoreApiKey(true);
+        autoFillAssistApiKey(true);
+        updateAssistApiRecommendation();
+    }
 }
 
 // 自定义API折叠切换函数
@@ -1247,15 +1280,15 @@ async function save_button_down(e) {
         apiKey = '';
     }
 
-    // Sync core key to book
-    if (coreApi && coreApi !== 'free') {
+    // Sync core key to book (仅在API Key不为空时才同步，避免清空时破坏Key Book)
+    if (coreApi && coreApi !== 'free' && apiKey) {
         syncKeyToBook(coreApi, apiKey);
     }
 
-    // Sync assist key to book (including empty string to clear)
+    // Sync assist key to book (仅在API Key不为空时才同步，避免清空时破坏Key Book)
     const assistKeyInput = document.getElementById('assistApiKeyInput');
     const assistKeyVal = getRealKey(assistKeyInput);
-    if (assistApi && assistApi !== 'free') {
+    if (assistApi && assistApi !== 'free' && assistKeyVal) {
         syncKeyToBook(assistApi, assistKeyVal);
     }
 
@@ -1591,7 +1624,7 @@ function updateAssistApiRecommendation() {
                 const validOpt = Array.from(assistApiSelect.options).find(o => !o.disabled && o.value !== 'free');
                 if (validOpt) assistApiSelect.value = validOpt.value;
             }
-            autoFillAssistApiKey();
+            autoFillAssistApiKey(true);
             // Directly recompute follow_assist slots (avoid redundant handler call)
             MODEL_TYPES.forEach(mt => {
                 const sel = document.getElementById(`${mt}ModelProvider`);
@@ -1633,28 +1666,21 @@ function autoFillCoreApiKey(force) {
     // Use !== null to distinguish "input not present" from "input present but empty":
     // null = restricted/hidden provider (no input), '' = user cleared the key intentionally.
     const bookKey = syncKeyFromBook(selectedCoreApi);
-    if (bookKey !== null) {
+    // 仅在Key Book中有非空值时才填充，避免清空用户可能输入的值
+    if (bookKey !== null && bookKey !== '') {
         setMaskedInput(apiKeyInput, bookKey);
         attachMaskBehavior(apiKeyInput);
         return;
     }
 
-    // No book input for this provider (restricted/hidden) — clear old value first
-    setMaskedInput(apiKeyInput, '');
-
-    // Fallback: use saved key from dataset (if available and not free)
-    const currentApiKeyDiv = document.getElementById('current-api-key');
-    if (currentApiKeyDiv && currentApiKeyDiv.dataset.hasKey === 'true') {
-        const savedKey = currentApiKeyDiv.dataset.apiKey;
-        if (savedKey && savedKey !== 'free-access') {
-            setMaskedInput(apiKeyInput, savedKey);
-            attachMaskBehavior(apiKeyInput);
-        }
-    }
+    // No book input or empty value for this provider — do not overwrite input
+    // Key Book intentionally cleared (empty string) should be respected
 }
 
 // Auto-fill assist API key from book
-function autoFillAssistApiKey() {
+// force=true: always overwrite (used on provider switch, disabling custom API, or init)
+// force=false (default): skip if user has already typed a non-empty value
+function autoFillAssistApiKey(force) {
     const assistApiSelect = document.getElementById('assistApiSelect');
     const assistApiKeyInput = document.getElementById('assistApiKeyInput');
     if (!assistApiSelect || !assistApiKeyInput) return;
@@ -1662,12 +1688,22 @@ function autoFillAssistApiKey() {
     const selectedAssistApi = assistApiSelect.value;
     if (selectedAssistApi === 'free') {
         setMaskedInput(assistApiKeyInput, '');
+        attachMaskBehavior(assistApiKeyInput);
         return;
     }
 
     const bookKey = syncKeyFromBook(selectedAssistApi);
-    setMaskedInput(assistApiKeyInput, bookKey || '');
-    attachMaskBehavior(assistApiKeyInput);
+    // When forced (provider switch, disabling custom API, or init), clear input if no book key
+    if (force && (bookKey === null || bookKey === '')) {
+        setMaskedInput(assistApiKeyInput, '');
+        attachMaskBehavior(assistApiKeyInput);
+        return;
+    }
+    // Non-forced: only fill if book has a value
+    if (bookKey !== null && bookKey !== '') {
+        setMaskedInput(assistApiKeyInput, bookKey);
+        attachMaskBehavior(assistApiKeyInput);
+    }
 }
 
 // Beacon功能 - 页面关闭时发送信号给服务器
@@ -1910,7 +1946,7 @@ async function initializePage() {
 
             updateAssistApiRecommendation();
             autoFillCoreApiKey(true);
-            autoFillAssistApiKey();
+            autoFillAssistApiKey(true);
         }
 
         // CRITICAL: Core/Assist selector change handlers that recompute follow-provider model slots
@@ -1932,7 +1968,7 @@ async function initializePage() {
         if (assistApiSelect) {
             assistApiSelect.addEventListener('change', function () {
                 updateAssistApiRecommendation();
-                autoFillAssistApiKey();
+                autoFillAssistApiKey(true);
                 // Recompute all follow_assist model slots
                 MODEL_TYPES.forEach(mt => {
                     const sel = document.getElementById(`${mt}ModelProvider`);
