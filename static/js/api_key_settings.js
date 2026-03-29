@@ -22,7 +22,8 @@ const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision
 function maskApiKey(key) {
     if (!key || typeof key !== 'string') return key;
     if (key.length < 14) return key;
-    return key.slice(0, 6) + '***' + key.slice(-6);
+    const midLen = key.length - 12;
+    return key.slice(0, 6) + '*'.repeat(midLen) + key.slice(-6);
 }
 
 /**
