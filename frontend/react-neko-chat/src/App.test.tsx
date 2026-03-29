@@ -70,4 +70,22 @@ describe('App', () => {
 
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: '测试发送' });
   });
+
+  it('renders composer tool buttons and calls the React callbacks', () => {
+    const onComposerImportImage = vi.fn();
+    const onComposerScreenshot = vi.fn();
+
+    render(
+      <App
+        onComposerImportImage={onComposerImportImage}
+        onComposerScreenshot={onComposerScreenshot}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '导入图片' }));
+    fireEvent.click(screen.getByRole('button', { name: '截图' }));
+
+    expect(onComposerImportImage).toHaveBeenCalledTimes(1);
+    expect(onComposerScreenshot).toHaveBeenCalledTimes(1);
+  });
 });

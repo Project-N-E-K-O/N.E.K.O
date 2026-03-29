@@ -78,12 +78,22 @@ export const chatWindowPropsSchema = z.object({
   chatWindowAriaLabel: z.string().optional(),
   messageListAriaLabel: z.string().optional(),
   composerToolsAriaLabel: z.string().optional(),
-  emojiButtonAriaLabel: z.string().optional(),
-  attachmentButtonAriaLabel: z.string().optional(),
+  importImageButtonLabel: z.string().optional(),
+  screenshotButtonLabel: z.string().optional(),
+  importImageButtonAriaLabel: z.string().optional(),
+  screenshotButtonAriaLabel: z.string().optional(),
   streamingStatusLabel: z.string().optional(),
   failedStatusLabel: z.string().optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
+    .returns(z.void())
+    .optional(),
+  onComposerImportImage: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
+  onComposerScreenshot: z.function()
+    .args()
     .returns(z.void())
     .optional(),
   onComposerSubmit: z.function()

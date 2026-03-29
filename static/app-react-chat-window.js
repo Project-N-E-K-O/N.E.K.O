@@ -23,6 +23,8 @@
         viewProps: null,
         messages: [],
         onMessageAction: null,
+        onComposerImportImage: null,
+        onComposerScreenshot: null,
         onComposerSubmit: null
     };
 
@@ -152,8 +154,14 @@
             chatWindowAriaLabel: getI18nText('chat.reactWindowAriaLabel', 'Neko chat window'),
             messageListAriaLabel: getI18nText('chat.messageListAriaLabel', 'Chat messages'),
             composerToolsAriaLabel: getI18nText('chat.composerToolsAriaLabel', 'Composer tools'),
-            emojiButtonAriaLabel: getI18nText('chat.emojiButtonAriaLabel', '表情'),
-            attachmentButtonAriaLabel: getI18nText('chat.attachmentButtonAriaLabel', '附件'),
+            importImageButtonLabel: getI18nText('chat.importImage', '导入图片'),
+            screenshotButtonLabel: isMobileWidth()
+                ? getI18nText('chat.takePhoto', '拍照')
+                : getI18nText('chat.screenshot', '截图'),
+            importImageButtonAriaLabel: getI18nText('chat.importImageAriaLabel', '导入图片'),
+            screenshotButtonAriaLabel: isMobileWidth()
+                ? getI18nText('chat.takePhotoAriaLabel', '拍照')
+                : getI18nText('chat.screenshotAriaLabel', '截图'),
             streamingStatusLabel: getI18nText('chat.messageStreaming', '生成中'),
             failedStatusLabel: getI18nText('chat.messageFailed', '发送失败'),
             inputHint: getI18nText('chat.reactWindowInputHint', 'Enter 发送，Shift + Enter 换行')
@@ -254,6 +262,8 @@
         return Object.assign({}, ensureViewProps(), {
             messages: state.messages,
             onMessageAction: handleMessageAction,
+            onComposerImportImage: handleComposerImportImage,
+            onComposerScreenshot: handleComposerScreenshot,
             onComposerSubmit: handleComposerSubmit
         });
     }
@@ -456,6 +466,38 @@
         }
 
         dispatchHostEvent('submit', detail);
+    }
+
+    function handleComposerImportImage() {
+        if (typeof state.onComposerImportImage === 'function') {
+            try {
+                state.onComposerImportImage();
+            } catch (error) {
+                console.error('[ReactChatWindow] onComposerImportImage failed:', error);
+            }
+        } else if (window.appButtons && typeof window.appButtons.openImageImportPicker === 'function') {
+            window.appButtons.openImageImportPicker();
+        } else {
+            console.warn('[ReactChatWindow] no import image handler available');
+        }
+
+        dispatchHostEvent('import-image', {});
+    }
+
+    function handleComposerScreenshot() {
+        if (typeof state.onComposerScreenshot === 'function') {
+            try {
+                state.onComposerScreenshot();
+            } catch (error) {
+                console.error('[ReactChatWindow] onComposerScreenshot failed:', error);
+            }
+        } else if (window.appButtons && typeof window.appButtons.captureScreenshotToPendingList === 'function') {
+            window.appButtons.captureScreenshotToPendingList();
+        } else {
+            console.warn('[ReactChatWindow] no screenshot handler available');
+        }
+
+        dispatchHostEvent('screenshot', {});
     }
 
     function setViewProps(nextViewProps) {
@@ -738,6 +780,12 @@
         getState: getStateSnapshot,
         setOnMessageAction: function (handler) {
             state.onMessageAction = typeof handler === 'function' ? handler : null;
+        },
+        setOnComposerImportImage: function (handler) {
+            state.onComposerImportImage = typeof handler === 'function' ? handler : null;
+        },
+        setOnComposerScreenshot: function (handler) {
+            state.onComposerScreenshot = typeof handler === 'function' ? handler : null;
         },
         setOnComposerSubmit: function (handler) {
             state.onComposerSubmit = typeof handler === 'function' ? handler : null;

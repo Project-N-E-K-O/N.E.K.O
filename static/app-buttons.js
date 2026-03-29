@@ -108,6 +108,83 @@
     };
     window.updateScreenshotCount = mod.updateScreenshotCount;
 
+    mod.ensureImportImageInput = function ensureImportImageInput() {
+        if (mod._importImageInput && mod._importImageInput.isConnected) {
+            return mod._importImageInput;
+        }
+
+        var input = document.getElementById('reactChatWindowImportImageInput');
+        if (!input) {
+            input = document.createElement('input');
+            input.id = 'reactChatWindowImportImageInput';
+            input.type = 'file';
+            input.accept = 'image/*';
+            input.multiple = true;
+            input.hidden = true;
+            document.body.appendChild(input);
+        }
+
+        input.addEventListener('change', function (event) {
+            var files = event && event.target && event.target.files ? Array.from(event.target.files) : [];
+            if (!files.length) return;
+
+            Promise.all(files.map(mod.importImageFileToPendingList))
+                .then(function (results) {
+                    var count = results.length;
+                    window.showStatusToast(
+                        window.t ? window.t('app.importImageAdded', { count: count }) : '已添加 ' + count + ' 张图片，发送时会一并带上',
+                        3000
+                    );
+                })
+                .catch(function (error) {
+                    console.error('[导入图片] 处理失败:', error);
+                    window.showStatusToast(
+                        window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                        4000
+                    );
+                })
+                .finally(function () {
+                    input.value = '';
+                });
+        });
+
+        mod._importImageInput = input;
+        return input;
+    };
+
+    mod.importImageFileToPendingList = function importImageFileToPendingList(file) {
+        return new Promise(function (resolve, reject) {
+            if (!(file instanceof File)) {
+                reject(new Error('INVALID_FILE'));
+                return;
+            }
+
+            if (!/^image\//i.test(file.type || '')) {
+                reject(new Error('INVALID_IMAGE_TYPE'));
+                return;
+            }
+
+            var reader = new FileReader();
+            reader.onload = function () {
+                try {
+                    mod.addScreenshotToList(String(reader.result || ''));
+                    resolve(reader.result);
+                } catch (error) {
+                    reject(error);
+                }
+            };
+            reader.onerror = function () {
+                reject(reader.error || new Error('READ_IMAGE_FAILED'));
+            };
+            reader.readAsDataURL(file);
+        });
+    };
+
+    mod.openImageImportPicker = function openImageImportPicker() {
+        var input = mod.ensureImportImageInput();
+        input.click();
+    };
+
     // ======================== Emotion analysis ========================
 
     /**
@@ -807,10 +884,7 @@
             }
         });
 
-        // ----------------------------------------------------------------
-        // Screenshot button click
-        // ----------------------------------------------------------------
-        screenshotButton.addEventListener('click', async function () {
+        mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
             var captureStream = null;
 
             try {
@@ -914,7 +988,12 @@
                 }
                 screenshotButton.disabled = false;
             }
-        });
+        };
+
+        // ----------------------------------------------------------------
+        // Screenshot button click
+        // ----------------------------------------------------------------
+        screenshotButton.addEventListener('click', mod.captureScreenshotToPendingList);
 
         // ----------------------------------------------------------------
         // Clear all screenshots button
@@ -938,6 +1017,18 @@
                 return mod.sendTextPayload(detail && detail.text, { source: 'react-chat-window' });
             });
         }
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerImportImage === 'function') {
+            window.reactChatWindowHost.setOnComposerImportImage(function () {
+                return mod.openImageImportPicker();
+            });
+        }
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerScreenshot === 'function') {
+            window.reactChatWindowHost.setOnComposerScreenshot(function () {
+                return mod.captureScreenshotToPendingList();
+            });
+        }
+
+        mod.ensureImportImageInput();
     };
 
     window.appButtons = mod;

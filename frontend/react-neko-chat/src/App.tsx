@@ -9,6 +9,8 @@ import {
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
+  onComposerImportImage?: () => void;
+  onComposerScreenshot?: () => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
 };
 
@@ -24,11 +26,15 @@ export default function App({
   chatWindowAriaLabel = 'Neko chat window',
   messageListAriaLabel = 'Chat messages',
   composerToolsAriaLabel = 'Composer tools',
-  emojiButtonAriaLabel = '表情',
-  attachmentButtonAriaLabel = '附件',
+  importImageButtonLabel = '导入图片',
+  screenshotButtonLabel = '截图',
+  importImageButtonAriaLabel = '导入图片',
+  screenshotButtonAriaLabel = '截图',
   streamingStatusLabel = '生成中',
   failedStatusLabel = '发送失败',
   onMessageAction,
+  onComposerImportImage,
+  onComposerScreenshot,
   onComposerSubmit,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
@@ -65,8 +71,22 @@ export default function App({
 
         <footer className="composer-panel">
           <div className="composer-toolbar" aria-label={composerToolsAriaLabel}>
-            <button className="tool-button" type="button" aria-label={emojiButtonAriaLabel}>☺</button>
-            <button className="tool-button" type="button" aria-label={attachmentButtonAriaLabel}>＋</button>
+            <button
+              className="composer-tool-chip"
+              type="button"
+              aria-label={importImageButtonAriaLabel}
+              onClick={() => onComposerImportImage?.()}
+            >
+              {importImageButtonLabel}
+            </button>
+            <button
+              className="composer-tool-chip"
+              type="button"
+              aria-label={screenshotButtonAriaLabel}
+              onClick={() => onComposerScreenshot?.()}
+            >
+              {screenshotButtonLabel}
+            </button>
           </div>
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();
