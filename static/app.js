@@ -92,6 +92,7 @@ function init_app() {
     S.dom.textInputArea = document.getElementById('text-input-area');
     S.dom.textSendButton = document.getElementById('textSendButton');
     S.dom.screenshotButton = document.getElementById('screenshotButton');
+    S.dom.avatarPreviewButton = document.getElementById('avatarPreviewButton');
     S.dom.screenshotThumbnailContainer = document.getElementById('screenshot-thumbnail-container');
     S.dom.screenshotsList = document.getElementById('screenshots-list');
     S.dom.screenshotCount = document.getElementById('screenshot-count');
@@ -119,6 +120,9 @@ function init_app() {
         window.appButtons.init();
     }
 
+    if (window.appChatAvatar && window.appChatAvatar.init) {
+        window.appChatAvatar.init();
+    }
     // WebSocket 连接
     if (window.appWebSocket && window.appWebSocket.connectWebSocket) {
         window.appWebSocket.connectWebSocket();

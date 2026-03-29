@@ -1,0 +1,430 @@
+/**
+ * 触摸配置管理器样式 - 参考情感配置页面设计
+ */
+
+:root {
+    --color-n-main: #40C5F1;
+    --color-n-deep: #22b3ff;
+    --color-n-light: #e3f4ff;
+    --color-n-border: #b3e5fc;
+
+    --color-success: #2ecc71;
+    --color-error: #ff5252;
+    --color-warning: #f39c12;
+
+    --color-text-main: #40C5F1;
+    --color-text-dark: #222222;
+    --color-text-muted: #666666;
+
+    --radius-capsule: 50px;
+    --radius-card: 20px;
+    --radius-item: 8px;
+    --spacing-sm: 8px;
+    --spacing-md: 12px;
+    --spacing-lg: 16px;
+    --spacing-xl: 24px;
+}
+
+.touch-config-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 10000;
+}
+
+.touch-config-window {
+    background: white;
+    max-width: 700px;
+    width: 90%;
+    max-height: 85vh;
+    border-radius: var(--radius-card);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+    font-family: 'Source Han Sans CN', 'Noto Sans SC', '微软雅黑', 'Segoe UI', Arial, sans-serif;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.touch-config-header {
+    background: var(--color-n-main);
+    padding: var(--spacing-lg) var(--spacing-xl);
+    border-radius: var(--radius-card) var(--radius-card) 0 0;
+    -webkit-app-region: drag;
+    position: relative;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    min-height: 60px;
+}
+
+.touch-config-header h3 {
+    position: relative;
+    color: transparent;
+    font-size: 20px;
+    font-weight: bold;
+    margin: 0;
+    --button-text-stroke-color: var(--color-n-deep);
+    flex: 1;
+}
+
+.touch-config-header h3::before {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    -webkit-text-stroke: 1px var(--button-text-stroke-color);
+    text-shadow:
+        2px 0 0 var(--button-text-stroke-color), -2px 0 0 var(--button-text-stroke-color),
+        0 2px 0 var(--button-text-stroke-color), 0 -2px 0 var(--button-text-stroke-color),
+        1px 1px 0 var(--button-text-stroke-color), -1px -1px 0 var(--button-text-stroke-color),
+        1px -1px 0 var(--button-text-stroke-color), -1px 1px 0 var(--button-text-stroke-color),
+        2px 2px 0 var(--button-text-stroke-color), -2px -2px 0 var(--button-text-stroke-color),
+        2px -2px 0 var(--button-text-stroke-color), -2px 2px 0 var(--button-text-stroke-color);
+    z-index: -1;
+}
+
+.touch-config-header h3::after {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    z-index: 10;
+}
+
+.touch-config-close {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s ease, opacity 0.2s ease;
+    opacity: 0.9;
+    -webkit-app-region: no-drag;
+}
+
+.touch-config-close:hover {
+    transform: scale(1.1);
+    opacity: 1;
+}
+
+.touch-config-close:active {
+    transform: scale(0.95);
+}
+
+.touch-config-close img {
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+}
+
+.touch-config-content {
+    padding: var(--spacing-xl);
+    overflow-y: auto;
+    flex: 1;
+    scrollbar-width: thin;
+    scrollbar-color: #96e8ff #f0f8ff;
+}
+
+.touch-config-content::-webkit-scrollbar {
+    width: 8px;
+}
+
+.touch-config-content::-webkit-scrollbar-track {
+    background: #f0f8ff;
+    border-radius: 4px;
+}
+
+.touch-config-content::-webkit-scrollbar-thumb {
+    background: #96e8ff;
+    border-radius: 4px;
+}
+
+.touch-config-content::-webkit-scrollbar-thumb:hover {
+    background: #7dd3ff;
+}
+
+.hitarea-config {
+    max-height: none;
+    overflow-y: visible;
+}
+
+.hitarea-item {
+    margin-bottom: var(--spacing-xl);
+    padding: var(--spacing-lg);
+    background: var(--color-n-light);
+    border-radius: var(--radius-card);
+    border: 2px solid var(--color-n-border);
+    position: relative;
+    padding-left: calc(var(--spacing-lg) + 12px);
+}
+
+.hitarea-item::before {
+    content: '';
+    position: absolute;
+    left: 8px;
+    top: 16px;
+    height: 24px;
+    width: 4px;
+    background: var(--color-n-main);
+    border-radius: 2px;
+}
+
+.hitarea-title {
+    font-weight: 600;
+    color: var(--color-text-dark);
+    margin-bottom: var(--spacing-md);
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
+.hitarea-title::before {
+    display: none;
+}
+
+.hitarea-section {
+    margin-bottom: var(--spacing-lg);
+}
+
+.hitarea-section:last-child {
+    margin-bottom: 0;
+}
+
+.hitarea-label {
+    display: block;
+    font-size: 13px;
+    color: var(--color-text-muted);
+    margin-bottom: var(--spacing-sm);
+}
+
+.custom-multiselect {
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+}
+
+.multiselect-header {
+    width: 100%;
+    max-width: 100%;
+    padding: 12px 16px;
+    background: white;
+    border: 2px solid var(--color-n-border);
+    border-radius: var(--radius-capsule);
+    color: var(--color-text-main);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    min-height: 46px;
+    user-select: none;
+    box-sizing: border-box;
+}
+
+.multiselect-header:hover {
+    border-color: var(--color-n-main);
+    transform: translateY(-1px);
+}
+
+.multiselect-header::after {
+    content: '';
+    width: 12px;
+    height: 12px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: center;
+    transition: transform 0.2s ease;
+}
+
+.custom-multiselect.active .multiselect-header::after {
+    transform: rotate(180deg);
+}
+
+.multiselect-options {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    right: 0;
+    width: auto;
+    max-width: 100%;
+    background: white;
+    border: 2px solid var(--color-n-border);
+    border-radius: var(--radius-card);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    z-index: 100;
+    max-height: 250px;
+    overflow-y: auto;
+    display: none;
+    padding: var(--spacing-sm);
+    scrollbar-width: thin;
+    scrollbar-color: #96e8ff #f0f8ff;
+    box-sizing: border-box;
+}
+
+.multiselect-options.has-scrollbar {
+    border-radius: var(--radius-card) 0 0 var(--radius-card);
+}
+
+.multiselect-options.has-scrollbar.open-up {
+    border-radius: var(--radius-card) 0 0 var(--radius-card);
+}
+
+.multiselect-options::-webkit-scrollbar {
+    width: 8px;
+}
+
+.multiselect-options::-webkit-scrollbar-track {
+    background: #f0f8ff;
+    border-radius: 4px;
+}
+
+.multiselect-options::-webkit-scrollbar-thumb {
+    background: #96e8ff;
+    border-radius: 4px;
+}
+
+.multiselect-options::-webkit-scrollbar-thumb:hover {
+    background: #7dd3ff;
+}
+
+.custom-multiselect.active .multiselect-options {
+    display: block;
+}
+
+.custom-multiselect.active.open-up .multiselect-options {
+    top: auto;
+    bottom: calc(100% + 8px);
+}
+
+.custom-multiselect.active.open-up .multiselect-header::after {
+    transform: rotate(180deg);
+}
+
+.multiselect-item {
+    padding: 10px 12px;
+    border-radius: var(--spacing-sm);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: background 0.2s ease;
+    font-size: 13px;
+    color: var(--color-text-dark);
+}
+
+.multiselect-item:hover {
+    background: var(--color-n-light);
+}
+
+.multiselect-item input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    accent-color: var(--color-n-main);
+}
+
+.multiselect-item span {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.multiselect-header .selected-text {
+    flex: 1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    overflow: hidden;
+    max-height: 70px;
+}
+
+.selected-tag {
+    background: var(--color-n-light);
+    color: var(--color-n-deep);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    border: 1px solid var(--color-n-border);
+    white-space: nowrap;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.multiselect-header .selected-count {
+    background: var(--color-n-main);
+    color: white;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    margin-left: 8px;
+    flex-shrink: 0;
+}
+
+.hitarea-buttons {
+    display: flex;
+    gap: var(--spacing-md);
+    margin-top: var(--spacing-xl);
+}
+
+.hitarea-btn {
+    flex: 1;
+    padding: 12px 20px;
+    border: none;
+    border-radius: var(--radius-capsule);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.hitarea-btn-primary {
+    background: var(--color-n-main);
+    color: white;
+}
+
+.hitarea-btn-primary:hover {
+    background: var(--color-n-deep);
+    transform: translateY(-1px);
+}
+
+.hitarea-btn-secondary {
+    background: white;
+    color: var(--color-n-main);
+    border: 2px solid var(--color-n-main);
+}
+
+.hitarea-btn-secondary:hover {
+    background: var(--color-n-light);
+}
+
+#touch-set-save-indicator {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: var(--color-success);
+    color: white;
+    padding: 10px 20px;
+    border-radius: var(--radius-capsule);
+    font-size: 14px;
+    font-weight: 500;
+    z-index: 10001;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    box-shadow: 0 4px 12px rgba(46, 204, 113, 0.3);
+}

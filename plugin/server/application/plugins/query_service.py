@@ -94,6 +94,10 @@ def _resolve_plugin_status(
     plugin_meta: Mapping[str, object],
     running_plugin_ids: set[str],
 ) -> str:
+    runtime_load_state_obj = plugin_meta.get("runtime_load_state")
+    if isinstance(runtime_load_state_obj, str) and runtime_load_state_obj == "failed":
+        return "load_failed"
+
     plugin_type = plugin_meta.get("type")
     if plugin_type == "extension":
         runtime_enabled = _to_bool(plugin_meta.get("runtime_enabled"), default=True)
@@ -171,6 +175,7 @@ def _build_entries_from_handlers(
             "name": name_obj if isinstance(name_obj, str) else "",
             "description": description_obj if isinstance(description_obj, str) else "",
             "event_key": event_key_obj,
+            "timeout": getattr(meta, "timeout", None),
             "input_schema": input_schema,
             "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
             "llm_result_fields": llm_result_fields,
@@ -258,6 +263,7 @@ def _append_entries_from_preview(
             "name": name_obj if isinstance(name_obj, str) else "",
             "description": description_obj if isinstance(description_obj, str) else "",
             "event_key": event_key_obj if isinstance(event_key_obj, str) and event_key_obj else f"{plugin_id}.{entry_id_obj}",
+            "timeout": normalized_preview.get("timeout"),
             "input_schema": input_schema,
             "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
             "llm_result_fields": llm_result_fields,

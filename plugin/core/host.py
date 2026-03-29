@@ -34,6 +34,7 @@ from plugin.settings import (
     PROCESS_SHUTDOWN_TIMEOUT,
     PROCESS_TERMINATE_TIMEOUT,
 )
+from plugin.sdk.shared.core.entry_runtime import resolve_entry_timeout
 from plugin.sdk.shared.core.router import PluginRouter
 from plugin.core.bus.types import dispatch_bus_change
 from plugin.core.zmq_transport import (
@@ -51,6 +52,9 @@ def _sanitize_plugin_id(raw: Any, max_len: int = 64) -> str:
         digest = hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()[:12]
         safe = f"{safe[:max_len - 13]}_{digest}"
     return safe
+
+
+_TIMEOUT_UNSET = object()
 
 
 def _inject_extensions(
@@ -916,16 +920,32 @@ def _plugin_process_runner(
             finally:
                 wd.cancel()
 
-        def _resolve_timeout(entry_id: str):
-            entry_meta = entry_meta_map.get(entry_id)
-            if entry_meta:
-                timeout_value = getattr(entry_meta, "timeout", None)
-                if timeout_value is not None:
-                    return None if timeout_value <= 0 else timeout_value
-                extra = getattr(entry_meta, "extra", None) or {}
-                ct = extra.get("timeout")
-                if ct is not None:
-                    return None if ct <= 0 else ct
+        def _resolve_timeout(entry_id: str, requested_timeout: Any = _TIMEOUT_UNSET):
+            # _TIMEOUT_UNSET 做 default → 区分 "entry 没配 timeout" 和 "entry 显式 timeout<=0 → None"
+            entry_timeout = resolve_entry_timeout(entry_meta_map.get(entry_id), _TIMEOUT_UNSET)
+            entry_has_timeout = entry_timeout is not _TIMEOUT_UNSET
+
+            if requested_timeout is not _TIMEOUT_UNSET:
+                if requested_timeout is None:
+                    # 调用者传 None → 交给 entry 决定
+                    return entry_timeout if entry_has_timeout else None
+                try:
+                    explicit_timeout = float(requested_timeout)
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    if explicit_timeout <= 0:
+                        return entry_timeout if entry_has_timeout else None
+                    # entry 显式禁用 timeout (None) → 尊重，不限时
+                    if entry_has_timeout and entry_timeout is None:
+                        return None
+                    # entry 配了正数 timeout → 取较小值
+                    if entry_has_timeout:
+                        return min(explicit_timeout, entry_timeout)
+                    return explicit_timeout
+
+            if entry_has_timeout:
+                return entry_timeout
             return PLUGIN_TRIGGER_TIMEOUT
 
         async def _save_plugin_state(reason: str) -> None:
@@ -1010,7 +1030,8 @@ def _plugin_process_runner(
                     ret["error"] = f"Entry '{entry_id}' must be 'async def'. Sync entries are not supported."
                     return
 
-                timeout_seconds = _resolve_timeout(entry_id)
+                requested_timeout = msg["timeout"] if "timeout" in msg else _TIMEOUT_UNSET
+                timeout_seconds = _resolve_timeout(entry_id, requested_timeout)
 
                 with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
                     result = await _run_with_watchdog(
@@ -1038,8 +1059,10 @@ def _plugin_process_runner(
             except asyncio.CancelledError:
                 ret["error"] = "Execution cancelled"
             except asyncio.TimeoutError:
-                logger.error("Entry '{}' timed out after {}s", entry_id, _resolve_timeout(entry_id))
-                ret["error"] = f"Execution timed out after {_resolve_timeout(entry_id)}s"
+                requested_timeout = msg["timeout"] if "timeout" in msg else _TIMEOUT_UNSET
+                resolved_timeout = _resolve_timeout(entry_id, requested_timeout)
+                logger.error("Entry '{}' timed out after {}s", entry_id, resolved_timeout)
+                ret["error"] = f"Execution timed out after {resolved_timeout}s"
             except PluginError as e:
                 logger.warning("Plugin error executing '{}': {}", entry_id, e)
                 ret["error"] = str(e)
@@ -1537,7 +1560,7 @@ class PluginHost:
 
         self._shutdown_process(timeout=timeout)
     
-    async def trigger(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:
+    async def trigger(self, entry_id: str, args: dict, timeout: float | None = PLUGIN_TRIGGER_TIMEOUT) -> Any:
         """
         触发插件入口点执行
         
@@ -1575,10 +1598,10 @@ class PluginHost:
         await self.comm_manager.send_cancel_run(run_id)
     
     async def trigger_custom_event(
-        self, 
-        event_type: str, 
-        event_id: str, 
-        args: dict, 
+        self,
+        event_type: str,
+        event_id: str,
+        args: dict,
         timeout: float = PLUGIN_TRIGGER_TIMEOUT
     ) -> Any:
         """

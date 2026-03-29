@@ -179,6 +179,10 @@ USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)
 AGENT_MQ_PORT = _read_port_env("AGENT_MQ_PORT", 48917)
 MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
 
+# OpenFang Agent 执行后端端口 (由 Electron 并行启动，端口写入 port_config.json)
+OPENFANG_PORT = _read_port_env("OPENFANG_PORT", 50051)
+OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
+
 # 实例 ID：同一次启动的所有服务共享。
 # launcher 会在拉起子进程前写入 NEKO_INSTANCE_ID 环境变量。
 # 若源码直跑绕过 launcher，则每次导入使用随机回退值，确保 /health
@@ -507,6 +511,9 @@ DEFAULT_CORE_CONFIG = {
     "agentModelUrl": "",
     "agentModelId": "",
     "agentModelApiKey": "",
+    "openclawUrl": "http://127.0.0.1:8089",
+    "openclawTimeout": 300.0,
+    "openclawDefaultSenderId": "neko_user",
     "textGuardMaxLength": 300,
 }
 
@@ -759,5 +766,7 @@ __all__ = [
     'DEFAULT_TTS_MODEL_API_KEY',
     'DEFAULT_AGENT_MODEL_URL',
     'DEFAULT_AGENT_MODEL_API_KEY',
+    # OpenFang
+    'OPENFANG_PORT',
+    'OPENFANG_BASE_URL',
 ]
-

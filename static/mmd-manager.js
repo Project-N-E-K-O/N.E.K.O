@@ -94,6 +94,7 @@ class MMDManager {
         // 初始化鼠标跟踪
         if (this.cursorFollow) {
             this.cursorFollow.init();
+            this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
         }
 
         // 设置浮动按钮
@@ -139,6 +140,11 @@ class MMDManager {
             }
 
             this._isModelReadyForInteraction = true;
+
+            // 应用保存的局部跟踪设置
+            if (this.cursorFollow) {
+                this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
+            }
 
             // 派发模型加载完成事件
             window.dispatchEvent(new CustomEvent('mmd-model-loaded', {
@@ -385,6 +391,67 @@ class MMDManager {
         }
 
         console.log('[MMD Manager] UI 已清理');
+    }
+
+    /**
+     * 获取 MMD 模型在屏幕上的边界（用于局部跟踪）
+     * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
+     */
+    getModelScreenBounds() {
+        if (!this.currentModel || !this.camera || !this.renderer) {
+            return null;
+        }
+
+        const canvasRect = this.renderer.domElement.getBoundingClientRect();
+        const canvasWidth = canvasRect.width;
+        const canvasHeight = canvasRect.height;
+
+        const mesh = this.currentModel.mesh;
+        if (!mesh) return null;
+
+        const box = new window.THREE.Box3().setFromObject(mesh);
+        const corners = [
+            new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
+            new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
+            new window.THREE.Vector3(box.min.x, box.max.y, box.min.z),
+            new window.THREE.Vector3(box.min.x, box.max.y, box.max.z),
+            new window.THREE.Vector3(box.max.x, box.min.y, box.min.z),
+            new window.THREE.Vector3(box.max.x, box.min.y, box.max.z),
+            new window.THREE.Vector3(box.max.x, box.max.y, box.min.z),
+            new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
+        ];
+
+        let screenLeft = Infinity, screenRight = -Infinity;
+        let screenTop = Infinity, screenBottom = -Infinity;
+
+        for (const corner of corners) {
+            corner.project(this.camera);
+            const sx = canvasRect.left + (corner.x * 0.5 + 0.5) * canvasWidth;
+            const sy = canvasRect.top + (-corner.y * 0.5 + 0.5) * canvasHeight;
+            screenLeft = Math.min(screenLeft, sx);
+            screenRight = Math.max(screenRight, sx);
+            screenTop = Math.min(screenTop, sy);
+            screenBottom = Math.max(screenBottom, sy);
+        }
+
+        if (!Number.isFinite(screenLeft) || !Number.isFinite(screenRight) ||
+            !Number.isFinite(screenTop) || !Number.isFinite(screenBottom)) {
+            return null;
+        }
+
+        const width = screenRight - screenLeft;
+        const height = screenBottom - screenTop;
+
+        return {
+            left: screenLeft,
+            right: screenRight,
+            top: screenTop,
+            bottom: screenBottom,
+            width: width,
+            height: height,
+            centerX: (screenLeft + screenRight) / 2,
+            centerY: (screenTop + screenBottom) / 2
+        };
     }
 
     dispose() {

@@ -2415,6 +2415,22 @@ async function scanCharaFile(filePath, itemId, itemTitle) {
     }
 }
 
+// 检查Steam状态，未运行时弹窗提醒
+async function checkSteamStatus() {
+    try {
+        const response = await fetch('/api/steam/workshop/status');
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data.success && !data.steamworks_initialized) {
+            const title = window.t ? window.t('steam.steamNotRunningTitle') : 'Steam 未运行';
+            const message = window.t ? window.t('steam.steamNotRunningMessage') : '检测到Steam客户端未运行或未登录。\n\n创意工坊功能需要Steam客户端支持，请：\n1. 下载并安装Steam客户端\n2. 启动Steam并登录您的账号\n3. 重新打开此页面';
+            showAlert(message, title);
+        }
+    } catch (e) {
+        console.error('Steam status check failed:', e);
+    }
+}
+
 // 初始化页面
 window.addEventListener('load', function () {
     // 检查是否需要切换到特定标签页
@@ -2438,6 +2454,9 @@ window.addEventListener('load', function () {
     if (document.getElementById('search-subscription')) {
         document.getElementById('search-subscription').placeholder = window.t ? window.t('steam.searchPlaceholder') : '搜索订阅内容...';
     }
+
+    // 检查Steam状态
+    checkSteamStatus();
 
     // 页面加载时自动加载订阅内容
     loadSubscriptions();

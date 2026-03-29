@@ -1628,7 +1628,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (vrmAnimation) {
                         modelData.vrm_animation = vrmAnimation;
                     } else if (idleAnimSel2 && idleAnimSel2.value) {
-                        modelData.vrm_animation = idleAnimSel2.value;
+                        modelData.idle_animation = idleAnimSel2.value;
                     }
                 }
             } else {

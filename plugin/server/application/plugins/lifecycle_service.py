@@ -17,8 +17,10 @@ from plugin._types.models import PluginAuthor, PluginMeta
 from plugin._types.version import SDK_VERSION
 from plugin.core.host import PluginProcessHost
 from plugin.core.registry import (
+    _collect_plugin_python_requirements,
     _check_plugin_dependency,
     _extract_entries_preview,
+    _find_missing_python_requirements,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
     register_plugin,
@@ -468,6 +470,24 @@ class PluginLifecycleService:
                     error_type="DuplicatePlugin",
                 )
             current_plugin_id = resolved_id
+            python_requirements = _collect_plugin_python_requirements(
+                conf,
+                config_path,
+                logger,
+                current_plugin_id,
+            )
+            unsatisfied_python_requirements = _find_missing_python_requirements(python_requirements)
+            if unsatisfied_python_requirements:
+                raise _to_domain_error(
+                    code="PLUGIN_PYTHON_DEPENDENCIES_MISSING",
+                    message=(
+                        f"Plugin '{current_plugin_id}' has unsatisfied Python dependencies: "
+                        f"{unsatisfied_python_requirements}. Install compatible packages in the current runtime environment."
+                    ),
+                    status_code=400,
+                    plugin_id=current_plugin_id,
+                    error_type="MissingPythonDependencies",
+                )
 
             _emit_lifecycle_event(event_type="plugin_start_requested", plugin_id=current_plugin_id)
             created_host = await asyncio.to_thread(

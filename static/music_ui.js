@@ -21,12 +21,26 @@
         primaryColor: '#667eea',
         secondaryColor: '#764ba2',
         defaultVolume: 0.5,
+        volumeStep: 0.05,
         // 自动销毁时长配置 (ms)
         timeouts: {
             ended: 21000,  // 自然播放结束
             idle: 24000,   // AI推荐未播放 (或被拦截)
             paused: 71000  // 用户点击暂停
-        }
+        },
+        // 域名白名单
+        allowlist: [
+            'i.scdn.co', 'p.scdn.co', 'a.scdn.co', 'i.imgur.com', 'y.qq.com',
+            'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
+            'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
+            'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
+            'freemusicarchive.org', 'musopen.org', 'bandcamp.com',
+            'bcbits.com', 'soundcloud.com', 'sndcdn.com',
+            'playback.media-streaming.soundcloud.cloud', 'api.soundcloud.com',
+            'itunes.apple.com', 'audio-ssl.itunes.apple.com',
+            'dummyimage.com', 'music.163.com',
+            'hdslb.com', 'bilivideo.com'
+        ]
     };
 
     let currentPlayingTrack = null;
@@ -37,29 +51,49 @@
     // --- 状态追踪：用于 5 秒去重 与 进度条清理 ---
     let lastPlayedMusicUrl = null;
     let lastMusicPlayTime = 0;
-    
+
+    // 全局监听管理
+    let managedWindowListeners = [];
+    const addManagedListener = (type, listener, options) => {
+        window.addEventListener(type, listener, options);
+        managedWindowListeners.push({ type, listener, options });
+    };
+    const clearManagedListeners = () => {
+        managedWindowListeners.forEach(({ type, listener, options }) => {
+            window.removeEventListener(type, listener, options);
+        });
+        managedWindowListeners = [];
+    };
+
     // 全局拖拽清理引用
     let currentDragHandlers = null;
+    let currentVolumeDragHandlers = null;
 
-    // --- 2. 原始工具函数 (完全保留所有域名白名单) ---
+    // --- 2. 原始工具函数 ---
+    /**
+     * 安全提取域名/IP
+     */
+    const extractHostname = (input) => {
+        if (!input || typeof input !== 'string') return null;
+        let target = input.trim();
+        if (!target.startsWith('http://') && !target.startsWith('https://')) {
+            target = 'https://' + target;
+        }
+        try {
+            const url = new URL(target);
+            return url.hostname;
+        } catch (e) {
+            return null;
+        }
+    };
+
     const isSafeUrl = (url) => {
         if (!url) return false;
         try {
             const parsed = new URL(url);
             if (!['http:', 'https:'].includes(parsed.protocol)) return false;
-            const allowedDomains = [
-                'i.scdn.co', 'p.scdn.co', 'a.scdn.co', 'i.imgur.com', 'y.qq.com',
-                'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
-                'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
-                'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
-                'freemusicarchive.org', 'musopen.org', 'bandcamp.com',
-                'bcbits.com', 'soundcloud.com', 'sndcdn.com',
-                'playback.media-streaming.soundcloud.cloud', 'api.soundcloud.com',
-                'itunes.apple.com', 'audio-ssl.itunes.apple.com',
-                'dummyimage.com', 'music.163.com',
-                'hdslb.com', 'bilivideo.com'
-            ];
-            return allowedDomains.some(d => parsed.hostname === d || parsed.hostname.endsWith('.' + d));
+            const hostname = parsed.hostname;
+            return MUSIC_CONFIG.allowlist.some(d => hostname === d || hostname.endsWith('.' + d));
         } catch { return false; }
     };
 
@@ -112,6 +146,7 @@
         return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     };
 
+
     const destroyMusicPlayer = (removeDOM = true, fullTeardown = false, updateToken = false) => {
         // 重要：销毁播放器意味着取消所有正在进行的异步加载令牌
         // 只有在 fullTeardown (手动关闭) 或明确要求时才更新 token
@@ -135,7 +170,14 @@
         if (localPlayer && typeof localPlayer.pause === 'function') {
             localPlayer.pause();
         }
-
+        if (currentDragHandlers && typeof currentDragHandlers.cleanup === 'function') {
+            currentDragHandlers.cleanup();
+            currentDragHandlers = null;
+        }
+        if (currentVolumeDragHandlers && typeof currentVolumeDragHandlers.cleanup === 'function') {
+            currentVolumeDragHandlers.cleanup();
+            currentVolumeDragHandlers = null;
+        }
         if (fullTeardown) {
             // 【核心修复】调整顺序：先调用外部销毁逻辑，再清理本地引用
             // 理由：APlayer/main.js 的 destroyAPlayer 依赖 window.aplayer 进行清理
@@ -145,7 +187,6 @@
             } else if (localPlayer && typeof localPlayer.destroy === 'function') {
                 localPlayer.destroy();
             }
-
             localPlayer = null;
             window.aplayer = null;
             if (window.aplayerInjected) window.aplayerInjected.aplayer = null;
@@ -154,10 +195,7 @@
             if (localPlayer && typeof localPlayer.destroy === 'function') {
                 try {
                     localPlayer._destroying = true;
-                    if (currentDragHandlers && typeof currentDragHandlers.cleanup === 'function') {
-                        currentDragHandlers.cleanup();
-                        currentDragHandlers = null;
-                    }
+                    clearManagedListeners();
                     localPlayer.destroy();
                 } catch (e) {
                     console.warn('[Music UI] Error during local player destroy:', e);
@@ -182,6 +220,7 @@
                     bar.remove();
                 }
             }
+            clearManagedListeners();
         }
         currentPlayingTrack = null;
     };
@@ -294,6 +333,15 @@
                     <div class="music-bar-artist"></div>
                 </div>
                 <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
+                <div class="music-bar-volume-container">
+                    <button type="button" class="music-bar-volume-btn" aria-label="Volume" title="Volume">🔊</button>
+                    <div class="music-bar-volume-slider-wrapper">
+                        <div class="music-bar-volume-slider">
+                            <div class="music-bar-volume-slider-fill"></div>
+                            <div class="music-bar-volume-slider-handle"></div>
+                        </div>
+                    </div>
+                </div>
                 <button type="button" class="music-bar-close" aria-label="Close" title="Close">✕</button>
                 <div class="aplayer-internal-container" style="display: none;"></div>
             `;
@@ -372,7 +420,7 @@
                 window.aplayer = localPlayer;
                 if (!window.aplayerInjected) window.aplayerInjected = {};
                 window.aplayerInjected.aplayer = localPlayer;
-                
+
                 // --- 绑定核心事件 (仅在初始化时绑定一次) ---
                 // 【核心修复】使用闭包固定当前的播放器实例
                 const boundPlayer = localPlayer;
@@ -403,21 +451,21 @@
                 boundPlayer.on('error', (err) => {
                     if (boundPlayer._destroying) return;
                     console.error('[Music UI] APlayer error:', err);
-                    
+
                     const tokenAtEvent = boundPlayer._latestToken;
                     boundPlayer._loadError = true;
-                    
+
                     setTimeout(() => {
                         if (tokenAtEvent !== latestMusicRequestToken) return;
                         if (autoplayBlocked) return;
                         if (boundPlayer._destroying) return;
-                        
+
                         let errorDetail = '播放失败，音频源可能已失效';
                         if (err && err.message) errorDetail = err.message;
-                        
+
                         showErrorToast('music.playError', errorDetail);
                         updatePlayBtnState(false);
-                        
+
                         if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                         autoDestroyTimer = setTimeout(() => {
                             if (tokenAtEvent === latestMusicRequestToken) {
@@ -436,15 +484,116 @@
                     e.preventDefault();
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     if (typeof window.setMusicUserDriven === 'function') window.setMusicUserDriven();
-                    
+
                     if (boundPlayer._loadError) {
                         destroyMusicPlayer(true, true, true);
                         return;
                     }
-                    
+
                     if (boundPlayer.audio.ended) boundPlayer.seek(0);
                     boundPlayer.toggle();
                 };
+
+                // --- 音量控制逻辑 ---
+                const volumeContainer = musicBar.querySelector('.music-bar-volume-container');
+                const volumeBtn = musicBar.querySelector('.music-bar-volume-btn');
+                const volumeSliderWrapper = musicBar.querySelector('.music-bar-volume-slider-wrapper');
+                const volumeSlider = musicBar.querySelector('.music-bar-volume-slider');
+                const volumeFill = musicBar.querySelector('.music-bar-volume-slider-fill');
+                const volumeHandle = musicBar.querySelector('.music-bar-volume-slider-handle');
+
+                const updateVolumeUI = (vol) => {
+                    const percent = vol * 100;
+                    volumeFill.style.height = percent + '%';
+                    volumeHandle.style.bottom = percent + '%';
+
+                    if (vol === 0) volumeBtn.textContent = '🔇';
+                    else if (vol < 0.5) volumeBtn.textContent = '🔉';
+                    else volumeBtn.textContent = '🔊';
+
+                    const volText = window.t ? window.t('music.volume', { defaultValue: '音量: ' }) + Math.round(percent) + '%' : '音量: ' + Math.round(percent) + '%';
+                    volumeBtn.setAttribute('title', volText);
+                };
+
+                // 初始化音量 UI
+                updateVolumeUI(boundPlayer.volume());
+
+                volumeBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    volumeContainer.classList.toggle('expanded');
+                };
+
+                let isDraggingVolume = false;
+                const adjustVolume = (e) => {
+                    const rect = volumeSlider.getBoundingClientRect();
+
+                    let clientY;
+                    if (e.clientY !== undefined) {
+                        clientY = e.clientY;
+                    } else if (e.touches && e.touches.length > 0) {
+                        clientY = e.touches[0].clientY;
+                    } else {
+                        boundPlayer.volume(MUSIC_CONFIG.defaultVolume);
+                        updateVolumeUI(MUSIC_CONFIG.defaultVolume);
+                        return;
+                    }
+
+                    let y = rect.bottom - clientY;
+                    let per = Math.max(0, Math.min(y, rect.height)) / rect.height;
+                    boundPlayer.volume(per);
+                    updateVolumeUI(per);
+                };
+
+                currentVolumeDragHandlers = {
+                    cleanup: () => {
+                        window.removeEventListener('mousemove', adjustVolume);
+                        window.removeEventListener('mouseup', stopVolumeDrag);
+                        window.removeEventListener('touchmove', adjustVolume);
+                        window.removeEventListener('touchend', stopVolumeDrag);
+                        window.removeEventListener('touchcancel', stopVolumeDrag);
+                        isDraggingVolume = false;
+                    }
+                };
+
+                const stopVolumeDrag = (e) => {
+                    if (!isDraggingVolume) return;
+                    // 拖拽结束时，直接调用清理工具
+                    if (currentVolumeDragHandlers) currentVolumeDragHandlers.cleanup();
+                };
+
+                volumeSliderWrapper.onmousedown = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    isDraggingVolume = true;
+                    adjustVolume(e);
+                    // 直接使用原生绑定
+                    window.addEventListener('mousemove', adjustVolume);
+                    window.addEventListener('mouseup', stopVolumeDrag);
+                };
+
+                volumeSliderWrapper.ontouchstart = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    isDraggingVolume = true;
+                    adjustVolume(e);
+                    window.addEventListener('touchmove', adjustVolume);
+                    window.addEventListener('touchend', stopVolumeDrag);
+                    window.addEventListener('touchcancel', stopVolumeDrag);
+                };
+
+                // 点击外部收起音量
+                const closeVolumeOnOutsideClick = (e) => {
+                    if (volumeContainer.classList.contains('expanded') && !volumeContainer.contains(e.target)) {
+                        volumeContainer.classList.remove('expanded');
+                    }
+                };
+                addManagedListener('mousedown', closeVolumeOnOutsideClick);
+
+                // 同步 APlayer 的音量变化
+                boundPlayer.on('volumechange', () => {
+                    updateVolumeUI(boundPlayer.volume());
+                });
 
                 // 进度更新与拖拽 (保持原有逻辑)
                 let isDragging = false;
@@ -467,19 +616,19 @@
                     // 修复细节：判断 0 的写法，防止 clientX 为 0 时误触 fallback
                     const clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
                     let x = clientX - rect.left;
-                    
+
                     x = Math.max(0, Math.min(x, rect.width));
                     const per = x / rect.width;
                     if (progressFill) progressFill.style.width = (per * 100) + '%';
                     if (timeCurrent && localPlayer.audio.duration) timeCurrent.textContent = formatTime(per * localPlayer.audio.duration);
                 };
                 const stopDrag = (e) => {
-                    if (!isDragging) return; 
+                    if (!isDragging) return;
                     isDragging = false;
                     // 【核心修复】必须先移除全局监听，然后再执行可能的 early return (CodeRabbit 建议)
-                    window.removeEventListener('mousemove', handleProgressMove); 
+                    window.removeEventListener('mousemove', handleProgressMove);
                     window.removeEventListener('mouseup', stopDrag);
-                    window.removeEventListener('touchmove', handleProgressMove); 
+                    window.removeEventListener('touchmove', handleProgressMove);
                     window.removeEventListener('touchend', stopDrag);
 
                     const rect = progressContainer.getBoundingClientRect();
@@ -487,11 +636,11 @@
 
                     const clientX = e.clientX !== undefined ? e.clientX : (e.changedTouches && e.changedTouches[0] ? e.changedTouches[0].clientX : 0);
                     let x = clientX - rect.left;
-                    
+
                     const per = Math.max(0, Math.min(x, rect.width)) / rect.width;
                     if (boundPlayer.audio.duration) boundPlayer.seek(per * boundPlayer.audio.duration);
                 };
-                
+
                 // 记录全局引用以便销毁时清理
                 currentDragHandlers = {
                     cleanup: () => {
@@ -499,6 +648,7 @@
                         window.removeEventListener('mouseup', stopDrag);
                         window.removeEventListener('touchmove', handleProgressMove);
                         window.removeEventListener('touchend', stopDrag);
+                        window.removeEventListener('touchcancel', stopDrag);
                         isDragging = false;
                     }
                 };
@@ -513,6 +663,7 @@
                     isDragging = true; handleProgressMove(e);
                     window.addEventListener('mousemove', handleProgressMove); window.addEventListener('mouseup', stopDrag);
                     window.addEventListener('touchmove', handleProgressMove); window.addEventListener('touchend', stopDrag);
+                    window.addEventListener('touchcancel', stopDrag);
                 };
 
                 // 自动播放拦截器：精确区分“被拦截”与“加载失败”
@@ -536,7 +687,7 @@
                                     autoplayBlocked = true;
                                     updatePlayBtnState(false);
                                     showErrorToast('music.autoplayBlocked', '由于浏览器限制，已拦截自动播放。请点击页面任意位置恢复，或点击此处。');
-                                    
+
                                     // 自动播放被拦截视为“未播放”，保持 24 秒销毁计时
                                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                                     autoDestroyTimer = setTimeout(() => {
@@ -568,6 +719,9 @@
                     };
                     window.addEventListener('mousedown', startOnInteraction, { once: true });
                     window.addEventListener('touchstart', startOnInteraction, { once: true });
+                    // 这些 once 监听器也会被管理，虽然它们会自动移除
+                    managedWindowListeners.push({ type: 'mousedown', listener: startOnInteraction, options: { once: true } });
+                    managedWindowListeners.push({ type: 'touchstart', listener: startOnInteraction, options: { once: true } });
                 }
             } else {
                 // --- 复用模式下的切歌逻辑 ---
@@ -604,14 +758,16 @@
     };
 
     // --- 6. 暴露全局接口 ---
-    window.sendMusicMessage = function (trackInfo, shouldAutoPlay = true) {
+    /**
+     * 向播放器发送播放请求 [Async Ready]
+     * 如果 URL 暂时不在白名单中，会等待最多 500ms 以响应并行的插件注册
+     */
+    window.sendMusicMessage = async function (trackInfo, shouldAutoPlay = true) {
         if (!trackInfo) return false;
 
         // --- 核心修复：更鲁棒的 URL 预清理 ---
-        // 递归处理多次转义或复杂编码的 HTML 实体
         if (trackInfo.url && typeof trackInfo.url === 'string') {
             try {
-                // CodeRabbit 建议：使用循环处理多次转义或复杂编码的 HTML 实体
                 let lastUrl = '';
                 while (trackInfo.url !== lastUrl) {
                     lastUrl = trackInfo.url;
@@ -626,18 +782,48 @@
         }
 
         const now = Date.now();
-        // 如果是 5 秒内相同的 URL 且播放器已在界面中，视为重复触发并略过（去重交回组件层处理）
+        // 5秒去重逻辑
         if (lastPlayedMusicUrl === trackInfo.url && (now - lastMusicPlayTime) < 5000 && isPlayerInDOM()) {
             console.log('[Music UI] 5秒内相同音乐且已在播放中，跳过播发请求:', trackInfo.name);
-            return true; // 视为已接受处理
+            return true;
         }
 
-        // 如果是同一首歌，但音乐条已经被关掉了（DOM里找不到了）
         if (isSameTrack(trackInfo) && !isPlayerInDOM()) {
             currentPlayingTrack = null;
         }
+
+        // 竞态保护：如果 URL 不在白名单，原地等待 500ms 看看是否会有插件注册进来
+        if (trackInfo.url && !isSafeUrl(trackInfo.url)) {
+            console.log('[Music UI] URL 暂未加入白名单，等待加白信号...', trackInfo.url);
+            try {
+                await new Promise((resolve) => {
+                    const timeout = setTimeout(() => {
+                        window.removeEventListener('music-allowlist-updated', onUpdate);
+                        resolve();
+                    }, 500);
+
+                    function onUpdate() {
+                        if (isSafeUrl(trackInfo.url)) {
+                            console.log('[Music UI] 收到加白信号，URL 已加白名单。');
+                            clearTimeout(timeout);
+                            window.removeEventListener('music-allowlist-updated', onUpdate);
+                            resolve();
+                        }
+                    }
+                    window.addEventListener('music-allowlist-updated', onUpdate);
+                });
+            } catch (e) {
+                console.warn('[Music UI] 竞态等待异常:', e);
+            }
+        }
+
         if (!trackInfo.url || !isSafeUrl(trackInfo.url)) {
             console.warn('[Music UI] 音频 URL 未通过安全校验:', trackInfo.url);
+            if (window.showStatusToast) {
+                var domain = extractHostname(trackInfo.url) || '未知源';
+                var msg = window.t ? window.t('music.unsafeSource', { domain: domain }) : ('已拦截不安全音源: ' + domain);
+                window.showStatusToast(msg, 5000);
+            }
             return false;
         }
 
@@ -645,6 +831,7 @@
         lastPlayedMusicUrl = trackInfo.url;
         lastMusicPlayTime = now;
 
+        // 特殊优化：如果是一模一样的歌曲且播放器已存在，直接播放而不是重载整个库
         if (isSameTrack(trackInfo) && isPlayerInDOM()) {
             const player = getMusicPlayerInstance();
             if (shouldAutoPlay && player && player.audio && player.audio.paused) {
@@ -658,9 +845,9 @@
 
         showNowPlayingToast(trackInfo.name);
 
-        loadAPlayerLibrary().then(() => {
+        loadAPlayerLibrary().then(function () {
             executePlay(trackInfo, currentToken, shouldAutoPlay);
-        }).catch(err => {
+        }).catch(function (err) {
             // 库加载失败同样需要校验 token，防止关闭后弹出报错
             if (currentToken === latestMusicRequestToken) {
                 console.error('[Music UI] 库加载失败:', err);
@@ -718,12 +905,30 @@
         }
     };
 
+    const MusicPluginAPI = {
+        getAllowlist: () => [...MUSIC_CONFIG.allowlist],
+        addAllowlist: (input) => {
+            const inputs = Array.isArray(input) ? input : [input];
+            const newDomains = inputs
+                .map(extractHostname)
+                .filter(d => d && !MUSIC_CONFIG.allowlist.includes(d));
+
+            if (newDomains.length > 0) {
+                MUSIC_CONFIG.allowlist.push(...newDomains);
+                console.log('[Music UI] Allowlist updated:', newDomains);
+                window.dispatchEvent(new CustomEvent('music-allowlist-updated'));
+            }
+        }
+    };
+
     // --- 暴露接口 ---
     window.destroyMusicPlayer = destroyMusicPlayer;
     window.getMusicPlayerInstance = getMusicPlayerInstance;
     window.isMusicPlaying = isMusicPlaying;
     window.getMusicCurrentTrack = getMusicCurrentTrack;
+    window.MusicPluginAPI = MusicPluginAPI;
 
+    // 派发就绪事件，通知提前加载的插件可以开始注册域名了
     window.dispatchEvent(new CustomEvent('music-ui-ready'));
     console.log('[Music UI] 接口已暴露，就绪信号已发送');
 

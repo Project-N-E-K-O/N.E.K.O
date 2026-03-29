@@ -173,6 +173,13 @@ def parse_plugin_result(
         return fallback
 
     if not llm_result_fields:
+        # Fallback for reply-style tool results: when caller did not specify
+        # llm_result_fields, surface the reply field if present.
+        reply_val = run_data.get("reply")
+        if isinstance(reply_val, str):
+            reply_text = reply_val.strip()
+            if reply_text:
+                return _truncate(reply_text)
         return fallback
 
     parts: list[tuple[str, str]] = []
