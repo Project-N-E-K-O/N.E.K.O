@@ -80,15 +80,14 @@
 
     function createBaseViewProps() {
         var titleNode = $('chat-title');
-        var textInputBox = $('textInputBox');
         var textSendButton = $('textSendButton');
         var sendButtonLabelNode = textSendButton ? textSendButton.querySelector('[data-i18n="chat.send"]') : null;
         var title = getTextContent(titleNode)
             || getI18nText('chat.title', '对话')
             || '对话';
-        var inputPlaceholder = (textInputBox && textInputBox.getAttribute('placeholder'))
-            || getI18nText('chat.textInputPlaceholder', '文字聊天模式...回车发送，Shift+回车换行')
-            || '文字聊天模式...回车发送，Shift+回车换行';
+        var inputPlaceholder = getI18nText('chat.textInputPlaceholderCompact', '')
+            || getI18nText('chat.textInputPlaceholderShort', '')
+            || '输入消息...';
         var sendButtonLabel = getTextContent(sendButtonLabelNode)
             || getI18nText('chat.send', '发送')
             || '发送';

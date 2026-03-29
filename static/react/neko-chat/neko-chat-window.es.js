@@ -21329,7 +21329,7 @@ function cT({
   title: D = "N.E.K.O Chat",
   iconSrc: $ = "/static/icons/chat_icon.png",
   messages: M = yD,
-  inputPlaceholder: $e = "文字聊天模式...回车发送，Shift+回车换行",
+  inputPlaceholder: $e = "输入消息...",
   sendButtonLabel: st = "发送",
   onMessageAction: gt
 }) {

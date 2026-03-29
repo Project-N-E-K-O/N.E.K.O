@@ -440,8 +440,9 @@ textarea {
 
 .composer-panel {
   display: grid;
-  gap: 8px;
-  padding: 8px 10px 10px;
+  gap: 10px;
+  gap: 12px;
+  padding: 16px 10px 18px;
   border-top: 1px solid rgba(111, 129, 158, 0.16);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 249, 252, 1));
 }
@@ -450,6 +451,7 @@ textarea {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 38px;
 }
 
 .tool-button {
@@ -468,46 +470,86 @@ textarea {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
+  gap: 0;
 }
 
 .composer-input-shell {
   display: flex;
-  align-items: center;
-  min-height: 46px;
-  padding: 0 14px;
-  border-radius: 16px;
+  align-items: flex-start;
+  min-height: 98px;
+  padding: 0 16px;
+  border-radius: 12px 0 0 12px;
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid rgba(127, 144, 170, 0.16);
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.78),
     0 4px 14px rgba(89, 108, 140, 0.05);
 }
 
+.composer-input-shell:focus-within {
+  border-color: rgba(64, 197, 241, 0.55);
+  background: rgba(255, 255, 255, 1);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 0 0 3px rgba(64, 197, 241, 0.14),
+    0 8px 18px rgba(89, 108, 140, 0.08);
+}
+
 .composer-input {
+  display: block;
   width: 100%;
-  min-height: 24px;
-  max-height: 84px;
-  resize: none;
+  height: 66px;
+  min-height: 66px;
+  max-height: 160px;
+  margin: 0;
+  resize: none !important;
+  overflow: hidden !important;
+  scrollbar-width: none;
   border: 0;
   outline: none;
+  appearance: none;
+  -webkit-appearance: none;
   background: transparent;
   color: #1f2329;
   padding: 12px 0 10px;
-  line-height: 1.45;
+  line-height: 1.34;
+  vertical-align: top;
+  box-shadow: none !important;
+}
+
+.composer-input::-webkit-scrollbar {
+  display: none;
+}
+
+.composer-input::-webkit-resizer {
+  display: none;
+}
+
+.composer-input::placeholder {
+  color: #66758d;
+  line-height: 1.34;
+}
+
+.composer-input:focus,
+.composer-input:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 .send-button {
-  min-width: 80px;
-  height: 46px;
-  padding: 0 16px;
+  min-width: 104px;
+  height: 98px;
+  padding: 0 20px;
   border: 0;
-  border-radius: 14px;
+  border-radius: 0 12px 12px 0;
   color: #fff;
   background: linear-gradient(135deg, #57b6f7 0%, #71c0fb 100%);
   cursor: pointer;
   font-weight: 700;
+  font-size: 1rem;
   box-shadow: 0 6px 14px rgba(97, 181, 246, 0.18);
+  margin-left: -1px;
 }
 
 .send-button:hover {
@@ -528,7 +570,7 @@ textarea {
   }
 
   .composer-panel {
-    padding: 8px 10px 10px;
+    padding: 12px 10px 14px;
   }
 
   .send-button {
