@@ -163,7 +163,7 @@ class ProactiveBridge:
                     # -------- 3. Music Direct Play --------
                     elif msg_type == "music_play_url":
                         music_url = metadata.get("url")
-                        if not music_url:
+                        if not isinstance(music_url, str) or not music_url.strip():
                             continue
                         proactive_event = {
                             "event_type": "music_play_url",
