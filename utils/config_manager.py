@@ -1866,8 +1866,7 @@ class ConfigManager:
         
         mapping = model_type_mapping[model_type]
         
-        # agent 不依赖 enable_custom_api 开关；其余模型遵循原逻辑
-        if enable_custom_api or model_type == 'agent':
+        if enable_custom_api:
             custom_model = core_config.get(mapping['custom_model'], '')
             custom_url = core_config.get(mapping['custom_url'], '')
             custom_key = core_config.get(mapping['custom_key'], '')
