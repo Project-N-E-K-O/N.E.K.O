@@ -649,6 +649,12 @@ html #chat-container {
    vrm_emotion_manager, live2d_emotion_manager 等
    =========================================================== */
 
+/* ===== 子页面：CSS 变量覆盖 ===== */
+[data-theme="dark"] {
+  --text-blue: #5CC4E0;
+  --text-blue-sub: #78D0E8;
+}
+
 /* ===== 子页面：body 和容器 ===== */
 [data-theme="dark"] .container {
   background: #1e1e1e;
