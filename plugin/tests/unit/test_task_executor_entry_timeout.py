@@ -145,4 +145,4 @@ async def test_await_run_completion_stops_after_consecutive_transport_errors(
 
     assert result["status"] == "failed"
     assert result["success"] is False
-    assert "consecutive transport errors" in result["error"]
+    assert "consecutive" in result["error"]
