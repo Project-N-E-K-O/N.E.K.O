@@ -293,6 +293,7 @@ function renderKeyBook(registry, providers) {
         input.id = `keyBookInput_${providerKey}`;
         input.placeholder = window.t ? window.t('api.keyBookKeyPlaceholder') : 'Enter API Key';
         input.dataset.providerKey = providerKey;
+        attachMaskBehavior(input);
         row.appendChild(input);
 
         container.appendChild(row);
@@ -433,6 +434,8 @@ function onCustomModelProviderChange(modelType) {
     const setKeyEditable = (input) => {
         if (!input) return;
         input.removeAttribute('readonly');
+        // 清除残留的遮蔽状态，让 getRealKey 使用用户新输入的 value
+        input.dataset.realKey = '';
         // 恢复原始 placeholder
         const origPlaceholder = input.getAttribute('data-i18n-placeholder');
         if (origPlaceholder && window.t) {
@@ -513,6 +516,7 @@ function ensureKeyBookLink(input) {
     const link = document.createElement('a');
     link.href = 'javascript:void(0)';
     link.className = 'key-book-shortcut';
+    link.setAttribute('data-i18n', 'api.goToKeyBook');
     link.textContent = window.t ? window.t('api.goToKeyBook') : '前往管理簿';
     link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
     link.addEventListener('click', (e) => {
