@@ -573,7 +573,7 @@ async def upload_preview_image(request: Request):
 
 @router.get('/status')
 async def get_steam_status():
-    """检查Steamworks是否已初始化，用于前端页面加载时判断Steam状态"""
+    """检查 Steamworks 是否已初始化并用于前端页面加载时判断 Steam 状态"""
     steamworks = get_steamworks()
     return JSONResponse({
         "success": True,
