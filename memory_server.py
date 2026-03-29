@@ -154,7 +154,7 @@ def _format_legacy_settings_as_text(settings: dict, lanlan_name: str) -> str:
             if isinstance(value, list):
                 value_str = '、'.join(str(v) for v in value)
             elif isinstance(value, dict):
-                parts = [f"{k}: {v}" for k, v in value.items() if v]
+                parts = [f"{k}: {v}" for k, v in value.items() if v is not None and v != '']
                 value_str = '、'.join(parts) if parts else str(value)
             else:
                 value_str = str(value)
@@ -477,7 +477,8 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         if not input_history:
             return {"status": "cached", "count": 0}
         logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
-        await recent_history_manager.update_history(input_history, lanlan_name, compress=False)
+        async with _get_settle_lock(lanlan_name):
+            await recent_history_manager.update_history(input_history, lanlan_name, compress=False)
         return {"status": "cached", "count": len(input_history)}
     except Exception as e:
         logger.error(f"[MemoryServer] cache 失败: {e}")

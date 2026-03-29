@@ -167,11 +167,17 @@ class PersonaManager:
         excluded_fields = set(CHARACTER_RESERVED_FIELDS)
         migrated_count = 0
 
+        # 确保 persona 有完整的默认结构，防止 KeyError
+        for section_key, inner_key in [('ai', 'facts'), ('user', 'facts'), ('relationship', 'dynamics')]:
+            persona.setdefault(section_key, {}).setdefault(inner_key, [])
+
         # ── 1. 从角色卡基础配置迁移 ──
         if name in lanlan_basic_config:
             ai_card = {k: v for k, v in lanlan_basic_config[name].items()
                        if k not in excluded_fields and v}
             for k, v in ai_card.items():
+                if isinstance(v, (dict, set, tuple)):
+                    continue  # 跳过嵌套结构
                 if isinstance(v, list):
                     v = '、'.join(str(item) for item in v)
                 entry = self._normalize_entry(f"{k}: {v}")
@@ -182,6 +188,8 @@ class PersonaManager:
         if master_basic_config and isinstance(master_basic_config, dict):
             for k, v in master_basic_config.items():
                 if k not in excluded_fields and v:
+                    if isinstance(v, (dict, set, tuple)):
+                        continue
                     if isinstance(v, list):
                         v = '、'.join(str(item) for item in v)
                     entry = self._normalize_entry(f"{k}: {v}")

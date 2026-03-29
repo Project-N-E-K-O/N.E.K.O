@@ -349,25 +349,21 @@ class OmniOfflineClient:
                                             self._is_responding = False
                                             break
                                         elif self.lanlan_name and prefix_buffer.startswith(lanlan_prefix):
-                                            remainder = prefix_buffer[len(lanlan_prefix):]
                                             logger.info(f"OmniOfflineClient: 剥离角色名前缀 '{lanlan_prefix}'")
-                                            if remainder.strip():
-                                                assistant_message += remainder
-                                                if self.on_text_delta:
-                                                    await self.on_text_delta(remainder, is_first_chunk)
-                                                is_first_chunk = False
+                                            truncated_content = prefix_buffer[len(lanlan_prefix):]
                                         else:
-                                            assistant_message += prefix_buffer
-                                            if self.on_text_delta:
-                                                await self.on_text_delta(prefix_buffer, is_first_chunk)
-                                            is_first_chunk = False
-                                    continue
+                                            truncated_content = prefix_buffer
+                                        # 前缀解析完毕，将结果送入下方的通用 emit/guard 路径
+                                        if not (truncated_content and truncated_content.strip()):
+                                            continue
+                                    else:
+                                        continue  # 缓冲区未满，等更多 chunk
 
-                                for idx, char in enumerate(content):
+                                for idx, char in enumerate(truncated_content):
                                     if char == '|':
                                         pipe_count += 1
                                         if pipe_count >= 2:
-                                            truncated_content = content[:idx]
+                                            truncated_content = truncated_content[:idx]
                                             fence_triggered = True
                                             logger.info("OmniOfflineClient: 围栏触发 - 检测到第二个 | 字符，截断输出")
                                             break
@@ -389,7 +385,7 @@ class OmniOfflineClient:
                             elif content and not content.strip():
                                 logger.debug(f"OmniOfflineClient: 过滤空白内容 - content_repr: {repr(content)[:100]}")
 
-                        # 流结束后：flush 未处理的前缀缓冲区
+                        # 流结束后：flush 未处理的前缀缓冲区（走通用 emit/guard 路径）
                         if prefix_buffer and not prefix_checked:
                             prefix_checked = True
                             lanlan_prefix = f"{self.lanlan_name} | "
@@ -398,19 +394,29 @@ class OmniOfflineClient:
                                 guard_triggered = True
                                 discard_reason = "role_hallucination"
                                 logger.info(f"OmniOfflineClient: 流结束时检测到主人名前缀，触发重试")
-                            elif self.lanlan_name and prefix_buffer.startswith(lanlan_prefix):
-                                remainder = prefix_buffer[len(lanlan_prefix):]
-                                logger.info(f"OmniOfflineClient: 流结束时剥离角色名前缀")
-                                if remainder.strip():
-                                    assistant_message += remainder
-                                    if self.on_text_delta:
-                                        await self.on_text_delta(remainder, is_first_chunk)
-                                    is_first_chunk = False
                             else:
-                                assistant_message += prefix_buffer
-                                if self.on_text_delta:
-                                    await self.on_text_delta(prefix_buffer, is_first_chunk)
-                                is_first_chunk = False
+                                flush_text = prefix_buffer
+                                if self.lanlan_name and prefix_buffer.startswith(lanlan_prefix):
+                                    logger.info(f"OmniOfflineClient: 流结束时剥离角色名前缀")
+                                    flush_text = prefix_buffer[len(lanlan_prefix):]
+                                # fence + length guard
+                                for idx, char in enumerate(flush_text):
+                                    if char == '|':
+                                        pipe_count += 1
+                                        if pipe_count >= 2:
+                                            flush_text = flush_text[:idx]
+                                            fence_triggered = True
+                                            break
+                                if flush_text and flush_text.strip():
+                                    assistant_message += flush_text
+                                    if self.on_text_delta:
+                                        await self.on_text_delta(flush_text, is_first_chunk)
+                                    is_first_chunk = False
+                                    if self.enable_response_guard:
+                                        current_length = count_words_and_chars(assistant_message)
+                                        if current_length > self.max_response_length:
+                                            guard_triggered = True
+                                            discard_reason = f"length>{self.max_response_length}"
 
                         if guard_triggered:
                             guard_attempt += 1
