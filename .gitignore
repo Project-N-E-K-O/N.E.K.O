@@ -75,6 +75,8 @@ node_modules/
 *.cache/
 dist/
 build/
+*.tsbuildinfo
+static/react/neko-chat/
 
 # Python venvs and wheels
 *.egg-info/
