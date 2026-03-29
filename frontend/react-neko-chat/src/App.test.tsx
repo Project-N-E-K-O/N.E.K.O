@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import App from './App';
 import { parseChatMessage } from './message-schema';
 
@@ -58,5 +58,16 @@ describe('App', () => {
 
     expect(screen.getByText('生成中')).toBeInTheDocument();
     expect(screen.getByText('发送失败')).toBeInTheDocument();
+  });
+
+  it('submits composer text through the new submit callback', () => {
+    const onComposerSubmit = vi.fn();
+    render(<App onComposerSubmit={onComposerSubmit} />);
+
+    const input = screen.getByPlaceholderText('输入消息...');
+    fireEvent.change(input, { target: { value: '测试发送' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '测试发送' });
   });
 });

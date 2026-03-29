@@ -64,6 +64,10 @@ export const chatMessageSchema = z.object({
   sortKey: z.number().finite().optional(),
 });
 
+export const composerSubmitSchema = z.object({
+  text: z.string(),
+});
+
 export const chatWindowPropsSchema = z.object({
   title: z.string().optional(),
   iconSrc: z.string().optional(),
@@ -72,6 +76,10 @@ export const chatWindowPropsSchema = z.object({
   sendButtonLabel: z.string().optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
+    .returns(z.void())
+    .optional(),
+  onComposerSubmit: z.function()
+    .args(composerSubmitSchema)
     .returns(z.void())
     .optional(),
 });
@@ -85,6 +93,7 @@ export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
+export type ComposerSubmitPayload = z.infer<typeof composerSubmitSchema>;
 export type ChatWindowSchemaProps = z.infer<typeof chatWindowPropsSchema>;
 
 export function parseChatMessage(input: unknown): ChatMessage {

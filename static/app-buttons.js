@@ -613,11 +613,9 @@
             }
         });
 
-        // ----------------------------------------------------------------
-        // Text send button click
-        // ----------------------------------------------------------------
-        textSendButton.addEventListener('click', async function () {
-            var text = textInputBox.value.trim();
+        async function sendTextPayload(rawText, options) {
+            options = options || {};
+            var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
 
             if (!text && !hasScreenshots) return;
@@ -745,7 +743,9 @@
                         input_type: 'text'
                     }));
 
-                    textInputBox.value = '';
+                    if (!options.preserveInputValue) {
+                        textInputBox.value = '';
+                    }
                     window.appendMessage(text, 'user', true);
 
                     // Achievement: meow detection
@@ -777,6 +777,16 @@
             } else {
                 window.showStatusToast(window.t ? window.t('app.websocketNotConnected') : 'WebSocket\u672A\u8FDE\u63A5\uFF01', 4000);
             }
+        }
+
+        mod.sendTextPayload = sendTextPayload;
+        window.sendTextPayload = sendTextPayload;
+
+        // ----------------------------------------------------------------
+        // Text send button click
+        // ----------------------------------------------------------------
+        textSendButton.addEventListener('click', async function () {
+            await sendTextPayload(textInputBox.value, { source: 'legacy-text-button' });
         });
 
         // ----------------------------------------------------------------
@@ -914,6 +924,12 @@
                 mod.updateScreenshotCount();
             }
         });
+
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerSubmit === 'function') {
+            window.reactChatWindowHost.setOnComposerSubmit(function (detail) {
+                return mod.sendTextPayload(detail && detail.text, { source: 'react-chat-window' });
+            });
+        }
     };
 
     window.appButtons = mod;

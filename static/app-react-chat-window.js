@@ -22,7 +22,8 @@
     var state = {
         viewProps: null,
         messages: [],
-        onMessageAction: null
+        onMessageAction: null,
+        onComposerSubmit: null
     };
 
     function $(id) {
@@ -194,7 +195,8 @@
     function buildRenderProps() {
         return Object.assign({}, ensureViewProps(), {
             messages: state.messages,
-            onMessageAction: handleMessageAction
+            onMessageAction: handleMessageAction,
+            onComposerSubmit: handleComposerSubmit
         });
     }
 
@@ -367,6 +369,35 @@
         }
 
         dispatchHostEvent('action', detail);
+    }
+
+    function handleComposerSubmit(payload) {
+        var detail = {
+            text: payload && typeof payload.text === 'string' ? payload.text : ''
+        };
+
+        if (!detail.text.trim()) return;
+
+        if (typeof state.onComposerSubmit === 'function') {
+            try {
+                state.onComposerSubmit(detail);
+            } catch (error) {
+                console.error('[ReactChatWindow] onComposerSubmit failed:', error);
+            }
+        } else if (window.appButtons && typeof window.appButtons.sendTextPayload === 'function') {
+            window.appButtons.sendTextPayload(detail.text, { source: 'react-chat-window' });
+        } else {
+            var input = $('textInputBox');
+            var sendButton = $('textSendButton');
+            if (input && sendButton) {
+                input.value = detail.text;
+                sendButton.click();
+            } else {
+                console.warn('[ReactChatWindow] no composer submit handler available');
+            }
+        }
+
+        dispatchHostEvent('submit', detail);
     }
 
     function setViewProps(nextViewProps) {
@@ -649,6 +680,9 @@
         getState: getStateSnapshot,
         setOnMessageAction: function (handler) {
             state.onMessageAction = typeof handler === 'function' ? handler : null;
+        },
+        setOnComposerSubmit: function (handler) {
+            state.onComposerSubmit = typeof handler === 'function' ? handler : null;
         },
         isMounted: function () { return mounted; }
     };
