@@ -15,6 +15,64 @@ let _coreApiProviders = {};
 // 所有模型类型
 const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
 
+/**
+ * 遮蔽 API Key：只显示前6位和后6位，中间用 *** 替代。
+ * 短于14位的 key 原样返回（不够遮蔽）。
+ */
+function maskApiKey(key) {
+    if (!key || typeof key !== 'string') return key;
+    if (key.length < 14) return key;
+    return key.slice(0, 6) + '***' + key.slice(-6);
+}
+
+/**
+ * 将真实 key 写入 input 的 dataset，输入框显示遮蔽值。
+ */
+function setMaskedInput(input, realKey) {
+    if (!input) return;
+    if (!realKey) {
+        input.dataset.realKey = '';
+        input.value = '';
+        return;
+    }
+    input.dataset.realKey = realKey;
+    input.value = maskApiKey(realKey);
+}
+
+/**
+ * 读取 input 中存储的真实 key（优先 dataset，否则 value）。
+ */
+function getRealKey(input) {
+    if (!input) return '';
+    // 如果用户直接编辑了（没有 realKey 或 focus 中），使用 value
+    if (input.dataset.realKey !== undefined && input.dataset.realKey !== '') {
+        return input.dataset.realKey;
+    }
+    return input.value.trim();
+}
+
+/**
+ * 为 API Key 输入框绑定 focus/blur 事件：聚焦时显示真实 key，失焦时遮蔽。
+ */
+function attachMaskBehavior(input) {
+    if (!input || input.dataset.maskAttached) return;
+    input.dataset.maskAttached = 'true';
+    input.addEventListener('focus', () => {
+        const real = input.dataset.realKey;
+        if (real) input.value = real;
+    });
+    input.addEventListener('blur', () => {
+        // 用户可能编辑了 value，同步回 realKey
+        const current = input.value.trim();
+        if (current) {
+            input.dataset.realKey = current;
+            input.value = maskApiKey(current);
+        } else {
+            input.dataset.realKey = '';
+        }
+    });
+}
+
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
 
@@ -258,7 +316,8 @@ function toggleKeyBook() {
  */
 function syncKeyFromBook(providerKey) {
     const input = document.getElementById(`keyBookInput_${providerKey}`);
-    return input ? input.value.trim() : null;
+    if (!input) return null;
+    return getRealKey(input);
 }
 
 /**
@@ -267,7 +326,8 @@ function syncKeyFromBook(providerKey) {
 function syncKeyToBook(providerKey, keyValue) {
     const input = document.getElementById(`keyBookInput_${providerKey}`);
     if (input) {
-        input.value = keyValue || '';
+        setMaskedInput(input, keyValue || '');
+        attachMaskBehavior(input);
     }
 }
 
@@ -356,7 +416,7 @@ function onCustomModelProviderChange(modelType) {
      */
     const setKeyReadonly = (input, value) => {
         if (!input) return;
-        input.value = value || '';
+        setMaskedInput(input, value || '');
         input.setAttribute('readonly', 'readonly');
         input.placeholder = window.t ? window.t('api.keyAutoFilledFromKeyBook') : 'Key从API管理簿自动填充';
         ensureKeyBookLink(input);
@@ -634,7 +694,7 @@ async function loadCurrentApiKey() {
                 if (data.api_key === 'free-access' || data.coreApi === 'free' || data.assistApi === 'free') {
                     showCurrentApiKey(window.t ? window.t('api.currentUsingFreeVersion') : '当前使用：免费版（无需API Key）', 'free-access', true);
                 } else {
-                    showCurrentApiKey(window.t ? window.t('api.currentApiKey', { key: data.api_key }) : `当前API Key: ${data.api_key}`, data.api_key, true);
+                    showCurrentApiKey(window.t ? window.t('api.currentApiKey', { key: maskApiKey(data.api_key) }) : `当前API Key: ${maskApiKey(data.api_key)}`, data.api_key, true);
                 }
             } else {
                 showCurrentApiKey(window.t ? window.t('api.currentNoApiKey') : '当前暂未设置API Key', '', false);
@@ -657,7 +717,8 @@ async function loadCurrentApiKey() {
                     // 免费版本：显示用户友好的文本
                     apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                 } else {
-                    apiKeyInput.value = data.api_key;
+                    setMaskedInput(apiKeyInput, data.api_key);
+                    attachMaskBehavior(apiKeyInput);
                 }
             }
             // 设置高级设定的值（确保下拉框已加载选项）
@@ -711,7 +772,8 @@ async function loadCurrentApiKey() {
             if (data.assistApi && data.assistApi !== 'free') {
                 const assistBookKey = syncKeyFromBook(data.assistApi);
                 if (assistApiKeyInput && assistBookKey) {
-                    assistApiKeyInput.value = assistBookKey;
+                    setMaskedInput(assistApiKeyInput, assistBookKey);
+                    attachMaskBehavior(assistApiKeyInput);
                 }
             }
 
@@ -1160,8 +1222,8 @@ async function save_button_down(e) {
         }
     }
 
-    // 处理API Key
-    let apiKey = apiKeyInput.value ? apiKeyInput.value.trim() : '';
+    // 处理API Key（优先读取真实 key）
+    let apiKey = getRealKey(apiKeyInput);
     if (isFreeVersionText(apiKey)) {
         apiKey = '';
     }
@@ -1173,7 +1235,7 @@ async function save_button_down(e) {
 
     // Sync assist key to book (including empty string to clear)
     const assistKeyInput = document.getElementById('assistApiKeyInput');
-    const assistKeyVal = assistKeyInput ? assistKeyInput.value.trim() : '';
+    const assistKeyVal = getRealKey(assistKeyInput);
     if (assistApi && assistApi !== 'free') {
         syncKeyToBook(assistApi, assistKeyVal);
     }
@@ -1356,7 +1418,7 @@ async function saveApiKey(params) {
                     statusMessage = window.t ? window.t('api.saveSuccessReload') : 'API Key保存成功！配置已重新加载，新配置将在下次对话时生效。';
                 }
                 showStatus(statusMessage, 'success');
-                document.getElementById('apiKeyInput').value = '';
+                setMaskedInput(document.getElementById('apiKeyInput'), '');
 
                 // 清除本地Voice ID记录
                 await clearVoiceIds();
@@ -1471,8 +1533,8 @@ function updateAssistApiRecommendation() {
             apiKeyInput.disabled = false;
             apiKeyInput.placeholder = window.t ? window.t('api.pleaseEnterApiKey') : '请输入您的API Key';
             apiKeyInput.required = true;
-            if (isFreeVersionText(apiKeyInput.value)) {
-                apiKeyInput.value = '';
+            if (isFreeVersionText(getRealKey(apiKeyInput))) {
+                setMaskedInput(apiKeyInput, '');
             }
         }
         if (freeVersionHint) {
@@ -1528,7 +1590,8 @@ function autoFillCoreApiKey(force) {
 
     // When not forced (e.g. called from updateAssistApiRecommendation),
     // preserve any unsaved user edits in apiKeyInput.
-    if (!force && apiKeyInput.value !== '' && !isFreeVersionText(apiKeyInput.value)) {
+    const currentReal = getRealKey(apiKeyInput);
+    if (!force && currentReal !== '' && !isFreeVersionText(currentReal)) {
         return;
     }
 
@@ -1538,19 +1601,21 @@ function autoFillCoreApiKey(force) {
     // null = restricted/hidden provider (no input), '' = user cleared the key intentionally.
     const bookKey = syncKeyFromBook(selectedCoreApi);
     if (bookKey !== null) {
-        apiKeyInput.value = bookKey;
+        setMaskedInput(apiKeyInput, bookKey);
+        attachMaskBehavior(apiKeyInput);
         return;
     }
 
     // No book input for this provider (restricted/hidden) — clear old value first
-    apiKeyInput.value = '';
+    setMaskedInput(apiKeyInput, '');
 
     // Fallback: use saved key from dataset (if available and not free)
     const currentApiKeyDiv = document.getElementById('current-api-key');
     if (currentApiKeyDiv && currentApiKeyDiv.dataset.hasKey === 'true') {
         const savedKey = currentApiKeyDiv.dataset.apiKey;
         if (savedKey && savedKey !== 'free-access') {
-            apiKeyInput.value = savedKey;
+            setMaskedInput(apiKeyInput, savedKey);
+            attachMaskBehavior(apiKeyInput);
         }
     }
 }
@@ -1563,12 +1628,13 @@ function autoFillAssistApiKey() {
 
     const selectedAssistApi = assistApiSelect.value;
     if (selectedAssistApi === 'free') {
-        assistApiKeyInput.value = '';
+        setMaskedInput(assistApiKeyInput, '');
         return;
     }
 
     const bookKey = syncKeyFromBook(selectedAssistApi);
-    assistApiKeyInput.value = bookKey || '';
+    setMaskedInput(assistApiKeyInput, bookKey || '');
+    attachMaskBehavior(assistApiKeyInput);
 }
 
 // Beacon功能 - 页面关闭时发送信号给服务器
@@ -1800,8 +1866,8 @@ async function initializePage() {
                 apiKeyInput.disabled = false;
                 apiKeyInput.placeholder = window.t ? window.t('api.pleaseEnterApiKey') : '请输入您的API Key';
                 apiKeyInput.required = true;
-                if (isFreeVersionText(apiKeyInput.value)) {
-                    apiKeyInput.value = '';
+                if (isFreeVersionText(getRealKey(apiKeyInput))) {
+                    setMaskedInput(apiKeyInput, '');
                 }
                 freeVersionHint.style.display = 'none';
             }

@@ -22,6 +22,9 @@
 /* 按钮文字大小变量 */
 :root {
 --button-text-size: 20px;  /* 统一控制按钮文字大小 */
+--text-blue: #0C8BA9;      /* 正文蓝色（对比度~4.2:1，比 #40C5F1 深很多） */
+--text-blue-sub: #3AA3BE;  /* 次级/辅助文字蓝色 */
+--accent-blue: #40C5F1;    /* 装饰性蓝色（边框/背景/按钮等，不用于正文） */
 }
 
 html,
@@ -162,7 +165,7 @@ border-radius: 0 0 20px 20px;
 h2 {
     margin-top: 0;
     font-size: 1.5rem;
-    color: #40C5F1;
+    color: var(--text-blue);
     font-weight: 600;
 }
 
@@ -180,15 +183,15 @@ margin-bottom: 16px;
 .field-row label {
     min-width: auto;
     font-weight: bold;
-    color: #40C5F1;
+    color: var(--text-blue);
     margin-bottom: 8px;
     font-size: 1.1rem;
 }
 
 .field-row label em {
-    font-weight: normal;
+    font-weight: 500;
     font-size: 0.85rem;
-    color: rgba(64, 197, 241, 0.8);
+    color: var(--text-blue-sub);
 }
 
 .field-row input,
@@ -198,8 +201,9 @@ margin-bottom: 16px;
     border-radius: 50px;
     border: 2px solid #b3e5fc;
     font-size: 1rem;
-    font-family: 'Courier New', monospace;
-    color: #40C5F1;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    color: var(--text-blue);
+    font-weight: 500;
     background: #fff;
     transition: all 0.2s ease;
     box-sizing: border-box;
@@ -338,11 +342,11 @@ border: 1px solid #f5c6cb;
 
 #current-api-key {
 background: #ffffff;
-color: rgba(64, 197, 241, 0.85);
+color: var(--text-blue-sub);
 border: 1px solid #b3e5fc;
 border-radius: 24px;
 padding: 8px 8px;
-font-weight: normal;
+font-weight: 500;
 line-height: 1.5;
 margin-bottom: 16px;
 display: flex;
@@ -435,7 +439,7 @@ opacity: 0.95 !important;
 .api-key-info h3 {
 margin-top: 0;
 margin-bottom: 16px;
-color: #40C5F1;
+color: var(--text-blue);
 font-size: 1.2em;
 font-weight: 600;
 display: flex;
@@ -453,7 +457,8 @@ list-style: none;
 
 .api-key-info li {
 margin-bottom: 8px;
-color: #40C5F1;
+color: var(--text-blue);
+font-weight: 500;
 line-height: 1.6;
 margin-left: 0;
 }
@@ -496,13 +501,13 @@ padding-bottom: 8px;
 
 .api-key-info.newbie-recommend > div {
 line-height: 1.5;
-color: rgba(64, 197, 241, 0.85);
-font-weight: normal;
+color: var(--text-blue);
+font-weight: 500;
 }
 
 .api-key-info.newbie-recommend > div strong {
-font-weight: normal;
-color: rgba(64, 197, 241, 0.85);
+font-weight: 600;
+color: var(--text-blue);
 }
 
 /* 弹出式警告样式 */
@@ -759,7 +764,8 @@ pointer-events: none;
 }
 
 .custom-api-toggle-note {
-color: #40C5F1 !important;
+color: var(--text-blue-sub) !important;
+font-weight: 500;
 font-size: 0.9em;
 margin-top: 8px;
 padding-left: 4px;
@@ -844,7 +850,7 @@ border-bottom: none;
 
 .model-content .field-row label {
     font-weight: bold;
-    color: #40C5F1;
+    color: var(--text-blue);
     font-size: 0.95rem;
 }
 
@@ -1076,16 +1082,18 @@ input:checked + .slider:before {
     width: 100%;
     text-align: center;
     padding: 24px;
-    color: #40C5F1;
+    color: var(--text-blue-sub);
+    font-weight: 500;
     font-size: 0.9em;
 }
 
 .gsv-refresh-btn {
     padding: 6px 14px;
     border-radius: 6px;
-    border: 1px solid #40C5F1;
+    border: 1px solid var(--accent-blue);
     background: #fff;
-    color: #40C5F1;
+    color: var(--text-blue);
+    font-weight: 500;
     cursor: pointer;
     font-size: 0.85em;
     white-space: nowrap;
@@ -1193,7 +1201,7 @@ input:checked + .slider:before {
     min-width: 140px;
     font-size: 0.9em;
     flex-shrink: 0;
-    color: #40C5F1;
+    color: var(--text-blue);
     font-weight: bold;
 }
 .key-book-row input {
@@ -1203,8 +1211,9 @@ input:checked + .slider:before {
     border-radius: 50px;
     border: 2px solid #b3e5fc;
     font-size: 0.9rem;
-    font-family: 'Courier New', monospace;
-    color: #40C5F1;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    color: var(--text-blue);
+    font-weight: 500;
     background: #fff;
     transition: all 0.2s ease;
     box-sizing: border-box;
