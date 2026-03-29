@@ -2,14 +2,10 @@ import MessageList from './MessageList';
 import {
   type ChatMessage,
   type MessageAction,
+  type ChatWindowSchemaProps,
 } from './message-schema';
 
-export type ChatWindowProps = {
-  title?: string;
-  iconSrc?: string;
-  messages?: ChatMessage[];
-  inputPlaceholder?: string;
-  sendButtonLabel?: string;
+export type ChatWindowProps = ChatWindowSchemaProps & {
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 

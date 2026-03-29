@@ -1,0 +1,62 @@
+import { render, screen } from '@testing-library/react';
+import App from './App';
+import { parseChatMessage } from './message-schema';
+
+describe('App', () => {
+  it('renders the empty state when there are no messages', () => {
+    render(<App />);
+
+    expect(screen.getByText('聊天内容接入后会显示在这里。')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('输入消息...')).toBeInTheDocument();
+  });
+
+  it('renders grouped assistant messages with a single visible avatar', () => {
+    const firstMessage = parseChatMessage({
+      id: 'assistant-1',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: '第一条消息' }],
+    });
+    const secondMessage = parseChatMessage({
+      id: 'assistant-2',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: '第二条消息' }],
+    });
+
+    const { container } = render(<App messages={[firstMessage, secondMessage]} />);
+
+    expect(screen.getByText('第一条消息')).toBeInTheDocument();
+    expect(screen.getByText('第二条消息')).toBeInTheDocument();
+    expect(container.querySelectorAll('.avatar-assistant').length).toBe(1);
+    expect(container.querySelectorAll('.avatar-placeholder').length).toBe(1);
+  });
+
+  it('renders message status chips for streaming and failed messages', () => {
+    const streamingMessage = parseChatMessage({
+      id: 'streaming-1',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      blocks: [{ type: 'text', text: '生成中消息' }],
+      status: 'streaming',
+    });
+    const failedMessage = parseChatMessage({
+      id: 'failed-1',
+      role: 'user',
+      author: 'You',
+      time: '10:01',
+      blocks: [{ type: 'text', text: '发送失败消息' }],
+      status: 'failed',
+    });
+
+    render(<App messages={[streamingMessage, failedMessage]} />);
+
+    expect(screen.getByText('生成中')).toBeInTheDocument();
+    expect(screen.getByText('发送失败')).toBeInTheDocument();
+  });
+});

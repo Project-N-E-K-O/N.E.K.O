@@ -5,6 +5,7 @@
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
+    "types": ["vitest/globals"],
     "moduleResolution": "Bundler",
     "allowImportingTsExtensions": false,
     "resolveJsonModule": true,
@@ -17,5 +18,5 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src", "src/**/*.test.ts", "src/**/*.test.tsx"]
 }

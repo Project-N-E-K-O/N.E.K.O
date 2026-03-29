@@ -1,3 +1,4 @@
+import clsx from 'clsx';
 import {
   type ChatMessage,
   type MessageAction,
@@ -16,22 +17,28 @@ function getAvatarLabel(message: ChatMessage) {
 }
 
 function getBubbleClassName(message: ChatMessage) {
-  if (message.role === 'user') return 'message-bubble message-bubble-user';
-  if (message.role === 'system') return 'message-bubble message-bubble-system';
-  if (message.role === 'tool') return 'message-bubble message-bubble-tool';
-  return 'message-bubble message-bubble-assistant';
+  return clsx('message-bubble', {
+    'message-bubble-user': message.role === 'user',
+    'message-bubble-system': message.role === 'system',
+    'message-bubble-tool': message.role === 'tool',
+    'message-bubble-assistant': message.role === 'assistant',
+  });
 }
 
 function getRowClassName(message: ChatMessage) {
-  if (message.role === 'user') return 'message-row message-row-user';
-  if (message.role === 'system') return 'message-row message-row-system';
-  return 'message-row message-row-assistant';
+  return clsx('message-row', {
+    'message-row-user': message.role === 'user',
+    'message-row-system': message.role === 'system',
+    'message-row-assistant': message.role === 'assistant' || message.role === 'tool',
+  });
 }
 
 function getAvatarClassName(message: ChatMessage) {
-  if (message.role === 'user') return 'avatar avatar-user';
-  if (message.role === 'tool') return 'avatar avatar-tool';
-  return 'avatar avatar-assistant';
+  return clsx('avatar', {
+    'avatar-user': message.role === 'user',
+    'avatar-tool': message.role === 'tool',
+    'avatar-assistant': message.role === 'assistant',
+  });
 }
 
 function MessageBlockView({

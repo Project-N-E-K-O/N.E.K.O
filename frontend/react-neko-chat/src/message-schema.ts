@@ -1,64 +1,96 @@
-export type ChatMessageRole = 'user' | 'assistant' | 'system' | 'tool';
+import { z } from 'zod';
 
-export type MessageAction = {
-  id: string;
-  label: string;
-  action: string;
-  variant?: 'primary' | 'secondary' | 'danger';
-  disabled?: boolean;
-  payload?: Record<string, unknown>;
-};
+const messageActionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  action: z.string().min(1),
+  variant: z.enum(['primary', 'secondary', 'danger']).optional(),
+  disabled: z.boolean().optional(),
+  payload: z.record(z.unknown()).optional(),
+});
 
-export type TextBlock = {
-  type: 'text';
-  text: string;
-};
+const textBlockSchema = z.object({
+  type: z.literal('text'),
+  text: z.string(),
+});
 
-export type ImageBlock = {
-  type: 'image';
-  url: string;
-  alt?: string;
-  width?: number;
-  height?: number;
-};
+const imageBlockSchema = z.object({
+  type: z.literal('image'),
+  url: z.string().min(1),
+  alt: z.string().optional(),
+  width: z.number().finite().positive().optional(),
+  height: z.number().finite().positive().optional(),
+});
 
-export type LinkBlock = {
-  type: 'link';
-  url: string;
-  title?: string;
-  description?: string;
-  siteName?: string;
-  thumbnailUrl?: string;
-};
+const linkBlockSchema = z.object({
+  type: z.literal('link'),
+  url: z.string().min(1),
+  title: z.string().optional(),
+  description: z.string().optional(),
+  siteName: z.string().optional(),
+  thumbnailUrl: z.string().optional(),
+});
 
-export type StatusBlock = {
-  type: 'status';
-  tone?: 'info' | 'success' | 'warning' | 'error';
-  text: string;
-};
+const statusBlockSchema = z.object({
+  type: z.literal('status'),
+  tone: z.enum(['info', 'success', 'warning', 'error']).optional(),
+  text: z.string(),
+});
 
-export type ButtonGroupBlock = {
-  type: 'buttons';
-  buttons: MessageAction[];
-};
+const buttonGroupBlockSchema = z.object({
+  type: z.literal('buttons'),
+  buttons: z.array(messageActionSchema),
+});
 
-export type MessageBlock =
-  | TextBlock
-  | ImageBlock
-  | LinkBlock
-  | StatusBlock
-  | ButtonGroupBlock;
+export const messageBlockSchema = z.discriminatedUnion('type', [
+  textBlockSchema,
+  imageBlockSchema,
+  linkBlockSchema,
+  statusBlockSchema,
+  buttonGroupBlockSchema,
+]);
 
-export type ChatMessage = {
-  id: string;
-  role: ChatMessageRole;
-  author: string;
-  time: string;
-  createdAt?: number;
-  avatarLabel?: string;
-  avatarUrl?: string;
-  blocks: MessageBlock[];
-  actions?: MessageAction[];
-  status?: 'sending' | 'sent' | 'failed' | 'streaming';
-  sortKey?: number;
-};
+export const chatMessageSchema = z.object({
+  id: z.string().min(1),
+  role: z.enum(['user', 'assistant', 'system', 'tool']),
+  author: z.string().min(1),
+  time: z.string(),
+  createdAt: z.number().finite().optional(),
+  avatarLabel: z.string().optional(),
+  avatarUrl: z.string().optional(),
+  blocks: z.array(messageBlockSchema),
+  actions: z.array(messageActionSchema).optional(),
+  status: z.enum(['sending', 'sent', 'failed', 'streaming']).optional(),
+  sortKey: z.number().finite().optional(),
+});
+
+export const chatWindowPropsSchema = z.object({
+  title: z.string().optional(),
+  iconSrc: z.string().optional(),
+  messages: z.array(chatMessageSchema).optional(),
+  inputPlaceholder: z.string().optional(),
+  sendButtonLabel: z.string().optional(),
+  onMessageAction: z.function()
+    .args(chatMessageSchema, messageActionSchema)
+    .returns(z.void())
+    .optional(),
+});
+
+export type ChatMessageRole = z.infer<typeof chatMessageSchema>['role'];
+export type MessageAction = z.infer<typeof messageActionSchema>;
+export type TextBlock = z.infer<typeof textBlockSchema>;
+export type ImageBlock = z.infer<typeof imageBlockSchema>;
+export type LinkBlock = z.infer<typeof linkBlockSchema>;
+export type StatusBlock = z.infer<typeof statusBlockSchema>;
+export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
+export type MessageBlock = z.infer<typeof messageBlockSchema>;
+export type ChatMessage = z.infer<typeof chatMessageSchema>;
+export type ChatWindowSchemaProps = z.infer<typeof chatWindowPropsSchema>;
+
+export function parseChatMessage(input: unknown): ChatMessage {
+  return chatMessageSchema.parse(input);
+}
+
+export function parseChatWindowProps<T extends Record<string, unknown> | undefined>(input: T) {
+  return chatWindowPropsSchema.parse(input ?? {}) as ChatWindowSchemaProps;
+}
