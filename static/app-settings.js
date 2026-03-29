@@ -309,7 +309,7 @@
                 // 画质设置
                 S.renderQuality = settings.renderQuality ?? 'medium';
                 window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
-                // 帧率设置
+                // 帧率设置（0 = 不限帧 / VSync）
                 S.targetFrameRate = settings.targetFrameRate ?? 60;
                 // 鼠标跟踪设置（严格转换为布尔值）
                 if (typeof settings.mouseTrackingEnabled === 'boolean') {

@@ -774,15 +774,15 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const fpsSlider = document.createElement('input');
     fpsSlider.type = 'range';
     fpsSlider.min = '0';
-    fpsSlider.max = '2';
+    fpsSlider.max = '3';
     fpsSlider.step = '1';
-    const fpsValues = [30, 45, 60];
-    const curFps = window.targetFrameRate || 60;
-    fpsSlider.value = curFps >= 60 ? '2' : curFps >= 45 ? '1' : '0';
+    const fpsValues = [30, 45, 60, 0];
+    const curFps = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
+    fpsSlider.value = curFps === 0 ? '3' : curFps >= 60 ? '2' : curFps >= 45 ? '1' : '0';
     Object.assign(fpsSlider.style, SLIDER_STYLE);
 
-    const fpsLabelKeys = ['settings.toggles.frameRateLow', 'settings.toggles.frameRateMedium', 'settings.toggles.frameRateHigh'];
-    const fpsDefaults = ['30fps', '45fps', '60fps'];
+    const fpsLabelKeys = ['settings.toggles.frameRateLow', 'settings.toggles.frameRateMedium', 'settings.toggles.frameRateHigh', 'settings.toggles.frameRateUnlimited'];
+    const fpsDefaults = ['30fps', '45fps', '60fps', 'VSync'];
     const fpsValue = document.createElement('span');
     const curFIdx = parseInt(fpsSlider.value, 10);
     fpsValue.textContent = window.t ? window.t(fpsLabelKeys[curFIdx]) : fpsDefaults[curFIdx];

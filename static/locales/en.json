@@ -1520,6 +1520,7 @@
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
             "frameRateHigh": "60fps",
+            "frameRateUnlimited": "Unlimited(VSync)",
             "mouseTracking": "Mouse Tracking",
             "fullscreenTracking": "Fullscreen Tracking",
             "localTracking": "Local Tracking"
