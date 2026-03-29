@@ -45,8 +45,12 @@ function setMaskedInput(input, realKey) {
  */
 function getRealKey(input) {
     if (!input) return '';
-    // 如果用户直接编辑了（没有 realKey 或 focus 中），使用 value
-    if (input.dataset.realKey !== undefined && input.dataset.realKey !== '') {
+    // 聚焦中：用户可能正在编辑，优先使用当前 value
+    if (input === document.activeElement) {
+        return input.value.trim();
+    }
+    // 非聚焦：优先使用存储的真实 key（value 可能是遮蔽值）
+    if (input.dataset.realKey) {
         return input.dataset.realKey;
     }
     return input.value.trim();
@@ -1261,37 +1265,42 @@ async function save_button_down(e) {
         const el = document.getElementById(id);
         return el ? el.value.trim() : '';
     };
+    // API Key 字段可能被遮蔽，需要读取真实值
+    const getKeyVal = (id) => {
+        const el = document.getElementById(id);
+        return el ? getRealKey(el) : '';
+    };
 
     const conversationModelUrl = getVal('conversationModelUrl');
     const conversationModelId = getVal('conversationModelId');
-    const conversationModelApiKey = getVal('conversationModelApiKey');
+    const conversationModelApiKey = getKeyVal('conversationModelApiKey');
 
     const summaryModelUrl = getVal('summaryModelUrl');
     const summaryModelId = getVal('summaryModelId');
-    const summaryModelApiKey = getVal('summaryModelApiKey');
+    const summaryModelApiKey = getKeyVal('summaryModelApiKey');
 
     const correctionModelUrl = getVal('correctionModelUrl');
     const correctionModelId = getVal('correctionModelId');
-    const correctionModelApiKey = getVal('correctionModelApiKey');
+    const correctionModelApiKey = getKeyVal('correctionModelApiKey');
 
     const emotionModelUrl = getVal('emotionModelUrl');
     const emotionModelId = getVal('emotionModelId');
-    const emotionModelApiKey = getVal('emotionModelApiKey');
+    const emotionModelApiKey = getKeyVal('emotionModelApiKey');
 
     const visionModelUrl = getVal('visionModelUrl');
     const visionModelId = getVal('visionModelId');
-    const visionModelApiKey = getVal('visionModelApiKey');
+    const visionModelApiKey = getKeyVal('visionModelApiKey');
     const agentModelUrl = getVal('agentModelUrl');
     const agentModelId = getVal('agentModelId');
-    const agentModelApiKey = getVal('agentModelApiKey');
+    const agentModelApiKey = getKeyVal('agentModelApiKey');
 
     const omniModelUrl = getVal('omniModelUrl');
     const omniModelId = getVal('omniModelId');
-    const omniModelApiKey = getVal('omniModelApiKey');
+    const omniModelApiKey = getKeyVal('omniModelApiKey');
 
     let ttsModelUrl = getVal('ttsModelUrl');
     const ttsModelId = getVal('ttsModelId');
-    const ttsModelApiKey = getVal('ttsModelApiKey');
+    const ttsModelApiKey = getKeyVal('ttsModelApiKey');
     let ttsVoiceId = getVal('ttsVoiceId');
 
     // 检查 GPT-SoVITS v3 配置
@@ -1931,12 +1940,12 @@ async function initializePage() {
             const selectedCoreApi = coreApiSelect ? coreApiSelect.value : '';
             const selectedAssistApi = assistApiSelect ? assistApiSelect.value : '';
 
-            // Snapshot Key Book input values
+            // Snapshot Key Book input values（读取真实 key，避免存遮蔽值）
             const keyBookSnapshot = {};
             const bookContainer = document.getElementById('key-book-inputs');
             if (bookContainer) {
                 bookContainer.querySelectorAll('input[data-provider-key]').forEach(input => {
-                    keyBookSnapshot[input.dataset.providerKey] = input.value;
+                    keyBookSnapshot[input.dataset.providerKey] = getRealKey(input);
                 });
             }
 
