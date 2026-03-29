@@ -1866,19 +1866,20 @@ class ConfigManager:
         
         mapping = model_type_mapping[model_type]
         
-        # agent 不依赖 enable_custom_api 开关；其余模型遵循原逻辑
+        # agent 始终走专用字段（AGENT_MODEL_URL 有 lanlan.app 归一化），
+        # 但 is_custom 仅在 enableCustomApi 开启时为 True。
         if enable_custom_api or model_type == 'agent':
             custom_model = core_config.get(mapping['custom_model'], '')
             custom_url = core_config.get(mapping['custom_url'], '')
             custom_key = core_config.get(mapping['custom_key'], '')
-            
+
             # 自定义配置完整时使用自定义配置
             if custom_model and custom_url:
                 return {
                     'model': custom_model,
                     'api_key': custom_key,
                     'base_url': custom_url,
-                    'is_custom': True,
+                    'is_custom': enable_custom_api,
                     # 对于 realtime 模型，自定义配置时 api_type 设为 'local'
                     # TODO: 后续完善 'local' 类型的具体实现（如本地推理服务等）
                     'api_type': 'local' if model_type == 'realtime' else None,

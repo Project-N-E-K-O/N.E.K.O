@@ -147,7 +147,8 @@
                         </form>
                     </div>
 
-                    <div id="current-api-key" class="status info" style="display: none;"></div>
+                    <!-- current-api-key: 隐藏元素，仅用于存储状态供 JS 读取 -->
+                    <div id="current-api-key" style="display: none !important;"></div>
 
                     <!-- ============ Area 2: Assist API Section (top-level) ============ -->
                     <div class="api-key-info">
@@ -318,7 +319,7 @@
                                         <div class="field-row">
                                             <label for="summaryModelApiKey" data-i18n="api.apiKey">API Key</label>
                                             <input type="text" id="summaryModelApiKey"
-                                                data-i18n-placeholder="api.summaryApiKeyPlaceholder"
+                                                data-i18n-placeholder="api.summaryModelApiKeyPlaceholder"
                                                 placeholder="Enter Summary API Key" value=""
                                                 style="max-width: 600px;">
                                         </div>
@@ -358,7 +359,7 @@
                                         <div class="field-row">
                                             <label for="correctionModelApiKey" data-i18n="api.apiKey">API Key</label>
                                             <input type="text" id="correctionModelApiKey"
-                                                data-i18n-placeholder="api.correctionApiKeyPlaceholder"
+                                                data-i18n-placeholder="api.correctionModelApiKeyPlaceholder"
                                                 placeholder="Enter Correction API Key" value=""
                                                 style="max-width: 600px;">
                                         </div>
@@ -398,7 +399,7 @@
                                         <div class="field-row">
                                             <label for="emotionModelApiKey" data-i18n="api.apiKey">API Key</label>
                                             <input type="text" id="emotionModelApiKey"
-                                                data-i18n-placeholder="api.emotionApiKeyPlaceholder"
+                                                data-i18n-placeholder="api.emotionModelApiKeyPlaceholder"
                                                 placeholder="Enter Emotion API Key" value=""
                                                 style="max-width: 600px;">
                                         </div>
@@ -438,7 +439,7 @@
                                         <div class="field-row">
                                             <label for="visionModelApiKey" data-i18n="api.apiKey">API Key</label>
                                             <input type="text" id="visionModelApiKey"
-                                                data-i18n-placeholder="api.visionApiKeyPlaceholder"
+                                                data-i18n-placeholder="api.visionModelApiKeyPlaceholder"
                                                 placeholder="Enter Vision API Key" value=""
                                                 style="max-width: 600px;">
                                         </div>
@@ -519,7 +520,7 @@
                                         <div class="field-row">
                                             <label for="omniModelApiKey" data-i18n="api.apiKey">API Key</label>
                                             <input type="text" id="omniModelApiKey"
-                                                data-i18n-placeholder="api.realtimeApiKeyPlaceholder"
+                                                data-i18n-placeholder="api.omniModelApiKeyPlaceholder"
                                                 placeholder="Enter Realtime API Key" value=""
                                                 style="max-width: 600px;">
                                         </div>
@@ -559,7 +560,7 @@
                                         <div class="field-row">
                                             <label for="ttsModelApiKey" data-i18n="api.apiKey">API Key</label>
                                             <input type="text" id="ttsModelApiKey"
-                                                data-i18n-placeholder="api.ttsApiKeyPlaceholder"
+                                                data-i18n-placeholder="api.ttsModelApiKeyPlaceholder"
                                                 placeholder="Enter TTS API Key" value="" style="max-width: 600px;">
                                         </div>
                                         <div class="field-row">

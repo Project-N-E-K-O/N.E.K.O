@@ -41,15 +41,25 @@ function setMaskedInput(input, realKey) {
 }
 
 /**
- * 读取 input 中存储的真实 key（优先 dataset，否则 value）。
+ * ⚠️ 重要：所有需要读取 API Key 真实值的地方，必须使用 getRealKey(input)
+ * 而不是 input.value。因为 input.value 可能是遮蔽后的值（如 sk-a04****6b53）。
+ * 真实 key 存储在 input.dataset.realKey 中，由 setMaskedInput() 写入。
+ * 新增读取 key 的代码时请务必使用此函数。
  */
 function getRealKey(input) {
     if (!input) return '';
-    // 如果用户直接编辑了（没有 realKey 或 focus 中），使用 value
-    if (input.dataset.realKey !== undefined && input.dataset.realKey !== '') {
+    // 聚焦中：用户可能正在编辑，优先使用当前 value
+    if (input === document.activeElement) {
+        return input.value.trim();
+    }
+    // 非聚焦：优先使用存储的真实 key（value 可能是遮蔽值）
+    if (input.dataset.realKey) {
         return input.dataset.realKey;
     }
-    return input.value.trim();
+    // 防御：如果 value 全是星号，说明是遮蔽残留，返回空
+    const val = input.value.trim();
+    if (/\*{3,}/.test(val)) return '';
+    return val;
 }
 
 /**
@@ -289,6 +299,7 @@ function renderKeyBook(registry, providers) {
         input.id = `keyBookInput_${providerKey}`;
         input.placeholder = window.t ? window.t('api.keyBookKeyPlaceholder') : 'Enter API Key';
         input.dataset.providerKey = providerKey;
+        attachMaskBehavior(input);
         row.appendChild(input);
 
         container.appendChild(row);
@@ -429,6 +440,9 @@ function onCustomModelProviderChange(modelType) {
     const setKeyEditable = (input) => {
         if (!input) return;
         input.removeAttribute('readonly');
+        // 清除残留的遮蔽状态和遮蔽值，让用户从空白开始输入
+        input.dataset.realKey = '';
+        input.value = '';
         // 恢复原始 placeholder
         const origPlaceholder = input.getAttribute('data-i18n-placeholder');
         if (origPlaceholder && window.t) {
@@ -509,6 +523,7 @@ function ensureKeyBookLink(input) {
     const link = document.createElement('a');
     link.href = 'javascript:void(0)';
     link.className = 'key-book-shortcut';
+    link.setAttribute('data-i18n', 'api.goToKeyBook');
     link.textContent = window.t ? window.t('api.goToKeyBook') : '前往管理簿';
     link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
     link.addEventListener('click', (e) => {
@@ -572,7 +587,7 @@ async function loadApiProviders() {
                             (_, _sep, c) => c.toUpperCase());
                         _apiKeyRegistry[pk] = {
                             label: allProviders[pk].name || pk,
-                            restricted: (pk === 'openai' || pk === 'gemini'),
+                            restricted: allProviders[pk].restricted || false,
                             config_field: allProviders[pk].config_field || defaultField
                         };
                     });
@@ -1107,14 +1122,17 @@ function toggleCustomApi() {
     const isFreeVersion = coreApiSelect && coreApiSelect.value === 'free';
 
     // 禁用或启用相关控件
+    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
     if (isFreeVersion) {
         if (assistApiSelect) assistApiSelect.disabled = true;
         if (apiKeyInput) apiKeyInput.disabled = true;
+        if (assistApiKeyInput) assistApiKeyInput.disabled = true;
         if (coreApiSelect) coreApiSelect.disabled = false;
     } else {
         if (coreApiSelect) coreApiSelect.disabled = false;
         if (assistApiSelect) assistApiSelect.disabled = false;
         if (apiKeyInput) apiKeyInput.disabled = false;
+        if (assistApiKeyInput) assistApiKeyInput.disabled = false;
     }
 
     // 控制自定义API容器的折叠状态
@@ -1258,37 +1276,42 @@ async function save_button_down(e) {
         const el = document.getElementById(id);
         return el ? el.value.trim() : '';
     };
+    // API Key 字段可能被遮蔽，需要读取真实值
+    const getKeyVal = (id) => {
+        const el = document.getElementById(id);
+        return el ? getRealKey(el) : '';
+    };
 
     const conversationModelUrl = getVal('conversationModelUrl');
     const conversationModelId = getVal('conversationModelId');
-    const conversationModelApiKey = getVal('conversationModelApiKey');
+    const conversationModelApiKey = getKeyVal('conversationModelApiKey');
 
     const summaryModelUrl = getVal('summaryModelUrl');
     const summaryModelId = getVal('summaryModelId');
-    const summaryModelApiKey = getVal('summaryModelApiKey');
+    const summaryModelApiKey = getKeyVal('summaryModelApiKey');
 
     const correctionModelUrl = getVal('correctionModelUrl');
     const correctionModelId = getVal('correctionModelId');
-    const correctionModelApiKey = getVal('correctionModelApiKey');
+    const correctionModelApiKey = getKeyVal('correctionModelApiKey');
 
     const emotionModelUrl = getVal('emotionModelUrl');
     const emotionModelId = getVal('emotionModelId');
-    const emotionModelApiKey = getVal('emotionModelApiKey');
+    const emotionModelApiKey = getKeyVal('emotionModelApiKey');
 
     const visionModelUrl = getVal('visionModelUrl');
     const visionModelId = getVal('visionModelId');
-    const visionModelApiKey = getVal('visionModelApiKey');
+    const visionModelApiKey = getKeyVal('visionModelApiKey');
     const agentModelUrl = getVal('agentModelUrl');
     const agentModelId = getVal('agentModelId');
-    const agentModelApiKey = getVal('agentModelApiKey');
+    const agentModelApiKey = getKeyVal('agentModelApiKey');
 
     const omniModelUrl = getVal('omniModelUrl');
     const omniModelId = getVal('omniModelId');
-    const omniModelApiKey = getVal('omniModelApiKey');
+    const omniModelApiKey = getKeyVal('omniModelApiKey');
 
     let ttsModelUrl = getVal('ttsModelUrl');
     const ttsModelId = getVal('ttsModelId');
-    const ttsModelApiKey = getVal('ttsModelApiKey');
+    const ttsModelApiKey = getKeyVal('ttsModelApiKey');
     let ttsVoiceId = getVal('ttsVoiceId');
 
     // 检查 GPT-SoVITS v3 配置
@@ -1506,12 +1529,18 @@ function updateAssistApiRecommendation() {
     const apiKeyInput = document.getElementById('apiKeyInput');
     const freeVersionHint = document.getElementById('freeVersionHint');
 
+    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
+
     if (selectedCoreApi === 'free') {
         if (apiKeyInput) {
             apiKeyInput.disabled = true;
             apiKeyInput.placeholder = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
             apiKeyInput.required = false;
             apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
+        }
+        if (assistApiKeyInput) {
+            assistApiKeyInput.disabled = true;
+            assistApiKeyInput.value = '';
         }
         if (freeVersionHint) {
             freeVersionHint.style.display = 'inline';
@@ -1537,6 +1566,9 @@ function updateAssistApiRecommendation() {
             if (isFreeVersionText(getRealKey(apiKeyInput))) {
                 setMaskedInput(apiKeyInput, '');
             }
+        }
+        if (assistApiKeyInput) {
+            assistApiKeyInput.disabled = false;
         }
         if (freeVersionHint) {
             freeVersionHint.style.display = 'none';
@@ -1857,11 +1889,13 @@ async function initializePage() {
         if (coreApiSelect && apiKeyInput && freeVersionHint) {
             const selectedCoreApi = coreApiSelect.value;
 
+            const assistApiKeyInputInit = document.getElementById('assistApiKeyInput');
             if (selectedCoreApi === 'free') {
                 apiKeyInput.disabled = true;
                 apiKeyInput.placeholder = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                 apiKeyInput.required = false;
                 apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
+                if (assistApiKeyInputInit) assistApiKeyInputInit.disabled = true;
                 freeVersionHint.style.display = 'inline';
             } else {
                 apiKeyInput.disabled = false;
@@ -1870,6 +1904,7 @@ async function initializePage() {
                 if (isFreeVersionText(getRealKey(apiKeyInput))) {
                     setMaskedInput(apiKeyInput, '');
                 }
+                if (assistApiKeyInputInit) assistApiKeyInputInit.disabled = false;
                 freeVersionHint.style.display = 'none';
             }
 
@@ -1916,12 +1951,12 @@ async function initializePage() {
             const selectedCoreApi = coreApiSelect ? coreApiSelect.value : '';
             const selectedAssistApi = assistApiSelect ? assistApiSelect.value : '';
 
-            // Snapshot Key Book input values
+            // Snapshot Key Book input values（读取真实 key，避免存遮蔽值）
             const keyBookSnapshot = {};
             const bookContainer = document.getElementById('key-book-inputs');
             if (bookContainer) {
                 bookContainer.querySelectorAll('input[data-provider-key]').forEach(input => {
-                    keyBookSnapshot[input.dataset.providerKey] = input.value;
+                    keyBookSnapshot[input.dataset.providerKey] = getRealKey(input);
                 });
             }
 
@@ -1947,11 +1982,12 @@ async function initializePage() {
                 syncKeyToBook(providerKey, keyBookSnapshot[providerKey]);
             });
 
-            // Restore model provider select values
+            // Restore model provider select values and replay derived state
             MODEL_TYPES.forEach(mt => {
                 const sel = document.getElementById(`${mt}ModelProvider`);
                 if (sel && modelProviderSnapshot[mt] !== undefined) {
                     sel.value = modelProviderSnapshot[mt];
+                    onCustomModelProviderChange(mt);
                 }
             });
         });
