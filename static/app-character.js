@@ -335,8 +335,8 @@
                     console.log('[猫娘切换] 完全销毁旧 MMD 管理器实例');
                     window.mmdManager.dispose();
                     window.mmdManager = null;
-                } else if (effectiveModelType !== 'mmd') {
-                    // 兜底清理：直接移除 DOM 元素
+                }
+                if (effectiveModelType !== 'mmd') {
                     document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
                         .forEach(el => el.remove());
                 }
