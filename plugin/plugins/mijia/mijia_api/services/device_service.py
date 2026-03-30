@@ -138,7 +138,7 @@ class DeviceService:
         device_id: str,
         siid: int,
         aiid: int,
-        params: Dict[str, Any],
+        params: List[Any],
         credential: Credential,
     ) -> Any:
         """调用设备操作
@@ -147,7 +147,7 @@ class DeviceService:
             device_id: 设备ID
             siid: 服务ID
             aiid: 操作ID
-            params: 操作参数
+            params: 操作参数列表
             credential: 用户凭据
 
         Returns:

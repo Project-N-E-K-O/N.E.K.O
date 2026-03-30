@@ -142,7 +142,7 @@ class MijiaAPI:
         device_id: str,
         siid: int,
         aiid: int,
-        params: Optional[Dict[str, Any]] = None,
+        params: Optional[List[Any]] = None,
         refresh_cache: bool = True,
     ) -> Any:
         """调用设备操作
@@ -153,7 +153,7 @@ class MijiaAPI:
             device_id: 设备ID
             siid: 服务ID
             aiid: 操作ID
-            params: 操作参数（可选）
+            params: 操作参数列表（可选）
             refresh_cache: 是否在操作后刷新缓存，默认为True
 
         Returns:
@@ -166,13 +166,13 @@ class MijiaAPI:
 
         Example:
             >>> # 调用操作并自动刷新缓存（推荐）
-            >>> api.call_device_action("device_123", 2, 1, {"mode": "auto"})
+            >>> api.call_device_action("device_123", 2, 1, ["auto"])
             >>>
             >>> # 调用操作但不刷新缓存
-            >>> api.call_device_action("device_123", 2, 1, {"mode": "auto"}, refresh_cache=False)
+            >>> api.call_device_action("device_123", 2, 1, ["auto"], refresh_cache=False)
         """
         result = self._device_service.call_device_action(
-            device_id, siid, aiid, params or {}, self._credential
+            device_id, siid, aiid, params or [], self._credential
         )
 
         # 操作成功后刷新缓存
@@ -394,14 +394,12 @@ class MijiaAPI:
         """
         try:
             # 关闭底层 HttpClient（持有 httpx.Client 连接池）
-            http_client = getattr(self._device_service, '_http_client', None)
-            if http_client is None:
-                # 从 _device_repo 尝试获取
-                repo = getattr(self._device_service, '_device_repo', None)
-                if repo:
-                    http_client = getattr(repo, '_http_client', None) or getattr(repo, '_client', None)
-            if http_client and hasattr(http_client, 'close'):
-                http_client.close()
+            # DeviceRepositoryImpl 使用 _http 属性存储 HttpClient
+            repo = getattr(self._device_service, '_device_repo', None)
+            if repo:
+                http_client = getattr(repo, '_http', None)
+                if http_client and hasattr(http_client, 'close'):
+                    http_client.close()
         except Exception:
             pass  # 关闭时忽略错误
 
@@ -558,7 +556,7 @@ class AsyncMijiaAPI:
         device_id: str,
         siid: int,
         aiid: int,
-        params: Optional[Dict[str, Any]] = None,
+        params: Optional[List[Any]] = None,
         refresh_cache: bool = True,
     ) -> Any:
         """异步调用设备操作
@@ -569,7 +567,7 @@ class AsyncMijiaAPI:
             device_id: 设备ID
             siid: 服务ID
             aiid: 操作ID
-            params: 操作参数（可选）
+            params: 操作参数列表（可选）
             refresh_cache: 是否在操作后刷新缓存，默认为True
 
         Returns:
@@ -577,10 +575,10 @@ class AsyncMijiaAPI:
 
         Example:
             >>> # 调用操作并自动刷新缓存（推荐）
-            >>> await api.call_device_action("device_123", 2, 1, {"mode": "auto"})
+            >>> await api.call_device_action("device_123", 2, 1, ["auto"])
             >>>
             >>> # 调用操作但不刷新缓存
-            >>> await api.call_device_action("device_123", 2, 1, {"mode": "auto"}, refresh_cache=False)
+            >>> await api.call_device_action("device_123", 2, 1, ["auto"], refresh_cache=False)
         """
         import asyncio
 
@@ -589,7 +587,7 @@ class AsyncMijiaAPI:
             device_id,
             siid,
             aiid,
-            params or {},
+            params or [],
             self._credential,
         )
 

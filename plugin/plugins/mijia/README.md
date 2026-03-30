@@ -189,7 +189,16 @@ control_device(device_id="xxx", siid=2, piid=3, value=80)
 
 触发在米家 App 中创建的智能场景（如"回家模式"、"睡眠模式"）。
 
+**参数**
+- `scene_id`: 场景 ID
+- `home_id`: 家庭 ID
+
 **获取 scene_id**：目前需通过米家 App 查看或抓包获取，插件暂不提供场景列表入口。
+
+**示例**
+```python
+execute_scene(scene_id="123456", home_id="abcdef")
+```
 
 ---
 

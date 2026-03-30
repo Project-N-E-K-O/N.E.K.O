@@ -696,13 +696,13 @@ class MijiaPlugin(NekoPluginBase):
                 "device_id": {"type": "string", "description": "设备 ID（did）"},
                 "siid": {"type": "integer", "description": "服务 ID"},
                 "aiid": {"type": "integer", "description": "操作 ID"},
-                "params": {"type": "object", "description": "操作参数，可选"}
+                "params": {"type": "array", "description": "操作参数列表，可选"}
             },
             "required": ["device_id", "siid", "aiid"]
         },
         llm_result_fields=["message"]
     )
-    async def call_device_action(self, device_id: str, siid: int, aiid: int, params: Optional[dict] = None, **_):
+    async def call_device_action(self, device_id: str, siid: int, aiid: int, params: Optional[list] = None, **_):
         if not self.api:
             return Err(SdkError("未登录"))
         try:
@@ -722,17 +722,18 @@ class MijiaPlugin(NekoPluginBase):
         input_schema={
             "type": "object",
             "properties": {
-                "scene_id": {"type": "string", "description": "场景 ID"}
+                "scene_id": {"type": "string", "description": "场景 ID"},
+                "home_id": {"type": "string", "description": "家庭 ID"}
             },
-            "required": ["scene_id"]
+            "required": ["scene_id", "home_id"]
         },
         llm_result_fields=["message"]
     )
-    async def execute_scene(self, scene_id: str, **_):
+    async def execute_scene(self, scene_id: str, home_id: str, **_):
         if not self.api:
             return Err(SdkError("未登录"))
         try:
-            success = await self.api.execute_scene(scene_id)
+            success = await self.api.execute_scene(scene_id, home_id)
             if success:
                 message = f"✅ 场景执行成功 (ID: {scene_id})"
                 return Ok({"success": True, "message": message})

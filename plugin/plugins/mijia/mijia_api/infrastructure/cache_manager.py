@@ -265,7 +265,8 @@ class CacheManager:
             if self._redis_client:
                 try:
                     # 使用 SCAN + DEL 按前缀删除，而不是危险的 flushdb
-                    pattern = "mijia:*"
+                    # 缓存键格式为 {namespace}:{key}，使用 *:* 模式匹配所有
+                    pattern = "*:*"
                     cursor = 0
                     while True:
                         cursor, keys = self._redis_client.scan(cursor, match=pattern, count=100)

@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 import httpx
 
 from ..core.logging import get_logger
-from ..domain.exceptions import MijiaAPIException
+from ..domain.exceptions import MijiaAPIException, SpecNotFoundError
 from ..domain.models import DeviceAction, DeviceProperty, PropertyAccess, PropertyType, ActionParameter
 from ..infrastructure.cache_manager import CacheManager
 from ..infrastructure.http_client import HttpClient
