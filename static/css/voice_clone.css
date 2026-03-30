@@ -1084,7 +1084,7 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
 
 /* 克隆输入区域容器（固定高度防止切换时页面跳动） */
 .clone-input-container {
-    height: 180px;
+    min-height: 180px;
     max-width: 600px;
     padding: 16px;
     background: rgba(255, 255, 255, 0.5);
@@ -1093,6 +1093,7 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     margin-bottom: 16px;
     position: relative;
     box-sizing: border-box;
+    overflow-y: auto;
 }
 
 /* 克隆区域通用样式 */
@@ -1109,6 +1110,7 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
 /* 克隆方式切换按钮样式 */
 .clone-method-toggle {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     max-width: 600px;
 }

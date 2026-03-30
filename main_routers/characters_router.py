@@ -2521,26 +2521,9 @@ async def voice_clone_direct(request: Request):
         storage_key = api_key
         provider_label = '阿里云CosyVoice'
 
-    # 计算直链的 MD5 用于去重（使用URL+语言作为唯一标识）
-    import hashlib
-    md5_source = f"{direct_link}:{ref_language}"
-    audio_md5 = hashlib.md5(md5_source.encode()).hexdigest()
-
-    # MD5 去重检查
-    existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
-    if existing:
-        voice_id, voice_data = existing
-        logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")
-        return JSONResponse({
-            'voice_id': voice_id,
-            'message': f'已复用现有{provider_label}音色，跳过注册',
-            'reused': True,
-            'provider': provider
-        })
-
     # 验证直链是否可访问
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, proxy=None, trust_env=False) as client:
             head_resp = await client.head(direct_link)
             if head_resp.status_code >= 400:
                 return JSONResponse({
@@ -2557,7 +2540,7 @@ async def voice_clone_direct(request: Request):
             # ========== MiniMax 直链克隆流程 ==========
             # 1. 下载音频文件
             logger.info(f"开始下载直链音频: {direct_link}")
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 download_resp = await client.get(direct_link)
                 if download_resp.status_code != 200:
                     return JSONResponse({
@@ -2590,6 +2573,22 @@ async def voice_clone_direct(request: Request):
             
             logger.info(f"音频下载完成: {filename}, 大小: {len(audio_bytes)} bytes")
             
+            # 2. 计算音频内容的 MD5 用于去重（与文件上传路径保持一致）
+            import hashlib
+            audio_md5 = hashlib.md5(audio_bytes).hexdigest()
+            
+            # 3. MD5 去重检查
+            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            if existing:
+                voice_id, voice_data = existing
+                logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")
+                return JSONResponse({
+                    'voice_id': voice_id,
+                    'message': f'已复用现有{provider_label}音色，跳过注册',
+                    'reused': True,
+                    'provider': provider
+                })
+            
             # 2. 使用 MinimaxVoiceCloneClient 上传并注册音色
             audio_buffer = io.BytesIO(audio_bytes)
             minimax_lang = minimax_normalize_language(ref_language)
@@ -2619,11 +2618,46 @@ async def voice_clone_direct(request: Request):
             
         else:  # cosyvoice
             # ========== CosyVoice 直链克隆流程 ==========
+            # 1. 下载音频文件以计算内容MD5（与文件上传路径保持一致）
+            logger.info(f"开始下载直链音频用于CosyVoice: {direct_link}")
+            async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
+                download_resp = await client.get(direct_link)
+                if download_resp.status_code != 200:
+                    return JSONResponse({
+                        'error': f'下载音频失败，状态码: {download_resp.status_code}',
+                        'code': 'DOWNLOAD_FAILED'
+                    }, status_code=400)
+                
+                audio_bytes = download_resp.content
+                if len(audio_bytes) > 100 * 1024 * 1024:  # 100MB限制
+                    return JSONResponse({
+                        'error': '音频文件超过100MB限制',
+                        'code': 'FILE_TOO_LARGE'
+                    }, status_code=400)
+            
+            logger.info(f"音频下载完成，大小: {len(audio_bytes)} bytes")
+            
+            # 2. 计算音频内容的 MD5 用于去重
+            import hashlib
+            audio_md5 = hashlib.md5(audio_bytes).hexdigest()
+            
+            # 3. MD5 去重检查
+            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            if existing:
+                voice_id, voice_data = existing
+                logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")
+                return JSONResponse({
+                    'voice_id': voice_id,
+                    'message': f'已复用现有{provider_label}音色，跳过注册',
+                    'reused': True,
+                    'provider': provider
+                })
+            
+            # 4. 使用直链注册音色
             language_hints = qwen_language_hints(ref_language)
             client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
 
-            # 直接使用直链注册音色，跳过上传
-            voice_id, request_id = await asyncio.to_thread(
+            voice_id, _ = await asyncio.to_thread(
                 client.create_voice,
                 prefix=prefix,
                 url=direct_link,

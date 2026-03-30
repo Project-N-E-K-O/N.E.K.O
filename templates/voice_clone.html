@@ -35,11 +35,13 @@
             <!-- 克隆方式切换 -->
             <div class="field-row" style="margin-bottom: 16px;">
                 <label data-i18n="voice.cloneMethod">克隆方式</label>
-                <div class="clone-method-toggle">
-                    <button type="button" class="clone-method-btn active" id="btnFileClone" onclick="switchCloneMethod('file')">
+                <div class="clone-method-toggle" role="tablist" aria-label="克隆方式选择">
+                    <button type="button" class="clone-method-btn active" id="btnFileClone" onclick="switchCloneMethod('file')"
+                        role="tab" aria-selected="true" aria-controls="fileCloneSection" tabindex="0">
                         <span data-i18n="voice.cloneMethodFile">本地文件</span>
                     </button>
-                    <button type="button" class="clone-method-btn" id="btnDirectLinkClone" onclick="switchCloneMethod('directlink')">
+                    <button type="button" class="clone-method-btn" id="btnDirectLinkClone" onclick="switchCloneMethod('directlink')"
+                        role="tab" aria-selected="false" aria-controls="directLinkCloneSection" tabindex="-1">
                         <span data-i18n="voice.cloneMethodDirectLink">直链克隆</span>
                     </button>
                 </div>

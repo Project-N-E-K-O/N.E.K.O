@@ -270,14 +270,27 @@ function switchCloneMethod(method) {
     const fileCloneSection = document.getElementById('fileCloneSection');
     const directLinkCloneSection = document.getElementById('directLinkCloneSection');
 
+    if (!btnFileClone || !btnDirectLinkClone || !fileCloneSection || !directLinkCloneSection) {
+        console.warn('克隆方式切换：部分DOM元素未找到');
+        return;
+    }
+
     if (method === 'file') {
         btnFileClone.classList.add('active');
+        btnFileClone.setAttribute('aria-selected', 'true');
+        btnFileClone.setAttribute('tabindex', '0');
         btnDirectLinkClone.classList.remove('active');
+        btnDirectLinkClone.setAttribute('aria-selected', 'false');
+        btnDirectLinkClone.setAttribute('tabindex', '-1');
         fileCloneSection.style.display = 'block';
         directLinkCloneSection.style.display = 'none';
     } else {
         btnFileClone.classList.remove('active');
+        btnFileClone.setAttribute('aria-selected', 'false');
+        btnFileClone.setAttribute('tabindex', '-1');
         btnDirectLinkClone.classList.add('active');
+        btnDirectLinkClone.setAttribute('aria-selected', 'true');
+        btnDirectLinkClone.setAttribute('tabindex', '0');
         fileCloneSection.style.display = 'none';
         directLinkCloneSection.style.display = 'block';
     }
