@@ -27,7 +27,8 @@ export default {
     darkMode: '深色模式',
     lightMode: '浅色模式',
     logoutConfirmTitle: '提示',
-    disconnected: '服务器已断开连接'
+    disconnected: '服务器已断开连接',
+    languageAuto: '自动'
   },
   nav: {
     dashboard: '仪表盘',

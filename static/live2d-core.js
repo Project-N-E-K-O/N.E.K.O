@@ -232,7 +232,7 @@ class Live2DManager {
 
                 this.isInitialized = true;
                 this._lastPIXIContext = { canvasId, containerId };
-                if (window.targetFrameRate && this.pixi_app.ticker) {
+                if (typeof window.targetFrameRate === 'number' && this.pixi_app.ticker) {
                     this.pixi_app.ticker.maxFPS = window.targetFrameRate;
                 }
 
@@ -362,12 +362,12 @@ class Live2DManager {
 
     /**
      * 设置目标帧率
-     * @param {number} fps - 目标帧率（30 或 60）
+     * @param {number} fps - 目标帧率，0 表示不限帧（跟随 VSync）
      */
     setTargetFPS(fps) {
         if (this.pixi_app && this.pixi_app.ticker) {
             this.pixi_app.ticker.maxFPS = fps;
-            console.log(`[Live2D Core] 目标帧率设置为 ${fps}fps`);
+            console.log(`[Live2D Core] 目标帧率设置为 ${fps === 0 ? 'VSync (无限制)' : fps + 'fps'}`);
         }
     }
 
@@ -768,7 +768,7 @@ window.isMobileWidth = isMobileWidth;
 // 监听帧率变更事件
 window.addEventListener('neko-frame-rate-changed', (e) => {
     const fps = e.detail?.fps;
-    if (fps && window.live2dManager) {
+    if (fps != null && window.live2dManager) {
         window.live2dManager.setTargetFPS(fps);
     }
 });

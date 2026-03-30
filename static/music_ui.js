@@ -27,7 +27,20 @@
             ended: 21000,  // 自然播放结束
             idle: 24000,   // AI推荐未播放 (或被拦截)
             paused: 71000  // 用户点击暂停
-        }
+        },
+        // 域名白名单
+        allowlist: [
+            'i.scdn.co', 'p.scdn.co', 'a.scdn.co', 'i.imgur.com', 'y.qq.com',
+            'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
+            'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
+            'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
+            'freemusicarchive.org', 'musopen.org', 'bandcamp.com',
+            'bcbits.com', 'soundcloud.com', 'sndcdn.com',
+            'playback.media-streaming.soundcloud.cloud', 'api.soundcloud.com',
+            'itunes.apple.com', 'audio-ssl.itunes.apple.com',
+            'dummyimage.com', 'music.163.com',
+            'hdslb.com', 'bilivideo.com'
+        ]
     };
 
     let currentPlayingTrack = null;
@@ -56,25 +69,31 @@
     let currentDragHandlers = null;
     let currentVolumeDragHandlers = null;
 
-    // --- 2. 原始工具函数 (完全保留所有域名白名单) ---
+    // --- 2. 原始工具函数 ---
+    /**
+     * 安全提取域名/IP
+     */
+    const extractHostname = (input) => {
+        if (!input || typeof input !== 'string') return null;
+        let target = input.trim();
+        if (!target.startsWith('http://') && !target.startsWith('https://')) {
+            target = 'https://' + target;
+        }
+        try {
+            const url = new URL(target);
+            return url.hostname;
+        } catch (e) {
+            return null;
+        }
+    };
+
     const isSafeUrl = (url) => {
         if (!url) return false;
         try {
             const parsed = new URL(url);
             if (!['http:', 'https:'].includes(parsed.protocol)) return false;
-            const allowedDomains = [
-                'i.scdn.co', 'p.scdn.co', 'a.scdn.co', 'i.imgur.com', 'y.qq.com',
-                'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
-                'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
-                'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
-                'freemusicarchive.org', 'musopen.org', 'bandcamp.com',
-                'bcbits.com', 'soundcloud.com', 'sndcdn.com',
-                'playback.media-streaming.soundcloud.cloud', 'api.soundcloud.com',
-                'itunes.apple.com', 'audio-ssl.itunes.apple.com',
-                'dummyimage.com', 'music.163.com',
-                'hdslb.com', 'bilivideo.com'
-            ];
-            return allowedDomains.some(d => parsed.hostname === d || parsed.hostname.endsWith('.' + d));
+            const hostname = parsed.hostname;
+            return MUSIC_CONFIG.allowlist.some(d => hostname === d || hostname.endsWith('.' + d));
         } catch { return false; }
     };
 
@@ -739,14 +758,16 @@
     };
 
     // --- 6. 暴露全局接口 ---
-    window.sendMusicMessage = function (trackInfo, shouldAutoPlay = true) {
+    /**
+     * 向播放器发送播放请求 [Async Ready]
+     * 如果 URL 暂时不在白名单中，会等待最多 500ms 以响应并行的插件注册
+     */
+    window.sendMusicMessage = async function (trackInfo, shouldAutoPlay = true) {
         if (!trackInfo) return false;
 
         // --- 核心修复：更鲁棒的 URL 预清理 ---
-        // 递归处理多次转义或复杂编码的 HTML 实体
         if (trackInfo.url && typeof trackInfo.url === 'string') {
             try {
-                // CodeRabbit 建议：使用循环处理多次转义或复杂编码的 HTML 实体
                 let lastUrl = '';
                 while (trackInfo.url !== lastUrl) {
                     lastUrl = trackInfo.url;
@@ -761,18 +782,48 @@
         }
 
         const now = Date.now();
-        // 如果是 5 秒内相同的 URL 且播放器已在界面中，视为重复触发并略过（去重交回组件层处理）
+        // 5秒去重逻辑
         if (lastPlayedMusicUrl === trackInfo.url && (now - lastMusicPlayTime) < 5000 && isPlayerInDOM()) {
             console.log('[Music UI] 5秒内相同音乐且已在播放中，跳过播发请求:', trackInfo.name);
-            return true; // 视为已接受处理
+            return true;
         }
 
-        // 如果是同一首歌，但音乐条已经被关掉了（DOM里找不到了）
         if (isSameTrack(trackInfo) && !isPlayerInDOM()) {
             currentPlayingTrack = null;
         }
+
+        // 竞态保护：如果 URL 不在白名单，原地等待 500ms 看看是否会有插件注册进来
+        if (trackInfo.url && !isSafeUrl(trackInfo.url)) {
+            console.log('[Music UI] URL 暂未加入白名单，等待加白信号...', trackInfo.url);
+            try {
+                await new Promise((resolve) => {
+                    const timeout = setTimeout(() => {
+                        window.removeEventListener('music-allowlist-updated', onUpdate);
+                        resolve();
+                    }, 500);
+
+                    function onUpdate() {
+                        if (isSafeUrl(trackInfo.url)) {
+                            console.log('[Music UI] 收到加白信号，URL 已加白名单。');
+                            clearTimeout(timeout);
+                            window.removeEventListener('music-allowlist-updated', onUpdate);
+                            resolve();
+                        }
+                    }
+                    window.addEventListener('music-allowlist-updated', onUpdate);
+                });
+            } catch (e) {
+                console.warn('[Music UI] 竞态等待异常:', e);
+            }
+        }
+
         if (!trackInfo.url || !isSafeUrl(trackInfo.url)) {
             console.warn('[Music UI] 音频 URL 未通过安全校验:', trackInfo.url);
+            if (window.showStatusToast) {
+                var domain = extractHostname(trackInfo.url) || '未知源';
+                var msg = window.t ? window.t('music.unsafeSource', { domain: domain }) : ('已拦截不安全音源: ' + domain);
+                window.showStatusToast(msg, 5000);
+            }
             return false;
         }
 
@@ -780,6 +831,7 @@
         lastPlayedMusicUrl = trackInfo.url;
         lastMusicPlayTime = now;
 
+        // 特殊优化：如果是一模一样的歌曲且播放器已存在，直接播放而不是重载整个库
         if (isSameTrack(trackInfo) && isPlayerInDOM()) {
             const player = getMusicPlayerInstance();
             if (shouldAutoPlay && player && player.audio && player.audio.paused) {
@@ -793,9 +845,9 @@
 
         showNowPlayingToast(trackInfo.name);
 
-        loadAPlayerLibrary().then(() => {
+        loadAPlayerLibrary().then(function () {
             executePlay(trackInfo, currentToken, shouldAutoPlay);
-        }).catch(err => {
+        }).catch(function (err) {
             // 库加载失败同样需要校验 token，防止关闭后弹出报错
             if (currentToken === latestMusicRequestToken) {
                 console.error('[Music UI] 库加载失败:', err);
@@ -853,12 +905,30 @@
         }
     };
 
+    const MusicPluginAPI = {
+        getAllowlist: () => [...MUSIC_CONFIG.allowlist],
+        addAllowlist: (input) => {
+            const inputs = Array.isArray(input) ? input : [input];
+            const newDomains = inputs
+                .map(extractHostname)
+                .filter(d => d && !MUSIC_CONFIG.allowlist.includes(d));
+
+            if (newDomains.length > 0) {
+                MUSIC_CONFIG.allowlist.push(...newDomains);
+                console.log('[Music UI] Allowlist updated:', newDomains);
+                window.dispatchEvent(new CustomEvent('music-allowlist-updated'));
+            }
+        }
+    };
+
     // --- 暴露接口 ---
     window.destroyMusicPlayer = destroyMusicPlayer;
     window.getMusicPlayerInstance = getMusicPlayerInstance;
     window.isMusicPlaying = isMusicPlaying;
     window.getMusicCurrentTrack = getMusicCurrentTrack;
+    window.MusicPluginAPI = MusicPluginAPI;
 
+    // 派发就绪事件，通知提前加载的插件可以开始注册域名了
     window.dispatchEvent(new CustomEvent('music-ui-ready'));
     console.log('[Music UI] 接口已暴露，就绪信号已发送');
 

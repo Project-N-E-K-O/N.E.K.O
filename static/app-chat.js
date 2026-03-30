@@ -384,7 +384,12 @@
 
     // ======================== 音乐播放调度 ========================
 
-    window.dispatchMusicPlay = function (trackInfo, options) {
+    /**
+     * 向音频组件派发播放请求 [Async Ready]
+     * @param {Object} trackInfo
+     * @param {Object} options 
+     */
+    window.dispatchMusicPlay = async function (trackInfo, options) {
         options = options || {};
 
         // 拦截逻辑：如果是主动搭话触发的切歌，且当前正在放歌，则拦截
@@ -401,7 +406,7 @@
         var currentDispatchId = ++_musicDispatchId;
 
         if (window.sendMusicMessage) {
-            var accepted = window.sendMusicMessage(trackInfo);
+            var accepted = await window.sendMusicMessage(trackInfo);
             return accepted; // 返回布尔值表示是否成功派发
         } else {
             console.warn('[MusicDispatch] sendMusicMessage \u5C1A\u672A\u5C31\u7EEA\uFF0C\u542F\u52A8\u7B49\u5F85 (ID: ' + currentDispatchId + ')...');
@@ -657,6 +662,8 @@
                 if (ch === '\n') return true;
                 // 连续标点只在最后一个标点处分段，避免 "！？"、"..." 被拆开
                 if (isPunctForBoundary(ch) && next && isPunctForBoundary(next)) return false;
+                // 流式输入：缓冲区末尾的标点暂不分段，等下一个 chunk 确认是否为连续标点
+                if (isPunctForBoundary(ch) && !next) return false;
                 if (ch === '\u3002' || ch === '\uFF01' || ch === '\uFF1F') return true;
                 if (ch === '!' || ch === '?') return true;
                 if (ch === '\u2026') return true;

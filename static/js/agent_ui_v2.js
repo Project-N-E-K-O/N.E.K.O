@@ -4,7 +4,7 @@
  * 包含状态快照、变更通知、繁忙状态等
  */
 (function () {
-    const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openfang_enabled'];
+    const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openclaw_enabled', 'openfang_enabled'];
 
     const state = {
         snapshot: null,
@@ -17,6 +17,8 @@
         globalBusy: false,
         optimistic: {},
         busyTimer: null,
+        openclawReady: null,
+        openclawReason: '',
     };
     
     // 暴露状态供 app.js 等外部脚本使用乐观更新检测
@@ -30,6 +32,7 @@
         browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser'),
         userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin'),
         openfang: getEls('live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang'),
+        openclaw: getEls('live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw'),
         status: getEls('live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status'),
     });
     const sync = (cbs) => {
@@ -43,6 +46,7 @@
             computer_use_enabled: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
             browser_use_enabled: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
             user_plugin_enabled: window.t ? window.t('settings.toggles.userPlugin') : '用户插件',
+            openclaw_enabled: window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw',
             openfang_enabled: window.t ? window.t('settings.toggles.openfang') : '虚拟机',
         };
         return map[key] || key;
@@ -73,6 +77,7 @@
             computer_use_enabled: 'computer_use',
             browser_use_enabled: 'browser_use',
             user_plugin_enabled: 'user_plugin',
+            openclaw_enabled: 'openclaw',
             openfang_enabled: 'openfang',
         };
         const cap = caps[map[key]];
@@ -85,11 +90,34 @@
             computer_use_enabled: 'computer_use',
             browser_use_enabled: 'browser_use',
             user_plugin_enabled: 'user_plugin',
+            openclaw_enabled: 'openclaw',
             openfang_enabled: 'openfang',
         };
         const cap = caps[map[key]];
         return (cap && cap.reason) || '';
     };
+
+    async function refreshOpenClawAvailability() {
+        try {
+            const r = await fetch('/api/agent/openclaw/availability');
+            if (!r.ok) {
+                state.openclawReady = null;
+                state.openclawReason = `status ${r.status}`;
+                if (state.snapshot) render('openclaw-refresh-error');
+                return false;
+            }
+            const payload = await r.json();
+            state.openclawReady = !!payload.ready;
+            state.openclawReason = Array.isArray(payload.reasons) ? String(payload.reasons[0] || '') : '';
+            if (state.snapshot) render('openclaw-refresh');
+            return state.openclawReady;
+        } catch (e) {
+            state.openclawReady = null;
+            state.openclawReason = String(e && e.message ? e.message : e || '');
+            if (state.snapshot) render('openclaw-refresh-error');
+            return false;
+        }
+    }
 
     async function fetchSnapshot() {
         const r = await fetch('/api/agent/state');
@@ -148,7 +176,7 @@
     }
 
     function render(source = 'render') {
-        const { master, keyboard, browser, userPlugin, openfang } = el();
+        const { master, keyboard, browser, userPlugin, openfang, openclaw } = el();
         if (!master.length) return;
         const snap = state.snapshot;
         if (!snap) {
@@ -157,7 +185,7 @@
                 m.checked = false;
             });
             sync(master);
-            [keyboard, browser, userPlugin, openfang].forEach(list => {
+            [keyboard, browser, userPlugin, openfang, openclaw].forEach(list => {
                 list.forEach(cb => {
                     cb.disabled = true;
                     cb.checked = false;
@@ -184,7 +212,7 @@
                 m.title = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
             });
             sync(master);
-            [keyboard, browser, userPlugin, openfang].forEach(list => {
+            [keyboard, browser, userPlugin, openfang, openclaw].forEach(list => {
                 list.forEach(cb => {
                     cb.checked = false;
                     cb.disabled = true;
@@ -244,6 +272,33 @@
             sync(list);
         });
 
+        if (openclaw.length) {
+            const ready = typeof state.openclawReady === 'boolean'
+                ? state.openclawReady
+                : capabilityReady(snap, 'openclaw_enabled');
+            const reason = state.openclawReason || capabilityReason(snap, 'openclaw_enabled');
+            const disabledByPending = state.pending.has('openclaw_enabled');
+            const canUse = effectiveAnalyzerEnabled && ready && !disabledByPending;
+            const openclawName = window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw';
+            const optimisticVal = Object.prototype.hasOwnProperty.call(state.optimistic, 'openclaw_enabled')
+                ? !!state.optimistic['openclaw_enabled']
+                : !!flags['openclaw_enabled'];
+            openclaw.forEach(cb => {
+                cb.checked = disabledByPending ? false : (optimisticVal && canUse);
+                cb.disabled = !!state.globalBusy || disabledByPending || !effectiveAnalyzerEnabled || !ready;
+                if (disabledByPending) {
+                    cb.title = window.t ? window.t('settings.toggles.checking') : '切换中...';
+                } else if (canUse) {
+                    cb.title = openclawName;
+                } else if (!effectiveAnalyzerEnabled) {
+                    cb.title = window.t ? window.t('settings.toggles.masterRequired', { name: openclawName }) : '\u8bf7\u5148\u5f00\u542fAgent\u603b\u5f00\u5173';
+                } else {
+                    cb.title = reason || (window.t ? window.t('settings.toggles.unavailable', { name: openclawName }) : `${openclawName}\u4e0d\u53ef\u7528`);
+                }
+            });
+            sync(openclaw);
+        }
+
         const anyPending = Object.values(snap.capabilities || {}).some(
             c => c && typeof c.reason === 'string' && c.reason.includes('PENDING')
         );
@@ -269,7 +324,7 @@
     }
 
     function bindEvents() {
-        const { master, keyboard, browser, userPlugin, openfang } = el();
+        const { master, keyboard, browser, userPlugin, openfang, openclaw } = el();
         if (!master.length) return;
         const clearProcessing = (cbs) => {
             (Array.isArray(cbs) ? cbs : [cbs]).forEach(cb => {
@@ -373,9 +428,55 @@
         bindFlag(userPlugin, 'user_plugin_enabled');
         bindFlag(openfang, 'openfang_enabled');
 
+        openclaw.forEach(cb => {
+            cb.addEventListener('change', async (e) => {
+                if (state.suppressChange) { clearProcessing(openclaw); return; }
+                const value = !!e.target.checked;
+                const openclawName = window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw';
+                if (value) {
+                    const ready = await refreshOpenClawAvailability();
+                    if (!ready) {
+                        state.suppressChange = true;
+                        openclaw.forEach(c => { c.checked = false; });
+                        state.suppressChange = false;
+                        sync(openclaw);
+                        clearProcessing(openclaw);
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(window.t ? window.t('settings.toggles.unavailable', { name: openclawName }) : `${openclawName}\u4e0d\u53ef\u7528`, 2500);
+                        }
+                        return;
+                    }
+                }
+                state.pending.add('openclaw_enabled');
+                state.optimistic['openclaw_enabled'] = value;
+                setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '\u5df2\u63a5\u53d7\u64cd\u4f5c\uff0c\u5207\u6362\u4e2d...');
+                render('command');
+                try {
+                    await sendCommand('set_flag', { key: 'openclaw_enabled', value });
+                    await fetchSnapshot().catch(() => {});
+                } catch (err) {
+                    state.pending.delete('openclaw_enabled');
+                    state.optimistic = {};
+                    setGlobalBusy(false);
+                    fetchSnapshot().catch(() => {});
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(`${openclawName}\u5207\u6362\u5931\u8d25: ${err.message}`, 2500);
+                    }
+                    return;
+                } finally {
+                    clearProcessing(openclaw);
+                }
+                state.pending.delete('openclaw_enabled');
+                state.optimistic = {};
+                setGlobalBusy(false);
+                render('command');
+            });
+        });
+
         window.addEventListener('live2d-agent-popup-opening', async () => {
             state.popupOpen = true;
             render('popup');
+            refreshOpenClawAvailability().catch(() => {});
             if (!state.snapshot) {
                 await fetchSnapshot().catch(() => render('popup'));
                 return;
