@@ -704,6 +704,24 @@
             var cleanFullText = normalizeGeminiText(fullText).replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
             if (!cleanFullText) return;
 
+            // 进入 structured 模式前，收拢本轮旧的拟真气泡（保留最后一个用于升级）
+            if (window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 1) {
+                var host = getReactChatHost();
+                var oldBubbles = window.currentTurnGeminiBubbles.slice(0, -1);
+                for (var bi = 0; bi < oldBubbles.length; bi++) {
+                    var oldBubble = oldBubbles[bi];
+                    // 移除 React 镜像消息
+                    if (host && typeof host.removeMessage === 'function' && oldBubble.dataset && oldBubble.dataset.reactChatMessageId) {
+                        host.removeMessage(oldBubble.dataset.reactChatMessageId);
+                    }
+                    // 移除 DOM 节点
+                    if (oldBubble.parentNode) {
+                        oldBubble.parentNode.removeChild(oldBubble);
+                    }
+                }
+                window.currentTurnGeminiBubbles = [window.currentTurnGeminiBubbles[window.currentTurnGeminiBubbles.length - 1]];
+            }
+
             if (!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0 ||
                 !window.currentGeminiMessage || !window.currentGeminiMessage.isConnected) {
                 var msgDiv = document.createElement('div');
@@ -799,7 +817,10 @@
                 window._realisticGeminiBuffer = combined;
                 window._realisticGeminiQueue = [];
                 renderStructuredGeminiMessage(fullTurnText || combined);
-                chatContainer.scrollTop = chatContainer.scrollHeight;
+                var _wrapStructured = chatContainer.parentElement;
+                if (_wrapStructured) {
+                    _wrapStructured.scrollTop = _wrapStructured.scrollHeight;
+                }
                 return;
             }
 

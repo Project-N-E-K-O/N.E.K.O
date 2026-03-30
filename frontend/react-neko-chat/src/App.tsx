@@ -60,7 +60,7 @@ export default function App({
             <div className="window-avatar window-avatar-image-shell">
               <img className="window-avatar-image" src={iconSrc} alt={title} />
             </div>
-            <h1 className="window-title">{title}</h1>
+            <h1 className="window-title" id="react-chat-window-title">{title}</h1>
           </div>
         </header>
 
