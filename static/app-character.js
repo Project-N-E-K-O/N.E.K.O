@@ -330,28 +330,15 @@
                 }
 
                 // 清理 MMD UI 资源（浮动按钮、锁图标等）
-                // MMD→MMD 切换时也需要清理旧 UI（return-state 等），后续会重建
-                if (window.mmdManager && typeof window.mmdManager.cleanupUI === 'function') {
-                    window.mmdManager.cleanupUI();
-                } else if (effectiveModelType !== 'mmd') {
+                // MMD→MMD 切换时需要完全销毁旧实例，避免状态残留导致的问题
+                if (window.mmdManager && typeof window.mmdManager.dispose === 'function') {
+                    console.log('[猫娘切换] 完全销毁旧 MMD 管理器实例');
+                    window.mmdManager.dispose();
+                    window.mmdManager = null;
+                }
+                if (effectiveModelType !== 'mmd') {
                     document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
                         .forEach(el => el.remove());
-                }
-
-                if (window.mmdManager) {
-                    // 停止 MMD 动画循环
-                    if (window.mmdManager._animationFrameId) {
-                        cancelAnimationFrame(window.mmdManager._animationFrameId);
-                        window.mmdManager._animationFrameId = null;
-                    }
-
-                    // 隐藏渲染器
-                    if (window.mmdManager.renderer && window.mmdManager.renderer.domElement) {
-                        window.mmdManager.renderer.domElement.style.display = 'none';
-                    }
-
-                    // 清空当前模型引用，让 preload 穿透逻辑不再将 MMD 视为活跃
-                    window.mmdManager.currentModel = null;
                 }
             } catch (e) {
                 console.warn('[猫娘切换] MMD 清理出错:', e);
@@ -873,14 +860,12 @@
                     mmdCanvasShow.style.pointerEvents = 'auto';
                 }
 
-                // 初始化 MMD 管理器（如果未初始化）
-                if (!window.mmdManager) {
-                    console.log('[猫娘切换] MMD 管理器未初始化，等待初始化');
-                    if (typeof window.initMMDModel === 'function') {
-                        await window.initMMDModel();
-                    } else if (typeof initMMDModel === 'function') {
-                        await initMMDModel();
-                    }
+                // 初始化 MMD 管理器（MMD→MMD 切换时需要完全重新初始化以避免状态残留）
+                console.log('[猫娘切换] 重新初始化 MMD 管理器');
+                if (typeof window.initMMDModel === 'function') {
+                    await window.initMMDModel();
+                } else if (typeof initMMDModel === 'function') {
+                    await initMMDModel();
                 }
 
                 // 加载 MMD 模型
