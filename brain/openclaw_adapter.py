@@ -128,6 +128,57 @@ class OpenClawAdapter:
             )
             return session_id
 
+    async def stop_running(
+        self,
+        *,
+        sender_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        role_name: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        self.reload_config()
+        sender = sender_id or self.default_sender_id
+        resolved_session_id = session_id or self.get_or_create_persistent_session_id(
+            role_name=role_name,
+            sender_id=sender,
+        )
+        payload = {
+            "channel_id": "neko",
+            "sender_id": sender,
+            "session_id": resolved_session_id,
+            "text": "/stop",
+            "task_id": task_id or "",
+            "meta": {
+                "reply_timeout": min(30.0, self.timeout),
+                "conversation_id": conversation_id or resolved_session_id,
+                "role_name": role_name or "",
+            },
+        }
+        timeout = httpx.Timeout(min(30.0, self.http_timeout), connect=min(10.0, self.http_timeout))
+        try:
+            async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+                response = await client.post(f"{self.base_url}/neko/send", json=payload)
+                response.raise_for_status()
+                data = response.json() if response.content else {}
+        except httpx.TimeoutException:
+            self.last_error = "OpenClaw stop message timed out"
+            return {"success": False, "error": self.last_error}
+        except httpx.HTTPStatusError as exc:
+            self.last_error = f"OpenClaw stop message returned HTTP {exc.response.status_code}"
+            return {"success": False, "error": self.last_error}
+        except Exception as exc:
+            self.last_error = f"OpenClaw stop message failed: {exc}"
+            return {"success": False, "error": self.last_error}
+
+        self.last_error = None
+        return {
+            "success": True,
+            "session_id": resolved_session_id,
+            "sender_id": sender,
+            "raw": data if isinstance(data, dict) else {"data": data},
+        }
+
     async def run_instruction(
         self,
         instruction: str,

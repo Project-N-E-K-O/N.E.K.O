@@ -1386,6 +1386,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 if isinstance(result.tool_args, dict):
                     instruction = str(result.tool_args.get("instruction") or "")
                 task_params = {"description": result.task_description or _default_openclaw_task_description()}
+                nk_sender_id = Modules.openclaw.default_sender_id
+                nk_session_id = Modules.openclaw.get_or_create_persistent_session_id(
+                    role_name=lanlan_name,
+                    sender_id=nk_sender_id,
+                )
                 Modules.task_registry[result.task_id] = {
                     "id": result.task_id,
                     "type": "openclaw",
@@ -1393,6 +1398,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     "start_time": nk_start,
                     "params": task_params,
                     "lanlan_name": lanlan_name,
+                    "sender_id": nk_sender_id,
+                    "session_id": nk_session_id,
                     "result": None,
                     "error": None,
                 }
@@ -1425,6 +1432,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     try:
                         nk_result = await Modules.openclaw.run_instruction(
                             instruction,
+                            sender_id=nk_sender_id,
+                            session_id=nk_session_id,
                             conversation_id=conversation_id,
                             role_name=lanlan_name,
                         )
@@ -2394,6 +2403,26 @@ async def cancel_task(task_id: str):
             except Exception as e:
                 logger.warning("[OpenFang] cancel_running failed for %s: %s", task_id, e)
             Modules.openfang.unregister_local_task(task_id)
+        info["status"] = "cancelled"
+        info["error"] = "Cancelled by user"
+    elif task_type == "openclaw":
+        if Modules.openclaw:
+            try:
+                stop_result = await Modules.openclaw.stop_running(
+                    sender_id=info.get("sender_id"),
+                    session_id=info.get("session_id"),
+                    conversation_id=info.get("session_id"),
+                    role_name=info.get("lanlan_name"),
+                    task_id=task_id,
+                )
+                if not stop_result.get("success"):
+                    logger.warning(
+                        "[OpenClaw] stop_running failed for %s: %s",
+                        task_id,
+                        stop_result.get("error"),
+                    )
+            except Exception as e:
+                logger.warning("[OpenClaw] stop_running failed for %s: %s", task_id, e)
         info["status"] = "cancelled"
         info["error"] = "Cancelled by user"
     else:
