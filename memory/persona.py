@@ -2,17 +2,18 @@
 """
 PersonaManager — Tier 3 of the three-tier memory hierarchy.
 
-Manages long-term persona data (user profile, AI profile, relationship dynamics).
-Integrates with the legacy ImportantSettings system and provides markdown rendering
-for LLM context injection.
+Manages long-term persona data with dynamic entity support.
+Core entities: master (human), neko (AI character), relationship (dynamics).
+Storage is entity-agnostic: any entity key can be added at runtime
+(e.g. QQ group IDs, other users, other nekos).
 
 Key features:
-- Three-section persona: user facts, AI facts, relationship dynamics
+- Dynamic entity sections: each entity stores a list of facts
 - Pending reflections injected with "(还不太确定)" annotation
 - Suppress mechanism: 5h window, >2 mentions → suppress (completely hidden from
   all rendering sections; suppress has highest priority)
 - Contradiction detection → queued for batch correction via LLM
-- Auto-migration from legacy settings files
+- Auto-migration from legacy settings files and v1 entity names
 """
 from __future__ import annotations
 
@@ -86,8 +87,11 @@ def _is_mentioned(fact_text: str, response_text: str) -> bool:
 
 
 class PersonaManager:
-    """Manages per-character persona files with three sections:
-    user, ai, relationship. Each section contains a list of fact entries.
+    """Manages per-character persona files with dynamic entity sections.
+
+    Core entities: 'master', 'neko', 'relationship'.
+    Storage is entity-agnostic — any string key is accepted as an entity.
+    Each entity section is ``{entity: {'facts': [...]}}``.
     """
 
     def __init__(self):
@@ -107,11 +111,7 @@ class PersonaManager:
     # ── CRUD ─────────────────────────────────────────────────────────
 
     def _empty_persona(self) -> dict:
-        return {
-            'user': {'facts': []},
-            'ai': {'facts': []},
-            'relationship': {'dynamics': []},
-        }
+        return {}
 
     def _is_persona_empty(self, persona: dict) -> bool:
         """Check if all fact/dynamics lists are empty."""
@@ -133,8 +133,11 @@ class PersonaManager:
                 with open(path, encoding='utf-8') as f:
                     data = json.load(f)
                 if isinstance(data, dict):
+                    migrated = self._migrate_v1_entity_keys(data)
                     if self._is_persona_empty(data):
                         self._migrate_from_settings(name, data)
+                        migrated = True
+                    if migrated:
                         self.save_persona(name, data)
                     self._personas[name] = data
                     return data
@@ -148,6 +151,34 @@ class PersonaManager:
         self._personas[name] = persona
         self.save_persona(name, persona)
         return persona
+
+    @staticmethod
+    def _migrate_v1_entity_keys(persona: dict) -> bool:
+        """One-time migration: rename v1 entity keys and unify inner key to 'facts'.
+
+        - 'user'  → 'master'
+        - 'ai'    → 'neko'
+        - relationship.dynamics → relationship.facts
+
+        Returns True if any migration was performed.
+        """
+        changed = False
+
+        # Rename top-level keys
+        for old_key, new_key in [('user', 'master'), ('ai', 'neko')]:
+            if old_key in persona and new_key not in persona:
+                persona[new_key] = persona.pop(old_key)
+                changed = True
+
+        # Unify 'dynamics' → 'facts' for any section that still uses it
+        for section in persona.values():
+            if isinstance(section, dict) and 'dynamics' in section:
+                section['facts'] = section.pop('dynamics')
+                changed = True
+
+        if changed:
+            logger.info("[Persona] v1→v2 entity key 迁移完成 (user→master, ai→neko, dynamics→facts)")
+        return changed
 
     def _migrate_from_settings(self, name: str, persona: dict) -> None:
         """One-time migration from legacy settings + character card to persona format.
@@ -167,9 +198,9 @@ class PersonaManager:
         excluded_fields = set(CHARACTER_RESERVED_FIELDS)
         migrated_count = 0
 
-        # 确保 persona 有完整的默认结构，防止 KeyError
-        for section_key, inner_key in [('ai', 'facts'), ('user', 'facts'), ('relationship', 'dynamics')]:
-            persona.setdefault(section_key, {}).setdefault(inner_key, [])
+        # 确保 persona 有核心 entity 结构，防止 KeyError
+        for section_key in ('neko', 'master', 'relationship'):
+            persona.setdefault(section_key, {}).setdefault('facts', [])
 
         def _is_migratable(val) -> bool:
             """仅排除 None、空白字符串、空容器；保留 0/False 等标量假值。"""
@@ -192,7 +223,7 @@ class PersonaManager:
                     v = '、'.join(str(item) for item in v)
                 entry = self._normalize_entry(f"{k}: {v}")
                 entry['protected'] = True
-                persona['ai']['facts'].append(entry)
+                persona['neko']['facts'].append(entry)
                 migrated_count += 1
 
         if master_basic_config and isinstance(master_basic_config, dict):
@@ -204,7 +235,7 @@ class PersonaManager:
                         v = '、'.join(str(item) for item in v)
                     entry = self._normalize_entry(f"{k}: {v}")
                     entry['protected'] = True
-                    persona['user']['facts'].append(entry)
+                    persona['master']['facts'].append(entry)
                     migrated_count += 1
 
         # ── 2. 从 settings.json 迁移（LLM 提取的设定）──
@@ -227,11 +258,11 @@ class PersonaManager:
                         if not isinstance(facts_dict, dict):
                             continue
                         if section_key == master_name or section_key == name_mapping.get('human', ''):
-                            target = persona['user']['facts']
+                            target = persona['master']['facts']
                         elif section_key == name:
-                            target = persona['ai']['facts']
+                            target = persona['neko']['facts']
                         else:
-                            target = persona['relationship']['dynamics']
+                            target = persona['relationship']['facts']
 
                         seen = _existing_texts_for(target)
                         for k, v in facts_dict.items():
@@ -286,7 +317,7 @@ class PersonaManager:
 
     # ── add facts to persona ─────────────────────────────────────────
 
-    def add_fact(self, name: str, text: str, entity: str = 'user') -> None:
+    def add_fact(self, name: str, text: str, entity: str = 'master') -> None:
         """Add a confirmed fact to persona. Checks for contradictions first."""
         persona = self.ensure_persona(name)
         section_facts = self._get_section_facts(persona, entity)
@@ -305,12 +336,7 @@ class PersonaManager:
         self.save_persona(name, persona)
 
     def _get_section_facts(self, persona: dict, entity: str) -> list:
-        if entity == 'user':
-            return persona.setdefault('user', {}).setdefault('facts', [])
-        elif entity == 'ai':
-            return persona.setdefault('ai', {}).setdefault('facts', [])
-        else:
-            return persona.setdefault('relationship', {}).setdefault('dynamics', [])
+        return persona.setdefault(entity, {}).setdefault('facts', [])
 
     @staticmethod
     def _texts_may_contradict(old_text: str, new_text: str) -> bool:
@@ -421,7 +447,7 @@ class PersonaManager:
 
             action = result.get('action', 'keep_both')
             merged_text = result.get('text', item.get('new_text', ''))
-            entity = item.get('entity', 'user')
+            entity = item.get('entity', 'master')
             old_text = item.get('old_text', '')
             new_text = item.get('new_text', '')
             section_facts = self._get_section_facts(persona, entity)
@@ -549,11 +575,11 @@ class PersonaManager:
 
     @staticmethod
     def _collect_all_entries(persona: dict) -> list[dict]:
-        """收集 persona 中所有 facts/dynamics 条目的引用。"""
+        """收集 persona 中所有 entity section 的 facts 条目引用。"""
         entries = []
-        for section_key in ('user', 'ai'):
-            entries.extend(persona.get(section_key, {}).get('facts', []))
-        entries.extend(persona.get('relationship', {}).get('dynamics', []))
+        for section in persona.values():
+            if isinstance(section, dict):
+                entries.extend(section.get('facts', []))
         return entries
 
     # ── rendering ────────────────────────────────────────────────────
@@ -572,6 +598,13 @@ class PersonaManager:
         master_name = name_mapping.get('human', '主人')
         ai_name = name
 
+        # Entity key → section header mapping for known entities
+        _headers = {
+            'master': f"关于{master_name}",
+            'neko': f"关于{ai_name}",
+            'relationship': "关系动态",
+        }
+
         sections = []
 
         # Collect suppressed items across all sections
@@ -582,23 +615,15 @@ class PersonaManager:
                 if text:
                     suppressed_lines.append(f"- {text}")
 
-        # User section (exclude suppressed)
-        user_facts = persona.get('user', {}).get('facts', [])
-        user_lines = self._render_fact_entries(user_facts)
-        if user_lines:
-            sections.append(f"### 关于{master_name}\n" + "\n".join(user_lines))
-
-        # AI section (exclude suppressed)
-        ai_facts = persona.get('ai', {}).get('facts', [])
-        ai_lines = self._render_fact_entries(ai_facts)
-        if ai_lines:
-            sections.append(f"### 关于{ai_name}\n" + "\n".join(ai_lines))
-
-        # Relationship section (exclude suppressed)
-        dynamics = persona.get('relationship', {}).get('dynamics', [])
-        dynamics_lines = self._render_fact_entries(dynamics)
-        if dynamics_lines:
-            sections.append("### 关系动态\n" + "\n".join(dynamics_lines))
+        # Render each entity section dynamically
+        for entity_key, section in persona.items():
+            if not isinstance(section, dict):
+                continue
+            facts = section.get('facts', [])
+            lines = self._render_fact_entries(facts)
+            if lines:
+                header = _headers.get(entity_key, entity_key)
+                sections.append(f"### {header}\n" + "\n".join(lines))
 
         # Pending reflections (also exclude suppressed)
         if pending_reflections:

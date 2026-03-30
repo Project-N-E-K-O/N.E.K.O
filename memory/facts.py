@@ -43,6 +43,9 @@ class FactStore:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts.json')
 
+    # v1→v2 entity key renames
+    _ENTITY_RENAMES = {'user': 'master', 'ai': 'neko'}
+
     def load_facts(self, name: str) -> list[dict]:
         path = self._facts_path(name)
         if name in self._facts:
@@ -52,12 +55,27 @@ class FactStore:
                 with open(path, encoding='utf-8') as f:
                     data = json.load(f)
                 if isinstance(data, list):
+                    if self._migrate_v1_entity_values(data):
+                        atomic_write_json(path, data, indent=2, ensure_ascii=False)
+                        logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
                     self._facts[name] = data
                     return data
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[FactStore] 加载 facts 文件失败: {e}")
         self._facts[name] = []
         return self._facts[name]
+
+    @classmethod
+    def _migrate_v1_entity_values(cls, facts: list[dict]) -> bool:
+        """Rename v1 entity values ('user'→'master', 'ai'→'neko') in-place."""
+        changed = False
+        for f in facts:
+            old = f.get('entity')
+            new = cls._ENTITY_RENAMES.get(old)
+            if new:
+                f['entity'] = new
+                changed = True
+        return changed
 
     def save_facts(self, name: str) -> None:
         facts = self._facts.get(name, [])
@@ -166,7 +184,7 @@ class FactStore:
                 'id': f"fact_{datetime.now().strftime('%Y%m%d%H%M%S')}_{content_hash[:8]}",
                 'text': text,
                 'importance': importance,
-                'entity': fact.get('entity', 'user'),
+                'entity': fact.get('entity', 'master'),
                 'tags': fact.get('tags', []),
                 'hash': content_hash,
                 'created_at': datetime.now().isoformat(),

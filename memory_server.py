@@ -781,7 +781,15 @@ async def new_dialog(lanlan_name: str):
             time=get_timestamp(),
         )
 
-        # ── 距上次聊天间隔提示 ──
+        for i in recent_history_manager.get_recent_history(lanlan_name):
+            if isinstance(i.content, str):
+                cleaned_content = brackets_pattern.sub('', i.content).strip()
+                result += f"{name_mapping[i.type]} | {cleaned_content}\n"
+            else:
+                texts = [brackets_pattern.sub('', j['text']).strip() for j in i.content if j['type'] == 'text']
+                result += f"{name_mapping[i.type]} | " + "\n".join(texts) + "\n"
+
+        # ── 距上次聊天间隔提示（放在最末尾，紧接 CONTEXT_SUMMARY_READY 之前） ──
         try:
             from datetime import datetime as _dt
             last_time = time_manager.get_last_conversation_time(lanlan_name)
@@ -806,13 +814,6 @@ async def new_dialog(lanlan_name: str):
         except Exception as e:
             logger.warning(f"计算聊天间隔失败: {e}")
 
-        for i in recent_history_manager.get_recent_history(lanlan_name):
-            if isinstance(i.content, str):
-                cleaned_content = brackets_pattern.sub('', i.content).strip()
-                result += f"{name_mapping[i.type]} | {cleaned_content}\n"
-            else:
-                texts = [brackets_pattern.sub('', j['text']).strip() for j in i.content if j['type'] == 'text']
-                result += f"{name_mapping[i.type]} | " + "\n".join(texts) + "\n"
         return PlainTextResponse(result)
 
 if __name__ == "__main__":
