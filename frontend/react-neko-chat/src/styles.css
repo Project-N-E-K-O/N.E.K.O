@@ -229,7 +229,8 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  word-break: break-word;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 .message-bubble-assistant {
@@ -592,7 +593,6 @@ textarea {
 
 .composer-panel {
   display: grid;
-  gap: 10px;
   gap: 12px;
   padding: 16px 10px 18px;
   border-top: 1px solid rgba(111, 129, 158, 0.16);
