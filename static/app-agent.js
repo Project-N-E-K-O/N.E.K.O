@@ -1635,6 +1635,7 @@
         const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
         const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
         const userPlugin = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
+        const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw']);
         const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang']);
 
         const domMaster = masterCheckbox ? masterCheckbox.checked : false;
@@ -1713,6 +1714,7 @@
             const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
             const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
             const userPluginCheckbox = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
+            const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw']);
 
             if (!keyboardCheckbox || !browserCheckbox) {
                 setTimeout(bindHUD, 500);
