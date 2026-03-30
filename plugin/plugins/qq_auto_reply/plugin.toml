@@ -1,0 +1,32 @@
+[plugin]
+name = "QQ 自动回复"
+description = "读取 QQ 消息并根据权限自动回复。通过 OneBot 协议连接 QQ，支持多级权限管理和 AI 对话。自动启动 NapCat.Shell。"
+version = "0.2.0"
+id = "qq_auto_reply"
+type = "plugin"
+entry = "plugin.plugins.qq_auto_reply:QQAutoReplyPlugin"
+
+[plugin.author]
+name = "zhaijiu"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.store]
+enabled = true
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[qq_auto_reply]
+onebot_url = "ws://127.0.0.1:3001"
+token = "xK6sBTNuW7y1XDia"
+trusted_users = [
+    { qq = "820040531", level = "admin" },
+]
+trusted_groups = [
+    { group_id = "985066274", level = "trusted" },
+]
+normal_relay_probability = 0.1
