@@ -653,6 +653,8 @@ class OpenClawChannel(BaseChannel):
 
         try:
             self._enqueue(native_payload)
+            # Add a small buffer beyond reply_timeout so enqueue/transport latency
+            # does not time out reply_future exactly at the user-facing limit.
             result = await asyncio.wait_for(reply_future, timeout=reply_timeout + 10.0)
         except asyncio.TimeoutError as exc:
             raise HTTPException(
