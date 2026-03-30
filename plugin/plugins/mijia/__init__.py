@@ -568,17 +568,30 @@ class MijiaPlugin(NekoPluginBase):
         
         cmd = command.lower().strip()
         
-        # 判断开关
+        # 判断开关并提取设备名
+        # 优先匹配长词，且只移除开头的控制词（避免误删设备名中的字）
         turn_on = None
-        if any(k in cmd for k in ["打开", "开启", "开"]):
-            turn_on = True
-        elif any(k in cmd for k in ["关闭", "关掉", "关"]):
-            turn_on = False
-        else:
-            return Err(SdkError("请说'打开'或'关闭'"))
+        device_name = cmd
         
-        # 提取设备名：按长词优先用正则移除关键词（避免短词误伤设备名中的字）
-        device_name = re.sub(r'打开|开启|关闭|关掉|开|关', '', cmd).strip()
+        # 按长度降序排列，优先匹配长词
+        open_keywords = ["打开", "开启", "开"]
+        close_keywords = ["关闭", "关掉", "关"]
+        
+        for keyword in open_keywords:
+            if device_name.startswith(keyword):
+                turn_on = True
+                device_name = device_name[len(keyword):].strip()
+                break
+        
+        if turn_on is None:
+            for keyword in close_keywords:
+                if device_name.startswith(keyword):
+                    turn_on = False
+                    device_name = device_name[len(keyword):].strip()
+                    break
+        
+        if turn_on is None:
+            return Err(SdkError("请说'打开'或'关闭'"))
         
         if not device_name:
             return Err(SdkError("请指定设备名，如'打开插座'"))
