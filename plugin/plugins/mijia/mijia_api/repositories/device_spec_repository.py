@@ -199,15 +199,17 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
                 if not siid:
                     continue
 
-                # 解析属性
+                # 先解析属性，建立索引用于 action 参数回填
+                service_properties: Dict[int, DeviceProperty] = {}
                 for prop in service.get("properties", []):
                     device_property = self._parse_property(siid, prop)
                     if device_property:
                         properties.append(device_property)
+                        service_properties[device_property.piid] = device_property
 
-                # 解析操作
+                # 解析操作（传入属性索引用于参数解析）
                 for action in service.get("actions", []):
-                    device_action = self._parse_action(siid, action)
+                    device_action = self._parse_action(siid, action, service_properties)
                     if device_action:
                         actions.append(device_action)
 
@@ -480,12 +482,18 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
             # 默认为只读
             return PropertyAccess.READ_ONLY
 
-    def _parse_action(self, siid: int, action_data: dict) -> Optional[DeviceAction]:
+    def _parse_action(
+        self,
+        siid: int,
+        action_data: dict,
+        properties_map: Optional[Dict[int, DeviceProperty]] = None
+    ) -> Optional[DeviceAction]:
         """解析设备操作
 
         Args:
             siid: 服务ID
             action_data: 操作数据
+            properties_map: 同服务下的属性索引，用于解析 action 参数
 
         Returns:
             设备操作对象，解析失败返回None
@@ -498,8 +506,23 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
             # 操作名称
             name = action_data.get("description", f"action_{aiid}")
 
-            # 参数列表（暂时不解析参数，后续可以扩展）
-            parameters: list[ActionParameter] = []
+            # 解析输入参数
+            parameters: List[ActionParameter] = []
+            for param_iid in action_data.get("in", []):
+                if properties_map and param_iid in properties_map:
+                    prop = properties_map[param_iid]
+                    parameters.append(ActionParameter(
+                        name=prop.name,
+                        type=prop.type,
+                        required=True,
+                    ))
+                else:
+                    # 找不到对应属性，使用通用参数名
+                    parameters.append(ActionParameter(
+                        name=f"param_{param_iid}",
+                        type=PropertyType.STRING,
+                        required=True,
+                    ))
 
             return DeviceAction(siid=siid, aiid=aiid, name=name, parameters=parameters)
 

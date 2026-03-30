@@ -598,6 +598,14 @@ class MijiaPlugin(NekoPluginBase):
         if not devices:
             return Err(SdkError(f"未找到'{device_name}'"))
         
+        # 多设备匹配时返回歧义错误，避免误操作
+        if len(devices) > 1:
+            device_names = [d.get("name", "未知") for d in devices]
+            return Err(SdkError(
+                f"找到多个匹配 '{device_name}' 的设备: {', '.join(device_names)}。"
+                f"请使用更精确的设备名称，或通过 find_device_by_name 查看完整列表后使用 control_device 精确控制。"
+            ))
+        
         device = devices[0]
         self.logger.info(f"设备数据: {device}")
         

@@ -163,18 +163,27 @@ class DeviceService:
         自动分组处理，每组最多20个请求，避免单次请求过大。
 
         Args:
-            requests: 批量请求列表，每个请求包含设备ID、siid、piid、value等信息
+            requests: 批量请求列表，每个请求包含device_id/did、siid、piid、value等信息
             credential: 用户凭据
 
         Returns:
             批量操作结果列表
         """
+        # 规范化请求：将 device_id 转换为 did
+        normalized_requests = []
+        for req in requests:
+            normalized = dict(req)  # 复制一份避免修改原数据
+            # 支持 device_id 或 did 作为设备ID字段
+            if "device_id" in normalized and "did" not in normalized:
+                normalized["did"] = normalized.pop("device_id")
+            normalized_requests.append(normalized)
+
         # 分组处理，每组最多20个请求
         batch_size = 20
         results: List[Dict[str, Any]] = []
 
-        for i in range(0, len(requests), batch_size):
-            batch = requests[i : i + batch_size]
+        for i in range(0, len(normalized_requests), batch_size):
+            batch = normalized_requests[i : i + batch_size]
             batch_results = self._device_repo.batch_set_properties(batch, credential)
             results.extend(batch_results)
 
