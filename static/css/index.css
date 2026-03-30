@@ -6,7 +6,7 @@ body {
     margin: 0;
     padding: 0;
     /* background: #fff; */
-    background: transparent;
+    background: transparent !important;
     color: #222;
     font-family: 'Segoe UI', Arial, sans-serif;
     pointer-events: none;
