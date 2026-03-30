@@ -2502,11 +2502,13 @@ async def voice_clone_direct(request: Request):
                 'code': 'TTS_AUDIO_API_KEY_MISSING'
             }, status_code=400)
 
+    # 导入所有可能用到的异常类（用于后面的异常捕获）
+    from utils.voice_clone import MinimaxVoiceCloneError, QwenVoiceCloneError
+    
     # 设置服务商相关参数
     if provider in ('minimax', 'minimax_intl'):
         from utils.voice_clone import (
             MinimaxVoiceCloneClient, 
-            MinimaxVoiceCloneError, 
             minimax_normalize_language,
             get_minimax_base_url,
             get_minimax_storage_prefix
@@ -2515,7 +2517,7 @@ async def voice_clone_direct(request: Request):
         storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
         provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
     else:  # cosyvoice
-        from utils.voice_clone import QwenVoiceCloneClient, QwenVoiceCloneError, qwen_language_hints
+        from utils.voice_clone import QwenVoiceCloneClient, qwen_language_hints
         storage_key = api_key
         provider_label = '阿里云CosyVoice'
 
