@@ -259,12 +259,38 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     updateNotice();
 });
 
+// 当前克隆方式
+let currentCloneMethod = 'file';
+
+// 切换克隆方式
+function switchCloneMethod(method) {
+    currentCloneMethod = method;
+    const btnFileClone = document.getElementById('btnFileClone');
+    const btnDirectLinkClone = document.getElementById('btnDirectLinkClone');
+    const fileCloneSection = document.getElementById('fileCloneSection');
+    const directLinkCloneSection = document.getElementById('directLinkCloneSection');
+
+    if (method === 'file') {
+        btnFileClone.classList.add('active');
+        btnDirectLinkClone.classList.remove('active');
+        fileCloneSection.style.display = 'block';
+        directLinkCloneSection.style.display = 'none';
+    } else {
+        btnFileClone.classList.remove('active');
+        btnDirectLinkClone.classList.add('active');
+        fileCloneSection.style.display = 'none';
+        directLinkCloneSection.style.display = 'block';
+    }
+}
+
 function setFormDisabled(disabled) {
     const audioFile = document.getElementById('audioFile');
+    const directLinkUrl = document.getElementById('directLinkUrl');
     const refLanguage = document.getElementById('refLanguage');
     const prefix = document.getElementById('prefix');
     const voiceProvider = document.getElementById('voiceProvider');
     if (audioFile) audioFile.disabled = disabled;
+    if (directLinkUrl) directLinkUrl.disabled = disabled;
     if (refLanguage) refLanguage.disabled = disabled;
     if (prefix) prefix.disabled = disabled;
     if (voiceProvider) voiceProvider.disabled = disabled;
@@ -279,6 +305,7 @@ function setFormDisabled(disabled) {
 
 function registerVoice() {
     const fileInput = document.getElementById('audioFile');
+    const directLinkUrl = document.getElementById('directLinkUrl');
     const refLanguage = document.getElementById('refLanguage').value;
     const prefix = document.getElementById('prefix').value.trim();
     const resultDiv = document.getElementById('result');
@@ -287,24 +314,67 @@ function registerVoice() {
     resultDiv.textContent = '';
     resultDiv.className = 'result';
 
-    if (!fileInput.files.length || !prefix) {
-        resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请上传音频文件并填写前缀';
-        resultDiv.className = 'result error';
-        return;
+    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
+
+    // 根据克隆方式验证输入
+    if (currentCloneMethod === 'file') {
+        if (!fileInput.files.length || !prefix) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请上传音频文件并填写前缀';
+            resultDiv.className = 'result error';
+            return;
+        }
+    } else {
+        // 直链克隆
+        const url = directLinkUrl.value.trim();
+        if (!url || !prefix) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterDirectLink') : '请输入音频直链URL并填写前缀';
+            resultDiv.className = 'result error';
+            return;
+        }
+        // 验证URL格式
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+            resultDiv.textContent = window.t ? window.t('voice.invalidDirectLink') : '请输入有效的HTTP/HTTPS链接';
+            resultDiv.className = 'result error';
+            return;
+        }
     }
+
     setFormDisabled(true);
     resultDiv.textContent = window.t ? window.t('voice.registering') : '正在注册声音，请稍后！';
     resultDiv.className = 'result';
-    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
-    const formData = new FormData();
-    formData.append('file', fileInput.files[0]);
-    formData.append('ref_language', refLanguage);
-    formData.append('prefix', prefix);
-    formData.append('provider', provider);
-    fetch('/api/characters/voice_clone', {
-        method: 'POST',
-        body: formData
-    })
+
+    // 根据克隆方式选择API端点和参数
+    let requestOptions;
+    if (currentCloneMethod === 'file') {
+        // 本地文件克隆
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        formData.append('ref_language', refLanguage);
+        formData.append('prefix', prefix);
+        formData.append('provider', provider);
+        requestOptions = {
+            method: 'POST',
+            body: formData
+        };
+    } else {
+        // 直链克隆
+        requestOptions = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                direct_link: directLinkUrl.value.trim(),
+                ref_language: refLanguage,
+                prefix: prefix,
+                provider: provider
+            })
+        };
+    }
+
+    const apiUrl = currentCloneMethod === 'file'
+        ? '/api/characters/voice_clone'
+        : '/api/characters/voice_clone_direct';
+
+    fetch(apiUrl, requestOptions)
         .then(async res => {
             const data = await res.json();
             if (!res.ok) {

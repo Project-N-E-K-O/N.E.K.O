@@ -32,17 +32,49 @@
             <div id="provider-notice" class="alibaba-api-notice" style="background: linear-gradient(135deg, #ff6b6b 0%, #ffa500 100%); color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-weight: bold; text-align: center; box-shadow: 0 2px 8px rgba(255, 107, 107, 0.3);">
                 <span data-i18n="voice.alibabaApiRequired">⚠️ 此功能只支持特定语音模型，请在API密钥设置页中保存对应API Key（不要求启用辅助API）或配置本地语音服务器</span>
             </div>
-            <label style="display: flex; align-items: center; gap: 8px;">
-                <img src="/static/icons/exclamation.png" alt="" style="width: 48px; height: 48px; flex-shrink: 0;">
-                <span data-i18n="voice.selectFile">选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）</span>
-            </label>
-            <div class="file-input-wrapper">
-                <input type="file" id="audioFile" accept="audio/*">
-                <label for="audioFile" class="file-input-label" id="fileInputLabel">
-                    <img src="/static/icons/import_model_button_icon.png?v=1" data-i18n-alt="voice.chooseFile" class="file-icon">
-                    <span class="file-text" data-i18n="voice.chooseFile" data-text="Choose File">选择文件</span>
-                </label>
-                <div id="fileNameDisplay" class="file-name-display"></div>
+            <!-- 克隆方式切换 -->
+            <div class="field-row" style="margin-bottom: 16px;">
+                <label data-i18n="voice.cloneMethod">克隆方式</label>
+                <div class="clone-method-toggle">
+                    <button type="button" class="clone-method-btn active" id="btnFileClone" onclick="switchCloneMethod('file')">
+                        <span data-i18n="voice.cloneMethodFile">本地文件</span>
+                    </button>
+                    <button type="button" class="clone-method-btn" id="btnDirectLinkClone" onclick="switchCloneMethod('directlink')">
+                        <span data-i18n="voice.cloneMethodDirectLink">直链克隆</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 克隆输入区域容器（固定高度防止切换时页面跳动） -->
+            <div class="clone-input-container">
+                <!-- 本地文件克隆区域 -->
+                <div id="fileCloneSection" class="clone-section">
+                    <label style="display: flex; align-items: center; gap: 8px;">
+                        <img src="/static/icons/exclamation.png" alt="" style="width: 48px; height: 48px; flex-shrink: 0;">
+                        <span data-i18n="voice.selectFile">选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）</span>
+                    </label>
+                    <div class="file-input-wrapper">
+                        <input type="file" id="audioFile" accept="audio/*">
+                        <label for="audioFile" class="file-input-label" id="fileInputLabel">
+                            <img src="/static/icons/import_model_button_icon.png?v=1" data-i18n-alt="voice.chooseFile" class="file-icon">
+                            <span class="file-text" data-i18n="voice.chooseFile" data-text="Choose File">选择文件</span>
+                        </label>
+                        <div id="fileNameDisplay" class="file-name-display"></div>
+                    </div>
+                </div>
+
+                <!-- 直链克隆区域 -->
+                <div id="directLinkCloneSection" class="clone-section" style="display: none;">
+                    <label style="display: flex; align-items: center; gap: 8px;">
+                        <img src="/static/icons/exclamation.png" alt="" style="width: 48px; height: 48px; flex-shrink: 0;">
+                        <span data-i18n="voice.directLinkUrl">音频直链URL（8秒最佳，请勿超过20秒，wav/mp3格式）</span>
+                    </label>
+                    <div class="field-row">
+                        <input type="url" id="directLinkUrl" data-i18n-placeholder="voice.directLinkPlaceholder"
+                            placeholder="https://example.com/audio.wav" style="max-width: 600px;">
+                    </div>
+                    <label class="hint" data-i18n="voice.directLinkHint">输入可公网访问的音频文件直链，系统将跳过上传步骤直接使用该链接注册音色</label>
+                </div>
             </div>
 
             <div class="field-row">
