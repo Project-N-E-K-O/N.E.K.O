@@ -278,6 +278,9 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
             # 可选值列表
             value_list = prop_data.get("value-list")
 
+            # 单位
+            unit = prop_data.get("unit")
+
             return DeviceProperty(
                 siid=siid,
                 piid=piid,
@@ -288,6 +291,7 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
                 ),
                 value_range=value_range,
                 value_list=value_list,
+                unit=unit,
             )
 
         except Exception as e:
@@ -375,6 +379,9 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
             if "value-list" in prop_data:
                 value_list = [item.get("value") for item in prop_data["value-list"]]
 
+            # 单位
+            unit = prop_data.get("unit")
+
             return DeviceProperty(
                 siid=siid,
                 piid=piid,
@@ -383,6 +390,7 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
                 access=access,
                 value_range=value_range,
                 value_list=value_list,
+                unit=unit,
             )
 
         except Exception as e:

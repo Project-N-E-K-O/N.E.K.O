@@ -854,30 +854,206 @@ class MijiaPlugin(NekoPluginBase):
             states = []
             lines = [f"📱 设备 '{device_name}' 当前状态："]
             lines.append("")
-            
+
+            # 属性名本地化映射（英文 -> 中文）
+            NAME_MAP = {
+                # 设备信息类
+                "Device Manufacturer": "设备制造商",
+                "Device Model": "设备型号",
+                "Device ID": "设备ID",
+                "Current Firmware Version": "当前固件版本",
+                "Serial Number": "序列号",
+                "Device Name": "设备名称",
+                "Device Location": "设备位置",
+                "Model": "型号",
+                "Manufacturer": "制造商",
+                "Firmware Version": "固件版本",
+                "Hardware Version": "硬件版本",
+                "MAC Address": "MAC地址",
+                "IP Address": "IP地址",
+                "RSSI": "信号强度",
+                "Battery Level": "电池电量",
+                "Battery Voltage": "电池电压",
+                "Charging State": "充电状态",
+                "Low Battery": "低电量",
+                
+                # 开关控制类
+                "Switch Status": "开关状态",
+                "Power": "电源",
+                "On": "开启",
+                "Off": "关闭",
+                "Toggle": "切换",
+                "Default Power On State": "默认通电状态",
+                "Power Off Memory": "断电记忆",
+                "Physical Control Locked": "物理控制锁定",
+                "Child Lock": "童锁",
+                
+                # 功率电量类
+                "Electric Power": "实时功率",
+                "Power Consumption": "累计用电量",
+                "Voltage": "电压",
+                "Current": "电流",
+                "Load Power": "负载功率",
+                "Total Consumption": "总用电量",
+                "Today Consumption": "今日用电量",
+                "Month Consumption": "本月用电量",
+                "Power Factor": "功率因数",
+                "Leakage Current": "漏电流",
+                "Surge Power": "浪涌功率",
+                "over-ele-day": "日用电超限阈值",
+                "over-ele-month": "月用电超限阈值",
+                "on-off-count": "开关次数",
+                
+                # 照明类
+                "Brightness": "亮度",
+                "Color Temperature": "色温",
+                "Color": "颜色",
+                "Hue": "色相",
+                "Saturation": "饱和度",
+                "Light Mode": "灯光模式",
+                "Scene": "场景",
+                "Night Light": "夜灯",
+                "Ambient Light": "氛围灯",
+                "Illuminance": "照度",
+                "Colorful": "彩光模式",
+                "Flow": "流光模式",
+                
+                # 环境传感器类
+                "temperature": "温度",
+                "Temperature": "温度",
+                "humidity": "湿度",
+                "Humidity": "湿度",
+                "PM2.5": "PM2.5",
+                "PM10": "PM10",
+                "CO2": "二氧化碳",
+                "TVOC": "总挥发性有机物",
+                "Formaldehyde": "甲醛",
+                "AQI": "空气质量指数",
+                "Air Quality": "空气质量",
+                "Air Quality Level": "空气质量等级",
+                "Pressure": "气压",
+                "Noise": "噪音",
+                "Light Intensity": "光照强度",
+                "UV Index": "紫外线指数",
+                "Water Leak": "水浸检测",
+                "Smoke Alarm": "烟雾报警",
+                "Gas Alarm": "燃气报警",
+                "Door Status": "门状态",
+                "Window Status": "窗状态",
+                "Motion Detection": "移动检测",
+                "Occupancy": "有人/无人",
+                
+                # 空调/温控类
+                "Target Temperature": "目标温度",
+                "Current Temperature": "当前温度",
+                "Mode": "模式",
+                "Fan Speed": "风速",
+                "Fan Level": "风量档位",
+                "Swing Mode": "摆风模式",
+                "Vertical Swing": "上下摆风",
+                "Horizontal Swing": "左右摆风",
+                "Sleep Mode": "睡眠模式",
+                "Eco Mode": "节能模式",
+                "Dry Mode": "除湿模式",
+                "Heat Mode": "制热模式",
+                "Cool Mode": "制冷模式",
+                "Auto Mode": "自动模式",
+                "Heating": "加热中",
+                "Cooling": "制冷中",
+                "Defrosting": "除霜中",
+                
+                # 窗帘/电机类
+                "Motor Control": "电机控制",
+                "Motor Reverse": "电机反转",
+                "Position": "位置",
+                "Current Position": "当前位置",
+                "Target Position": "目标位置",
+                "Run Time": "运行时间",
+                
+                # 安防类
+                "Alarm": "警报",
+                "Alarm Volume": "警报音量",
+                "Alarm Duration": "警报时长",
+                "Guard Mode": "守护模式",
+                "Away Mode": "离家模式",
+                "Home Mode": "在家模式",
+                "Sleep Mode Guard": "睡眠守护",
+                
+                # 定时/倒计时类
+                "start-time": "开始时间",
+                "end-time": "结束时间",
+                "duration": "持续时长",
+                "left-time": "剩余时间",
+                "countdown": "倒计时",
+                "Timer": "定时器",
+                "Schedule": "定时任务",
+                
+                # 状态/故障类
+                "status": "状态",
+                "mode": "模式",
+                "on": "开启状态",
+                "power": "功率设定",
+                "data-value": "数据值",
+                "Device Fault": "设备故障",
+                "Fault": "故障",
+                "Error": "错误",
+                "Error Code": "错误代码",
+                "Working Time": "工作时间",
+                "Remaining Time": "剩余时间",
+                "Filter Life": "滤芯寿命",
+                "Filter Used Time": "滤芯已用时间",
+                "protect-time": "保护时间",
+            }
+
+            # 硬编码单位映射（属性名 -> 单位）
+            UNIT_MAP = {
+                "Electric Power": "W",
+                "Power Consumption": "kWh",
+                "Voltage": "V",
+                "Current": "A",
+                "temperature": "°C",
+                "Temperature": "°C",
+                "humidity": "%",
+                "Humidity": "%",
+            }
+
             for prop in readable_props:
                 key = (prop.get("siid"), prop.get("piid"))
                 res = result_map.get(key)
                 if res is None:
                     continue
-                prop_name = prop.get("name", f"属性{prop.get('piid')}")
+
+                siid = prop.get("siid")
+                piid = prop.get("piid")
+                original_name = prop.get("name", f"属性{piid}")
+
+                # 属性名本地化（保留原始名用于调试）
+                display_name = NAME_MAP.get(original_name, original_name)
+
                 value = res.get("value")
                 code = res.get("code", -1)
-                
+                # 优先使用 spec 中的 unit，否则使用硬编码映射
+                unit = prop.get("unit") or UNIT_MAP.get(original_name)
+
                 if code == 0:
                     # 格式化值
                     if isinstance(value, bool):
                         value_str = "✅ 开启" if value else "❌ 关闭"
                     else:
                         value_str = str(value)
-                    
+                        # 添加单位
+                        if unit:
+                            value_str = f"{value_str} {unit}"
+
                     states.append({
-                        "name": prop_name,
+                        "name": display_name,
+                        "original_name": original_name,
                         "value": value,
-                        "siid": prop.get("siid"),
-                        "piid": prop.get("piid")
+                        "siid": siid,
+                        "piid": piid,
+                        "unit": unit
                     })
-                    lines.append(f"  • {prop_name}: {value_str}")
+                    lines.append(f"  • {display_name}: {value_str}")
             
             if not states:
                 lines.append("  （暂无可用状态数据）")

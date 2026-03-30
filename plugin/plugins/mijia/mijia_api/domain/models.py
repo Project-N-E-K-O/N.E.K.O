@@ -118,6 +118,7 @@ class DeviceProperty(BaseModel):
     value: Optional[Any] = Field(default=None, description="属性值")
     value_range: Optional[List[Any]] = Field(default=None, description="值范围")
     value_list: Optional[List[Any]] = Field(default=None, description="枚举值列表")
+    unit: Optional[str] = Field(default=None, description="单位")
 
     def is_readable(self) -> bool:
         """是否可读"""
