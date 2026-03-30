@@ -2371,17 +2371,23 @@ async def voice_clone(
     # ---------- 按 provider 调用对应克隆 API ----------
     try:
         if provider in ('minimax', 'minimax_intl'):
+            # 为MiniMax生成带随机数的前缀（避免重复）
+            import uuid
+            original_prefix = prefix  # 保存原始前缀用于显示
+            minimax_prefix = f"{prefix}_{uuid.uuid4().hex[:8]}"  # 添加8位随机数
+            
             minimax_lang = minimax_normalize_language(ref_language)
             client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
             voice_id = await client.clone_voice(
                 audio_buffer=normalized_buffer,
                 filename=normalized_filename,
-                prefix=prefix,
+                prefix=minimax_prefix,
                 language=minimax_lang,
             )
             voice_data = {
                 'voice_id': voice_id,
-                'prefix': prefix,
+                'prefix': original_prefix,  # 保存原始前缀（不含随机数）用于显示
+                'minimax_prefix': minimax_prefix,  # 保存实际使用的带随机数前缀
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'minimax_language': minimax_lang,
@@ -2481,10 +2487,56 @@ async def voice_clone_direct(request: Request):
     if not direct_link.startswith(('http://', 'https://')):
         return JSONResponse({'error': 'direct_link 必须是有效的HTTP/HTTPS链接'}, status_code=400)
 
+    # SSRF防护：验证直链域名不是内网IP
+    try:
+        from urllib.parse import urlparse
+        import socket
+        import ipaddress
+        
+        parsed_url = urlparse(direct_link)
+        hostname = parsed_url.hostname
+        
+        if not hostname:
+            return JSONResponse({'error': '无法解析直链域名'}, status_code=400)
+        
+        # 解析域名到IP
+        try:
+            addr_info = socket.getaddrinfo(hostname, None)
+        except socket.gaierror:
+            return JSONResponse({'error': '无法解析直链域名'}, status_code=400)
+        
+        # 检查每个IP是否是内网IP
+        for _, _, _, _, sockaddr in addr_info:
+            ip = sockaddr[0]
+            try:
+                ip_obj = ipaddress.ip_address(ip)
+                # 检查是否是内网、回环、链路本地、未指定或多播地址
+                if (ip_obj.is_loopback or ip_obj.is_private or 
+                    ip_obj.is_link_local or ip_obj.is_unspecified or 
+                    ip_obj.is_multicast):
+                    return JSONResponse({
+                        'error': '直链不能指向内网地址',
+                        'code': 'PRIVATE_IP_NOT_ALLOWED'
+                    }, status_code=400)
+            except ValueError:
+                continue
+    except Exception as e:
+        logger.warning(f"SSRF检查失败: {e}")
+        return JSONResponse({'error': '直链安全检查失败'}, status_code=400)
+
     # 验证语言参数
     valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
     if ref_language not in valid_languages:
         ref_language = 'ch'
+
+    # 验证服务商参数
+    valid_providers = ['minimax', 'minimax_intl', 'cosyvoice']
+    if provider not in valid_providers:
+        return JSONResponse({
+            'error': f'无效的服务商: {provider}',
+            'code': 'TTS_PROVIDER_INVALID',
+            'message': f'支持的服务商: {", ".join(valid_providers)}'
+        }, status_code=400)
 
     # 获取 API Key
     _config_manager = get_config_manager()
@@ -2521,15 +2573,19 @@ async def voice_clone_direct(request: Request):
         storage_key = api_key
         provider_label = '阿里云CosyVoice'
 
-    # 验证直链是否可访问
+    # 验证直链是否可访问（HEAD失败时回退到GET）
     try:
         async with httpx.AsyncClient(timeout=30, proxy=None, trust_env=False) as client:
-            head_resp = await client.head(direct_link)
+            head_resp = await client.head(direct_link, follow_redirects=True)
             if head_resp.status_code >= 400:
-                return JSONResponse({
-                    'error': f'直链无法访问，状态码: {head_resp.status_code}',
-                    'code': 'DIRECT_LINK_INACCESSIBLE'
-                }, status_code=400)
+                # HEAD失败，尝试GET
+                logger.warning(f"HEAD请求失败({head_resp.status_code})，尝试GET请求: {direct_link}")
+                get_resp = await client.get(direct_link, follow_redirects=True)
+                if get_resp.status_code >= 400:
+                    return JSONResponse({
+                        'error': f'直链无法访问，状态码: {get_resp.status_code}',
+                        'code': 'DIRECT_LINK_INACCESSIBLE'
+                    }, status_code=400)
     except Exception as e:
         logger.warning(f"直链验证失败: {e}")
         # 不阻断流程，只是警告
@@ -2538,38 +2594,48 @@ async def voice_clone_direct(request: Request):
     try:
         if provider in ('minimax', 'minimax_intl'):
             # ========== MiniMax 直链克隆流程 ==========
-            # 1. 下载音频文件
+            # 1. 下载音频文件（使用流式读取避免内存问题）
             logger.info(f"开始下载直链音频: {direct_link}")
+            MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
+            
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
-                download_resp = await client.get(direct_link)
-                if download_resp.status_code != 200:
-                    return JSONResponse({
-                        'error': f'下载音频失败，状态码: {download_resp.status_code}',
-                        'code': 'DOWNLOAD_FAILED'
-                    }, status_code=400)
-                
-                audio_bytes = download_resp.content
-                if len(audio_bytes) > 100 * 1024 * 1024:  # 100MB限制
-                    return JSONResponse({
-                        'error': '音频文件超过100MB限制',
-                        'code': 'FILE_TOO_LARGE'
-                    }, status_code=400)
-                
-                # 从URL或Content-Type推断文件名
-                filename = 'audio.wav'
-                content_disposition = download_resp.headers.get('content-disposition', '')
-                if 'filename=' in content_disposition:
-                    import re
-                    match = re.search(r'filename=["\']?([^"\';]+)', content_disposition)
-                    if match:
-                        filename = match.group(1)
-                else:
-                    # 从URL路径获取文件名
-                    from urllib.parse import urlparse
-                    parsed = urlparse(direct_link)
-                    path_filename = parsed.path.split('/')[-1]
-                    if path_filename and '.' in path_filename:
-                        filename = path_filename
+                async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
+                    if download_resp.status_code != 200:
+                        return JSONResponse({
+                            'error': f'下载音频失败，状态码: {download_resp.status_code}',
+                            'code': 'DOWNLOAD_FAILED'
+                        }, status_code=400)
+                    
+                    # 从Content-Disposition或URL推断文件名
+                    filename = 'audio.wav'
+                    content_disposition = download_resp.headers.get('content-disposition', '')
+                    if 'filename=' in content_disposition:
+                        import re
+                        match = re.search(r'filename=["\']?([^"\';]+)', content_disposition)
+                        if match:
+                            filename = match.group(1)
+                    else:
+                        # 从URL路径获取文件名
+                        from urllib.parse import urlparse
+                        parsed = urlparse(direct_link)
+                        path_filename = parsed.path.split('/')[-1]
+                        if path_filename and '.' in path_filename:
+                            filename = path_filename
+                    
+                    # 流式读取内容并检查大小
+                    audio_buffer = io.BytesIO()
+                    total_size = 0
+                    async for chunk in download_resp.aiter_bytes(chunk_size=8192):
+                        total_size += len(chunk)
+                        if total_size > MAX_FILE_SIZE:
+                            return JSONResponse({
+                                'error': '音频文件超过100MB限制',
+                                'code': 'FILE_TOO_LARGE'
+                            }, status_code=400)
+                        audio_buffer.write(chunk)
+                    
+                    audio_buffer.seek(0)
+                    audio_bytes = audio_buffer.getvalue()
             
             logger.info(f"音频下载完成: {filename}, 大小: {len(audio_bytes)} bytes")
             
@@ -2589,21 +2655,33 @@ async def voice_clone_direct(request: Request):
                     'provider': provider
                 })
             
-            # 2. 使用 MinimaxVoiceCloneClient 上传并注册音色
-            audio_buffer = io.BytesIO(audio_bytes)
+            # 2. 音频归一化处理（与文件上传路径保持一致）
+            from utils.audio import normalize_voice_clone_api_audio
+            original_buffer = io.BytesIO(audio_bytes)
+            normalized_buffer, normalized_filename, _ = normalize_voice_clone_api_audio(
+                original_buffer, filename
+            )
+            
+            # 3. 为MiniMax生成带随机数的前缀（避免重复）
+            import uuid
+            original_prefix = prefix  # 保存原始前缀用于显示
+            minimax_prefix = f"{prefix}_{uuid.uuid4().hex[:8]}"  # 添加8位随机数
+            
+            # 4. 使用 MinimaxVoiceCloneClient 上传并注册音色
             minimax_lang = minimax_normalize_language(ref_language)
             client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
             
             voice_id = await client.clone_voice(
-                audio_buffer=audio_buffer,
-                filename=filename,
-                prefix=prefix,
+                audio_buffer=normalized_buffer,
+                filename=normalized_filename,
+                prefix=minimax_prefix,
                 language=minimax_lang,
             )
             
             voice_data = {
                 'voice_id': voice_id,
-                'prefix': prefix,
+                'prefix': original_prefix,  # 保存原始前缀（不含随机数）用于显示
+                'minimax_prefix': minimax_prefix,  # 保存实际使用的带随机数前缀
                 'direct_link': direct_link,
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
@@ -2618,22 +2696,32 @@ async def voice_clone_direct(request: Request):
             
         else:  # cosyvoice
             # ========== CosyVoice 直链克隆流程 ==========
-            # 1. 下载音频文件以计算内容MD5（与文件上传路径保持一致）
+            # 1. 下载音频文件以计算内容MD5（使用流式读取避免内存问题）
             logger.info(f"开始下载直链音频用于CosyVoice: {direct_link}")
+            MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
+            
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
-                download_resp = await client.get(direct_link)
-                if download_resp.status_code != 200:
-                    return JSONResponse({
-                        'error': f'下载音频失败，状态码: {download_resp.status_code}',
-                        'code': 'DOWNLOAD_FAILED'
-                    }, status_code=400)
-                
-                audio_bytes = download_resp.content
-                if len(audio_bytes) > 100 * 1024 * 1024:  # 100MB限制
-                    return JSONResponse({
-                        'error': '音频文件超过100MB限制',
-                        'code': 'FILE_TOO_LARGE'
-                    }, status_code=400)
+                async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
+                    if download_resp.status_code != 200:
+                        return JSONResponse({
+                            'error': f'下载音频失败，状态码: {download_resp.status_code}',
+                            'code': 'DOWNLOAD_FAILED'
+                        }, status_code=400)
+                    
+                    # 流式读取内容并检查大小
+                    audio_buffer = io.BytesIO()
+                    total_size = 0
+                    async for chunk in download_resp.aiter_bytes(chunk_size=8192):
+                        total_size += len(chunk)
+                        if total_size > MAX_FILE_SIZE:
+                            return JSONResponse({
+                                'error': '音频文件超过100MB限制',
+                                'code': 'FILE_TOO_LARGE'
+                            }, status_code=400)
+                        audio_buffer.write(chunk)
+                    
+                    audio_buffer.seek(0)
+                    audio_bytes = audio_buffer.getvalue()
             
             logger.info(f"音频下载完成，大小: {len(audio_bytes)} bytes")
             

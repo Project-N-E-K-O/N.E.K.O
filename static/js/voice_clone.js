@@ -401,6 +401,36 @@ function registerVoice() {
             if (data.voice_id) {
                 if (data.reused) {
                     resultDiv.textContent = window.t ? window.t('voice.reusedExisting', { voiceId: data.voice_id }) : '已复用现有音色，跳过上传。voice_id: ' + data.voice_id;
+                } else if (data.local_save_failed) {
+                    // 部分成功：音色注册成功但本地保存失败
+                    resultDiv.innerHTML = '';
+                    const partialMsg = document.createElement('span');
+                    partialMsg.style.color = 'orange';
+                    partialMsg.textContent = window.t ? window.t('voice.registerSuccessButSaveFailed') : '音色注册成功，但本地保存失败';
+                    resultDiv.appendChild(partialMsg);
+                    resultDiv.appendChild(document.createElement('br'));
+                    
+                    const voiceIdLabel = document.createElement('span');
+                    voiceIdLabel.textContent = 'voice_id: ';
+                    resultDiv.appendChild(voiceIdLabel);
+                    
+                    const voiceIdCode = document.createElement('code');
+                    voiceIdCode.style.background = '#f0f0f0';
+                    voiceIdCode.style.padding = '2px 6px';
+                    voiceIdCode.style.borderRadius = '4px';
+                    voiceIdCode.style.userSelect = 'all';
+                    voiceIdCode.textContent = data.voice_id;
+                    resultDiv.appendChild(voiceIdCode);
+                    
+                    resultDiv.appendChild(document.createElement('br'));
+                    const copyHint = document.createElement('span');
+                    copyHint.style.fontSize = '12px';
+                    copyHint.style.color = '#666';
+                    copyHint.textContent = window.t ? window.t('voice.pleaseCopyVoiceId') : '请复制上面的voice_id手动保存';
+                    resultDiv.appendChild(copyHint);
+                    
+                    setFormDisabled(false);
+                    return;
                 } else {
                     resultDiv.textContent = window.t ? window.t('voice.registerSuccess', { voiceId: data.voice_id }) : '注册成功！voice_id: ' + data.voice_id;
                 }
