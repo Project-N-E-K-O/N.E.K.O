@@ -133,6 +133,10 @@ class DeviceRepositoryImpl(IDeviceRepository):
             }
             response = self._http.post(uri, json=data, credential=credential)
             homes = response.get("result", {}).get("homelist", [])
+            # 缓存家庭列表（使用较长的TTL，因为家庭信息变化较少）
+            self._cache.set(
+                cache_key, homes, ttl=3600, namespace=credential.user_id
+            )
         
         # 查找对应的家庭
         for home in homes:

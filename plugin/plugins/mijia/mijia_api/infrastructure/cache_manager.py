@@ -189,13 +189,16 @@ class CacheManager:
         """写入内存缓存
 
         根据TTL选择合适的缓存类型：
-        - TTL <= 30秒：使用state_cache（设备状态）
-        - TTL > 30秒：使用device_cache（设备列表）
+        - TTL <= 30秒：使用state_cache（设备状态），固定30秒过期
+        - TTL > 30秒：使用device_cache（设备列表），固定300秒过期
+
+        注意：传入的ttl参数仅用于选择缓存类型，实际的缓存过期时间
+        由缓存实例初始化时固定（state_cache=30秒, device_cache=300秒）。
 
         Args:
             full_key: 完整的缓存键（包含命名空间）
             value: 缓存值
-            ttl: 生存时间（秒）
+            ttl: 生存时间（秒），仅用于选择缓存类型
         """
         if ttl <= 30:
             self._state_cache[full_key] = value
@@ -343,17 +346,26 @@ class CacheManager:
                 return None
         return None
 
-    def _save_to_file(self, key: str, value: Any) -> None:
+    def _save_to_file(self, key: str, value: Any, ttl: int = 3600) -> None:
         """保存缓存到文件
 
         Args:
             key: 缓存键
             value: 缓存值
+            ttl: 过期时间（秒）
         """
+        import time
+
         file_path = self._cache_dir / self._hash_key(key)
         try:
+            # 包装值和过期时间
+            wrapped = {
+                "_value": value,
+                "_expires_at": time.time() + ttl,
+                "_ttl": ttl,
+            }
             with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(value, f, ensure_ascii=False, indent=2)
+                json.dump(wrapped, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.warning(f"文件缓存保存失败: {e}", extra={"key": key})
 

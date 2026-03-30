@@ -183,7 +183,8 @@ class CryptoService:
         except UnicodeDecodeError:
             # 如果失败，说明是GZIP压缩的，需要解压
             compressed_file = BytesIO(decrypted)
-            return gzip.GzipFile(fileobj=compressed_file, mode="rb").read().decode("utf-8")
+            with gzip.GzipFile(fileobj=compressed_file, mode="rb") as gz:
+                return gz.read().decode("utf-8")
 
     @staticmethod
     def encrypt_params(

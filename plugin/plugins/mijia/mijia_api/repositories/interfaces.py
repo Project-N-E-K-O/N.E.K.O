@@ -68,7 +68,7 @@ class IDeviceRepository(ABC):
 
     @abstractmethod
     def call_action(
-        self, device_id: str, siid: int, aiid: int, params: Dict[str, Any], credential: Credential
+        self, device_id: str, siid: int, aiid: int, params: List[Any], credential: Credential
     ) -> Any:
         """调用设备操作"""
         pass

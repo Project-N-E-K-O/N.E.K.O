@@ -142,7 +142,7 @@ find_device_by_name(name="插座")
 - `value`：目标值，类型须与属性 type 一致（bool/int/float/string）
 
 **示例：把台灯亮度设为 80**
-```
+```python
 # 1. 查找设备
 find_device_by_name(name="台灯")
 # → devices[0].did = "xxx", properties 中找到亮度: siid=2, piid=3

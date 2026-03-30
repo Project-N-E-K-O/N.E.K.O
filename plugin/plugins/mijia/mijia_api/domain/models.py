@@ -139,18 +139,23 @@ class DeviceProperty(BaseModel):
 
     def validate_value(self, value: Any) -> bool:
         """验证值是否有效"""
-        # 类型检查
+        # 类型检查（注意：bool 是 int 的子类，必须先检查 bool）
         if self.type == PropertyType.BOOL and not isinstance(value, bool):
             return False
-        if self.type in [PropertyType.INT, PropertyType.UINT] and not isinstance(value, int):
+        # 使用 type() 而不是 isinstance() 来排除 bool 类型
+        if self.type == PropertyType.INT and type(value) is not int:
             return False
+        # UINT 需要 >= 0 且排除 bool
+        if self.type == PropertyType.UINT:
+            if type(value) is not int or value < 0:
+                return False
         if self.type == PropertyType.FLOAT and not isinstance(value, (int, float)):
             return False
         if self.type == PropertyType.STRING and not isinstance(value, str):
             return False
 
-        # 范围检查
-        if self.value_range and len(self.value_range) == 2:
+        # 范围检查（支持 [min, max] 和 [min, max, step] 两种格式）
+        if self.value_range and len(self.value_range) >= 2:
             if value < self.value_range[0] or value > self.value_range[1]:
                 return False
 

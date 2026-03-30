@@ -36,10 +36,10 @@ class HomeRepositoryImpl(IHomeRepository):
         Returns:
             家庭列表
         """
-        # 检查缓存
+        # 检查缓存（使用 is not None 区分空列表和缓存未命中）
         cache_key = "homes"
         cached = self._cache.get(cache_key, namespace=credential.user_id)
-        if cached:
+        if cached is not None:
             return [Home.model_validate(h) for h in cached]
 
         # 从API获取（使用旧项目的URI和参数）

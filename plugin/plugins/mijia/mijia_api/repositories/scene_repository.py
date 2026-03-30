@@ -51,8 +51,12 @@ class SceneRepositoryImpl(ISceneRepository):
         scenes = []
         for scene_data in scene_list:
             # 映射API字段到领域模型
+            scene_id = str(scene_data.get("scene_id", ""))
+            # 跳过无效的场景ID
+            if not scene_id:
+                continue
             scene = Scene(
-                scene_id=str(scene_data.get("scene_id", "")),
+                scene_id=scene_id,
                 name=scene_data.get("name", ""),
                 home_id=home_id,
                 icon=scene_data.get("icon"),

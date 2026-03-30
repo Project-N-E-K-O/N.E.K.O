@@ -294,12 +294,23 @@ class MijiaAPI:
 
         Returns:
             设备规格对象，不存在返回None
+
+        Raises:
+            MijiaAPIException: 网络或服务器错误（非规格不存在的情况）
         """
-        # 直接使用设备服务中的规格仓储
+        from .domain.exceptions import SpecNotFoundError, MijiaAPIException
+
         try:
-            return self._device_service._spec_repo.get_spec(model)
-        except Exception:
+            return self._device_service.get_device_spec(model)
+        except SpecNotFoundError:
+            # 规格确实不存在，返回None
             return None
+        except MijiaAPIException:
+            # 网络/服务器错误，继续抛出
+            raise
+        except Exception as e:
+            # 其他未知错误，包装后抛出
+            raise MijiaAPIException(f"获取设备规格失败: {e}") from e
     
     def get_device_properties(self, requests: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """批量获取设备属性
@@ -317,8 +328,8 @@ class MijiaAPI:
             >>> ]
             >>> results = api.get_device_properties(requests)
         """
-        # 直接使用设备服务中的设备仓储
-        return self._device_service._device_repo.batch_get_properties(requests, self._credential)
+        # 通过设备服务批量获取属性
+        return self._device_service.batch_get_properties(requests, self._credential)
 
     def update_credential(self, credential: Credential) -> None:
         """更新凭据
@@ -711,11 +722,20 @@ class AsyncMijiaAPI:
             return None
         import asyncio
 
+        from .domain.exceptions import SpecNotFoundError, MijiaAPIException
+
         def _get_spec():
             try:
-                return self._device_service._spec_repo.get_spec(model)
-            except Exception:
+                return self._device_service.get_device_spec(model)
+            except SpecNotFoundError:
+                # 规格确实不存在，返回None
                 return None
+            except MijiaAPIException:
+                # 网络/服务器错误，继续抛出
+                raise
+            except Exception as e:
+                # 其他未知错误，包装后抛出
+                raise MijiaAPIException(f"获取设备规格失败: {e}") from e
 
         return await asyncio.to_thread(_get_spec)
 

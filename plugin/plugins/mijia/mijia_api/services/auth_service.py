@@ -139,7 +139,7 @@ class AuthService:
         示例:
             >>> if auth_service.revoke_credential(credential):
             ...     print("凭据已撤销")
-            ...     auth_service.save_credential(None)  # 删除本地存储
+            ...     auth_service.delete_credential()  # 删除本地存储
         """
         return self._provider.revoke(credential)
     

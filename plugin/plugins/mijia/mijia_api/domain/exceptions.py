@@ -68,6 +68,12 @@ class DeviceNotFoundError(DeviceError):
     pass
 
 
+class SpecNotFoundError(DeviceError):
+    """设备规格不存在错误"""
+
+    pass
+
+
 class PropertyReadOnlyError(DeviceError):
     """属性只读错误"""
 

@@ -3,6 +3,7 @@
 封装设备相关的业务逻辑。
 """
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from ..domain.exceptions import (
@@ -13,6 +14,8 @@ from ..domain.exceptions import (
 from ..domain.models import Credential, Device, DeviceProperty
 from ..infrastructure.cache_manager import CacheManager
 from ..repositories.interfaces import IDeviceRepository, IDeviceSpecRepository
+
+logger = logging.getLogger(__name__)
 
 
 class DeviceService:
@@ -122,8 +125,9 @@ class DeviceService:
         except (PropertyReadOnlyError, ValidationError):
             # 验证错误需要抛出
             raise
-        except Exception:
-            # 规格获取失败不影响控制，跳过验证
+        except Exception as e:
+            # 规格获取失败不影响控制，但记录日志便于调试
+            logger.debug(f"设备规格获取失败，跳过验证: {e}")
             pass
 
         # 5. 调用仓储层设置属性
@@ -175,3 +179,28 @@ class DeviceService:
             results.extend(batch_results)
 
         return results
+
+    def get_device_spec(self, model: str) -> Any:
+        """获取设备规格
+
+        Args:
+            model: 设备型号
+
+        Returns:
+            设备规格对象
+        """
+        return self._spec_repo.get_spec(model)
+
+    def batch_get_properties(
+        self, requests: List[Dict[str, Any]], credential: Credential
+    ) -> List[Dict[str, Any]]:
+        """批量获取设备属性
+
+        Args:
+            requests: 请求列表，每个请求包含did、siid、piid
+            credential: 用户凭据
+
+        Returns:
+            结果列表，每个结果包含code、siid、piid、value
+        """
+        return self._device_repo.batch_get_properties(requests, credential)

@@ -748,7 +748,7 @@ class CredentialProvider:
         except httpx.TimeoutException:
             return None  # 超时未扫码
         except Exception as e:
-            raise LoginFailedError(f"轮询失败: {e}")
+            raise LoginFailedError(f"轮询失败: {e}") from e
         
     async def refresh_async(self, credential: Credential) -> Credential:
         """异步刷新凭据"""

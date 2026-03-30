@@ -5,7 +5,7 @@
 
 import json
 import re
-from typing import Optional
+from typing import Dict, List, Optional
 
 import httpx
 
@@ -152,7 +152,7 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
             device_type = index.get(model)
 
             if not device_type:
-                raise MijiaAPIException(f"未找到设备型号 {model} 的规格定义")
+                raise SpecNotFoundError(f"未找到设备型号 {model} 的规格定义")
 
             # 步骤2: 使用type获取完整规格
             headers = {"User-Agent": "mijiaAPI_V2/2.0.0"}

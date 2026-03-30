@@ -56,10 +56,14 @@ class MijiaPlugin(NekoPluginBase):
                 self.logger.info("米家插件启动成功，已加载已有凭据")
             except Exception as e:
                 self.logger.error(f"API初始化失败，插件将在未登录状态下运行: {e}")
-                asyncio.create_task(self._auto_open_config_page())
+                task = asyncio.create_task(self._auto_open_config_page())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
         else:
             self.logger.warning("未找到有效凭据，请在Web UI中登录")
-            asyncio.create_task(self._auto_open_config_page())
+            task = asyncio.create_task(self._auto_open_config_page())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         # 注册静态UI
         # register_static_ui 接受相对目录名，内部会拼接 self.config_dir / directory
         # static/ 目录下的入口文件为 config.html
