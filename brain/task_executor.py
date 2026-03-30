@@ -305,8 +305,8 @@ class DirectTaskExecutor:
 
     def _build_openclaw_instruction(self, user_intent: str) -> str:
         system_hint = (
-            "[系统指令] 如果任务涉及保存文件，除非用户明确指定路径，否则默认保存到桌面；"
-            "如果需要打开浏览器处理任务，不要使用无头模式。"
+            "如果任务涉及保存文件，除非用户明确指定路径，否则默认保存到桌面；"
+            "如果需要打开浏览器处理任务，使用有头模式。"
         )
         return f"{system_hint}\n\n用户任务：{user_intent}"
 
