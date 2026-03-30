@@ -258,10 +258,18 @@ class CacheManager:
             self._device_cache.clear()
             self._state_cache.clear()
 
-            # 清空 Redis（如果配置）
+            # 清空 Redis（按前缀删除，避免误删其他应用数据）
             if self._redis_client:
                 try:
-                    self._redis_client.flushdb()
+                    # 使用 SCAN + DEL 按前缀删除，而不是危险的 flushdb
+                    pattern = "mijia:*"
+                    cursor = 0
+                    while True:
+                        cursor, keys = self._redis_client.scan(cursor, match=pattern, count=100)
+                        if keys:
+                            self._redis_client.delete(*keys)
+                        if cursor == 0:
+                            break
                 except Exception as e:
                     logger.warning(f"Redis 清空失败: {e}")
 

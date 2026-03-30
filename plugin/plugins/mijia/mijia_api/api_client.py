@@ -376,6 +376,32 @@ class MijiaAPI:
         if self._cache_manager:
             self._cache_manager.clear()
 
+    def close(self) -> None:
+        """关闭API客户端，释放底层HTTP连接池资源。
+
+        应在不再使用客户端时调用（如插件关闭时）。
+        """
+        try:
+            # 关闭底层 HttpClient（持有 httpx.Client 连接池）
+            http_client = getattr(self._device_service, '_http_client', None)
+            if http_client is None:
+                # 从 _device_repo 尝试获取
+                repo = getattr(self._device_service, '_device_repo', None)
+                if repo:
+                    http_client = getattr(repo, '_http_client', None) or getattr(repo, '_client', None)
+            if http_client and hasattr(http_client, 'close'):
+                http_client.close()
+        except Exception:
+            pass  # 关闭时忽略错误
+
+    def __enter__(self):
+        """上下文管理器入口"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """上下文管理器出口，自动关闭资源"""
+        self.close()
+
 
 class AsyncMijiaAPI:
     """米家API客户端（异步版本）

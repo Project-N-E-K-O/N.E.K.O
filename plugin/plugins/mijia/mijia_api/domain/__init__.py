@@ -57,7 +57,9 @@ __all__ = [
     "DeviceNotFoundError",
     "PropertyReadOnlyError",
     "NetworkError",
-    "TimeoutError",
-    "ConnectionError",
+    "MijiaTimeoutError",
+    "MijiaConnectionError",
+    "TimeoutError",  # 向后兼容别名
+    "ConnectionError",  # 向后兼容别名
     "ValidationError",
 ]

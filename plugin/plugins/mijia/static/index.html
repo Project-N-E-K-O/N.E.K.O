@@ -322,12 +322,12 @@
                 const home = homes.homes[0];
                 if (!home.id) {
                     showMessage('❌ 家庭ID为空，无法获取设备列表', 'error');
-                    document.getElementById('userInfo').innerHTML = `<p>🏠 当前家庭：${home.name || '未知'}</p>`;
+                    document.getElementById('userInfo').innerHTML = `<p>🏠 当前家庭：${escapeHtml(home.name) || '未知'}</p>`;
                     document.getElementById('deviceList').innerHTML = '';
                     return;
                 }
-                showMessage(`✅ 已登录，家庭：${home.name}`, 'success');
-                document.getElementById('userInfo').innerHTML = `<p>🏠 当前家庭：${home.name} (ID: ${home.id})</p>`;
+                showMessage(`✅ 已登录，家庭：${escapeHtml(home.name)}`, 'success');
+                document.getElementById('userInfo').innerHTML = `<p>🏠 当前家庭：${escapeHtml(home.name)} (ID: ${escapeHtml(home.id)})</p>`;
                 // 获取设备列表
                 const devicesRes = await callPlugin('list_devices', { home_id: home.id });
                 if (devicesRes && devicesRes.devices) {
@@ -372,6 +372,8 @@
 
     // 二维码登录流程
     let pollInterval = null;
+    let isPollingInFlight = false;  // 防止并发轮询的闸门
+
     async function startQrLogin() {
         try {
             const qrData = await callPlugin('start_qrcode_login', {});
@@ -383,13 +385,19 @@
 
             // 开始轮询
             if (pollInterval) clearInterval(pollInterval);
+            isPollingInFlight = false;
+
             pollInterval = setInterval(async () => {
+                // 如果上一次请求还没完成，跳过这次
+                if (isPollingInFlight) return;
+
+                isPollingInFlight = true;
                 try {
                     const result = await callPlugin('check_login_status', { login_url: qrData.login_url });
                     if (result.success) {
                         clearInterval(pollInterval);
                         pollInterval = null;
-                        showMessage(`✅ 登录成功！用户ID: ${result.user_id}`, 'success');
+                        showMessage(`✅ 登录成功！`, 'success');
                         document.getElementById('qrDisplay').classList.add('hidden');
                         document.getElementById('cancelPollBtn').classList.add('hidden');
                         await loadStatus();
@@ -402,6 +410,8 @@
                     }
                 } catch (err) {
                     console.warn('轮询错误', err);
+                } finally {
+                    isPollingInFlight = false;
                 }
             }, 2000);
             document.getElementById('cancelPollBtn').classList.remove('hidden');

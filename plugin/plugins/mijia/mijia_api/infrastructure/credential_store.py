@@ -139,7 +139,9 @@ class FileCredentialStore(ICredentialStore):
                 data = json.load(f)
 
             credential = Credential.from_dict(data)
-            logger.info(f"凭据已加载，用户ID: {credential.user_id}")
+            # 脱敏：只显示用户ID前4位
+            masked_id = credential.user_id[:4] + "****" if len(credential.user_id) > 4 else "****"
+            logger.info(f"凭据已加载，用户ID: {masked_id}")
             return credential
         except Exception as e:
             logger.error(f"加载凭据失败: {e}")

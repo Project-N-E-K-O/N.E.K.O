@@ -131,7 +131,11 @@ class DeviceProperty(BaseModel):
 
     def is_writable(self) -> bool:
         """是否可写"""
-        return self.access in [PropertyAccess.WRITE_ONLY, PropertyAccess.READ_WRITE]
+        return self.access in [
+            PropertyAccess.WRITE_ONLY,
+            PropertyAccess.READ_WRITE,
+            PropertyAccess.NOTIFY_READ_WRITE,
+        ]
 
     def validate_value(self, value: Any) -> bool:
         """验证值是否有效"""

@@ -46,8 +46,8 @@ class LoginFailedError(AuthenticationError):
 class TokenExpiredError(AuthenticationError):
     """Token过期错误"""
 
-    def __init__(self, message: str = "Token已过期") -> None:
-        super().__init__(message, code=401)
+    def __init__(self, message: str = "Token已过期", code: Optional[int] = 401, context: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message, code=code, context=context)
 
 
 class DeviceError(MijiaAPIException):
@@ -80,16 +80,21 @@ class NetworkError(MijiaAPIException):
     pass
 
 
-class TimeoutError(NetworkError):
+class MijiaTimeoutError(NetworkError):
     """超时错误"""
 
     pass
 
 
-class ConnectionError(NetworkError):
+class MijiaConnectionError(NetworkError):
     """连接错误"""
 
     pass
+
+
+# 保留旧名称的别名，用于向后兼容
+TimeoutError = MijiaTimeoutError
+ConnectionError = MijiaConnectionError
 
 
 class ValidationError(MijiaAPIException):
@@ -102,7 +107,7 @@ class ValidationError(MijiaAPIException):
 ERROR_CODE_MAPPING: Dict[int, type[MijiaAPIException]] = {
     401: TokenExpiredError,
     404: DeviceNotFoundError,
-    408: TimeoutError,
+    408: MijiaTimeoutError,
     500: MijiaAPIException,
 }
 
