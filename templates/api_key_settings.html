@@ -96,7 +96,7 @@
                                 style="width: 48px; height: 48px; vertical-align: middle; margin-right: 8px;">
                             <span data-i18n="api.newbieRecommendTitle">新手推荐</span>
                         </h3>
-                        <div style="color: #40C5F1;">
+                        <div style="color: var(--text-blue); font-weight: 500;">
                             <strong data-i18n="api.newbieRecommend">如果您还没有API
                                 Key，可以直接在下方高级选项中选择"免费版"开始使用，无需注册任何账号！</strong>
                         </div>
@@ -110,9 +110,8 @@
                             <span data-i18n="api.coreApiKey">核心API Key</span>
                         </h3>
                         <div class="tips"
-                            style="color: rgba(64, 197, 241, 0.85); font-weight: normal; margin-bottom: 16px;">
-                            <span data-i18n="api.tip">请确保API Key格式正确。保存后需要重启服务才能生效。</span><br>
-                            <span data-i18n="api.tip2">个人使用环境，API Key将完整显示以便复制使用。</span>
+                            style="color: var(--text-blue-sub); font-weight: 500; margin-bottom: 16px;">
+                            <span data-i18n="api.tip">请确保API Key格式正确。配置后请注意点击屏幕下方的"保存设置"。</span>
                         </div>
 
                         <form id="api-key-form">
@@ -148,7 +147,8 @@
                         </form>
                     </div>
 
-                    <div id="current-api-key" class="status info" style="display: none;"></div>
+                    <!-- current-api-key: 隐藏元素，仅用于存储状态供 JS 读取 -->
+                    <div id="current-api-key" style="display: none !important;"></div>
 
                     <!-- ============ Area 2: Assist API Section (top-level) ============ -->
                     <div class="api-key-info">
@@ -174,7 +174,7 @@
                         </h3>
                         <div class="field-row">
                             <label for="assistApiSelect">
-                                <span data-i18n="api.assistApiProviderLabel">辅助API服务商</span>
+                                <span data-i18n="api.assistApiSelectLabel">辅助API服务商</span>
                             </label>
                             <select id="assistApiSelect"
                                 style="width: 100%; max-width: 600px; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc; font-size: 1rem;">
@@ -183,7 +183,7 @@
                         </div>
                         <div class="field-row">
                             <label for="assistApiKeyInput">
-                                <span data-i18n="api.assistApiKey">辅助API Key</span>
+                                <span data-i18n="api.assistApiKeyLabel">辅助API Key</span>
                             </label>
                             <input type="text" id="assistApiKeyInput"
                                 data-i18n-placeholder="api.assistApiKeyPlaceholder"
@@ -200,7 +200,7 @@
                             <span data-i18n="api.keyBookTitle">API 管理簿</span>
                         </button>
                         <div id="key-book-options" style="display: none;">
-                            <div style="background: #e7f3ff; border: 1px solid #b3d9ff; border-radius: 6px; padding: 16px; margin-bottom: 16px; font-size: 0.9em; color: #40C5F1; line-height: 1.6;">
+                            <div style="background: #e7f3ff; border: 1px solid #b3d9ff; border-radius: 6px; padding: 16px; margin-bottom: 16px; font-size: 0.9em; color: var(--text-blue-sub); font-weight: 500; line-height: 1.6;">
                                 <span data-i18n="api.keyBookDescription">在此统一管理各服务商的API Key。核心API和辅助API选择服务商时会自动从管理簿中填充对应的Key。</span>
                             </div>
                             <div id="key-book-inputs">
@@ -219,7 +219,7 @@
                         <div id="custom-api-options"
                             style="display: none; padding: 12px 0 0 0; border-top: 1px solid #eee;">
                             <div
-                                style="background: #f0f8ff; border: 1px solid #b3d9ff; border-radius: 6px; padding: 16px; margin-bottom: 16px; font-size: 0.9em; color: #40C5F1; line-height: 1.5;">
+                                style="background: #f0f8ff; border: 1px solid #b3d9ff; border-radius: 6px; padding: 16px; margin-bottom: 16px; font-size: 0.9em; color: var(--text-blue-sub); font-weight: 500; line-height: 1.5;">
                                 <strong data-i18n="api.customApiDescription">自定义API说明：</strong><br>
                                 <span
                                     data-i18n="api.customApiDescriptionText">这些API用于特定的功能模块，如摘要生成、文本纠错、情感分析、视觉识别、全模态对话和语音合成。每个API都需要单独配置供应商、URL、模型ID和API
@@ -319,7 +319,7 @@
                                         <div class="field-row">
                                             <label for="summaryModelApiKey" data-i18n="api.apiKey">API Key</label>
                                             <input type="text" id="summaryModelApiKey"
-                                                data-i18n-placeholder="api.summaryApiKeyPlaceholder"
+                                                data-i18n-placeholder="api.summaryModelApiKeyPlaceholder"
                                                 placeholder="Enter Summary API Key" value=""
                                                 style="max-width: 600px;">
                                         </div>
@@ -359,7 +359,7 @@
                                         <div class="field-row">
                                             <label for="correctionModelApiKey" data-i18n="api.apiKey">API Key</label>
                                             <input type="text" id="correctionModelApiKey"
-                                                data-i18n-placeholder="api.correctionApiKeyPlaceholder"
+                                                data-i18n-placeholder="api.correctionModelApiKeyPlaceholder"
                                                 placeholder="Enter Correction API Key" value=""
                                                 style="max-width: 600px;">
                                         </div>
@@ -399,7 +399,7 @@
                                         <div class="field-row">
                                             <label for="emotionModelApiKey" data-i18n="api.apiKey">API Key</label>
                                             <input type="text" id="emotionModelApiKey"
-                                                data-i18n-placeholder="api.emotionApiKeyPlaceholder"
+                                                data-i18n-placeholder="api.emotionModelApiKeyPlaceholder"
                                                 placeholder="Enter Emotion API Key" value=""
                                                 style="max-width: 600px;">
                                         </div>
@@ -439,7 +439,7 @@
                                         <div class="field-row">
                                             <label for="visionModelApiKey" data-i18n="api.apiKey">API Key</label>
                                             <input type="text" id="visionModelApiKey"
-                                                data-i18n-placeholder="api.visionApiKeyPlaceholder"
+                                                data-i18n-placeholder="api.visionModelApiKeyPlaceholder"
                                                 placeholder="Enter Vision API Key" value=""
                                                 style="max-width: 600px;">
                                         </div>
@@ -520,7 +520,7 @@
                                         <div class="field-row">
                                             <label for="omniModelApiKey" data-i18n="api.apiKey">API Key</label>
                                             <input type="text" id="omniModelApiKey"
-                                                data-i18n-placeholder="api.realtimeApiKeyPlaceholder"
+                                                data-i18n-placeholder="api.omniModelApiKeyPlaceholder"
                                                 placeholder="Enter Realtime API Key" value=""
                                                 style="max-width: 600px;">
                                         </div>
@@ -560,7 +560,7 @@
                                         <div class="field-row">
                                             <label for="ttsModelApiKey" data-i18n="api.apiKey">API Key</label>
                                             <input type="text" id="ttsModelApiKey"
-                                                data-i18n-placeholder="api.ttsApiKeyPlaceholder"
+                                                data-i18n-placeholder="api.ttsModelApiKeyPlaceholder"
                                                 placeholder="Enter TTS API Key" value="" style="max-width: 600px;">
                                         </div>
                                         <div class="field-row">

@@ -84,6 +84,24 @@ class NekoPluginBase(_SharedNekoPluginBase):
     def push_message(self, **kwargs: Any) -> object:
         return self.ctx.push_message(**kwargs)
 
+    def register_music_domains(self, domains: list[str] | str) -> None:
+        """
+        向前端注册合法的音乐源域名白名单。
+        
+        后端插件如果需要动态播放来自第三方域名的音乐（例如 AI 回复的 URL），
+        可以通过此方法通知前端将其域名加入安全白名单，避免播放被拦截。
+        
+        Args:
+            domains: 域名字符串或域名列表 (支持完整 URL，会自动提取 hostname)
+        """
+        if isinstance(domains, str):
+            domains = [domains]
+        self.push_message(
+            source=self.plugin_id,
+            message_type="music_allowlist_add",
+            metadata={"domains": list(domains)}
+        )
+
     def include_router(self, router, *, prefix: str = "") -> None:
         super().include_router(router, prefix=prefix)
 

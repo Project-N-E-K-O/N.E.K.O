@@ -115,12 +115,49 @@ def _build_lanlan_prompt(lang: str) -> str:
     return result
 
 
+def _normalize_default_prompt_text(prompt_text: str) -> str:
+    """Normalize legacy default prompts so removed characteristic lines don't break matching."""
+    allowed_characteristic_prefixes = (
+        "- Identity:",
+        "- Relationship:",
+        "- Language:",
+        "- Format:",
+        "- No Servitude:",
+        "- No Repetition:",
+    )
+    legacy_removed_lines = {
+        "- Skills: versatile, proactive and capable of using external tools when available.",
+        "- Skills: versatile, proactive, and capable of using external tools when available.",
+    }
+    normalized_lines = []
+    in_characteristics = False
+    for line in prompt_text.splitlines():
+        stripped = line.strip()
+        if stripped == "<Characteristics of {LANLAN_NAME}>":
+            in_characteristics = True
+            normalized_lines.append(line)
+            continue
+        if stripped == "</Characteristics of {LANLAN_NAME}>":
+            in_characteristics = False
+            normalized_lines.append(line)
+            continue
+        if (
+            in_characteristics
+            and stripped.startswith("- ")
+            and not stripped.startswith(allowed_characteristic_prefixes)
+            and stripped in legacy_removed_lines
+        ):
+            continue
+        normalized_lines.append(line)
+    return "\n".join(normalized_lines).strip()
+
+
 # ============================================================================
 # 预构建所有语言版本（用于 is_default_prompt 比对）
 # ============================================================================
 
 _ALL_DEFAULTS = {lang: _build_lanlan_prompt(lang) for lang in _L10N}
-_ALL_DEFAULTS_STRIPPED = {v.strip() for v in _ALL_DEFAULTS.values()}
+_ALL_DEFAULTS_STRIPPED = {_normalize_default_prompt_text(v) for v in _ALL_DEFAULTS.values()}
 
 # 向后兼容：lanlan_prompt 始终为中文版本，供 DEFAULT_LANLAN_TEMPLATE 等静态常量使用
 lanlan_prompt = _ALL_DEFAULTS['zh']
@@ -154,5 +191,4 @@ def is_default_prompt(prompt_text: str | None) -> bool:
     """
     if not prompt_text:
         return True
-    stripped = prompt_text.strip()
-    return stripped in _ALL_DEFAULTS_STRIPPED
+    return _normalize_default_prompt_text(prompt_text) in _ALL_DEFAULTS_STRIPPED

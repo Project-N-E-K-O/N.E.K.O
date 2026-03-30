@@ -224,6 +224,7 @@ def get_vrm_models():
                 models.append({
                         "name": vrm_file.stem,
                         "filename": vrm_file.name,
+                        "path": url,
                         "url": url,
                         "type": "vrm",
                         "size": vrm_file.stat().st_size,
@@ -244,6 +245,7 @@ def get_vrm_models():
                 models.append({
                         "name": vrm_file.stem,
                         "filename": vrm_file.name,
+                        "path": url,
                         "url": url,
                         "type": "vrm",
                         "size": vrm_file.stat().st_size,
