@@ -157,8 +157,13 @@ ai_ness_penalty
             }
 
             computed_overall = self._compute_overall_score(scores)
-            verdict_str = str(data.get("verdict", "NO")).upper().strip()
-            passed = verdict_str.startswith("YES")
+            raw_verdict = str(data.get("verdict", "NO")).upper().strip()
+            passed = (
+                computed_overall >= 75
+                and scores["naturalness"] >= 6
+                and scores["empathy"] >= 6
+            )
+            verdict_str = "YES" if passed else "NO"
 
             result_entry["scores"] = {
                 **scores,
@@ -168,6 +173,7 @@ ai_ness_penalty
             }
             result_entry["passed"] = passed
             result_entry["verdict"] = verdict_str
+            result_entry["model_verdict"] = raw_verdict
             result_entry["analysis"] = str(data.get("analysis", "")).strip()
             result_entry["strengths"] = self._normalize_list(data.get("strengths"))
             result_entry["weaknesses"] = self._normalize_list(data.get("weaknesses"))
