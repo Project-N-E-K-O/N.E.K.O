@@ -108,6 +108,16 @@ function init_app() {
         }
     }
 
+    // --- 初始化点歌台模块 ---
+    if (typeof window.Jukebox !== 'undefined') {
+        try {
+            window.Jukebox.init();
+            console.log('[Jukebox] 模块已初始化');
+        } catch (e) {
+            console.error('[Jukebox] 初始化失败:', e);
+        }
+    }
+
     // --- 初始化各模块 ---
 
     // UI 模块
