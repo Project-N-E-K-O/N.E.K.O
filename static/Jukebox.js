@@ -15,6 +15,7 @@ window.Jukebox = {
     audioElement: null,
     mp3EndedListenerAdded: false,
     boundPlayer: null,
+    playRequestId: 0,
     isOpen: false,
     isHidden: false,
     container: null,
@@ -572,11 +573,23 @@ window.Jukebox = {
     
     Jukebox.stopPlayback();
     
+    const requestId = ++Jukebox.State.playRequestId;
+    
     try {
       await Jukebox.playAudio(song);
       
+      if (requestId !== Jukebox.State.playRequestId) {
+        console.log('[Jukebox] 播放请求已被新请求取代，取消状态更新');
+        return;
+      }
+      
       if (Jukebox.isMMDModel() && song.vmd) {
         await Jukebox.playVMD(song.vmd);
+      }
+      
+      if (requestId !== Jukebox.State.playRequestId) {
+        console.log('[Jukebox] 播放请求已被新请求取代，取消状态更新');
+        return;
       }
       
       Jukebox.State.currentSong = song;
@@ -584,6 +597,9 @@ window.Jukebox = {
       
       Jukebox.updatePlayingStatus(song);
     } catch (error) {
+      if (requestId !== Jukebox.State.playRequestId) {
+        return;
+      }
       console.error('[Jukebox]', window.t('Jukebox.playFailed', '播放失败'), error);
       Jukebox.showError(window.t('Jukebox.playFailed', '播放失败') + ': ' + error.message);
     }
@@ -722,7 +738,10 @@ window.Jukebox = {
   
   getPlayer: function() {
     if (window.music_ui && window.music_ui.getMusicPlayerInstance) {
-      return window.music_ui.getMusicPlayerInstance();
+      const sharedPlayer = window.music_ui.getMusicPlayerInstance();
+      if (sharedPlayer) {
+        return sharedPlayer;
+      }
     }
     
     return Jukebox.State.player;
