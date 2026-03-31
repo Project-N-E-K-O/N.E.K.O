@@ -102,7 +102,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
         """插件关闭时清理资源"""
-        await self.stop_auto_reply()
+        await self._stop_auto_reply_runtime(stop_napcat=True)
         await self._flush_all_memory_sessions(reason="shutdown")
         if self._session_housekeeping_task:
             self._session_housekeeping_task.cancel()
@@ -111,11 +111,6 @@ class QQAutoReplyPlugin(NekoPluginBase):
             except asyncio.CancelledError:
                 pass
             self._session_housekeeping_task = None
-        if self.qq_client:
-            await self.qq_client.disconnect()
-
-        # 停止 NapCat.Shell
-        await self._stop_napcat()
 
         self.logger.info("QQ Auto Reply Plugin shutdown")
         return Ok({"status": "shutdown"})
@@ -162,9 +157,14 @@ class QQAutoReplyPlugin(NekoPluginBase):
     )
     async def stop_auto_reply(self, **_):
         """停止自动回复功能"""
-        if not self._running:
+        if not self._running and not self._message_task:
             return Ok({"status": "not_running"})
 
+        await self._stop_auto_reply_runtime(stop_napcat=False)
+        self.logger.info("Auto reply stopped")
+        return Ok({"status": "stopped"})
+
+    async def _stop_auto_reply_runtime(self, *, stop_napcat: bool):
         self._running = False
         if self._message_task:
             self._message_task.cancel()
@@ -174,8 +174,11 @@ class QQAutoReplyPlugin(NekoPluginBase):
                 pass
             self._message_task = None
 
-        self.logger.info("Auto reply stopped")
-        return Ok({"status": "stopped"})
+        if self.qq_client:
+            await self.qq_client.disconnect()
+
+        if stop_napcat:
+            await self._stop_napcat()
 
     async def _process_messages(self):
         """处理接收到的 QQ 消息"""
@@ -1113,7 +1116,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
     )
     async def stop_napcat(self, **_):
         """停止 NapCat"""
-        await self._stop_napcat()
+        await self._stop_auto_reply_runtime(stop_napcat=True)
         return Ok({"status": "stopped"})
 
     async def _stop_napcat(self):

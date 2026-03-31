@@ -22,11 +22,11 @@ auto_start = true
 
 [qq_auto_reply]
 onebot_url = "ws://127.0.0.1:3001"
-token = "xK6sBTNuW7y1XDia"
+token = "你的token"
 trusted_users = [
-    { qq = "820040531", level = "admin" },
+    { qq = "你的qq号", level = "admin" },
 ]
 trusted_groups = [
-    { group_id = "985066274", level = "trusted" },
+    { group_id = "你的群", level = "trusted" },
 ]
 normal_relay_probability = 0.1

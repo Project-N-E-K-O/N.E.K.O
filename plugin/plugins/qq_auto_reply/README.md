@@ -253,15 +253,6 @@ QQAutoReplyPlugin
 └─ Memory Server (记忆同步，仅 admin 私聊)
 ```
 
-## 测试
-
-```bash
-cd plugin/plugins/qq_auto_reply
-python -m pytest tests/ -v
-```
-
-测试覆盖：权限路由、session 持久化、CQ 码清理、真实 AI 回复、Memory Server 同步（78 个用例）。
-
 ## 常见问题
 
 ### 1. 无法连接到 OneBot 服务
