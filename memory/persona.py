@@ -532,6 +532,11 @@ class PersonaManager:
 
     def _queue_correction(self, name: str, old_text: str, new_text: str, entity: str) -> None:
         corrections = self.load_pending_corrections(name)
+        for existing in corrections:
+            if (existing.get('old_text') == old_text
+                    and existing.get('new_text') == new_text
+                    and existing.get('entity') == entity):
+                return
         corrections.append({
             'old_text': old_text,
             'new_text': new_text,
