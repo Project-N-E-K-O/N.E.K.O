@@ -171,6 +171,9 @@ class ReflectionEngine:
                 logger.warning(f"[Reflection] reflection 字段非 str: {type(reflection_text)}")
                 return []
             reflection_text = reflection_text.strip()
+            reflection_entity = result.get('entity', 'relationship')
+            if reflection_entity not in ('master', 'neko', 'relationship'):
+                reflection_entity = 'relationship'
         except Exception as e:
             logger.warning(f"[Reflection] 合成失败: {e}")
             return []
@@ -183,6 +186,7 @@ class ReflectionEngine:
         reflection = {
             'id': f"ref_{now.strftime('%Y%m%d%H%M%S')}",
             'text': reflection_text,
+            'entity': reflection_entity,
             'status': 'pending',  # pending | confirmed | denied | promoted | archived
             'source_fact_ids': [f['id'] for f in unabsorbed],
             'created_at': now.isoformat(),
@@ -467,7 +471,10 @@ class ReflectionEngine:
                     confirmed_at = datetime.fromisoformat(r.get('confirmed_at', ''))
                     if (now - confirmed_at).total_seconds() / 86400 >= AUTO_PROMOTE_DAYS:
                         self._persona_manager.add_fact(
-                            lanlan_name, r['text'], entity='relationship'
+                            lanlan_name, r['text'],
+                            entity=r.get('entity', 'relationship'),
+                            source='reflection',
+                            source_id=r['id'],
                         )
                         r['status'] = 'promoted'
                         r['promoted_at'] = now.isoformat()

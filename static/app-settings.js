@@ -298,7 +298,7 @@
                 S.proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
                 S.proactiveVisionChatEnabled = settings.proactiveVisionChatEnabled ?? true;
                 S.proactiveNewsChatEnabled = settings.proactiveNewsChatEnabled ?? false;
-                S.proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? false;
+                S.proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? true;
                 S.proactivePersonalChatEnabled = settings.proactivePersonalChatEnabled ?? false;
                 S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? true;
                 S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? true;
