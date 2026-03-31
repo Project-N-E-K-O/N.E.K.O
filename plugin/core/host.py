@@ -921,16 +921,32 @@ def _plugin_process_runner(
                 wd.cancel()
 
         def _resolve_timeout(entry_id: str, requested_timeout: Any = _TIMEOUT_UNSET):
+            # _TIMEOUT_UNSET 做 default → 区分 "entry 没配 timeout" 和 "entry 显式 timeout<=0 → None"
+            entry_timeout = resolve_entry_timeout(entry_meta_map.get(entry_id), _TIMEOUT_UNSET)
+            entry_has_timeout = entry_timeout is not _TIMEOUT_UNSET
+
             if requested_timeout is not _TIMEOUT_UNSET:
                 if requested_timeout is None:
-                    return None
+                    # 调用者传 None → 交给 entry 决定
+                    return entry_timeout if entry_has_timeout else None
                 try:
                     explicit_timeout = float(requested_timeout)
                 except (TypeError, ValueError):
                     pass
                 else:
-                    return None if explicit_timeout <= 0 else explicit_timeout
-            return resolve_entry_timeout(entry_meta_map.get(entry_id), PLUGIN_TRIGGER_TIMEOUT)
+                    if explicit_timeout <= 0:
+                        return entry_timeout if entry_has_timeout else None
+                    # entry 显式禁用 timeout (None) → 尊重，不限时
+                    if entry_has_timeout and entry_timeout is None:
+                        return None
+                    # entry 配了正数 timeout → 取较小值
+                    if entry_has_timeout:
+                        return min(explicit_timeout, entry_timeout)
+                    return explicit_timeout
+
+            if entry_has_timeout:
+                return entry_timeout
+            return PLUGIN_TRIGGER_TIMEOUT
 
         async def _save_plugin_state(reason: str) -> None:
             sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)

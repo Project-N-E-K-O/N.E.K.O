@@ -27,7 +27,8 @@ export default {
     darkMode: 'Dark Mode',
     lightMode: 'Light Mode',
     logoutConfirmTitle: 'Notice',
-    disconnected: 'Server disconnected'
+    disconnected: 'Server disconnected',
+    languageAuto: 'Auto'
   },
   nav: {
     dashboard: 'Dashboard',

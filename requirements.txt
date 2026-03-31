@@ -276,6 +276,8 @@ openai==2.8.1
     # via
     #   browser-use
     #   n-e-k-o
+ormsgpack==1.12.2
+    # via n-e-k-o
 packaging==25.0
     # via
     #   matplotlib
@@ -1093,7 +1095,7 @@ pyperclip==1.9.0
     # via mouseinfo
 pyrect==0.2.0
     # via pygetwindow
-pyrnnoise==0.4.1
+pyrnnoise==0.4.3
     # via n-e-k-o
 pyscreeze==1.0.1
     # via pyautogui

@@ -571,6 +571,15 @@ async def upload_preview_image(request: Request):
             "message": "文件上传失败"
         }, status_code=500)
 
+@router.get('/status')
+async def get_steam_status():
+    """检查 Steamworks 是否已初始化并用于前端页面加载时判断 Steam 状态"""
+    steamworks = get_steamworks()
+    return JSONResponse({
+        "success": True,
+        "steamworks_initialized": steamworks is not None
+    })
+
 @router.get('/subscribed-items')
 async def get_subscribed_workshop_items():
     """
