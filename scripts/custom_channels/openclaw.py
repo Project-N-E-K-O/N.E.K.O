@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from agentscope_runtime.engine.schemas.agent_schemas import (
     AudioContent,
@@ -62,6 +62,15 @@ _PROGRESS_REPLY_MARKERS = (
     "这就",
     "我先",
     "先帮你",
+)
+_PROGRESS_INDICATORS = (
+    "正在",
+    "处理中",
+    "进行中",
+    "稍等",
+    "请稍等",
+    "...",
+    "…",
 )
 
 
@@ -236,7 +245,22 @@ def _looks_like_progress_only_reply(text: str) -> bool:
     compact = normalized.replace(" ", "").replace("\n", "")
     if len(compact) > 36:
         return False
-    return any(marker in compact for marker in _PROGRESS_REPLY_MARKERS)
+    has_marker = any(marker in compact for marker in _PROGRESS_REPLY_MARKERS)
+    if not has_marker:
+        return False
+
+    if any(indicator in compact for indicator in _PROGRESS_INDICATORS):
+        return True
+
+    trailing_ellipsis_stripped = compact.rstrip(".…")
+    has_trailing_ellipsis = trailing_ellipsis_stripped != compact
+    if not has_trailing_ellipsis:
+        return False
+
+    return any(
+        trailing_ellipsis_stripped.endswith(marker)
+        for marker in _PROGRESS_REPLY_MARKERS
+    )
 
 
 class OpenClawInboundRequest(BaseModel):
@@ -251,6 +275,24 @@ class OpenClawInboundRequest(BaseModel):
     audios: Optional[List[Any]] = None
     files: Optional[List[Any]] = None
     meta: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_audio_alias(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if value.get("audios") is None and value.get("audio") is not None:
+            normalized = dict(value)
+            normalized["audios"] = normalized.get("audio")
+            return normalized
+        return value
+
+    @field_validator("images", "audios", "files", mode="before")
+    @classmethod
+    def _coerce_single_item_to_list(cls, value: Any) -> Any:
+        if value is None or isinstance(value, list):
+            return value
+        return [value]
 
 
 class OpenClawChannel(BaseChannel):
