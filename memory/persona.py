@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from datetime import datetime, timedelta
 
 from config import SETTING_PROPOSER_MODEL
@@ -41,13 +42,8 @@ SIMILARITY_THRESHOLD = 0.6           # 余弦相似度(如有embedding)或关键
 # ── 自动晋升冷却 ─────────────────────────────────────────────────
 AUTO_CONFIRM_DAYS = 3                # pending reflection N 天无反对 → 自动晋升
 
-
-import re as _re
-import unicodedata as _ud
-
 # Split on any CJK/Latin punctuation, symbols, whitespace
-_SPLIT_RE = _re.compile(r'[，。、！？；：\u201c\u201d\u2018\u2019（）()\[\]{}<>《》【】\s,.!?;:\-\u2014\u2026\xb7\u3000]+')
-
+_SPLIT_RE = re.compile(r'[，。、！？；：\u201c\u201d\u2018\u2019（）()\[\]{}<>《》【】\s,.!?;:\-\u2014\u2026\xb7\u3000]+')
 
 def _extract_keywords(text: str) -> set[str]:
     """从文本提取关键词/n-gram，支持 CJK 和拉丁文。

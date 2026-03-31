@@ -11,7 +11,6 @@ Usage:
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import tempfile
@@ -199,7 +198,7 @@ def run_test():
                 if r.get("auto_confirmed"):
                     extra = " [AUTO-CONFIRMED]"
                 if r["status"] == "promoted":
-                    extra = f" [PROMOTED]"
+                    extra = " [PROMOTED]"
                 print(f"  [{r['status']:10s}] {r['entity']:12s} | {r['text'][:45]}{extra}")
 
             # ── Step 4: persona facts ────────────────────────────────

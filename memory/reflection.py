@@ -28,6 +28,7 @@ from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
+from memory.persona import PersonaManager
 
 if TYPE_CHECKING:
     from memory.facts import FactStore
@@ -470,7 +471,6 @@ class ReflectionEngine:
                     # confirmed → promoted after AUTO_PROMOTE_DAYS
                     confirmed_at = datetime.fromisoformat(r.get('confirmed_at', ''))
                     if (now - confirmed_at).total_seconds() / 86400 >= AUTO_PROMOTE_DAYS:
-                        from memory.persona import PersonaManager
                         result = self._persona_manager.add_fact(
                             lanlan_name, r['text'],
                             entity=r.get('entity', 'relationship'),
