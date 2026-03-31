@@ -71,7 +71,8 @@ if _IS_MAIN_PROCESS:
         )
 
 try:
-    from fastapi import FastAPI # noqa
+    from fastapi import FastAPI, Request # noqa
+    from fastapi.responses import JSONResponse # noqa
     from fastapi.staticfiles import StaticFiles # noqa
     from main_logic import core as core, cross_server as cross_server # noqa
     from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
@@ -754,6 +755,66 @@ if _IS_MAIN_PROCESS:
         logger=logger,
         initialize_character_data=initialize_character_data,
     )
+
+
+# ── 插件内部注入接口 ─────────────────────────────────────────────
+@app.post("/api/internal/inject_text")
+async def inject_text(request: Request):
+    """
+    插件专用：将一段文本作为 proactive 消息注入到 AI 对话，触发语音回复。
+    不依赖 WebSocket 连接状态，直接操作 session manager。
+    Body: { "text": str, "lanlan_name": str (optional) }
+    """
+    try:
+        data = await request.json()
+        text = (data.get("text") or "").strip()
+        lanlan = data.get("lanlan_name") or ""
+        if not text:
+            return JSONResponse({"success": False, "error": "text is empty"}, status_code=400)
+
+        # 找目标 session manager
+        mgr = session_manager.get(lanlan) if lanlan else None
+        if mgr is None:
+            # 没指定 lanlan 或找不到，取 session_manager 里第一个有 session 的
+            for name, m in session_manager.items():
+                if m is not None:
+                    mgr = m
+                    lanlan = name
+                    break
+        if mgr is None:
+            return JSONResponse({"success": False, "error": "no session_manager found"}, status_code=404)
+
+        from main_logic.omni_offline_client import OmniOfflineClient
+        from uuid import uuid4
+
+        sess = getattr(mgr, "session", None)
+
+        # 如果 session 不是 OmniOfflineClient，尝试用文本模式启动
+        if not isinstance(sess, OmniOfflineClient):
+            ws = getattr(mgr, "websocket", None)
+            try:
+                await mgr.start_session(ws, new=False, input_mode="text")
+            except Exception as e:
+                logger.warning("[inject_text] start_session failed: %s", e)
+            sess = getattr(mgr, "session", None)
+
+        if not isinstance(sess, OmniOfflineClient):
+            return JSONResponse({"success": False, "error": f"session not ready (type={type(sess).__name__})"}, status_code=503)
+
+        if getattr(sess, "_is_responding", False):
+            return JSONResponse({"success": False, "error": "session busy"}, status_code=429)
+
+        # 注入并触发 stream_proactive
+        async with mgr._proactive_write_lock:
+            async with mgr.lock:
+                mgr.current_speech_id = str(uuid4())
+            delivered = await sess.stream_proactive(text)
+
+        logger.info("[inject_text] delivered=%s lanlan=%s text=%.60s", delivered, lanlan, text)
+        return {"success": True, "delivered": delivered, "lanlan": lanlan}
+    except Exception as e:
+        logger.warning("[inject_text] error: %s", e)
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
 # ── 健康检查 / 指纹端点 ──────────────────────────────────────────
