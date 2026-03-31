@@ -303,13 +303,6 @@ class DirectTaskExecutor:
             return plugin, None
         return None, None
 
-    def _build_openclaw_instruction(self, user_intent: str) -> str:
-        system_hint = (
-            "[系统指令] 如果任务涉及保存文件，除非用户明确指定路径，否则默认保存到桌面；"
-            "如果需要打开浏览器处理任务，不要使用无头模式。"
-        )
-        return f"{system_hint}\n\n用户任务：{user_intent}"
-
     def _rule_assess_openclaw(self, conversation: str) -> Optional[OpenClawDecision]:
         """Hard-match obvious execution requests to OpenClaw before other assessments."""
         user_intent = self._extract_latest_user_intent(conversation)
@@ -338,7 +331,7 @@ class DirectTaskExecutor:
             has_task=True,
             can_execute=True,
             task_description=task_description,
-            instruction=self._build_openclaw_instruction(user_intent),
+            instruction=user_intent,
             reason="rule_matched_openclaw_web_action",
         )
     

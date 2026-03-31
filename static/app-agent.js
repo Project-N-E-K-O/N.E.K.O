@@ -1715,6 +1715,7 @@
             const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
             const userPluginCheckbox = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
             const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw']);
+            const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang']);
 
             if (!keyboardCheckbox || !browserCheckbox) {
                 setTimeout(bindHUD, 500);
@@ -1732,6 +1733,10 @@
             if (openclawCheckbox) {
                 openclawCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
                 openclawCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            }
+            if (openfangCheckbox) {
+                openfangCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
+                openfangCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
 
             checkAndToggleTaskHUD();

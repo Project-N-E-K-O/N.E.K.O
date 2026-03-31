@@ -510,9 +510,16 @@ def get_human_like_scenarios(scenario_set: str = "full") -> List[Dict[str, Any]]
     normalized = (scenario_set or "full").strip().lower()
     scenario_map = {scenario["id"]: scenario for scenario in HUMAN_LIKE_SCENARIOS}
 
-    if normalized == "basic":
-        selected_ids = HUMAN_LIKE_BASIC_SCENARIO_IDS
-    else:
-        selected_ids = HUMAN_LIKE_FULL_SCENARIO_IDS
+    scenario_sets = {
+        "basic": HUMAN_LIKE_BASIC_SCENARIO_IDS,
+        "full": HUMAN_LIKE_FULL_SCENARIO_IDS,
+    }
+    if normalized not in scenario_sets:
+        raise ValueError(f"Unsupported scenario set: {scenario_set}")
 
-    return [scenario_map[scenario_id] for scenario_id in selected_ids if scenario_id in scenario_map]
+    selected_ids = scenario_sets[normalized]
+    missing_ids = [scenario_id for scenario_id in selected_ids if scenario_id not in scenario_map]
+    if missing_ids:
+        raise ValueError(f"Unknown scenario ids: {missing_ids}")
+
+    return [scenario_map[scenario_id] for scenario_id in selected_ids]

@@ -166,8 +166,13 @@ overall_score = max(raw_score, 0) / {HUMAN_LIKE_MAX_RAW_SCORE} * 100
 
             raw_score = self._compute_raw_score(scores)
             computed_overall = self._normalize_overall_score(raw_score)
-            verdict_str = str(data.get("verdict", "NO")).upper().strip()
-            passed = verdict_str.startswith("YES")
+            raw_verdict = str(data.get("verdict", "NO")).upper().strip()
+            passed = (
+                computed_overall >= 75
+                and scores["naturalness"] >= 6
+                and scores["empathy"] >= 6
+            )
+            verdict_str = "YES" if passed else "NO"
 
             result_entry["scores"] = {
                 **scores,
@@ -179,6 +184,7 @@ overall_score = max(raw_score, 0) / {HUMAN_LIKE_MAX_RAW_SCORE} * 100
             }
             result_entry["passed"] = passed
             result_entry["verdict"] = verdict_str
+            result_entry["model_verdict"] = raw_verdict
             result_entry["analysis"] = str(data.get("analysis", "")).strip()
             result_entry["strengths"] = self._normalize_list(data.get("strengths"))
             result_entry["weaknesses"] = self._normalize_list(data.get("weaknesses"))
