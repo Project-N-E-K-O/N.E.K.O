@@ -42,6 +42,13 @@ Tests for `OmniOfflineClient`, `OmniRealtimeClient`, and provider API connectivi
 uv run pytest tests/unit -s
 ```
 
+### Run Human-Like Multi-Model Evaluation
+Standalone framework for evaluating naturalness, empathy, lifelikeness, continuity, and low AI-ness across multiple chat models.
+```bash
+uv run python tests/unit/run_human_like_multi_model_eval.py
+```
+See `tests/unit/README_human_like_eval.md` for full documentation.
+
 ### Run Frontend Integration Tests
 Tests for Settings, Character Manager, Memory Browser, Voice Clone, and Emotion Manager pages.
 ```bash
@@ -64,7 +71,12 @@ tests/
 │   ├── test_providers.py    # Multi-provider API test (Text/TTS/Voice/Video)
 │   ├── test_text_chat.py    # OmniOfflineClient text + vision chat
 │   ├── test_voice_session.py# OmniRealtimeClient WebSocket session
-│   └── test_video_session.py# OmniRealtimeClient video/screen streaming
+│   ├── test_video_session.py# OmniRealtimeClient video/screen streaming
+│   ├── run_human_like_multi_model_eval.py # Human-like multi-model evaluation runner
+│   ├── human_like_eval_config.py # Human-like scenario bank and scoring configuration
+│   ├── human_like_eval_targets.py # Model target list and scenario-set switch
+│   ├── human_like_eval_personas.py # Shared persona presets for evaluated models
+│   └── README_human_like_eval.md # Detailed docs for the human-like evaluation framework
 ├── frontend/
 │   ├── test_api_settings.py # API key settings page
 │   ├── test_chara_settings.py # Character management page
@@ -122,6 +134,35 @@ When tests involving the `llm_judger` are run, results are collected and a **nar
 
 ### LLM Provider Configuration
 The judger uses keys defined in `tests/api_keys.json`. It will attempt to use providers in order of preference and skip those with missing or placeholder keys (e.g., `sk-...`).
+
+## Human-Like Evaluation Framework
+
+This repository also includes a separate human-like multi-model evaluation framework focused on:
+
+- naturalness
+- empathy
+- lifelikeness
+- context retention
+- engagement
+- persona warmth
+- AI-ness penalty
+
+It has its own:
+
+- scenario bank
+- persona presets
+- batch runner
+- Chinese judging prompts
+- normalized 100-point overall score
+- report generation flow
+
+Documentation:
+
+- `tests/unit/README_human_like_eval.md`
+
+Important:
+
+- Future changes to this framework should be documented in `tests/unit/README_human_like_eval.md`.
 
 ---
 *(Note: Reports are gitignored and will not be committed to the repository)*
