@@ -666,16 +666,29 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     };
 
     const live2dContainer = document.getElementById('live2d-container');
-    let lockedHoverFadeActive = false;
-    const setLockedHoverFade = (shouldFade) => {
+    let ctrlFadeActive = false;      // Ctrl 按住淡化
+    let stationaryFadeActive = false; // 静止1秒淡化
+    const applyFade = () => {
         if (!live2dContainer) return;
-        if (lockedHoverFadeActive === shouldFade) return;
-        lockedHoverFadeActive = shouldFade;
+        const shouldFade = ctrlFadeActive || stationaryFadeActive;
         live2dContainer.classList.toggle('locked-hover-fade', shouldFade);
     };
 
     // 跟踪 Ctrl 键状态（作为备用，主要从事件中直接读取）
     let isCtrlPressed = false;
+
+    // 静止自动淡化：鼠标在模型范围内静止1秒后自动淡化
+    this._stationaryFadeTimer = null;
+    this._hasEnteredHoverRange = false; // 是否已进入过模型范围
+    const STATIONARY_FADE_DELAY = 1000;
+
+    const clearStationaryFadeTimer = () => {
+        if (this._stationaryFadeTimer !== null) {
+            clearTimeout(this._stationaryFadeTimer);
+            this._stationaryFadeTimer = null;
+        }
+    };
+    this._clearStationaryFadeTimer = clearStationaryFadeTimer;
 
     // 清理旧的键盘监听器（在添加新监听器之前）
     if (this._ctrlKeyDownListener) {
@@ -697,10 +710,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         // 检查 Ctrl 或 Cmd 键是否释放
         if (!event.ctrlKey && !event.metaKey) {
             isCtrlPressed = false;
-            // Ctrl/Cmd 键释放时，如果正在变淡，立即取消变淡效果
-            if (lockedHoverFadeActive) {
-                setLockedHoverFade(false);
-            }
+            // Ctrl 释放时重新计算淡化状态，让 stationaryFadeActive 有机会生效
+            ctrlFadeActive = false;
+            applyFade();
         }
     };
 
@@ -739,13 +751,17 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
         // 检查模型是否存在，防止切换模型时出现错误
         if (!model) {
-            setLockedHoverFade(false);
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
             return;
         }
 
         // 检查模型是否已被销毁或不在舞台上
         if (model.destroyed || !model.parent || !this.pixi_app || !this.pixi_app.stage) {
-            setLockedHoverFade(false);
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
             return;
         }
         
@@ -784,7 +800,6 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         if ((model.interactive && model.dragging) || this._isDraggingModel) {
             return;
         }
-
         // 如果已经点击了"请她离开"，特殊处理
         if (this._goodbyeClicked) {
             const lockIcon = document.getElementById('live2d-lock-icon');
@@ -801,7 +816,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             if (returnButtonContainer) {
                 returnButtonContainer.style.display = 'block';
             }
-            setLockedHoverFade(false);
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
             return;
         }
 
@@ -851,12 +868,41 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             if (!isPointerNearVisibleModel && !isFullscreenTracking) {
                 this.isFocusing = false;
                 startHideTimer();
-                setLockedHoverFade(false);
+                clearStationaryFadeTimer();
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                applyFade();
                 return;
             }
-            // 只有在锁定、按住 Ctrl 键且鼠标在模型附近时才变淡
-            const shouldFade = this.isLocked && ctrlKeyPressed && distance < HoverFadethreshold;
-            setLockedHoverFade(shouldFade);
+
+            const isNearModel = distance < HoverFadethreshold;
+
+            // 静止时启动定时器，移出范围时清除
+            if (this.isLocked && isNearModel) {
+                // 首次进入范围：设置标志并启动定时器
+                if (!this._hasEnteredHoverRange) {
+                    this._hasEnteredHoverRange = true;
+                    if (this._stationaryFadeTimer === null && !stationaryFadeActive) {
+                        this._stationaryFadeTimer = setTimeout(() => {
+                            stationaryFadeActive = true;
+                            applyFade();
+                        }, STATIONARY_FADE_DELAY);
+                    }
+                }
+                // 已在范围内：移动时不重启定时器，只更新位置
+            } else {
+                // 移出范围：清除定时器并重置标志
+                if (this._stationaryFadeTimer !== null || stationaryFadeActive) {
+                    clearStationaryFadeTimer();
+                    stationaryFadeActive = false;
+                    applyFade();
+                }
+                this._hasEnteredHoverRange = false;
+            }
+
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化）
+            ctrlFadeActive = this.isLocked && ctrlKeyPressed && isNearModel;
+            applyFade();
 
             const canvasEl = document.getElementById('live2d-canvas');
 
@@ -907,12 +953,16 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         }
     };
 
-    // 窗口失去焦点时重置 Ctrl 键状态和变淡效果
+    // 窗口失去焦点时，只重置淡化效果，不重置 Ctrl 键状态
+    // 这样窗口重新获得焦点后，如果 Ctrl 仍被按住，淡化功能可以恢复
     const onBlur = () => {
-        isCtrlPressed = false;
-        if (lockedHoverFadeActive) {
-            setLockedHoverFade(false);
+        clearStationaryFadeTimer();
+        // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
+        if (stationaryFadeActive) {
+            stationaryFadeActive = false;
+            applyFade();
         }
+        this._hasEnteredHoverRange = false;
     };
 
     // 清理旧的监听器
@@ -1426,6 +1476,12 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     if (this._windowBlurListener) {
         window.removeEventListener('blur', this._windowBlurListener);
         this._windowBlurListener = null;
+    }
+
+    // 清理静止淡化定时器
+    if (this._clearStationaryFadeTimer) {
+        this._clearStationaryFadeTimer();
+        this._clearStationaryFadeTimer = null;
     }
 
     // resize 吸附监听器已移除（setupResizeSnapDetection 不再存在）

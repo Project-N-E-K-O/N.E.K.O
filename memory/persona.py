@@ -2,20 +2,22 @@
 """
 PersonaManager — Tier 3 of the three-tier memory hierarchy.
 
-Manages long-term persona data (user profile, AI profile, relationship dynamics).
-Integrates with the legacy ImportantSettings system and provides markdown rendering
-for LLM context injection.
+Manages long-term persona data with dynamic entity support.
+Core entities: master (human), neko (AI character), relationship (dynamics).
+Storage is entity-agnostic: any entity key can be added at runtime
+(e.g. QQ group IDs, other users, other nekos).
 
 Key features:
-- Three-section persona: user facts, AI facts, relationship dynamics
+- Dynamic entity sections: each entity stores a list of facts
 - Pending reflections injected with "(还不太确定)" annotation
 - Suppress mechanism: 5h window, >2 mentions → suppress (completely hidden from
   all rendering sections; suppress has highest priority)
 - Contradiction detection → queued for batch correction via LLM
-- Auto-migration from legacy settings files
+- Auto-migration from legacy settings files and v1 entity names
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime, timedelta
@@ -86,8 +88,11 @@ def _is_mentioned(fact_text: str, response_text: str) -> bool:
 
 
 class PersonaManager:
-    """Manages per-character persona files with three sections:
-    user, ai, relationship. Each section contains a list of fact entries.
+    """Manages per-character persona files with dynamic entity sections.
+
+    Core entities: 'master', 'neko', 'relationship'.
+    Storage is entity-agnostic — any string key is accepted as an entity.
+    Each entity section is ``{entity: {'facts': [...]}}``.
     """
 
     def __init__(self):
@@ -107,11 +112,7 @@ class PersonaManager:
     # ── CRUD ─────────────────────────────────────────────────────────
 
     def _empty_persona(self) -> dict:
-        return {
-            'user': {'facts': []},
-            'ai': {'facts': []},
-            'relationship': {'dynamics': []},
-        }
+        return {}
 
     def _is_persona_empty(self, persona: dict) -> bool:
         """Check if all fact/dynamics lists are empty."""
@@ -123,8 +124,14 @@ class PersonaManager:
         return True
 
     def ensure_persona(self, name: str) -> dict:
-        """Load or create persona. Auto-migrate from legacy settings if needed."""
+        """Load or create persona. Auto-migrate from legacy settings if needed.
+
+        每次调用时自动与 characters.json 同步 character_card 条目。
+        """
         if name in self._personas:
+            # 每次读取时同步 character card
+            if self._sync_character_card(name, self._personas[name]):
+                self.save_persona(name, self._personas[name])
             return self._personas[name]
 
         path = self._persona_path(name)
@@ -133,8 +140,14 @@ class PersonaManager:
                 with open(path, encoding='utf-8') as f:
                     data = json.load(f)
                 if isinstance(data, dict):
+                    migrated = self._migrate_v1_entity_keys(data)
                     if self._is_persona_empty(data):
                         self._migrate_from_settings(name, data)
+                        migrated = True
+                    # 同步 character card
+                    if self._sync_character_card(name, data):
+                        migrated = True
+                    if migrated:
                         self.save_persona(name, data)
                     self._personas[name] = data
                     return data
@@ -145,31 +158,63 @@ class PersonaManager:
         # Auto-migrate from legacy settings
         persona = self._empty_persona()
         self._migrate_from_settings(name, persona)
+        self._sync_character_card(name, persona)
         self._personas[name] = persona
         self.save_persona(name, persona)
         return persona
 
-    def _migrate_from_settings(self, name: str, persona: dict) -> None:
-        """One-time migration from legacy settings + character card to persona format.
+    @staticmethod
+    def _migrate_v1_entity_keys(persona: dict) -> bool:
+        """One-time migration: rename v1 entity keys and unify inner key to 'facts'.
 
-        数据来源优先级：
-        1. lanlan_basic_config / master_basic_config（角色卡 JSON）
-        2. settings.json（LLM 从对话中提取的设定）
-        两者合并后写入 persona，角色卡来源的条目标记 protected=True。
+        - 'user'  → 'master'
+        - 'ai'    → 'neko'
+        - relationship.dynamics → relationship.facts
+
+        Returns True if any migration was performed.
+        """
+        changed = False
+
+        # Rename top-level keys
+        for old_key, new_key in [('user', 'master'), ('ai', 'neko')]:
+            if old_key in persona and new_key not in persona:
+                persona[new_key] = persona.pop(old_key)
+                changed = True
+
+        # Unify 'dynamics' → 'facts' for any section that still uses it
+        for section in persona.values():
+            if isinstance(section, dict) and 'dynamics' in section:
+                section['facts'] = section.pop('dynamics')
+                changed = True
+
+        if changed:
+            logger.info("[Persona] v1→v2 entity key 迁移完成 (user→master, ai→neko, dynamics→facts)")
+        return changed
+
+    @staticmethod
+    def _card_entry_id(entity: str, field_name: str) -> str:
+        """为 character card 条目生成确定性 ID（基于 entity + field_name 哈希）。"""
+        raw = f"{entity}:{field_name}"
+        return f"card_{hashlib.sha256(raw.encode()).hexdigest()[:8]}"
+
+    def _migrate_from_settings(self, name: str, persona: dict) -> None:
+        """One-time migration from legacy settings.json to persona format.
+
+        仅迁移 settings.json（LLM 从对话中提取的设定）。
+        角色卡数据（characters.json）的同步统一由 _sync_character_card() 负责，
+        此方法不再处理角色卡，避免两处写入导致重复条目。
         """
         from memory import ensure_character_dir
-        from config import CHARACTER_RESERVED_FIELDS
 
-        _, _, master_basic_config, lanlan_basic_config, name_mapping, _, _, _, _ = (
+        _, _, _, _, name_mapping, _, _, _, _ = (
             self._config_manager.get_character_data()
         )
         master_name = name_mapping.get('human', '主人')
-        excluded_fields = set(CHARACTER_RESERVED_FIELDS)
         migrated_count = 0
 
-        # 确保 persona 有完整的默认结构，防止 KeyError
-        for section_key, inner_key in [('ai', 'facts'), ('user', 'facts'), ('relationship', 'dynamics')]:
-            persona.setdefault(section_key, {}).setdefault(inner_key, [])
+        # 确保 persona 有核心 entity 结构，防止 KeyError
+        for section_key in ('neko', 'master', 'relationship'):
+            persona.setdefault(section_key, {}).setdefault('facts', [])
 
         def _is_migratable(val) -> bool:
             """仅排除 None、空白字符串、空容器；保留 0/False 等标量假值。"""
@@ -181,33 +226,7 @@ class PersonaManager:
                 return len(val) > 0
             return True  # int 0, bool False 等合法标量
 
-        # ── 1. 从角色卡基础配置迁移 ──
-        if name in lanlan_basic_config:
-            ai_card = {k: v for k, v in lanlan_basic_config[name].items()
-                       if k not in excluded_fields and _is_migratable(v)}
-            for k, v in ai_card.items():
-                if isinstance(v, (dict, set, tuple)):
-                    continue  # 跳过嵌套结构
-                if isinstance(v, list):
-                    v = '、'.join(str(item) for item in v)
-                entry = self._normalize_entry(f"{k}: {v}")
-                entry['protected'] = True
-                persona['ai']['facts'].append(entry)
-                migrated_count += 1
-
-        if master_basic_config and isinstance(master_basic_config, dict):
-            for k, v in master_basic_config.items():
-                if k not in excluded_fields and _is_migratable(v):
-                    if isinstance(v, (dict, set, tuple)):
-                        continue
-                    if isinstance(v, list):
-                        v = '、'.join(str(item) for item in v)
-                    entry = self._normalize_entry(f"{k}: {v}")
-                    entry['protected'] = True
-                    persona['user']['facts'].append(entry)
-                    migrated_count += 1
-
-        # ── 2. 从 settings.json 迁移（LLM 提取的设定）──
+        # ── 从 settings.json 迁移（LLM 提取的设定）──
         char_dir = ensure_character_dir(self._config_manager.memory_dir, name)
         settings_path = os.path.join(char_dir, 'settings.json')
         if not os.path.exists(settings_path):
@@ -227,25 +246,145 @@ class PersonaManager:
                         if not isinstance(facts_dict, dict):
                             continue
                         if section_key == master_name or section_key == name_mapping.get('human', ''):
-                            target = persona['user']['facts']
+                            target = persona['master']['facts']
                         elif section_key == name:
-                            target = persona['ai']['facts']
+                            target = persona['neko']['facts']
                         else:
-                            target = persona['relationship']['dynamics']
+                            target = persona['relationship']['facts']
 
                         seen = _existing_texts_for(target)
                         for k, v in facts_dict.items():
                             if _is_migratable(v):
                                 text = f"{k}: {v}"
                                 if text not in seen:
-                                    target.append(self._normalize_entry(text))
+                                    entry = self._normalize_entry(text)
+                                    content_hash = hashlib.sha256(text.encode()).hexdigest()[:8]
+                                    entry['id'] = f"legacy_{content_hash}"
+                                    entry['source'] = 'settings'
+                                    target.append(entry)
                                     seen.add(text)
                                     migrated_count += 1
             except Exception as e:
                 logger.warning(f"[Persona] {name}: settings.json 读取失败: {e}")
 
         if migrated_count:
-            logger.info(f"[Persona] {name}: 迁移了 {migrated_count} 条 persona 数据（角色卡 + settings）")
+            logger.info(f"[Persona] {name}: 迁移了 {migrated_count} 条 persona 数据（settings）")
+
+    # ── character card 同步 ───────────────────────────────────────────
+
+    def _sync_character_card(self, name: str, persona: dict) -> bool:
+        """同步 character card 条目到 persona 头部，保持顺序与 characters.json 一致。
+
+        规则：
+        1. 读取当前 characters.json 的 neko/master 字段
+        2. 为每个字段生成确定性 ID (card_{entity}_{hash})
+        3. 与 persona 中 source=='character_card' 的条目对比
+        4. 更新文本变化的、新增缺少的、删除 card 中已移除的
+        5. card 条目始终排在 facts 列表头部，顺序与 card 一致
+
+        Returns True if any change was made.
+        """
+        from config import CHARACTER_RESERVED_FIELDS
+
+        try:
+            _, _, master_basic_config, lanlan_basic_config, name_mapping, _, _, _, _ = (
+                self._config_manager.get_character_data()
+            )
+        except Exception:
+            return False
+
+        excluded_fields = set(CHARACTER_RESERVED_FIELDS)
+        changed = False
+
+        def _is_syncable(val) -> bool:
+            if val is None:
+                return False
+            if isinstance(val, str):
+                return bool(val.strip())
+            if isinstance(val, (list, dict, set, tuple)):
+                return len(val) > 0
+            return True
+
+        def _build_expected(card_data: dict, entity: str) -> list[tuple[str, dict]]:
+            """从 card 字段构建期望的 (id, entry) 列表，保持 card 字段顺序。"""
+            expected = []
+            for k, v in card_data.items():
+                if k in excluded_fields or not _is_syncable(v):
+                    continue
+                if isinstance(v, (dict, set, tuple)):
+                    continue
+                if isinstance(v, list):
+                    v = '、'.join(str(item) for item in v)
+                entry_id = self._card_entry_id(entity, k)
+                text = f"{k}: {v}"
+                expected.append((entry_id, text))
+            return expected
+
+        def _sync_entity(entity: str, card_data: dict) -> bool:
+            """同步单个 entity section。返回是否有变更。"""
+            section = persona.setdefault(entity, {})
+            facts = section.setdefault('facts', [])
+            expected = _build_expected(card_data, entity)
+            expected_ids = {eid for eid, _ in expected}
+
+            # 分离 card 条目和非 card 条目
+            existing_card = {}  # id → entry
+            other_entries = []
+            for entry in facts:
+                if isinstance(entry, dict) and entry.get('source') == 'character_card':
+                    existing_card[entry.get('id', '')] = entry
+                else:
+                    other_entries.append(entry)
+
+            # 按 card 顺序构建新的 card 条目列表
+            modified = False
+            new_card_entries = []
+            for eid, text in expected:
+                if eid in existing_card:
+                    entry = existing_card[eid]
+                    if entry.get('text') != text:
+                        # 文本变化 → 更新
+                        old_text = entry.get('text', '')
+                        entry['text'] = text
+                        modified = True
+                        logger.info(f"[Persona] {name}: card 同步更新 [{entity}] \"{old_text[:30]}\" → \"{text[:30]}\"")
+                    new_card_entries.append(entry)
+                else:
+                    # 新字段 → 创建
+                    entry = self._normalize_entry(text)
+                    entry['id'] = eid
+                    entry['source'] = 'character_card'
+                    entry['protected'] = True
+                    new_card_entries.append(entry)
+                    modified = True
+                    logger.info(f"[Persona] {name}: card 同步新增 [{entity}] \"{text[:40]}\"")
+
+            # 检查是否有 card 中已删除的条目
+            removed_ids = set(existing_card.keys()) - expected_ids
+            if removed_ids:
+                modified = True
+                for rid in removed_ids:
+                    removed_text = existing_card[rid].get('text', '')
+                    logger.info(f"[Persona] {name}: card 同步移除 [{entity}] \"{removed_text[:40]}\"")
+
+
+            if modified:
+                # card 条目在前，其他条目在后
+                section['facts'] = new_card_entries + other_entries
+
+            return modified
+
+        # 同步 neko entity
+        if name in (lanlan_basic_config or {}):
+            if _sync_entity('neko', lanlan_basic_config[name]):
+                changed = True
+
+        # 同步 master entity
+        if master_basic_config and isinstance(master_basic_config, dict):
+            if _sync_entity('master', master_basic_config):
+                changed = True
+
+        return changed
 
     def save_persona(self, name: str, persona: dict | None = None) -> None:
         if persona is None:
@@ -260,13 +399,22 @@ class PersonaManager:
 
     @staticmethod
     def _normalize_entry(entry) -> dict:
-        """将纯字符串条目迁移为 dict 格式。"""
+        """将纯字符串条目迁移为 dict 格式。
+
+        每个条目包含以下溯源字段：
+        - id: 唯一标识。card_xxx / legacy_xxx / prom_xxx / manual_xxx
+        - source: 来源类型。character_card / settings / reflection / manual
+        - source_id: 上游 ID（如 reflection_id），用于追溯来源链
+        """
         defaults = {
+            'id': '',                   # 唯一标识
             'text': '',
+            'source': 'unknown',        # character_card | settings | reflection | manual
+            'source_id': None,          # 上游 ID（reflection_id 等）
             'recent_mentions': [],      # 窗口内提及时间戳列表
             'suppress': False,          # 是否被抑制
             'suppressed_at': None,      # suppress 开始时间
-            'protected': False,         # 硬编码 setting 迁移的条目，不可 suppress
+            'protected': False,         # character_card 来源条目，不可 suppress
         }
         if isinstance(entry, str):
             d = dict(defaults)
@@ -286,8 +434,14 @@ class PersonaManager:
 
     # ── add facts to persona ─────────────────────────────────────────
 
-    def add_fact(self, name: str, text: str, entity: str = 'user') -> None:
-        """Add a confirmed fact to persona. Checks for contradictions first."""
+    def add_fact(self, name: str, text: str, entity: str = 'master',
+                 source: str = 'manual', source_id: str | None = None) -> None:
+        """Add a confirmed fact to persona. Checks for contradictions first.
+
+        Args:
+            source: 来源类型 (reflection / manual / ...)
+            source_id: 上游 ID，如 reflection_id (ref_xxx)
+        """
         persona = self.ensure_persona(name)
         section_facts = self._get_section_facts(persona, entity)
 
@@ -301,16 +455,19 @@ class PersonaManager:
                 self._queue_correction(name, old_text, text, entity)
                 return
 
-        section_facts.append(self._normalize_entry(text))
+        entry = self._normalize_entry(text)
+        # 赋予溯源标识
+        if source == 'reflection' and source_id:
+            entry['id'] = f"prom_{source_id}"
+        else:
+            entry['id'] = f"manual_{datetime.now().strftime('%Y%m%d%H%M%S')}_{hashlib.sha256(text.encode()).hexdigest()[:8]}"
+        entry['source'] = source
+        entry['source_id'] = source_id
+        section_facts.append(entry)
         self.save_persona(name, persona)
 
     def _get_section_facts(self, persona: dict, entity: str) -> list:
-        if entity == 'user':
-            return persona.setdefault('user', {}).setdefault('facts', [])
-        elif entity == 'ai':
-            return persona.setdefault('ai', {}).setdefault('facts', [])
-        else:
-            return persona.setdefault('relationship', {}).setdefault('dynamics', [])
+        return persona.setdefault(entity, {}).setdefault('facts', [])
 
     @staticmethod
     def _texts_may_contradict(old_text: str, new_text: str) -> bool:
@@ -421,7 +578,7 @@ class PersonaManager:
 
             action = result.get('action', 'keep_both')
             merged_text = result.get('text', item.get('new_text', ''))
-            entity = item.get('entity', 'user')
+            entity = item.get('entity', 'master')
             old_text = item.get('old_text', '')
             new_text = item.get('new_text', '')
             section_facts = self._get_section_facts(persona, entity)
@@ -549,11 +706,11 @@ class PersonaManager:
 
     @staticmethod
     def _collect_all_entries(persona: dict) -> list[dict]:
-        """收集 persona 中所有 facts/dynamics 条目的引用。"""
+        """收集 persona 中所有 entity section 的 facts 条目引用。"""
         entries = []
-        for section_key in ('user', 'ai'):
-            entries.extend(persona.get(section_key, {}).get('facts', []))
-        entries.extend(persona.get('relationship', {}).get('dynamics', []))
+        for section in persona.values():
+            if isinstance(section, dict):
+                entries.extend(section.get('facts', []))
         return entries
 
     # ── rendering ────────────────────────────────────────────────────
@@ -572,6 +729,13 @@ class PersonaManager:
         master_name = name_mapping.get('human', '主人')
         ai_name = name
 
+        # Entity key → section header mapping for known entities
+        _headers = {
+            'master': f"关于{master_name}",
+            'neko': f"关于{ai_name}",
+            'relationship': "关系动态",
+        }
+
         sections = []
 
         # Collect suppressed items across all sections
@@ -582,23 +746,15 @@ class PersonaManager:
                 if text:
                     suppressed_lines.append(f"- {text}")
 
-        # User section (exclude suppressed)
-        user_facts = persona.get('user', {}).get('facts', [])
-        user_lines = self._render_fact_entries(user_facts)
-        if user_lines:
-            sections.append(f"### 关于{master_name}\n" + "\n".join(user_lines))
-
-        # AI section (exclude suppressed)
-        ai_facts = persona.get('ai', {}).get('facts', [])
-        ai_lines = self._render_fact_entries(ai_facts)
-        if ai_lines:
-            sections.append(f"### 关于{ai_name}\n" + "\n".join(ai_lines))
-
-        # Relationship section (exclude suppressed)
-        dynamics = persona.get('relationship', {}).get('dynamics', [])
-        dynamics_lines = self._render_fact_entries(dynamics)
-        if dynamics_lines:
-            sections.append("### 关系动态\n" + "\n".join(dynamics_lines))
+        # Render each entity section dynamically
+        for entity_key, section in persona.items():
+            if not isinstance(section, dict):
+                continue
+            facts = section.get('facts', [])
+            lines = self._render_fact_entries(facts)
+            if lines:
+                header = _headers.get(entity_key, entity_key)
+                sections.append(f"### {header}\n" + "\n".join(lines))
 
         # Pending reflections (also exclude suppressed)
         if pending_reflections:
