@@ -575,10 +575,10 @@ INNER_THOUGHTS_BODY = {
 # ---------- Inner thoughts dynamic part (split from INNER_THOUGHTS_BODY) ----------
 INNER_THOUGHTS_DYNAMIC = {
     'zh': '现在时间是{time}。开始聊天前，{name}又在脑海内整理了近期发生的事情。\n',
-    'en': "The current time is {time}. 开始聊天前，{name}又在脑海内整理了近期发生的事情。\n",
-    'ja': '現在の時刻は{time}です。開始聊天前，{name}又在脑海内整理了近期发生的事情。\n',
-    'ko': '현재 시간은 {time}입니다. 开始聊天前，{name}又在脑海内整理了近期发生的事情。\n',
-    'ru': 'Текущее время: {time}. 开始聊天前，{name}又在脑海内整理了近期发生的事情。\n',
+    'en': "The current time is {time}. Before the conversation begins, {name} is mentally reviewing recent events.\n",
+    'ja': '現在の時刻は{time}です。会話を始める前に、{name}は最近の出来事を頭の中で整理しています。\n',
+    'ko': '현재 시간은 {time}입니다. 대화를 시작하기 전에 {name}은 최근 있었던 일들을 마음속으로 정리하고 있습니다.\n',
+    'ru': 'Текущее время: {time}. Перед началом разговора {name} мысленно перебирает последние события.\n',
 }
 
 # =====================================================================
@@ -674,13 +674,13 @@ FACT_EXTRACTION_PROMPT = {
         '- 忽略闲聊、寒暄、模糊的内容\n'
         '- 每条事实必须是一个独立的原子陈述\n'
         '- importance 评分 1-10，只返回 >= 5 的事实\n'
-        '- entity 标注为 "user"(关于{MASTER_NAME})、"ai"(关于{LANLAN_NAME})或 "relationship"(关于两人关系)\n\n'
+        '- entity 标注为 "master"(关于{MASTER_NAME})、"neko"(关于{LANLAN_NAME})或 "relationship"(关于两人关系)\n\n'
         '======以下为对话======\n'
         '{CONVERSATION}\n'
         '======以上为对话======\n\n'
         '请以 JSON 数组格式返回，格式如下(如果没有值得提取的事实，返回空数组 [])：\n'
         '[\n'
-        '  {{"text": "事实描述", "importance": 7, "entity": "user", "tags": ["preference"]}},\n'
+        '  {{"text": "事实描述", "importance": 7, "entity": "master", "tags": ["preference"]}},\n'
         '  ...\n'
         ']'
     ),
@@ -691,13 +691,13 @@ FACT_EXTRACTION_PROMPT = {
         '- Ignore small talk, greetings, and vague content\n'
         '- Each fact must be an independent atomic statement\n'
         '- Rate importance 1-10, only return facts with importance >= 5\n'
-        '- Mark entity as "user" (about {MASTER_NAME}), "ai" (about {LANLAN_NAME}), or "relationship" (about the relationship)\n\n'
+        '- Mark entity as "master" (about {MASTER_NAME}), "neko" (about {LANLAN_NAME}), or "relationship" (about the relationship)\n\n'
         '======Conversation======\n'
         '{CONVERSATION}\n'
         '======End of Conversation======\n\n'
         'Return as a JSON array in the following format (if no facts are worth extracting, return an empty array []):\n'
         '[\n'
-        '  {{"text": "fact description", "importance": 7, "entity": "user", "tags": ["preference"]}},\n'
+        '  {{"text": "fact description", "importance": 7, "entity": "master", "tags": ["preference"]}},\n'
         '  ...\n'
         ']'
     ),
@@ -708,13 +708,13 @@ FACT_EXTRACTION_PROMPT = {
         '- 雑談、挨拶、曖昧な内容は無視\n'
         '- 各事実は独立した原子的な文でなければならない\n'
         '- importance は 1-10 で評価し、5 以上の事実のみ返す\n'
-        '- entity は "user"({MASTER_NAME}について)、"ai"({LANLAN_NAME}について)、または "relationship"(二人の関係について) と記載\n\n'
+        '- entity は "master"({MASTER_NAME}について)、"neko"({LANLAN_NAME}について)、または "relationship"(二人の関係について) と記載\n\n'
         '======会話======\n'
         '{CONVERSATION}\n'
         '======会話ここまで======\n\n'
         '以下の形式のJSON配列で返してください（抽出する事実がなければ空配列 [] を返す）：\n'
         '[\n'
-        '  {{"text": "事実の説明", "importance": 7, "entity": "user", "tags": ["preference"]}},\n'
+        '  {{"text": "事実の説明", "importance": 7, "entity": "master", "tags": ["preference"]}},\n'
         '  ...\n'
         ']'
     ),
@@ -725,13 +725,13 @@ FACT_EXTRACTION_PROMPT = {
         '- 잡담, 인사, 모호한 내용은 무시\n'
         '- 각 사실은 독립적인 원자적 진술이어야 함\n'
         '- importance는 1-10으로 평가하고 5 이상인 사실만 반환\n'
-        '- entity는 "user"({MASTER_NAME}에 대해), "ai"({LANLAN_NAME}에 대해), 또는 "relationship"(두 사람의 관계에 대해)로 표기\n\n'
+        '- entity는 "master"({MASTER_NAME}에 대해), "neko"({LANLAN_NAME}에 대해), 또는 "relationship"(두 사람의 관계에 대해)로 표기\n\n'
         '======대화======\n'
         '{CONVERSATION}\n'
         '======대화 끝======\n\n'
         '다음 형식의 JSON 배열로 반환해 주세요 (추출할 사실이 없으면 빈 배열 [] 반환):\n'
         '[\n'
-        '  {{"text": "사실 설명", "importance": 7, "entity": "user", "tags": ["preference"]}},\n'
+        '  {{"text": "사실 설명", "importance": 7, "entity": "master", "tags": ["preference"]}},\n'
         '  ...\n'
         ']'
     ),
@@ -742,13 +742,13 @@ FACT_EXTRACTION_PROMPT = {
         '- Игнорируйте болтовню, приветствия и расплывчатое содержание\n'
         '- Каждый факт должен быть независимым атомарным утверждением\n'
         '- Оценка importance от 1 до 10, возвращайте только факты с importance >= 5\n'
-        '- Отмечайте entity как "user" (о {MASTER_NAME}), "ai" (о {LANLAN_NAME}) или "relationship" (об отношениях)\n\n'
+        '- Отмечайте entity как "master" (о {MASTER_NAME}), "neko" (о {LANLAN_NAME}) или "relationship" (об отношениях)\n\n'
         '======Беседа======\n'
         '{CONVERSATION}\n'
         '======Конец беседы======\n\n'
         'Верните в формате JSON-массива (если нет достойных извлечения фактов, верните пустой массив []):\n'
         '[\n'
-        '  {{"text": "описание факта", "importance": 7, "entity": "user", "tags": ["preference"]}},\n'
+        '  {{"text": "описание факта", "importance": 7, "entity": "master", "tags": ["preference"]}},\n'
         '  ...\n'
         ']'
     ),
