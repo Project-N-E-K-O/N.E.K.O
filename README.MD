@@ -89,7 +89,7 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 <details>
 <summary>点击展开 Docker 部署指南</summary>
 
-#### 部署教程也可以查看 [***HINS'*** ***blog***](https://blog.hinswu.top/archives/project-n.e.k.o.-dockerbu-shu-zhi-dao)
+#### 部署教程也可以查看 [***HINS's*** ***Blog***](https://blog.hinswu.top/archives/project-n.e.k.o.-dockerbu-shu-zhi-dao)
 #### 部署方式一：Docker Compose（推荐）
 
 <details>
