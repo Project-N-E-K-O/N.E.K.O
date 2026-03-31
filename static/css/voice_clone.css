@@ -1082,3 +1082,85 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     background: #b71c1c;
 }
 
+/* 克隆输入区域容器（固定高度防止切换时页面跳动） */
+.clone-input-container {
+    min-height: 180px;
+    max-width: 600px;
+    padding: 16px;
+    background: rgba(255, 255, 255, 0.5);
+    border: 2px dashed #cce5ff;
+    border-radius: 12px;
+    margin-bottom: 16px;
+    position: relative;
+    box-sizing: border-box;
+    overflow-y: auto;
+}
+
+/* 克隆区域通用样式 */
+.clone-section {
+    width: 100%;
+}
+
+/* 暗色模式适配 */
+[data-theme="dark"] .clone-input-container {
+    background: rgba(42, 58, 74, 0.5);
+    border-color: rgba(64, 197, 241, 0.3);
+}
+
+/* 克隆方式切换按钮样式 */
+.clone-method-toggle {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-width: 600px;
+}
+
+.clone-method-btn {
+    flex: 1;
+    padding: 10px 20px;
+    border: 2px solid #ddd;
+    border-radius: 8px;
+    background: #fff;
+    color: #555;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.clone-method-btn:hover {
+    border-color: #40C5F1;
+    color: #40C5F1;
+}
+
+.clone-method-btn.active {
+    background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
+    border-color: #40C5F1;
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(64, 197, 241, 0.3);
+}
+
+.clone-method-btn.active:hover {
+    opacity: 0.9;
+    transform: translateY(-1px);
+}
+
+/* 暗色模式适配 */
+[data-theme="dark"] .clone-method-btn {
+    background: #2a3a4a;
+    border-color: rgba(255, 255, 255, 0.15);
+    color: #ccc;
+}
+
+[data-theme="dark"] .clone-method-btn:hover {
+    border-color: #40C5F1;
+    color: #40C5F1;
+}
+
+[data-theme="dark"] .clone-method-btn.active {
+    background: linear-gradient(135deg, #2a7bc4 0%, #1a5fa0 100%);
+    border-color: #2a7bc4;
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(42, 123, 196, 0.3);
+}
+
