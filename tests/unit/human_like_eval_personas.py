@@ -36,8 +36,20 @@ PERSONA_PRESETS = {
 
 
 def get_active_persona_prompt() -> str:
-    return PERSONA_PRESETS.get(PERSONA_PRESET, PERSONA_PRESETS["warm_companion"])["prompt"]
+    if PERSONA_PRESET not in PERSONA_PRESETS:
+        available_keys = ", ".join(sorted(PERSONA_PRESETS.keys()))
+        raise ValueError(
+            f"Invalid PERSONA_PRESET='{PERSONA_PRESET}'. "
+            f"Expected one of PERSONA_PRESETS keys: {available_keys}"
+        )
+    return PERSONA_PRESETS[PERSONA_PRESET]["prompt"]
 
 
 def get_active_persona_label() -> str:
-    return PERSONA_PRESETS.get(PERSONA_PRESET, PERSONA_PRESETS["warm_companion"])["label"]
+    if PERSONA_PRESET not in PERSONA_PRESETS:
+        available_keys = ", ".join(sorted(PERSONA_PRESETS.keys()))
+        raise ValueError(
+            f"Invalid PERSONA_PRESET='{PERSONA_PRESET}'. "
+            f"Expected one of PERSONA_PRESETS keys: {available_keys}"
+        )
+    return PERSONA_PRESETS[PERSONA_PRESET]["label"]
