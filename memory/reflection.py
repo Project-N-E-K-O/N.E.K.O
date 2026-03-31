@@ -470,17 +470,27 @@ class ReflectionEngine:
                     # confirmed → promoted after AUTO_PROMOTE_DAYS
                     confirmed_at = datetime.fromisoformat(r.get('confirmed_at', ''))
                     if (now - confirmed_at).total_seconds() / 86400 >= AUTO_PROMOTE_DAYS:
-                        self._persona_manager.add_fact(
+                        from memory.persona import PersonaManager
+                        result = self._persona_manager.add_fact(
                             lanlan_name, r['text'],
                             entity=r.get('entity', 'relationship'),
                             source='reflection',
                             source_id=r['id'],
                         )
-                        r['status'] = 'promoted'
-                        r['promoted_at'] = now.isoformat()
-                        promoted_ids.append(r['id'])
-                        transitions += 1
-                        logger.info(f"[Reflection] {lanlan_name}: confirmed→persona({AUTO_PROMOTE_DAYS}天): {r['text'][:50]}...")
+                        if result == PersonaManager.FACT_ADDED:
+                            r['status'] = 'promoted'
+                            r['promoted_at'] = now.isoformat()
+                            promoted_ids.append(r['id'])
+                            transitions += 1
+                            logger.info(f"[Reflection] {lanlan_name}: confirmed→persona({AUTO_PROMOTE_DAYS}天): {r['text'][:50]}...")
+                        elif result == PersonaManager.FACT_REJECTED_CARD:
+                            r['status'] = 'denied'
+                            r['denied_at'] = now.isoformat()
+                            r['denied_reason'] = 'contradicts_character_card'
+                            transitions += 1
+                            logger.info(f"[Reflection] {lanlan_name}: confirmed→denied(与角色卡矛盾): {r['text'][:50]}...")
+                        else:
+                            logger.info(f"[Reflection] {lanlan_name}: confirmed→persona 暂缓(进入矛盾审视队列): {r['text'][:50]}...")
             except (ValueError, TypeError):
                 continue
 

@@ -434,29 +434,46 @@ class PersonaManager:
 
     # ── add facts to persona ─────────────────────────────────────────
 
+    # add_fact return codes
+    FACT_ADDED = 'added'
+    FACT_REJECTED_CARD = 'rejected_card'      # contradicts character_card → permanent
+    FACT_QUEUED_CORRECTION = 'queued'         # contradicts non-card → correction queue
+
     def add_fact(self, name: str, text: str, entity: str = 'master',
-                 source: str = 'manual', source_id: str | None = None) -> None:
+                 source: str = 'manual', source_id: str | None = None) -> str:
         """Add a confirmed fact to persona. Checks for contradictions first.
 
         Args:
             source: 来源类型 (reflection / manual / ...)
             source_id: 上游 ID，如 reflection_id (ref_xxx)
+
+        Returns:
+            FACT_ADDED            — successfully appended
+            FACT_REJECTED_CARD    — contradicts character_card, permanently blocked
+            FACT_QUEUED_CORRECTION — contradicts existing non-card fact, queued for LLM review
         """
         persona = self.ensure_persona(name)
         section_facts = self._get_section_facts(persona, entity)
+        stop_names = self._get_entity_stop_names()
 
-        # Check for potential contradictions
         for existing in section_facts:
             if isinstance(existing, dict):
                 old_text = existing.get('text', '')
+                is_card = existing.get('source') == 'character_card'
             else:
                 old_text = str(existing)
-            if self._texts_may_contradict(old_text, text):
+                is_card = False
+            if self._texts_may_contradict(old_text, text, stop_names=stop_names):
+                if is_card:
+                    logger.info(
+                        f"[Persona] {name}: 新条目与角色卡矛盾，无条件拒绝: "
+                        f"card=\"{old_text[:40]}\" vs new=\"{text[:40]}\""
+                    )
+                    return self.FACT_REJECTED_CARD
                 self._queue_correction(name, old_text, text, entity)
-                return
+                return self.FACT_QUEUED_CORRECTION
 
         entry = self._normalize_entry(text)
-        # 赋予溯源标识
         if source == 'reflection' and source_id:
             entry['id'] = f"prom_{source_id}"
         else:
@@ -465,20 +482,46 @@ class PersonaManager:
         entry['source_id'] = source_id
         section_facts.append(entry)
         self.save_persona(name, persona)
+        return self.FACT_ADDED
 
     def _get_section_facts(self, persona: dict, entity: str) -> list:
         return persona.setdefault(entity, {}).setdefault('facts', [])
 
+    def _get_entity_stop_names(self) -> list[str]:
+        """Return master + neko names to strip from contradiction keywords."""
+        try:
+            master_name, her_name, _, _, _, _, _, _, _ = (
+                self._config_manager.get_character_data()
+            )
+            names = []
+            if master_name:
+                names.append(master_name)
+            if her_name:
+                names.append(her_name)
+            return names
+        except Exception:
+            return []
+
     @staticmethod
-    def _texts_may_contradict(old_text: str, new_text: str) -> bool:
+    def _texts_may_contradict(old_text: str, new_text: str,
+                              stop_names: list[str] | None = None) -> bool:
         """Lightweight keyword-overlap heuristic for contradiction detection.
 
         Uses the same CJK-aware tokenization as _is_mentioned.
+        ``stop_names`` — entity names (master/neko) whose n-grams are
+        stripped from both sides so that shared names alone don't inflate
+        the overlap ratio.
         """
         if not old_text or not new_text:
             return False
         old_kw = _extract_keywords(old_text)
         new_kw = _extract_keywords(new_text)
+        if stop_names:
+            stop_kw: set[str] = set()
+            for sn in stop_names:
+                stop_kw |= _extract_keywords(sn)
+            old_kw -= stop_kw
+            new_kw -= stop_kw
         if not old_kw or not new_kw:
             return False
         overlap = old_kw & new_kw
