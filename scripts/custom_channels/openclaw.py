@@ -31,6 +31,8 @@ from agentscope_runtime.engine.schemas.agent_schemas import (
     ContentType,
     FileContent,
     ImageContent,
+    MessageType,
+    Role,
     RunStatus,
     TextContent,
     VideoContent,
@@ -45,6 +47,22 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8089
 DEFAULT_REPLY_TIMEOUT = 300.0
+_PROGRESS_REPLY_MARKERS = (
+    "好的",
+    "收到",
+    "明白",
+    "我来",
+    "我试试",
+    "稍等",
+    "请稍等",
+    "正在",
+    "处理中",
+    "开始",
+    "马上",
+    "这就",
+    "我先",
+    "先帮你",
+)
 
 
 def _cfg_get(config: Any, key: str, default: Any = None) -> Any:
@@ -209,6 +227,16 @@ def _build_content_parts(payload: Dict[str, Any]) -> List[Any]:
                 parts.append(part)
 
     return parts
+
+
+def _looks_like_progress_only_reply(text: str) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    compact = normalized.replace(" ", "").replace("\n", "")
+    if len(compact) > 36:
+        return False
+    return any(marker in compact for marker in _PROGRESS_REPLY_MARKERS)
 
 
 class OpenClawInboundRequest(BaseModel):
@@ -432,6 +460,83 @@ class OpenClawChannel(BaseChannel):
             payload["channel_id"] = meta.get("origin_channel_id") or self.channel
         return payload
 
+    def _build_reply_payload_from_message(
+        self,
+        message: Any,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if getattr(message, "type", None) != MessageType.MESSAGE:
+            return None
+        if getattr(message, "role", None) != Role.ASSISTANT:
+            return None
+        parts = self._message_to_content_parts(message)
+        if not parts:
+            return None
+        has_user_visible_content = any(
+            getattr(part, "type", None) in (
+                ContentType.TEXT,
+                ContentType.REFUSAL,
+                ContentType.IMAGE,
+                ContentType.VIDEO,
+                ContentType.AUDIO,
+                ContentType.FILE,
+            )
+            for part in parts
+        )
+        if not has_user_visible_content:
+            return None
+        payload = self._make_reply_payload(parts, meta)
+        if _looks_like_progress_only_reply(payload.get("reply", "")):
+            return None
+        return payload
+
+    def _build_final_reply_payload_from_response(
+        self,
+        response_event: Any,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        response = response_event
+        if getattr(response_event, "data", None) is not None:
+            response = response_event.data
+        elif getattr(response_event, "response", None) is not None:
+            response = response_event.response
+        output = getattr(response, "output", None) or []
+        for message in reversed(output):
+            payload = self._build_reply_payload_from_message(message, meta)
+            if payload:
+                return payload
+        return None
+
+    def _resolve_http_bridge_reply_payload(
+        self,
+        *,
+        last_response: Any,
+        last_completed_message_payload: Optional[Dict[str, Any]],
+        request: Any,
+        send_meta: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        final_reply_payload = None
+        if (
+            last_response is not None
+            and getattr(last_response, "status", None) == RunStatus.Completed
+        ):
+            final_reply_payload = self._build_final_reply_payload_from_response(
+                last_response,
+                send_meta,
+            )
+        if final_reply_payload is None:
+            final_reply_payload = last_completed_message_payload
+        if final_reply_payload is not None:
+            return final_reply_payload
+        return {
+            "success": False,
+            "reply": "",
+            "error": "OpenClaw did not produce a final reply payload.",
+            "session_id": send_meta.get("session_id") or getattr(request, "session_id", ""),
+            "sender_id": send_meta.get("sender_id") or send_meta.get("original_sender_id"),
+            "channel_id": send_meta.get("origin_channel_id") or self.channel,
+        }
+
     def _desired_channel_config(self) -> Dict[str, Any]:
         return {
             "enabled": self.enabled,
@@ -545,17 +650,25 @@ class OpenClawChannel(BaseChannel):
         send_meta: Dict[str, Any],
     ) -> None:
         last_response = None
+        last_completed_message_payload = None
+        http_bridge_reply = bool((send_meta or {}).get("reply_token"))
         try:
             async for event in self._process(request):
                 obj = getattr(event, "object", None)
                 status = getattr(event, "status", None)
                 if obj == "message" and status == RunStatus.Completed:
-                    await self.on_event_message_completed(
-                        request,
-                        to_handle,
-                        event,
-                        send_meta,
-                    )
+                    if http_bridge_reply:
+                        last_completed_message_payload = self._build_reply_payload_from_message(
+                            event,
+                            send_meta,
+                        ) or last_completed_message_payload
+                    else:
+                        await self.on_event_message_completed(
+                            request,
+                            to_handle,
+                            event,
+                            send_meta,
+                        )
                 elif obj == "response":
                     last_response = event
                     await self.on_event_response(request, event)
@@ -565,6 +678,16 @@ class OpenClawChannel(BaseChannel):
                     to_handle,
                     send_meta,
                     f"Error: {err_msg}",
+                )
+            elif http_bridge_reply:
+                self._set_reply_payload(
+                    send_meta,
+                    self._resolve_http_bridge_reply_payload(
+                        last_response=last_response,
+                        last_completed_message_payload=last_completed_message_payload,
+                        request=request,
+                        send_meta=send_meta,
+                    ),
                 )
             if self._on_reply_sent:
                 args = self.get_on_reply_sent_args(request, to_handle)
@@ -576,6 +699,110 @@ class OpenClawChannel(BaseChannel):
                 send_meta,
                 "An error occurred while processing your request.",
             )
+
+    async def _stream_with_tracker(
+        self,
+        payload: Any,
+    ):
+        request = self._payload_to_request(payload)
+
+        if isinstance(payload, dict):
+            send_meta = dict(payload.get("meta") or {})
+            if payload.get("session_webhook"):
+                send_meta["session_webhook"] = payload["session_webhook"]
+        else:
+            send_meta = getattr(request, "channel_meta", None) or {}
+
+        bot_prefix = getattr(self, "bot_prefix", None) or getattr(
+            self,
+            "_bot_prefix",
+            "",
+        )
+        if bot_prefix and "bot_prefix" not in send_meta:
+            send_meta = {**send_meta, "bot_prefix": bot_prefix}
+
+        to_handle = self.get_to_handle_from_request(request)
+        await self._before_consume_process(request)
+
+        last_response = None
+        last_completed_message_payload = None
+        http_bridge_reply = bool((send_meta or {}).get("reply_token"))
+        process_iterator = None
+        try:
+            process_iterator = self._process(request)
+            async for event in process_iterator:
+                if hasattr(event, "model_dump_json"):
+                    data = event.model_dump_json()
+                elif hasattr(event, "json"):
+                    data = event.json()
+                else:
+                    data = json.dumps({"text": str(event)})
+
+                yield f"data: {data}\n\n"
+
+                obj = getattr(event, "object", None)
+                status = getattr(event, "status", None)
+
+                if obj == "message" and status == RunStatus.Completed:
+                    if http_bridge_reply:
+                        last_completed_message_payload = self._build_reply_payload_from_message(
+                            event,
+                            send_meta,
+                        ) or last_completed_message_payload
+                    else:
+                        await self.on_event_message_completed(
+                            request,
+                            to_handle,
+                            event,
+                            send_meta,
+                        )
+                elif obj == "response":
+                    last_response = event
+                    await self.on_event_response(request, event)
+
+            err_msg = self._get_response_error_message(last_response)
+            if err_msg:
+                await self._on_consume_error(
+                    request,
+                    to_handle,
+                    f"Error: {err_msg}",
+                )
+            elif http_bridge_reply:
+                self._set_reply_payload(
+                    send_meta,
+                    self._resolve_http_bridge_reply_payload(
+                        last_response=last_response,
+                        last_completed_message_payload=last_completed_message_payload,
+                        request=request,
+                        send_meta=send_meta,
+                    ),
+                )
+
+            if self._on_reply_sent:
+                args = self.get_on_reply_sent_args(request, to_handle)
+                self._on_reply_sent(self.channel, *args)
+
+        except asyncio.CancelledError:
+            logger.info(
+                f"channel task cancelled: "
+                f"session={getattr(request, 'session_id', '')[:30]}",
+            )
+            if process_iterator is not None:
+                await process_iterator.aclose()
+            raise
+
+        except Exception as e:
+            logger.exception(
+                f"channel _stream_with_tracker failed: {e}, "
+                f"session={getattr(request, 'session_id', 'N/A')[:30]}, "
+                f"agent={to_handle}",
+            )
+            await self._on_consume_error(
+                request,
+                to_handle,
+                "Internal error",
+            )
+            raise
 
     async def _handle_health(self) -> Dict[str, Any]:
         ready = bool(
