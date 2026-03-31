@@ -2590,7 +2590,11 @@
         "songsRendered": "Song list rendered",
         "statusUpdated": "Status updated",
         "volumeSet": "Volume set to",
-        "initialized": "Initializing jukebox"
+        "initialized": "Initializing jukebox",
+        "loadFailed": "Failed to load song list",
+        "listContainerNotFound": "Song list container not found",
+        "noSongs": "No songs available",
+        "playFailed": "Playback failed"
     },
     "notice": {
         "voiceMigration": {

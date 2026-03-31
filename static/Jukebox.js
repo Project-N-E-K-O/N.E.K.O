@@ -14,6 +14,7 @@ window.Jukebox = {
     player: null,
     audioElement: null,
     mp3EndedListenerAdded: false,
+    boundPlayer: null,
     isOpen: false,
     isHidden: false,
     container: null,
@@ -101,6 +102,10 @@ window.Jukebox = {
     
     requestAnimationFrame(() => {
       setTimeout(() => {
+        if (!Jukebox.State.isOpen || !Jukebox.State.container) {
+          console.log('[Jukebox] 点歌台已关闭，取消初始化');
+          return;
+        }
         console.log('[Jukebox] 准备加载歌曲，检查容器...');
         const tbody = document.getElementById('jukebox-song-list');
         console.log('[Jukebox] 歌曲列表容器:', tbody);
@@ -610,7 +615,7 @@ window.Jukebox = {
     
     player.options.loop = 'none';
     
-    if (!Jukebox.State.mp3EndedListenerAdded) {
+    if (Jukebox.State.boundPlayer !== player) {
       player.on('ended', () => {
         console.log('[Jukebox]', window.t('Jukebox.mp3Ended', 'mp3播放结束'), {
           isPlaying: Jukebox.State.isPlaying,
@@ -622,7 +627,7 @@ window.Jukebox = {
         Jukebox.State.currentSong = null;
         Jukebox.updateStoppedStatus();
       });
-      Jukebox.State.mp3EndedListenerAdded = true;
+      Jukebox.State.boundPlayer = player;
     }
     
     player.play();
@@ -725,7 +730,16 @@ window.Jukebox = {
   
   initPlayer: function() {
     if (window.music_ui && window.music_ui.getMusicPlayerInstance) {
-      console.log('[Jukebox] 使用现有的音乐播放器');
+      const existingPlayer = window.music_ui.getMusicPlayerInstance();
+      if (existingPlayer) {
+        console.log('[Jukebox] 使用现有的音乐播放器');
+        return;
+      }
+      console.log('[Jukebox] music_ui 存在但播放器未初始化，创建新播放器');
+    }
+    
+    if (!Jukebox.State.container) {
+      console.warn('[Jukebox] 容器不存在，取消播放器初始化');
       return;
     }
     

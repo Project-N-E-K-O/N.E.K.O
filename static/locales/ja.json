@@ -2590,7 +2590,11 @@
         "songsRendered": "曲リストがレンダリングされました",
         "statusUpdated": "ステータスが更新されました",
         "volumeSet": "音量を設定しました",
-        "initialized": "ジュークボックスを初期化中"
+        "initialized": "ジュークボックスを初期化中",
+        "loadFailed": "曲リストの読み込みに失敗しました",
+        "listContainerNotFound": "曲リストコンテナが見つかりません",
+        "noSongs": "曲がありません",
+        "playFailed": "再生に失敗しました"
     },
     "notice": {
         "voiceMigration": {

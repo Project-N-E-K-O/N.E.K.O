@@ -2590,7 +2590,11 @@
         "songsRendered": "곡 목록 렌더링됨",
         "statusUpdated": "상태 업데이트됨",
         "volumeSet": "볼륨 설정됨",
-        "initialized": "주크박스 초기화 중"
+        "initialized": "주크박스 초기화 중",
+        "loadFailed": "곡 목록 로드 실패",
+        "listContainerNotFound": "곡 목록 컨테이너를 찾을 수 없습니다",
+        "noSongs": "곡이 없습니다",
+        "playFailed": "재생 실패"
     },
     "notice": {
         "voiceMigration": {

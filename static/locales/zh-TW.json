@@ -2590,7 +2590,11 @@
         "songsRendered": "歌曲列表已渲染",
         "statusUpdated": "狀態已更新",
         "volumeSet": "音量已設定為",
-        "initialized": "初始化點歌台"
+        "initialized": "初始化點歌台",
+        "loadFailed": "載入歌曲列表失敗",
+        "listContainerNotFound": "歌曲列表容器不存在",
+        "noSongs": "暫無歌曲",
+        "playFailed": "播放失敗"
     },
     "notice": {
         "voiceMigration": {
