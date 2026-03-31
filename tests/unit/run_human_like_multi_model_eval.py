@@ -296,7 +296,7 @@ def _write_reports(payload: Dict[str, Any]) -> Path:
         f"- 场景数量：{len(SELECTED_SCENARIOS)}",
         f"- 模型数量：{len(payload['model_comparison'])}",
         f"- 当前人设：`{ACTIVE_PERSONA_LABEL}` (`{PERSONA_PRESET}`)",
-        f"- 评分器：`HumanLikeJudger`",
+        "- 评分器：`HumanLikeJudger`",
         "",
         "## 统一人设设定",
         "",
