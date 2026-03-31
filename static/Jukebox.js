@@ -36,19 +36,25 @@ window.Jukebox = {
     Jukebox.setupCloseListener();
   },
   
-  setupButton: function() {
+  setupButton: function(retries = 0) {
+    const MAX_RETRIES = 20;
     const jukeboxButton = document.getElementById('jukeboxButton');
     if (!jukeboxButton) {
+      if (retries >= MAX_RETRIES) {
+        console.error('[Jukebox]', window.t('Jukebox.btnNotFoundGiveUp', '点歌台按钮在重试后仍未找到，放弃绑定'));
+        return;
+      }
       console.warn('[Jukebox]', window.t('Jukebox.btnNotFound', '点歌台按钮不存在，等待加载...'));
-      setTimeout(Jukebox.setupButton, 500);
+      setTimeout(() => Jukebox.setupButton(retries + 1), 500);
       return;
     }
-    
+
     jukeboxButton.addEventListener('click', Jukebox.toggle);
     console.log('[Jukebox]', window.t('Jukebox.btnBound', '点歌台按钮已绑定'));
   },
   
-  setupCloseListener: function() {
+  setupCloseListener: function(retries = 0) {
+    const MAX_RETRIES = 20;
     if (Jukebox.State.observer) return;
 
     const toggleChatBtn = document.getElementById('toggle-chat-btn');
@@ -59,8 +65,12 @@ window.Jukebox = {
       });
       console.log('[Jukebox]', window.t('Jukebox.minimizeListenerSet', '最小化按钮监听器已设置'));
     } else {
+      if (retries >= MAX_RETRIES) {
+        console.error('[Jukebox]', window.t('Jukebox.minimizeBtnNotFoundGiveUp', '最小化按钮在重试后仍未找到，放弃监听'));
+        return;
+      }
       console.warn('[Jukebox]', window.t('Jukebox.minimizeBtnNotFound', '最小化按钮不存在，等待加载...'));
-      setTimeout(Jukebox.setupCloseListener, 500);
+      setTimeout(() => Jukebox.setupCloseListener(retries + 1), 500);
       return;
     }
     
@@ -540,18 +550,24 @@ window.Jukebox = {
     }
     
     tbody.innerHTML = Jukebox.State.songs.map((song, index) => `
-      <tr data-song-id="${song.id}">
+      <tr data-song-id="${Jukebox.escapeHtml(song.id)}">
         <td>${index + 1}</td>
         <td>${Jukebox.escapeHtml(song.name)}</td>
         <td>${Jukebox.escapeHtml(song.artist)}</td>
         <td>${Jukebox.formatDuration(song.duration)}</td>
         <td>
-          <button class="play-btn" onclick="Jukebox_playSong('${song.id}')">
+          <button class="play-btn" data-song-id="${Jukebox.escapeHtml(song.id)}">
             ${window.t('Jukebox.play', '播放')}
           </button>
         </td>
       </tr>
     `).join('');
+
+    tbody.querySelectorAll('.play-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        Jukebox_playSong(btn.dataset.songId);
+      });
+    });
     
     console.log('[Jukebox]', window.t('Jukebox.songsRendered', '歌曲列表已渲染'));
   },
@@ -661,7 +677,7 @@ window.Jukebox = {
       Jukebox.stopVMD();
       
       await window.mmdManager.animationModule.loadAnimation(vmdPath);
-      await window.mmdManager.animationModule.play();
+      window.mmdManager.animationModule.play();
       
       Jukebox.State.isVMDPlaying = true;
       
@@ -804,7 +820,7 @@ window.Jukebox = {
       btn.classList.remove('playing');
     });
     
-    const currentRow = document.querySelector(`tr[data-song-id="${song.id}"]`);
+    const currentRow = document.querySelector(`tr[data-song-id="${CSS.escape(song.id)}"]`);
     if (currentRow) {
       const btn = currentRow.querySelector('.play-btn');
       if (btn) {
