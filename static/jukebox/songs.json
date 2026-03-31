@@ -1,0 +1,20 @@
+{
+  "songs": [
+    {
+      "id": "song_001",
+      "name": "桃源恋歌",
+      "artist": "GARNiDELiA",
+      "audio": "/static/jukebox/song_001.mp3",
+      "vmd": "/static/jukebox/song_001.vmd",
+      "duration": 231
+    },
+    {
+      "id": "song_002",
+      "name": "Ievan Polkka",
+      "artist": "初音未来,Otomania",
+      "audio": "/static/jukebox/song_002.mp3",
+      "vmd": "/static/jukebox/song_002.vmd",
+      "duration": 151
+    }
+  ]
+}
