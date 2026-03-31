@@ -47,6 +47,8 @@ window.Jukebox = {
   },
   
   setupCloseListener: function() {
+    if (Jukebox.State.observer) return;
+
     const toggleChatBtn = document.getElementById('toggle-chat-btn');
     if (toggleChatBtn) {
       toggleChatBtn.addEventListener('click', () => {
@@ -57,6 +59,7 @@ window.Jukebox = {
     } else {
       console.warn('[Jukebox]', window.t('Jukebox.minimizeBtnNotFound', '最小化按钮不存在，等待加载...'));
       setTimeout(Jukebox.setupCloseListener, 500);
+      return;
     }
     
     const observer = new MutationObserver((mutations) => {
@@ -513,20 +516,20 @@ window.Jukebox = {
       Jukebox.renderList();
       
     } catch (error) {
-      console.error('[Jukebox] 加载歌曲列表失败:', error);
-      Jukebox.showError('加载歌曲列表失败: ' + error.message);
+      console.error('[Jukebox]', window.t('Jukebox.loadFailed', '加载歌曲列表失败'), error);
+      Jukebox.showError(window.t('Jukebox.loadFailed', '加载歌曲列表失败') + ': ' + error.message);
     }
   },
   
   renderList: function() {
     const tbody = document.getElementById('jukebox-song-list');
     if (!tbody) {
-      console.error('[Jukebox] 歌曲列表容器不存在');
+      console.error('[Jukebox]', window.t('Jukebox.listContainerNotFound', '歌曲列表容器不存在'));
       return;
     }
     
     if (Jukebox.State.songs.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="loading">暂无歌曲</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="loading">' + window.t('Jukebox.noSongs', '暂无歌曲') + '</td></tr>';
       return;
     }
     
@@ -564,16 +567,21 @@ window.Jukebox = {
     
     Jukebox.stopPlayback();
     
-    await Jukebox.playAudio(song);
-    
-    if (Jukebox.isMMDModel() && song.vmd) {
-      await Jukebox.playVMD(song.vmd);
+    try {
+      await Jukebox.playAudio(song);
+      
+      if (Jukebox.isMMDModel() && song.vmd) {
+        await Jukebox.playVMD(song.vmd);
+      }
+      
+      Jukebox.State.currentSong = song;
+      Jukebox.State.isPlaying = true;
+      
+      Jukebox.updatePlayingStatus(song);
+    } catch (error) {
+      console.error('[Jukebox]', window.t('Jukebox.playFailed', '播放失败'), error);
+      Jukebox.showError(window.t('Jukebox.playFailed', '播放失败') + ': ' + error.message);
     }
-    
-    Jukebox.State.currentSong = song;
-    Jukebox.State.isPlaying = true;
-    
-    Jukebox.updatePlayingStatus(song);
   },
   
   playAudio: async function(song) {
@@ -588,7 +596,7 @@ window.Jukebox = {
     if (!song.audio.endsWith('.mp3')) {
       console.error('[Jukebox]', window.t('Jukebox.nonMp3Error', '试图播放非mp3格式文件'));
       console.error('[Jukebox]', window.t('Jukebox.nonMp3Info', '非mp3音频信息'), JSON.stringify(song, null, 2));
-      return;
+      throw new Error(window.t('Jukebox.nonMp3Error', '试图播放非mp3格式文件'));
     }
     
     console.log('[Jukebox]', window.t('Jukebox.useAPlayer', '使用APlayer播放mp3文件'));
@@ -694,7 +702,7 @@ window.Jukebox = {
     }
     
     const player = Jukebox.getPlayer();
-    if (player) {
+    if (player && Jukebox.State.isPlaying) {
       player.pause();
       player.seek(0);
     }

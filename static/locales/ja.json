@@ -527,7 +527,9 @@
         "screenshotTitle": "クリックしてスクリーンショット {{index}} を表示",
         "removeScreenshot": "このスクリーンショットを削除",
         "avatarPreview": "現在のアバターを表示",
-        "avatarPreviewLabel": "現在のアバター"
+        "avatarPreviewLabel": "現在のアバター",
+        "jukebox": "ジュークボックス",
+        "jukeboxLabel": "ジュークボックス"
     },
     "voiceControl": {
         "startVoice": "音声開始",

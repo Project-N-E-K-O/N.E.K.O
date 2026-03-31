@@ -527,7 +527,9 @@
         "screenshotTitle": "Нажмите для просмотра скриншота {{index}}",
         "removeScreenshot": "Удалить этот скриншот",
         "avatarPreview": "Показать текущий аватар",
-        "avatarPreviewLabel": "Текущий аватар"
+        "avatarPreviewLabel": "Текущий аватар",
+        "jukebox": "Музыкальный автомат",
+        "jukeboxLabel": "Музыкальный автомат"
     },
     "voiceControl": {
         "startVoice": "Начать голос",

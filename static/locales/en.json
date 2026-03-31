@@ -527,7 +527,9 @@
         "screenshotTitle": "Click to view screenshot {{index}}",
         "removeScreenshot": "Remove this screenshot",
         "avatarPreview": "Show current avatar",
-        "avatarPreviewLabel": "Current avatar"
+        "avatarPreviewLabel": "Current avatar",
+        "jukebox": "Jukebox",
+        "jukeboxLabel": "Jukebox"
     },
     "voiceControl": {
         "startVoice": "Start Voice",

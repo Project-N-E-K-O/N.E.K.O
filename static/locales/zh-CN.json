@@ -527,7 +527,9 @@
         "screenshotTitle": "点击查看截图 {{index}}",
         "removeScreenshot": "移除此截图",
         "avatarPreview": "显示当前头像",
-        "avatarPreviewLabel": "当前头像"
+        "avatarPreviewLabel": "当前头像",
+        "jukebox": "点歌台",
+        "jukeboxLabel": "点歌台"
     },
     "voiceControl": {
         "startVoice": "开始语音",
