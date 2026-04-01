@@ -185,6 +185,18 @@
       "vision_model": "MiniMax-Text-01",
       "agent_model": "MiniMax-M2.7"
     },
+    "claude": {
+      "key": "claude",
+      "name": "Claude（Anthropic）",
+      "description": "Anthropic的强力模型，国内无法使用，不支持自定义语音",
+      "openrouter_url": "https://api.anthropic.com/v1",
+      "conversation_model": "claude-sonnet-4-6",
+      "summary_model": "claude-sonnet-4-6",
+      "correction_model": "claude-sonnet-4-6",
+      "emotion_model": "claude-haiku-4-5-20251001",
+      "vision_model": "claude-sonnet-4-6",
+      "agent_model": "claude-opus-4-6"
+    },
     "grok": {
       "key": "grok",
       "name": "Grok（xAI）",
@@ -225,6 +237,7 @@
     "doubao": "ASSIST_API_KEY_DOUBAO",
     "minimax": "ASSIST_API_KEY_MINIMAX",
     "minimax_intl": "ASSIST_API_KEY_MINIMAX_INTL",
+    "claude": "ASSIST_API_KEY_CLAUDE",
     "grok": "ASSIST_API_KEY_GROK"
   },
   "api_key_registry": {
@@ -271,6 +284,10 @@
     "minimax_intl": {
       "config_field": "assistApiKeyMinimaxIntl",
       "restricted": false
+    },
+    "claude": {
+      "config_field": "assistApiKeyClaude",
+      "restricted": true
     },
     "grok": {
       "config_field": "assistApiKeyGrok",

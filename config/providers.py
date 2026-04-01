@@ -47,6 +47,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
+    # Claude 系列
+    "claude-sonnet-4-6": EXTRA_BODY_CLAUDE,
+    "claude-haiku-4-5-20251001": EXTRA_BODY_CLAUDE,
     # Doubao Seed 2.0 系列
     "doubao-seed-2-0-lite-260215": EXTRA_BODY_DOUBAO,
     "doubao-seed-2-0-mini": EXTRA_BODY_DOUBAO,
