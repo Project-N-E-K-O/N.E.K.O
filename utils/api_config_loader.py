@@ -325,6 +325,26 @@ def get_free_voices() -> Dict[str, str]:
     return config.get('free_voices', {})
 
 
+_COSYVOICE_CLONE_MODEL_DEFAULT = "cosyvoice-v3.5-plus"
+
+
+def get_cosyvoice_clone_model() -> str:
+    """获取 CosyVoice 克隆/合成使用的模型名称。
+
+    读取 api_providers.json → default_models.cosyvoice_clone_model，
+    未配置时 fallback 到 ``cosyvoice-v3.5-plus``。
+    """
+    return (
+        get_default_models().get('cosyvoice_clone_model')
+        or _COSYVOICE_CLONE_MODEL_DEFAULT
+    )
+
+
+def cosyvoice_model_supports_language_hints(model: str) -> bool:
+    """language_hints 仅适用于 v3 / v3.5 系列模型，v2 不支持。"""
+    return not model.startswith("cosyvoice-v2")
+
+
 # 导出主要函数
 __all__ = [
     'get_core_api_profiles',
@@ -336,4 +356,6 @@ __all__ = [
     'reload_config',
     'get_config',
     'get_free_voices',
+    'get_cosyvoice_clone_model',
+    'cosyvoice_model_supports_language_hints',
 ]

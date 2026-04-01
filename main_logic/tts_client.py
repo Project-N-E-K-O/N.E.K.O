@@ -940,15 +940,20 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         """创建新的 SpeechSynthesizer，可选语言提示。
         仅建立 WebSocket 连接，不发送预热文本——调用方会紧接着发送真实文本。
         """
+        from utils.api_config_loader import (
+            cosyvoice_model_supports_language_hints,
+            get_cosyvoice_clone_model,
+        )
         nonlocal last_streaming_call_time
+        clone_model = get_cosyvoice_clone_model()
         kwargs = dict(
-            model="cosyvoice-v3.5-plus",
+            model=clone_model,
             voice=voice_id,
             speech_rate=1.05,
             format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,
             callback=callback,
         )
-        if lang_hint:
+        if lang_hint and cosyvoice_model_supports_language_hints(clone_model):
             kwargs["language_hints"] = [lang_hint]
         callback.construct_start_time = time.time()
         syn = SpeechSynthesizer(**kwargs)

@@ -1790,9 +1790,9 @@ async def get_voice_preview(voice_id: str):
 
         # 生成音频
         dashscope.api_key = audio_api_key
-        # 参照 复刻.py 使用 cosyvoice-v3.5-plus 模型
         try:
-            synthesizer = SpeechSynthesizer(model="cosyvoice-v3.5-plus", voice=voice_id)
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            synthesizer = SpeechSynthesizer(model=get_cosyvoice_clone_model(), voice=voice_id)
             # 使用 asyncio.to_thread 包装同步阻塞调用
             audio_data = await asyncio.to_thread(lambda: synthesizer.call(text))
             
@@ -2750,7 +2750,6 @@ async def voice_clone_direct(request: Request):
                 prefix=prefix,
                 url=direct_link,
                 language_hints=language_hints,
-                target_model="cosyvoice-v3.5-plus",
             )
 
             voice_data = {
