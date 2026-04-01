@@ -129,13 +129,13 @@
 
         // 语音模式：固定间隔（不退避），连续5轮无回复则停止
         if (S.isRecording) {
-            if (S._voiceProactiveNoResponseCount >= 5) {
+            if (S._voiceProactiveNoResponseCount >= 10) {
                 console.log('[ProactiveChat] 语音模式连续5轮无回复，停止主动搭话');
                 return;
             }
             var baseInterval = Math.min(S.proactiveChatInterval, S.proactiveVisionInterval);
             var delay = baseInterval * 1000;
-            console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/5）');
+            console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/10）');
 
             S.proactiveChatTimer = setTimeout(async function () {
                 if (S.isProactiveChatRunning) return;
