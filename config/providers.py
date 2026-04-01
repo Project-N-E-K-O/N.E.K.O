@@ -20,6 +20,7 @@ from typing import Any
 
 EXTRA_BODY_OPENAI = {"enable_thinking": False}
 EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
+EXTRA_BODY_DOUBAO = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
 
@@ -46,6 +47,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
+    # Doubao Seed 2.0 系列
+    "doubao-seed-2-0-lite-260215": EXTRA_BODY_DOUBAO,
+    "doubao-seed-2-0-mini": EXTRA_BODY_DOUBAO,
+    "doubao-seed-2-0-pro-260215": EXTRA_BODY_DOUBAO,
     # Gemini 系列
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,

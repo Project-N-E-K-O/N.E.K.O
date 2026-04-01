@@ -166,11 +166,11 @@
       "name": "MiniMax（国服）",
       "description": "支持语音克隆（TTS），国服版本",
       "openrouter_url": "https://api.minimaxi.com/v1",
-      "conversation_model": "MiniMax-M2.5",
-      "summary_model": "MiniMax-M2.5",
-      "correction_model": "MiniMax-M2.5",
-      "emotion_model": "MiniMax-M2",
-      "vision_model": "MiniMax-M2.7",
+      "conversation_model": "MiniMax-Text-01",
+      "summary_model": "MiniMax-Text-01",
+      "correction_model": "MiniMax-Text-01",
+      "emotion_model": "MiniMax-Text-01",
+      "vision_model": "MiniMax-Text-01",
       "agent_model": "MiniMax-M2.7"
     },
     "minimax_intl": {
@@ -178,11 +178,11 @@
       "name": "MiniMax（国际服）",
       "description": "支持语音克隆（TTS），国际服版本",
       "openrouter_url": "https://api.minimax.chat/v1",
-      "conversation_model": "MiniMax-M2.5",
-      "summary_model": "MiniMax-M2.5",
-      "correction_model": "MiniMax-M2.5",
-      "emotion_model": "MiniMax-M2",
-      "vision_model": "MiniMax-M2.7",
+      "conversation_model": "MiniMax-Text-01",
+      "summary_model": "MiniMax-Text-01",
+      "correction_model": "MiniMax-Text-01",
+      "emotion_model": "MiniMax-Text-01",
+      "vision_model": "MiniMax-Text-01",
       "agent_model": "MiniMax-M2.7"
     },
     "grok": {
@@ -195,7 +195,7 @@
       "correction_model": "grok-4-1-fast-non-reasoning",
       "emotion_model": "grok-3-mini-fast",
       "vision_model": "grok-2-vision-latest",
-      "agent_model": "grok-4"
+      "agent_model": "grok-4.1-fast-non-reasoning"
     }
   },
   "default_models": {
