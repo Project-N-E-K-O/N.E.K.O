@@ -498,9 +498,12 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                     buttonsContainer.style.transformOrigin = 'left top';
                     const isLocked = this.isLocked;
                     const hoveringButtons = this._mmdButtonsHovered === true;
-                    const hasOpenPopup = Array.from(document.querySelectorAll('[id^="mmd-popup-"]'))
-                        .some(popup => popup.style.display === 'flex' && popup.style.opacity !== '0');
-                    const shouldShowButtons = !isLocked && (this._mmdUiNearModel || hoveringButtons || hasOpenPopup);
+                    const popupUi = window.AvatarPopupUI || null;
+                    const hasOpenOverlay = popupUi && typeof popupUi.hasVisibleOverlay === 'function'
+                        ? popupUi.hasVisibleOverlay('mmd')
+                        : Array.from(document.querySelectorAll('[id^="mmd-popup-"]'))
+                            .some(popup => popup.style.display === 'flex' && popup.style.opacity !== '0');
+                    const shouldShowButtons = !isLocked && (this._mmdUiNearModel || hoveringButtons || hasOpenOverlay);
                     buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;
