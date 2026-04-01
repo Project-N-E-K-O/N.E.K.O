@@ -325,5 +325,5 @@ Err(SdkError("设备离线"))
 ## 依赖
 
 - Python 3.11+
-- 内嵌 `mijia_api` 模块
+- 内嵌 `mijia_api` 模块（不用单独下载）
 - 外部依赖见项目根目录 `requirements.txt`
