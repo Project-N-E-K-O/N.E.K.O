@@ -856,6 +856,8 @@ window.Jukebox = {
     // 直接停止动画模块，不通过 stopAnimation()
     // 避免在 idle 加载完成前改变 cursor follow 状态
     window.mmdManager.animationModule.stop();
+    // 清除 currentAnimationUrl 防止下次 playVMD 误将舞蹈 URL 存为 idle
+    window.mmdManager.currentAnimationUrl = null;
     Jukebox.State.isVMDPlaying = false;
     Jukebox.State.isPaused = false;
 
@@ -866,6 +868,9 @@ window.Jukebox = {
 
   restoreIdleAnimation: async function() {
     if (!window.mmdManager) return;
+
+    // 记录发起恢复时的 playRequestId，用于检测新播放请求是否已覆盖
+    const restoreRequestId = Jukebox.State.playRequestId;
 
     let idleUrl = Jukebox.State.savedIdleAnimationUrl;
 
@@ -883,8 +888,13 @@ window.Jukebox = {
       } catch (_) { /* ignore */ }
     }
 
+    // 异步操作后检查：如果已有新的播放请求，放弃恢复
+    if (restoreRequestId !== Jukebox.State.playRequestId) {
+      console.log('[Jukebox] 恢复待机动画被新播放请求取消');
+      return;
+    }
+
     if (!idleUrl) {
-      // 无待机动画可恢复，重置 cursor follow 到完全跟踪
       if (window.mmdManager.cursorFollow) {
         window.mmdManager.cursorFollow.setAnimationMode('none');
       }
@@ -893,12 +903,17 @@ window.Jukebox = {
 
     try {
       await window.mmdManager.loadAnimation(idleUrl);
-      // playAnimation() 默认 'idle' 模式，会设置 cursor follow 权重为 0.7
+
+      // 二次检查：loadAnimation 是异步的
+      if (restoreRequestId !== Jukebox.State.playRequestId) {
+        console.log('[Jukebox] 恢复待机动画被新播放请求取消');
+        return;
+      }
+
       window.mmdManager.playAnimation();
       console.log('[Jukebox]', window.t('Jukebox.idleRestored', '已恢复待机动画'));
     } catch (error) {
       console.warn('[Jukebox]', window.t('Jukebox.idleRestoreFailed', '恢复待机动画失败'), error);
-      // 加载失败也要恢复 cursor follow
       if (window.mmdManager.cursorFollow) {
         window.mmdManager.cursorFollow.setAnimationMode('none');
       }
