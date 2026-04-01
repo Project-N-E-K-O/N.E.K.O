@@ -1584,6 +1584,7 @@
             "statusQueued": "队列中",
             "statusCompleted": "已完成",
             "statusFailed": "失败",
+            "statusCancelled": "已取消",
             "minimize": "折叠/展开",
             "cancelAll": "终止所有任务",
             "cancelConfirm": "确定要终止所有正在进行的任务吗？",

@@ -1584,6 +1584,7 @@
             "statusQueued": "キュー中",
             "statusCompleted": "完了",
             "statusFailed": "失敗",
+            "statusCancelled": "キャンセル済み",
             "minimize": "折りたたみ/展開",
             "cancelAll": "すべてのタスクをキャンセル",
             "cancelConfirm": "実行中のすべてのタスクをキャンセルしますか？",
