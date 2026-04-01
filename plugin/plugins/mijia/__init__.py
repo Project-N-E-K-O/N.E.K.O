@@ -325,7 +325,14 @@ class MijiaPlugin(NekoPluginBase):
                 except Exception as e:
                     self.logger.warning(f"删除数据文件失败 {item}: {e}")
         
+        # 关闭旧 client 再置 None，防止 HttpClient / CacheManager 资源泄漏
+        old_api = self.api
         self.api = None
+        if old_api is not None:
+            try:
+                await old_api.close()
+            except Exception as close_err:
+                self.logger.warning(f"关闭旧API客户端时出错: {close_err}")
         self.logger.info("已登出，凭据和数据已删除")
         return Ok({"success": True, "message": "✅ 已登出，所有本地数据已清除"})
 
