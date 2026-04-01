@@ -1375,7 +1375,8 @@ class LLMSessionManager:
             )
             
             logger.info(f"⚡ 并行启动完成 (总用时: {time.time() - start_parallel_time:.2f}秒)")
-            logger.info(f"[语音会话诊断] 并行启动结果: TTS={'异常' if isinstance(tts_result, Exception) else 'OK'}, LLM={'异常' if isinstance(llm_result, Exception) else 'OK'}")
+            tts_status = '异常' if isinstance(tts_result, Exception) else ('跳过(原生语音)' if not self.use_tts else 'OK')
+            logger.info(f"[语音会话诊断] 并行启动结果: TTS={tts_status}, LLM={'异常' if isinstance(llm_result, Exception) else 'OK'}")
             # 检查是否有错误
             if isinstance(tts_result, Exception):
                 logger.error(f"TTS 启动失败: {tts_result}")
