@@ -519,8 +519,8 @@ class OmniRealtimeClient:
                     },
                     "repetition_penalty": 1.2,
                     "temperature": 0.7,
-                    "enable_search": True,
-                    "search_options": {'enable_source': True}
+                    # "enable_search": True,
+                    # "search_options": {'enable_source': True}
                 })
             elif "gpt" in self.model:
                 await self.update_session({
@@ -1038,11 +1038,15 @@ class OmniRealtimeClient:
             return False
 
         # ── Choose audio file ─────────────────────────────────────────
-        # Vision is active if we recognized an image this turn OR have an
-        # unconsumed frame from stream_image().
+        # Vision context exists if an image was analyzed this turn (via
+        # VISION_MODEL text description OR native image input) or we have
+        # an unconsumed frame from stream_image().
         has_vision = self._image_recognized_this_turn or (
             self._latest_image_b64 is not None and not self._proactive_image_consumed
         )
+        # Only backends with native image support can receive raw screenshots;
+        # step / lanlan.tech+free consume vision context as text only.
+        can_inject_image = has_vision and self._supports_native_image
         prompt_type = "vision" if has_vision else "general"
         lang = (language or "zh")[:2]
         filename = f"prompt_{prompt_type}_{lang}.wav"
@@ -1090,15 +1094,27 @@ class OmniRealtimeClient:
                     "audio": audio_b64,
                 })
 
-            # Inject cached screenshot at midpoint so vision model can recognize it
-            if has_vision and not image_injected and chunk_idx >= mid_chunk and self._latest_image_b64:
+            # Inject cached screenshot at midpoint (only for native-image backends)
+            if can_inject_image and not image_injected and chunk_idx >= mid_chunk and self._latest_image_b64:
                 if self._is_gemini:
                     if self._gemini_session:
                         image_bytes = base64.b64decode(self._latest_image_b64)
                         await self._gemini_session.send_realtime_input(
                             media={"data": image_bytes, "mime_type": "image/jpeg"}
                         )
-                elif "qwen" in self.model:
+                elif "gpt" in self.model:
+                    await self.send_event({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{
+                                "type": "input_image",
+                                "image_url": "data:image/jpeg;base64," + self._latest_image_b64,
+                            }],
+                        },
+                    })
+                elif "qwen" in self.model or ("lanlan.app" in self.base_url and "free" in self.model):
                     await self.send_event({
                         "type": "input_image_buffer.append",
                         "image": self._latest_image_b64,
@@ -1109,12 +1125,17 @@ class OmniRealtimeClient:
                         "video_frame": self._latest_image_b64,
                     })
                 image_injected = True
-                self._proactive_image_consumed = True
                 logger.info("stream_proactive: injected screenshot at chunk %d/%d", chunk_idx, total_chunks)
 
             await asyncio.sleep(sleep_interval)
 
-        logger.info("stream_proactive: audio injection complete, waiting for VAD → response")
+        # Mark vision context consumed after full successful delivery —
+        # whether the image was injected natively or consumed as text annotation.
+        if has_vision:
+            self._proactive_image_consumed = True
+        logger.info("stream_proactive: audio injection complete (%s%s), waiting for VAD → response",
+                     "vision" if has_vision else "general",
+                     "+image" if image_injected else "")
         return True
 
     async def cancel_response(self) -> None:

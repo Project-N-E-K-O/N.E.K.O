@@ -146,7 +146,14 @@
                     S.isProactiveChatRunning = false;
                 }
                 S._voiceProactiveNoResponseCount = (S._voiceProactiveNoResponseCount || 0) + 1;
-                scheduleProactiveChat();
+                // 不在这里 scheduleProactiveChat()——等 AI turn end 后再调度下一次，
+                // 避免 AI 还在说话就被下一次 nudge 打断。
+                // turn end handler 中会对语音模式调用 scheduleProactiveChat()。
+                // 如果本次 nudge 被 guard 跳过（pass），AI 不会响应也不会有 turn end，
+                // 所以 pass 时仍需自行调度。
+                if (S._voiceProactiveLastResult === 'pass') {
+                    scheduleProactiveChat();
+                }
             }, delay);
             return;
         }
@@ -242,7 +249,8 @@
                     })
                 });
                 var result = await resp.json();
-                console.log('[ProactiveChat] 语音模式结果:', result.action || 'unknown');
+                S._voiceProactiveLastResult = result.action || 'unknown';
+                console.log('[ProactiveChat] 语音模式结果:', S._voiceProactiveLastResult);
                 return;
             }
 
