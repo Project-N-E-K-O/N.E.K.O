@@ -6,6 +6,7 @@ Each step: one VLM call with screenshot → structured thought/action/code → e
 The multimodal model handles visual grounding directly in its generated code.
 Supports thinking mode for models that provide it.
 """
+
 from typing import Dict, Any, Optional, List, Tuple
 import json
 import re
@@ -29,6 +30,7 @@ logger = get_module_logger(__name__, "Agent")
 try:
     if platform.system().lower() == "windows":
         import ctypes
+
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
@@ -187,6 +189,7 @@ HISTORY_TEMPLATE_NON_THINKING = "## Thought:\n{thought}\n\n## Action:\n{action}\
 
 # ─── Response Parser ────────────────────────────────────────────────────
 
+
 def parse_response(
     response_content: str, reasoning_content: Optional[str] = None
 ) -> Dict[str, str]:
@@ -196,7 +199,10 @@ def parse_response(
     visible *response_content* starts at ``## Action``.
     """
     result: Dict[str, str] = {
-        "thought": "", "action": "", "code": "", "raw": response_content,
+        "thought": "",
+        "action": "",
+        "code": "",
+        "raw": response_content,
     }
     text = response_content.lstrip()
 
@@ -205,11 +211,12 @@ def parse_response(
         result["thought"] = reasoning_content.strip()
         m = re.search(r"^##\s*Action\b", text, flags=re.MULTILINE)
         if m:
-            text = text[m.start():]
+            text = text[m.start() :]
     else:
         m = re.search(
             r"##\s*Thought\s*:?\s*[\n\r]+(.*?)(?=##\s*Action|##\s*Code|$)",
-            text, re.DOTALL,
+            text,
+            re.DOTALL,
         )
         if m:
             result["thought"] = m.group(1).strip()
@@ -217,15 +224,14 @@ def parse_response(
     # Action
     m = re.search(
         r"##\s*Action\s*:?\s*[\n\r]+(.*?)(?=##\s*Code|```|$)",
-        text, re.DOTALL,
+        text,
+        re.DOTALL,
     )
     if m:
         result["action"] = m.group(1).strip()
 
     # Code (last block)
-    code_blocks = re.findall(
-        r"```(?:python|code)?\s*\n?(.*?)\s*```", text, re.DOTALL
-    )
+    code_blocks = re.findall(r"```(?:python|code)?\s*\n?(.*?)\s*```", text, re.DOTALL)
     if code_blocks:
         result["code"] = code_blocks[-1].strip()
 
@@ -233,6 +239,7 @@ def parse_response(
 
 
 # ─── Coordinate-scaling proxy ───────────────────────────────────────────
+
 
 class _ScaledPyAutoGUI:
     """Projects [0, 999] model coordinates to physical screen pixels.
@@ -258,9 +265,11 @@ class _ScaledPyAutoGUI:
     def __getattr__(self, name):
         attr = getattr(self._backend, name)
         if callable(attr):
+
             def _wrapped(*args, **kwargs):
                 self._ensure_not_cancelled()
                 return attr(*args, **kwargs)
+
             return _wrapped
         return attr
 
@@ -270,8 +279,10 @@ class _ScaledPyAutoGUI:
 
     def _in_range(self, x, y) -> bool:
         return (
-            isinstance(x, (int, float)) and isinstance(y, (int, float))
-            and 0 <= x <= self._COORD_MAX and 0 <= y <= self._COORD_MAX
+            isinstance(x, (int, float))
+            and isinstance(y, (int, float))
+            and 0 <= x <= self._COORD_MAX
+            and 0 <= y <= self._COORD_MAX
         )
 
     def _project(self, args, kwargs):
@@ -306,6 +317,7 @@ class _ScaledPyAutoGUI:
         if tx is not None:
             self._smooth_move_to(tx, ty)
             self._show_click_halo(tx, ty)
+        self._ensure_not_cancelled()
         return self._backend.click(*a, **kw)
 
     def doubleClick(self, *a, **kw):
@@ -315,6 +327,7 @@ class _ScaledPyAutoGUI:
         if tx is not None:
             self._smooth_move_to(tx, ty)
             self._show_click_halo(tx, ty)
+        self._ensure_not_cancelled()
         return self._backend.doubleClick(*a, **kw)
 
     def rightClick(self, *a, **kw):
@@ -324,20 +337,21 @@ class _ScaledPyAutoGUI:
         if tx is not None:
             self._smooth_move_to(tx, ty)
             self._show_click_halo(tx, ty)
+        self._ensure_not_cancelled()
         return self._backend.rightClick(*a, **kw)
 
     def moveTo(self, *a, **kw):
         self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
-        if 'duration' not in kw and len(a) < 3:
-            kw['duration'] = 0.3
+        if "duration" not in kw and len(a) < 3:
+            kw["duration"] = 0.3
         return self._backend.moveTo(*a, **kw)
 
     def dragTo(self, *a, **kw):
         self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
-        if 'duration' not in kw and len(a) < 3:
-            kw['duration'] = 0.5
+        if "duration" not in kw and len(a) < 3:
+            kw["duration"] = 0.5
         return self._backend.dragTo(*a, **kw)
 
     def scroll(self, clicks, x=None, y=None, *args, **kwargs):
@@ -353,9 +367,15 @@ class _ScaledPyAutoGUI:
 
     # ── Smooth movement & click halo ─────────────────────────────────────
 
-    def _extract_xy(self, args: tuple, kwargs: dict) -> Tuple[Optional[int], Optional[int]]:
+    def _extract_xy(
+        self, args: tuple, kwargs: dict
+    ) -> Tuple[Optional[int], Optional[int]]:
         """Extract (x, y) from already-projected args/kwargs."""
-        if len(args) >= 2 and isinstance(args[0], (int, float)) and isinstance(args[1], (int, float)):
+        if (
+            len(args) >= 2
+            and isinstance(args[0], (int, float))
+            and isinstance(args[1], (int, float))
+        ):
             return int(args[0]), int(args[1])
         x, y = kwargs.get("x"), kwargs.get("y")
         if x is not None and y is not None:
@@ -365,11 +385,16 @@ class _ScaledPyAutoGUI:
     def _smooth_move_to(self, x: int, y: int, duration: float = 0.3):
         """Smoothly move the cursor to (x, y) with easeOutQuad tween."""
         try:
-            tween = getattr(self._backend, 'easeOutQuad', None)
+            tween = getattr(self._backend, "easeOutQuad", None)
             if tween is None and pyautogui is not None:
-                tween = getattr(pyautogui, 'easeOutQuad', None)
-            self._backend.moveTo(x, y, duration=duration, _pause=False,
-                                 **({"tween": tween} if tween else {}))
+                tween = getattr(pyautogui, "easeOutQuad", None)
+            self._backend.moveTo(
+                x,
+                y,
+                duration=duration,
+                _pause=False,
+                **({"tween": tween} if tween else {}),
+            )
         except Exception:
             # Fallback: instant move
             try:
@@ -389,6 +414,7 @@ class _ScaledPyAutoGUI:
         """Type text via clipboard paste — handles CJK / Unicode reliably."""
         self._ensure_not_cancelled()
         import pyperclip
+
         paste_key = "command" if platform.system() == "Darwin" else "ctrl"
         pyperclip.copy(text)
         self._backend.hotkey(paste_key, "v")
@@ -414,6 +440,7 @@ class _ScaledPyAutoGUI:
 
 
 # ─── Main Adapter ───────────────────────────────────────────────────────
+
 
 class ComputerUseAdapter:
     """GUI automation agent: single-call Thought + Action + Code paradigm.
@@ -449,7 +476,8 @@ class ComputerUseAdapter:
         self._agent_model_cfg = self._config_manager.get_model_api_config("agent")
 
         self._history_template = (
-            HISTORY_TEMPLATE_THINKING if self.thinking
+            HISTORY_TEMPLATE_THINKING
+            if self.thinking
             else HISTORY_TEMPLATE_NON_THINKING
         )
 
@@ -478,7 +506,9 @@ class ComputerUseAdapter:
                 return
 
             self._llm_client = OpenAI(
-                base_url=base_url, api_key=api_key, timeout=65.0,
+                base_url=base_url,
+                api_key=api_key,
+                timeout=65.0,
                 max_retries=0,
             )
         except Exception as e:
@@ -504,10 +534,13 @@ class ComputerUseAdapter:
         try:
             if (
                 self._llm_client is None
-                or getattr(self._llm_client, '_base_url', None) and str(self._llm_client._base_url).rstrip('/') != base_url.rstrip('/')
+                or getattr(self._llm_client, "_base_url", None)
+                and str(self._llm_client._base_url).rstrip("/") != base_url.rstrip("/")
             ):
                 self._llm_client = OpenAI(
-                    base_url=base_url, api_key=api_key, timeout=65.0,
+                    base_url=base_url,
+                    api_key=api_key,
+                    timeout=65.0,
                     max_retries=0,
                 )
             extra = get_agent_extra_body(model) or {}
@@ -592,12 +625,16 @@ class ComputerUseAdapter:
                     return out
 
         # Fall back to smallest candidate.
-        resized = img.resize((max(320, int(w * 0.56)), max(180, int(h * 0.56))), Image.LANCZOS)
+        resized = img.resize(
+            (max(320, int(w * 0.56)), max(180, int(h * 0.56))), Image.LANCZOS
+        )
         buf = BytesIO()
         resized.save(buf, format="JPEG", quality=24, optimize=True)
         return buf.getvalue()
 
-    def _fit_images_to_total_budget(self, images: List[bytes], total_budget_bytes: int) -> List[bytes]:
+    def _fit_images_to_total_budget(
+        self, images: List[bytes], total_budget_bytes: int
+    ) -> List[bytes]:
         """Best-effort fit multiple images into a total size budget."""
         if not images:
             return images
@@ -668,61 +705,72 @@ class ComputerUseAdapter:
         }
 
         for i in range(n):
-            step_text = (
-                STEP_TEMPLATE.format(step_num=i + 1)
-                + self._history_template.format(
-                    thought=self.cots[i].get("thought", ""),
-                    action=self.cots[i].get("action", ""),
-                )
+            step_text = STEP_TEMPLATE.format(
+                step_num=i + 1
+            ) + self._history_template.format(
+                thought=self.cots[i].get("thought", ""),
+                action=self.cots[i].get("action", ""),
             )
             # Recent steps: keep the screenshot image
             if i >= history_start:
                 if text_parts:
-                    messages.append({
-                        "role": "assistant",
-                        "content": "\n".join(text_parts),
-                    })
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": "\n".join(text_parts),
+                        }
+                    )
                     text_parts = []
                 img_bytes = packed_history_by_idx.get(i, self.observations[i])
                 b64 = base64.b64encode(img_bytes).decode("utf-8")
-                messages.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{b64}",
-                        },
-                    }],
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{b64}",
+                                },
+                            }
+                        ],
+                    }
+                )
                 messages.append({"role": "assistant", "content": step_text})
             else:
                 # Older steps: text only (images dropped to save context)
                 text_parts.append(step_text)
                 if i == history_start - 1:
-                    messages.append({
-                        "role": "assistant",
-                        "content": "\n".join(text_parts),
-                    })
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": "\n".join(text_parts),
+                        }
+                    )
                     text_parts = []
 
         if text_parts:
-            messages.append({
-                "role": "assistant",
-                "content": "\n".join(text_parts),
-            })
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "\n".join(text_parts),
+                }
+            )
 
         # Current screenshot + task prompt
         cur_b64 = base64.b64encode(packed_current).decode("utf-8")
-        messages.append({
-            "role": "user",
-            "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{cur_b64}"},
-                },
-                {"type": "text", "text": instruction_prompt},
-            ],
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{cur_b64}"},
+                    },
+                    {"type": "text", "text": instruction_prompt},
+                ],
+            }
+        )
 
         # ── Call LLM ─────────────────────────────────────────────────
         parsed = self._call_llm(messages)
@@ -730,7 +778,9 @@ class ComputerUseAdapter:
         thought = parsed.get("thought", "")
         action = parsed.get("action", "")
 
-        print(f"[CUA] Step {step_num}, {action[:120]}") # 敏感日志使用print而不是logger，用于脱敏
+        print(
+            f"[CUA] Step {step_num}, {action[:120]}"
+        )  # 敏感日志使用print而不是logger，用于脱敏
 
         # ── Update agent state ───────────────────────────────────────
         self.observations.append(screenshot_bytes)
@@ -739,9 +789,7 @@ class ComputerUseAdapter:
 
         # Force termination at step limit
         if step_num >= self.max_steps and "computer.terminate" not in code.lower():
-            logger.warning(
-                "Reached max steps %d. Forcing termination.", self.max_steps
-            )
+            logger.warning("Reached max steps %d. Forcing termination.", self.max_steps)
             code = (
                 'computer.terminate(status="failure", '
                 'answer="Reached maximum step limit")'
@@ -766,10 +814,18 @@ class ComputerUseAdapter:
     def _make_cancellable_time_module(self):
         """Return a *time*-like namespace whose ``sleep`` is interruptible."""
         import types
+
         fake = types.ModuleType("time")
         cancel_event = self._cancel_event
-        for attr in ("monotonic", "time", "perf_counter", "strftime",
-                      "gmtime", "localtime", "mktime"):
+        for attr in (
+            "monotonic",
+            "time",
+            "perf_counter",
+            "strftime",
+            "gmtime",
+            "localtime",
+            "mktime",
+        ):
             if hasattr(time, attr):
                 setattr(fake, attr, getattr(time, attr))
 
@@ -777,6 +833,7 @@ class ComputerUseAdapter:
             cancel_event.wait(timeout=min(float(seconds), 30))
             if cancel_event.is_set():
                 raise InterruptedError("Task cancelled")
+
         fake.sleep = _cancellable_sleep
         return fake
 
@@ -822,7 +879,10 @@ class ComputerUseAdapter:
                 t_llm = time.monotonic() - t1
                 logger.info(
                     "[CUA] Step %d timing: capture=%.1fs (%dKB), llm=%.1fs",
-                    step, t_capture, len(jpg_bytes) // 1024, t_llm,
+                    step,
+                    t_capture,
+                    len(jpg_bytes) // 1024,
+                    t_llm,
                 )
 
                 # Re-check after the (potentially long) LLM call
@@ -839,7 +899,9 @@ class ComputerUseAdapter:
                 # ── Special actions ──────────────────────────────────
                 if "computer.terminate" in code_lower:
                     m_status = re.search(r'status\s*=\s*["\'](\w+)["\']', code)
-                    success = (m_status.group(1).lower() == "success") if m_status else False
+                    success = (
+                        (m_status.group(1).lower() == "success") if m_status else False
+                    )
                     m_answer = re.search(
                         r'answer\s*=\s*["\'](.+?)["\']', code, re.DOTALL
                     )
@@ -896,7 +958,8 @@ class ComputerUseAdapter:
     # ------------------------------------------------------------------
 
     _CANCEL_TERMINATE = {
-        "thought": "", "action": "",
+        "thought": "",
+        "action": "",
         "code": 'computer.terminate(status="failure", answer="Task cancelled by user")',
         "raw": "",
     }
@@ -927,7 +990,15 @@ class ComputerUseAdapter:
                         "thought": "",
                         "action": "",
                         "code": 'computer.terminate(status="failure", answer="AGENT_QUOTA_EXCEEDED")',
-                        "raw": json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get("used", 0), "limit": info.get("limit", 300)}}),
+                        "raw": json.dumps(
+                            {
+                                "code": "AGENT_QUOTA_EXCEEDED",
+                                "details": {
+                                    "used": info.get("used", 0),
+                                    "limit": info.get("limit", 300),
+                                },
+                            }
+                        ),
                     }
                 set_call_type("agent_cua")
                 resp = self._llm_client.chat.completions.create(
@@ -940,9 +1011,7 @@ class ComputerUseAdapter:
                 content = msg.content or ""
                 reasoning = getattr(msg, "reasoning_content", None)
 
-                parsed = parse_response(
-                    content, reasoning if self.thinking else None
-                )
+                parsed = parse_response(content, reasoning if self.thinking else None)
                 if parsed["code"]:
                     return parsed
 
