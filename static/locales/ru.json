@@ -1582,6 +1582,7 @@
             "statusQueued": "В очереди",
             "statusCompleted": "Завершено",
             "statusFailed": "Ошибка",
+            "statusCancelled": "Отменено",
             "minimize": "Свернуть/Развернуть",
             "cancelAll": "Отменить все задачи",
             "cancelConfirm": "Отменить все задачи (включая ожидающие)?",

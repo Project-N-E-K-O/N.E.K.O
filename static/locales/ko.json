@@ -1584,6 +1584,7 @@
             "statusQueued": "대기 중",
             "statusCompleted": "완료됨",
             "statusFailed": "실패",
+            "statusCancelled": "취소됨",
             "minimize": "접기/펼치기",
             "cancelAll": "모든 작업 취소",
             "cancelConfirm": "진행 중인 모든 작업을 취소하시겠습니까?",

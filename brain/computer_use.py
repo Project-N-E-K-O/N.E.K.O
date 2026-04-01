@@ -302,26 +302,42 @@ class _ScaledPyAutoGUI:
     def click(self, *a, **kw):
         self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
+        tx, ty = self._extract_xy(a, kw)
+        if tx is not None:
+            self._smooth_move_to(tx, ty)
+            self._show_click_halo(tx, ty)
         return self._backend.click(*a, **kw)
 
     def doubleClick(self, *a, **kw):
         self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
+        tx, ty = self._extract_xy(a, kw)
+        if tx is not None:
+            self._smooth_move_to(tx, ty)
+            self._show_click_halo(tx, ty)
         return self._backend.doubleClick(*a, **kw)
 
     def rightClick(self, *a, **kw):
         self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
+        tx, ty = self._extract_xy(a, kw)
+        if tx is not None:
+            self._smooth_move_to(tx, ty)
+            self._show_click_halo(tx, ty)
         return self._backend.rightClick(*a, **kw)
 
     def moveTo(self, *a, **kw):
         self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
+        if 'duration' not in kw and len(a) < 3:
+            kw['duration'] = 0.3
         return self._backend.moveTo(*a, **kw)
 
     def dragTo(self, *a, **kw):
         self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
+        if 'duration' not in kw and len(a) < 3:
+            kw['duration'] = 0.5
         return self._backend.dragTo(*a, **kw)
 
     def scroll(self, clicks, x=None, y=None, *args, **kwargs):
@@ -334,6 +350,130 @@ class _ScaledPyAutoGUI:
                 scaled_x, scaled_y = int(round(x)), int(round(y))
             return self._backend.scroll(clicks, x=scaled_x, y=scaled_y, *args, **kwargs)
         return self._backend.scroll(clicks, x=x, y=y, *args, **kwargs)
+
+    # ── Smooth movement & click halo ─────────────────────────────────────
+
+    def _extract_xy(self, args: tuple, kwargs: dict) -> Tuple[Optional[int], Optional[int]]:
+        """Extract (x, y) from already-projected args/kwargs."""
+        if len(args) >= 2 and isinstance(args[0], (int, float)) and isinstance(args[1], (int, float)):
+            return int(args[0]), int(args[1])
+        x, y = kwargs.get("x"), kwargs.get("y")
+        if x is not None and y is not None:
+            return int(x), int(y)
+        return None, None
+
+    def _smooth_move_to(self, x: int, y: int, duration: float = 0.3):
+        """Smoothly move the cursor to (x, y) with easeOutQuad tween."""
+        try:
+            tween = getattr(self._backend, 'easeOutQuad', None)
+            if tween is None and pyautogui is not None:
+                tween = getattr(pyautogui, 'easeOutQuad', None)
+            self._backend.moveTo(x, y, duration=duration, _pause=False,
+                                 **({"tween": tween} if tween else {}))
+        except Exception:
+            # Fallback: instant move
+            try:
+                self._backend.moveTo(x, y, _pause=False)
+            except Exception:
+                pass
+
+    def _show_click_halo(self, x: int, y: int):
+        """Show a brief expanding-ring halo at (x, y). Windows only, via ctypes."""
+        if platform.system() != "Windows":
+            return
+        threading.Thread(target=self._halo_animation, args=(x, y), daemon=True).start()
+
+    @staticmethod
+    def _halo_animation(cx: int, cy: int):
+        """Render a quick expanding-ring overlay using Win32 + GDI (ctypes)."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            gdi32 = ctypes.windll.gdi32
+
+            # Constants
+            WS_EX_TOPMOST = 0x00000008
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_NOACTIVATE = 0x08000000
+            WS_POPUP = 0x80000000
+            LWA_COLORKEY = 0x00000001
+            LWA_ALPHA = 0x00000002
+            SW_SHOWNOACTIVATE = 4
+            GWL_EXSTYLE = -20
+            PS_SOLID = 0
+            NULL_BRUSH = 5
+
+            SIZE = 60  # window size
+            half = SIZE // 2
+
+            # Register window class (unique per thread to avoid conflicts)
+            tid = threading.current_thread().ident or 0
+            class_name = f"NekoCursorHalo_{tid}"
+
+            wc = wintypes.WNDCLASS()
+            wc.lpfnWndProc = ctypes.cast(user32.DefWindowProcW, ctypes.c_void_p)
+            wc.hInstance = user32.GetModuleHandleW(None)
+            wc.lpszClassName = class_name
+            wc.hbrBackground = gdi32.GetStockObject(NULL_BRUSH)
+            atom = user32.RegisterClassW(ctypes.byref(wc))
+
+            ex_style = WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+
+            hwnd = user32.CreateWindowExW(
+                ex_style, class_name, None, WS_POPUP,
+                cx - half, cy - half, SIZE, SIZE,
+                None, None, wc.hInstance, None,
+            )
+            if not hwnd:
+                return
+
+            # Transparent background via color key (magenta)
+            MAGENTA = 0x00FF00FF  # COLORREF BGR → magenta
+            user32.SetLayeredWindowAttributes(hwnd, MAGENTA, 0, LWA_COLORKEY)
+            user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+
+            hdc = user32.GetDC(hwnd)
+
+            # Fill background with magenta (will be keyed out)
+            brush = gdi32.CreateSolidBrush(MAGENTA)
+            rect = wintypes.RECT(0, 0, SIZE, SIZE)
+            user32.FillRect(hdc, ctypes.byref(rect), brush)
+            gdi32.DeleteObject(brush)
+
+            # Animation: 4 frames, ring expands from r=8 to r=26
+            ORANGE = 0x000080FF  # COLORREF BGR for orange
+            frames = [(8, 3), (14, 3), (20, 2), (26, 2)]
+            for radius, width in frames:
+                # Clear previous
+                brush2 = gdi32.CreateSolidBrush(MAGENTA)
+                user32.FillRect(hdc, ctypes.byref(rect), brush2)
+                gdi32.DeleteObject(brush2)
+
+                pen = gdi32.CreatePen(PS_SOLID, width, ORANGE)
+                old_pen = gdi32.SelectObject(hdc, pen)
+                old_brush = gdi32.SelectObject(hdc, gdi32.GetStockObject(NULL_BRUSH))
+
+                gdi32.Ellipse(hdc, half - radius, half - radius, half + radius, half + radius)
+
+                gdi32.SelectObject(hdc, old_pen)
+                gdi32.SelectObject(hdc, old_brush)
+                gdi32.DeleteObject(pen)
+
+                # Set window alpha for fade effect
+                alpha = max(60, 220 - (radius - 8) * 9)
+                user32.SetLayeredWindowAttributes(hwnd, MAGENTA, alpha, LWA_COLORKEY | LWA_ALPHA)
+
+                time.sleep(0.06)
+
+            user32.ReleaseDC(hwnd, hdc)
+            user32.DestroyWindow(hwnd)
+            user32.UnregisterClassW(class_name, wc.hInstance)
+        except Exception:
+            pass  # halo is purely cosmetic — never block execution
 
     def _clipboard_type(self, text: str):
         """Type text via clipboard paste — handles CJK / Unicode reliably."""
