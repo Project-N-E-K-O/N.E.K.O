@@ -355,11 +355,21 @@
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <select id="tonemapping-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
                         <option value="0" style="color: #4f8cff;">None (无)</option>
-                        <option value="1" selected style="color: #4f8cff;">Linear (线性)</option>
+                        <option value="1" style="color: #4f8cff;">Linear (线性)</option>
                         <option value="2" style="color: #4f8cff;">Reinhard</option>
                         <option value="3" style="color: #4f8cff;">Cineon (电影)</option>
                         <option value="4" style="color: #4f8cff;">ACES Filmic</option>
+                        <option value="6" style="color: #4f8cff;">AgX</option>
+                        <option value="7" selected style="color: #4f8cff;">Neutral</option>
                     </select>
+                </div>
+            </div>
+
+            <div class="lighting-control" id="vrm-outline-width-control">
+                <label for="vrm-outline-width-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.outlineWidth">描边粗细</label>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <input type="range" id="vrm-outline-width-slider" min="0" max="3" step="0.1" value="1.0" style="flex: 1;">
+                    <span id="vrm-outline-width-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">1.00</span>
                 </div>
             </div>
 
@@ -444,13 +454,13 @@
                             <label for="mmd-tonemapping-select" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.rendering.toneMapping">色调映射</label>
                             <div style="display: flex; align-items: center; gap: 10px;">
                                 <select id="mmd-tonemapping-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #2ecc71;">
-                                    <option value="0" selected style="color: #2ecc71;">None (无)</option>
+                                    <option value="0" style="color: #2ecc71;">None (无)</option>
                                     <option value="1" style="color: #2ecc71;">Linear (线性)</option>
                                     <option value="2" style="color: #2ecc71;">Reinhard</option>
                                     <option value="3" style="color: #2ecc71;">Cineon (电影)</option>
                                     <option value="4" style="color: #2ecc71;">ACES Filmic</option>
                                     <option value="6" style="color: #2ecc71;">AgX</option>
-                                    <option value="7" style="color: #2ecc71;">Neutral</option>
+                                    <option value="7" selected style="color: #2ecc71;">Neutral</option>
                                 </select>
                             </div>
                         </div>
