@@ -45,7 +45,7 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
         # 检查缓存
         cache_key = f"devices:{home_id}"
         cached = self._cache.get(cache_key, namespace=credential.user_id)
-        if cached:
+        if cached is not None:
             logger.info(f"从缓存获取设备列表: {home_id}")
             return [Device(**d) for d in cached]
 
@@ -71,20 +71,38 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
         return devices
 
     async def get_by_id(
-        self, device_id: str, home_id: str, credential: Credential
+        self, device_id: str, credential: Credential
     ) -> Optional[Device]:
         """异步获取单个设备
 
         Args:
             device_id: 设备ID
-            home_id: 家庭ID
             credential: 用户凭据
 
         Returns:
             设备对象，不存在返回None
         """
-        devices = await self.get_all(home_id, credential)
-        return next((d for d in devices if d.did == device_id), None)
+        # 遍历所有家庭查找设备
+        uri = "/v2/homeroom/gethome_merged"
+        data = {
+            "fg": True,
+            "fetch_share": True,
+            "fetch_share_dev": True,
+            "fetch_cariot": True,
+            "limit": 300,
+            "app_ver": 7,
+            "plat_form": 0,
+        }
+        response = await self._client.post(uri, data, credential)
+        homes = response.get("result", {}).get("homelist", [])
+        # 遍历每个家庭查找设备
+        for home in homes:
+            home_id = str(home.get("id", ""))
+            devices = await self.get_all(home_id, credential)
+            for device in devices:
+                if device.did == device_id:
+                    return device
+        return None
 
     async def get_properties(
         self, device_id: str, siid: int, piid: int, credential: Credential
@@ -148,18 +166,9 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
         Returns:
             是否成功
         """
-        # 构建请求参数
-        request_data = {
-            "did": device_id,
-            "siid": siid,
-            "aiid": aiid
-        }
-        if params:
-            request_data["value"] = params
-
         response = await self._http.post(
             "/miotspec/action",
-            {"params": request_data},
+            {"did": device_id, "siid": siid, "aiid": aiid, "in": params},
             credential,
         )
         return response.get("code") == 0

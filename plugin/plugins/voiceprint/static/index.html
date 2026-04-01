@@ -436,8 +436,8 @@
         let currentAudio = null;
         let isRecording = false;
 
-        async function startRecord(num) {
-            event.preventDefault();
+        async function startRecord(num, e) {
+            e.preventDefault();
             if (isRecording) return;
 
             const btn = document.getElementById('btn' + num);
@@ -450,46 +450,51 @@
             status.textContent = '正在录音...';
             status.className = 'record-status';
 
-            audioChunks = [];
-            currentAudio = num;
+            // 本次录音的局部状态，防止异步期间被后一次录音覆盖
+            const localChunks = [];
+            const localAudioNum = num;
+            const localStatus = status;
 
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream, {
+                const recorder = new MediaRecorder(stream, {
                     mimeType: 'audio/webm;codecs=opus'
                 });
 
-                mediaRecorder.ondataavailable = (e) => {
-                    if (e.data.size > 0) {
-                        audioChunks.push(e.data);
+                recorder.ondataavailable = (evt) => {
+                    if (evt.data.size > 0) {
+                        localChunks.push(evt.data);
                     }
                 };
 
-                mediaRecorder.onstop = async () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                recorder.onstop = async () => {
+                    const audioBlob = new Blob(localChunks, { type: 'audio/webm' });
 
                     // 转换为 WAV 格式
                     const arrayBuffer = await audioBlob.arrayBuffer();
                     const wavBuffer = await convertToWav(arrayBuffer);
                     const base64 = arrayBufferToBase64(wavBuffer);
 
-                    if (currentAudio === 1) {
+                    // 用捕获的局部变量决定写入哪个槽
+                    if (localAudioNum === 1) {
                         audio1Data = base64;
-                        status.textContent = '✓ 已录制';
+                        localStatus.textContent = '✓ 已录制';
                     } else {
                         audio2Data = base64;
-                        status.textContent = '✓ 已录制';
+                        localStatus.textContent = '✓ 已录制';
                     }
-                    status.className = 'record-status recorded';
+                    localStatus.className = 'record-status recorded';
 
                     // 停止所有轨道
                     stream.getTracks().forEach(track => track.stop());
 
                     updateCompareButton();
-                    resetButton(num);
+                    resetButton(localAudioNum);
                 };
 
-                mediaRecorder.start();
+                recorder.start();
+                // 用局部变量记录当前活跃 recorder，以便 stopRecord 停止正确的实例
+                mediaRecorder = recorder;
             } catch (err) {
                 console.error('录音失败:', err);
                 status.textContent = '录音失败: ' + err.message;
@@ -497,8 +502,8 @@
             }
         }
 
-        function stopRecord(num) {
-            event.preventDefault();
+        function stopRecord(num, e) {
+            e.preventDefault();
             if (!isRecording || !mediaRecorder || mediaRecorder.state !== 'recording') return;
 
             isRecording = false;
@@ -616,7 +621,6 @@
             btn.disabled = true;
             btnText.innerHTML = '<div class="loading-spinner"></div> 比对中...';
             resultContainer.className = 'result-container';
-            resultContainer.style.display = 'none';
 
             try {
                 const response = await fetch('/api/plugin/voiceprint/compare', {

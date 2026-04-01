@@ -8,7 +8,6 @@ import time
 from typing import Any, Dict
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ..core.config import ConfigManager
 from ..core.logging import get_logger
@@ -19,6 +18,7 @@ from ..domain.exceptions import (
     NetworkError,
     TimeoutError,
     TokenExpiredError,
+    get_exception_by_code,
 )
 from ..domain.models import Credential
 from .crypto_service import CryptoService
@@ -30,7 +30,7 @@ class HttpClient:
     """同步HTTP客户端
 
     提供统一的HTTP请求接口，支持：
-    - 自动重试机制（最多3次，指数退避）
+    - 读接口自动重试（最多3次，指数退避），写接口禁用重试
     - 请求数据加密
     - 错误码到异常的转换
     - 结构化日志记录（请求URL、user_id、响应时间）
@@ -57,18 +57,10 @@ class HttpClient:
             ),
         )
 
-    @retry(
-        stop=stop_after_attempt(3),  # 最多重试3次
-        wait=wait_exponential(multiplier=1, min=1, max=10),  # 指数退避：1s, 2s, 4s...最多10s
-        retry=retry_if_exception_type(
-            (httpx.TimeoutException, httpx.ConnectError)
-        ),  # 只重试超时和连接错误
-        reraise=True,  # 重试失败后重新抛出异常
-    )
     def _do_post(
         self, url: str, encrypted_params: Dict[str, str], headers: Dict[str, str], **kwargs: Any
     ) -> httpx.Response:
-        """执行POST请求（内部方法，用于重试）
+        """执行POST请求（内部方法，无重试）
 
         Args:
             url: 完整URL
@@ -78,20 +70,47 @@ class HttpClient:
 
         Returns:
             httpx响应对象
-
-        Raises:
-            httpx.TimeoutException: 请求超时（会被重试）
-            httpx.ConnectError: 连接错误（会被重试）
-            httpx.HTTPError: 其他HTTP错误（不会被重试）
         """
         response = self._client.post(url, data=encrypted_params, headers=headers, **kwargs)
         response.raise_for_status()
         return response
 
+    def _do_post_with_retry(
+        self, url: str, encrypted_params: Dict[str, str], headers: Dict[str, str], **kwargs: Any
+    ) -> httpx.Response:
+        """执行POST请求（带重试，仅用于读接口）
+
+        Args:
+            url: 完整URL
+            encrypted_params: 加密后的请求参数
+            headers: 请求头
+            **kwargs: 其他httpx.post参数
+
+        Returns:
+            httpx响应对象
+        """
+        max_retries = 3
+        last_exception: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                return self._do_post(url, encrypted_params, headers, **kwargs)
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    wait_time = min(2 ** attempt, 10)
+                    time.sleep(wait_time)
+                    continue
+        # 所有重试均失败
+        if last_exception is not None:
+            raise last_exception
+
     def post(
         self, path: str, json: Dict[str, Any], credential: Credential, **kwargs: Any
     ) -> Dict[str, Any]:
         """发送POST请求
+
+        写接口（/miotspec/prop/set、/miotspec/action）禁用自动重试，
+        以避免服务端已执行成功后因超时触发重复操作。
 
         Args:
             path: API路径（相对路径，如 "/home/device_list"）
@@ -141,8 +160,13 @@ class HttpClient:
         )
 
         try:
-            # 发送POST请求（带重试）
-            response = self._do_post(url, encrypted_params, headers, **kwargs)
+            # 判断是否对写接口禁用重试（避免超时导致重复执行设备控制）
+            should_retry = path not in ("/miotspec/prop/set", "/miotspec/action")
+            # 发送POST请求
+            if should_retry:
+                response = self._do_post_with_retry(url, encrypted_params, headers, **kwargs)
+            else:
+                response = self._do_post(url, encrypted_params, headers, **kwargs)
 
             # 记录原始响应（用于调试）
             logger.debug(
@@ -253,23 +277,17 @@ class HttpClient:
         code = result.get("code")
         message = result.get("message", "未知错误")
 
-        # 记录业务错误
-        logger.warning(
-            f"API业务错误: {message}",
-            extra={"error_code": code, "error_message": message},
-        )
-
-        # 根据错误码抛出对应异常
+        # 特殊日志处理（复用集中的错误码映射）
         if code == 401:
+            logger.warning(f"Token已过期", extra={"error_code": code, "error_message": message})
             raise TokenExpiredError("Token已过期")
         elif code == 404:
+            logger.warning(f"设备不存在: {message}", extra={"error_code": code})
             raise DeviceNotFoundError(message)
-        elif code == 403:
-            raise MijiaAPIException(f"权限不足: {message}", code=code)
-        elif code == 500:
-            raise MijiaAPIException(f"服务器内部错误: {message}", code=code)
         else:
-            raise MijiaAPIException(f"API错误: {message}", code=code)
+            exc = get_exception_by_code(code, message)
+            logger.warning(f"API业务错误: {message}", extra={"error_code": code})
+            raise exc
 
     def close(self) -> None:
         """关闭HTTP客户端
@@ -292,7 +310,7 @@ class AsyncHttpClient:
     """异步HTTP客户端
 
     提供异步的HTTP请求接口，支持：
-    - 自动重试机制（最多3次，指数退避）
+    - 读接口自动重试（最多3次，指数退避），写接口禁用重试
     - 请求数据加密
     - 错误码到异常的转换
     - 结构化日志记录（请求URL、user_id、响应时间）
@@ -319,45 +337,33 @@ class AsyncHttpClient:
             ),
         )
 
+    async def _do_post(
+        self, url: str, encrypted_params: Dict[str, str], headers: Dict[str, str], **kwargs: Any
+    ) -> httpx.Response:
+        """执行POST请求（内部方法，无重试）"""
+        response = await self._client.post(url, data=encrypted_params, headers=headers, **kwargs)
+        response.raise_for_status()
+        return response
+
     async def _do_post_with_retry(
         self, url: str, encrypted_params: Dict[str, str], headers: Dict[str, str], **kwargs: Any
     ) -> httpx.Response:
-        """执行POST请求（带重试）
-
-        Args:
-            url: 完整URL
-            encrypted_params: 加密后的请求参数
-            headers: 请求头
-            **kwargs: 其他httpx.post参数
-
-        Returns:
-            httpx响应对象
-
-        Raises:
-            httpx.TimeoutException: 请求超时
-            httpx.ConnectError: 连接错误
-            httpx.HTTPError: 其他HTTP错误
-        """
+        """执行POST请求（带重试，仅用于读接口）"""
         import asyncio
 
         max_retries = 3
-        last_exception: Exception = Exception("未知错误")
-        
+        last_exception: Exception | None = None
         for attempt in range(max_retries):
             try:
-                response = await self._client.post(url, data=encrypted_params, headers=headers, **kwargs)
-                response.raise_for_status()
-                return response
+                return await self._do_post(url, encrypted_params, headers, **kwargs)
             except (httpx.TimeoutException, httpx.ConnectError) as e:
                 last_exception = e
                 if attempt < max_retries - 1:
-                    # 指数退避：1s, 2s, 4s
                     wait_time = min(2 ** attempt, 10)
                     await asyncio.sleep(wait_time)
                     continue
-        
-        # 所有重试都失败，抛出最后一个异常
-        raise last_exception
+        if last_exception is not None:
+            raise last_exception
 
     async def post(
         self, path: str, json: Dict[str, Any], credential: Credential, **kwargs: Any
@@ -412,8 +418,12 @@ class AsyncHttpClient:
         )
 
         try:
-            # 发送POST请求（带重试）
-            response = await self._do_post_with_retry(url, encrypted_params, headers, **kwargs)
+            # 判断是否对写接口禁用重试（避免超时导致重复执行设备控制）
+            should_retry = path not in ("/miotspec/prop/set", "/miotspec/action")
+            if should_retry:
+                response = await self._do_post_with_retry(url, encrypted_params, headers, **kwargs)
+            else:
+                response = await self._do_post(url, encrypted_params, headers, **kwargs)
 
             # 解密响应
             decrypted_text = self._crypto.decrypt_response(
@@ -513,23 +523,17 @@ class AsyncHttpClient:
         code = result.get("code")
         message = result.get("message", "未知错误")
 
-        # 记录业务错误
-        logger.warning(
-            f"API业务错误: {message}",
-            extra={"error_code": code, "error_message": message},
-        )
-
-        # 根据错误码抛出对应异常
+        # 特殊日志处理（复用集中的错误码映射）
         if code == 401:
+            logger.warning(f"Token已过期", extra={"error_code": code, "error_message": message})
             raise TokenExpiredError("Token已过期")
         elif code == 404:
+            logger.warning(f"设备不存在: {message}", extra={"error_code": code})
             raise DeviceNotFoundError(message)
-        elif code == 403:
-            raise MijiaAPIException(f"权限不足: {message}", code=code)
-        elif code == 500:
-            raise MijiaAPIException(f"服务器内部错误: {message}", code=code)
         else:
-            raise MijiaAPIException(f"API错误: {message}", code=code)
+            exc = get_exception_by_code(code, message)
+            logger.warning(f"API业务错误: {message}", extra={"error_code": code})
+            raise exc
 
     async def close(self) -> None:
         """关闭异步HTTP客户端

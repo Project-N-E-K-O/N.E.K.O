@@ -56,7 +56,6 @@ class SceneRepositoryImpl(ISceneRepository):
             if scene_id_raw is None or scene_id_raw == "":
                 continue
             scene_id = str(scene_id_raw)
-                continue
             scene = Scene(
                 scene_id=scene_id,
                 name=scene_data.get("name", ""),

@@ -181,9 +181,9 @@ class CacheManager:
                 # Redis 写入失败不影响主流程
                 logger.warning(f"Redis 写入失败: {e}", extra={"key": full_key})
 
-        # L3: 长期缓存写入文件
+        # L3: 长期缓存写入文件（传递实际 ttl）
         if ttl > 300:
-            self._save_to_file(full_key, value)
+            self._save_to_file(full_key, value, ttl)
 
     def _set_memory_cache(self, full_key: str, value: Any, ttl: int) -> None:
         """写入内存缓存
@@ -225,6 +225,13 @@ class CacheManager:
             except Exception as e:
                 logger.warning(f"Redis 删除失败: {e}", extra={"key": full_key})
 
+        # L3: 删除文件缓存
+        try:
+            file_path = self._cache_dir / self._hash_key(full_key)
+            file_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"文件缓存删除失败: {e}", extra={"key": full_key})
+
     def invalidate_pattern(self, pattern: str) -> None:
         """失效匹配模式的所有缓存
 
@@ -256,6 +263,19 @@ class CacheManager:
         if namespace:
             # 清空指定命名空间
             self.invalidate_pattern(f"{namespace}:")
+            # L3: 删除该 namespace 对应的文件缓存
+            for f in self._cache_dir.iterdir():
+                if f.is_file():
+                    try:
+                        import json as _json
+                        with open(f, "r", encoding="utf-8") as _f:
+                            data = _json.load(_f)
+                        if isinstance(data, dict) and "_value" in data:
+                            _ns = data.get("_namespace", "")
+                            if _ns == namespace or f.stem.startswith(namespace):
+                                f.unlink()
+                    except Exception:
+                        pass
         else:
             # 清空所有缓存
             self._device_cache.clear()
@@ -276,6 +296,11 @@ class CacheManager:
                             break
                 except Exception as e:
                     logger.warning(f"Redis 清空失败: {e}")
+
+            # L3: 清空整个文件缓存目录
+            for f in self._cache_dir.iterdir():
+                if f.is_file():
+                    f.unlink(missing_ok=True)
 
             logger.info("所有缓存已清空")
 
@@ -341,7 +366,15 @@ class CacheManager:
         if file_path.exists():
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    wrapper = json.load(f)
+                # 解包：支持旧格式（直接值）和新格式（_value 包装）
+                if isinstance(wrapper, dict) and "_value" in wrapper:
+                    import time
+                    if time.time() > wrapper.get("_expires_at", 0):
+                        file_path.unlink(missing_ok=True)
+                        return None
+                    return wrapper["_value"]
+                return wrapper
             except Exception as e:
                 logger.warning(f"文件缓存加载失败: {e}", extra={"key": key})
                 return None

@@ -135,6 +135,7 @@ class ConfigManager:
             "SECURITY_CREDENTIAL_PATH": "CREDENTIAL_PATH",
             "LOGGING_LEVEL": "LOG_LEVEL",
             "NETWORK_DEFAULT_TIMEOUT": "DEFAULT_TIMEOUT",
+            "NETWORK_MAX_RETRIES": "MAX_RETRIES",
         }
         for alias_key, canonical_key in aliases.items():
             if alias_key in result and canonical_key not in result:

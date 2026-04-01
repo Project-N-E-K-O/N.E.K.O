@@ -134,6 +134,11 @@ class MijiaAPI:
                 self._cache_manager.invalidate_pattern(
                     f"{self._credential.user_id}:devices:{device.home_id}"
                 )
+            else:
+                # 设备未查到时，退化为清理当前用户的全部设备缓存
+                self._cache_manager.invalidate_pattern(
+                    f"{self._credential.user_id}:devices:*"
+                )
 
         return result
 
@@ -184,6 +189,11 @@ class MijiaAPI:
                 self._cache_manager.invalidate_pattern(
                     f"{self._credential.user_id}:devices:{device.home_id}"
                 )
+            else:
+                # 设备未查到时，退化为清理当前用户的全部设备缓存
+                self._cache_manager.invalidate_pattern(
+                    f"{self._credential.user_id}:devices:*"
+                )
 
         return result
 
@@ -230,9 +240,15 @@ class MijiaAPI:
                         home_ids.add(device.home_id)
 
             # 刷新所有涉及家庭的缓存
-            for home_id in home_ids:
+            if home_ids:
+                for home_id in home_ids:
+                    self._cache_manager.invalidate_pattern(
+                        f"{self._credential.user_id}:devices:{home_id}"
+                    )
+            else:
+                # 所有设备均未查到时，退化为清理当前用户的全部设备缓存
                 self._cache_manager.invalidate_pattern(
-                    f"{self._credential.user_id}:devices:{home_id}"
+                    f"{self._credential.user_id}:devices:*"
                 )
 
         return results
@@ -548,6 +564,11 @@ class AsyncMijiaAPI:
                     self._cache_manager.invalidate_pattern,
                     f"{self._credential.user_id}:devices:{device.home_id}",
                 )
+            else:
+                await asyncio.to_thread(
+                    self._cache_manager.invalidate_pattern,
+                    f"{self._credential.user_id}:devices:*",
+                )
 
         return result
 
@@ -601,6 +622,11 @@ class AsyncMijiaAPI:
                     self._cache_manager.invalidate_pattern,
                     f"{self._credential.user_id}:devices:{device.home_id}",
                 )
+            else:
+                await asyncio.to_thread(
+                    self._cache_manager.invalidate_pattern,
+                    f"{self._credential.user_id}:devices:*",
+                )
 
         return result
 
@@ -653,10 +679,16 @@ class AsyncMijiaAPI:
                         home_ids.add(device.home_id)
 
             # 刷新所有涉及家庭的缓存
-            for home_id in home_ids:
+            if home_ids:
+                for home_id in home_ids:
+                    await asyncio.to_thread(
+                        self._cache_manager.invalidate_pattern,
+                        f"{self._credential.user_id}:devices:{home_id}",
+                    )
+            else:
                 await asyncio.to_thread(
                     self._cache_manager.invalidate_pattern,
-                    f"{self._credential.user_id}:devices:{home_id}",
+                    f"{self._credential.user_id}:devices:*",
                 )
 
         return results

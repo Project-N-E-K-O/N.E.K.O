@@ -158,6 +158,11 @@ class DeviceProperty(BaseModel):
         if self.value_range and len(self.value_range) >= 2:
             if value < self.value_range[0] or value > self.value_range[1]:
                 return False
+            # 步长检查（仅当类型为整数且指定了 step 时生效）
+            if len(self.value_range) >= 3 and self.type == PropertyType.INT:
+                step = self.value_range[2]
+                if step > 0 and (value - self.value_range[0]) % step != 0:
+                    return False
 
         # 枚举检查
         if self.value_list and value not in self.value_list:

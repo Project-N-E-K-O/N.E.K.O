@@ -5,7 +5,7 @@
 模块：
 - http_client: HTTP客户端（同步和异步）
 - cache_manager: 缓存管理器
-- redis_client: Redis客户端（可选）
+- redis_client: Redis客户端（可选，未实现）
 - crypto_service: 加密服务
 - credential_provider: 凭据提供者
 - credential_store: 凭据存储

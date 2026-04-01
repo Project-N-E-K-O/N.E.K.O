@@ -94,6 +94,9 @@ class FileCredentialStore(ICredentialStore):
         """
         file_path = self._get_path(path)
 
+        # 确保父目录存在（支持自定义路径如 foo/bar/credential.json）
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
         try:
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(credential.to_dict(), f, ensure_ascii=False, indent=2, default=str)
@@ -105,12 +108,16 @@ class FileCredentialStore(ICredentialStore):
                     username = subprocess.check_output(
                         ["cmd", "/c", "echo", "%USERNAME%"], text=True
                     ).strip()
-                    subprocess.run(
+                    result = subprocess.run(
                         ["icacls", str(file_path), "/inheritance:r", "/grant:r", f"{username}:F"],
-                        check=False, capture_output=True
+                        check=False, capture_output=True, text=True
                     )
+                    if result.returncode != 0:
+                        logger.error(f"设置凭据文件权限失败(Windows): {result.stderr.strip()}")
+                        raise IOError(f"icacls failed: {result.stderr.strip()}")
                 except Exception as e:
                     logger.warning(f"设置凭据文件权限失败(Windows): {e}")
+                    raise
             else:
                 file_path.chmod(0o600)
 

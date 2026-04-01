@@ -700,7 +700,7 @@ class MijiaPlugin(NekoPluginBase):
         for p in props:
             pname = p.get("name", "").lower()
             if any(k in pname for k in ["开关", "电源", "power", "switch"]):
-                if p.get("access") in ["write", "read_write"]:
+                if p.get("access") in ["write", "read_write", "notify_read_write"]:
                     switch = p
                     self.logger.info(f"找到开关属性: {p}")
                     break
@@ -708,7 +708,7 @@ class MijiaPlugin(NekoPluginBase):
         if not switch:
             # 找第一个可写的bool
             for p in props:
-                if p.get("access") in ["write", "read_write"] and p.get("type") == "bool":
+                if p.get("access") in ["write", "read_write", "notify_read_write"] and p.get("type") == "bool":
                     switch = p
                     self.logger.info(f"找到bool属性: {p}")
                     break

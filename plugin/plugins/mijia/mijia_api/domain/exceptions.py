@@ -98,11 +98,6 @@ class MijiaConnectionError(NetworkError):
     pass
 
 
-# 保留旧名称的别名，用于向后兼容
-TimeoutError = MijiaTimeoutError
-ConnectionError = MijiaConnectionError
-
-
 class ValidationError(MijiaAPIException):
     """参数验证错误"""
 

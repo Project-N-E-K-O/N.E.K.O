@@ -24,7 +24,6 @@ class VoiceprintPlugin(NekoPluginBase):
 
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
 
         # 配置参数
         self.voiceprint_threshold = 0.5  # 相似度阈值
@@ -49,24 +48,46 @@ class VoiceprintPlugin(NekoPluginBase):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                 threshold = config.get("声纹识别阈值", 0.5)
-                if threshold:
+                if threshold is not None:
                     self.voiceprint_threshold = float(threshold)
                     self.logger.info(f"Loaded threshold from config: {self.voiceprint_threshold}")
         except Exception as e:
             self.logger.warning(f"Failed to load config: {e}")
 
-    def _preprocess_audio(self, audio: np.ndarray, target_sr: int = 16000) -> np.ndarray:
+    def _preprocess_audio(self, audio: np.ndarray, source_sr: int = 16000) -> np.ndarray:
         """音频预处理：重采样到目标采样率"""
         if len(audio) == 0:
             return audio
 
-        # 如果采样率不同，进行重采样
-        # 这里简化处理，假设输入音频已经是合适的采样率
-        # 实际使用时，前端已经将音频转换为16kHz
-        return audio
+        # 已达目标采样率，直接返回
+        if source_sr == self.sample_rate:
+            return audio
+
+        # 拒绝不支持的采样率，防止特征整体算偏
+        if source_sr not in (8000, 11025, 16000, 22050, 44100, 48000):
+            raise ValueError(f"不支持的采样率: {source_sr}，请先转换为支持的采样率")
+
+        # 使用 scipy 信号重采样（分数倍采样，精度高）
+        from scipy.signal import resample_poly
+        # gcd 计算最小公倍数，确保整数倍下采样
+        gcd = self._gcd(source_sr, self.sample_rate)
+        up = self.sample_rate // gcd
+        down = source_sr // gcd
+        return resample_poly(audio, up, down)
+
+    @staticmethod
+    def _gcd(a: int, b: int) -> int:
+        """计算最大公约数（欧几里得算法）"""
+        while b:
+            a, b = b, a % b
+        return a
 
     def _frame_audio(self, audio: np.ndarray) -> np.ndarray:
         """分帧处理"""
+        # 兜底：音频过短时直接返回零帧，避免 np.zeros(0, ...) 异常
+        if len(audio) < self.n_fft:
+            return np.zeros((0, self.n_fft))
+
         n_frames = 1 + (len(audio) - self.n_fft) // self.hop_length
         frames = np.zeros((n_frames, self.n_fft))
 
@@ -202,10 +223,11 @@ class VoiceprintPlugin(NekoPluginBase):
         if len(audio.shape) > 1:
             audio = audio[:, 0]
 
-        # 归一化到[-1, 1]
+        # 归一化到[-1, 1]，按绝对峰值归一化（避免不对称波形越界）
         audio = audio.astype(np.float32)
-        if audio.max() != 0:
-            audio = audio / audio.max()
+        abs_max = np.abs(audio).max()
+        if abs_max != 0:
+            audio = audio / abs_max
 
         return audio, sr
 

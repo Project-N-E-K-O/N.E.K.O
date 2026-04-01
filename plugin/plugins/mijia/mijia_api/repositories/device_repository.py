@@ -291,21 +291,10 @@ class DeviceRepositoryImpl(IDeviceRepository):
         # 参数已经是列表格式
         param_values = params if params else []
         
-        # 构建请求参数（使用旧版本的格式）
-        request_data = {
-            "did": device_id,
-            "siid": siid,
-            "aiid": aiid
-        }
-        
-        # 只有当有参数时才添加 value 字段
-        if param_values:
-            request_data["value"] = param_values
-        
-        # 调用API执行操作（使用 params 包装）
+        # 调用API执行操作（与异步版保持一致的请求格式）
         response = self._http.post(
             "/miotspec/action",
-            json={"params": request_data},
+            json={"did": device_id, "siid": siid, "aiid": aiid, "in": param_values},
             credential=credential,
         )
 

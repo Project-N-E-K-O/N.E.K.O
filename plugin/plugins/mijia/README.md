@@ -59,7 +59,7 @@
 | 关 | 关闭、关掉、关 |
 
 **示例**
-```
+```python
 smart_control(command="打开客厅插座")
 smart_control(command="关闭灯")
 ```
@@ -76,12 +76,12 @@ smart_control(command="关闭灯")
 按名称查询设备所有可读属性的当前值，是最常用的状态查询入口。
 
 **示例**
-```
+```python
 query_device_state(name="插座")
 ```
 
 **返回示例**
-```
+```text
 📱 设备 '插座' 当前状态：
 
   • 开关: ✅ 开启
@@ -98,7 +98,7 @@ query_device_state(name="插座")
 控制设备前，AI 通常需要先调用此入口获取 `did`、`siid`、`piid`。
 
 **示例**
-```
+```python
 find_device_by_name(name="插座")
 ```
 

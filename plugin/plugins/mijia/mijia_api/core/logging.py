@@ -60,28 +60,33 @@ class StructuredLogger:
 
         return json.dumps(log_data, ensure_ascii=False)
 
-    def _sanitize(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _sanitize(self, data: Any) -> Any:
         """脱敏处理敏感信息
 
         对包含敏感关键字的字段进行脱敏处理，替换为"***"。
         敏感关键字包括：token、password、ssecurity、service_token等。
+        递归处理嵌套字典和列表。
 
         Args:
-            data: 需要脱敏的数据字典
+            data: 需要脱敏的数据（字典、列表或原始值）
 
         Returns:
-            脱敏后的数据字典
+            脱敏后的数据
         """
         sensitive_keys = ["token", "password", "ssecurity", "service_token"]
-        sanitized: Dict[str, Any] = {}
 
-        for key, value in data.items():
-            if any(sk in key.lower() for sk in sensitive_keys):
-                sanitized[key] = "***"
-            else:
-                sanitized[key] = value
-
-        return sanitized
+        if isinstance(data, dict):
+            sanitized: Dict[str, Any] = {}
+            for key, value in data.items():
+                if any(sk in key.lower() for sk in sensitive_keys):
+                    sanitized[key] = "***"
+                else:
+                    sanitized[key] = self._sanitize(value)
+            return sanitized
+        elif isinstance(data, list):
+            return [self._sanitize(item) for item in data]
+        else:
+            return data
 
     def debug(self, message: str, extra: Optional[Dict[str, Any]] = None) -> None:
         """记录DEBUG级别日志

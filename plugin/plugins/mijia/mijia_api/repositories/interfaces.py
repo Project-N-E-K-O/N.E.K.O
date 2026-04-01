@@ -125,7 +125,7 @@ class IAsyncDeviceRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_by_id(self, device_id: str, home_id: str, credential: Credential) -> Optional[Device]:
+    async def get_by_id(self, device_id: str, credential: Credential) -> Optional[Device]:
         """根据ID获取设备"""
         pass
 
