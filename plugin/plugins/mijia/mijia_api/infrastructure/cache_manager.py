@@ -8,6 +8,7 @@
 当 Redis 配置存在时，使用三层缓存；否则使用内存+文件两层缓存。
 """
 
+import fnmatch
 import hashlib
 import json
 from pathlib import Path
@@ -135,9 +136,11 @@ class CacheManager:
                     data = json.loads(raw)
                     if isinstance(data, dict) and "_value" in data:
                         return data["_value"], data.get("_ttl", 300)
+                    # 旧格式：纯 JSON 值（dict/list 等），返回解析后的对象
+                    return data, 300
                 except Exception:
                     pass
-                # 旧格式：纯 JSON 值或非 JSON 字符串
+                # 非 JSON 字符串，直接返回
                 return raw, 300
             return raw, 300
         except Exception as e:
@@ -254,11 +257,18 @@ class CacheManager:
             pattern: 匹配模式，支持部分匹配
         """
         # L1: 清除内存缓存
-        keys_to_remove = [k for k in self._device_cache.keys() if pattern in k]
+        # 与 L2 (Redis glob 匹配) 保持一致：有 * 时用 fnmatch，否则用子串匹配
+        if "*" in pattern:
+            keys_to_remove = [k for k in self._device_cache.keys() if fnmatch.fnmatch(k, pattern)]
+        else:
+            keys_to_remove = [k for k in self._device_cache.keys() if pattern in k]
         for key in keys_to_remove:
             self._device_cache.pop(key, None)
 
-        keys_to_remove = [k for k in self._state_cache.keys() if pattern in k]
+        if "*" in pattern:
+            keys_to_remove = [k for k in self._state_cache.keys() if fnmatch.fnmatch(k, pattern)]
+        else:
+            keys_to_remove = [k for k in self._state_cache.keys() if pattern in k]
         for key in keys_to_remove:
             self._state_cache.pop(key, None)
 
