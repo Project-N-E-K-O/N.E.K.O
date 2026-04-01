@@ -419,6 +419,12 @@ _VALUE_TRANSLATIONS = {
         '女': '女',
         'T酱, 小T': 'T醬, 小T',
     },
+    'ru': {
+        '哥哥': 'Братик',
+        '男': 'Мужской',
+        '女': 'Женский',
+        'T酱, 小T': 'Тян-тян, малышка Т',
+    },
     # zh 和 zh-CN 使用原始中文值（不需要翻译）
 }
 
@@ -462,7 +468,9 @@ def get_localized_default_characters(language: str | None = None) -> dict:
             value_trans = _VALUE_TRANSLATIONS.get('ja')
         elif lang_lower.startswith('en'):
             value_trans = _VALUE_TRANSLATIONS.get('en')
-    
+        elif lang_lower.startswith('ru'):
+            value_trans = _VALUE_TRANSLATIONS.get('ru')
+
     # 如果不需要翻译（简体中文），直接返回原始配置
     if value_trans is None:
         return deepcopy(DEFAULT_CHARACTERS_CONFIG)
