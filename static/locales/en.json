@@ -1623,6 +1623,7 @@
             "bottomLight": "Bottom Light",
             "exposure": "Exposure",
             "toneMapping": "Tone Mapping",
+            "outlineWidth": "Outline Width",
             "resetLighting": "Reset Default",
             "saveLighting": "Save Lighting",
             "selectPreset": "Select Preset",
@@ -2594,7 +2595,16 @@
         "loadFailed": "Failed to load song list",
         "listContainerNotFound": "Song list container not found",
         "noSongs": "No songs available",
-        "playFailed": "Playback failed"
+        "playFailed": "Playback failed",
+        "pause": "Pause",
+        "resume": "Resume",
+        "paused": "Paused",
+        "resumed": "Resumed",
+        "pausedStatus": "Paused: {{name}}",
+        "idleRestored": "Idle animation restored",
+        "idleRestoreFailed": "Failed to restore idle animation",
+        "btnNotFoundGiveUp": "Jukebox button not found after retries, giving up",
+        "minimizeBtnNotFoundGiveUp": "Minimize button not found after retries, giving up"
     },
     "notice": {
         "voiceMigration": {

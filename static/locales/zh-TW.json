@@ -1623,6 +1623,7 @@
             "bottomLight": "底光強度",
             "exposure": "曝光",
             "toneMapping": "色調映射",
+            "outlineWidth": "描邊粗細",
             "resetLighting": "重置默認",
             "saveLighting": "保存打光",
             "selectPreset": "選擇預設",
@@ -2594,7 +2595,16 @@
         "loadFailed": "載入歌曲列表失敗",
         "listContainerNotFound": "歌曲列表容器不存在",
         "noSongs": "暫無歌曲",
-        "playFailed": "播放失敗"
+        "playFailed": "播放失敗",
+        "pause": "暫停",
+        "resume": "繼續",
+        "paused": "已暫停",
+        "resumed": "已恢復播放",
+        "pausedStatus": "已暫停: {{name}}",
+        "idleRestored": "已恢復待機動畫",
+        "idleRestoreFailed": "恢復待機動畫失敗",
+        "btnNotFoundGiveUp": "點歌台按鈕在重試後仍未找到，放棄綁定",
+        "minimizeBtnNotFoundGiveUp": "最小化按鈕在重試後仍未找到，放棄監聽"
     },
     "notice": {
         "voiceMigration": {
