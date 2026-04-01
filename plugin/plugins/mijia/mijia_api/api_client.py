@@ -860,14 +860,14 @@ class AsyncMijiaAPI:
 
         应在不再使用客户端时调用（如插件关闭时）。
         """
-        import asyncio
         try:
             # 关闭底层 HttpClient（持有 httpx.AsyncClient 连接池）
             # AsyncDeviceRepositoryImpl 使用 _http 属性存储 AsyncHttpClient
             repo = getattr(self._device_service, '_device_repo', None)
             if repo:
                 http_client = getattr(repo, '_http', None)
-                if http_client and hasattr(http_client, 'close'):
-                    await asyncio.to_thread(http_client.close)
+                if http_client and hasattr(http_client, 'aclose'):
+                    # httpx.AsyncClient.close() 是协程，必须直接 await，不能用 to_thread
+                    await http_client.aclose()
         except Exception:
             pass  # 关闭时忽略错误

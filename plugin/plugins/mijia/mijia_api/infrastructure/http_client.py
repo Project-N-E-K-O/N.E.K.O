@@ -5,7 +5,7 @@
 
 import json as json_module
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 import httpx
 
@@ -22,6 +22,27 @@ from ..domain.exceptions import (
 )
 from ..domain.models import Credential
 from .crypto_service import CryptoService
+
+# 响应头中可能包含敏感信息的字段（黑名单）
+_SENSITIVE_HEADERS: set[str] = {
+    k.lower()
+    for k in [
+        "cookie",
+        "set-cookie",
+        "set-cookie2",
+        "authorization",
+        "x-auth-token",
+        "x-session-token",
+        "x-user-token",
+        "user-agent",  # 部分场景下 User-Agent 也可能含认证信息
+        "x-device-id",
+    ]
+}
+
+
+def _safe_headers(headers: Mapping[str, str]) -> Dict[str, str]:
+    """从响应头中过滤掉敏感字段，只保留安全的调试信息。"""
+    return {k: v for k, v in headers.items() if k.lower() not in _SENSITIVE_HEADERS}
 
 logger = get_logger(__name__)
 
@@ -161,21 +182,20 @@ class HttpClient:
 
         try:
             # 判断是否对写接口禁用重试（避免超时导致重复执行设备控制）
-            should_retry = path not in ("/miotspec/prop/set", "/miotspec/action")
+            should_retry = path not in ("/miotspec/prop/set", "/miotspec/prop/set_batch", "/miotspec/action")
             # 发送POST请求
             if should_retry:
                 response = self._do_post_with_retry(url, encrypted_params, headers, **kwargs)
             else:
                 response = self._do_post(url, encrypted_params, headers, **kwargs)
 
-            # 记录原始响应（用于调试）
+            # 记录原始响应（用于调试），headers 已脱敏
             logger.debug(
                 f"原始响应: {path}",
                 extra={
                     "status_code": response.status_code,
-                    "headers": dict(response.headers),
+                    "headers": _safe_headers(response.headers),
                     "content_length": len(response.content),
-                    "content_preview": response.text[:200] if response.text else "(empty)",
                 },
             )
 
@@ -260,6 +280,20 @@ class HttpClient:
                 exc_info=e,
             )
             raise NetworkError(f"网络错误: {str(e)}") from e
+
+        except (ValueError, UnicodeDecodeError, json_module.JSONDecodeError) as e:
+            # 解密或 JSON 反序列化失败
+            response_time = time.time() - start_time
+            logger.error(
+                f"响应解析失败: {path}",
+                extra={
+                    "url": url,
+                    "user_id": credential.user_id,
+                    "response_time": f"{response_time:.3f}s",
+                },
+                exc_info=e,
+            )
+            raise MijiaAPIException(f"响应解析失败: {str(e)}") from e
 
     def _handle_error(self, result: Dict[str, Any]) -> None:
         """处理业务错误码
@@ -419,7 +453,7 @@ class AsyncHttpClient:
 
         try:
             # 判断是否对写接口禁用重试（避免超时导致重复执行设备控制）
-            should_retry = path not in ("/miotspec/prop/set", "/miotspec/action")
+            should_retry = path not in ("/miotspec/prop/set", "/miotspec/prop/set_batch", "/miotspec/action")
             if should_retry:
                 response = await self._do_post_with_retry(url, encrypted_params, headers, **kwargs)
             else:
@@ -506,6 +540,20 @@ class AsyncHttpClient:
                 exc_info=e,
             )
             raise NetworkError(f"网络错误: {str(e)}") from e
+
+        except (ValueError, UnicodeDecodeError, json_module.JSONDecodeError) as e:
+            # 解密或 JSON 反序列化失败
+            response_time = time.time() - start_time
+            logger.error(
+                f"异步响应解析失败: {path}",
+                extra={
+                    "url": url,
+                    "user_id": credential.user_id,
+                    "response_time": f"{response_time:.3f}s",
+                },
+                exc_info=e,
+            )
+            raise MijiaAPIException(f"响应解析失败: {str(e)}") from e
 
     def _handle_error(self, result: Dict[str, Any]) -> None:
         """处理业务错误码

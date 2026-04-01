@@ -12,7 +12,7 @@ from .core.config import ConfigManager
 from .core.logging import get_logger
 from .domain.models import Credential
 from .infrastructure.cache_manager import CacheManager
-from .infrastructure.credential_provider import CredentialProvider
+from .infrastructure.credential_provider import CredentialProvider, _mask_user_id
 from .infrastructure.credential_store import FileCredentialStore, ICredentialStore
 from .infrastructure.crypto_service import CryptoService
 from .infrastructure.http_client import HttpClient
@@ -154,7 +154,7 @@ def create_api_client(
         cache_manager=cache_manager,
     )
 
-    logger.info(f"API客户端创建成功，用户ID: {credential.user_id}")
+    logger.info(f"API客户端创建成功，用户ID: {_mask_user_id(credential.user_id)}")
 
     return api
 
@@ -220,7 +220,7 @@ def create_async_api_client(
         cache_manager=cache_manager,
     )
 
-    logger.info(f"异步API客户端创建成功，用户ID: {credential.user_id}")
+    logger.info(f"异步API客户端创建成功，用户ID: {_mask_user_id(credential.user_id)}")
 
     return api
 
@@ -346,7 +346,7 @@ def create_multi_user_clients(
         )
 
         clients[user_id] = client
-        logger.info(f"为用户 {user_id} 创建API客户端")
+        logger.info(f"为用户 {_mask_user_id(user_id)} 创建API客户端")
 
     logger.info(f"多用户API客户端创建完成，共 {len(clients)} 个用户")
 

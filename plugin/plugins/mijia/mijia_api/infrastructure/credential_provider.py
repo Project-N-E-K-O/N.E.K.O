@@ -21,6 +21,15 @@ from ..domain.models import Credential
 logger = get_logger(__name__)
 
 
+def _mask_user_id(user_id: Optional[str]) -> str:
+    """脱敏用户ID，只显示首尾各1字符，中间用 * 替代"""
+    if not user_id:
+        return "(unknown)"
+    if len(user_id) <= 2:
+        return user_id[0] + "***" if user_id else "***"
+    return f"{user_id[0]}***{user_id[-1]}"
+
+
 class CredentialProvider:
     """凭据提供者
 
@@ -87,7 +96,7 @@ class CredentialProvider:
                 expires_at=self._calculate_expires_at({}),
             )
 
-            logger.info(f"登录成功，用户ID: {credential.user_id}")
+            logger.info(f"登录成功，用户ID: {_mask_user_id(credential.user_id)}")
             return credential
 
         except LoginFailedError:
@@ -108,7 +117,7 @@ class CredentialProvider:
         Raises:
             TokenExpiredError: 凭据刷新失败
         """
-        logger.info(f"刷新凭据，用户ID: {credential.user_id}")
+        logger.info(f"刷新凭据，用户ID: {_mask_user_id(credential.user_id)}")
 
         # 检查是否有passToken
         if not credential.pass_token:
@@ -132,7 +141,7 @@ class CredentialProvider:
                 expires_at=self._calculate_expires_at(new_token_data),
             )
 
-            logger.info(f"凭据刷新成功，用户ID: {credential.user_id}")
+            logger.info(f"凭据刷新成功，用户ID: {_mask_user_id(credential.user_id)}")
             return new_credential
 
         except TokenExpiredError:
@@ -155,7 +164,7 @@ class CredentialProvider:
         Returns:
             bool: 撤销是否成功
         """
-        logger.info(f"撤销凭据，用户ID: {credential.user_id}")
+        logger.info(f"撤销凭据，用户ID: {_mask_user_id(credential.user_id)}")
 
         try:
             # 调用API撤销token
@@ -167,7 +176,7 @@ class CredentialProvider:
             )
 
             if response.status_code == 200:
-                logger.info(f"凭据撤销成功，用户ID: {credential.user_id}")
+                logger.info(f"凭据撤销成功，用户ID: {_mask_user_id(credential.user_id)}")
                 return True
             else:
                 logger.warning(f"凭据撤销失败，状态码: {response.status_code}")

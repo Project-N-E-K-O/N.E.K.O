@@ -5,7 +5,7 @@
 
 from typing import Any, Dict, List
 
-from ..domain.models import Credential, Device
+from ..domain.models import Credential, Device, DeviceStatus
 from ..repositories.interfaces import IDeviceRepository
 
 
@@ -44,7 +44,8 @@ class StatisticsService:
 
         # 统计在线和离线设备数量
         online_count = sum(1 for d in devices if d.is_online())
-        offline_count = sum(1 for d in devices if not d.is_online())
+        # UNKNOWN 状态不属于离线，只有显式 OFFLINE 才计入离线
+        offline_count = sum(1 for d in devices if d.status == DeviceStatus.OFFLINE)
 
         return {
             "total": len(devices),

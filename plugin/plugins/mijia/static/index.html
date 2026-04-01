@@ -373,6 +373,7 @@
     // 二维码登录流程
     let pollInterval = null;
     let isPollingInFlight = false;  // 防止并发轮询的闸门
+    let pollGeneration = 0;  // 轮询代际计数器，用于废弃旧周期的请求
 
     async function startQrLogin() {
         try {
@@ -383,17 +384,22 @@
             document.getElementById('qrDisplay').classList.remove('hidden');
             showMessage('请使用米家APP扫描二维码', 'info');
 
-            // 开始轮询
+            // 废弃旧轮询并开启新一轮
             if (pollInterval) clearInterval(pollInterval);
             isPollingInFlight = false;
+            const gen = ++pollGeneration;  // 获取当前代际编号
 
             pollInterval = setInterval(async () => {
                 // 如果上一次请求还没完成，跳过这次
                 if (isPollingInFlight) return;
+                // 如果代际已变化（新一轮已开始），废弃本次回调
+                if (gen !== pollGeneration) return;
 
                 isPollingInFlight = true;
                 try {
                     const result = await callPlugin('check_login_status', { login_url: qrData.login_url });
+                    // 代际检查：双重保险，防止旧请求在 stop→start 之间返回
+                    if (gen !== pollGeneration) return;
                     if (result.success) {
                         clearInterval(pollInterval);
                         pollInterval = null;
