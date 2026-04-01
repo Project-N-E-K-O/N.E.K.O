@@ -4153,31 +4153,31 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // VRM 描边粗细滑条
+    // VRM 描边粗细 — 共用 helper
+    function applyVrmOutlineWidth(scale) {
+        const label = document.getElementById('vrm-outline-width-value');
+        if (label) label.textContent = scale.toFixed(2);
+        if (!vrmManager?.currentModel?.vrm?.scene) return;
+        vrmManager.currentModel.vrm.scene.traverse((object) => {
+            if (!object.isMesh && !object.isSkinnedMesh) return;
+            const mats = Array.isArray(object.material) ? object.material : [object.material];
+            mats.forEach(mat => {
+                if (!mat || !(mat._isOutline || mat.isOutline)) return;
+                if (mat._originalOutlineWidthFactor === undefined) {
+                    mat._originalOutlineWidthFactor = mat.outlineWidthFactor !== undefined ? mat.outlineWidthFactor : 0.002;
+                }
+                if (mat.outlineWidthFactor !== undefined) {
+                    mat.outlineWidthFactor = mat._originalOutlineWidthFactor * scale;
+                    mat.needsUpdate = true;
+                }
+            });
+        });
+    }
+
     const vrmOutlineWidthSlider = document.getElementById('vrm-outline-width-slider');
-    const vrmOutlineWidthValue = document.getElementById('vrm-outline-width-value');
     if (vrmOutlineWidthSlider) {
         vrmOutlineWidthSlider.addEventListener('input', (e) => {
-            const scale = parseFloat(e.target.value);
-            if (vrmOutlineWidthValue) vrmOutlineWidthValue.textContent = scale.toFixed(2);
-
-            if (vrmManager && vrmManager.currentModel?.vrm?.scene) {
-                vrmManager.currentModel.vrm.scene.traverse((object) => {
-                    if (!object.isMesh && !object.isSkinnedMesh) return;
-                    const mats = Array.isArray(object.material) ? object.material : [object.material];
-                    mats.forEach(mat => {
-                        if (!mat || !(mat._isOutline || mat.isOutline)) return;
-                        // 保存原始值（首次调整时）
-                        if (mat._originalOutlineWidthFactor === undefined) {
-                            mat._originalOutlineWidthFactor = mat.outlineWidthFactor !== undefined ? mat.outlineWidthFactor : 0.002;
-                        }
-                        if (mat.outlineWidthFactor !== undefined) {
-                            mat.outlineWidthFactor = mat._originalOutlineWidthFactor * scale;
-                            mat.needsUpdate = true;
-                        }
-                    });
-                });
-            }
+            applyVrmOutlineWidth(parseFloat(e.target.value));
         });
     }
 
@@ -4720,27 +4720,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 恢复描边粗细
         const vrmOutlineWidthSlider = document.getElementById('vrm-outline-width-slider');
-        const vrmOutlineWidthValue = document.getElementById('vrm-outline-width-value');
         if (vrmOutlineWidthSlider && lighting.outlineWidthScale !== undefined) {
-            const scale = lighting.outlineWidthScale;
-            vrmOutlineWidthSlider.value = scale;
-            if (vrmOutlineWidthValue) vrmOutlineWidthValue.textContent = scale.toFixed(2);
-            // 应用到材质
-            if (vrmManager?.currentModel?.vrm?.scene) {
-                vrmManager.currentModel.vrm.scene.traverse((object) => {
-                    if (!object.isMesh && !object.isSkinnedMesh) return;
-                    const mats = Array.isArray(object.material) ? object.material : [object.material];
-                    mats.forEach(mat => {
-                        if (!mat || !(mat._isOutline || mat.isOutline)) return;
-                        if (mat._originalOutlineWidthFactor === undefined) {
-                            mat._originalOutlineWidthFactor = mat.outlineWidthFactor !== undefined ? mat.outlineWidthFactor : 0.002;
-                        }
-                        if (mat.outlineWidthFactor !== undefined) {
-                            mat.outlineWidthFactor = mat._originalOutlineWidthFactor * scale;
-                            mat.needsUpdate = true;
-                        }
-                    });
-                });
+            const scale = Number(lighting.outlineWidthScale);
+            if (!Number.isNaN(scale)) {
+                vrmOutlineWidthSlider.value = scale;
+                applyVrmOutlineWidth(scale);
             }
         }
 

@@ -774,7 +774,7 @@ window.Jukebox = {
 
     try {
       // 保存当前待机动画 URL（用于停止后恢复）
-      if (!Jukebox.State.savedIdleAnimationUrl && window.mmdManager.currentAnimationUrl) {
+      if (window.mmdManager.currentAnimationUrl) {
         Jukebox.State.savedIdleAnimationUrl = window.mmdManager.currentAnimationUrl;
       }
 
