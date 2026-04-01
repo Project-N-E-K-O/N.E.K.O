@@ -154,48 +154,48 @@
       "name": "豆包（字节跳动）",
       "description": "国内可用，价格适中，不支持自定义语音",
       "openrouter_url": "https://ark.cn-beijing.volces.com/api/v3",
-      "conversation_model": "doubao-1.5-pro-32k",
-      "summary_model": "doubao-1.5-lite-32k",
-      "correction_model": "doubao-1.5-pro-32k",
-      "emotion_model": "doubao-1.5-lite-32k",
-      "vision_model": "doubao-1.5-vision-pro-32k",
-      "agent_model": "doubao-1.5-pro-32k"
+      "conversation_model": "doubao-seed-2-0-lite-260215",
+      "summary_model": "doubao-seed-2-0-lite-260215",
+      "correction_model": "doubao-seed-2-0-lite-260215",
+      "emotion_model": "doubao-seed-2-0-mini",
+      "vision_model": "doubao-seed-2-0-pro-260215",
+      "agent_model": "doubao-seed-2-0-pro-260215"
     },
     "minimax": {
       "key": "minimax",
       "name": "MiniMax（国服）",
       "description": "支持语音克隆（TTS），国服版本",
       "openrouter_url": "https://api.minimaxi.com/v1",
-      "conversation_model": "MiniMax-Text-01",
-      "summary_model": "MiniMax-Text-01",
-      "correction_model": "MiniMax-Text-01",
-      "emotion_model": "MiniMax-Text-01",
-      "vision_model": "MiniMax-Text-01",
-      "agent_model": "MiniMax-Text-01"
+      "conversation_model": "MiniMax-M2.5",
+      "summary_model": "MiniMax-M2.5",
+      "correction_model": "MiniMax-M2.5",
+      "emotion_model": "MiniMax-M2",
+      "vision_model": "MiniMax-M2.7",
+      "agent_model": "MiniMax-M2.7"
     },
     "minimax_intl": {
       "key": "minimax_intl",
       "name": "MiniMax（国际服）",
       "description": "支持语音克隆（TTS），国际服版本",
       "openrouter_url": "https://api.minimax.chat/v1",
-      "conversation_model": "MiniMax-Text-01",
-      "summary_model": "MiniMax-Text-01",
-      "correction_model": "MiniMax-Text-01",
-      "emotion_model": "MiniMax-Text-01",
-      "vision_model": "MiniMax-Text-01",
-      "agent_model": "MiniMax-Text-01"
+      "conversation_model": "MiniMax-M2.5",
+      "summary_model": "MiniMax-M2.5",
+      "correction_model": "MiniMax-M2.5",
+      "emotion_model": "MiniMax-M2",
+      "vision_model": "MiniMax-M2.7",
+      "agent_model": "MiniMax-M2.7"
     },
     "grok": {
       "key": "grok",
       "name": "Grok（xAI）",
       "description": "xAI的强力模型，国内版不支持",
       "openrouter_url": "https://api.x.ai/v1",
-      "conversation_model": "grok-3-mini-fast",
-      "summary_model": "grok-3-mini-fast",
-      "correction_model": "grok-3-mini-fast",
+      "conversation_model": "grok-4-1-fast-non-reasoning",
+      "summary_model": "grok-4-1-fast-non-reasoning",
+      "correction_model": "grok-4-1-fast-non-reasoning",
       "emotion_model": "grok-3-mini-fast",
       "vision_model": "grok-2-vision-latest",
-      "agent_model": "grok-3-mini"
+      "agent_model": "grok-4"
     }
   },
   "default_models": {
