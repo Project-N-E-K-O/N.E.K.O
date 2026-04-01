@@ -844,7 +844,7 @@ window.Jukebox = {
     }
     
     const player = Jukebox.getPlayer();
-    if (player && Jukebox.State.isPlaying) {
+    if (player) {
       player.pause();
       player.seek(0);
     }
@@ -925,10 +925,12 @@ window.Jukebox = {
 
     const player = Jukebox.getPlayer();
 
+    const hasVMD = Jukebox.State.currentSong?.vmd;
+
     if (Jukebox.State.isPaused) {
       // 恢复播放
       if (player) player.play();
-      if (window.mmdManager?.animationModule) {
+      if (hasVMD && window.mmdManager?.animationModule) {
         // 直接恢复动画模块（不通过 playAnimation 避免重置动画进度）
         window.mmdManager.animationModule.play();
         if (window.mmdManager.cursorFollow) {
@@ -942,7 +944,7 @@ window.Jukebox = {
     } else if (Jukebox.State.isPlaying) {
       // 暂停
       if (player) player.pause();
-      if (window.mmdManager?.animationModule) {
+      if (hasVMD && window.mmdManager?.animationModule) {
         window.mmdManager.animationModule.pause();
         // 暂停时提升跟踪权重，让视线追踪更明显
         if (window.mmdManager.cursorFollow) {
@@ -1042,6 +1044,13 @@ window.Jukebox = {
       if (mesh) mesh.updateMatrixWorld(true);
       if (anim.ikSolver) anim.ikSolver.update();
       if (anim.grantSolver) anim.grantSolver.update();
+
+      // 重置 cursor follow 缓存，防止下帧用旧姿态覆盖 seek 后的新姿态
+      const cf = window.mmdManager.cursorFollow;
+      if (cf) {
+        cf._appliedLastFrame = false;
+        if (cf._eyeLastOffsetQuat) cf._eyeLastOffsetQuat.identity();
+      }
     }
 
     Jukebox.State.isSeeking = false;

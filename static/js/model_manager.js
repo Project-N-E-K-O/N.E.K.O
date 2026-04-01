@@ -4722,9 +4722,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const vrmOutlineWidthSlider = document.getElementById('vrm-outline-width-slider');
         const vrmOutlineWidthValue = document.getElementById('vrm-outline-width-value');
         if (vrmOutlineWidthSlider && lighting.outlineWidthScale !== undefined) {
-            const scale = lighting.outlineWidthScale;
-            vrmOutlineWidthSlider.value = scale;
-            if (vrmOutlineWidthValue) vrmOutlineWidthValue.textContent = scale.toFixed(2);
+            const scale = Number(lighting.outlineWidthScale);
+            if (!Number.isNaN(scale)) {
+                vrmOutlineWidthSlider.value = scale;
+                if (vrmOutlineWidthValue) vrmOutlineWidthValue.textContent = scale.toFixed(2);
+            }
             // 应用到材质
             if (vrmManager?.currentModel?.vrm?.scene) {
                 vrmManager.currentModel.vrm.scene.traverse((object) => {
