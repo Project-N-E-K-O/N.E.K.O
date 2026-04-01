@@ -77,7 +77,7 @@ class MijiaPlugin(NekoPluginBase):
             if ok:
                 self.logger.info("已注册米家配置页面，访问路径: /plugin/mijia/ui/")
             else:
-                self.logger.warning("注册静态UI失败，请检查 static/config.html 是否存在")
+                self.logger.warning("注册静态UI失败，请检查 static/index.html 是否存在")
 
         return Ok({"status": "ready"})
     
