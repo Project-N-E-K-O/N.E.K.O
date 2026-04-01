@@ -851,7 +851,7 @@ window.Jukebox = {
     }
     
     const player = Jukebox.getPlayer();
-    if (player) {
+    if (player && (Jukebox.State.isPlaying || Jukebox.State.isPaused)) {
       player.pause();
       player.seek(0);
     }
