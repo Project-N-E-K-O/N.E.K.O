@@ -15,6 +15,32 @@
         _sidePanels.delete(panel);
     }
 
+    function isOverlayVisible(element) {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }
+
+    function hasVisiblePopup(ownerPrefix = '') {
+        const selector = ownerPrefix
+            ? `[id^="${ownerPrefix}-popup-"]`
+            : '[id*="-popup-"]';
+        return Array.from(document.querySelectorAll(selector)).some(isOverlayVisible);
+    }
+
+    function hasVisibleSidePanel(ownerPrefix = '') {
+        const selector = ownerPrefix
+            ? `[data-neko-sidepanel-owner^="${ownerPrefix}-popup-"]`
+            : '[data-neko-sidepanel-owner]';
+        return Array.from(document.querySelectorAll(selector)).some(isOverlayVisible);
+    }
+
+    function hasVisibleOverlay(ownerPrefix = '') {
+        return hasVisiblePopup(ownerPrefix) || hasVisibleSidePanel(ownerPrefix);
+    }
+
     /**
      * 立即隐藏除 current 以外的所有侧面板（跳过动画）。
      * 必须在计算新面板位置之前调用，确保旧面板不影响空间判断。
@@ -383,6 +409,9 @@
         registerSidePanel,
         unregisterSidePanel,
         collapseOtherSidePanels,
-        positionSidePanel
+        positionSidePanel,
+        hasVisiblePopup,
+        hasVisibleSidePanel,
+        hasVisibleOverlay
     };
 })();
