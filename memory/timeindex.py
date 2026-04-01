@@ -121,7 +121,6 @@ class TimeIndexedMemory:
         connection_string = f"sqlite:///{db_path}"
         
         original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
-        compressed_table = self._validate_table_name(TIME_COMPRESSED_TABLE_NAME)
         
         origin_history = SQLChatMessageHistory(
             connection_string=connection_string,
@@ -129,22 +128,12 @@ class TimeIndexedMemory:
             table_name=original_table,
         )
 
-        compressed_history = SQLChatMessageHistory(
-            connection_string=connection_string,
-            session_id=event_id,
-            table_name=compressed_table,
-        )
-
         origin_history.add_messages(messages)
-        compressed_history.add_message(SystemMessage((await self.recent_history_manager.compress_history(messages, lanlan_name))[1]))
+        # NOTE: compressed table 写入已废弃，fact/reflection 层已取代其功能
 
         with self.engines[lanlan_name].connect() as conn:
             conn.execute(
                 text(f"UPDATE {original_table} SET timestamp = :timestamp WHERE session_id = :session_id"),
-                {"timestamp": timestamp, "session_id": event_id}
-            )
-            conn.execute(
-                text(f"UPDATE {compressed_table} SET timestamp = :timestamp WHERE session_id = :session_id"),
                 {"timestamp": timestamp, "session_id": event_id}
             )
             conn.commit()
@@ -181,15 +170,8 @@ class TimeIndexedMemory:
         return None
 
     def retrieve_summary_by_timeframe(self, lanlan_name, start_time, end_time):
-        if lanlan_name not in self.engines:
-            return []
-        table_name = self._validate_table_name(TIME_COMPRESSED_TABLE_NAME)
-        with self.engines[lanlan_name].connect() as conn:
-            result = conn.execute(
-                text(f"SELECT session_id, message FROM {table_name} WHERE timestamp BETWEEN :start_time AND :end_time"),
-                {"start_time": start_time, "end_time": end_time}
-            )
-            return result.fetchall()
+        """[已废弃] compressed table 不再写入，fact/reflection 已取代。"""
+        return []
 
     def retrieve_original_by_timeframe(self, lanlan_name, start_time, end_time):
         if lanlan_name not in self.engines:

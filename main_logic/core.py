@@ -203,6 +203,8 @@ class LLMSessionManager:
             'computer_use_enabled': False,
             'browser_use_enabled': False,
             'user_plugin_enabled': False,
+            'openclaw_enabled': False,
+            'openfang_enabled': False,
         }
         
         # 模式标志: 'audio' 或 'text'
@@ -1586,6 +1588,8 @@ class LLMSessionManager:
             self.agent_flags['computer_use_enabled']
             or self.agent_flags.get('browser_use_enabled', False)
             or self.agent_flags.get('user_plugin_enabled', False)
+            or self.agent_flags.get('openclaw_enabled', False)
+            or self.agent_flags.get('openfang_enabled', False)
         )
 
     async def _fetch_plugin_summary_prompt(self) -> str:
@@ -1810,7 +1814,7 @@ class LLMSessionManager:
     # 供主服务调用，更新Agent模式相关开关
     def update_agent_flags(self, flags: dict):
         try:
-            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled']:
+            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openclaw_enabled', 'openfang_enabled']:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:
