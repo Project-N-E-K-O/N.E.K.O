@@ -67,7 +67,7 @@ class MijiaPlugin(NekoPluginBase):
             task.add_done_callback(self._background_tasks.discard)
         # 注册静态UI
         # register_static_ui 接受相对目录名，内部会拼接 self.config_dir / directory
-        # static/ 目录下的入口文件为 config.html
+        # static/ 目录下的入口文件为 index.html
         if (self.config_dir / "static").exists():
             ok = self.register_static_ui(
                 "static",
@@ -93,6 +93,15 @@ class MijiaPlugin(NekoPluginBase):
     async def on_shutdown(self, **_):
         """插件关闭：清理资源"""
         self.logger.info("米家插件关闭")
+
+        # 取消所有后台任务
+        if self._background_tasks:
+            for task in list(self._background_tasks):
+                task.cancel()
+            if self._background_tasks:
+                await asyncio.gather(*self._background_tasks, return_exceptions=True)
+                self._background_tasks.clear()
+
         if self.api:
             try:
                 await self.api.close()
@@ -390,15 +399,25 @@ class MijiaPlugin(NekoPluginBase):
             try:
                 with open(cache_path, 'r', encoding='utf-8') as f:
                     cached = json.load(f)
-                devices = cached.get('devices', [])
-                self.logger.info(f"从缓存读取设备列表: {len(devices)} 个设备")
-                # 构建友好消息（与网络请求分支保持一致）
-                lines = [f"📱 共有 {len(devices)} 个设备（缓存）:"]
-                for d in devices:
-                    status = "🟢" if d.get("is_online") else "🔴"
-                    lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
-                message = "\n".join(lines)
-                return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
+                # 跨用户/家庭校验，防止缓存泄漏
+                cache_home_id = cached.get('home_id')
+                cache_user_id = cached.get('user_id')
+                current_user_id = self.api.credential.user_id if self.api and self.api.credential else None
+                if cache_home_id != home_id or (current_user_id and cache_user_id != current_user_id):
+                    self.logger.warning(
+                        f"缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
+                        f"home_id: {cache_home_id}→{home_id})，跳过缓存"
+                    )
+                else:
+                    devices = cached.get('devices', [])
+                    self.logger.info(f"从缓存读取设备列表: {len(devices)} 个设备")
+                    # 构建友好消息（与网络请求分支保持一致）
+                    lines = [f"📱 共有 {len(devices)} 个设备（缓存）:"]
+                    for d in devices:
+                        status = "🟢" if d.get("is_online") else "🔴"
+                        lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
+                    message = "\n".join(lines)
+                    return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
             except Exception as e:
                 self.logger.warning(f"读取缓存失败: {e}")
         
@@ -468,8 +487,9 @@ class MijiaPlugin(NekoPluginBase):
             
             # 保存到缓存
             try:
+                user_id = self.api.credential.user_id if self.api and self.api.credential else None
                 with open(cache_path, 'w', encoding='utf-8') as f:
-                    json.dump({"devices": result, "home_id": home_id}, f, ensure_ascii=False, indent=2)
+                    json.dump({"devices": result, "home_id": home_id, "user_id": user_id}, f, ensure_ascii=False, indent=2)
                 self.logger.info(f"设备列表已缓存: {len(result)} 个设备")
             except Exception as e:
                 self.logger.warning(f"保存缓存失败: {e}")
@@ -509,17 +529,23 @@ class MijiaPlugin(NekoPluginBase):
             try:
                 with open(cache_path, 'r', encoding='utf-8') as f:
                     cached = json.load(f)
-                devices = cached.get('devices', [])
-                self.logger.info(f"AI 从缓存读取设备列表: {len(devices)} 个设备")
-                
-                # 构建友好消息
-                lines = [f"📱 共有 {len(devices)} 个设备:"]
-                for d in devices:
-                    status = "🟢" if d.get("is_online") else "🔴"
-                    lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
-                message = "\n".join(lines)
-                
-                return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
+                # 跨用户校验，防止缓存泄漏
+                cache_user_id = cached.get('user_id')
+                current_user_id = self.api.credential.user_id if self.api and self.api.credential else None
+                if current_user_id and cache_user_id != current_user_id:
+                    self.logger.warning(
+                        f"缓存归属不匹配(user_id: {cache_user_id}→{current_user_id})，跳过缓存"
+                    )
+                else:
+                    devices = cached.get('devices', [])
+                    self.logger.info(f"AI 从缓存读取设备列表: {len(devices)} 个设备")
+                    # 构建友好消息
+                    lines = [f"📱 共有 {len(devices)} 个设备:"]
+                    for d in devices:
+                        status = "🟢" if d.get("is_online") else "🔴"
+                        lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
+                    message = "\n".join(lines)
+                    return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
             except Exception as e:
                 self.logger.warning(f"读取缓存失败: {e}")
         
