@@ -2402,7 +2402,7 @@ async def voice_clone(
             clone_model = get_cosyvoice_clone_model()
             language_hints = qwen_language_hints(ref_language)
             client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
-            voice_id, tmp_url, request_id = await client.clone_voice(
+            voice_id, tmp_url, _request_id = await client.clone_voice(
                 audio_buffer=normalized_buffer,
                 filename=normalized_filename,
                 prefix=prefix,
