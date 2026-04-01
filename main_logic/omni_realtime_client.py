@@ -484,13 +484,14 @@ class OmniRealtimeClient:
                     },
                     "turn_detection": {
                         "type": "server_vad",
-                        "threshold": 0.5,
+                        "threshold": 0.55,
                         "prefix_padding_ms": 300,
                         "silence_duration_ms": 650
                     },
-                    "smooth_output": False,
                     "repetition_penalty": 1.2,
-                    "temperature": 0.7
+                    "temperature": 0.7,
+                    "enable_search": True,
+                    "search_options": {'enable_source': True}
                 })
             elif "gpt" in self.model:
                 await self.update_session({
