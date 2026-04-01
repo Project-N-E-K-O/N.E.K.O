@@ -118,7 +118,19 @@ class OmniOfflineClient:
         self._prefix_buffer_size = max(len(lanlan_name), len(master_name)) + 3 if (lanlan_name or master_name) else 0
 
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡
-        
+
+    def _match_name_prefix(self, text: str, name: str) -> int:
+        """Check if text starts with a name prefix like 'Name | ' or 'Name |'.
+        Returns the length of the matched prefix, or 0 if no match.
+        Handles variants with/without spaces around the pipe character.
+        """
+        if not name:
+            return 0
+        for variant in (f"{name} | ", f"{name} |", f"{name}| ", f"{name}|"):
+            if text.startswith(variant):
+                return len(variant)
+        return 0
+
     async def connect(self, instructions: str, native_audio=False) -> None:
         """Initialize the client with system instructions."""
         self._instructions = instructions
@@ -340,17 +352,17 @@ class OmniOfflineClient:
                                     prefix_buffer += truncated_content
                                     if len(prefix_buffer) >= self._prefix_buffer_size:
                                         prefix_checked = True
-                                        lanlan_prefix = f"{self.lanlan_name} | "
-                                        master_prefix = f"{self.master_name} | "
-                                        if self.master_name and prefix_buffer.startswith(master_prefix):
+                                        master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+                                        lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+                                        if master_match:
                                             guard_triggered = True
                                             discard_reason = "role_hallucination"
-                                            logger.info(f"OmniOfflineClient: 检测到主人名前缀 '{master_prefix}'，触发重试")
+                                            logger.info(f"OmniOfflineClient: 检测到主人名前缀 '{prefix_buffer[:master_match]}'，触发重试")
                                             self._is_responding = False
                                             break
-                                        elif self.lanlan_name and prefix_buffer.startswith(lanlan_prefix):
-                                            logger.info(f"OmniOfflineClient: 剥离角色名前缀 '{lanlan_prefix}'")
-                                            truncated_content = prefix_buffer[len(lanlan_prefix):]
+                                        elif lanlan_match:
+                                            logger.info(f"OmniOfflineClient: 剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
+                                            truncated_content = prefix_buffer[lanlan_match:]
                                         else:
                                             truncated_content = prefix_buffer
                                         # 前缀解析完毕，将结果送入下方的通用 emit/guard 路径
@@ -388,17 +400,17 @@ class OmniOfflineClient:
                         # 流结束后：flush 未处理的前缀缓冲区（走通用 emit/guard 路径）
                         if prefix_buffer and not prefix_checked:
                             prefix_checked = True
-                            lanlan_prefix = f"{self.lanlan_name} | "
-                            master_prefix = f"{self.master_name} | "
-                            if self.master_name and prefix_buffer.startswith(master_prefix):
+                            master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+                            lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+                            if master_match:
                                 guard_triggered = True
                                 discard_reason = "role_hallucination"
-                                logger.info(f"OmniOfflineClient: 流结束时检测到主人名前缀，触发重试")
+                                logger.info(f"OmniOfflineClient: 流结束时检测到主人名前缀 '{prefix_buffer[:master_match]}'，触发重试")
                             else:
                                 flush_text = prefix_buffer
-                                if self.lanlan_name and prefix_buffer.startswith(lanlan_prefix):
-                                    logger.info(f"OmniOfflineClient: 流结束时剥离角色名前缀")
-                                    flush_text = prefix_buffer[len(lanlan_prefix):]
+                                if lanlan_match:
+                                    logger.info(f"OmniOfflineClient: 流结束时剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
+                                    flush_text = prefix_buffer[lanlan_match:]
                                 # fence + length guard
                                 for idx, char in enumerate(flush_text):
                                     if char == '|':
@@ -558,6 +570,8 @@ class OmniOfflineClient:
         assistant_message = ""
         is_first_chunk = True
         chunk_usage = None
+        prefix_buffer = ""
+        prefix_checked = not bool(self._prefix_buffer_size)
 
         try:
             self._is_responding = True
@@ -574,9 +588,50 @@ class OmniOfflineClient:
                     break
                 content = chunk.content if hasattr(chunk, "content") else str(chunk)
                 if content and content.strip():
-                    assistant_message += content
+                    emit_content = content
+
+                    # ── 前缀检测阶段：缓冲初始输出，剥离角色名前缀 ──
+                    if not prefix_checked:
+                        prefix_buffer += emit_content
+                        if len(prefix_buffer) >= self._prefix_buffer_size:
+                            prefix_checked = True
+                            master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+                            lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+                            if master_match:
+                                logger.info(f"OmniOfflineClient.stream_proactive: 剥离主人名前缀 '{prefix_buffer[:master_match]}'")
+                                emit_content = prefix_buffer[master_match:]
+                            elif lanlan_match:
+                                logger.info(f"OmniOfflineClient.stream_proactive: 剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
+                                emit_content = prefix_buffer[lanlan_match:]
+                            else:
+                                emit_content = prefix_buffer
+                            if not (emit_content and emit_content.strip()):
+                                continue
+                        else:
+                            continue  # 缓冲区未满，等更多 chunk
+
+                    assistant_message += emit_content
                     if self.on_text_delta:
-                        await self.on_text_delta(content, is_first_chunk)
+                        await self.on_text_delta(emit_content, is_first_chunk)
+                    is_first_chunk = False
+
+            # ── flush 前缀缓冲区（流提前结束时） ──
+            if prefix_buffer and not prefix_checked:
+                prefix_checked = True
+                master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+                lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+                if master_match:
+                    logger.info(f"OmniOfflineClient.stream_proactive: 流结束时剥离主人名前缀")
+                    flush_text = prefix_buffer[master_match:]
+                elif lanlan_match:
+                    logger.info(f"OmniOfflineClient.stream_proactive: 流结束时剥离角色名前缀")
+                    flush_text = prefix_buffer[lanlan_match:]
+                else:
+                    flush_text = prefix_buffer
+                if flush_text and flush_text.strip():
+                    assistant_message += flush_text
+                    if self.on_text_delta:
+                        await self.on_text_delta(flush_text, is_first_chunk)
                     is_first_chunk = False
         except Exception as e:
             error_msg = f"OmniOfflineClient.stream_proactive error: {e}"

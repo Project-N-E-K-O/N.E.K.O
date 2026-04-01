@@ -206,6 +206,8 @@ class LLMSessionManager:
             'computer_use_enabled': False,
             'browser_use_enabled': False,
             'user_plugin_enabled': False,
+            'openclaw_enabled': False,
+            'openfang_enabled': False,
         }
         
         # 模式标志: 'audio' 或 'text'
@@ -224,10 +226,7 @@ class LLMSessionManager:
         
         # 防止并发启动的标志
         self.is_starting_session = False
-        
-        # 预热进行中标志：防止预热期间向TTS发送空包
-        self._is_warmup_in_progress = False
-        
+
         # TTS缓存机制：确保不丢包
         self.tts_ready = False  # TTS是否完全就绪
         self.tts_pending_chunks = []  # 待处理的TTS文本chunk: [(speech_id, text), ...]
@@ -370,14 +369,7 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
-        
-        # 预热期间跳过TTS信号发送（避免local TTS收到空包产生参考prompt音频）
-        if self._is_warmup_in_progress:
-            logger.debug("⏭️ 跳过预热期间的TTS信号发送")
-            # 仍然发送 turn end 消息（不影响其他逻辑）
-            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-            return
-        
+
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
             try:
@@ -1420,65 +1412,19 @@ class LLMSessionManager:
                 # 启动消息处理任务
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
                 
-                # 🔥 预热逻辑：对于语音模式，立即触发一次 skipped response 来 prefill instructions
-                # 这样可以大幅减少首轮对话的延迟（让 API 提前处理并缓存 instructions 的 KV cache）
-                # 注意：Gemini 和 Free 模型跳过预热，因为：
-                #   - Gemini: prefill 本身足够快，发送空内容会污染对话历史
-                #   - Free: 底层使用 Gemini，同样会导致首轮对话被吞
-                skip_warmup_api_types = ['gemini', 'free']
-                session_api_type = getattr(self.session, '_api_type', '').lower()
-                should_warmup = isinstance(self.session, OmniRealtimeClient) and session_api_type not in skip_warmup_api_types
-                if should_warmup:
-                    try:
-                        logger.info("🔥 开始预热 Session，prefill instructions...")
-                        warmup_start = time.time()
-                        
-                        # 设置预热标志，防止预热期间向TTS发送空包
-                        self._is_warmup_in_progress = True
-                        
-                        # 创建一个事件来等待预热完成
-                        warmup_done_event = asyncio.Event()
-                        original_callback = self.session.on_response_done
-                        
-                        # 临时替换回调，只用于等待预热完成
-                        async def warmup_callback():
-                            warmup_done_event.set()
-                        
-                        self.session.on_response_done = warmup_callback
-                        
-                        await self.session.create_response("", skipped=True)
-                        
-                        # 等待预热完成（最多12秒）
-                        try:
-                            await asyncio.wait_for(warmup_done_event.wait(), timeout=12.0)
-                            warmup_time = time.time() - warmup_start
-                            logger.info(f"✅ Session预热完成 (耗时: {warmup_time:.2f}秒)，首轮对话延迟已优化")
-                        except asyncio.TimeoutError:
-                            logger.warning("⚠️ Session预热超时（12秒），继续执行...")
-                            logger.warning("[语音会话诊断] 预热在 12 秒内未完成，可能为 realtime API 响应慢")
-                        
-                        # 恢复原始回调
-                        self.session.on_response_done = original_callback
-                        
-                    except Exception as e:
-                        logger.warning(f"⚠️ Session预热失败（不影响正常使用）: {e}")
-                    finally:
-                        # 确保清除预热标志
-                        self._is_warmup_in_progress = False
-                
                 # 启动成功，重置失败计数器
                 self.session_start_failure_count = 0
                 self.session_start_last_failure_time = None
                 self._memory_error_retry_after = 0
-                
+
                 logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - _diag_start:.2f}秒)")
                 # 通知前端 session 已成功启动
                 await self.send_session_started(input_mode)
-                
+
                 # 标记session为就绪状态并处理可能已缓存的输入数据
                 async with self.input_cache_lock:
                     self.session_ready = True
-                
+
                 # 处理在session启动期间可能已经缓存的输入数据
                 await self._flush_pending_input_data()
 
@@ -1615,6 +1561,8 @@ class LLMSessionManager:
             self.agent_flags['computer_use_enabled']
             or self.agent_flags.get('browser_use_enabled', False)
             or self.agent_flags.get('user_plugin_enabled', False)
+            or self.agent_flags.get('openclaw_enabled', False)
+            or self.agent_flags.get('openfang_enabled', False)
         )
 
     async def _fetch_plugin_summary_prompt(self) -> str:
@@ -1839,7 +1787,7 @@ class LLMSessionManager:
     # 供主服务调用，更新Agent模式相关开关
     def update_agent_flags(self, flags: dict):
         try:
-            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled']:
+            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openclaw_enabled', 'openfang_enabled']:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:
@@ -2733,8 +2681,11 @@ class LLMSessionManager:
                 logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
                 return
             self.is_active = False
-            # is_starting_session 仅由 start_session 的 finally 块管理，
-            # 不在此处复位，防止并发 start_session 重入导致 >2 session。
+            # 重置 is_starting_session：如果 start_session 正在执行中（比如卡在预热），
+            # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
+            # 静默丢弃（is_starting_session=True → return），导致"必须重启应用才能恢复"。
+            # connect-then-assign 模式已保证不会出现 >2 个 session。
+            self.is_starting_session = False
             
             # Snapshot all mutable resource refs while holding the lock,
             # then operate only on locals to prevent killing newly created resources.

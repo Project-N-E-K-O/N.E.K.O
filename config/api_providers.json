@@ -14,7 +14,7 @@
       "name": "Qwen-Omni（阿里）",
       "description": "有免费额度，功能最全面",
       "core_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
-      "core_model": "qwen3-omni-flash-realtime-2025-12-01"
+      "core_model": "qwen3.5-omni-plus-realtime-2026-03-15"
     },
     "openai": {
       "key": "openai",
@@ -210,7 +210,8 @@
     "vision_model": "qwen3-vl-plus-2025-09-23",
     "core_model": "qwen3-omni-flash-realtime",
     "core_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
-    "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "cosyvoice_clone_model": "cosyvoice-v3.5-plus"
   },
   "assist_api_key_fields": {
     "qwen": "ASSIST_API_KEY_QWEN",
@@ -227,18 +228,54 @@
     "grok": "ASSIST_API_KEY_GROK"
   },
   "api_key_registry": {
-    "qwen":         { "config_field": "assistApiKeyQwen",       "restricted": false },
-    "openai":       { "config_field": "assistApiKeyOpenai",     "restricted": true },
-    "deepseek":     { "config_field": "assistApiKeyDeepseek",   "restricted": false },
-    "glm":          { "config_field": "assistApiKeyGlm",        "restricted": false },
-    "step":         { "config_field": "assistApiKeyStep",        "restricted": false },
-    "silicon":      { "config_field": "assistApiKeySilicon",     "restricted": false },
-    "gemini":       { "config_field": "assistApiKeyGemini",      "restricted": true },
-    "kimi":         { "config_field": "assistApiKeyKimi",        "restricted": false },
-    "doubao":       { "config_field": "assistApiKeyDoubao",      "restricted": false },
-    "minimax":      { "config_field": "assistApiKeyMinimax",     "restricted": false },
-    "minimax_intl": { "config_field": "assistApiKeyMinimaxIntl", "restricted": false },
-    "grok":         { "config_field": "assistApiKeyGrok",        "restricted": true }
+    "qwen": {
+      "config_field": "assistApiKeyQwen",
+      "restricted": false
+    },
+    "openai": {
+      "config_field": "assistApiKeyOpenai",
+      "restricted": true
+    },
+    "deepseek": {
+      "config_field": "assistApiKeyDeepseek",
+      "restricted": false
+    },
+    "glm": {
+      "config_field": "assistApiKeyGlm",
+      "restricted": false
+    },
+    "step": {
+      "config_field": "assistApiKeyStep",
+      "restricted": false
+    },
+    "silicon": {
+      "config_field": "assistApiKeySilicon",
+      "restricted": false
+    },
+    "gemini": {
+      "config_field": "assistApiKeyGemini",
+      "restricted": true
+    },
+    "kimi": {
+      "config_field": "assistApiKeyKimi",
+      "restricted": false
+    },
+    "doubao": {
+      "config_field": "assistApiKeyDoubao",
+      "restricted": false
+    },
+    "minimax": {
+      "config_field": "assistApiKeyMinimax",
+      "restricted": false
+    },
+    "minimax_intl": {
+      "config_field": "assistApiKeyMinimaxIntl",
+      "restricted": false
+    },
+    "grok": {
+      "config_field": "assistApiKeyGrok",
+      "restricted": true
+    }
   },
   "free_voices": {
     "俏皮女孩": "voice-tone-PGLiTXeJCS",

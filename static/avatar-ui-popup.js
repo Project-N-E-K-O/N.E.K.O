@@ -268,7 +268,7 @@ function createSettingsPopupContent(manager, prefix, popup) {
 
     // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
     const settingsToggles = [
-        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 30 },
+        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15 },
         { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '自主视觉', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15 }
     ];
 
@@ -1023,6 +1023,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
     ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
         container.addEventListener(evt, stopEventPropagation, true);
     });
+    container.addEventListener('click', stopEventPropagation);
 
     container._expand = () => {
         if (container.style.display === 'flex' && container.style.opacity !== '0') return;
@@ -1157,6 +1158,7 @@ function createIntervalControl(manager, prefix, toggle) {
     ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
         container.addEventListener(evt, stopEventPropagation, true);
     });
+    container.addEventListener('click', stopEventPropagation);
 
     const sliderRow = document.createElement('div');
     Object.assign(sliderRow.style, { display: 'flex', alignItems: 'center', gap: '4px', width: 'auto' });

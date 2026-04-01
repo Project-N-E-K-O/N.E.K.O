@@ -16,6 +16,7 @@ class MMDAnimation {
         this.currentClip = null;
         this.clock = null;
         this.isPlaying = false;
+        this.isPaused = false;  // 区分暂停 vs 停止（IK/Grant 仅在非暂停、非播放时运行）
         this.isLoop = true;
 
         // IK + Grant
@@ -161,11 +162,13 @@ class MMDAnimation {
         this.currentAction.play();
         if (this.clock) this.clock.start();
         this.isPlaying = true;
+        this.isPaused = false;
     }
 
     pause() {
         if (this.clock) this.clock.stop();
         this.isPlaying = false;
+        this.isPaused = true;
     }
 
     stop() {
@@ -174,6 +177,7 @@ class MMDAnimation {
         }
         if (this.clock) this.clock.stop();
         this.isPlaying = false;
+        this.isPaused = false;
     }
 
     setLoop(loop) {
@@ -358,6 +362,7 @@ class MMDAnimation {
         this.grantSolver = null;
         this._boneBackup = null;
         this.isPlaying = false;
+        this.isPaused = false;
         if (this.clock) {
             this.clock.stop();
             this.clock = null;

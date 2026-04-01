@@ -533,9 +533,12 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                     buttonsContainer.style.transformOrigin = 'left top';
                     const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
                     const hoveringButtons = this._vrmButtonsHovered === true;
-                    const hasOpenPopup = Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
-                        .some(popup => popup.style.display === 'flex' && popup.style.opacity !== '0');
-                    const shouldShowButtons = !isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenPopup);
+                    const popupUi = window.AvatarPopupUI || null;
+                    const hasOpenOverlay = popupUi && typeof popupUi.hasVisibleOverlay === 'function'
+                        ? popupUi.hasVisibleOverlay('vrm')
+                        : Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
+                            .some(popup => popup.style.display === 'flex' && popup.style.opacity !== '0');
+                    const shouldShowButtons = !isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenOverlay);
                     buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;
