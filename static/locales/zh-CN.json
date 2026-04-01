@@ -1408,7 +1408,7 @@
         "voiceUpdated": "{{name}} 的语音已更新",
         "audioWorkletFailed": "AudioWorklet加载失败",
         "audioContextError": "音频系统异常，请重试",
-        "sessionTimeout": "Session启动超时",
+        "sessionTimeout": "启动超时，服务器可能繁忙，请稍后手动重试",
         "websocketNotConnectedError": "WebSocket未连接",
         "sessionStartFailed": "Session启动连续失败{{count}}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。",
         "sessionStartFailedCount": "Error starting session: {{error}} (失败{{count}}次)",

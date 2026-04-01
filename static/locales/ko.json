@@ -1408,7 +1408,7 @@
         "voiceUpdated": "{{name}}의 음성이 업데이트되었습니다.",
         "audioWorkletFailed": "AudioWorklet을 로드하지 못했습니다.",
         "audioContextError": "오디오 시스템 오류입니다. 다시 시도해 주세요.",
-        "sessionTimeout": "세션 시간 초과",
+        "sessionTimeout": "시작 시간 초과, 서버가 혼잡할 수 있습니다. 수동으로 다시 시도해주세요",
         "websocketNotConnectedError": "WebSocket이 연결되지 않음",
         "sessionStartFailed": "세션 시작이 {{count}}번 실패하고 자동 재시도가 중지되었습니다. 네트워크 및 API 구성을 확인하세요.",
         "sessionStartFailedCount": "세션 시작 오류: {{error}}({{count}}회 실패)",
