@@ -451,6 +451,7 @@
         "API_RATE_LIMIT": "💥 Too many requests (429) or quota limit reached. Please try again later.",
         "API_POLICY_VIOLATION": "💥 Policy violation or security block: {{msg}}",
         "API_1008_FALLBACK": "💥 Connection disconnected (1008): {{msg}}",
+        "API_IDLE_TIMEOUT": "💥 Voice connection closed due to inactivity, auto-reconnecting...",
         "API_UNKNOWN_ERROR": "💥 API error: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 Memory server not started! Please run memory_server.py first.",
         "MEMORY_SERVER_CRASHED": "🧠 Memory server (port {{port}}) has crashed. Please restart memory_server.py.",

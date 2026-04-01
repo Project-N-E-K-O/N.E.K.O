@@ -451,6 +451,7 @@
         "API_RATE_LIMIT": "💥 リクエストが多すぎます(429)。しばらくしてからもう一度お試しください。",
         "API_POLICY_VIOLATION": "💥 ポリシー違反またはセキュリティブロック：{{msg}}",
         "API_1008_FALLBACK": "💥 接続が切断されました(1008)：{{msg}}",
+        "API_IDLE_TIMEOUT": "💥 長時間操作がなかったため音声接続が切断されました。自動再接続中...",
         "API_UNKNOWN_ERROR": "💥 APIエラー：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 メモリサーバーが起動していません！先に memory_server.py を実行してください。",
         "MEMORY_SERVER_CRASHED": "🧠 メモリサーバー(ポート{{port}})がクラッシュしました。memory_server.py を再起動してください。",

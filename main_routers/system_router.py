@@ -29,6 +29,7 @@ import httpx
 from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
+from main_logic.omni_realtime_client import OmniRealtimeClient
 from config import get_extra_body, MEMORY_SERVER_PORT
 from config.prompts_sys import _loc
 from config.prompts_memory import emotion_analysis_prompt, PROACTIVE_FOLLOWUP_HEADER
@@ -1786,11 +1787,22 @@ async def proactive_chat(request: Request):
         # 检查是否正在响应中（如果正在说话，不打断）
         if mgr.is_active and hasattr(mgr.session, '_is_responding') and mgr.session._is_responding:
             return JSONResponse({
-                "success": False, 
+                "success": False,
                 "error": "AI正在响应中，无法主动搭话",
                 "message": "请等待当前响应完成"
             }, status_code=409)
-        
+
+        # ========== Voice mode fast path ==========
+        # 语音模式下不走 Phase1/Phase2，直接注入预录音频触发 AI 回复
+        if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
+            _lang = normalize_language_code(getattr(mgr, 'user_language', '') or '', format='short') or 'zh'
+            delivered = await mgr.session.stream_proactive(language=_lang)
+            return JSONResponse({
+                "success": True,
+                "action": "chat" if delivered else "pass",
+                "message": "voice proactive triggered" if delivered else "voice proactive skipped (guard)",
+            })
+
         print(f"[{lanlan_name}] 开始主动搭话流程（两阶段架构）...")
         
         # ========== 解析 enabled_modes ==========

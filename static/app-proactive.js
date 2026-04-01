@@ -127,15 +127,14 @@
             return;
         }
 
-        // 只在非语音模式下执行（语音模式下不触发主动搭话）
-        // 文本模式或待机模式都可以触发主动搭话
-        if (S.isRecording) {
-            console.log('语音模式中，不安排主动搭话');
-            return;
-        }
+        // 语音模式：使用 min(proactiveChatInterval, proactiveVisionInterval) 作为基础间隔
+        // 确保搭话时视觉数据是新鲜的
+        var baseInterval = S.isRecording
+            ? Math.min(S.proactiveChatInterval, S.proactiveVisionInterval)
+            : S.proactiveChatInterval;
 
         // 计算延迟时间（指数退避，倍率2.5）
-        var delay = (S.proactiveChatInterval * 1000) * Math.pow(2.5, S.proactiveChatBackoffLevel);
+        var delay = (baseInterval * 1000) * Math.pow(2.5, S.proactiveChatBackoffLevel);
 
         // 首次启动时额外等待5秒，避免程序刚启动就触发音乐推荐
         var startupDelay = S.proactiveChatBackoffLevel === 0 ? 6000 : 0;
@@ -204,6 +203,28 @@
 
     async function triggerProactiveChat() {
         try {
+            // ── 语音模式快速路径：直接发 voice_mode 请求，后端注入预录音频 ──
+            if (S.isRecording) {
+                var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                var voiceModes = [];
+                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+                    voiceModes.push('vision');
+                }
+                console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
+                var resp = await fetch('/api/proactive_chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        lanlan_name: lanlanName,
+                        enabled_modes: voiceModes,
+                        voice_mode: true
+                    })
+                });
+                var result = await resp.json();
+                console.log('[ProactiveChat] 语音模式结果:', result.action || 'unknown');
+                return;
+            }
+
             var availableModes = [];
             // 收集所有启用的搭话方式
             // 视觉搭话：需要同时开启主动搭话和自主视觉

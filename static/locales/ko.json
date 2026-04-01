@@ -451,6 +451,7 @@
         "API_RATE_LIMIT": "💥 요청이 너무 많습니다 (429). 잠시 후 다시 시도해 주세요.",
         "API_POLICY_VIOLATION": "💥 정책 위반 또는 보안 차단: {{msg}}",
         "API_1008_FALLBACK": "💥 연결이 끊어졌습니다 (1008): {{msg}}",
+        "API_IDLE_TIMEOUT": "💥 장시간 미사용으로 음성 연결이 끊어졌습니다. 자동 재연결 중...",
         "API_UNKNOWN_ERROR": "💥 API 오류: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 메모리 서버가 시작되지 않았습니다! 먼저 memory_server.py를 실행하세요.",
         "MEMORY_SERVER_CRASHED": "🧠 메모리 서버(포트 {{port}})가 충돌했습니다. memory_server.py를 재시작하세요.",

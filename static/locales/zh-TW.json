@@ -451,6 +451,7 @@
         "API_RATE_LIMIT": "💥 API達到限額或請求過於頻繁(429)，請稍後再試。",
         "API_POLICY_VIOLATION": "💥 伺服器返回安全策略攔截或政策限制：{{msg}}",
         "API_1008_FALLBACK": "💥 會話斷開(1008)：{{msg}}",
+        "API_IDLE_TIMEOUT": "💥 語音連線因長時間無操作而斷開，正在自動重連...",
         "API_UNKNOWN_ERROR": "💥 API錯誤：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 記憶伺服器未啟動！請先運行 memory_server.py",
         "MEMORY_SERVER_CRASHED": "🧠 記憶伺服器(端口{{port}})已崩潰。請重啟 memory_server.py",

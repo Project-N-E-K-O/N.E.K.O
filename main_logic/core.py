@@ -654,7 +654,16 @@ class LLMSessionManager:
         if message:
             message_text = str(message)
             message_text_lower = message_text.lower()
-            if '欠费' in message_text_lower or 'standing' in message_text_lower:
+
+            # Pre-classified structured errors from omni_realtime_client (JSON with "code")
+            # Forward them directly so the frontend sees the original code.
+            try:
+                _parsed = json.loads(message_text) if message_text.startswith('{') else None
+            except (json.JSONDecodeError, TypeError):
+                _parsed = None
+            if _parsed and isinstance(_parsed, dict) and _parsed.get('code'):
+                await self.send_status(message_text)
+            elif '欠费' in message_text_lower or 'standing' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_ARREARS"}))
             elif 'quota' in message_text_lower or 'time limit' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
@@ -1789,13 +1798,18 @@ class LLMSessionManager:
                 )
                 return False
 
-        # Skip if voice session is currently running (don't interrupt)
+        # Voice session: route to audio-prompt proactive delivery
         if self.is_active and isinstance(self.session, OmniRealtimeClient):
-            logger.info(
-                "[%s] deliver_text_proactively skipped: voice session active",
-                self.lanlan_name,
-            )
-            return False
+            if self.is_hot_swap_imminent:
+                logger.info("[%s] deliver_text_proactively skipped: hot-swap imminent", self.lanlan_name)
+                return False
+            _lang = normalize_language_code(self.user_language, format='short') or 'zh'
+            delivered = await self.session.stream_proactive(language=_lang)
+            if delivered:
+                logger.info("[%s] deliver_text_proactively: voice proactive delivered via audio prompt", self.lanlan_name)
+            else:
+                logger.info("[%s] deliver_text_proactively: voice proactive skipped (guard check)", self.lanlan_name)
+            return delivered
 
         # Need a live WebSocket
         if not self.websocket:

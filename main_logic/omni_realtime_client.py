@@ -5,6 +5,7 @@ import websockets
 import json
 import base64
 import time
+import wave
 import numpy as np
 from pathlib import Path
 
@@ -32,6 +33,22 @@ except Exception as e:
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+# ── Proactive audio prompt cache ──────────────────────────────────────
+_PROACTIVE_AUDIO_DIR = Path(__file__).resolve().parent.parent / "static" / "proactive_audio"
+_PROACTIVE_AUDIO_CACHE: Dict[str, bytes] = {}
+
+
+def _load_proactive_audio(filename: str) -> bytes:
+    """Load a proactive prompt WAV file as raw PCM16 bytes (cached)."""
+    if filename in _PROACTIVE_AUDIO_CACHE:
+        return _PROACTIVE_AUDIO_CACHE[filename]
+    path = _PROACTIVE_AUDIO_DIR / filename
+    with wave.open(str(path), "rb") as wf:
+        data = wf.readframes(wf.getnframes())
+    _PROACTIVE_AUDIO_CACHE[filename] = data
+    return data
+
 
 class TurnDetectionMode(Enum):
     SERVER_VAD = "server_vad"
@@ -980,23 +997,73 @@ class OmniRealtimeClient:
         except Exception as e:
             logger.error(f"Error sending client content to Gemini: {e}")
 
-    async def stream_proactive(self, instruction: str) -> bool:
-        """Proactive delivery stub for voice mode.
+    async def stream_proactive(self, instruction: str = "", *, language: str = "zh") -> bool:
+        """Send a pre-recorded audio prompt to trigger proactive AI speech.
 
-        Voice mode proactive delivery is handled by the hot-swap mechanism
-        (pending_extra_replies → _trigger_immediate_preparation_for_extra →
-        _perform_final_swap_sequence).  This method is a placeholder that
-        satisfies the unified OmniClient interface; it always returns False so
-        that LLMSessionManager knows delivery was not performed here and the
-        hot-swap path should be used instead.
+        Injects a short WAV clip via ``input_audio_buffer.append`` so the
+        realtime model "hears" a conversational nudge and responds.  Bypasses
+        ``stream_audio()`` (no RNNoise / AGC) since the audio is clean.
 
-        When voice-mode instant proactive delivery is implemented in the future,
-        replace this stub with the actual logic (e.g. create_response with a
-        properly framed system turn).
+        Chunk pacing mirrors hot-swap flush: 1600 bytes/chunk, 0.025 s sleep,
+        40 chunks/s → 2× real-time delivery.
+
+        Returns True if the audio was fully sent, False if skipped or aborted.
         """
-        _ = instruction
-        logger.debug("OmniRealtimeClient.stream_proactive: delegating to hot-swap mechanism")
-        return False
+        # ── Guard checks ──────────────────────────────────────────────
+        if self._fatal_error_occurred or self.ws is None:
+            return False
+        if self._is_responding:
+            logger.debug("stream_proactive: skipped — already responding")
+            return False
+        if self._client_vad_active:
+            logger.debug("stream_proactive: skipped — user speaking (VAD active)")
+            return False
+        if time.time() - self._client_vad_last_speech_time < self._client_vad_grace_period:
+            logger.debug("stream_proactive: skipped — VAD grace period")
+            return False
+
+        # ── Choose audio file ─────────────────────────────────────────
+        has_vision = "正在分析中" not in self._image_description
+        prompt_type = "vision" if has_vision else "general"
+        lang = (language or "zh")[:2]
+        filename = f"prompt_{prompt_type}_{lang}.wav"
+
+        try:
+            pcm_data = _load_proactive_audio(filename)
+        except FileNotFoundError:
+            try:
+                pcm_data = _load_proactive_audio(f"prompt_{prompt_type}_zh.wav")
+            except FileNotFoundError:
+                logger.warning("stream_proactive: no audio file found for %s", filename)
+                return False
+
+        # ── Send audio chunks (same pacing as hot-swap flush) ─────────
+        # 320 bytes = 10 ms @16 kHz 16-bit mono, ×5 multiplier → 1600 bytes
+        chunk_size = 320 * 5  # 1600 bytes = 50 ms of audio
+        sleep_interval = 0.025  # 25 ms → 40 chunks/s, 2× real-time
+
+        logger.info(
+            "stream_proactive: injecting %s (%d bytes, %s)",
+            filename, len(pcm_data), "vision" if has_vision else "general",
+        )
+
+        for i in range(0, len(pcm_data), chunk_size):
+            # Abort if user starts speaking or AI starts responding
+            if self._client_vad_active or self._is_responding:
+                logger.info("stream_proactive: aborted — user spoke or response started")
+                await self.clear_audio_buffer()
+                return False
+
+            chunk = pcm_data[i : i + chunk_size]
+            audio_b64 = base64.b64encode(chunk).decode()
+            await self.send_event({
+                "type": "input_audio_buffer.append",
+                "audio": audio_b64,
+            })
+            await asyncio.sleep(sleep_interval)
+
+        logger.info("stream_proactive: audio injection complete, waiting for VAD → response")
+        return True
 
     async def cancel_response(self) -> None:
         """Cancel the current response."""
@@ -1093,6 +1160,15 @@ class OmniRealtimeClient:
                         continue
                     
                     error_msg_lower = error_msg.lower()
+
+                    # Idle timeout — Qwen 约 25s 无操作断连
+                    if 'too long without operation' in error_msg_lower or 'idle' in error_msg_lower:
+                        logger.warning("⏰ Idle timeout from API: %s", error_msg)
+                        if self.on_connection_error:
+                            await self.on_connection_error(json.dumps({"code": "API_IDLE_TIMEOUT", "details": {"msg": error_msg}}))
+                        await self.close()
+                        continue
+
                     if ('欠费' in error_msg or 'standing' in error_msg_lower or 'time limit' in error_msg_lower or
                         'policy violation' in error_msg_lower or '1008' in error_msg_lower or
                         '429' in error_msg_lower or 'quota' in error_msg_lower or 'too many' in error_msg_lower):
