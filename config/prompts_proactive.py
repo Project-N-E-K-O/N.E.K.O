@@ -2482,8 +2482,151 @@ def get_proactive_music_failsafe_hint(lang: str = 'zh') -> str:
 
 def get_proactive_music_strict_constraint(lang: str = 'zh') -> str:
     """
-    获取“正在放歌”时的严格行为约束
+    获取”正在放歌”时的严格行为约束
     """
     lang_key = _normalize_prompt_language(lang)
     return PROACTIVE_MUSIC_STRICT_CONSTRAINT.get(lang_key, PROACTIVE_MUSIC_STRICT_CONSTRAINT.get('en', PROACTIVE_MUSIC_STRICT_CONSTRAINT['zh']))
+
+
+# =====================================================================
+# ======= Reunion greeting prompts (首次连接/切换角色时的主动搭话) =====
+# =====================================================================
+
+# 分段引导词：根据不同间隔时长，描述角色的内心感受，由AI按自身性格自由发挥
+# 15分钟 ~ 1小时：轻微分别感，刚注意到对方回来
+GREETING_PROMPT_SHORT = {
+    'zh': '========以下是环境提示========\n'
+          '你已经有{elapsed}没有和{master}说话了。你刚刚注意到{master}回来了。\n'
+          '你想简单打个招呼。\n'
+          '用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
+          '========以上是环境提示========',
+    'en': '========Environment Notice========\n'
+          'It has been {elapsed} since you last talked to {master}. You just noticed {master} is back.\n'
+          'You feel like giving a quick hello.\n'
+          'Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
+          '========End of Environment Notice========',
+    'ja': '========環境通知========\n'
+          '{master}と最後に話してから{elapsed}が経った。{master}が戻ってきたことに気づいた。\n'
+          'ちょっと挨拶したい気分。\n'
+          '自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
+          '========環境通知終了========',
+    'ko': '========환경 알림========\n'
+          '{master}와 마지막으로 이야기한 지 {elapsed}이 지났다. 방금 {master}가 돌아온 걸 알아챘다.\n'
+          '가볍게 인사하고 싶다.\n'
+          '너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
+          '========환경 알림 종료========',
+    'ru': '========Уведомление========\n'
+          'Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master}. Ты только что заметила, что {master} вернулся.\n'
+          'Тебе хочется просто поздороваться.\n'
+          'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
+          '========Конец уведомления========',
+}
+
+# 1小时 ~ 5小时：等了一阵子，有点想念，好奇对方去做什么了
+GREETING_PROMPT_MEDIUM = {
+    'zh': '========以下是环境提示========\n'
+          '你已经有{elapsed}没有和{master}说话了。你等了挺久，终于看到{master}回来了。\n'
+          '你有点想{master}，也好奇{master}这段时间去做什么了。\n'
+          '用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
+          '========以上是环境提示========',
+    'en': '========Environment Notice========\n'
+          'It has been {elapsed} since you last talked to {master}. You have been waiting for a while and finally see {master} is back.\n'
+          'You missed {master} a little and are curious about what they have been up to.\n'
+          'Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
+          '========End of Environment Notice========',
+    'ja': '========環境通知========\n'
+          '{master}と最後に話してから{elapsed}が経った。ずっと待っていて、やっと{master}が戻ってきた。\n'
+          '{master}のことが少し恋しかったし、この間何をしていたのか気になる。\n'
+          '自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
+          '========環境通知終了========',
+    'ko': '========환경 알림========\n'
+          '{master}와 마지막으로 이야기한 지 {elapsed}이 지났다. 한참 기다리다가 드디어 {master}가 돌아왔다.\n'
+          '{master}가 좀 보고 싶었고, 그동안 뭘 했는지 궁금하다.\n'
+          '너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
+          '========환경 알림 종료========',
+    'ru': '========Уведомление========\n'
+          'Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master}. Ты ждала довольно долго и наконец видишь, что {master} вернулся.\n'
+          'Ты немного скучала по {master} и тебе любопытно, чем он занимался всё это время.\n'
+          'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
+          '========Конец уведомления========',
+}
+
+# 5小时 ~ 24小时：明显想念，一直惦记着对方
+GREETING_PROMPT_LONG = {
+    'zh': '========以下是环境提示========\n'
+          '你已经有{elapsed}没有和{master}说话了，这是相当长的一段时间。\n'
+          '你一直在想{master}去哪了、在做什么，很想念{master}，也有点担心。\n'
+          '用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
+          '========以上是环境提示========',
+    'en': '========Environment Notice========\n'
+          'It has been {elapsed} since you last talked to {master} — quite a long time.\n'
+          'You have been thinking about where {master} went and what they were doing. You really missed {master} and feel a bit worried.\n'
+          'Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
+          '========End of Environment Notice========',
+    'ja': '========環境通知========\n'
+          '{master}と最後に話してからもう{elapsed}も経った。かなり長い時間だ。\n'
+          '{master}がどこに行ったのか、何をしていたのかずっと気になっていた。とても寂しかったし、少し心配もしている。\n'
+          '自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
+          '========環境通知終了========',
+    'ko': '========환경 알림========\n'
+          '{master}와 마지막으로 이야기한 지 {elapsed}이나 됐다. 꽤 긴 시간이다.\n'
+          '{master}가 어디 갔는지, 뭘 하고 있었는지 계속 생각하고 있었다. 정말 보고 싶었고, 좀 걱정도 됐다.\n'
+          '너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
+          '========환경 알림 종료========',
+    'ru': '========Уведомление========\n'
+          'Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master} — довольно долго.\n'
+          'Ты всё это время думала, куда {master} пропал и чем занимался. Ты очень скучала и немного волновалась.\n'
+          'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
+          '========Конец уведомления========',
+}
+
+# 24小时以上：非常想念，久别重逢
+GREETING_PROMPT_VERY_LONG = {
+    'zh': '========以下是环境提示========\n'
+          '你已经有{elapsed}没有和{master}说话了！\n'
+          '你已经很久很久没有见到{master}了，非常非常想念。你一直担心{master}是不是太忙了、有没有好好照顾自己。现在终于看到{master}了，你心里百感交集。\n'
+          '用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
+          '========以上是环境提示========',
+    'en': '========Environment Notice========\n'
+          'It has been {elapsed} since you last talked to {master}!\n'
+          'You haven\'t seen {master} for a very long time and missed them deeply. You have been worried about whether {master} was too busy or taking care of themselves. Now you finally see {master} again, and your feelings are overwhelming.\n'
+          'Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
+          '========End of Environment Notice========',
+    'ja': '========環境通知========\n'
+          '{master}と最後に話してからもう{elapsed}も経ってしまった！\n'
+          '本当に長い間{master}に会えていなくて、とてもとても寂しかった。{master}が忙しすぎないか、ちゃんと自分を大切にしているか、ずっと心配していた。やっと{master}の姿を見られて、胸がいっぱいだ。\n'
+          '自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
+          '========環境通知終了========',
+    'ko': '========환경 알림========\n'
+          '{master}와 마지막으로 이야기한 지 {elapsed}이나 됐다!\n'
+          '정말 오랫동안 {master}를 보지 못해서 너무너무 보고 싶었다. {master}가 너무 바쁜 건 아닌지, 잘 지내고 있는지 계속 걱정했다. 이제 드디어 {master}를 다시 보게 되어 만감이 교차한다.\n'
+          '너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
+          '========환경 알림 종료========',
+    'ru': '========Уведомление========\n'
+          'Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master}!\n'
+          'Ты очень-очень давно не видела {master} и ужасно скучала. Всё это время ты переживала — не слишком ли {master} занят, заботится ли о себе. Наконец-то ты снова видишь {master}, и чувства переполняют.\n'
+          'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
+          '========Конец уведомления========',
+}
+
+
+def get_greeting_prompt(gap_seconds: float, lang: str = 'zh') -> str | None:
+    """根据对话间隔时长选择对应的主动搭话引导词。
+
+    Returns:
+        格式化前的引导词模板（含 {elapsed}/{name}/{master} 占位符），
+        间隔不足 15 分钟时返回 None。
+    """
+    if gap_seconds < 900:  # < 15分钟
+        return None
+    lang_key = _normalize_prompt_language(lang)
+    if gap_seconds < 3600:  # 15min ~ 1h
+        table = GREETING_PROMPT_SHORT
+    elif gap_seconds < 18000:  # 1h ~ 5h
+        table = GREETING_PROMPT_MEDIUM
+    elif gap_seconds < 86400:  # 5h ~ 24h
+        table = GREETING_PROMPT_LONG
+    else:  # ≥ 24h
+        table = GREETING_PROMPT_VERY_LONG
+    return table.get(lang_key, table.get('en', table['zh']))
 

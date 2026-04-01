@@ -382,6 +382,7 @@
             window.lanlan_config.lanlan_name = newCatgirl;
 
             await new Promise(resolve => setTimeout(resolve, 100));
+            S._pendingGreetingSwitch = true;  // 标记为切换连接，onopen 时发送 greeting_check
             connectWebSocket();
             document.title = `${newCatgirl} Terminal - Project N.E.K.O.`;
 
