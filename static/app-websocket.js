@@ -256,13 +256,20 @@
                     window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
 
                     if (window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0) {
+                        var _discardHost = window.reactChatWindowHost;
                         window.currentTurnGeminiBubbles.forEach(function (bubble) {
+                            // Remove paired React mirror message
+                            if (_discardHost && typeof _discardHost.removeMessage === 'function' &&
+                                bubble && bubble.dataset && bubble.dataset.reactChatMessageId) {
+                                _discardHost.removeMessage(bubble.dataset.reactChatMessageId);
+                            }
                             if (bubble && bubble.parentNode) {
                                 bubble.parentNode.removeChild(bubble);
                             }
                         });
                         window.currentTurnGeminiBubbles = [];
                     }
+                    window.currentGeminiMessage = null;
 
                     if (window.currentTurnGeminiAttachments && window.currentTurnGeminiAttachments.length > 0) {
                         window.currentTurnGeminiAttachments.forEach(function (attachment) {

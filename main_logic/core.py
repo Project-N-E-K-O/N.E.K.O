@@ -3007,6 +3007,10 @@ class LLMSessionManager:
                                 if isinstance(_candidate, str) and _candidate in _known_codes:
                                     _parsed_code = _candidate
                         except (json.JSONDecodeError, TypeError):
+                            # JSON parsing may fail for free-form error strings from
+                            # tts.response.error events; this is expected and harmless —
+                            # the keyword-based fallback below will handle classification.
+                            # self._last_tts_error_code is only set when a valid code is parsed.
                             pass
 
                         if _parsed_code:

@@ -205,7 +205,12 @@
         if (!host || typeof host.appendMessage !== 'function') return;
 
         var messageId = getOrAssignReactMessageId(element, role);
-        var message = buildReactTextMessage(messageId, role, author, getCurrentTimeString(), text, status);
+        var timeStr = getCurrentTimeString();
+        // Cache the initial timestamp on the element so updateReactTextMessage can reuse it
+        if (element && element.dataset) {
+            element.dataset.reactChatInitTime = timeStr;
+        }
+        var message = buildReactTextMessage(messageId, role, author, timeStr, text, status);
         if (!message) return;
         host.appendMessage(message);
     }
@@ -254,7 +259,9 @@
         if (!host || typeof host.updateMessage !== 'function' || !element) return;
 
         var messageId = getOrAssignReactMessageId(element, role);
-        var message = buildReactTextMessage(messageId, role, author, getCurrentTimeString(), text, status);
+        // Reuse the stable timestamp from the initial append to avoid time drift during streaming
+        var stableTime = (element.dataset && element.dataset.reactChatInitTime) || getCurrentTimeString();
+        var message = buildReactTextMessage(messageId, role, author, stableTime, text, status);
         if (!message) return;
 
         host.updateMessage(messageId, {
@@ -818,7 +825,7 @@
                 window._realisticGeminiQueue = [];
                 renderStructuredGeminiMessage(fullTurnText || combined);
                 var _wrapStructured = chatContainer.parentElement;
-                if (_wrapStructured) {
+                if (_wrapStructured && _wrapStructured.scrollHeight - _wrapStructured.scrollTop - _wrapStructured.clientHeight < 60) {
                     _wrapStructured.scrollTop = _wrapStructured.scrollHeight;
                 }
                 return;
