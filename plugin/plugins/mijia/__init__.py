@@ -228,16 +228,28 @@ class MijiaPlugin(NekoPluginBase):
 
     async def _init_api(self, credential: Credential):
         """使用凭据初始化API客户端"""
+        # 先构建新实例，探活成功后再替换，避免旧连接在验证期间被提前丢弃
+        new_api = create_async_api_client(credential)
         try:
-            # create_async_api_client 是同步工厂函数，返回 AsyncMijiaAPI 实例
-            self.api = create_async_api_client(credential)
-            # 测试连接（异步方法）
-            await self.api.get_homes()
-            self.logger.info("API客户端初始化成功")
+            await new_api.get_homes()
         except Exception as e:
             self.logger.error(f"API初始化失败: {e}")
-            self.api = None
+            try:
+                await new_api.close()
+            except Exception:
+                pass
             raise
+        
+        # 验证通过，关闭旧客户端后原子替换
+        old_api = self.api
+        self.api = new_api
+        if old_api is not None:
+            try:
+                await old_api.close()
+            except Exception as close_err:
+                self.logger.warning(f"关闭旧API客户端时出错: {close_err}")
+        
+        self.logger.info("API客户端初始化成功")
 
     async def _reload_credential(self):
         """重新加载凭据（如配置变化）"""
@@ -832,6 +844,14 @@ class MijiaPlugin(NekoPluginBase):
         devices = result.value.get("devices", [])
         if not devices:
             return Err(SdkError(f"未找到'{name}'"))
+        
+        # 多设备匹配时返回歧义错误，避免查询到错误设备
+        if len(devices) > 1:
+            device_names = [d.get("name", "未知") for d in devices]
+            return Err(SdkError(
+                f"找到多个匹配 '{name}' 的设备: {', '.join(device_names)}。"
+                f"请使用更精确的设备名称。"
+            ))
         
         device = devices[0]
         did = device.get("did")
