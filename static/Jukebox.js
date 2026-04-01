@@ -862,7 +862,12 @@ window.Jukebox = {
 
     // 直接停止动画模块，不通过 stopAnimation()
     // 避免在 idle 加载完成前改变 cursor follow 状态
-    window.mmdManager.animationModule.stop();
+    const anim = window.mmdManager.animationModule;
+    anim.stop();
+    // 清除舞蹈的 IK/Grant solver，防止它们在 idle 加载前
+    // 对已停止的骨骼运行（导致 T-pose + 眼球乱转）
+    anim.ikSolver = null;
+    anim.grantSolver = null;
     // 清除 currentAnimationUrl 防止下次 playVMD 误将舞蹈 URL 存为 idle
     window.mmdManager.currentAnimationUrl = null;
     Jukebox.State.isVMDPlaying = false;
