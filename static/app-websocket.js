@@ -525,7 +525,7 @@
                                                 S.socket.send(JSON.stringify({ action: 'end_session' }));
                                                 console.log(window.t('console.autoRestartTimeoutEndSession'));
                                             }
-                                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
+                                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5'));
                                         }
                                     }, 15000);
 

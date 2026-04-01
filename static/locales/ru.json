@@ -1408,7 +1408,7 @@
         "voiceUpdated": "Голос {{name}} обновлён",
         "audioWorkletFailed": "AudioWorklet не загрузился",
         "audioContextError": "Ошибка аудиосистемы, попробуйте снова",
-        "sessionTimeout": "Таймаут сессии",
+        "sessionTimeout": "Время запуска истекло, сервер может быть занят. Повторите попытку вручную",
         "websocketNotConnectedError": "WebSocket не подключён",
         "sessionStartFailed": "Ошибка запуска сессии {{count}} раз, авторетри остановлен. Проверьте сеть и API.",
         "sessionStartFailedCount": "Ошибка запуска сессии: {{error}} (Ошибок: {{count}})",

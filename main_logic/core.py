@@ -1393,6 +1393,17 @@ class LLMSessionManager:
                 # 启动消息处理任务
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
                 
+                # 启动成功，重置失败计数器
+                self.session_start_failure_count = 0
+                self.session_start_last_failure_time = None
+                self._memory_error_retry_after = 0
+
+                # ★ 先通知前端 session 已启动，再做预热
+                # 预热只是优化首轮延迟，不应阻塞 session_started 信号
+                # （之前 session_started 放在预热后面，导致断连重连时总耗时 > 15s 前端超时）
+                logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 耗时: {time.time() - _diag_start:.2f}秒)")
+                await self.send_session_started(input_mode)
+
                 # 🔥 预热逻辑：对于语音模式，立即触发一次 skipped response 来 prefill instructions
                 # 这样可以大幅减少首轮对话的延迟（让 API 提前处理并缓存 instructions 的 KV cache）
                 # 注意：Gemini 和 Free 模型跳过预热，因为：
@@ -1405,22 +1416,22 @@ class LLMSessionManager:
                     try:
                         logger.info("🔥 开始预热 Session，prefill instructions...")
                         warmup_start = time.time()
-                        
+
                         # 设置预热标志，防止预热期间向TTS发送空包
                         self._is_warmup_in_progress = True
-                        
+
                         # 创建一个事件来等待预热完成
                         warmup_done_event = asyncio.Event()
                         original_callback = self.session.on_response_done
-                        
+
                         # 临时替换回调，只用于等待预热完成
                         async def warmup_callback():
                             warmup_done_event.set()
-                        
+
                         self.session.on_response_done = warmup_callback
-                        
+
                         await self.session.create_response("", skipped=True)
-                        
+
                         # 等待预热完成（最多12秒）
                         try:
                             await asyncio.wait_for(warmup_done_event.wait(), timeout=12.0)
@@ -1429,29 +1440,21 @@ class LLMSessionManager:
                         except asyncio.TimeoutError:
                             logger.warning("⚠️ Session预热超时（12秒），继续执行...")
                             logger.warning("[语音会话诊断] 预热在 12 秒内未完成，可能为 realtime API 响应慢")
-                        
-                        # 恢复原始回调
-                        self.session.on_response_done = original_callback
-                        
+
+                        # 恢复原始回调（仅当 session 未被并发 end_session 销毁时）
+                        if self.session is not None and self.is_active:
+                            self.session.on_response_done = original_callback
+
                     except Exception as e:
                         logger.warning(f"⚠️ Session预热失败（不影响正常使用）: {e}")
                     finally:
                         # 确保清除预热标志
                         self._is_warmup_in_progress = False
-                
-                # 启动成功，重置失败计数器
-                self.session_start_failure_count = 0
-                self.session_start_last_failure_time = None
-                self._memory_error_retry_after = 0
-                
-                logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - _diag_start:.2f}秒)")
-                # 通知前端 session 已成功启动
-                await self.send_session_started(input_mode)
-                
+
                 # 标记session为就绪状态并处理可能已缓存的输入数据
                 async with self.input_cache_lock:
                     self.session_ready = True
-                
+
                 # 处理在session启动期间可能已经缓存的输入数据
                 await self._flush_pending_input_data()
 
@@ -2701,8 +2704,11 @@ class LLMSessionManager:
                 logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
                 return
             self.is_active = False
-            # is_starting_session 仅由 start_session 的 finally 块管理，
-            # 不在此处复位，防止并发 start_session 重入导致 >2 session。
+            # 重置 is_starting_session：如果 start_session 正在执行中（比如卡在预热），
+            # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
+            # 静默丢弃（is_starting_session=True → return），导致"必须重启应用才能恢复"。
+            # connect-then-assign 模式已保证不会出现 >2 个 session。
+            self.is_starting_session = False
             
             # Snapshot all mutable resource refs while holding the lock,
             # then operate only on locals to prevent killing newly created resources.
