@@ -433,9 +433,8 @@ class VRMCore {
             this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
         }
         
-        // 使用 Cineon 色调映射，提亮暗部，降低整体对比度，更接近 VRoid Hub 效果
-        // 建议使用 LinearToneMapping 或 NoToneMapping 以获得更纯净的二次元感
-        this.manager.renderer.toneMapping = THREE.LinearToneMapping; 
+        // 默认使用 NeutralToneMapping（色调平衡、对比度适中）
+        this.manager.renderer.toneMapping = THREE.NeutralToneMapping;
         this.manager.renderer.toneMappingExposure = 0.8;
 
         const canvas = this.manager.renderer.domElement;

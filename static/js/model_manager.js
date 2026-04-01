@@ -1735,6 +1735,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (tonemapping) {
                     lightingData.lighting.toneMapping = parseInt(tonemapping.value);
                 }
+                const outlineWidthSlider = document.getElementById('vrm-outline-width-slider');
+                if (outlineWidthSlider) {
+                    lightingData.lighting.outlineWidthScale = parseFloat(outlineWidthSlider.value);
+                }
 
                 try {
                     lightingResult = await RequestHelper.fetchJson(
@@ -4149,6 +4153,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    // VRM 描边粗细 — 共用 helper
+    function applyVrmOutlineWidth(scale) {
+        const label = document.getElementById('vrm-outline-width-value');
+        if (label) label.textContent = scale.toFixed(2);
+        if (!vrmManager?.currentModel?.vrm?.scene) return;
+        vrmManager.currentModel.vrm.scene.traverse((object) => {
+            if (!object.isMesh && !object.isSkinnedMesh) return;
+            const mats = Array.isArray(object.material) ? object.material : [object.material];
+            mats.forEach(mat => {
+                if (!mat || !(mat._isOutline || mat.isOutline)) return;
+                if (mat._originalOutlineWidthFactor === undefined) {
+                    mat._originalOutlineWidthFactor = mat.outlineWidthFactor !== undefined ? mat.outlineWidthFactor : 0.002;
+                }
+                if (mat.outlineWidthFactor !== undefined) {
+                    mat.outlineWidthFactor = mat._originalOutlineWidthFactor * scale;
+                    mat.needsUpdate = true;
+                }
+            });
+        });
+    }
+
+    const vrmOutlineWidthSlider = document.getElementById('vrm-outline-width-slider');
+    if (vrmOutlineWidthSlider) {
+        vrmOutlineWidthSlider.addEventListener('input', (e) => {
+            applyVrmOutlineWidth(parseFloat(e.target.value));
+        });
+    }
+
     // 待机动作选择器
     if (idleAnimationSelect) {
         idleAnimationSelect.addEventListener('change', async (e) => {
@@ -4683,6 +4715,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             if (exposureValue) {
                 exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+            }
+        }
+
+        // 恢复描边粗细
+        const vrmOutlineWidthSlider = document.getElementById('vrm-outline-width-slider');
+        if (vrmOutlineWidthSlider && lighting.outlineWidthScale !== undefined) {
+            const scale = Number(lighting.outlineWidthScale);
+            if (!Number.isNaN(scale)) {
+                vrmOutlineWidthSlider.value = scale;
+                applyVrmOutlineWidth(scale);
             }
         }
 

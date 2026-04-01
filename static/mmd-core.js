@@ -261,9 +261,8 @@ class MMDCore {
             this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
         }
 
-        // NoToneMapping 与 hime-display 一致（Three.js r180 默认值）
-        // 可通过调试面板切换不同 toneMapping 实时比较效果
-        this.manager.renderer.toneMapping = THREE.NoToneMapping;
+        // 默认使用 NeutralToneMapping（色调平衡、对比度适中）
+        this.manager.renderer.toneMapping = THREE.NeutralToneMapping;
         this.manager.renderer.toneMappingExposure = 1.0;
 
         // Canvas 样式
@@ -835,10 +834,11 @@ class MMDCore {
             this.manager.animationModule.update(clampedDelta);
         }
 
-        // 2. IK/Grant 求解（每帧执行）
+        // 2. IK/Grant 求解（仅在无动画静止状态执行，暂停时跳过）
         //    Grant（付与変換）常用负比率实现骨骼联动（如裙摆反向补偿），
-        //    必须每帧执行，否则 kinematic 骨骼位置错误导致物理镜像分离。
-        if (this.manager.animationModule && !this.manager.animationModule.isPlaying) {
+        //    必须在静止状态每帧执行，否则 kinematic 骨骼位置错误导致物理镜像分离。
+        //    但在暂停时不应运行——暂停保持的是动画帧的快照，IK 会破坏该快照。
+        if (this.manager.animationModule && !this.manager.animationModule.isPlaying && !this.manager.animationModule.isPaused) {
             const anim = this.manager.animationModule;
             const mmd = this.manager.currentModel;
             if (mmd && mmd.mesh) {
@@ -854,12 +854,15 @@ class MMDCore {
         }
 
         // 4. 更新物理（库内部有 substep）
-        if (this.manager.enablePhysics && this.manager.currentModel && this.manager.currentModel.physics) {
+        //    暂停时冻结物理，防止头发/裙摆持续摆动
+        const animPaused = this.manager.animationModule && this.manager.animationModule.isPaused;
+        if (this.manager.enablePhysics && this.manager.currentModel && this.manager.currentModel.physics && !animPaused) {
             this.manager.currentModel.update(clampedDelta);
         }
 
         // 5. 更新表情模块（眨眼、口型同步等）
-        if (this.manager.expression) {
+        //    暂停时冻结表情，防止自动眨眼导致的循环感
+        if (this.manager.expression && !animPaused) {
             this.manager.expression.update(clampedDelta);
         }
 

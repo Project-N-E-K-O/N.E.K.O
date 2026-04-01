@@ -1623,6 +1623,7 @@
             "bottomLight": "ボトムライト",
             "exposure": "露出",
             "toneMapping": "トーンマッピング",
+            "outlineWidth": "描線の太さ",
             "resetLighting": "デフォルトにリセット",
             "saveLighting": "ライティングを保存",
             "selectPreset": "プリセットを選択",
@@ -2594,7 +2595,16 @@
         "loadFailed": "曲リストの読み込みに失敗しました",
         "listContainerNotFound": "曲リストコンテナが見つかりません",
         "noSongs": "曲がありません",
-        "playFailed": "再生に失敗しました"
+        "playFailed": "再生に失敗しました",
+        "pause": "一時停止",
+        "resume": "再開",
+        "paused": "一時停止中",
+        "resumed": "再生を再開しました",
+        "pausedStatus": "一時停止中: {{name}}",
+        "idleRestored": "待機アニメーションを復元しました",
+        "idleRestoreFailed": "待機アニメーションの復元に失敗しました",
+        "btnNotFoundGiveUp": "ジュークボックスボタンが見つかりません、バインドを中止",
+        "minimizeBtnNotFoundGiveUp": "最小化ボタンが見つかりません、監視を中止"
     },
     "notice": {
         "voiceMigration": {
