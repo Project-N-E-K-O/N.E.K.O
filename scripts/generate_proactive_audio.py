@@ -96,17 +96,24 @@ async def generate_one(text: str, voice: str, output_path: Path) -> None:
 
     mp3_bytes = mp3_buf.getvalue()
     if not mp3_bytes:
-        print(f"  WARNING: empty audio for {output_path.name}")
-        return
+        raise RuntimeError(f"empty audio from edge-tts for {output_path.name}")
 
     wav_bytes = mp3_to_wav16k(mp3_bytes)
     wav_bytes = append_silence(wav_bytes, duration_ms=500)
 
+    # Validate WAV format before writing
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        if (wf.getnchannels() != TARGET_CHANNELS or wf.getsampwidth() != TARGET_SAMPLE_WIDTH
+                or wf.getframerate() != TARGET_SAMPLE_RATE or wf.getcomptype() != "NONE"):
+            raise ValueError(
+                f"{output_path.name}: expected PCM16 mono {TARGET_SAMPLE_RATE}Hz, got "
+                f"ch={wf.getnchannels()} sw={wf.getsampwidth()} "
+                f"rate={wf.getframerate()} comp={wf.getcomptype()}"
+            )
+        duration = wf.getnframes() / wf.getframerate()
+
     output_path.write_bytes(wav_bytes)
 
-    # Print stats
-    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
-        duration = wf.getnframes() / wf.getframerate()
     size_kb = len(wav_bytes) / 1024
     print(f"  {output_path.name}: {duration:.1f}s, {size_kb:.0f}KB")
 

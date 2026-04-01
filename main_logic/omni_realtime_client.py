@@ -40,11 +40,21 @@ _PROACTIVE_AUDIO_CACHE: Dict[str, bytes] = {}
 
 
 def _load_proactive_audio(filename: str) -> bytes:
-    """Load a proactive prompt WAV file as raw PCM16 bytes (cached)."""
+    """Load a proactive prompt WAV file as raw PCM16 bytes (cached).
+
+    Validates that the file is PCM16 mono 16 kHz before caching.
+    Raises ``ValueError`` on format mismatch, ``FileNotFoundError`` if absent.
+    """
     if filename in _PROACTIVE_AUDIO_CACHE:
         return _PROACTIVE_AUDIO_CACHE[filename]
     path = _PROACTIVE_AUDIO_DIR / filename
     with wave.open(str(path), "rb") as wf:
+        if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getframerate() != 16000 or wf.getcomptype() != "NONE":
+            raise ValueError(
+                f"{filename}: expected PCM16 mono 16kHz, got "
+                f"ch={wf.getnchannels()} sw={wf.getsampwidth()} "
+                f"rate={wf.getframerate()} comp={wf.getcomptype()}"
+            )
         data = wf.readframes(wf.getnframes())
     _PROACTIVE_AUDIO_CACHE[filename] = data
     return data
@@ -224,6 +234,7 @@ class OmniRealtimeClient:
         self._image_being_analyzed = False
         self._image_description = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
         self._latest_image_b64 = None  # Cached latest screenshot for proactive injection
+        self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
         
         # Silence detection for auto-closing inactive sessions
         # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
@@ -820,6 +831,7 @@ class OmniRealtimeClient:
         """Stream raw image data to the API."""
         # Cache latest frame for proactive injection
         self._latest_image_b64 = image_b64
+        self._proactive_image_consumed = False
 
         try:
             # Models without native vision (step, free on lanlan.tech) — first frame triggers VISION_MODEL analysis
@@ -1026,8 +1038,11 @@ class OmniRealtimeClient:
             return False
 
         # ── Choose audio file ─────────────────────────────────────────
-        # Vision is active if image was ever successfully analyzed (not just default placeholder)
-        has_vision = self._image_recognized_this_turn or ("正在分析中" not in self._image_description)
+        # Vision is active if we recognized an image this turn OR have an
+        # unconsumed frame from stream_image().
+        has_vision = self._image_recognized_this_turn or (
+            self._latest_image_b64 is not None and not self._proactive_image_consumed
+        )
         prompt_type = "vision" if has_vision else "general"
         lang = (language or "zh")[:2]
         filename = f"prompt_{prompt_type}_{lang}.wav"
@@ -1063,15 +1078,27 @@ class OmniRealtimeClient:
                 return False
 
             chunk = pcm_data[i : i + chunk_size]
-            audio_b64 = base64.b64encode(chunk).decode()
-            await self.send_event({
-                "type": "input_audio_buffer.append",
-                "audio": audio_b64,
-            })
+            if self._is_gemini:
+                if self._gemini_session:
+                    await self._gemini_session.send_realtime_input(
+                        audio={"data": chunk, "mime_type": "audio/pcm"}
+                    )
+            else:
+                audio_b64 = base64.b64encode(chunk).decode()
+                await self.send_event({
+                    "type": "input_audio_buffer.append",
+                    "audio": audio_b64,
+                })
 
             # Inject cached screenshot at midpoint so vision model can recognize it
             if has_vision and not image_injected and chunk_idx >= mid_chunk and self._latest_image_b64:
-                if "qwen" in self.model:
+                if self._is_gemini:
+                    if self._gemini_session:
+                        image_bytes = base64.b64decode(self._latest_image_b64)
+                        await self._gemini_session.send_realtime_input(
+                            media={"data": image_bytes, "mime_type": "image/jpeg"}
+                        )
+                elif "qwen" in self.model:
                     await self.send_event({
                         "type": "input_image_buffer.append",
                         "image": self._latest_image_b64,
@@ -1082,6 +1109,7 @@ class OmniRealtimeClient:
                         "video_frame": self._latest_image_b64,
                     })
                 image_injected = True
+                self._proactive_image_consumed = True
                 logger.info("stream_proactive: injected screenshot at chunk %d/%d", chunk_idx, total_chunks)
 
             await asyncio.sleep(sleep_interval)

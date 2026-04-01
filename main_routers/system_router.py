@@ -1795,8 +1795,7 @@ async def proactive_chat(request: Request):
         # ========== Voice mode fast path ==========
         # 语音模式下不走 Phase1/Phase2，直接注入预录音频触发 AI 回复
         if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
-            _lang = normalize_language_code(getattr(mgr, 'user_language', '') or '', format='short') or 'zh'
-            delivered = await mgr.session.stream_proactive(language=_lang)
+            delivered = await mgr.trigger_voice_proactive_nudge()
             return JSONResponse({
                 "success": True,
                 "action": "chat" if delivered else "pass",

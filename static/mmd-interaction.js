@@ -321,7 +321,11 @@ class MMDInteraction {
         // 鼠标悬停光标（仅用屏幕包围盒判断，避免高频射线检测掉帧）
         let _lastHoverHitTestAt = 0;
         this.mouseHoverHandler = (e) => {
-            if (this.isDragging || this.checkLocked()) return;
+            if (this.isDragging) return;
+            if (this.checkLocked()) {
+                canvas.style.cursor = 'default';
+                return;
+            }
             const now = performance.now();
             if ((now - _lastHoverHitTestAt) < 80) return;
             _lastHoverHitTestAt = now;
