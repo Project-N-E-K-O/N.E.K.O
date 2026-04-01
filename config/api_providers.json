@@ -158,7 +158,7 @@
       "summary_model": "doubao-seed-2-0-lite-260215",
       "correction_model": "doubao-seed-2-0-lite-260215",
       "emotion_model": "doubao-seed-2-0-mini",
-      "vision_model": "doubao-seed-2-0-pro-260215",
+      "vision_model": "doubao-seed-2-0-lite-260215",
       "agent_model": "doubao-seed-2-0-pro-260215"
     },
     "minimax": {
