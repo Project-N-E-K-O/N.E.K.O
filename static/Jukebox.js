@@ -867,6 +867,8 @@ window.Jukebox = {
   restoreIdleAnimation: async function() {
     if (!window.mmdManager) return;
 
+    const restoreRequestId = Jukebox.State.playRequestId;
+
     let idleUrl = Jukebox.State.savedIdleAnimationUrl;
 
     // 如果没有保存的待机动画 URL，从角色配置获取
@@ -883,8 +885,9 @@ window.Jukebox = {
       } catch (_) { /* ignore */ }
     }
 
+    if (restoreRequestId !== Jukebox.State.playRequestId) return;
+
     if (!idleUrl) {
-      // 无待机动画可恢复，重置 cursor follow 到完全跟踪
       if (window.mmdManager.cursorFollow) {
         window.mmdManager.cursorFollow.setAnimationMode('none');
       }
@@ -893,12 +896,11 @@ window.Jukebox = {
 
     try {
       await window.mmdManager.loadAnimation(idleUrl);
-      // playAnimation() 默认 'idle' 模式，会设置 cursor follow 权重为 0.7
+      if (restoreRequestId !== Jukebox.State.playRequestId) return;
       window.mmdManager.playAnimation();
       console.log('[Jukebox]', window.t('Jukebox.idleRestored', '已恢复待机动画'));
     } catch (error) {
       console.warn('[Jukebox]', window.t('Jukebox.idleRestoreFailed', '恢复待机动画失败'), error);
-      // 加载失败也要恢复 cursor follow
       if (window.mmdManager.cursorFollow) {
         window.mmdManager.cursorFollow.setAnimationMode('none');
       }
