@@ -223,10 +223,7 @@ class LLMSessionManager:
         
         # 防止并发启动的标志
         self.is_starting_session = False
-        
-        # 预热进行中标志：防止预热期间向TTS发送空包
-        self._is_warmup_in_progress = False
-        
+
         # TTS缓存机制：确保不丢包
         self.tts_ready = False  # TTS是否完全就绪
         self.tts_pending_chunks = []  # 待处理的TTS文本chunk: [(speech_id, text), ...]
@@ -367,14 +364,7 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
-        
-        # 预热期间跳过TTS信号发送（避免local TTS收到空包产生参考prompt音频）
-        if self._is_warmup_in_progress:
-            logger.debug("⏭️ 跳过预热期间的TTS信号发送")
-            # 仍然发送 turn end 消息（不影响其他逻辑）
-            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-            return
-        
+
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
             try:
@@ -1398,61 +1388,9 @@ class LLMSessionManager:
                 self.session_start_last_failure_time = None
                 self._memory_error_retry_after = 0
 
-                # ★ 先通知前端 session 已启动，再做预热
-                # 预热只是优化首轮延迟，不应阻塞 session_started 信号
-                # （之前 session_started 放在预热后面，导致断连重连时总耗时 > 15s 前端超时）
-                logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 耗时: {time.time() - _diag_start:.2f}秒)")
+                logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - _diag_start:.2f}秒)")
+                # 通知前端 session 已成功启动
                 await self.send_session_started(input_mode)
-
-                # 🔥 预热逻辑：对于语音模式，立即触发一次 skipped response 来 prefill instructions
-                # 这样可以大幅减少首轮对话的延迟（让 API 提前处理并缓存 instructions 的 KV cache）
-                # 注意：Gemini 和 Free 模型跳过预热，因为：
-                #   - Gemini: prefill 本身足够快，发送空内容会污染对话历史
-                #   - Free: 底层使用 Gemini，同样会导致首轮对话被吞
-                skip_warmup_api_types = ['gemini', 'free']
-                session_api_type = getattr(self.session, '_api_type', '').lower()
-                should_warmup = isinstance(self.session, OmniRealtimeClient) and session_api_type not in skip_warmup_api_types
-                if should_warmup:
-                    # Pin 住当前 session 引用，防止 warmup 期间 end_session + 新 start_session
-                    # 导致 self.session 变成另一个对象，恢复回调时污染新 session
-                    warmup_session = self.session
-                    try:
-                        logger.info("🔥 开始预热 Session，prefill instructions...")
-                        warmup_start = time.time()
-
-                        # 设置预热标志，防止预热期间向TTS发送空包
-                        self._is_warmup_in_progress = True
-
-                        # 创建一个事件来等待预热完成
-                        warmup_done_event = asyncio.Event()
-                        original_callback = warmup_session.on_response_done
-
-                        # 临时替换回调，只用于等待预热完成
-                        async def warmup_callback():
-                            warmup_done_event.set()
-
-                        warmup_session.on_response_done = warmup_callback
-
-                        await warmup_session.create_response("", skipped=True)
-
-                        # 等待预热完成（最多12秒）
-                        try:
-                            await asyncio.wait_for(warmup_done_event.wait(), timeout=12.0)
-                            warmup_time = time.time() - warmup_start
-                            logger.info(f"✅ Session预热完成 (耗时: {warmup_time:.2f}秒)，首轮对话延迟已优化")
-                        except asyncio.TimeoutError:
-                            logger.warning("⚠️ Session预热超时（12秒），继续执行...")
-                            logger.warning("[语音会话诊断] 预热在 12 秒内未完成，可能为 realtime API 响应慢")
-
-                        # 恢复原始回调（仅当此 session 仍是当前活跃 session 时）
-                        if warmup_session is self.session and self.is_active:
-                            warmup_session.on_response_done = original_callback
-
-                    except Exception as e:
-                        logger.warning(f"⚠️ Session预热失败（不影响正常使用）: {e}")
-                    finally:
-                        # 确保清除预热标志
-                        self._is_warmup_in_progress = False
 
                 # 标记session为就绪状态并处理可能已缓存的输入数据
                 async with self.input_cache_lock:
