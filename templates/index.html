@@ -290,6 +290,9 @@
             if (!window.lanlan_config || typeof window.lanlan_config !== 'object') {
                 window.lanlan_config = {};
             }
+            if (typeof window.lanlan_config.lanlan_name !== 'string') {
+                try { window.lanlan_config.lanlan_name = new URLSearchParams(window.location.search).get('lanlan_name') || ''; } catch(_) { window.lanlan_config.lanlan_name = ''; }
+            }
             if (typeof window.lanlan_config.master_name !== 'string') {
                 window.lanlan_config.master_name = '';
             }

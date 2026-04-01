@@ -152,20 +152,27 @@
             var files = event && event.target && event.target.files ? Array.from(event.target.files) : [];
             if (!files.length) return;
 
-            Promise.all(files.map(mod.importImageFileToPendingList))
+            Promise.allSettled(files.map(mod.importImageFileToPendingList))
                 .then(function (results) {
-                    var count = results.length;
-                    window.showStatusToast(
-                        window.t ? window.t('app.importImageAdded', { count: count }) : '已添加 ' + count + ' 张图片，发送时会一并带上',
-                        3000
-                    );
-                })
-                .catch(function (error) {
-                    console.error('[导入图片] 处理失败:', error);
-                    window.showStatusToast(
-                        window.t ? window.t('app.importImageFailed') : '导入图片失败',
-                        4000
-                    );
+                    var succeeded = 0;
+                    for (var i = 0; i < results.length; i++) {
+                        if (results[i].status === 'fulfilled') {
+                            succeeded++;
+                        } else {
+                            console.error('[导入图片] 单张处理失败:', results[i].reason);
+                        }
+                    }
+                    if (succeeded > 0) {
+                        window.showStatusToast(
+                            window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
+                            3000
+                        );
+                    } else {
+                        window.showStatusToast(
+                            window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                            4000
+                        );
+                    }
                 })
                 .finally(function () {
                     input.value = '';

@@ -631,7 +631,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
 
 // 为VRM的"请她回来"按钮设置拖动功能
 // 性能优化：使用 RAF 批处理 + transform 走 GPU 合成，避免每帧 layout 抖动
-VRMManager.prototype.setupVRMReturnButtonDrag = function (returnButtonContainer) {
+VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     let isDragging = false;
     let dragStartX = 0;
     let dragStartY = 0;
@@ -647,6 +647,10 @@ VRMManager.prototype.setupVRMReturnButtonDrag = function (returnButtonContainer)
         isDragging = true;
         dragStartX = clientX;
         dragStartY = clientY;
+        // 同步初始化 pending 坐标，防止 click-without-move 时
+        // commitDragPosition() 使用过期值产生错误位移
+        pendingClientX = clientX;
+        pendingClientY = clientY;
 
         // 设置全局拖拽标志，供 preload 等跳过昂贵操作
         if (window.DragHelpers) window.DragHelpers.isDragging = true;

@@ -842,6 +842,51 @@ class LLMSessionManager:
         self._last_tts_error_code = ''
         self._last_tts_respawn_time = 0.0
 
+    async def _teardown_tts_runtime(self, handler_task_ref, thread_ref,
+                                     req_queue_ref, resp_queue_ref):
+        """Tear down TTS handler task, worker thread, and drain queues.
+
+        Operates only on the snapshot references passed in to prevent
+        accidentally killing resources that have been recreated by a
+        concurrent start_session.
+        """
+        if handler_task_ref and not handler_task_ref.done():
+            handler_task_ref.cancel()
+            try:
+                await asyncio.wait_for(handler_task_ref, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            if self.tts_handler_task is handler_task_ref:
+                self.tts_handler_task = None
+
+        if thread_ref and thread_ref.is_alive():
+            try:
+                req_queue_ref.put((None, None))
+                thread_ref.join(timeout=2.0)
+            except Exception as e:
+                logger.error(f"💥 关闭TTS线程时出错: {e}")
+            finally:
+                if self.tts_thread is thread_ref:
+                    self.tts_thread = None
+
+        try:
+            while not req_queue_ref.empty():
+                req_queue_ref.get_nowait()
+        except:  # noqa
+            pass
+        try:
+            while not resp_queue_ref.empty():
+                resp_queue_ref.get_nowait()
+        except:  # noqa
+            pass
+
+        # handler 可能在取消前重新引入了过期错误码，再次清理
+        self._reset_tts_retry_state()
+
+        async with self.tts_cache_lock:
+            self.tts_ready = False
+            self.tts_pending_chunks.clear()
+
     def _respawn_tts_worker(self):
         """检测 TTS Worker 线程已死亡时重新拉起，不阻塞等待就绪。
 
@@ -2657,19 +2702,34 @@ class LLMSessionManager:
     async def end_session(self, by_server=False, *, expected_session=None):  # 与Core API断开连接
         # Pre-check: no-side-effect guard before _init_renew_status which mutates
         # pending/prewarm state.  A stale callback must not nuke preparation state.
+        _inactive_early = False
         async with self.lock:
             if not self.is_active:
                 # 即使会话未完全激活（如 start_session 失败），也要清理
                 # 可能残留的 TTS 重试状态，防止污染下一次会话
                 self._reset_tts_retry_state()
-                return
-            if expected_session is not None and expected_session is not self.session:
+                _inactive_early = True
+                # start_tts_if_needed 可能已启动 TTS 线程/handler，
+                # 但 is_active 尚未置 True 就失败了——快照引用以便释放锁后清理
+                _orphan_tts_handler = self.tts_handler_task
+                _orphan_tts_thread = self.tts_thread
+                _orphan_tts_rq = self.tts_request_queue
+                _orphan_tts_rsq = self.tts_response_queue
+            elif expected_session is not None and expected_session is not self.session:
                 logger.info("⏭️ end_session: expected_session stale (pre-check), skipping")
                 return
+            else:
+                # 尽早取消 TTS 延迟重试任务并清理错误码（持锁状态下），
+                # 防止 _init_renew_status 期间 respawn task 触发无效重试
+                self._reset_tts_retry_state()
 
-            # 尽早取消 TTS 延迟重试任务并清理错误码（持锁状态下），
-            # 防止 _init_renew_status 期间 respawn task 触发无效重试
-            self._reset_tts_retry_state()
+        if _inactive_early:
+            # start_tts_if_needed 可能已启动 TTS 但 is_active 未置 True（如 LLM 启动失败），
+            # 必须清理这些孤儿资源，否则线程/task 会泄漏
+            await self._teardown_tts_runtime(
+                _orphan_tts_handler, _orphan_tts_thread,
+                _orphan_tts_rq, _orphan_tts_rsq)
+            return
 
         await self._init_renew_status()
 
@@ -2723,46 +2783,9 @@ class LLMSessionManager:
                 if self.session is main_session_ref:
                     self.session = None
 
-        if tts_handler_task_ref and not tts_handler_task_ref.done():
-            tts_handler_task_ref.cancel()
-            try:
-                await asyncio.wait_for(tts_handler_task_ref, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-            if self.tts_handler_task is tts_handler_task_ref:
-                self.tts_handler_task = None
-            
-        if tts_thread_ref and tts_thread_ref.is_alive():
-            try:
-                tts_request_queue_ref.put((None, None))
-                tts_thread_ref.join(timeout=2.0)
-            except Exception as e:
-                logger.error(f"💥 关闭TTS线程时出错: {e}")
-            finally:
-                if self.tts_thread is tts_thread_ref:
-                    self.tts_thread = None
-                
-        # 清理TTS队列和缓存状态（使用快照的队列引用）
-        try:
-            while not tts_request_queue_ref.empty():
-                tts_request_queue_ref.get_nowait()
-        except: # noqa
-            pass
-        try:
-            while not tts_response_queue_ref.empty():
-                tts_response_queue_ref.get_nowait()
-        except: # noqa
-            pass
-
-        # Final reset: tts_response_handler may have re-introduced a stale
-        # error code between the early lock-clearing and task cancellation.
-        # Also reset respawn cooldown so new sessions start fresh.
-        self._reset_tts_retry_state()
-        
-        # 重置TTS缓存状态
-        async with self.tts_cache_lock:
-            self.tts_ready = False
-            self.tts_pending_chunks.clear()
+        await self._teardown_tts_runtime(
+            tts_handler_task_ref, tts_thread_ref,
+            tts_request_queue_ref, tts_response_queue_ref)
         
         # 重置输入缓存状态
         async with self.input_cache_lock:
@@ -2941,6 +2964,9 @@ class LLMSessionManager:
                                 if self._tts_respawn_task and not self._tts_respawn_task.done():
                                     self._tts_respawn_task.cancel()
                                     self._tts_respawn_task = None
+                                # TTS 不会恢复，清空无用的缓存文本，避免白白占用内存
+                                async with self.tts_cache_lock:
+                                    self.tts_pending_chunks.clear()
                             else:
                                 logger.warning("⚠️ 收到TTS未就绪信号，13秒后尝试重新拉起Worker")
                                 # 取消之前的延迟重试任务（如有）
