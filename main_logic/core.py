@@ -865,23 +865,23 @@ class LLMSessionManager:
                 thread_ref.join(timeout=2.0)
             except Exception as e:
                 logger.error(f"💥 关闭TTS线程时出错: {e}")
-            finally:
+
+            if thread_ref.is_alive():
+                logger.warning("⚠️ TTS worker 未在超时内退出，保留引用以便后续清理")
+            else:
                 if self.tts_thread is thread_ref:
                     self.tts_thread = None
-
-        try:
-            while not req_queue_ref.empty():
-                req_queue_ref.get_nowait()
-        except:  # noqa
-            pass
-        try:
-            while not resp_queue_ref.empty():
-                resp_queue_ref.get_nowait()
-        except:  # noqa
-            pass
-
-        # handler 可能在取消前重新引入了过期错误码，再次清理
-        self._reset_tts_retry_state()
+                # 仅在线程确实已停止后才安全地清空队列
+                try:
+                    while not req_queue_ref.empty():
+                        req_queue_ref.get_nowait()
+                except:  # noqa
+                    pass
+                try:
+                    while not resp_queue_ref.empty():
+                        resp_queue_ref.get_nowait()
+                except:  # noqa
+                    pass
 
         async with self.tts_cache_lock:
             self.tts_ready = False
@@ -2786,6 +2786,9 @@ class LLMSessionManager:
         await self._teardown_tts_runtime(
             tts_handler_task_ref, tts_thread_ref,
             tts_request_queue_ref, tts_response_queue_ref)
+        # handler 可能在锁释放到 task 取消之间重新引入了过期错误码——
+        # 在活跃会话拆除路径（is_active 已置 False）补充一次清理
+        self._reset_tts_retry_state()
         
         # 重置输入缓存状态
         async with self.input_cache_lock:
