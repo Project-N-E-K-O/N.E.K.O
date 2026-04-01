@@ -119,6 +119,7 @@ class ConfigManager:
         """
         result = {}
         
+        # 展平嵌套的节（如 [security].credential_path -> SECURITY_CREDENTIAL_PATH）
         for key, value in config.items():
             if isinstance(value, dict):
                 # 递归处理嵌套字典，累积前缀
@@ -127,6 +128,17 @@ class ConfigManager:
                 # 转换为大写并添加前缀
                 full_key = f"{prefix}{key}".upper()
                 result[full_key] = value
+        
+        # 别名归一化：展平后的节前缀在默认值里没有对应节
+        # 例如：SECURITY_CREDENTIAL_PATH -> CREDENTIAL_PATH（匹配默认值键名）
+        aliases = {
+            "SECURITY_CREDENTIAL_PATH": "CREDENTIAL_PATH",
+            "LOGGING_LEVEL": "LOG_LEVEL",
+            "NETWORK_DEFAULT_TIMEOUT": "DEFAULT_TIMEOUT",
+        }
+        for alias_key, canonical_key in aliases.items():
+            if alias_key in result and canonical_key not in result:
+                result[canonical_key] = result.pop(alias_key)
         
         return result
 

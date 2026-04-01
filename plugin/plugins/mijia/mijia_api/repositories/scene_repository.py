@@ -51,9 +51,11 @@ class SceneRepositoryImpl(ISceneRepository):
         scenes = []
         for scene_data in scene_list:
             # 映射API字段到领域模型
-            scene_id = str(scene_data.get("scene_id", ""))
-            # 跳过无效的场景ID
-            if not scene_id:
+            scene_id_raw = scene_data.get("scene_id")
+            # 跳过无效的场景ID（None 和空字符串都要过滤）
+            if scene_id_raw is None or scene_id_raw == "":
+                continue
+            scene_id = str(scene_id_raw)
                 continue
             scene = Scene(
                 scene_id=scene_id,

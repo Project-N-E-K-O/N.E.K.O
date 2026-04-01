@@ -12,8 +12,8 @@
 - 结构化日志系统
 
 基本使用：
-    from mijiaAPI_V2 import create_api_client
-    from mijiaAPI_V2.infrastructure.credential_provider import CredentialProvider
+    from mijia_api import create_api_client
+    from mijia_api.infrastructure.credential_provider import CredentialProvider
 
     # 获取凭据
     provider = CredentialProvider()

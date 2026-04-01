@@ -128,8 +128,8 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
             credential,
         )
 
-        # 失效相关缓存
-        self._cache.invalidate_pattern("devices:")
+        # 失效相关缓存（限制到当前用户范围）
+        self._cache.invalidate_pattern(f"{credential.user_id}:devices:")
 
         return response.get("code") == 0
 
@@ -148,9 +148,18 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
         Returns:
             是否成功
         """
+        # 构建请求参数
+        request_data = {
+            "did": device_id,
+            "siid": siid,
+            "aiid": aiid
+        }
+        if params:
+            request_data["value"] = params
+
         response = await self._http.post(
             "/miotspec/action",
-            {"did": device_id, "siid": siid, "aiid": aiid, "in": params},
+            {"params": request_data},
             credential,
         )
         return response.get("code") == 0
@@ -192,8 +201,8 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
             credential
         )
 
-        # 失效相关缓存
-        self._cache.invalidate_pattern("devices:")
+        # 失效相关缓存（限制到当前用户范围）
+        self._cache.invalidate_pattern(f"{credential.user_id}:devices:")
 
         results = response.get("result", [])
         return [r.get("code") == 0 for r in results]

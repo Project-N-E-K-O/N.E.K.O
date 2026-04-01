@@ -169,9 +169,11 @@ class DeviceService:
         Returns:
             批量操作结果列表
         """
-        # 规范化请求：将 device_id 转换为 did
+        # 规范化请求：将 device_id 转换为 did，同时过滤无效项
         normalized_requests = []
         for req in requests:
+            if not req.get("did") and not req.get("device_id"):
+                continue  # 跳过既没有 did 也没有 device_id 的无效项
             normalized = dict(req)  # 复制一份避免修改原数据
             # 支持 device_id 或 did 作为设备ID字段
             if "device_id" in normalized and "did" not in normalized:

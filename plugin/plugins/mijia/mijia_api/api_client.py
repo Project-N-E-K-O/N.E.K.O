@@ -755,7 +755,7 @@ class AsyncMijiaAPI:
         """
         import asyncio
         return await asyncio.to_thread(
-            self._device_service._device_repo.batch_get_properties, requests, self._credential
+            self._device_service.batch_get_properties, requests, self._credential
         )
 
     def update_credential(self, credential: Credential) -> None:
@@ -830,14 +830,12 @@ class AsyncMijiaAPI:
         """
         import asyncio
         try:
-            # 关闭底层 HttpClient（持有 httpx.Client 连接池）
-            http_client = getattr(self._device_service, '_http_client', None)
-            if http_client is None:
-                # 从 _device_repo 尝试获取
-                repo = getattr(self._device_service, '_device_repo', None)
-                if repo:
-                    http_client = getattr(repo, '_http_client', None) or getattr(repo, '_client', None)
-            if http_client and hasattr(http_client, 'close'):
-                await asyncio.to_thread(http_client.close)
+            # 关闭底层 HttpClient（持有 httpx.AsyncClient 连接池）
+            # AsyncDeviceRepositoryImpl 使用 _http 属性存储 AsyncHttpClient
+            repo = getattr(self._device_service, '_device_repo', None)
+            if repo:
+                http_client = getattr(repo, '_http', None)
+                if http_client and hasattr(http_client, 'close'):
+                    await asyncio.to_thread(http_client.close)
         except Exception:
             pass  # 关闭时忽略错误
