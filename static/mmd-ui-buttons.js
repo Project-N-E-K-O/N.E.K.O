@@ -498,9 +498,26 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                     buttonsContainer.style.transformOrigin = 'left top';
                     const isLocked = this.isLocked;
                     const hoveringButtons = this._mmdButtonsHovered === true;
-                    const hasOpenPopup = Array.from(document.querySelectorAll('[id^="mmd-popup-"]'))
-                        .some(popup => popup.style.display === 'flex' && popup.style.opacity !== '0');
-                    const shouldShowButtons = !isLocked && (this._mmdUiNearModel || hoveringButtons || hasOpenPopup);
+                    const popupUi = window.AvatarPopupUI || null;
+                    const isFallbackOverlayVisible = (element) => {
+                        if (!element) return false;
+                        const style = window.getComputedStyle(element);
+                        const opacity = Number.parseFloat(style.opacity || '1');
+                        if (style.display === 'none' || style.visibility === 'hidden' || opacity <= 0) return false;
+
+                        const rect = element.getBoundingClientRect();
+                        if (rect.width <= 0 || rect.height <= 0) return false;
+
+                        return rect.bottom > 0 &&
+                            rect.right > 0 &&
+                            rect.top < window.innerHeight &&
+                            rect.left < window.innerWidth;
+                    };
+                    const hasOpenOverlay = popupUi && typeof popupUi.hasVisibleOverlay === 'function'
+                        ? popupUi.hasVisibleOverlay('mmd')
+                        : Array.from(document.querySelectorAll('[id^="mmd-popup-"], [data-neko-sidepanel-owner^="mmd-popup-"]'))
+                            .some(isFallbackOverlayVisible);
+                    const shouldShowButtons = !isLocked && (this._mmdUiNearModel || hoveringButtons || hasOpenOverlay);
                     buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;

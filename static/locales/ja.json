@@ -1408,7 +1408,7 @@
         "voiceUpdated": "{{name}}の声が更新されました",
         "audioWorkletFailed": "AudioWorkletの読み込みに失敗しました",
         "audioContextError": "オーディオシステムエラー。再試行してください",
-        "sessionTimeout": "セッションタイムアウト",
+        "sessionTimeout": "起動がタイムアウトしました。サーバーが混雑している可能性があります。手動で再試行してください",
         "websocketNotConnectedError": "WebSocket未接続",
         "sessionStartFailed": "セッション開始が{{count}}回失敗しました。自動リトライを停止しました。ネットワークとAPI設定を確認してください。",
         "sessionStartFailedCount": "セッション開始エラー: {{error}} ({{count}}回失敗)",

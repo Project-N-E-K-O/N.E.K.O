@@ -256,8 +256,9 @@
                             console.log(window.t('console.sessionTimeoutEndSession'));
                         }
 
-                        window.showVoicePreparingToast(window.t ? window.t('app.sessionTimeout') || '\u8FDE\u63A5\u8D85\u65F6' : '\u8FDE\u63A5\u8D85\u65F6\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC\u8FDE\u63A5');
-                        rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session\u542F\u52A8\u8D85\u65F6'));
+                        var timeoutMsg = (window.t && window.t('app.sessionTimeout')) || '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5';
+                        window.showVoicePreparingToast(timeoutMsg);
+                        rejecter(new Error(timeoutMsg));
                     } else {
                         window.sessionTimeoutId = null;
                     }
@@ -515,7 +516,8 @@
                                 console.log(window.t('console.returnSessionTimeoutEndSession'));
                             }
 
-                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session\u542F\u52A8\u8D85\u65F6'));
+                            var timeoutMsg = (window.t && window.t('app.sessionTimeout')) || '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5';
+                            rejecter(new Error(timeoutMsg));
                         }
                     }, 15000);
                 });
@@ -665,7 +667,8 @@
                                 console.log('[TextSession] timeout \u2192 sent end_session');
                             }
 
-                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session\u542F\u52A8\u8D85\u65F6'));
+                            var timeoutMsg = (window.t && window.t('app.sessionTimeout')) || '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5';
+                            rejecter(new Error(timeoutMsg));
                         }
                     }, 15000);
 
