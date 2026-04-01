@@ -30,8 +30,10 @@ class MMDCursorFollow {
         this._neckBaseQuat = null;
         this._appliedLastFrame = false;
 
-        // 眼骨使用"撤销上帧偏移"方案（不依赖 Grant，不累积）
-        this._eyeLastOffsetQuat = null; // 上帧施加的偏移四元数
+        // 眼骨基准四元数（由 render loop 在 Grant 后、cursor follow 前捕获）
+        this._eyesBoneBase = null;
+        this._eyeLBoneBase = null;
+        this._eyeRBoneBase = null;
 
         // 预分配临时对象（减少 GC）
         this._tempEuler = null;
@@ -94,10 +96,11 @@ class MMDCursorFollow {
 
         this._tempEuler = new THREE.Euler();
         this._tempQuat = new THREE.Quaternion();
-        this._tempQuatInv = new THREE.Quaternion(); // 用于眼骨偏移反转
         this._headBaseQuat = new THREE.Quaternion();
         this._neckBaseQuat = new THREE.Quaternion();
-        this._eyeLastOffsetQuat = new THREE.Quaternion(); // identity = 无偏移
+        this._eyesBoneBase = new THREE.Quaternion();
+        this._eyeLBoneBase = new THREE.Quaternion();
+        this._eyeRBoneBase = new THREE.Quaternion();
         this._raycaster = new THREE.Raycaster();
         this._ndcVec = new THREE.Vector2();
         this._headWorldPos = new THREE.Vector3();
@@ -225,6 +228,17 @@ class MMDCursorFollow {
         return this._headWorldPos;
     }
 
+    /**
+     * 由 render loop 在 Grant/IK 之后、cursor follow 之前调用。
+     * 捕获眼骨的"干净"四元数（不含 cursor follow 偏移）。
+     * 只在动画或 IK/Grant 实际重置了骨骼的帧调用。
+     */
+    captureEyeBases() {
+        if (this._eyesBone) this._eyesBoneBase.copy(this._eyesBone.quaternion);
+        if (this._eyeLBone) this._eyeLBoneBase.copy(this._eyeLBone.quaternion);
+        if (this._eyeRBone) this._eyeRBoneBase.copy(this._eyeRBone.quaternion);
+    }
+
     // ═══════════════════ 帧更新 ═══════════════════
 
     update(delta) {
@@ -243,14 +257,10 @@ class MMDCursorFollow {
                 if (this._headBone) this._headBone.quaternion.copy(this._headBaseQuat);
                 this._appliedLastFrame = false;
             }
-            // 撤销眼骨偏移
-            if (this._eyeLastOffsetQuat && this._eyeLastOffsetQuat.lengthSq() > 0.5) {
-                this._tempQuatInv.copy(this._eyeLastOffsetQuat).invert();
-                if (this._eyesBone) this._eyesBone.quaternion.multiply(this._tempQuatInv);
-                if (this._eyeLBone) this._eyeLBone.quaternion.multiply(this._tempQuatInv);
-                if (this._eyeRBone) this._eyeRBone.quaternion.multiply(this._tempQuatInv);
-                this._eyeLastOffsetQuat.identity();
-            }
+            // 恢复眼骨到干净基准
+            if (this._eyesBone) this._eyesBone.quaternion.copy(this._eyesBoneBase);
+            if (this._eyeLBone) this._eyeLBone.quaternion.copy(this._eyeLBoneBase);
+            if (this._eyeRBone) this._eyeRBone.quaternion.copy(this._eyeRBoneBase);
             return;
         }
 
@@ -408,38 +418,24 @@ class MMDCursorFollow {
             this._headBone.quaternion.multiply(offsetQuat);
         }
 
-        // 眼球跟踪：Grant 感知的混合策略
-        // Grant 运行时（动画播放 / 静态 IK 阶段）已重置眼骨 → 直接叠加偏移
-        // Grant 未运行时（暂停等）→ 先撤销上帧偏移再叠加，防止累积
+        // 眼球跟踪：恢复基准 + 叠加偏移（无 undo，无 Grant 检测，无累积）
+        // 基准由 render loop 在 Grant 后调用 captureEyeBases() 捕获。
+        // 当 Grant/动画未运行时基准不刷新，cursor follow 恢复到上次干净基准。
         const eyeYaw = this._currentYaw * this.eyeYawScale * w;
         const eyePitch = this._currentPitch * this.eyePitchScale * w;
 
-        const hasEyeBones = this._eyesBone || this._eyeLBone || this._eyeRBone;
-        if (hasEyeBones && this._eyeLastOffsetQuat) {
-            const anim = this.manager.animationModule;
-            const grantActive = anim && (
-                anim.isPlaying ||                               // Grant 在 animationModule.update() 内运行
-                (!anim.isPaused && anim.grantSolver)            // Grant 在 render loop 静态 IK 阶段运行
-            );
+        if (this._eyesBone || this._eyeLBone || this._eyeRBone) {
+            // 恢复到干净基准（captureEyeBases 捕获的 post-Grant 值）
+            if (this._eyesBone) this._eyesBone.quaternion.copy(this._eyesBoneBase);
+            if (this._eyeLBone) this._eyeLBone.quaternion.copy(this._eyeLBoneBase);
+            if (this._eyeRBone) this._eyeRBone.quaternion.copy(this._eyeRBoneBase);
 
-            if (!grantActive) {
-                // Grant 未运行：撤销上帧偏移防止累积
-                this._tempQuatInv.copy(this._eyeLastOffsetQuat).invert();
-                if (this._eyesBone) this._eyesBone.quaternion.multiply(this._tempQuatInv);
-                if (this._eyeLBone) this._eyeLBone.quaternion.multiply(this._tempQuatInv);
-                if (this._eyeRBone) this._eyeRBone.quaternion.multiply(this._tempQuatInv);
-            }
-            // else: Grant 已重置眼骨到动画值，直接叠加即可
-
-            // 计算并应用新偏移
+            // 叠加偏移
             euler.set(eyePitch, eyeYaw, 0, 'YXZ');
             offsetQuat.setFromEuler(euler);
             if (this._eyesBone) this._eyesBone.quaternion.multiply(offsetQuat);
             if (this._eyeLBone) this._eyeLBone.quaternion.multiply(offsetQuat);
             if (this._eyeRBone) this._eyeRBone.quaternion.multiply(offsetQuat);
-
-            // 保存本帧偏移供下帧撤销
-            this._eyeLastOffsetQuat.copy(offsetQuat);
         }
     }
 
@@ -518,14 +514,10 @@ class MMDCursorFollow {
             }
             this._appliedLastFrame = false;
         }
-        // 撤销眼骨偏移
-        if (this._eyeLastOffsetQuat && this._eyeLastOffsetQuat.lengthSq() > 0.5) {
-            this._tempQuatInv.copy(this._eyeLastOffsetQuat).invert();
-            if (this._eyesBone) this._eyesBone.quaternion.multiply(this._tempQuatInv);
-            if (this._eyeLBone) this._eyeLBone.quaternion.multiply(this._tempQuatInv);
-            if (this._eyeRBone) this._eyeRBone.quaternion.multiply(this._tempQuatInv);
-            this._eyeLastOffsetQuat.identity();
-        }
+        // 恢复眼骨到干净基准
+        if (this._eyesBone) this._eyesBone.quaternion.copy(this._eyesBoneBase);
+        if (this._eyeLBone) this._eyeLBone.quaternion.copy(this._eyeLBoneBase);
+        if (this._eyeRBone) this._eyeRBone.quaternion.copy(this._eyeRBoneBase);
         this._currentYaw = 0;
         this._currentPitch = 0;
         this._targetYaw = 0;
@@ -542,7 +534,6 @@ class MMDCursorFollow {
         this._targetYaw = 0;
         this._targetPitch = 0;
         this._appliedLastFrame = false;
-        if (this._eyeLastOffsetQuat) this._eyeLastOffsetQuat.identity();
     }
 
     /**

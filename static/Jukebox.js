@@ -1061,7 +1061,7 @@ window.Jukebox = {
       const cf = window.mmdManager.cursorFollow;
       if (cf) {
         cf._appliedLastFrame = false;
-        if (cf._eyeLastOffsetQuat) cf._eyeLastOffsetQuat.identity();
+        cf.captureEyeBases(); // 刷新眼骨基准到 seek 后的新姿态
       }
     }
 
