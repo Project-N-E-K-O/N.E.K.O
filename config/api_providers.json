@@ -177,7 +177,7 @@
       "key": "minimax_intl",
       "name": "MiniMax（国际服）",
       "description": "支持语音克隆（TTS），国际服版本",
-      "openrouter_url": "https://api.minimax.chat/v1",
+      "openrouter_url": "https://api.minimax.io/v1",
       "conversation_model": "MiniMax-Text-01",
       "summary_model": "MiniMax-Text-01",
       "correction_model": "MiniMax-Text-01",
