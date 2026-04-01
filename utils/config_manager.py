@@ -831,6 +831,8 @@ class ConfigManager:
             suffix = 'en'
         elif lang_lower.startswith('ko'):
             suffix = 'ko'
+        elif lang_lower.startswith('ru'):
+            suffix = 'ru'
         else:
             # 未知语言，回退
             return None
