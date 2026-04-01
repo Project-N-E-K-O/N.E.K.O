@@ -302,7 +302,8 @@ _DEFAULT_VRM_LIGHTING_MUTABLE = {
     "top": 0.3,      # 顶光强度
     "bottom": 0.15,  # 底光强度
     "exposure": 0.0, # 曝光值
-    "toneMapping": 0 # 色调映射类型
+    "toneMapping": 7, # 色调映射类型 (7 = Neutral)
+    "outlineWidthScale": 1.0, # 描边粗细倍率
 }
 
 DEFAULT_VRM_LIGHTING = MappingProxyType(_DEFAULT_VRM_LIGHTING_MUTABLE)
@@ -315,7 +316,8 @@ VRM_LIGHTING_RANGES = {
     'top': (0, 1.0),
     'bottom': (0, 0.5),
     'exposure': (-10.0, 10.0),
-    'toneMapping': (0, 5),
+    'toneMapping': (0, 7),
+    'outlineWidthScale': (0, 3.0),
 }
 
 
@@ -340,7 +342,7 @@ MMD_LIGHTING_RANGES = {
 }
 
 _DEFAULT_MMD_RENDERING_MUTABLE = {
-    "toneMapping": 0,
+    "toneMapping": 7,
     "exposure": 1.0,
     "outline": True,
     "pixelRatio": 0,
