@@ -30,6 +30,7 @@ class MijiaPlugin(NekoPluginBase):
         self.auth_service: Optional[AuthService] = None
         self.credential_path: Optional[Path] = None
         self._lock = asyncio.Lock()
+        self._background_tasks: set = set()  # 持有后台 Task 引用，防止被 GC 提前回收
 
     # ========== 生命周期 ==========
     @lifecycle(id="startup")
