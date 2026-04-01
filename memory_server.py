@@ -7,7 +7,7 @@ from memory import (
     FactStore, PersonaManager, ReflectionEngine,
 )
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, JSONResponse
 import json
 import uvicorn
 from utils.llm_client import convert_to_messages
@@ -17,8 +17,6 @@ from config.prompts_sys import _loc
 from config.prompts_memory import (
     INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
     CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, CHAT_GAP_CURRENT_TIME,
-    ELAPSED_TIME_DHM, ELAPSED_TIME_DH, ELAPSED_TIME_DM, ELAPSED_TIME_D,
-    ELAPSED_TIME_HM, ELAPSED_TIME_H, ELAPSED_TIME_M,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
 )
@@ -36,27 +34,7 @@ from utils.frontend_utils import get_timestamp
 from utils.logger_config import setup_logging
 logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
 
-def _format_elapsed(lang: str, gap_seconds: float) -> str:
-    """根据间隔秒数，智能选择时间格式模板（天/时/分，省略零值单位）。"""
-    days = int(gap_seconds // 86400)
-    hours = int((gap_seconds % 86400) // 3600)
-    minutes = int((gap_seconds % 3600) // 60)
-    if days > 0:
-        if hours > 0 and minutes > 0:
-            return _loc(ELAPSED_TIME_DHM, lang).format(d=days, h=hours, m=minutes)
-        elif hours > 0:
-            return _loc(ELAPSED_TIME_DH, lang).format(d=days, h=hours)
-        elif minutes > 0:
-            return _loc(ELAPSED_TIME_DM, lang).format(d=days, m=minutes)
-        else:
-            return _loc(ELAPSED_TIME_D, lang).format(d=days)
-    elif hours > 0:
-        if minutes > 0:
-            return _loc(ELAPSED_TIME_HM, lang).format(h=hours, m=minutes)
-        else:
-            return _loc(ELAPSED_TIME_H, lang).format(h=hours)
-    else:
-        return _loc(ELAPSED_TIME_M, lang).format(m=minutes)
+from utils.time_format import format_elapsed as _format_elapsed
 
 
 class HistoryRequest(BaseModel):
@@ -846,8 +824,8 @@ async def last_conversation_gap(lanlan_name: str):
         gap = (datetime.now() - last_time).total_seconds()
         return {"gap_seconds": gap}
     except Exception as e:
-        logger.warning(f"查询对话间隔失败: {e}")
-        return {"gap_seconds": -1}
+        logger.exception(f"查询对话间隔失败: {e}")
+        return JSONResponse({"gap_seconds": -1, "error": "server_error"}, status_code=500)
 
 if __name__ == "__main__":
     import threading

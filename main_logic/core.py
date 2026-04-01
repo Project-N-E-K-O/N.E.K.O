@@ -2109,7 +2109,7 @@ class LLMSessionManager:
 
         _lang = normalize_language_code(self.user_language, format='short')
         from config.prompts_proactive import get_greeting_prompt
-        from memory_server import _format_elapsed
+        from utils.time_format import format_elapsed as _format_elapsed
         template = get_greeting_prompt(gap_seconds, _lang)
         if not template:
             return
