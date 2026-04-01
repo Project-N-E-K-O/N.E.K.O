@@ -1623,6 +1623,7 @@
             "bottomLight": "Нижний свет",
             "exposure": "Экспозиция",
             "toneMapping": "Тональная коррекция",
+            "outlineWidth": "Толщина контура",
             "resetLighting": "Сброс по умолчанию",
             "saveLighting": "Сохранить освещение",
             "selectPreset": "Выбрать пресет",
@@ -2594,7 +2595,16 @@
         "loadFailed": "Не удалось загрузить список песен",
         "listContainerNotFound": "Контейнер списка песен не найден",
         "noSongs": "Нет песен",
-        "playFailed": "Ошибка воспроизведения"
+        "playFailed": "Ошибка воспроизведения",
+        "pause": "Пауза",
+        "resume": "Продолжить",
+        "paused": "На паузе",
+        "resumed": "Воспроизведение возобновлено",
+        "pausedStatus": "На паузе: {{name}}",
+        "idleRestored": "Анимация ожидания восстановлена",
+        "idleRestoreFailed": "Не удалось восстановить анимацию ожидания",
+        "btnNotFoundGiveUp": "Кнопка джукбокса не найдена после повторных попыток",
+        "minimizeBtnNotFoundGiveUp": "Кнопка сворачивания не найдена после повторных попыток"
     },
     "notice": {
         "voiceMigration": {

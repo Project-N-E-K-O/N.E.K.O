@@ -1623,6 +1623,7 @@
             "bottomLight": "하단 조명",
             "exposure": "노출",
             "toneMapping": "톤 매핑",
+            "outlineWidth": "외곽선 두께",
             "resetLighting": "기본값 재설정",
             "saveLighting": "조명 저장",
             "selectPreset": "사전 설정 선택",
@@ -2594,7 +2595,16 @@
         "loadFailed": "곡 목록 로드 실패",
         "listContainerNotFound": "곡 목록 컨테이너를 찾을 수 없습니다",
         "noSongs": "곡이 없습니다",
-        "playFailed": "재생 실패"
+        "playFailed": "재생 실패",
+        "pause": "일시정지",
+        "resume": "계속",
+        "paused": "일시정지됨",
+        "resumed": "재생을 재개했습니다",
+        "pausedStatus": "일시정지: {{name}}",
+        "idleRestored": "대기 애니메이션이 복원되었습니다",
+        "idleRestoreFailed": "대기 애니메이션 복원 실패",
+        "btnNotFoundGiveUp": "주크박스 버튼을 찾을 수 없습니다, 바인딩 포기",
+        "minimizeBtnNotFoundGiveUp": "최소화 버튼을 찾을 수 없습니다, 모니터링 포기"
     },
     "notice": {
         "voiceMigration": {
