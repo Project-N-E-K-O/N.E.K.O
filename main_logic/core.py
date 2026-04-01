@@ -2982,6 +2982,7 @@ class LLMSessionManager:
                                 # 取消之前的延迟重试任务（如有）
                                 if self._tts_respawn_task and not self._tts_respawn_task.done():
                                     self._tts_respawn_task.cancel()
+                                    self._tts_respawn_task = None
                                 async def _delayed_respawn():
                                     await asyncio.sleep(13)
                                     if not self.is_active or self.tts_ready:
