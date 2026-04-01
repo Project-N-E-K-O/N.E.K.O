@@ -142,6 +142,23 @@ class CacheManager:
                     pass
                 # 非 JSON 字符串，直接返回
                 return raw, 300
+            # redis-py 在 Python 3 返回 bytes；尝试按 bytes->str->JSON 解码
+            if isinstance(raw, bytes):
+                try:
+                    data = json.loads(raw.decode("utf-8"))
+                    if isinstance(data, dict) and "_value" in data:
+                        return data["_value"], data.get("_ttl", 300)
+                    return data, 300
+                except Exception:
+                    pass
+                # 非 JSON bytes，尝试解析为数字（兼容旧版直接存原始值如 "123" 或 b"123"）
+                try:
+                    decoded = raw.decode("utf-8").strip()
+                    if "." in decoded:
+                        return float(decoded), 300
+                    return int(decoded), 300
+                except Exception:
+                    pass
             return raw, 300
         except Exception as e:
             logger.warning(f"Redis 读取失败: {e}", extra={"key": full_key})
@@ -172,7 +189,7 @@ class CacheManager:
         if self._redis_client:
             try:
                 redis_payload = {"_value": value, "_ttl": 3600}
-                self._redis_client.set(full_key, json.dumps(redis_payload), ttl=3600)
+                self._redis_client.set(full_key, json.dumps(redis_payload), ex=3600)
             except Exception as e:
                 logger.warning(f"Redis 回填失败: {e}", extra={"key": full_key})
 
@@ -275,7 +292,13 @@ class CacheManager:
         # L2: 清除 Redis 缓存（如果配置）
         if self._redis_client:
             try:
-                self._redis_client.delete_pattern(pattern)
+                # 优先尝试自定义适配器的 delete_pattern 方法，不存在则用标准 scan_iter
+                if hasattr(self._redis_client, 'delete_pattern'):
+                    self._redis_client.delete_pattern(pattern)
+                else:
+                    # 标准 redis-py：使用 scan_iter 遍历匹配键并删除
+                    for key in self._redis_client.scan_iter(match=pattern):
+                        self._redis_client.delete(key)
             except Exception as e:
                 logger.warning(f"Redis 批量删除失败: {e}", extra={"pattern": pattern})
 
@@ -371,7 +394,7 @@ class CacheManager:
         # 如果 Redis 可用，添加 Redis 统计
         if self._redis_client:
             try:
-                stats["redis_info"] = self._redis_client.get_info()
+                stats["redis_info"] = self._redis_client.info()
             except Exception:
                 stats["redis_info"] = "不可用"
 

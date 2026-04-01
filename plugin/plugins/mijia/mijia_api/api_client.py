@@ -282,7 +282,10 @@ class MijiaAPI:
             TokenExpiredError: 凭据已过期
             NetworkError: 网络错误
         """
-        return self._scene_service.execute_scene(scene_id, home_id, self._credential)
+        result = self._scene_service.execute_scene(scene_id, home_id, self._credential)
+        # 场景执行可能改变设备状态，失效缓存（键格式与 get_device_list 保持一致）
+        self._cache_manager.invalidate_pattern(f"{self._credential.user_id}:devices:{home_id}")
+        return result
 
     def get_device_statistics(self, home_id: str) -> Dict[str, Any]:
         """获取设备统计信息
@@ -718,9 +721,14 @@ class AsyncMijiaAPI:
             是否成功
         """
         import asyncio
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             self._scene_service.execute_scene, scene_id, home_id, self._credential
         )
+        # 场景执行可能改变设备状态，失效缓存（键格式与 get_device_list 保持一致）
+        await asyncio.to_thread(
+            self._cache_manager.invalidate_pattern, f"{self._credential.user_id}:devices:{home_id}"
+        )
+        return result
 
     async def get_device_statistics(self, home_id: str) -> Dict[str, Any]:
         """异步获取设备统计信息
@@ -860,14 +868,19 @@ class AsyncMijiaAPI:
 
         应在不再使用客户端时调用（如插件关闭时）。
         """
+        import asyncio
         try:
             # 关闭底层 HttpClient（持有 httpx.AsyncClient 连接池）
-            # AsyncDeviceRepositoryImpl 使用 _http 属性存储 AsyncHttpClient
+            # HttpClient.close() 是同步方法，AsyncHttpClient.close() 是协程
             repo = getattr(self._device_service, '_device_repo', None)
             if repo:
                 http_client = getattr(repo, '_http', None)
-                if http_client and hasattr(http_client, 'aclose'):
-                    # httpx.AsyncClient.close() 是协程，必须直接 await，不能用 to_thread
-                    await http_client.aclose()
+                if http_client and hasattr(http_client, 'close'):
+                    if asyncio.iscoroutinefunction(http_client.close):
+                        # AsyncHttpClient：协程方法，直接 await
+                        await http_client.close()
+                    else:
+                        # HttpClient：同步方法，用 to_thread 避免阻塞
+                        await asyncio.to_thread(http_client.close)
         except Exception:
             pass  # 关闭时忽略错误
