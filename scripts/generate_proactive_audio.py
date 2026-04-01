@@ -42,7 +42,7 @@ PROMPTS = {
     ),
     "en": (
         "Hmm... look!",
-        "Hmm hmm...",
+        "Hmm... hmm... hmm...",
     ),
     "ja": (
         "うーん……ほら！",

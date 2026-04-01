@@ -127,11 +127,32 @@
             return;
         }
 
-        // 语音模式：使用 min(proactiveChatInterval, proactiveVisionInterval) 作为基础间隔
-        // 确保搭话时视觉数据是新鲜的
-        var baseInterval = S.isRecording
-            ? Math.min(S.proactiveChatInterval, S.proactiveVisionInterval)
-            : S.proactiveChatInterval;
+        // 语音模式：固定间隔（不退避），连续5轮无回复则停止
+        if (S.isRecording) {
+            if (S._voiceProactiveNoResponseCount >= 5) {
+                console.log('[ProactiveChat] 语音模式连续5轮无回复，停止主动搭话');
+                return;
+            }
+            var baseInterval = Math.min(S.proactiveChatInterval, S.proactiveVisionInterval);
+            var delay = baseInterval * 1000;
+            console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/5）');
+
+            S.proactiveChatTimer = setTimeout(async function () {
+                if (S.isProactiveChatRunning) return;
+                S.isProactiveChatRunning = true;
+                try {
+                    await triggerProactiveChat();
+                } finally {
+                    S.isProactiveChatRunning = false;
+                }
+                S._voiceProactiveNoResponseCount = (S._voiceProactiveNoResponseCount || 0) + 1;
+                scheduleProactiveChat();
+            }, delay);
+            return;
+        }
+
+        // 文本模式：指数退避
+        var baseInterval = S.proactiveChatInterval;
 
         // 计算延迟时间（指数退避，倍率2.5）
         var delay = (baseInterval * 1000) * Math.pow(2.5, S.proactiveChatBackoffLevel);
@@ -771,6 +792,8 @@
     function resetProactiveChatBackoff() {
         // 重置退避级别
         S.proactiveChatBackoffLevel = 0;
+        // 语音模式：用户说话了，重置无回复计数
+        S._voiceProactiveNoResponseCount = 0;
         // 重新安排定时器
         scheduleProactiveChat();
     }
