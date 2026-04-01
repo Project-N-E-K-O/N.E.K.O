@@ -109,7 +109,8 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
         cache_key = "homes"
         cached = self._cache.get(cache_key, namespace=credential.user_id)
 
-        if cached:
+        # 使用 is not None 显式检查，避免空列表被误判为缓存未命中
+        if cached is not None:
             homes = cached
         else:
             uri = "/v2/homeroom/gethome_merged"
@@ -248,8 +249,8 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
             结果列表
         """
         response = await self._http.post(
-            "/miotspec/prop/get_batch", 
-            {"params": requests}, 
+            "/miotspec/prop/get_batch",
+            {"params": requests},
             credential
         )
         return response.get("result", [])
@@ -267,8 +268,8 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
             结果列表
         """
         response = await self._http.post(
-            "/miotspec/prop/set_batch", 
-            {"params": requests}, 
+            "/miotspec/prop/set_batch",
+            {"params": requests},
             credential
         )
 
