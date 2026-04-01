@@ -780,9 +780,16 @@ window.Jukebox = {
 
       Jukebox.stopVMD(true); // skipIdleRestore = true
 
+      const vmdRequestId = Jukebox.State.playRequestId;
       await window.mmdManager.loadAnimation(vmdPath);
-      window.mmdManager.playAnimation('dance');
 
+      // 异步加载后检查：新播放请求已覆盖则放弃
+      if (vmdRequestId !== Jukebox.State.playRequestId) {
+        console.log('[Jukebox] VMD 加载完成但播放请求已过期，跳过');
+        return;
+      }
+
+      window.mmdManager.playAnimation('dance');
       Jukebox.State.isVMDPlaying = true;
 
       console.log('[Jukebox]', window.t('Jukebox.vmdPlayed', 'VMD 动画已播放'), vmdPath);
@@ -1021,10 +1028,10 @@ window.Jukebox = {
     }
 
     const slider = document.getElementById('jukebox-progress-slider');
-    if (!slider) return;
+    if (!slider) { Jukebox.State.isSeeking = false; return; }
 
     const player = Jukebox.getPlayer();
-    if (!player || !player.audio) return;
+    if (!player || !player.audio) { Jukebox.State.isSeeking = false; return; }
 
     const duration = player.audio.duration || 0;
     const seekTime = (parseFloat(slider.value) / 100) * duration;
