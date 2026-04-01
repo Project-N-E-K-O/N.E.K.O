@@ -372,8 +372,10 @@
                     return;
                 }
 
-                // 更新屏幕感知时间戳（用于独立计时器节流）
-                S._lastProactiveChatScreenTime = Date.now();
+                // 更新屏幕感知时间戳（仅当 vision/window 实际保留时才消耗冷却）
+                if (availableModes.includes('vision') || availableModes.includes('window')) {
+                    S._lastProactiveChatScreenTime = Date.now();
+                }
             }
 
             // 发送请求前最终检查：确保功能状态未在 await 期间改变
