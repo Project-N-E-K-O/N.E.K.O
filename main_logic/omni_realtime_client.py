@@ -1047,6 +1047,11 @@ class OmniRealtimeClient:
         # Only backends with native image support can receive raw screenshots;
         # step / lanlan.tech+free consume vision context as text only.
         can_inject_image = has_vision and self._supports_native_image
+
+        # Snapshot the current image so concurrent stream_image() calls don't
+        # cause us to mark a newer frame as consumed.
+        snapshot_image_b64 = self._latest_image_b64 if has_vision else None
+
         prompt_type = "vision" if has_vision else "general"
         lang = (language or "zh")[:2]
         filename = f"prompt_{prompt_type}_{lang}.wav"
@@ -1059,6 +1064,20 @@ class OmniRealtimeClient:
             except FileNotFoundError:
                 logger.warning("stream_proactive: no audio file found for %s", filename)
                 return False
+
+        # ── Non-native vision: inject text description before audio ───
+        # step / lanlan.tech+free can't receive raw images; send the
+        # VISION_MODEL text analysis so the model has visual context.
+        if has_vision and not can_inject_image and self._image_recognized_this_turn and self._image_description:
+            await self.send_event({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": self._image_description}],
+                },
+            })
+            logger.info("stream_proactive: injected vision text description for non-native backend")
 
         # ── Send audio chunks (same pacing as hot-swap flush) ─────────
         # 320 bytes = 10 ms @16 kHz 16-bit mono, ×5 multiplier → 1600 bytes
@@ -1095,10 +1114,10 @@ class OmniRealtimeClient:
                 })
 
             # Inject cached screenshot at midpoint (only for native-image backends)
-            if can_inject_image and not image_injected and chunk_idx >= mid_chunk and self._latest_image_b64:
+            if can_inject_image and not image_injected and chunk_idx >= mid_chunk and snapshot_image_b64:
                 if self._is_gemini:
                     if self._gemini_session:
-                        image_bytes = base64.b64decode(self._latest_image_b64)
+                        image_bytes = base64.b64decode(snapshot_image_b64)
                         await self._gemini_session.send_realtime_input(
                             media={"data": image_bytes, "mime_type": "image/jpeg"}
                         )
@@ -1110,28 +1129,28 @@ class OmniRealtimeClient:
                             "role": "user",
                             "content": [{
                                 "type": "input_image",
-                                "image_url": "data:image/jpeg;base64," + self._latest_image_b64,
+                                "image_url": "data:image/jpeg;base64," + snapshot_image_b64,
                             }],
                         },
                     })
                 elif "qwen" in self.model or ("lanlan.app" in self.base_url and "free" in self.model):
                     await self.send_event({
                         "type": "input_image_buffer.append",
-                        "image": self._latest_image_b64,
+                        "image": snapshot_image_b64,
                     })
                 elif "glm" in self.model:
                     await self.send_event({
                         "type": "input_audio_buffer.append_video_frame",
-                        "video_frame": self._latest_image_b64,
+                        "video_frame": snapshot_image_b64,
                     })
                 image_injected = True
                 logger.info("stream_proactive: injected screenshot at chunk %d/%d", chunk_idx, total_chunks)
 
             await asyncio.sleep(sleep_interval)
 
-        # Mark vision context consumed after full successful delivery —
-        # whether the image was injected natively or consumed as text annotation.
-        if has_vision:
+        # Mark vision context consumed only if the shared image hasn't been
+        # replaced by a newer frame from stream_image() during our async loop.
+        if has_vision and self._latest_image_b64 == snapshot_image_b64:
             self._proactive_image_consumed = True
         logger.info("stream_proactive: audio injection complete (%s%s), waiting for VAD → response",
                      "vision" if has_vision else "general",
