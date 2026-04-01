@@ -2788,6 +2788,12 @@ class LLMSessionManager:
                 tts_response_queue_ref.get_nowait()
         except: # noqa
             pass
+
+        # Final reset: tts_response_handler may have re-introduced a stale
+        # error code between the early lock-clearing and task cancellation.
+        # Also reset respawn cooldown so new sessions start fresh.
+        self._last_tts_error_code = ''
+        self._last_tts_respawn_time = 0.0
         
         # 重置TTS缓存状态
         async with self.tts_cache_lock:
