@@ -1790,9 +1790,10 @@ async def get_voice_preview(voice_id: str):
 
         # 生成音频
         dashscope.api_key = audio_api_key
-        # 参照 复刻.py 使用 cosyvoice-v3.5-plus 模型
         try:
-            synthesizer = SpeechSynthesizer(model="cosyvoice-v3.5-plus", voice=voice_id)
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model()
+            synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
             # 使用 asyncio.to_thread 包装同步阻塞调用
             audio_data = await asyncio.to_thread(lambda: synthesizer.call(text))
             
@@ -2397,13 +2398,16 @@ async def voice_clone(
             }
 
         else:  # cosyvoice
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = get_cosyvoice_clone_model()
             language_hints = qwen_language_hints(ref_language)
             client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
-            voice_id, tmp_url, request_id = await client.clone_voice(
+            voice_id, tmp_url, _request_id = await client.clone_voice(
                 audio_buffer=normalized_buffer,
                 filename=normalized_filename,
                 prefix=prefix,
                 language_hints=language_hints,
+                target_model=clone_model,
             )
             voice_data = {
                 'voice_id': voice_id,
@@ -2412,6 +2416,7 @@ async def voice_clone(
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'provider': 'cosyvoice',
+                'clone_model': clone_model,
                 'created_at': datetime.now().isoformat()
             }
 
@@ -2745,12 +2750,14 @@ async def voice_clone_direct(request: Request):
             language_hints = qwen_language_hints(ref_language)
             client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
 
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = get_cosyvoice_clone_model()
             voice_id, _ = await asyncio.to_thread(
                 client.create_voice,
                 prefix=prefix,
                 url=direct_link,
                 language_hints=language_hints,
-                target_model="cosyvoice-v3.5-plus",
+                target_model=clone_model,
             )
 
             voice_data = {
@@ -2760,6 +2767,7 @@ async def voice_clone_direct(request: Request):
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'provider': 'cosyvoice',
+                'clone_model': clone_model,
                 'created_at': datetime.now().isoformat(),
                 'is_direct_link': True
             }
