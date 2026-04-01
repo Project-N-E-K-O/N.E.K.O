@@ -862,12 +862,7 @@ window.Jukebox = {
 
     // 直接停止动画模块，不通过 stopAnimation()
     // 避免在 idle 加载完成前改变 cursor follow 状态
-    const anim = window.mmdManager.animationModule;
-    anim.stop();
-    // 清除舞蹈的 IK/Grant solver，防止它们在 idle 加载前
-    // 对已停止的骨骼运行（导致 T-pose + 眼球乱转）
-    anim.ikSolver = null;
-    anim.grantSolver = null;
+    window.mmdManager.animationModule.stop();
     // 清除 currentAnimationUrl 防止下次 playVMD 误将舞蹈 URL 存为 idle
     window.mmdManager.currentAnimationUrl = null;
     Jukebox.State.isVMDPlaying = false;
@@ -1058,10 +1053,11 @@ window.Jukebox = {
       if (anim.grantSolver) anim.grantSolver.update();
 
       // 重置 cursor follow 缓存，防止下帧用旧姿态覆盖 seek 后的新姿态
-      const cf = window.mmdManager.cursorFollow;
-      if (cf) {
-        cf._appliedLastFrame = false;
-        cf.captureEyeBases(); // 刷新眼骨基准到 seek 后的新姿态
+      if (window.mmdManager.cursorFollow) {
+        window.mmdManager.cursorFollow._appliedLastFrame = false;
+        if (window.mmdManager.cursorFollow._eyeLastOffsetQuat) {
+          window.mmdManager.cursorFollow._eyeLastOffsetQuat.identity();
+        }
       }
     }
 

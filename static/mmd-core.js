@@ -850,15 +850,6 @@ class MMDCore {
 
         // 3. 更新鼠标跟踪（在物理之前，让 kinematic 骨骼到位）
         if (this.manager.cursorFollow) {
-            // 当动画或 IK/Grant 运行了本帧时，刷新眼骨的干净基准
-            // （cursor follow 会恢复到此基准再叠加偏移，从根本上杜绝累积）
-            const bonesResetThisFrame =
-                (this.manager.animationModule && this.manager.animationModule.isPlaying) ||
-                (this.manager.animationModule && !this.manager.animationModule.isPlaying && !this.manager.animationModule.isPaused &&
-                    (this.manager.animationModule.ikSolver || this.manager.animationModule.grantSolver));
-            if (bonesResetThisFrame) {
-                this.manager.cursorFollow.captureEyeBases();
-            }
             this.manager.cursorFollow.update(clampedDelta);
         }
 
