@@ -732,6 +732,8 @@ class MijiaPlugin(NekoPluginBase):
             else:
                 message = f"❌ {action}'{name}'失败"
                 return Ok({"success": False, "message": message})
+        except TokenExpiredError:
+            return Err(SdkError("凭据已过期，请重新登录"))
         except Exception as e:
             self.logger.exception("控制失败")
             return Err(SdkError(f"控制失败: {e}"))
@@ -1169,6 +1171,8 @@ class MijiaPlugin(NekoPluginBase):
                 "states": states
             })
             
+        except TokenExpiredError:
+            return Err(SdkError("凭据已过期，请重新登录"))
         except Exception as e:
             self.logger.exception("查询设备状态失败")
             return Err(SdkError(f"查询设备状态失败: {e}"))

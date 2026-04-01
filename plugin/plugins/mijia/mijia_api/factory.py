@@ -266,24 +266,24 @@ def create_auth_service(
 
     # 创建凭据存储
     if credential_store is None:
-        # 从环境变量 > 配置 > 默认值 依次读取凭据路径
-        credential_path_str = (
+        # 凭据路径优先级：参数 > 环境变量 > 配置 > 默认值
+        _effective_path = credential_path or (
             os.environ.get("MIJIA_CREDENTIAL_PATH")
             or config.get("CREDENTIAL_PATH")
             or ".mijia/credential.json"
         )
-        credential_path = Path(credential_path_str)
-        
+        _cred_path = Path(_effective_path) if isinstance(_effective_path, (str, Path)) else Path(str(_effective_path))
+
         # 如果是相对路径，相对于项目根目录
-        if not credential_path.is_absolute() and not str(credential_path).startswith("~"):
+        if not _cred_path.is_absolute() and not str(_cred_path).startswith("~"):
             # 查找项目根目录
             project_root = _find_project_root()
-            credential_path = project_root / credential_path
+            _cred_path = project_root / _cred_path
         # 如果是用户目录路径，展开 ~
-        elif str(credential_path).startswith("~"):
-            credential_path = credential_path.expanduser()
-        
-        credential_store = FileCredentialStore(default_path=credential_path)
+        elif str(_cred_path).startswith("~"):
+            _cred_path = _cred_path.expanduser()
+
+        credential_store = FileCredentialStore(default_path=_cred_path)
 
     # 创建认证服务
     auth_service = AuthService(provider, credential_store)

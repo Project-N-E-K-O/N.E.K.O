@@ -93,7 +93,7 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
             "app_ver": 7,
             "plat_form": 0,
         }
-        response = await self._client.post(uri, data, credential)
+        response = await self._http.post(uri, data, credential)
         homes = response.get("result", {}).get("homelist", [])
         # 遍历每个家庭查找设备
         for home in homes:
@@ -104,10 +104,10 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
                     return device
         return None
 
-    async def get_properties(
+    async def get_property(
         self, device_id: str, siid: int, piid: int, credential: Credential
     ) -> Any:
-        """异步获取设备属性
+        """异步获取单个设备属性值
 
         Args:
             device_id: 设备ID

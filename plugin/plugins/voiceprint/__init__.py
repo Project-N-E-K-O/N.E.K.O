@@ -291,7 +291,7 @@ class VoiceprintPlugin(NekoPluginBase):
                 "success": True,
                 "message": "声纹注册成功",
                 "sample_rate": sample_rate,
-                "audio_duration": len(audio_data) / sample_rate,
+                "audio_duration": len(audio_data) / self.sample_rate,
                 "audio_samples": len(audio_data),
                 "threshold": self.voiceprint_threshold
             })

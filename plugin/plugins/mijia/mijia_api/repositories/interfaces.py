@@ -130,10 +130,10 @@ class IAsyncDeviceRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_properties(
+    async def get_property(
         self, device_id: str, siid: int, piid: int, credential: Credential
     ) -> Any:
-        """获取设备属性"""
+        """获取单个设备属性值（异步）"""
         pass
 
     @abstractmethod

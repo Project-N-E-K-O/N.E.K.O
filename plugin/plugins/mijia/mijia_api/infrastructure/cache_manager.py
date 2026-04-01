@@ -181,9 +181,9 @@ class CacheManager:
                 # Redis 写入失败不影响主流程
                 logger.warning(f"Redis 写入失败: {e}", extra={"key": full_key})
 
-        # L3: 长期缓存写入文件（传递实际 ttl）
+        # L3: 长期缓存写入文件（传递实际 ttl 和 namespace）
         if ttl > 300:
-            self._save_to_file(full_key, value, ttl)
+            self._save_to_file(full_key, value, ttl, namespace)
 
     def _set_memory_cache(self, full_key: str, value: Any, ttl: int) -> None:
         """写入内存缓存
@@ -263,16 +263,15 @@ class CacheManager:
         if namespace:
             # 清空指定命名空间
             self.invalidate_pattern(f"{namespace}:")
-            # L3: 删除该 namespace 对应的文件缓存
+            # L3: 按文件内的 _namespace 字段删除
             for f in self._cache_dir.iterdir():
                 if f.is_file():
                     try:
                         import json as _json
                         with open(f, "r", encoding="utf-8") as _f:
                             data = _json.load(_f)
-                        if isinstance(data, dict) and "_value" in data:
-                            _ns = data.get("_namespace", "")
-                            if _ns == namespace or f.stem.startswith(namespace):
+                        if isinstance(data, dict) and "_namespace" in data:
+                            if data["_namespace"] == namespace:
                                 f.unlink()
                     except Exception:
                         pass
@@ -380,23 +379,25 @@ class CacheManager:
                 return None
         return None
 
-    def _save_to_file(self, key: str, value: Any, ttl: int = 3600) -> None:
+    def _save_to_file(self, key: str, value: Any, ttl: int = 3600, namespace: str = "default") -> None:
         """保存缓存到文件
 
         Args:
             key: 缓存键
             value: 缓存值
             ttl: 过期时间（秒）
+            namespace: 命名空间，用于 clear() 按 namespace 清除
         """
         import time
 
         file_path = self._cache_dir / self._hash_key(key)
         try:
-            # 包装值和过期时间
+            # 包装值、过期时间和命名空间
             wrapped = {
                 "_value": value,
                 "_expires_at": time.time() + ttl,
                 "_ttl": ttl,
+                "_namespace": namespace,
             }
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(wrapped, f, ensure_ascii=False, indent=2)
