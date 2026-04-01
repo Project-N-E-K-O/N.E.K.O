@@ -2978,7 +2978,7 @@ class LLMSessionManager:
                                     self._tts_respawn_task.cancel()
                                     self._tts_respawn_task = None
                             else:
-                                logger.warning("⚠️ 收到TTS未就绪信号，12秒后尝试重新拉起Worker")
+                                logger.warning("⚠️ 收到TTS未就绪信号，13秒后尝试重新拉起Worker")
                                 # 取消之前的延迟重试任务（如有）
                                 if self._tts_respawn_task and not self._tts_respawn_task.done():
                                     self._tts_respawn_task.cancel()
