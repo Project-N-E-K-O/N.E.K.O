@@ -210,7 +210,8 @@
     "vision_model": "qwen3-vl-plus-2025-09-23",
     "core_model": "qwen3-omni-flash-realtime",
     "core_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
-    "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "cosyvoice_clone_model": "cosyvoice-v3.5-plus"
   },
   "assist_api_key_fields": {
     "qwen": "ASSIST_API_KEY_QWEN",

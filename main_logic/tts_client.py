@@ -829,6 +829,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     from dashscope.audio.tts_v2 import ResultCallback, SpeechSynthesizer, AudioFormat
     
     dashscope.api_key = audio_api_key
+
+    # 从 voice 元数据中读取注册时使用的模型，fallback 到全局配置
+    _voice_meta = _get_voice_meta(voice_id)
+    _enrolled_model = (_voice_meta or {}).get('clone_model') if _voice_meta else None
     
     _RE_KANA = re.compile(r'[\u3040-\u309F\u30A0-\u30FF]')
     MIN_BUFFER_CHARS = 6
@@ -940,15 +944,20 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         """创建新的 SpeechSynthesizer，可选语言提示。
         仅建立 WebSocket 连接，不发送预热文本——调用方会紧接着发送真实文本。
         """
+        from utils.api_config_loader import (
+            cosyvoice_model_supports_language_hints,
+            get_cosyvoice_clone_model,
+        )
         nonlocal last_streaming_call_time
+        clone_model = _enrolled_model or get_cosyvoice_clone_model()
         kwargs = dict(
-            model="cosyvoice-v3.5-plus",
+            model=clone_model,
             voice=voice_id,
             speech_rate=1.05,
             format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,
             callback=callback,
         )
-        if lang_hint:
+        if lang_hint and cosyvoice_model_supports_language_hints(clone_model):
             kwargs["language_hints"] = [lang_hint]
         callback.construct_start_time = time.time()
         syn = SpeechSynthesizer(**kwargs)
