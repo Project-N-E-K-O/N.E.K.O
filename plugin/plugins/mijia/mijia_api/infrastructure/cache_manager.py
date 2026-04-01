@@ -82,10 +82,10 @@ class CacheManager:
             return l1_value
 
         # L2: 查 Redis 缓存（如果配置）
-        l2_value = self._get_from_redis(full_key)
+        l2_value, l2_ttl = self._get_from_redis(full_key)
         if l2_value is not None:
             self._stats["l2_hits"] += 1
-            self._set_memory_cache(full_key, l2_value, ttl=300)
+            self._set_memory_cache(full_key, l2_value, ttl=l2_ttl)
             return l2_value
 
         # L3: 查文件缓存
@@ -113,23 +113,36 @@ class CacheManager:
             return self._state_cache[full_key]
         return None
 
-    def _get_from_redis(self, full_key: str) -> Optional[Any]:
-        """从Redis缓存获取值
+    def _get_from_redis(self, full_key: str) -> tuple[Optional[Any], int]:
+        """从Redis缓存获取值和原始TTL
 
         Args:
             full_key: 完整的缓存键（包含命名空间）
 
         Returns:
-            缓存值，不存在或失败返回None
+            (缓存值, 原始TTL秒数)；不存在或失败返回 (None, 300)
         """
         if not self._redis_client:
-            return None
+            return None, 300
 
         try:
-            return self._redis_client.get(full_key)
+            raw = self._redis_client.get(full_key)
+            if raw is None:
+                return None, 300
+            # 兼容旧格式（纯值）和新格式（带 TTL 元数据的 JSON）
+            if isinstance(raw, str):
+                try:
+                    data = json.loads(raw)
+                    if isinstance(data, dict) and "_value" in data:
+                        return data["_value"], data.get("_ttl", 300)
+                except Exception:
+                    pass
+                # 旧格式：纯 JSON 值或非 JSON 字符串
+                return raw, 300
+            return raw, 300
         except Exception as e:
             logger.warning(f"Redis 读取失败: {e}", extra={"key": full_key})
-            return None
+            return None, 300
 
     def _get_from_file(self, full_key: str) -> Optional[Any]:
         """从文件缓存获取值
@@ -155,7 +168,8 @@ class CacheManager:
         # 回填到 L2（如果配置）
         if self._redis_client:
             try:
-                self._redis_client.set(full_key, value, ttl=3600)
+                redis_payload = {"_value": value, "_ttl": 3600}
+                self._redis_client.set(full_key, json.dumps(redis_payload), ttl=3600)
             except Exception as e:
                 logger.warning(f"Redis 回填失败: {e}", extra={"key": full_key})
 
@@ -173,10 +187,11 @@ class CacheManager:
         # L1: 写入内存缓存
         self._set_memory_cache(full_key, value, ttl)
 
-        # L2: 写入 Redis（如果配置）
+        # L2: 写入 Redis（如果配置），将值与 TTL 元数据打包以便回填时还原
         if self._redis_client:
             try:
-                self._redis_client.set(full_key, value, ttl=ttl)
+                redis_payload = {"_value": value, "_ttl": ttl}
+                self._redis_client.set(full_key, json.dumps(redis_payload), ttl=ttl)
             except Exception as e:
                 # Redis 写入失败不影响主流程
                 logger.warning(f"Redis 写入失败: {e}", extra={"key": full_key})
