@@ -211,7 +211,7 @@ class CacheManager:
         if self._redis_client:
             try:
                 redis_payload = {"_value": value, "_ttl": ttl}
-                self._redis_client.set(full_key, json.dumps(redis_payload), ttl=ttl)
+                self._redis_client.set(full_key, json.dumps(redis_payload), ex=ttl)
             except Exception as e:
                 # Redis 写入失败不影响主流程
                 logger.warning(f"Redis 写入失败: {e}", extra={"key": full_key})
@@ -309,20 +309,8 @@ class CacheManager:
             namespace: 命名空间，如果指定则只清空该命名空间的缓存，否则清空所有缓存
         """
         if namespace:
-            # 清空指定命名空间
-            self.invalidate_pattern(f"{namespace}:")
-            # L3: 按文件内的 _namespace 字段删除
-            for f in self._cache_dir.iterdir():
-                if f.is_file():
-                    try:
-                        import json as _json
-                        with open(f, "r", encoding="utf-8") as _f:
-                            data = _json.load(_f)
-                        if isinstance(data, dict) and "_namespace" in data:
-                            if data["_namespace"] == namespace:
-                                f.unlink()
-                    except Exception:
-                        pass
+            # 清空指定命名空间（L1/L2/L3 均使用 glob 前缀匹配，保证行为一致）
+            self.invalidate_pattern(f"{namespace}:*")
         else:
             # 清空所有缓存
             self._device_cache.clear()

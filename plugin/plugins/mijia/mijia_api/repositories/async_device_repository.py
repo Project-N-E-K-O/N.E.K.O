@@ -33,7 +33,7 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
         self._cache = cache_manager
 
     async def get_all(self, home_id: str, credential: Credential) -> List[Device]:
-        """异步获取设备列表
+        """异步获取设备列表（带分页，与同步版保持一致）
 
         Args:
             home_id: 家庭ID
@@ -49,15 +49,38 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
             logger.info(f"从缓存获取设备列表: {home_id}")
             return [Device(**d) for d in cached]
 
-        # 从API获取
-        response = await self._http.post(
-            "/home/device_list",
-            {"home_id": home_id},
-            credential,
-        )
+        # 获取家庭所有者的 UID（分页端点需要）
+        home_owner = await self._get_home_owner(home_id, credential)
 
-        devices_data = response.get("result", {}).get("device_info", [])
-        devices = [self._parse_device(d, home_id) for d in devices_data]
+        # 分页获取所有设备（与同步版使用相同端点）
+        uri = "/home/home_device_list"
+        start_did = ""
+        has_more = True
+        all_devices = []
+
+        while has_more:
+            data = {
+                "home_owner": home_owner,
+                "home_id": int(home_id),
+                "limit": 200,
+                "start_did": start_did,
+                "get_split_device": True,
+                "support_smart_home": True,
+                "get_cariot_device": True,
+                "get_third_device": True,
+            }
+            response = await self._http.post(uri, data, credential)
+            result = response.get("result", {})
+
+            device_info = result.get("device_info", [])
+            if device_info:
+                all_devices.extend(device_info)
+                start_did = result.get("max_did", "")
+                has_more = result.get("has_more", False) and start_did != ""
+            else:
+                has_more = False
+
+        devices = [self._parse_device(d, home_id) for d in all_devices]
 
         # 缓存结果
         self._cache.set(
@@ -69,6 +92,45 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
 
         logger.info(f"获取设备列表成功: {len(devices)} 个设备")
         return devices
+
+    async def _get_home_owner(self, home_id: str, credential: Credential) -> int:
+        """获取家庭所有者的 UID
+
+        Args:
+            home_id: 家庭ID
+            credential: 用户凭据
+
+        Returns:
+            家庭所有者的 UID
+
+        Raises:
+            ValueError: 找不到对应的家庭
+        """
+        cache_key = "homes"
+        cached = self._cache.get(cache_key, namespace=credential.user_id)
+
+        if cached:
+            homes = cached
+        else:
+            uri = "/v2/homeroom/gethome_merged"
+            data = {
+                "fg": True,
+                "fetch_share": True,
+                "fetch_share_dev": True,
+                "fetch_cariot": True,
+                "limit": 300,
+                "app_ver": 7,
+                "plat_form": 0,
+            }
+            response = await self._http.post(uri, data, credential)
+            homes = response.get("result", {}).get("homelist", [])
+            self._cache.set(cache_key, homes, ttl=3600, namespace=credential.user_id)
+
+        for home in homes:
+            if str(home.get("id", "")) == str(home_id):
+                return int(home.get("uid", 0))
+
+        raise ValueError(f"未找到 home_id={home_id} 的家庭信息")
 
     async def get_by_id(
         self, device_id: str, credential: Credential
@@ -210,8 +272,10 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
             credential
         )
 
-        # 失效相关缓存（限制到当前用户范围）
-        self._cache.invalidate_pattern(f"{credential.user_id}:devices:")
+        # 失效所有相关设备的缓存（与同步版保持一致，逐设备精确失效）
+        device_ids = {req.get("did") for req in requests if req.get("did")}
+        for device_id in device_ids:
+            self._cache.invalidate_pattern(f"{credential.user_id}:device:{device_id}")
 
         results = response.get("result", [])
         return [r.get("code") == 0 for r in results]
