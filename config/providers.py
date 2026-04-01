@@ -20,7 +20,6 @@ from typing import Any
 
 EXTRA_BODY_OPENAI = {"enable_thinking": False}
 EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
-EXTRA_BODY_DOUBAO = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
 
@@ -51,9 +50,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "claude-sonnet-4-6": EXTRA_BODY_CLAUDE,
     "claude-haiku-4-5-20251001": EXTRA_BODY_CLAUDE,
     # Doubao Seed 2.0 系列
-    "doubao-seed-2-0-lite-260215": EXTRA_BODY_DOUBAO,
-    "doubao-seed-2-0-mini": EXTRA_BODY_DOUBAO,
-    "doubao-seed-2-0-pro-260215": EXTRA_BODY_DOUBAO,
+    "doubao-seed-2-0-lite-260215": EXTRA_BODY_CLAUDE,
+    "doubao-seed-2-0-mini": EXTRA_BODY_CLAUDE,
+    "doubao-seed-2-0-pro-260215": EXTRA_BODY_CLAUDE,
     # Gemini 系列
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,

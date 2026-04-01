@@ -681,6 +681,7 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (внутренний)",
             "minimax_intl": "MiniMax (международный)",
+            "claude": "Claude (Anthropic, недоступен в Китае)",
             "grok": "Grok (xAI)"
         },
         "coreApiAutoFillHint": "Ключ автоматически заполняется из справочника API, можно ввести вручную",
@@ -709,6 +710,7 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (внутренний)",
             "minimax_intl": "MiniMax (международный)",
+            "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)"
         },
         "freeVersionNoApiKey": "Бесплатная версия не требует API Key",

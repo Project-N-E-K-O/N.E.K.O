@@ -681,6 +681,7 @@
             "doubao": "ByteDance（Doubao）",
             "minimax": "MiniMax（国内版）",
             "minimax_intl": "MiniMax（国際版）",
+            "claude": "Claude（Anthropic、中国国内では利用不可）",
             "grok": "Grok（xAI）"
         },
         "coreApiAutoFillHint": "API管理簿からキーが自動入力されます。直接入力も可能です",
@@ -709,6 +710,7 @@
             "doubao": "ByteDance（Doubao）",
             "minimax": "MiniMax（国内版）",
             "minimax_intl": "MiniMax（国際版）",
+            "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",

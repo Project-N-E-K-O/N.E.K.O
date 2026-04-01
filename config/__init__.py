@@ -637,6 +637,15 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "kimi-latest",
         'AGENT_MODEL': "kimi-latest",
     },
+    'claude': {
+        'OPENROUTER_URL': "https://api.anthropic.com/v1",
+        'CONVERSATION_MODEL': "claude-sonnet-4-6",
+        'SUMMARY_MODEL': "claude-sonnet-4-6",
+        'CORRECTION_MODEL': "claude-sonnet-4-6",
+        'EMOTION_MODEL': "claude-haiku-4-5-20251001",
+        'VISION_MODEL': "claude-sonnet-4-6",
+        'AGENT_MODEL': "claude-opus-4-6",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -648,6 +657,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'gemini': 'ASSIST_API_KEY_GEMINI',
     'kimi': 'ASSIST_API_KEY_KIMI',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
+    'claude': 'ASSIST_API_KEY_CLAUDE',
 }
 
 DEFAULT_CONFIG_DATA = {

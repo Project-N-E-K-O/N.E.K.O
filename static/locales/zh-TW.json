@@ -681,6 +681,7 @@
             "doubao": "豆包（字節跳動）",
             "minimax": "MiniMax（國服）",
             "minimax_intl": "MiniMax（國際服）",
+            "claude": "Claude（Anthropic，國內無法使用）",
             "grok": "Grok（xAI）"
         },
         "coreApiAutoFillHint": "Key從API管理簿自動填充，也可在此直接輸入",
@@ -709,6 +710,7 @@
             "doubao": "豆包（字節跳動）",
             "minimax": "MiniMax（國服）",
             "minimax_intl": "MiniMax（國際服）",
+            "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
         },
         "freeVersionNoApiKey": "免費版無需API Key",
