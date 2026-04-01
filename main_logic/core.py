@@ -836,6 +836,20 @@ class LLMSessionManager:
         )
         self.tts_thread.start()
 
+    def _reset_tts_retry_state(self):
+        """Cancel pending TTS respawn task and clear error/cooldown state.
+
+        Safe to call whether or not a session is active.  When called from
+        within an ``async with self.lock`` block the cancellation of
+        ``_tts_respawn_task`` is race-free; outside the lock the worst case
+        is a harmless double-cancel.
+        """
+        if self._tts_respawn_task and not self._tts_respawn_task.done():
+            self._tts_respawn_task.cancel()
+            self._tts_respawn_task = None
+        self._last_tts_error_code = ''
+        self._last_tts_respawn_time = 0.0
+
     def _respawn_tts_worker(self):
         """检测 TTS Worker 线程已死亡时重新拉起，不阻塞等待就绪。
 
@@ -2697,6 +2711,9 @@ class LLMSessionManager:
         # pending/prewarm state.  A stale callback must not nuke preparation state.
         async with self.lock:
             if not self.is_active:
+                # 即使会话未完全激活（如 start_session 失败），也要清理
+                # 可能残留的 TTS 重试状态，防止污染下一次会话
+                self._reset_tts_retry_state()
                 return
             if expected_session is not None and expected_session is not self.session:
                 logger.info("⏭️ end_session: expected_session stale (pre-check), skipping")
@@ -2704,10 +2721,7 @@ class LLMSessionManager:
 
             # 尽早取消 TTS 延迟重试任务并清理错误码（持锁状态下），
             # 防止 _init_renew_status 期间 respawn task 触发无效重试
-            if self._tts_respawn_task and not self._tts_respawn_task.done():
-                self._tts_respawn_task.cancel()
-                self._tts_respawn_task = None
-            self._last_tts_error_code = ''
+            self._reset_tts_retry_state()
 
         await self._init_renew_status()
 
@@ -2792,8 +2806,7 @@ class LLMSessionManager:
         # Final reset: tts_response_handler may have re-introduced a stale
         # error code between the early lock-clearing and task cancellation.
         # Also reset respawn cooldown so new sessions start fresh.
-        self._last_tts_error_code = ''
-        self._last_tts_respawn_time = 0.0
+        self._reset_tts_retry_state()
         
         # 重置TTS缓存状态
         async with self.tts_cache_lock:
