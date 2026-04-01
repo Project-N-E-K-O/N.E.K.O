@@ -146,10 +146,17 @@ class MijiaPlugin(NekoPluginBase):
                 ).strip()
                 path_str = str(self.credential_path)
                 # 先移除所有继承权限，再授权当前用户完全控制
-                subprocess.run(
+                result = subprocess.run(
                     ["icacls", path_str, "/inheritance:r", "/grant:r", f"{username}:F"],
-                    check=False, capture_output=True
+                    check=False, capture_output=True, text=True
                 )
+                if result.returncode != 0:
+                    self.logger.warning(
+                        f"设置凭据文件权限失败(Windows): icacls 返回码 {result.returncode}"
+                        + (f", stderr: {result.stderr.strip()}" if result.stderr.strip() else "")
+                    )
+                else:
+                    self.logger.debug("凭据文件权限已设置（仅当前用户）")
             except Exception as e:
                 self.logger.warning(f"设置凭据文件权限失败(Windows): {e}")
         else:
@@ -259,7 +266,14 @@ class MijiaPlugin(NekoPluginBase):
             if credential:
                 await self._init_api(credential)
             else:
+                # 关闭旧 client 再置 None，防止 HttpClient / CacheManager 资源泄漏
+                old_api = self.api
                 self.api = None
+                if old_api is not None:
+                    try:
+                        await old_api.close()
+                    except Exception as close_err:
+                        self.logger.warning(f"关闭旧API客户端时出错: {close_err}")
 
     # ========== 定时刷新凭据 ==========
     @timer_interval(id="refresh_credential", seconds=86400, auto_start=True)  # 每天一次
