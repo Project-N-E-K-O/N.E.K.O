@@ -738,8 +738,10 @@ class MijiaPlugin(NekoPluginBase):
     async def call_device_action(self, device_id: str, siid: int, aiid: int, params: Optional[list] = None, **_):
         if not self.api:
             return Err(SdkError("未登录"))
+        # 无参 action 需要空列表，不能透传 None（下层协议期望 list 而非 null）
+        normalized_params: list = params if params is not None else []
         try:
-            result = await self.api.call_device_action(device_id, siid, aiid, params)
+            result = await self.api.call_device_action(device_id, siid, aiid, normalized_params)
             message = f"✅ 操作执行成功 (siid={siid}, aiid={aiid})"
             return Ok({"success": True, "message": message, "result": result})
         except TokenExpiredError:

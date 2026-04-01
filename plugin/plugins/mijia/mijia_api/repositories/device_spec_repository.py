@@ -78,7 +78,12 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
                 # 缓存到文件（永久缓存，TTL设置为1年）
                 self.cache_spec(model, spec)
             return spec
+        except MijiaAPIException:
+            # 已分层的子类异常（SpecNotFoundError / NetworkError 等）直接透传，
+            # 保留准确的错误类型和排障信息，不再抹平成泛化消息
+            raise
         except Exception as e:
+            # 真正的未知异常才包装，并附上原始 cause
             logger.error(f"获取设备规格失败: {e}", extra={"model": model}, exc_info=e)
             raise MijiaAPIException(f"获取设备规格失败: {model}") from e
 
