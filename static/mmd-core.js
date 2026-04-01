@@ -1130,10 +1130,16 @@ class MMDCore {
             }
 
             // 恢复缩放（含跨分辨率归一化）
+            // MMD 模型 scale 必须均匀（x=y=z），否则模型变形。
+            // 历史偏好或 bug 可能保存了非均匀值，加载时强制均匀化。
             if (preferences.scale) {
                 const scl = preferences.scale;
                 if (Number.isFinite(scl.x) && Number.isFinite(scl.y) && Number.isFinite(scl.z) &&
                     scl.x > 0 && scl.y > 0 && scl.z > 0) {
+                    let uniformScale = (scl.x + scl.y + scl.z) / 3;
+                    if (Math.abs(scl.x - scl.y) > 0.001 || Math.abs(scl.y - scl.z) > 0.001) {
+                        console.warn(`[MMD Core] 非均匀缩放已修正: (${scl.x.toFixed(3)}, ${scl.y.toFixed(3)}, ${scl.z.toFixed(3)}) → ${uniformScale.toFixed(3)}`);
+                    }
                     const savedViewport = preferences.viewport;
                     const currentScreenH = window.screen.height;
                     const hRatio = (savedViewport &&
@@ -1141,11 +1147,10 @@ class MMDCore {
                         ? currentScreenH / savedViewport.height : 1;
                     const isExtremeChange = hRatio > 1.8 || hRatio < 0.56;
                     if (isExtremeChange) {
-                        mesh.scale.set(scl.x * hRatio, scl.y * hRatio, scl.z * hRatio);
+                        uniformScale *= hRatio;
                         console.log('[MMD Core] 屏幕分辨率大幅变化，缩放已归一化');
-                    } else {
-                        mesh.scale.set(scl.x, scl.y, scl.z);
                     }
+                    mesh.scale.setScalar(uniformScale);
                 }
             }
 
