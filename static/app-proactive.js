@@ -265,6 +265,22 @@
                 current_track: (typeof window.getMusicCurrentTrack === 'function') ? window.getMusicCurrentTrack() : null
             };
 
+            // 独立计时器：确保 vision/window 模式的屏幕感知间隔不低于 proactiveVisionInterval
+            if (availableModes.includes('vision') || availableModes.includes('window')) {
+                var now = Date.now();
+                var minIntervalMs = S.proactiveVisionInterval * 1000;
+                var elapsed = now - S._lastProactiveChatScreenTime;
+                if (elapsed < minIntervalMs) {
+                    console.log('[ProactiveChat] 屏幕感知间隔不足（已过 ' + Math.round(elapsed / 1000) + '秒，最低 ' + S.proactiveVisionInterval + '秒），本轮跳过 vision/window');
+                    availableModes = availableModes.filter(function (m) { return m !== 'vision' && m !== 'window'; });
+                    requestBody.enabled_modes = availableModes;
+                    if (availableModes.length === 0) {
+                        console.log('跳过屏幕感知后无其他可用模式，取消本次搭话');
+                        return;
+                    }
+                }
+            }
+
             // 如果包含 vision 模式，需要在前端获取截图和窗口标题
             if (availableModes.includes('vision') || availableModes.includes('window')) {
                 var fetchTasks = [];
@@ -355,6 +371,9 @@
                     console.log('所有附加模式均失败，移除后无其他可用模式，跳过本次搭话');
                     return;
                 }
+
+                // 更新屏幕感知时间戳（用于独立计时器节流）
+                S._lastProactiveChatScreenTime = Date.now();
             }
 
             // 发送请求前最终检查：确保功能状态未在 await 期间改变
