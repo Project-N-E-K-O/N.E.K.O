@@ -340,9 +340,9 @@ def get_cosyvoice_clone_model() -> str:
     )
 
 
-def cosyvoice_model_supports_language_hints(model: str) -> bool:
+def cosyvoice_model_supports_language_hints(model: str | None) -> bool:
     """language_hints 仅适用于 v3 / v3.5 系列模型，v2 不支持。"""
-    return not model.startswith("cosyvoice-v2")
+    return not str(model or _COSYVOICE_CLONE_MODEL_DEFAULT).startswith("cosyvoice-v2")
 
 
 # 导出主要函数
