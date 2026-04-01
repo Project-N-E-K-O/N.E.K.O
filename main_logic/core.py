@@ -2964,7 +2964,7 @@ class LLMSessionManager:
                             await self._flush_tts_pending_chunks()
                         else:
                             # 复用 __error__ 分支记录的 code 判断是否重试
-                            _last_code = getattr(self, '_last_tts_error_code', '')
+                            _last_code = self._last_tts_error_code
                             if _last_code in NO_RETRY_TTS_CODES:
                                 logger.warning(f"⚠️ TTS 未就绪且上次错误为 {_last_code}，跳过自动重试")
                                 # 取消可能仍在等待的延迟重试任务，避免绕过 no-retry 策略
