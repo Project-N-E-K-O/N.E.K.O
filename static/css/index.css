@@ -343,6 +343,30 @@ button * {
     will-change: transform;
 }
 
+/* 展开动画：从最小化尺寸过渡到完整尺寸 */
+#chat-container.expanding {
+    transform: scale(var(--chat-expand-scale-x, 1), var(--chat-expand-scale-y, 1));
+    transition: transform 0.32s cubic-bezier(0.2, 0, 0, 1);
+    will-change: transform;
+}
+
+#chat-container.expanding::before {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    transition: none !important;
+}
+
+/* 调整大小期间的性能优化 */
+#chat-container.is-resizing::before {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    transition: none !important;
+}
+
+#chat-container.is-resizing * {
+    transition: none !important;
+}
+
 /* Fluent Design Acrylic 材质层：将 backdrop-filter 隔离到伪元素上，
    避免它与滚动子元素同层合成导致 Chromium 透明区域泄漏 */
 #chat-container::before {

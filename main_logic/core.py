@@ -2983,9 +2983,15 @@ class LLMSessionManager:
                                 if self._tts_respawn_task and not self._tts_respawn_task.done():
                                     self._tts_respawn_task.cancel()
                                     self._tts_respawn_task = None
+                                # 捕获当前会话身份与 TTS 标志，防止跨会话的错误 respawn
+                                _expected_session = self.session
+                                _expected_use_tts = self.use_tts
                                 async def _delayed_respawn():
                                     await asyncio.sleep(13)
                                     if not self.is_active or self.tts_ready:
+                                        return
+                                    if self.session is not _expected_session or self.use_tts != _expected_use_tts:
+                                        logger.info("🔄 TTS 延迟重试：会话已变更，跳过 respawn")
                                         return
                                     logger.info("🔄 TTS 延迟重试：尝试重新拉起 Worker...")
                                     self._respawn_tts_worker()

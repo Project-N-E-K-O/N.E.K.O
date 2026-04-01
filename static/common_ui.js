@@ -215,32 +215,68 @@ function setupResizableChatContainer() {
     restoreContainerSize();
 
     let isResizing = false;
+    let resizeRAFId = null;
     let startX = 0;
     let startY = 0;
     let startWidth = 0;
     let startHeight = 0;
     let startBottom = 0;
-    // 处理调整大小移动事件
-    const onResizeMove = (e) => {
-        if (!isResizing) return;
-        const clientX = e.type.startsWith('touch') ? e.touches[0].clientX : e.clientX;
-        const clientY = e.type.startsWith('touch') ? e.touches[0].clientY : e.clientY;
-        const nextWidth = startWidth + (clientX - startX);
-        const rawNextHeight = startHeight + (clientY - startY);
+    let pendingResizeClientX = 0;
+    let pendingResizeClientY = 0;
+
+    // rAF 回调：批量应用 resize 尺寸
+    const applyResizeFrame = () => {
+        resizeRAFId = null;
+        const nextWidth = startWidth + (pendingResizeClientX - startX);
+        const rawNextHeight = startHeight + (pendingResizeClientY - startY);
         // 当底边触达屏幕底部后，继续向下拖拽不再增高（顶部保持锚定）
         const bottomLimitedMaxHeight = startHeight + Math.max(0, startBottom);
         const nextHeight = Math.min(rawNextHeight, bottomLimitedMaxHeight);
         const applied = applyContainerSize(nextWidth, nextHeight);
-        // chat-container 采用 bottom 定位；同步调整 bottom 让垂直拉伸表现为“向下展开”
+        // chat-container 采用 bottom 定位；同步调整 bottom 让垂直拉伸表现为"向下展开"
         const consumedDeltaY = applied.height - startHeight;
         chatContainer.style.bottom = `${Math.max(0, startBottom - consumedDeltaY)}px`;
+    };
+
+    // 处理调整大小移动事件（仅记录位置，通过 rAF 合并更新）
+    const onResizeMove = (e) => {
+        if (!isResizing) return;
+        const clientX = e.type.startsWith('touch') ? e.touches[0].clientX : e.clientX;
+        const clientY = e.type.startsWith('touch') ? e.touches[0].clientY : e.clientY;
+        pendingResizeClientX = clientX;
+        pendingResizeClientY = clientY;
+        if (!resizeRAFId) {
+            resizeRAFId = requestAnimationFrame(applyResizeFrame);
+        }
         e.preventDefault();
     };
+
+    // 动态绑定/解绑全局 resize 事件监听器
+    const bindResizeListeners = () => {
+        document.addEventListener('mousemove', onResizeMove);
+        document.addEventListener('touchmove', onResizeMove, { passive: false });
+        document.addEventListener('mouseup', stopResize);
+        document.addEventListener('touchend', stopResize);
+    };
+    const unbindResizeListeners = () => {
+        document.removeEventListener('mousemove', onResizeMove);
+        document.removeEventListener('touchmove', onResizeMove);
+        document.removeEventListener('mouseup', stopResize);
+        document.removeEventListener('touchend', stopResize);
+    };
+
     // 处理调整大小结束事件
     const stopResize = () => {
         if (!isResizing) return;
+        // 取消待执行的 rAF，立即应用最终尺寸
+        if (resizeRAFId) {
+            cancelAnimationFrame(resizeRAFId);
+            resizeRAFId = null;
+            applyResizeFrame();
+        }
         isResizing = false;
         chatContainer.classList.remove('is-resizing');
+        unbindResizeListeners();
         persistContainerSize();
         if (window.ChatDialogSnap && typeof window.ChatDialogSnap.snapIntoScreen === 'function') {
             window.ChatDialogSnap.snapIntoScreen({ animate: true });
@@ -258,20 +294,21 @@ function setupResizableChatContainer() {
         startY = point.clientY;
         startWidth = rect.width;
         startHeight = rect.height;
+        pendingResizeClientX = point.clientX;
+        pendingResizeClientY = point.clientY;
         const computedStyle = window.getComputedStyle(chatContainer);
         const parsedBottom = parseFloat(computedStyle.bottom);
         startBottom = Number.isFinite(parsedBottom) ? parsedBottom : (window.innerHeight - rect.bottom);
 
+        // 动态绑定全局事件
+        bindResizeListeners();
+
         e.stopPropagation();
         e.preventDefault();
     };
-    // 绑定调整大小事件
+    // 绑定调整大小启动事件（仅 handle 上绑定 mousedown/touchstart）
     resizeHandle.addEventListener('mousedown', startResize);
     resizeHandle.addEventListener('touchstart', startResize, { passive: false });
-    document.addEventListener('mousemove', onResizeMove);
-    document.addEventListener('touchmove', onResizeMove, { passive: false });
-    document.addEventListener('mouseup', stopResize);
-    document.addEventListener('touchend', stopResize);
 
     window.addEventListener('resize', () => {
         const rect = chatContainer.getBoundingClientRect();
@@ -279,6 +316,7 @@ function setupResizableChatContainer() {
         persistContainerSize();
     });
 }
+
 
 // --- 切换聊天框最小化/展开状态 ---
 // 用于跟踪是否刚刚发生了拖动
@@ -448,13 +486,51 @@ if (toggleBtn) {
                     finishCollapse();
                 }, transitionDuration);
             } else {
+                // 展开动画：从最小化尺寸过渡到完整尺寸
+                const targetSize = 50;
+                // 计算初始 scale（从最小尺寸到完整尺寸的逆向）
+                const storedSize = getStoredChatContainerSize ? getStoredChatContainerSize() : null;
+                const targetW = storedSize ? storedSize.width : 400;
+                const targetH = storedSize ? storedSize.height : 500;
+                const startScaleX = targetW > 0 ? Math.min(1, targetSize / targetW) : 1;
+                const startScaleY = targetH > 0 ? Math.min(1, targetSize / targetH) : 1;
+
                 chatContainer.classList.remove('minimized');
                 chatContainer.classList.remove('collapsing');
-                chatContainer.style.removeProperty('--chat-collapse-scale-x');
-                chatContainer.style.removeProperty('--chat-collapse-scale-y');
-                if (chatContainer.classList.length === 0) {
-                    chatContainer.removeAttribute('class');
-                }
+
+                // 设置初始 scale 并添加展开类
+                chatContainer.style.setProperty('--chat-expand-scale-x', String(startScaleX));
+                chatContainer.style.setProperty('--chat-expand-scale-y', String(startScaleY));
+                chatContainer.classList.add('expanding');
+
+                // 强制 reflow，确保初始状态被渲染
+                void chatContainer.offsetHeight;
+
+                // 在下一帧设置目标 scale 为 1，触发动画
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        chatContainer.style.setProperty('--chat-expand-scale-x', '1');
+                        chatContainer.style.setProperty('--chat-expand-scale-y', '1');
+                    });
+                });
+
+                // 动画结束后清理
+                let expandHandled = false;
+                const finishExpand = () => {
+                    if (expandHandled) return;
+                    expandHandled = true;
+                    chatContainer.removeEventListener('transitionend', onExpandEnd);
+                    chatContainer.classList.remove('expanding');
+                    chatContainer.style.removeProperty('--chat-expand-scale-x');
+                    chatContainer.style.removeProperty('--chat-expand-scale-y');
+                    isTransitioning = false;
+                };
+                const onExpandEnd = (e) => {
+                    if (e.target !== chatContainer || e.propertyName !== 'transform') return;
+                    finishExpand();
+                };
+                chatContainer.addEventListener('transitionend', onExpandEnd);
+                setTimeout(finishExpand, 400);
             }
 
             const isMinimized = willMinimize;
@@ -497,8 +573,10 @@ if (toggleBtn) {
                 // 展开后执行回弹，避免位置越界
                 triggerExpandSnap();
             }
-            // 动画结束后清除过渡标志
-            setTimeout(() => { isTransitioning = false; }, 350);
+            // 折叠动画结束后清除过渡标志（展开动画由 finishExpand 清除）
+            if (willMinimize) {
+                setTimeout(() => { isTransitioning = false; }, 350);
+            }
         } catch (e) {
             // 发生异常时立即重置过渡标志
             isTransitioning = false;
