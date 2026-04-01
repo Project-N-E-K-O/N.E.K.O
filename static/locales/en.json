@@ -1584,6 +1584,7 @@
             "statusQueued": "Queued",
             "statusCompleted": "Completed",
             "statusFailed": "Failed",
+            "statusCancelled": "Cancelled",
             "minimize": "Collapse/Expand",
             "cancelAll": "Cancel all tasks",
             "cancelConfirm": "Cancel all running tasks?",
