@@ -871,6 +871,11 @@ class MMDCore {
             this.manager.controls.update();
         }
 
+        // 更新屏幕空间包围盒缓存（用于悬停检测和鼠标穿透判断）
+        if (this.manager.interaction) {
+            this.manager.interaction.updateScreenBounds();
+        }
+
         // 渲染
         if (this.manager.effect && this.manager.useOutlineEffect) {
             this.manager.effect.render(this.manager.scene, this.manager.camera);
