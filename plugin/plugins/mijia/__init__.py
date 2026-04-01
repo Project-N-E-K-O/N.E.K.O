@@ -292,16 +292,21 @@ class MijiaPlugin(NekoPluginBase):
             return Ok({"skipped": "no_api"})
         new_cred = None
         credential = self.api.credential
-        if credential and not credential.is_expired():
-            # 如果将在7天内过期，尝试刷新
-            if credential.expires_in() < 7 * 86400:
+        if credential:
+            # 同时处理"7天内即将过期"和"已经过期但尚未处理"两种情况
+            if not credential.is_expired() and credential.expires_in() >= 7 * 86400:
+                return Ok({"skipped": "not_near_expiry"})
+            # 已过期或在7天内，尝试刷新
+            if credential.is_expired():
+                self.logger.warning("凭据已过期，尝试刷新")
+            else:
                 self.logger.info("凭据即将过期，尝试刷新")
-                new_cred = await self._refresh_credential(credential)
-                if new_cred:
-                    await self._init_api(new_cred)
-                    self.logger.info("凭据刷新成功")
-                else:
-                    self.logger.warning("凭据刷新失败，请手动登录")
+            new_cred = await self._refresh_credential(credential)
+            if new_cred:
+                await self._init_api(new_cred)
+                self.logger.info("凭据刷新成功")
+            else:
+                self.logger.warning("凭据刷新失败，请手动登录")
         return Ok({"refreshed": new_cred is not None})
 
     # ========== Web UI 端点（供前端调用） ==========
@@ -480,6 +485,8 @@ class MijiaPlugin(NekoPluginBase):
                             
                             device_info["properties"] = properties
                             device_info["actions"] = actions
+                    except TokenExpiredError:
+                        raise  # 让外层统一返回"凭据已过期"，不能静默写半残缓存
                     except Exception as e:
                         self.logger.debug(f"获取设备 {d.name}({d.model}) 规格失败: {e}")
                 

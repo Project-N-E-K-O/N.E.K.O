@@ -215,13 +215,14 @@ execute_scene(scene_id="123456", home_id="abcdef")
 | 文件 | 内容 | 说明 |
 |------|------|------|
 | `credential.json` | 登录凭据 | 权限 600，仅当前用户可读 |
-| `devices_cache.json` | 设备列表及规格缓存 | 包含 did、properties、actions |
+| `devices_cache.json` | 设备列表及规格缓存 | 包含 did、properties、actions、user_id、home_id（归属校验用） |
 
 ### 缓存结构（devices_cache.json）
 
 ```json
 {
   "home_id": "xxx",
+  "user_id": "xxx",
   "devices": [
     {
       "did": "设备唯一ID",
