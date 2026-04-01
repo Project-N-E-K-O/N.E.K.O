@@ -1082,6 +1082,10 @@ class VRMInteraction {
         };
 
         const shouldKeepUiVisible = (mouseX, mouseY, distanceToModel) => {
+            const popupUi = window.AvatarPopupUI || null;
+            if (popupUi && typeof popupUi.hasVisibleOverlay === 'function' && popupUi.hasVisibleOverlay('vrm')) {
+                return true;
+            }
             const threshold = getModelThreshold();
             if (distanceToModel < threshold) return true;
             if (isPointerNearUi(mouseX, mouseY)) return true;
@@ -1110,7 +1114,9 @@ class VRMInteraction {
                         mouseY >= lockRect.top && mouseY <= lockRect.bottom;
                 }
 
-                if (this._isMouseOverButtons || isMouseOverLock) {
+                const popupUi = window.AvatarPopupUI || null;
+                const hasOpenOverlay = !!(popupUi && typeof popupUi.hasVisibleOverlay === 'function' && popupUi.hasVisibleOverlay('vrm'));
+                if (this._isMouseOverButtons || isMouseOverLock || hasOpenOverlay) {
                     this._hideButtonsTimer = null;
                     startHideTimer(delay);
                     return;
@@ -1554,4 +1560,3 @@ class VRMInteraction {
 
 // 导出到全局
 window.VRMInteraction = VRMInteraction;
-

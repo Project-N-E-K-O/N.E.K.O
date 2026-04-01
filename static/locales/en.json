@@ -1408,7 +1408,7 @@
         "voiceUpdated": "{{name}}'s voice updated",
         "audioWorkletFailed": "AudioWorklet failed to load",
         "audioContextError": "Audio system error, please retry",
-        "sessionTimeout": "Session timeout",
+        "sessionTimeout": "Startup timed out, server may be busy. Please retry manually",
         "websocketNotConnectedError": "WebSocket not connected",
         "sessionStartFailed": "Session start failed {{count}} times, auto-retry stopped. Please check network and API config.",
         "sessionStartFailedCount": "Error starting session: {{error}} (Failed {{count}} times)",
