@@ -875,12 +875,12 @@ class LLMSessionManager:
                 try:
                     while not req_queue_ref.empty():
                         req_queue_ref.get_nowait()
-                except:  # noqa
+                except Exception:
                     pass
                 try:
                     while not resp_queue_ref.empty():
                         resp_queue_ref.get_nowait()
-                except:  # noqa
+                except Exception:
                     pass
 
         async with self.tts_cache_lock:
@@ -2979,7 +2979,8 @@ class LLMSessionManager:
                                 # 捕获当前会话身份与 TTS 标志，防止跨会话的错误 respawn
                                 _expected_session = self.session
                                 _expected_use_tts = self.use_tts
-                                async def _delayed_respawn():
+                                async def _delayed_respawn(_expected_session=_expected_session,
+                                                           _expected_use_tts=_expected_use_tts):
                                     await asyncio.sleep(13)
                                     if not self.is_active or self.tts_ready:
                                         return
