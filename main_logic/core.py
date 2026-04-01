@@ -1402,6 +1402,7 @@ class LLMSessionManager:
                 # WebSocket 重连后，投递因断线积压的 agent 任务回调
                 if self.pending_agent_callbacks:
                     asyncio.create_task(self.trigger_agent_callbacks())
+
             else:
                 raise Exception("Session not initialized")
         
@@ -2085,6 +2086,63 @@ class LLMSessionManager:
             self.pending_agent_callbacks.extend(callbacks_snapshot)
         finally:
             self._agent_delivery_in_progress = False
+
+    async def trigger_greeting(self) -> None:
+        """首次连接或切换角色时，根据距上次对话间隔触发主动搭话。
+
+        流程：查询 memory_server 获取间隔 → 构建引导词 → 主动拉起 text session → 投递。
+        """
+        try:
+            async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
+                resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/last_conversation_gap/{self.lanlan_name}")
+                if not resp.is_success:
+                    logger.warning("[%s] trigger_greeting: memory server returned %s", self.lanlan_name, resp.status_code)
+                    return
+                gap_seconds = resp.json().get("gap_seconds", -1)
+        except Exception as e:
+            logger.warning("[%s] trigger_greeting: failed to query gap: %s", self.lanlan_name, e)
+            return
+
+        if gap_seconds < 900:  # < 15分钟，不触发
+            logger.debug("[%s] trigger_greeting: gap %.0fs < 15min, skipping", self.lanlan_name, gap_seconds)
+            return
+
+        _lang = normalize_language_code(self.user_language, format='short')
+        from config.prompts_proactive import get_greeting_prompt
+        from memory_server import _format_elapsed
+        template = get_greeting_prompt(gap_seconds, _lang)
+        if not template:
+            return
+
+        elapsed = _format_elapsed(_lang, gap_seconds)
+        instruction = template.format(elapsed=elapsed, name=self.lanlan_name, master=self.master_name)
+        logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", self.lanlan_name, gap_seconds, elapsed)
+
+        # 如果已有 text session 且空闲，直接投递
+        if isinstance(self.session, OmniOfflineClient) and not getattr(self.session, "_is_responding", False):
+            pass  # 直接走下面的投递逻辑
+        else:
+            # 没有 session 或不是 text session → 主动拉起
+            ws = self.websocket
+            if not ws or not hasattr(ws, 'client_state') or ws.client_state != ws.client_state.CONNECTED:
+                logger.warning("[%s] trigger_greeting: no connected websocket, aborting", self.lanlan_name)
+                return
+            try:
+                logger.info("[%s] trigger_greeting: auto-starting text session", self.lanlan_name)
+                await self.start_session(ws, new=False, input_mode='text')
+            except Exception as e:
+                logger.warning("[%s] trigger_greeting: auto start_session failed: %s", self.lanlan_name, e)
+                return
+
+        if not isinstance(self.session, OmniOfflineClient):
+            logger.warning("[%s] trigger_greeting: session is not text mode after start, aborting", self.lanlan_name)
+            return
+
+        async with self._proactive_write_lock:
+            async with self.lock:
+                self.current_speech_id = str(uuid4())
+            delivered = await self.session.stream_proactive(instruction)
+            logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.

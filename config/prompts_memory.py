@@ -585,7 +585,24 @@ INNER_THOUGHTS_DYNAMIC = {
 # ======= Chat gap notices ===========================================
 # =====================================================================
 
-# 时间间隔格式化模板 — {h}=小时, {m}=分钟
+# 时间间隔格式化模板 — {d}=天, {h}=小时, {m}=分钟
+# 组合规则：只显示非零单位，不到1天不写天，不到1小时不写小时
+ELAPSED_TIME_DHM = {
+    'zh': '{d}天{h}小时{m}分钟', 'en': '{d} days, {h} hours and {m} minutes',
+    'ja': '{d}日{h}時間{m}分', 'ko': '{d}일 {h}시간 {m}분', 'ru': '{d} дн. {h} ч. {m} мин.',
+}
+ELAPSED_TIME_DH = {
+    'zh': '{d}天{h}小时', 'en': '{d} days and {h} hours',
+    'ja': '{d}日{h}時間', 'ko': '{d}일 {h}시간', 'ru': '{d} дн. {h} ч.',
+}
+ELAPSED_TIME_DM = {
+    'zh': '{d}天{m}分钟', 'en': '{d} days and {m} minutes',
+    'ja': '{d}日{m}分', 'ko': '{d}일 {m}분', 'ru': '{d} дн. {m} мин.',
+}
+ELAPSED_TIME_D = {
+    'zh': '{d}天', 'en': '{d} days',
+    'ja': '{d}日', 'ko': '{d}일', 'ru': '{d} дн.',
+}
 ELAPSED_TIME_HM = {
     'zh': '{h}小时{m}分钟', 'en': '{h} hours and {m} minutes',
     'ja': '{h}時間{m}分', 'ko': '{h}시간 {m}분', 'ru': '{h} ч. {m} мин.',
@@ -593,6 +610,10 @@ ELAPSED_TIME_HM = {
 ELAPSED_TIME_H = {
     'zh': '{h}小时', 'en': '{h} hours',
     'ja': '{h}時間', 'ko': '{h}시간', 'ru': '{h} ч.',
+}
+ELAPSED_TIME_M = {
+    'zh': '{m}分钟', 'en': '{m} minutes',
+    'ja': '{m}分', 'ko': '{m}분', 'ru': '{m} мин.',
 }
 
 # {elapsed}: 自然语言时间间隔（如"3小时22分钟"）
