@@ -1413,6 +1413,9 @@ class LLMSessionManager:
                 session_api_type = getattr(self.session, '_api_type', '').lower()
                 should_warmup = isinstance(self.session, OmniRealtimeClient) and session_api_type not in skip_warmup_api_types
                 if should_warmup:
+                    # Pin 住当前 session 引用，防止 warmup 期间 end_session + 新 start_session
+                    # 导致 self.session 变成另一个对象，恢复回调时污染新 session
+                    warmup_session = self.session
                     try:
                         logger.info("🔥 开始预热 Session，prefill instructions...")
                         warmup_start = time.time()
@@ -1422,15 +1425,15 @@ class LLMSessionManager:
 
                         # 创建一个事件来等待预热完成
                         warmup_done_event = asyncio.Event()
-                        original_callback = self.session.on_response_done
+                        original_callback = warmup_session.on_response_done
 
                         # 临时替换回调，只用于等待预热完成
                         async def warmup_callback():
                             warmup_done_event.set()
 
-                        self.session.on_response_done = warmup_callback
+                        warmup_session.on_response_done = warmup_callback
 
-                        await self.session.create_response("", skipped=True)
+                        await warmup_session.create_response("", skipped=True)
 
                         # 等待预热完成（最多12秒）
                         try:
@@ -1441,9 +1444,9 @@ class LLMSessionManager:
                             logger.warning("⚠️ Session预热超时（12秒），继续执行...")
                             logger.warning("[语音会话诊断] 预热在 12 秒内未完成，可能为 realtime API 响应慢")
 
-                        # 恢复原始回调（仅当 session 未被并发 end_session 销毁时）
-                        if self.session is not None and self.is_active:
-                            self.session.on_response_done = original_callback
+                        # 恢复原始回调（仅当此 session 仍是当前活跃 session 时）
+                        if warmup_session is self.session and self.is_active:
+                            warmup_session.on_response_done = original_callback
 
                     except Exception as e:
                         logger.warning(f"⚠️ Session预热失败（不影响正常使用）: {e}")
