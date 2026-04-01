@@ -10,7 +10,6 @@ Usage:
 
 import asyncio
 import io
-import struct
 import wave
 from pathlib import Path
 
