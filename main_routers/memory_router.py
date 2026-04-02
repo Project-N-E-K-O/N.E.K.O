@@ -89,6 +89,11 @@ def resolve_recent_file_path(
     memory_dir = Path(config_manager.memory_dir)
     project_memory_dir = Path(config_manager.project_memory_dir)
 
+    if create:
+        target_dir = memory_dir / catgirl_name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir / 'recent.json', "", "", catgirl_name
+
     candidates = [
         memory_dir / catgirl_name / 'recent.json',
         memory_dir / filename,
@@ -104,12 +109,7 @@ def resolve_recent_file_path(
         if candidate.exists():
             return candidate, "", "", catgirl_name
 
-    if not create:
-        return None, "文件不存在", PATH_ERROR_NOT_FOUND, catgirl_name
-
-    target_dir = memory_dir / catgirl_name
-    target_dir.mkdir(parents=True, exist_ok=True)
-    return target_dir / 'recent.json', "", "", catgirl_name
+    return None, "文件不存在", PATH_ERROR_NOT_FOUND, catgirl_name
 
 
 def path_error_status_code(error_code: str) -> int:
@@ -412,13 +412,8 @@ async def update_catgirl_name(request: Request):
         old_file_path = Path(old_file_path)
         new_file_path = Path(new_file_path)
 
-        if old_file_path.resolve() != new_file_path.resolve():
-            if new_file_path.exists():
-                new_file_path.unlink()
-            shutil.move(str(old_file_path), str(new_file_path))
-        
-        # 2. 更新文件内容中的猫娘名称引用
-        with open(new_file_path, 'r', encoding='utf-8') as f:
+        # 2. 先完整读取旧文件，确认可解析后再写入新路径，避免中途失败导致源文件丢失
+        with open(old_file_path, 'r', encoding='utf-8') as f:
             file_content = json.load(f)
         
         # 遍历所有消息，仅在特定字段中更新猫娘名称
@@ -466,8 +461,14 @@ async def update_catgirl_name(request: Request):
                         
                         data['content'] = content
         
-        # 保存更新后的内容
+        # 保存更新后的内容；写入成功后再删除旧路径，避免改名过程中数据丢失
         atomic_write_json(new_file_path, file_content, ensure_ascii=False, indent=2)
+
+        if old_file_path.resolve() != new_file_path.resolve() and old_file_path.exists():
+            if old_file_path.is_dir():
+                shutil.rmtree(old_file_path)
+            else:
+                old_file_path.unlink()
         
         logger.info(f"已更新猫娘名称从 '{old_name}' 到 '{new_name}' 的记忆文件")
         return {"success": True}

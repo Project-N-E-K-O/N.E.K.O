@@ -147,7 +147,7 @@ def _update_json_file_channel_config(
         return False
 
     channels["neko"] = updated
-    if LEGACY_CHANNEL_NAME in channels and LEGACY_CHANNEL_NAME != "neko":
+    if LEGACY_CHANNEL_NAME in channels:
         channels.pop(LEGACY_CHANNEL_NAME, None)
     try:
         path.write_text(
@@ -173,6 +173,9 @@ def _bootstrap_neko_channel_config() -> None:
 
     try:
         root_config_path = Path(get_config_path()).expanduser()
+    except (FileNotFoundError, OSError, TypeError, ValueError):
+        logger.debug("neko bootstrap skipped: get_config_path unavailable", exc_info=True)
+        return
     except Exception:
         logger.debug("neko bootstrap skipped: get_config_path unavailable", exc_info=True)
         return
@@ -485,7 +488,7 @@ class NekoChannel(BaseChannel):
         ).strip()
         if not _is_loopback_host(self.host) and not self.auth_token:
             raise ValueError(
-                "OpenClaw auth_token is required when binding to a non-loopback host.",
+                "N.E.K.O auth token is required when binding to a non-loopback host.",
             )
         self.route_prefix = "/" + str(route_prefix or "").strip().strip("/")
         if self.route_prefix == "/":
