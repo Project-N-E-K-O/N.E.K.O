@@ -88,11 +88,11 @@ def resolve_recent_file_path(config_manager, filename: str, *, create: bool = Fa
         project_memory_dir / filename,
     ]
 
-    checked_paths: list[Path] = []
+    seen: set[Path] = set()
     for candidate in candidates:
-        if candidate in checked_paths:
+        if candidate in seen:
             continue
-        checked_paths.append(candidate)
+        seen.add(candidate)
         if candidate.exists():
             return candidate, "", catgirl_name
 
@@ -270,9 +270,6 @@ async def get_recent_file(filename: str):
     if resolved_path is None:
         status_code = 404 if path_error == "文件不存在" else 400
         return JSONResponse({"success": False, "error": path_error}, status_code=status_code)
-
-    if not resolved_path.exists():
-        return JSONResponse({"success": False, "error": "文件不存在"}, status_code=404)
     
     with open(resolved_path, 'r', encoding='utf-8') as f:
         content = f.read()

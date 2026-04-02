@@ -797,14 +797,14 @@
         // Enter key sends text (Shift+Enter for newline)
         // ----------------------------------------------------------------
         textInputBox.addEventListener('keydown', function (e) {
-            var isImeEnter = e.isComposing || e.keyCode === 229 || textInputComposing;
-            var justEndedComposition = lastTextCompositionEndAt > 0 && (Date.now() - lastTextCompositionEndAt) < 80;
-
-            if (isImeEnter || justEndedComposition) {
-                return;
-            }
-
             if (e.key === 'Enter' && !e.shiftKey) {
+                var isImeEnter = e.isComposing || e.keyCode === 229 || textInputComposing;
+                var justEndedComposition = lastTextCompositionEndAt > 0 && (Date.now() - lastTextCompositionEndAt) < 80;
+
+                if (isImeEnter || justEndedComposition) {
+                    return;
+                }
+
                 e.preventDefault();
                 textSendButton.click();
             }

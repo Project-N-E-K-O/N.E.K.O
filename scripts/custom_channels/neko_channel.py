@@ -117,15 +117,12 @@ def _update_json_file_channel_config(
         channels = {}
         data["channels"] = channels
 
-    had_existing = isinstance(channels.get("neko"), dict)
     updated = _merge_channel_defaults(
         channels.get("neko"),
         enabled_if_missing=enable_if_missing,
     )
 
-    if had_existing and channels.get("neko") == updated:
-        return False
-    if not had_existing and channels.get("neko") == updated:
+    if channels.get("neko") == updated:
         return False
 
     channels["neko"] = updated
@@ -728,12 +725,14 @@ class NekoChannel(BaseChannel):
         if not self.auth_token:
             return
         bearer = request.headers.get("authorization", "")
-        header_token = request.headers.get("x-openclaw-token", "")
+        header_token = request.headers.get("x-neko-token", "")
+        if not header_token:
+            header_token = request.headers.get("x-openclaw-token", "")
         provided = header_token.strip()
         if not provided and bearer.lower().startswith("bearer "):
             provided = bearer[7:].strip()
         if provided != self.auth_token:
-            raise HTTPException(status_code=401, detail="OpenClaw auth token is required")
+            raise HTTPException(status_code=401, detail="N.E.K.O auth token is required")
 
     def _merge_channel_config_file(self, config_path: Path, *, create_if_missing: bool = False) -> None:
         if not config_path.exists():
