@@ -656,12 +656,17 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             
             # 主循环：处理请求队列
             loop = asyncio.get_running_loop()
+            pending = None  # 断线重试时暂存当前片段，保证顺序（不回共享队列）
             while True:
-                # 非阻塞检查队列
-                try:
-                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                except Exception:
-                    break
+                # 优先处理断线暂存的片段，再从队列取新请求
+                if pending:
+                    sid, tts_text = pending
+                    pending = None
+                else:
+                    try:
+                        sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                    except Exception:
+                        break
 
                 if sid == "__interrupt__":
                     # 打断：立即关闭连接，不发 commit、不等服务器确认
@@ -799,9 +804,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     continue
 
                 if not ws or not session_ready.is_set():
-                    # 连接已因空闲超时断开，重置 speech_id 并重新入队以触发重连
+                    # 连接已因空闲超时断开，暂存当前片段并重置 speech_id 以触发重连
                     current_speech_id = None
-                    request_queue.put((sid, tts_text))
+                    pending = (sid, tts_text)
                     continue
                 
                 # 追加文本到缓冲区（不立即提交，等待响应完成时的终止信号再 commit）

@@ -1718,12 +1718,18 @@ class ConfigManager:
                 if cfg_model is not None:
                     config[model_key] = cfg_model or config.get(model_key, '')
 
-                # API Key: 只有非"跟随"模式才覆盖（空串是合法值，本地服务商不需要 key）
-                # follow_core / follow_assist → 保留派生值，保证向后兼容
-                # ''（老配置无 provider 字段）→ 允许写入，不丢弃用户已保存的自定义 key
-                cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
-                if cfg_key is not None and provider not in ('follow_core', 'follow_assist'):
-                    config[apikey_key] = cfg_key
+                # API Key 处理：
+                #   follow_core   → 从核心 API Key 派生
+                #   follow_assist → 从辅助 API Key 派生（OPENROUTER_API_KEY 已含 assist→core 回退）
+                #   具体服务商/custom/''(老配置) → 使用存储值（空串合法，本地服务商不需要 key）
+                if provider == 'follow_core':
+                    config[apikey_key] = config.get('CORE_API_KEY', '')
+                elif provider == 'follow_assist':
+                    config[apikey_key] = config.get('OPENROUTER_API_KEY', '')
+                else:
+                    cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
+                    if cfg_key is not None:
+                        config[apikey_key] = cfg_key
 
             # TTS Voice ID 作为角色 voice_id 的回退
             if core_cfg.get('ttsVoiceId') is not None:
