@@ -681,7 +681,7 @@
             "doubao": "ByteDance(Doubao)",
             "minimax": "MiniMax(국내 서버)",
             "minimax_intl": "MiniMax(국제 서버)",
-            "claude": "Claude(Anthropic, 중국 내 사용 불가)",
+            "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)"
         },
         "coreApiAutoFillHint": "API 관리 대장에서 키가 자동 입력됩니다. 직접 입력도 가능합니다",

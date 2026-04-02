@@ -681,7 +681,7 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (Domestic)",
             "minimax_intl": "MiniMax (Intl)",
-            "claude": "Claude (Anthropic, not available in China)",
+            "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)"
         },
         "coreApiAutoFillHint": "Key auto-filled from API Key Book, or enter directly",
