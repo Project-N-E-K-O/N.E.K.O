@@ -10,7 +10,7 @@ Handles memory-related endpoints including:
 import os
 import re
 import json
-import glob
+import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -25,6 +25,91 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 # Pattern for valid recent file names: must start with "recent_", have content, and end with .json
 # Uses blacklist approach instead of whitelist to support CJK characters
 VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent_.+\.json$')
+PATH_ERROR_INVALID_REQUEST = "INVALID_REQUEST"
+PATH_ERROR_NOT_FOUND = "NOT_FOUND"
+
+
+def extract_catgirl_name_from_recent_filename(filename: str) -> str | None:
+    """Convert a logical recent filename (recent_<name>.json) to a character name."""
+    if not isinstance(filename, str):
+        return None
+    match = re.match(r'^recent_(.+)\.json$', filename)
+    return match.group(1) if match else None
+
+
+def build_recent_filename(catgirl_name: str) -> str:
+    """Build the legacy logical filename used by the memory browser UI."""
+    return f"recent_{catgirl_name}.json"
+
+
+def iter_recent_memory_files(base_dir: Path) -> list[str]:
+    """List logical recent filenames from both legacy flat files and character dirs."""
+    if not base_dir.exists():
+        return []
+
+    logical_names: set[str] = set()
+
+    for flat_file in base_dir.glob('recent_*.json'):
+        if flat_file.is_file():
+            logical_names.add(flat_file.name)
+
+    for child in base_dir.iterdir():
+        if not child.is_dir():
+            continue
+        recent_file = child / 'recent.json'
+        if recent_file.is_file():
+            logical_names.add(build_recent_filename(child.name))
+
+    return sorted(logical_names)
+
+
+def resolve_recent_file_path(
+    config_manager,
+    filename: str,
+    *,
+    create: bool = False,
+) -> tuple[Path | None, str, str, str | None]:
+    """
+    Resolve a logical recent filename to the actual storage path.
+
+    Supports both:
+    - New layout: memory/<catgirl>/recent.json
+    - Legacy layout: memory/recent_<catgirl>.json
+    """
+    catgirl_name = extract_catgirl_name_from_recent_filename(filename)
+    if not catgirl_name:
+        return None, "文件名格式不合法，必须以 recent_ 开头并以 .json 结尾", PATH_ERROR_INVALID_REQUEST, None
+
+    memory_dir = Path(config_manager.memory_dir)
+    project_memory_dir = Path(config_manager.project_memory_dir)
+
+    if create:
+        target_dir = memory_dir / catgirl_name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir / 'recent.json', "", "", catgirl_name
+
+    candidates = [
+        memory_dir / catgirl_name / 'recent.json',
+        memory_dir / filename,
+        project_memory_dir / catgirl_name / 'recent.json',
+        project_memory_dir / filename,
+    ]
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.is_file():
+            return candidate, "", "", catgirl_name
+
+    return None, "文件不存在", PATH_ERROR_NOT_FOUND, catgirl_name
+
+
+def path_error_status_code(error_code: str) -> int:
+    if error_code == PATH_ERROR_NOT_FOUND:
+        return 404
+    return 400
 
 
 def validate_catgirl_name(name: str, allow_dots: bool = False) -> tuple[bool, str]:
@@ -160,9 +245,17 @@ async def get_recent_files():
     """获取 memory 目录下所有 recent*.json 文件名列表"""
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
-    files = glob.glob(str(cm.memory_dir / 'recent*.json'))
-    file_names = [os.path.basename(f) for f in files]
-    return {"files": file_names}
+    file_names: list[str] = []
+    seen: set[str] = set()
+
+    for base_dir in (Path(cm.memory_dir), Path(cm.project_memory_dir)):
+        for logical_name in iter_recent_memory_files(base_dir):
+            if logical_name in seen:
+                continue
+            seen.add(logical_name)
+            file_names.append(logical_name)
+
+    return {"files": sorted(file_names)}
 
 
 @router.get('/recent_file')
@@ -177,15 +270,11 @@ async def get_recent_file(filename: str):
     
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
-    
-    # Use safe_memory_path to validate and construct the target path
-    memory_dir = Path(cm.memory_dir)
-    resolved_path, path_error = safe_memory_path(memory_dir, filename)
+
+    resolved_path, path_error, path_error_code, _catgirl_name = resolve_recent_file_path(cm, filename)
     if resolved_path is None:
-        return JSONResponse({"success": False, "error": path_error}, status_code=400)
-    
-    if not resolved_path.exists():
-        return JSONResponse({"success": False, "error": "文件不存在"}, status_code=404)
+        status_code = path_error_status_code(path_error_code)
+        return JSONResponse({"success": False, "error": path_error}, status_code=status_code)
     
     with open(resolved_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -212,12 +301,10 @@ async def save_recent_file(request: Request):
     
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
-    
-    # Use safe_memory_path to validate and construct the target path
-    memory_dir = Path(cm.memory_dir)
-    resolved_path, path_error = safe_memory_path(memory_dir, filename)
+
+    resolved_path, path_error, _path_error_code, catgirl_name = resolve_recent_file_path(cm, filename, create=True)
     if resolved_path is None:
-        logger.warning(f"Path traversal attempt blocked for filename: {filename!r} - {path_error}")
+        logger.warning(f"Recent file path resolution failed for filename: {filename!r} - {path_error}")
         return JSONResponse({"success": False, "error": path_error}, status_code=400)
     
     arr = []
@@ -239,10 +326,6 @@ async def save_recent_file(request: Request):
         })
     try:
         atomic_write_json(resolved_path, arr, ensure_ascii=False, indent=2)
-        
-        # 从文件名提取猫娘名 (recent_XXX.json -> XXX)
-        match = re.match(r'^recent_(.+)\.json$', filename)
-        catgirl_name = match.group(1) if match else None
         
         if catgirl_name:
             # 中断 memory_server 的 review 任务
@@ -294,36 +377,34 @@ async def update_catgirl_name(request: Request):
     try:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
-        memory_dir = Path(cm.memory_dir)
-        
-        # Construct and validate file paths
         old_filename = f'recent_{old_name}.json'
         new_filename = f'recent_{new_name}.json'
-        
-        old_file_path, old_path_error = safe_memory_path(memory_dir, old_filename)
+
+        old_file_path, old_path_error, old_path_error_code, _old_catgirl_name = resolve_recent_file_path(cm, old_filename)
         if old_file_path is None:
-            logger.warning(f"Path traversal attempt blocked for old_name: {old_name!r} - {old_path_error}")
-            return JSONResponse({"success": False, "error": old_path_error}, status_code=400)
-        
-        new_file_path, new_path_error = safe_memory_path(memory_dir, new_filename)
+            logger.warning(f"Recent file path resolution failed for old_name: {old_name!r} - {old_path_error}")
+            return JSONResponse(
+                {"success": False, "error": old_path_error},
+                status_code=path_error_status_code(old_path_error_code),
+            )
+
+        new_file_path, new_path_error, new_path_error_code, _new_catgirl_name = resolve_recent_file_path(
+            cm,
+            new_filename,
+            create=True,
+        )
         if new_file_path is None:
-            logger.warning(f"Path traversal attempt blocked for new_name: {new_name!r} - {new_path_error}")
-            return JSONResponse({"success": False, "error": new_path_error}, status_code=400)
-        
-        # 检查旧文件是否存在
-        if not os.path.exists(old_file_path):
-            logger.warning(f"记忆文件不存在: {old_file_path}")
-            return JSONResponse({"success": False, "error": f"记忆文件不存在: {old_filename}"}, status_code=404)
-        
-        # 如果新文件已存在，先删除
-        if os.path.exists(new_file_path):
-            os.remove(new_file_path)
-        
-        # 重命名文件
-        os.rename(old_file_path, new_file_path)
-        
-        # 2. 更新文件内容中的猫娘名称引用
-        with open(new_file_path, 'r', encoding='utf-8') as f:
+            logger.warning(f"Recent file path resolution failed for new_name: {new_name!r} - {new_path_error}")
+            return JSONResponse(
+                {"success": False, "error": new_path_error},
+                status_code=path_error_status_code(new_path_error_code),
+            )
+
+        old_file_path = Path(old_file_path)
+        new_file_path = Path(new_file_path)
+
+        # 2. 先完整读取旧文件，确认可解析后再写入新路径，避免中途失败导致源文件丢失
+        with open(old_file_path, 'r', encoding='utf-8') as f:
             file_content = json.load(f)
         
         # 遍历所有消息，仅在特定字段中更新猫娘名称
@@ -371,8 +452,20 @@ async def update_catgirl_name(request: Request):
                         
                         data['content'] = content
         
-        # 保存更新后的内容
+        # 保存更新后的内容；写入成功后再删除旧路径，避免改名过程中数据丢失
         atomic_write_json(new_file_path, file_content, ensure_ascii=False, indent=2)
+
+        user_memory_dir = Path(cm.memory_dir).resolve()
+        resolved_old_file_path = old_file_path.resolve()
+        if (
+            resolved_old_file_path != new_file_path.resolve()
+            and old_file_path.exists()
+            and resolved_old_file_path.is_relative_to(user_memory_dir)
+        ):
+            if old_file_path.is_dir():
+                shutil.rmtree(old_file_path)
+            else:
+                old_file_path.unlink()
         
         logger.info(f"已更新猫娘名称从 '{old_name}' 到 '{new_name}' 的记忆文件")
         return {"success": True}

@@ -197,26 +197,13 @@ class VRMAnimation {
     }
 
     _cleanupOldMixer(vrm) {
+        // 只清理通用 animationMixer；vrmaMixer 由 _createAndConfigureAction 管理（复用 / 重建）
         if (this.manager.animationMixer) {
             this.manager.animationMixer.stopAllAction();
-            // 添加空值保护，避免传入 null/undefined 导致 Three.js bug
             if (vrm?.scene) {
                 this.manager.animationMixer.uncacheRoot(vrm.scene);
             }
             this.manager.animationMixer = null;
-        }
-
-        if (this.vrmaMixer) {
-            const oldRoot = this.vrmaMixer.getRoot();
-            // 总是清理旧的 VRMA mixer，无论 oldRoot 是否等于当前的 vrm.scene 或 normalized root
-            this.vrmaMixer.stopAllAction();
-            // 添加空值保护，避免传入 null/undefined 导致 Three.js bug
-            if (oldRoot) {
-                this.vrmaMixer.uncacheRoot(oldRoot);
-            }
-            this.vrmaMixer = null;
-            this.currentAction = null;
-            this.vrmaIsPlaying = false;
         }
     }
 
@@ -340,19 +327,24 @@ class VRMAnimation {
     }
 
     _createAndConfigureAction(clip, mixerRoot, options) {
-        if (this.vrmaMixer) {
-            this.vrmaMixer.stopAllAction();
-            // 添加空值保护，避免传入 null/undefined 导致 Three.js bug
-            const root = this.vrmaMixer.getRoot();
-            if (root) {
-                this.vrmaMixer.uncacheRoot(root);
+        const existingRoot = this.vrmaMixer ? this.vrmaMixer.getRoot() : null;
+
+        if (this.vrmaMixer && existingRoot === mixerRoot) {
+            // mixer root 相同 → 复用 mixer，保留 currentAction 供 _playAction crossfade
+            // 只取消旧 clip 的缓存，避免内存泄漏
+            this.vrmaMixer.uncacheClip(clip);
+        } else {
+            // mixer root 变了或首次创建 → 必须重建 mixer
+            if (this.vrmaMixer) {
+                this.vrmaMixer.stopAllAction();
+                if (existingRoot) {
+                    this.vrmaMixer.uncacheRoot(existingRoot);
+                }
             }
-            this.vrmaMixer = null;
             this.currentAction = null;
             this.vrmaIsPlaying = false;
+            this.vrmaMixer = new window.THREE.AnimationMixer(mixerRoot);
         }
-
-        this.vrmaMixer = new window.THREE.AnimationMixer(mixerRoot);
         const newAction = this.vrmaMixer.clipAction(clip);
         if (!newAction) {
             const root = this.vrmaMixer.getRoot();
@@ -467,6 +459,12 @@ class VRMAnimation {
         }
 
         try {
+            // 清除上一次 stopVRMAAnimation 的 fadeOut 定时器，防止它在新动画播放后误杀 action
+            if (this._fadeTimer) {
+                clearTimeout(this._fadeTimer);
+                this._fadeTimer = null;
+            }
+
             // 设置 autoUpdateHumanBones = false，让 vrm.update() 只更新 SpringBone 物理
             // 不覆盖动画设置的 humanoid 骨骼位置
             // 这样头发等物理效果可以在动画播放期间正常工作

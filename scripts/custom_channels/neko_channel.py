@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""CoPaw custom OpenClaw channel for N.E.K.O.
+"""CoPaw custom N.E.K.O channel for N.E.K.O.
 
 This channel starts a small local HTTP bridge that exposes:
 
@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8089
 DEFAULT_REPLY_TIMEOUT = 300.0
+LEGACY_CHANNEL_NAME = "openclaw"
 _PROGRESS_REPLY_MARKERS = (
     "好的",
     "收到",
@@ -72,6 +73,175 @@ _PROGRESS_INDICATORS = (
     "...",
     "…",
 )
+
+
+def _default_neko_channel_config(*, enabled: bool) -> Dict[str, Any]:
+    return {
+        "enabled": enabled,
+        "bot_prefix": "",
+        "filter_tool_messages": False,
+        "filter_thinking": False,
+        "host": DEFAULT_HOST,
+        "port": DEFAULT_PORT,
+        "reply_timeout": DEFAULT_REPLY_TIMEOUT,
+        "route_prefix": "",
+    }
+
+
+def _normalize_channel_config_keys(existing: Any) -> Dict[str, Any]:
+    if not isinstance(existing, dict):
+        return {}
+
+    key_aliases = {
+        "botPrefix": "bot_prefix",
+        "filterToolMessages": "filter_tool_messages",
+        "filterThinking": "filter_thinking",
+        "replyTimeout": "reply_timeout",
+        "routePrefix": "route_prefix",
+        "authToken": "auth_token",
+    }
+
+    normalized: Dict[str, Any] = {}
+    original_keys = {str(key) for key in existing.keys()}
+
+    for key, value in existing.items():
+        key_name = str(key)
+        if key_name in key_aliases:
+            continue
+        normalized[key_name] = value
+
+    for key, value in existing.items():
+        key_name = str(key)
+        target_name = key_aliases.get(key_name)
+        if not target_name:
+            continue
+        if target_name in original_keys or target_name in normalized:
+            continue
+        normalized[target_name] = value
+    return normalized
+
+
+def _merge_channel_defaults(
+    existing: Any,
+    *,
+    enabled_if_missing: bool,
+) -> Dict[str, Any]:
+    current = _normalize_channel_config_keys(existing)
+    merged = _default_neko_channel_config(enabled=enabled_if_missing)
+    merged.update(current)
+    return merged
+
+
+def _update_json_file_channel_config(
+    path: Path,
+    *,
+    enable_if_missing: bool,
+) -> bool:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("neko bootstrap failed to read %s", path)
+        return False
+
+    if not isinstance(data, dict):
+        return False
+
+    channels = data.get("channels")
+    if not isinstance(channels, dict):
+        channels = {}
+        data["channels"] = channels
+
+    existing_channel = channels.get("neko")
+    if not isinstance(existing_channel, dict):
+        existing_channel = channels.get(LEGACY_CHANNEL_NAME)
+
+    updated = _merge_channel_defaults(existing_channel, enabled_if_missing=enable_if_missing)
+
+    if _normalize_channel_config_keys(channels.get("neko")) == updated and LEGACY_CHANNEL_NAME not in channels:
+        return False
+
+    channels["neko"] = updated
+    if LEGACY_CHANNEL_NAME in channels:
+        channels.pop(LEGACY_CHANNEL_NAME, None)
+    try:
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        logger.info("neko bootstrap persisted to %s", path)
+        return True
+    except Exception:
+        logger.exception("neko bootstrap failed to write %s", path)
+        return False
+
+
+def _bootstrap_neko_channel_config() -> None:
+    """Seed the active CoPaw agent config before channel loading.
+
+    CoPaw discovers custom channel modules before it instantiates channel
+    classes, but it still requires the channel key to already exist in the
+    active agent's channels config. We therefore patch the active agent's
+    `agent.json` during module import so first-time setup works without
+    touching CoPaw core code.
+    """
+
+    try:
+        root_config_path = Path(get_config_path()).expanduser()
+    except (FileNotFoundError, OSError, TypeError, ValueError):
+        logger.debug("neko bootstrap skipped: get_config_path unavailable", exc_info=True)
+        return
+    except Exception:
+        logger.debug("neko bootstrap skipped: get_config_path unavailable", exc_info=True)
+        return
+
+    if not root_config_path.exists():
+        return
+
+    try:
+        root_data = json.loads(root_config_path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("neko bootstrap failed to read root config %s", root_config_path)
+        return
+
+    if not isinstance(root_data, dict):
+        return
+
+    agents = root_data.get("agents")
+    profiles = agents.get("profiles") if isinstance(agents, dict) else None
+    active_agent_id = (
+        str(agents.get("active_agent") or "default").strip()
+        if isinstance(agents, dict)
+        else "default"
+    )
+    active_profile = profiles.get(active_agent_id) if isinstance(profiles, dict) else None
+    workspace_dir = (
+        Path(str(active_profile.get("workspace_dir") or "")).expanduser()
+        if isinstance(active_profile, dict) and active_profile.get("workspace_dir")
+        else None
+    )
+
+    # Root config is only a fallback in multi-agent mode, so keep it disabled
+    # by default there to avoid cloning an enabled port-binding channel into
+    # newly created agents.
+    _update_json_file_channel_config(
+        root_config_path,
+        enable_if_missing=False,
+    )
+
+    if workspace_dir is None:
+        return
+
+    agent_config_path = workspace_dir / "agent.json"
+    if not agent_config_path.exists():
+        return
+
+    _update_json_file_channel_config(
+        agent_config_path,
+        enable_if_missing=True,
+    )
+
+
+_bootstrap_neko_channel_config()
 
 
 def _cfg_get(config: Any, key: str, default: Any = None) -> Any:
@@ -263,7 +433,7 @@ def _looks_like_progress_only_reply(text: str) -> bool:
     )
 
 
-class OpenClawInboundRequest(BaseModel):
+class NekoInboundRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     channel_id: str = Field(default="neko")
@@ -295,9 +465,9 @@ class OpenClawInboundRequest(BaseModel):
         return [value]
 
 
-class OpenClawChannel(BaseChannel):
-    channel: ChannelType = "openclaw"
-    display_name = "OpenClaw"
+class NekoChannel(BaseChannel):
+    channel: ChannelType = "neko"
+    display_name = "N.E.K.O"
 
     def __init__(
         self,
@@ -332,7 +502,7 @@ class OpenClawChannel(BaseChannel):
         ).strip()
         if not _is_loopback_host(self.host) and not self.auth_token:
             raise ValueError(
-                "OpenClaw auth_token is required when binding to a non-loopback host.",
+                "N.E.K.O auth token is required when binding to a non-loopback host.",
             )
         self.route_prefix = "/" + str(route_prefix or "").strip().strip("/")
         if self.route_prefix == "/":
@@ -573,15 +743,15 @@ class OpenClawChannel(BaseChannel):
         return {
             "success": False,
             "reply": "",
-            "error": "OpenClaw did not produce a final reply payload.",
+            "error": "N.E.K.O channel did not produce a final reply payload.",
             "session_id": send_meta.get("session_id") or getattr(request, "session_id", ""),
             "sender_id": send_meta.get("sender_id") or send_meta.get("original_sender_id"),
             "channel_id": send_meta.get("origin_channel_id") or self.channel,
         }
 
-    def _desired_channel_config(self) -> Dict[str, Any]:
+    def _desired_channel_config(self, *, enabled_override: Optional[bool] = None) -> Dict[str, Any]:
         return {
-            "enabled": self.enabled,
+            "enabled": self.enabled if enabled_override is None else enabled_override,
             "bot_prefix": self.bot_prefix,
             "filter_tool_messages": self._filter_tool_messages,
             "filter_thinking": self._filter_thinking,
@@ -595,18 +765,26 @@ class OpenClawChannel(BaseChannel):
         if not self.auth_token:
             return
         bearer = request.headers.get("authorization", "")
-        header_token = request.headers.get("x-openclaw-token", "")
+        header_token = request.headers.get("x-neko-token", "")
+        if not header_token:
+            header_token = request.headers.get("x-openclaw-token", "")
         provided = header_token.strip()
         if not provided and bearer.lower().startswith("bearer "):
             provided = bearer[7:].strip()
         if provided != self.auth_token:
-            raise HTTPException(status_code=401, detail="OpenClaw auth token is required")
+            raise HTTPException(status_code=401, detail="N.E.K.O auth token is required")
 
-    def _merge_channel_config_file(self, config_path: Path, *, create_if_missing: bool = False) -> None:
+    def _merge_channel_config_file(
+        self,
+        config_path: Path,
+        *,
+        create_if_missing: bool = False,
+        enabled_override: Optional[bool] = None,
+    ) -> None:
         if not config_path.exists():
             if not create_if_missing:
                 logger.warning(
-                    "openclaw auto-config skipped: config not found at %s",
+                    "neko auto-config skipped: config not found at %s",
                     config_path,
                 )
                 return
@@ -616,7 +794,7 @@ class OpenClawChannel(BaseChannel):
                 data = json.loads(config_path.read_text(encoding="utf-8"))
             except Exception:
                 logger.exception(
-                    "openclaw auto-config failed to read %s",
+                    "neko auto-config failed to read %s",
                     config_path,
                 )
                 return
@@ -628,20 +806,26 @@ class OpenClawChannel(BaseChannel):
 
         existing = channels.get(self.channel)
         if not isinstance(existing, dict):
-            existing = {}
+            existing = channels.get(LEGACY_CHANNEL_NAME)
+        normalized_existing = _normalize_channel_config_keys(existing)
 
-        desired = self._desired_channel_config()
-        updated = dict(existing)
+        desired = self._desired_channel_config(enabled_override=enabled_override)
+        updated = dict(normalized_existing)
         changed = self.channel not in channels
         for key, value in desired.items():
             if updated.get(key) != value:
                 updated[key] = value
                 changed = True
 
+        if LEGACY_CHANNEL_NAME in channels and LEGACY_CHANNEL_NAME != self.channel:
+            changed = True
+
         if not changed:
             return
 
         channels[self.channel] = updated
+        if LEGACY_CHANNEL_NAME in channels and LEGACY_CHANNEL_NAME != self.channel:
+            channels.pop(LEGACY_CHANNEL_NAME, None)
         try:
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(
@@ -649,12 +833,12 @@ class OpenClawChannel(BaseChannel):
                 encoding="utf-8",
             )
             logger.info(
-                "openclaw auto-config persisted to %s",
+                "neko auto-config persisted to %s",
                 config_path,
             )
         except Exception:
             logger.exception(
-                "openclaw auto-config failed to write %s",
+                "neko auto-config failed to write %s",
                 config_path,
             )
 
@@ -663,9 +847,10 @@ class OpenClawChannel(BaseChannel):
             self._merge_channel_config_file(
                 Path(get_config_path()).expanduser(),
                 create_if_missing=True,
+                enabled_override=False,
             )
         except Exception:
-            logger.exception("openclaw auto-config failed for root config")
+            logger.exception("neko auto-config failed for root config")
 
         if self._workspace_dir:
             self._merge_channel_config_file(
@@ -857,7 +1042,7 @@ class OpenClawChannel(BaseChannel):
         return {
             "enabled": self.enabled,
             "ready": ready,
-            "reasons": ["OpenClaw channel bridge is running"] if ready else ["OpenClaw channel is not ready"],
+            "reasons": ["N.E.K.O channel bridge is running"] if ready else ["N.E.K.O channel is not ready"],
             "provider": self.channel,
             "ok": True,
             "channel": self.channel,
@@ -865,11 +1050,11 @@ class OpenClawChannel(BaseChannel):
             "port": self.port,
         }
 
-    async def _handle_neko_send(self, body: OpenClawInboundRequest, request: Request) -> Dict[str, Any]:
+    async def _handle_neko_send(self, body: NekoInboundRequest, request: Request) -> Dict[str, Any]:
         if not self.enabled:
-            raise HTTPException(status_code=503, detail="OpenClaw channel is disabled")
+            raise HTTPException(status_code=503, detail="N.E.K.O channel is disabled")
         if self._enqueue is None:
-            raise HTTPException(status_code=503, detail="OpenClaw channel queue is not ready")
+            raise HTTPException(status_code=503, detail="N.E.K.O channel queue is not ready")
 
         loop = asyncio.get_running_loop()
         raw = body.model_dump(mode="python")
@@ -914,7 +1099,7 @@ class OpenClawChannel(BaseChannel):
             ]
 
         logger.info(
-            "openclaw recv: sender=%s session=%s parts=%s",
+            "neko recv: sender=%s session=%s parts=%s",
             sender_id[:48],
             session_id[:64],
             len(native_payload["content_parts"]),
@@ -947,7 +1132,7 @@ class OpenClawChannel(BaseChannel):
         return result
 
     def _build_http_app(self) -> FastAPI:
-        app = FastAPI(title="OpenClaw Custom Channel", docs_url=None, redoc_url=None, openapi_url=None)
+        app = FastAPI(title="N.E.K.O Custom Channel", docs_url=None, redoc_url=None, openapi_url=None)
 
         @app.get(f"{self.route_prefix}/health")
         async def health(request: Request) -> Dict[str, Any]:
@@ -955,7 +1140,7 @@ class OpenClawChannel(BaseChannel):
             return await self._handle_health()
 
         @app.post(f"{self.route_prefix}/neko/send")
-        async def neko_send(body: OpenClawInboundRequest, request: Request) -> Dict[str, Any]:
+        async def neko_send(body: NekoInboundRequest, request: Request) -> Dict[str, Any]:
             self._check_auth(request)
             return await self._handle_neko_send(body, request)
 
@@ -963,7 +1148,7 @@ class OpenClawChannel(BaseChannel):
 
     async def start(self) -> None:
         if not self.enabled:
-            logger.info("openclaw channel disabled, skipping HTTP bridge startup")
+            logger.info("neko channel disabled, skipping HTTP bridge startup")
             return
         if self._task and not self._task.done():
             return
@@ -985,20 +1170,20 @@ class OpenClawChannel(BaseChannel):
             try:
                 await self._server.serve()
             except Exception:
-                logger.exception("openclaw channel failed to start")
+                logger.exception("neko channel failed to start")
                 raise
 
-        self._task = asyncio.create_task(_run_server(), name="openclaw_custom_channel_server")
+        self._task = asyncio.create_task(_run_server(), name="neko_custom_channel_server")
         while not getattr(self._server, "started", False):
             if self._task.done():
                 exc = self._task.exception()
                 if exc is not None:
                     raise exc
-                raise RuntimeError("openclaw channel failed to start")
+                raise RuntimeError("neko channel failed to start")
             await asyncio.sleep(0.05)
         self._routes_ready.set()
         logger.info(
-            "openclaw channel started at http://%s:%s%s",
+            "neko channel started at http://%s:%s%s",
             self.host,
             self.port,
             self.route_prefix or "",
@@ -1013,7 +1198,7 @@ class OpenClawChannel(BaseChannel):
                 await self._task
             except (asyncio.CancelledError, Exception):
                 logger.debug(
-                    "openclaw channel task ended with an exception during shutdown",
+                    "neko channel task ended with an exception during shutdown",
                     exc_info=True,
                 )
         self._task = None
@@ -1059,7 +1244,7 @@ class OpenClawChannel(BaseChannel):
             return
 
         logger.warning(
-            "openclaw proactive send is not implemented yet: to_handle=%s text=%r",
+            "neko proactive send is not implemented yet: to_handle=%s text=%r",
             to_handle,
             (text or "")[:200],
         )
