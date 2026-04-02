@@ -181,8 +181,16 @@ class HttpClient:
         )
 
         try:
-            # 判断是否对写接口禁用重试（避免超时导致重复执行设备控制）
-            should_retry = path not in ("/miotspec/prop/set", "/miotspec/prop/set_batch", "/miotspec/action")
+            # 仅对明确的只读端点启用重试，防止写接口超时导致重复操作
+            _SAFE_READ_PATHS = frozenset([
+                "/home/device_list",
+                "/home/getslicedhome",
+                "/miotspec/prop/get",
+                "/miotspec/prop/batch_get",
+                "/v2/iot/device/home/getslicedhome",
+                "/v2/iot/device/home/device_list",
+            ])
+            should_retry = path in _SAFE_READ_PATHS
             # 发送POST请求
             if should_retry:
                 response = self._do_post_with_retry(url, encrypted_params, headers, **kwargs)
@@ -281,8 +289,8 @@ class HttpClient:
             )
             raise NetworkError(f"网络错误: {str(e)}") from e
 
-        except (ValueError, UnicodeDecodeError, json_module.JSONDecodeError) as e:
-            # 解密或 JSON 反序列化失败
+        except (ValueError, UnicodeDecodeError, json_module.JSONDecodeError, OSError) as e:
+            # 解密或 JSON 反序列化失败（包括 gzip 解压失败）
             response_time = time.time() - start_time
             logger.error(
                 f"响应解析失败: {path}",
@@ -452,8 +460,16 @@ class AsyncHttpClient:
         )
 
         try:
-            # 判断是否对写接口禁用重试（避免超时导致重复执行设备控制）
-            should_retry = path not in ("/miotspec/prop/set", "/miotspec/prop/set_batch", "/miotspec/action")
+            # 仅对明确的只读端点启用重试，防止写接口超时导致重复操作
+            _SAFE_READ_PATHS = frozenset([
+                "/home/device_list",
+                "/home/getslicedhome",
+                "/miotspec/prop/get",
+                "/miotspec/prop/batch_get",
+                "/v2/iot/device/home/getslicedhome",
+                "/v2/iot/device/home/device_list",
+            ])
+            should_retry = path in _SAFE_READ_PATHS
             if should_retry:
                 response = await self._do_post_with_retry(url, encrypted_params, headers, **kwargs)
             else:
@@ -541,8 +557,8 @@ class AsyncHttpClient:
             )
             raise NetworkError(f"网络错误: {str(e)}") from e
 
-        except (ValueError, UnicodeDecodeError, json_module.JSONDecodeError) as e:
-            # 解密或 JSON 反序列化失败
+        except (ValueError, UnicodeDecodeError, json_module.JSONDecodeError, OSError) as e:
+            # 解密或 JSON 反序列化失败（包括 gzip 解压失败）
             response_time = time.time() - start_time
             logger.error(
                 f"异步响应解析失败: {path}",
