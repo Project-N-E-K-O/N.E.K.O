@@ -871,6 +871,11 @@ class MMDCore {
             this.manager.controls.update();
         }
 
+        // 更新屏幕空间包围盒缓存（用于悬停检测和鼠标穿透判断）
+        if (this.manager.interaction) {
+            this.manager.interaction.updateScreenBounds();
+        }
+
         // 渲染
         if (this.manager.effect && this.manager.useOutlineEffect) {
             this.manager.effect.render(this.manager.scene, this.manager.camera);
@@ -928,6 +933,9 @@ class MMDCore {
         }
 
         this.manager.enablePhysics = hadPhysics;
+
+        // 标记 T-Pose 状态，让鼠标跟踪模块跳过眼骨旋转
+        this.manager._isTPose = true;
     }
 
     resetModelPosition() {

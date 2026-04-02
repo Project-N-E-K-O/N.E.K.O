@@ -97,6 +97,7 @@
         mergeMessagesEnabled: false,
         proactiveChatTimer: null,
         proactiveChatBackoffLevel: 0,
+        _voiceProactiveNoResponseCount: 0,
         isProactiveChatRunning: false,
         _proactiveSchedulerInitialized: false,
         proactiveChatInterval: 15,
