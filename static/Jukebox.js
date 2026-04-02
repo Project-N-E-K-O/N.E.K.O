@@ -65,6 +65,14 @@ window.Jukebox = {
     const toggleChatBtn = document.getElementById('toggle-chat-btn');
     if (toggleChatBtn) {
       toggleChatBtn.addEventListener('click', () => {
+        // 仅在聊天框即将最小化时销毁（展开时不需要）
+        const chatContainer = document.getElementById('chat-container');
+        const isCurrentlyMinimized = chatContainer &&
+          (chatContainer.classList.contains('minimized') || chatContainer.classList.contains('mobile-collapsed'));
+        if (isCurrentlyMinimized) {
+          // 当前已最小化 → 即将展开，不销毁
+          return;
+        }
         console.log('[Jukebox]', window.t('Jukebox.minimizeDetected', '检测到对话框最小化，销毁点歌台'));
         Jukebox.destroy();
       });
@@ -852,6 +860,9 @@ window.Jukebox = {
   
   stopVMD: function(skipIdleRestore) {
     if (!window.mmdManager?.animationModule) return;
+
+    // 没有在播放舞蹈 VMD 时，不要停止当前动画（可能是 idle 待机）
+    if (!Jukebox.State.isVMDPlaying) return;
 
     // 直接停止动画模块，不通过 stopAnimation()
     // 避免在 idle 加载完成前改变 cursor follow 状态
