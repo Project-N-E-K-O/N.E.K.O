@@ -46,6 +46,44 @@ def _safe_headers(headers: Mapping[str, str]) -> Dict[str, str]:
 
 logger = get_logger(__name__)
 
+# 仅对明确的只读端点启用重试，防止写接口超时导致重复操作
+_SAFE_READ_PATHS = frozenset([
+    "/home/device_list",
+    "/home/getslicedhome",
+    "/miotspec/prop/get",
+    "/miotspec/prop/batch_get",
+    "/v2/iot/device/home/getslicedhome",
+    "/v2/iot/device/home/device_list",
+])
+
+
+def _handle_business_error(result: Dict[str, Any]) -> None:
+    """处理业务错误码（同步/异步共用）
+
+    将API返回的错误码转换为对应的业务异常。
+
+    Args:
+        result: API响应数据
+
+    Raises:
+        TokenExpiredError: code=401，Token已过期
+        DeviceNotFoundError: code=404，设备不存在
+        MijiaAPIException: 其他错误码
+    """
+    code = result.get("code")
+    message = result.get("message", "未知错误")
+
+    if code == 401:
+        logger.warning("Token已过期", extra={"error_code": code, "error_message": message})
+        raise TokenExpiredError("Token已过期")
+    elif code == 404:
+        logger.warning(f"设备不存在: {message}", extra={"error_code": code})
+        raise DeviceNotFoundError(message)
+    else:
+        exc = get_exception_by_code(code, message)
+        logger.warning(f"API业务错误: {message}", extra={"error_code": code})
+        raise exc
+
 
 class HttpClient:
     """同步HTTP客户端
@@ -122,16 +160,16 @@ class HttpClient:
                     time.sleep(wait_time)
                     continue
         # 所有重试均失败
-        if last_exception is not None:
-            raise last_exception
+        assert last_exception is not None
+        raise last_exception
 
     def post(
         self, path: str, json: Dict[str, Any], credential: Credential, **kwargs: Any
     ) -> Dict[str, Any]:
         """发送POST请求
 
-        写接口（/miotspec/prop/set、/miotspec/action）禁用自动重试，
-        以避免服务端已执行成功后因超时触发重复操作。
+        仅对白名单内的只读端点启用自动重试（最多3次，指数退避），
+        写接口默认不重试，防止超时导致重复操作。
 
         Args:
             path: API路径（相对路径，如 "/home/device_list"）
@@ -181,15 +219,6 @@ class HttpClient:
         )
 
         try:
-            # 仅对明确的只读端点启用重试，防止写接口超时导致重复操作
-            _SAFE_READ_PATHS = frozenset([
-                "/home/device_list",
-                "/home/getslicedhome",
-                "/miotspec/prop/get",
-                "/miotspec/prop/batch_get",
-                "/v2/iot/device/home/getslicedhome",
-                "/v2/iot/device/home/device_list",
-            ])
             should_retry = path in _SAFE_READ_PATHS
             # 发送POST请求
             if should_retry:
@@ -231,7 +260,7 @@ class HttpClient:
 
             # 检查业务错误码
             if result.get("code") != 0:
-                self._handle_error(result)
+                _handle_business_error(result)
 
             return result
 
@@ -273,7 +302,7 @@ class HttpClient:
                     "response_time": f"{response_time:.3f}s",
                 },
             )
-            raise MijiaConnectionError(f"连接失败: {str(e)}") from e
+            raise MijiaConnectionError(f"连接失败: {e}") from e
 
         except httpx.HTTPError as e:
             # 其他HTTP错误
@@ -287,7 +316,7 @@ class HttpClient:
                 },
                 exc_info=e,
             )
-            raise NetworkError(f"网络错误: {str(e)}") from e
+            raise NetworkError(f"网络错误: {e}") from e
 
         except (ValueError, UnicodeDecodeError, json_module.JSONDecodeError, OSError) as e:
             # 解密或 JSON 反序列化失败（包括 gzip 解压失败）
@@ -301,35 +330,7 @@ class HttpClient:
                 },
                 exc_info=e,
             )
-            raise MijiaAPIException(f"响应解析失败: {str(e)}") from e
-
-    def _handle_error(self, result: Dict[str, Any]) -> None:
-        """处理业务错误码
-
-        将API返回的错误码转换为对应的业务异常。
-
-        Args:
-            result: API响应数据
-
-        Raises:
-            TokenExpiredError: code=401，Token已过期
-            DeviceNotFoundError: code=404，设备不存在
-            MijiaAPIException: 其他错误码
-        """
-        code = result.get("code")
-        message = result.get("message", "未知错误")
-
-        # 特殊日志处理（复用集中的错误码映射）
-        if code == 401:
-            logger.warning("Token已过期", extra={"error_code": code, "error_message": message})
-            raise TokenExpiredError("Token已过期")
-        elif code == 404:
-            logger.warning(f"设备不存在: {message}", extra={"error_code": code})
-            raise DeviceNotFoundError(message)
-        else:
-            exc = get_exception_by_code(code, message)
-            logger.warning(f"API业务错误: {message}", extra={"error_code": code})
-            raise exc
+            raise MijiaAPIException(f"响应解析失败: {e}") from e
 
     def close(self) -> None:
         """关闭HTTP客户端
@@ -404,13 +405,16 @@ class AsyncHttpClient:
                     wait_time = min(2 ** attempt, 10)
                     await asyncio.sleep(wait_time)
                     continue
-        if last_exception is not None:
-            raise last_exception
+        assert last_exception is not None
+        raise last_exception
 
     async def post(
         self, path: str, json: Dict[str, Any], credential: Credential, **kwargs: Any
     ) -> Dict[str, Any]:
         """发送异步POST请求
+
+        仅对白名单内的只读端点启用自动重试（最多3次，指数退避），
+        写接口默认不重试，防止超时导致重复操作。
 
         Args:
             path: API路径（相对路径，如 "/home/device_list"）
@@ -460,15 +464,6 @@ class AsyncHttpClient:
         )
 
         try:
-            # 仅对明确的只读端点启用重试，防止写接口超时导致重复操作
-            _SAFE_READ_PATHS = frozenset([
-                "/home/device_list",
-                "/home/getslicedhome",
-                "/miotspec/prop/get",
-                "/miotspec/prop/batch_get",
-                "/v2/iot/device/home/getslicedhome",
-                "/v2/iot/device/home/device_list",
-            ])
             should_retry = path in _SAFE_READ_PATHS
             if should_retry:
                 response = await self._do_post_with_retry(url, encrypted_params, headers, **kwargs)
@@ -499,7 +494,7 @@ class AsyncHttpClient:
 
             # 检查业务错误码
             if result.get("code") != 0:
-                self._handle_error(result)
+                _handle_business_error(result)
 
             return result
 
@@ -541,7 +536,7 @@ class AsyncHttpClient:
                     "response_time": f"{response_time:.3f}s",
                 },
             )
-            raise MijiaConnectionError(f"连接失败: {str(e)}") from e
+            raise MijiaConnectionError(f"连接失败: {e}") from e
 
         except httpx.HTTPError as e:
             # 其他HTTP错误
@@ -555,7 +550,7 @@ class AsyncHttpClient:
                 },
                 exc_info=e,
             )
-            raise NetworkError(f"网络错误: {str(e)}") from e
+            raise NetworkError(f"网络错误: {e}") from e
 
         except (ValueError, UnicodeDecodeError, json_module.JSONDecodeError, OSError) as e:
             # 解密或 JSON 反序列化失败（包括 gzip 解压失败）
@@ -569,35 +564,7 @@ class AsyncHttpClient:
                 },
                 exc_info=e,
             )
-            raise MijiaAPIException(f"响应解析失败: {str(e)}") from e
-
-    def _handle_error(self, result: Dict[str, Any]) -> None:
-        """处理业务错误码
-
-        将API返回的错误码转换为对应的业务异常。
-
-        Args:
-            result: API响应数据
-
-        Raises:
-            TokenExpiredError: code=401，Token已过期
-            DeviceNotFoundError: code=404，设备不存在
-            MijiaAPIException: 其他错误码
-        """
-        code = result.get("code")
-        message = result.get("message", "未知错误")
-
-        # 特殊日志处理（复用集中的错误码映射）
-        if code == 401:
-            logger.warning("Token已过期", extra={"error_code": code, "error_message": message})
-            raise TokenExpiredError("Token已过期")
-        elif code == 404:
-            logger.warning(f"设备不存在: {message}", extra={"error_code": code})
-            raise DeviceNotFoundError(message)
-        else:
-            exc = get_exception_by_code(code, message)
-            logger.warning(f"API业务错误: {message}", extra={"error_code": code})
-            raise exc
+            raise MijiaAPIException(f"响应解析失败: {e}") from e
 
     async def close(self) -> None:
         """关闭异步HTTP客户端
