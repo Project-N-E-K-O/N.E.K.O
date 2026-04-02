@@ -14,19 +14,13 @@ import glob
 from pathlib import Path
 
 from fastapi import APIRouter, Request
+from utils.character_name import validate_character_name
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
 from fastapi.responses import JSONResponse
 
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
-
-# Regex pattern for valid catgirl names:
-# - Allows letters (a-zA-Z), digits (0-9), underscores, hyphens
-# - Allows CJK characters (Chinese, Japanese, Korean)
-# - Must be 1-100 characters long
-VALID_NAME_PATTERN = re.compile(r'^[\w\-\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{1,100}$')
-VALID_NAME_PATTERN_RELAXED = re.compile(r'^[\w\-.\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{1,100}$')
 
 # Pattern for valid recent file names: must start with "recent_", have content, and end with .json
 # Uses blacklist approach instead of whitelist to support CJK characters
@@ -45,22 +39,17 @@ def validate_catgirl_name(name: str, allow_dots: bool = False) -> tuple[bool, st
     Returns:
         tuple: (is_valid, error_message)
     """
-    if not name:
+    result = validate_character_name(name, allow_dots=allow_dots, max_length=100)
+    if result.code == "empty":
         return False, "名称不能为空"
-    
-    if not isinstance(name, str):
-        return False, "名称必须是字符串"
-    
-    pattern = VALID_NAME_PATTERN_RELAXED if allow_dots else VALID_NAME_PATTERN
-    if not pattern.match(name):
-        return False, "名称只能包含字母、数字、下划线、连字符和中日韩文字符"
-    
-    if os.path.sep in name or '/' in name or '\\' in name or '..' in name:
+    if result.code in {"contains_path_separator", "path_traversal"}:
         return False, "名称不能包含路径分隔符或目录遍历字符"
-    
-    if not allow_dots and '.' in name:
+    if result.code == "contains_dot":
         return False, "名称不能包含点号(.)"
-    
+    if result.code == "invalid_character":
+        return False, "名称只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号"
+    if result.code == "too_long_length":
+        return False, "名称长度不能超过100个字符"
     return True, ""
 
 
@@ -438,5 +427,3 @@ async def update_review_config(request: Request):
     except Exception as e:
         logger.error(f"更新记忆整理配置失败: {e}")
         return {"success": False, "error": str(e)}
-
-

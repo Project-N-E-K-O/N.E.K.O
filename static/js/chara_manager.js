@@ -448,6 +448,66 @@ function tOrFallback(key, fallback, params) {
 
 const PROFILE_NAME_CONTAINS_SLASH_KEY = 'character.profileNameContainsSlash';
 const PROFILE_NAME_CONTAINS_DOT_KEY = 'character.profileNameContainsDot';
+const PROFILE_NAME_INVALID_CHARS_KEY = 'character.profileNameInvalidChars';
+const PROFILE_NAME_WINDOWS_FORBIDDEN_CHARS = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*']);
+const PROFILE_NAME_SAFE_EXTRA_CHARS = new Set([' ', '_', '-', '(', ')', '（', '）', '·', '・', '•', "'", '’']);
+
+function getProfileNameCharIssue(ch) {
+    if (!ch) return '';
+    if (ch === '/' || ch === '\\') return 'slash';
+    if (ch === '.') return 'dot';
+    if (PROFILE_NAME_WINDOWS_FORBIDDEN_CHARS.has(ch)) return 'invalid';
+    if (/[\p{L}\p{N}]/u.test(ch)) return '';
+    if (PROFILE_NAME_SAFE_EXTRA_CHARS.has(ch)) return '';
+    if (/\p{Zs}/u.test(ch)) return '';
+    return 'invalid';
+}
+
+function findInvalidProfileNameIssue(value) {
+    for (const ch of String(value ?? '')) {
+        const issue = getProfileNameCharIssue(ch);
+        if (issue) return issue;
+    }
+    return '';
+}
+
+function sanitizeProfileNameValue(value, caretPos = null) {
+    const raw = String(value ?? '');
+    let sanitized = '';
+    let removedBeforeCaret = 0;
+    let cursor = 0;
+    let removedSlash = false;
+    let removedDot = false;
+    let removedOther = false;
+    const caret = (typeof caretPos === 'number') ? caretPos : null;
+
+    for (const ch of raw) {
+        const issue = getProfileNameCharIssue(ch);
+        if (!issue) {
+            sanitized += ch;
+        } else {
+            if (issue === 'slash') {
+                removedSlash = true;
+            } else if (issue === 'dot') {
+                removedDot = true;
+            } else {
+                removedOther = true;
+            }
+            if (caret !== null && cursor < caret) {
+                removedBeforeCaret += ch.length;
+            }
+        }
+        cursor += ch.length;
+    }
+
+    return {
+        value: sanitized,
+        removedBeforeCaret,
+        removedSlash,
+        removedDot,
+        removedOther
+    };
+}
 
 function translateBackendError(errorMessage) {
     if (!errorMessage || typeof errorMessage !== 'string') return errorMessage;
@@ -456,6 +516,9 @@ function translateBackendError(errorMessage) {
     }
     if (errorMessage.includes('点号') || errorMessage.includes('不能包含"."')) {
         return tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, errorMessage);
+    }
+    if (errorMessage.includes('只能包含文字、数字')) {
+        return tOrFallback(PROFILE_NAME_INVALID_CHARS_KEY, errorMessage);
     }
     if (errorMessage.includes('档案名为必填项')) {
         return tOrFallback('character.profileNameRequired', errorMessage);
@@ -514,6 +577,17 @@ function flashProfileNameContainsDot(inputEl) {
     if (!inputEl) return;
 
     const msg = tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, '档案名不能包含点号(.)');
+
+    flashProfileNameError(inputEl, msg);
+}
+
+function flashProfileNameContainsInvalidChars(inputEl) {
+    if (!inputEl) return;
+
+    const msg = tOrFallback(
+        PROFILE_NAME_INVALID_CHARS_KEY,
+        '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号'
+    );
 
     flashProfileNameError(inputEl, msg);
 }
@@ -583,37 +657,27 @@ function attachProfileNameLimiter(inputEl) {
         if (composing) return;
         if (inputEl.readOnly || inputEl.disabled) return;
         let before = inputEl.value;
-        
-        // 检查是否包含路径分隔符，移除并显示警告
-        if (before.includes('/') || before.includes('\\')) {
-            const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
-            inputEl.value = before.replace(/[/\\]/g, '');
+
+        const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
+        const sanitizedResult = sanitizeProfileNameValue(before, caret);
+        if (before !== sanitizedResult.value) {
+            inputEl.value = sanitizedResult.value;
             if (caret !== null) {
-                // 计算光标之前被移除的路径分隔符数量
-                const beforeCaret = before.substring(0, caret);
-                const removedCount = (beforeCaret.match(/[/\\]/g) || []).length;
-                const newPos = Math.max(0, caret - removedCount);
+                const newPos = Math.max(0, caret - sanitizedResult.removedBeforeCaret);
                 try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
             }
-            flashProfileNameContainsSlash(inputEl);
-            before = inputEl.value;
-        }
-        
-        // 检查是否包含点号，移除并显示警告
-        if (before.includes('.')) {
-            const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
-            inputEl.value = before.replace(/\./g, '');
-            if (caret !== null) {
-                // 计算光标之前被移除的点号数量
-                const beforeCaret = before.substring(0, caret);
-                const removedCount = (beforeCaret.match(/\./g) || []).length;
-                const newPos = Math.max(0, caret - removedCount);
-                try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
+            if (sanitizedResult.removedSlash) {
+                flashProfileNameContainsSlash(inputEl);
             }
-            flashProfileNameContainsDot(inputEl);
+            if (sanitizedResult.removedDot) {
+                flashProfileNameContainsDot(inputEl);
+            }
+            if (sanitizedResult.removedOther) {
+                flashProfileNameContainsInvalidChars(inputEl);
+            }
             before = inputEl.value;
         }
-        
+
         const beforeUnits = profileNameCountUnits(before);
         const after = profileNameTrimToMaxUnits(before, PROFILE_NAME_MAX_UNITS);
         if (before !== after) {
@@ -2531,6 +2595,7 @@ window.renameMaster = async function (oldName) {
     let _renameMasterDidOverLimit = false;
     let _renameMasterContainsSlash = false;
     let _renameMasterContainsDot = false;
+    let _renameMasterContainsInvalidChars = false;
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的主人档案名',
         oldName,
@@ -2542,10 +2607,12 @@ window.renameMaster = async function (oldName) {
             },
             normalize: (v) => {
                 const trimmed = String(v ?? '').trim();
+                const sanitized = sanitizeProfileNameValue(trimmed);
                 _renameMasterDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
-                _renameMasterContainsSlash = trimmed.includes('/') || trimmed.includes('\\');
-                _renameMasterContainsDot = trimmed.includes('.');
-                return profileNameTrimToMaxUnits(trimmed.replace(/[/\\.]/g, ''), PROFILE_NAME_MAX_UNITS);
+                _renameMasterContainsSlash = sanitized.removedSlash;
+                _renameMasterContainsDot = sanitized.removedDot;
+                _renameMasterContainsInvalidChars = sanitized.removedOther;
+                return profileNameTrimToMaxUnits(sanitized.value, PROFILE_NAME_MAX_UNITS);
             },
             validator: (v) => {
                 const trimmed = String(v ?? '').trim();
@@ -2553,8 +2620,15 @@ window.renameMaster = async function (oldName) {
                 if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
                 }
-                if (trimmed.includes('.')) {
+                const invalidIssue = findInvalidProfileNameIssue(trimmed);
+                if (invalidIssue === 'slash') {
+                    return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符(/或\\)');
+                }
+                if (invalidIssue === 'dot') {
                     return tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, '档案名不能包含点号(.)');
+                }
+                if (invalidIssue === 'invalid') {
+                    return tOrFallback(PROFILE_NAME_INVALID_CHARS_KEY, '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号');
                 }
                 return '';
             },
@@ -2570,6 +2644,10 @@ window.renameMaster = async function (oldName) {
                 if (_renameMasterContainsDot) {
                     _renameMasterContainsDot = false;
                     flashProfileNameContainsDot(inputEl);
+                }
+                if (_renameMasterContainsInvalidChars) {
+                    _renameMasterContainsInvalidChars = false;
+                    flashProfileNameContainsInvalidChars(inputEl);
                 }
             }
         }
@@ -2614,6 +2692,7 @@ window.renameCatgirl = async function (oldName) {
     let _renameCatgirlDidOverLimit = false;
     let _renameCatgirlContainsSlash = false;
     let _renameCatgirlContainsDot = false;
+    let _renameCatgirlContainsInvalidChars = false;
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的猫娘档案名',
         oldName,
@@ -2625,10 +2704,12 @@ window.renameCatgirl = async function (oldName) {
             },
             normalize: (v) => {
                 const trimmed = String(v ?? '').trim();
+                const sanitized = sanitizeProfileNameValue(trimmed);
                 _renameCatgirlDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
-                _renameCatgirlContainsSlash = trimmed.includes('/') || trimmed.includes('\\');
-                _renameCatgirlContainsDot = trimmed.includes('.');
-                return profileNameTrimToMaxUnits(trimmed.replace(/[/\\.]/g, ''), PROFILE_NAME_MAX_UNITS);
+                _renameCatgirlContainsSlash = sanitized.removedSlash;
+                _renameCatgirlContainsDot = sanitized.removedDot;
+                _renameCatgirlContainsInvalidChars = sanitized.removedOther;
+                return profileNameTrimToMaxUnits(sanitized.value, PROFILE_NAME_MAX_UNITS);
             },
             validator: (v) => {
                 const trimmed = String(v ?? '').trim();
@@ -2636,8 +2717,15 @@ window.renameCatgirl = async function (oldName) {
                 if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
                 }
-                if (trimmed.includes('.')) {
+                const invalidIssue = findInvalidProfileNameIssue(trimmed);
+                if (invalidIssue === 'slash') {
+                    return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符(/或\\)');
+                }
+                if (invalidIssue === 'dot') {
                     return tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, '档案名不能包含点号(.)');
+                }
+                if (invalidIssue === 'invalid') {
+                    return tOrFallback(PROFILE_NAME_INVALID_CHARS_KEY, '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号');
                 }
                 return '';
             },
@@ -2653,6 +2741,10 @@ window.renameCatgirl = async function (oldName) {
                 if (_renameCatgirlContainsDot) {
                     _renameCatgirlContainsDot = false;
                     flashProfileNameContainsDot(inputEl);
+                }
+                if (_renameCatgirlContainsInvalidChars) {
+                    _renameCatgirlContainsInvalidChars = false;
+                    flashProfileNameContainsInvalidChars(inputEl);
                 }
             }
         }
