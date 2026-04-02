@@ -5,7 +5,7 @@ import re
 import unicodedata
 
 
-PROFILE_NAME_MAX_UNITS = 20
+PROFILE_NAME_MAX_UNITS = 60
 
 # 与 Windows 文件名规则保持兼容，避免角色名写入 memory_dir/{name}/ 时踩坑。
 WINDOWS_FORBIDDEN_NAME_CHARS = frozenset('<>:"/\\|?*')
