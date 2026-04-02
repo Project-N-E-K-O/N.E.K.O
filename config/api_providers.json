@@ -294,6 +294,7 @@
       "restricted": true
     }
   },
+  "_comment_free_voices": "Shape: {voiceKey: voice_id}. Keys are i18n identifiers (e.g., playfulGirl, cuteGirl) that the frontend must localize for display. Do not treat keys as display names.",
   "free_voices": {
     "playfulGirl": "voice-tone-PGLiTXeJCS",
     "cuteGirl": "voice-tone-PGLiyZt65w",

@@ -1176,7 +1176,7 @@
         "deleteSuccess": "음성 \"{{name}}\"이(가) 성공적으로 삭제되었습니다.",
         "deleteFailed": "삭제 실패",
         "deleteError": "삭제 실패: {{error}}",
-        "freePresetLabel": "묣� 사전 설정",
+        "freePresetLabel": "무료 사전 설정",
         "freePresetBadge": "사전 설정",
         "freeVoice": {
             "playfulGirl": "장난기 많은 소녀",
