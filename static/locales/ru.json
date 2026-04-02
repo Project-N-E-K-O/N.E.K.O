@@ -1178,13 +1178,25 @@
         "deleteError": "Ошибка удаления: {{error}}",
         "freePresetLabel": "Бесплатные предустановленные голоса",
         "freePresetBadge": "Предустановленный",
+        "freeVoice": {
+            "playfulGirl": "Игривая девушка",
+            "cuteGirl": "Милая девочка",
+            "cuteMaiden": "Милая девушка",
+            "heroine": "Героиня",
+            "livelyGirl": "Живая девочка",
+            "coolLady": "Холодная леди",
+            "gentleMaiden": "Нежная девушка",
+            "sweetLady": "Сладкая леди",
+            "frailMaiden": "Хрупкая девушка",
+            "childishMaiden": "Детская девушка"
+        },
         "cloneMethod": "Способ клонирования",
         "cloneMethodFile": "Локальный файл",
         "cloneMethodDirectLink": "Прямая ссылка",
         "directLinkUrl": "URL прямой ссылки на аудио (оптимально 8 сек, макс. 20 сек, формат wav/mp3)",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "Введите прямую ссылку на общедоступный аудиофайл. Система пропустит шаг загрузки и напрямую использует эту ссылку для регистрации голоса.",
-        "pleaseEnterDirectLink": "Пожалуйста, введите URL прямой ссылки на аудио и префикс",
+        "pleaseEnterDirectLink": "Пожалуйста, введите URL прямой ссылки на аудио",
         "invalidDirectLink": "Пожалуйста, введите действительную HTTP/HTTPS ссылку",
         "silenceModal": {
             "title": "Результаты обнаружения тишины",
@@ -1263,7 +1275,7 @@
         "apiKeySettings": "API Key",
         "masterProfile": "Профиль хозяина (Уникальный): Имя профиля обязательно, остальное необязательно.",
         "profileName": "Имя профиля",
-        "profileNameMaxHint": "Макс. 20 символов",
+        "profileNameMaxHint": "Макс. 60 символов",
         "profileNameTooLong": "Имя профиля слишком длинное",
         "profileNameContainsSlash": "Имя профиля не может содержать разделители пути (/ или \\)",
         "profileNameContainsDot": "Имя профиля не может содержать точки (.)",
@@ -2018,7 +2030,7 @@
             },
             "step2": {
                 "title": "📝 Set Profile Name",
-                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 20 characters."
+                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 60 characters."
             },
             "step3": {
                 "title": "👥 Gender Setting",
