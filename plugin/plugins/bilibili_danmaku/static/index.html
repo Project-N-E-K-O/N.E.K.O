@@ -394,7 +394,9 @@
 
         <div class="cookie-field-row">
           <label>DedeUserID <span style="color:#ff3b30">*</span></label>
-          <input type="text" id="f_dedeuserid" placeholder="你的 B站 UID，如 12345678" autocomplete="off">
+          <div class="field-input-wrap">
+            <input type="text" id="f_dedeuserid" placeholder="你的 B站 UID，如 12345678" autocomplete="off">
+          </div>
         </div>
 
         <div class="cookie-field-row">
@@ -663,8 +665,8 @@
     const roomInput = document.getElementById('roomIdInput');
     if (!roomInput.value && roomId > 0) roomInput.value = roomId;
 
-    // 同步间隔滑块
-    if (data.interval) {
+    // 同步间隔滑块（仅当滑块未被操作时才同步，避免覆盖用户正在调整的值）
+    if (data.interval && !_sliderDragging) {
       document.getElementById('intervalSlider').value = data.interval;
       document.getElementById('intervalDisplay').textContent = data.interval + 's';
     }
@@ -870,7 +872,13 @@
   document.getElementById('refreshBtn').addEventListener('click', () => refreshStatus());
 
   // ── 间隔设置 ────────────────────────────────────────────
-  document.getElementById('intervalSlider').addEventListener('input', e => {
+  let _sliderDragging = false;
+  const intervalSlider = document.getElementById('intervalSlider');
+  intervalSlider.addEventListener('mousedown', () => { _sliderDragging = true; });
+  intervalSlider.addEventListener('touchstart', () => { _sliderDragging = true; });
+  intervalSlider.addEventListener('mouseup', () => { _sliderDragging = false; });
+  intervalSlider.addEventListener('touchend', () => { _sliderDragging = false; });
+  intervalSlider.addEventListener('input', e => {
     document.getElementById('intervalDisplay').textContent = e.target.value + 's';
   });
 

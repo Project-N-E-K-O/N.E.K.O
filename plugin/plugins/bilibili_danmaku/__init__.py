@@ -331,39 +331,31 @@ class BiliDanmakuPlugin(NekoPluginBase):
         await self._do_push_to_ai(content, summary, priority)
 
     async def _do_push_to_ai(self, content: str, summary: str, priority: int):
-        """实际执行推送，优先 inject_text，失败回落 push_message"""
-        try:
-            import httpx
-            from config import MAIN_SERVER_PORT
-            url = f"http://127.0.0.1:{MAIN_SERVER_PORT}/api/internal/inject_text"
-            payload = {"text": content}
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.post(url, json=payload)
-            if resp.status_code == 200 and resp.json().get("success"):
-                self.logger.info(f"📤 inject_text 成功: {summary[:50]}")
-                return
-            else:
-                self.logger.warning(f"inject_text 返回异常: {resp.status_code} {resp.text[:100]}，回落 push_message")
-        except Exception as e:
-            self.logger.warning(f"inject_text 失败: {e}，回落 push_message")
-
-        # 回落：push_message
+        """
+        将弹幕内容通过 push_message 推送给 AI，触发语音回复。
+        参考 memo_reminder 插件的通道方式，直接用 push_message 即可。
+        """
+        # 包装成猫娘视角的弹幕提示，让她知道是直播间消息
+        danmaku_notice = (
+            f"【B站直播间弹幕】{content}\n"
+            "（这是你在直播时收到的实时弹幕，可以自然地回应一下~）"
+        )
         try:
             self.push_message(
                 source="bilibili_danmaku",
                 message_type="proactive_notification",
-                description=f"📺 弹幕: {summary[:60]}",
+                description=f"📺 {summary[:60]}",
                 priority=priority,
-                content=content,
+                content=danmaku_notice,
                 metadata={
                     "room_id": self._room_id,
                     "plugin_id": "bilibili-danmaku",
-                    "target_lanlan": "小天",  # 指定目标 AI，避免 proactive_bridge 丢失路由
                 },
+                target_lanlan="小天",  # 指定目标 AI
             )
-            self.logger.info(f"📤 push_message 回落成功: {summary[:50]}")
+            self.logger.info(f"📤 push_message 成功: {summary[:50]}")
         except Exception as e:
-            self.logger.warning(f"push_message 也失败了: {e}")
+            self.logger.warning(f"push_message 失败: {e}")
 
     def _init_filter(self):
         """初始化过滤器"""
