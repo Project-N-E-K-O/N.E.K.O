@@ -741,7 +741,7 @@ async function loadVoices() {
             divider.textContent = '── ' + freeLabel + ' ──';
             container.appendChild(divider);
 
-            Object.entries(data.free_voices).forEach(([displayName, voiceId]) => {
+            Object.entries(data.free_voices).forEach(([voiceKey, voiceId]) => {
                 const item = document.createElement('div');
                 item.className = 'voice-list-item';
                 item.style.opacity = '0.85';
@@ -751,6 +751,8 @@ async function loadVoices() {
 
                 const nameDiv = document.createElement('div');
                 nameDiv.className = 'voice-name';
+                // 使用 i18n 翻译键获取显示名称
+                const displayName = window.t ? window.t(`voice.freeVoice.${voiceKey}`) : voiceKey;
                 nameDiv.textContent = displayName;
                 // 添加预设标签
                 const badge = document.createElement('span');
