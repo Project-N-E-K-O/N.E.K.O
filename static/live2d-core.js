@@ -544,6 +544,56 @@ class Live2DManager {
         return this.pixi_app;
     }
 
+    /**
+     * 获取 Live2D 模型在屏幕上的边界
+     * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
+     */
+    getModelScreenBounds() {
+        const model = this.currentModel;
+        if (!model || typeof model.getBounds !== 'function') {
+            return null;
+        }
+
+        let bounds = null;
+        try {
+            bounds = model.getBounds();
+        } catch (error) {
+            console.warn('[Live2D] 获取模型屏幕边界失败:', error);
+            return null;
+        }
+
+        if (!bounds) {
+            return null;
+        }
+
+        const left = Number(bounds.left);
+        const right = Number(bounds.right);
+        const top = Number(bounds.top);
+        const bottom = Number(bounds.bottom);
+
+        if (!Number.isFinite(left) || !Number.isFinite(right) ||
+            !Number.isFinite(top) || !Number.isFinite(bottom)) {
+            return null;
+        }
+
+        const width = right - left;
+        const height = bottom - top;
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            return null;
+        }
+
+        return {
+            left: left,
+            right: right,
+            top: top,
+            bottom: bottom,
+            width: width,
+            height: height,
+            centerX: left + width / 2,
+            centerY: top + height / 2
+        };
+    }
+
     // 复位模型位置和缩放到初始状态
     async resetModelPosition() {
         if (!this.currentModel || !this.pixi_app) {

@@ -275,6 +275,7 @@ _ALLOWED_CONVERSATION_SETTINGS = {
     'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
     'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
     'proactiveMusicEnabled', 'proactiveMemeEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
+    'avatarReactionBubbleEnabled',
     'proactiveChatInterval', 'proactiveVisionInterval', 'subtitleEnabled', 'userLanguage'
 }
 
@@ -347,7 +348,8 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
         _BOOL_FIELDS = {
             'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
             'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-            'proactiveMusicEnabled', 'mergeMessagesEnabled', 'focusModeEnabled', 'subtitleEnabled'
+            'proactiveMusicEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
+            'avatarReactionBubbleEnabled', 'subtitleEnabled'
         }
         _INT_INTERVAL_FIELDS = {'proactiveChatInterval', 'proactiveVisionInterval'}
         _STRING_FIELDS = {'userLanguage'}

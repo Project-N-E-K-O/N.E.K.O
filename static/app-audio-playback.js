@@ -16,6 +16,57 @@
     const S = window.appState;
     const C = window.appConst;
 
+    function normalizeAssistantTurnId(turnId) {
+        if (turnId === undefined || turnId === null || turnId === '') {
+            return null;
+        }
+        return String(turnId);
+    }
+
+    function emitAssistantSpeechLifecycleEvent(eventName, detail) {
+        window.dispatchEvent(new CustomEvent(eventName, {
+            detail: Object.assign({
+                timestamp: Date.now()
+            }, detail || {})
+        }));
+    }
+
+    function dispatchAssistantSpeechStart(turnId) {
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!normalizedTurnId || S.assistantSpeechActiveTurnId === normalizedTurnId) {
+            return;
+        }
+        S.assistantSpeechActiveTurnId = normalizedTurnId;
+        emitAssistantSpeechLifecycleEvent('neko-assistant-speech-start', {
+            turnId: normalizedTurnId,
+            source: 'audio_playback'
+        });
+    }
+
+    function dispatchAssistantSpeechEnd(turnId) {
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!normalizedTurnId || S.assistantSpeechActiveTurnId !== normalizedTurnId) {
+            return;
+        }
+        S.assistantSpeechActiveTurnId = null;
+        emitAssistantSpeechLifecycleEvent('neko-assistant-speech-end', {
+            turnId: normalizedTurnId,
+            source: 'audio_playback'
+        });
+    }
+
+    function dispatchAssistantSpeechCancel(source) {
+        var normalizedTurnId = normalizeAssistantTurnId(S.assistantSpeechActiveTurnId);
+        if (!normalizedTurnId) {
+            return;
+        }
+        S.assistantSpeechActiveTurnId = null;
+        emitAssistantSpeechLifecycleEvent('neko-assistant-speech-cancel', {
+            turnId: normalizedTurnId,
+            source: source || 'audio_playback'
+        });
+    }
+
     // ======================== Lip-sync smoothing (module-local) ========================
     let _lastMouthOpen = 0;
     let _lipSyncSkipCounter = 0;
@@ -28,6 +79,7 @@
      * and reset the OGG Opus decoder.
      */
     async function clearAudioQueue() {
+        dispatchAssistantSpeechCancel('clear_audio_queue');
         S.scheduledSources.forEach(function (source) {
             try { source.stop(); } catch (_) { /* noop */ }
         });
@@ -46,6 +98,7 @@
      * is preserved until the next speech_id arrives.
      */
     function clearAudioQueueWithoutDecoderReset() {
+        dispatchAssistantSpeechCancel('clear_audio_queue_without_decoder_reset');
         S.scheduledSources.forEach(function (source) {
             try { source.stop(); } catch (_) { /* noop */ }
         });
@@ -176,10 +229,15 @@
 
                     var source = S.audioPlayerContext.createBufferSource();
                     source.buffer = nextBuffer;
+                    source._nekoAssistantTurnId = normalizeAssistantTurnId(S.assistantTurnId);
                     if (hasAnalyser) {
                         source.connect(S.globalAnalyser);
                     } else {
                         source.connect(S.audioPlayerContext.destination);
+                    }
+
+                    if (source._nekoAssistantTurnId) {
+                        dispatchAssistantSpeechStart(source._nekoAssistantTurnId);
                     }
 
                     if (hasAnalyser && !S.lipSyncActive) {
@@ -242,6 +300,7 @@
                                 }
                                 S.lipSyncActive = false;
                                 S.isPlaying = false;
+                                dispatchAssistantSpeechEnd(src._nekoAssistantTurnId);
                             }
                         };
                     })(source);

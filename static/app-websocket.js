@@ -30,6 +30,45 @@
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
 
+    function normalizeAssistantTurnId(turnId) {
+        if (turnId === undefined || turnId === null || turnId === '') {
+            return null;
+        }
+        return String(turnId);
+    }
+
+    function allocateAssistantTurnId(serverTurnId) {
+        var normalized = normalizeAssistantTurnId(serverTurnId);
+        if (normalized) {
+            return normalized;
+        }
+        S.assistantTurnSeq = (S.assistantTurnSeq || 0) + 1;
+        return 'local-' + S.assistantTurnSeq;
+    }
+
+    function emitAssistantLifecycleEvent(eventName, detail) {
+        window.dispatchEvent(new CustomEvent(eventName, {
+            detail: Object.assign({
+                timestamp: Date.now()
+            }, detail || {})
+        }));
+    }
+
+    function emitAssistantSpeechCancel(source) {
+        var currentTurnId = normalizeAssistantTurnId(S.assistantTurnId || S.assistantSpeechActiveTurnId);
+        S.assistantSpeechActiveTurnId = null;
+        if (currentTurnId) {
+            emitAssistantLifecycleEvent('neko-assistant-speech-cancel', {
+                turnId: currentTurnId,
+                source: source
+            });
+        } else {
+            emitAssistantLifecycleEvent('neko-assistant-speech-cancel', {
+                source: source
+            });
+        }
+    }
+
     // ========================  Convenience helpers  ========================
 
     /** Check whether the WebSocket is open */
@@ -236,6 +275,11 @@
                     if (isNewMessage) {
                         S.lastVoiceUserMessage = null;
                         S.lastVoiceUserMessageTime = 0;
+                        S.assistantTurnId = allocateAssistantTurnId(response.turn_id);
+                        emitAssistantLifecycleEvent('neko-assistant-turn-start', {
+                            turnId: S.assistantTurnId,
+                            source: 'gemini_response'
+                        });
                     }
                     if (typeof window.appendMessage === 'function') {
                         window.appendMessage(response.text, 'gemini', isNewMessage);
@@ -251,6 +295,8 @@
                 // -------- response_discarded --------
                 } else if (response.type === 'response_discarded') {
                     window.invalidatePendingMusicSearch();
+                    emitAssistantSpeechCancel('response_discarded');
+                    S.assistantTurnId = null;
                     var attempt = response.attempt || 0;
                     var maxAttempts = response.max_attempts || 0;
                     console.log('[Discard] AI回复被丢弃 reason=' + response.reason + ' attempt=' + attempt + '/' + maxAttempts + ' retry=' + response.will_retry);
@@ -361,6 +407,8 @@
 
                 // -------- user_activity --------
                 } else if (response.type === 'user_activity') {
+                    emitAssistantSpeechCancel('user_activity');
+                    S.assistantTurnId = null;
                     S.interruptedSpeechId = response.interrupted_speech_id || null;
                     S.pendingDecoderReset = true;
                     S.skipNextAudioBlob = false;
@@ -808,6 +856,13 @@
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log(window.t('console.turnEndReceived'));
+                    var assistantTurnId = normalizeAssistantTurnId(S.assistantTurnId);
+                    if (assistantTurnId) {
+                        emitAssistantLifecycleEvent('neko-assistant-turn-end', {
+                            turnId: assistantTurnId,
+                            source: 'turn_end'
+                        });
+                    }
                     // Flush remaining buffer
                     try {
                         window._pendingMusicCommand = '';
@@ -867,6 +922,13 @@
                                 if (emotionResult && emotionResult.emotion) {
                                     console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
                                     if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
+                                    if (assistantTurnId) {
+                                        emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
+                                            turnId: assistantTurnId,
+                                            emotion: emotionResult.emotion,
+                                            source: 'emotion_analysis'
+                                        });
+                                    }
                                 }
                             } catch (emotionError) {
                                 if (emotionError.message === '情感分析超时') {
@@ -968,6 +1030,8 @@
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
                     S.isTextSessionActive = false;
+                    emitAssistantSpeechCancel('session_ended_by_server');
+                    S.assistantTurnId = null;
 
                     if (S.sessionStartedRejecter) {
                         try { S.sessionStartedRejecter(new Error('Session ended by server')); } catch (_e2) { }

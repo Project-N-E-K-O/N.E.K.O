@@ -422,6 +422,7 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
     const chatToggles = [
         { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages' },
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true },
+        { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled' },
     ];
 
     chatToggles.forEach(toggle => {
@@ -1469,6 +1470,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         }
     } else if (toggle.id === 'focus-mode' && typeof window.focusModeEnabled !== 'undefined') {
         checkbox.checked = toggle.inverted ? !window.focusModeEnabled : window.focusModeEnabled;
+    } else if (toggle.id === 'avatar-reaction-bubble' && typeof window.avatarReactionBubbleEnabled !== 'undefined') {
+        checkbox.checked = window.avatarReactionBubbleEnabled;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
@@ -1555,6 +1558,17 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
             }
+        } else if (toggle.id === 'avatar-reaction-bubble') {
+            window.avatarReactionBubbleEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+            window.dispatchEvent(new CustomEvent('neko-avatar-reaction-bubble-setting-changed', {
+                detail: {
+                    enabled: isChecked,
+                    timestamp: Date.now()
+                }
+            }));
         } else if (toggle.id === 'proactive-chat') {
             window.proactiveChatEnabled = isChecked;
             if (typeof window.saveNEKOSettings === 'function') {
