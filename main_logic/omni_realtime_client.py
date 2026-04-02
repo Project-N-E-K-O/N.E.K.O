@@ -461,7 +461,7 @@ class OmniRealtimeClient:
             self._audio_processor.reset()
 
         # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
-        url = f"{self.base_url}?model={self.model}" if self.model != "free-model" else self.base_url
+        url = f"{self.base_url}?model={self.model}" if self._model_lower != "free-model" else self.base_url
         headers = {
             "Authorization": f"Bearer {self.api_key}"
         }

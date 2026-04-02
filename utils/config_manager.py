@@ -1718,10 +1718,11 @@ class ConfigManager:
                 if cfg_model is not None:
                     config[model_key] = cfg_model or config.get(model_key, '')
 
-                # API Key: 只有明确选择了具体服务商或 'custom' 时才覆盖
-                # follow_core / follow_assist / ''（老配置）→ 保留派生值，保证向后兼容
+                # API Key: 只有非"跟随"模式才覆盖（空串是合法值，本地服务商不需要 key）
+                # follow_core / follow_assist → 保留派生值，保证向后兼容
+                # ''（老配置无 provider 字段）→ 允许写入，不丢弃用户已保存的自定义 key
                 cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
-                if cfg_key is not None and provider not in ('follow_core', 'follow_assist', ''):
+                if cfg_key is not None and provider not in ('follow_core', 'follow_assist'):
                     config[apikey_key] = cfg_key
 
             # TTS Voice ID 作为角色 voice_id 的回退

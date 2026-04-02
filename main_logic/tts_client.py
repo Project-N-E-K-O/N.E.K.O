@@ -613,6 +613,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             # 初始接收任务（会在每次新 speech_id 时重新创建）
             async def receive_messages_initial():
                 """初始接收任务"""
+                nonlocal ws
                 try:
                     async for message in ws:
                         event = json.loads(message)
@@ -643,7 +644,6 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     logger.error(f"消息接收出错: {e}")
                 finally:
                     # 接收循环退出（超时/断开），清理连接状态以便主循环按需重连
-                    nonlocal ws
                     if ws:
                         try:
                             await ws.close()
