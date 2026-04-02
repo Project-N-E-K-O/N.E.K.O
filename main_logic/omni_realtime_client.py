@@ -5,6 +5,7 @@ import websockets
 import json
 import base64
 import time
+import wave
 import numpy as np
 from pathlib import Path
 
@@ -32,6 +33,32 @@ except Exception as e:
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+# ── Proactive audio prompt cache ──────────────────────────────────────
+_PROACTIVE_AUDIO_DIR = Path(__file__).resolve().parent.parent / "static" / "proactive_audio"
+_PROACTIVE_AUDIO_CACHE: Dict[str, bytes] = {}
+
+
+def _load_proactive_audio(filename: str) -> bytes:
+    """Load a proactive prompt WAV file as raw PCM16 bytes (cached).
+
+    Validates that the file is PCM16 mono 16 kHz before caching.
+    Raises ``ValueError`` on format mismatch, ``FileNotFoundError`` if absent.
+    """
+    if filename in _PROACTIVE_AUDIO_CACHE:
+        return _PROACTIVE_AUDIO_CACHE[filename]
+    path = _PROACTIVE_AUDIO_DIR / filename
+    with wave.open(str(path), "rb") as wf:
+        if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getframerate() != 16000 or wf.getcomptype() != "NONE":
+            raise ValueError(
+                f"{filename}: expected PCM16 mono 16kHz, got "
+                f"ch={wf.getnchannels()} sw={wf.getsampwidth()} "
+                f"rate={wf.getframerate()} comp={wf.getcomptype()}"
+            )
+        data = wf.readframes(wf.getnframes())
+    _PROACTIVE_AUDIO_CACHE[filename] = data
+    return data
+
 
 class TurnDetectionMode(Enum):
     SERVER_VAD = "server_vad"
@@ -206,6 +233,8 @@ class OmniRealtimeClient:
         self._image_sent_this_turn = False
         self._image_being_analyzed = False
         self._image_description = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
+        self._latest_image_b64 = None  # Cached latest screenshot for proactive injection
+        self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
         
         # Silence detection for auto-closing inactive sessions
         # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
@@ -490,8 +519,8 @@ class OmniRealtimeClient:
                     },
                     "repetition_penalty": 1.2,
                     "temperature": 0.7,
-                    "enable_search": True,
-                    "search_options": {'enable_source': True}
+                    # "enable_search": True,
+                    # "search_options": {'enable_source': True}
                 })
             elif "gpt" in self.model:
                 await self.update_session({
@@ -800,6 +829,9 @@ class OmniRealtimeClient:
     
     async def stream_image(self, image_b64: str) -> None:
         """Stream raw image data to the API."""
+        # Cache latest frame for proactive injection
+        self._latest_image_b64 = image_b64
+        self._proactive_image_consumed = False
 
         try:
             # Models without native vision (step, free on lanlan.tech) — first frame triggers VISION_MODEL analysis
@@ -980,23 +1012,150 @@ class OmniRealtimeClient:
         except Exception as e:
             logger.error(f"Error sending client content to Gemini: {e}")
 
-    async def stream_proactive(self, instruction: str) -> bool:
-        """Proactive delivery stub for voice mode.
+    async def stream_proactive(self, instruction: str = "", *, language: str = "zh") -> bool:
+        """Send a pre-recorded audio prompt to trigger proactive AI speech.
 
-        Voice mode proactive delivery is handled by the hot-swap mechanism
-        (pending_extra_replies → _trigger_immediate_preparation_for_extra →
-        _perform_final_swap_sequence).  This method is a placeholder that
-        satisfies the unified OmniClient interface; it always returns False so
-        that LLMSessionManager knows delivery was not performed here and the
-        hot-swap path should be used instead.
+        Injects a short WAV clip via ``input_audio_buffer.append`` so the
+        realtime model "hears" a conversational nudge and responds.  Bypasses
+        ``stream_audio()`` (no RNNoise / AGC) since the audio is clean.
 
-        When voice-mode instant proactive delivery is implemented in the future,
-        replace this stub with the actual logic (e.g. create_response with a
-        properly framed system turn).
+        Chunk pacing mirrors hot-swap flush: 1600 bytes/chunk, 0.025 s sleep,
+        40 chunks/s → 2× real-time delivery.
+
+        Returns True if the audio was fully sent, False if skipped or aborted.
         """
-        _ = instruction
-        logger.debug("OmniRealtimeClient.stream_proactive: delegating to hot-swap mechanism")
-        return False
+        # ── Guard checks ──────────────────────────────────────────────
+        if self._fatal_error_occurred or self.ws is None:
+            return False
+        if self._is_responding:
+            logger.debug("stream_proactive: skipped — already responding")
+            return False
+        if self._client_vad_active:
+            logger.debug("stream_proactive: skipped — user speaking (VAD active)")
+            return False
+        if time.time() - self._client_vad_last_speech_time < self._client_vad_grace_period:
+            logger.debug("stream_proactive: skipped — VAD grace period")
+            return False
+
+        # ── Choose audio file ─────────────────────────────────────────
+        # Vision context exists if an image was analyzed this turn (via
+        # VISION_MODEL text description OR native image input) or we have
+        # an unconsumed frame from stream_image().
+        has_vision = self._image_recognized_this_turn or (
+            self._latest_image_b64 is not None and not self._proactive_image_consumed
+        )
+        # Only backends with native image support can receive raw screenshots;
+        # step / lanlan.tech+free consume vision context as text only.
+        can_inject_image = has_vision and self._supports_native_image
+
+        # Snapshot the current image so concurrent stream_image() calls don't
+        # cause us to mark a newer frame as consumed.
+        snapshot_image_b64 = self._latest_image_b64 if has_vision else None
+
+        prompt_type = "vision" if has_vision else "general"
+        lang = (language or "zh")[:2]
+        filename = f"prompt_{prompt_type}_{lang}.wav"
+
+        try:
+            pcm_data = _load_proactive_audio(filename)
+        except FileNotFoundError:
+            try:
+                pcm_data = _load_proactive_audio(f"prompt_{prompt_type}_zh.wav")
+            except FileNotFoundError:
+                logger.warning("stream_proactive: no audio file found for %s", filename)
+                return False
+
+        # ── Non-native vision: inject text description before audio ───
+        # step / lanlan.tech+free can't receive raw images; send the
+        # VISION_MODEL text analysis so the model has visual context.
+        if has_vision and not can_inject_image and self._image_recognized_this_turn and self._image_description:
+            await self.send_event({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": self._image_description}],
+                },
+            })
+            logger.info("stream_proactive: injected vision text description for non-native backend")
+
+        # ── Send audio chunks (same pacing as hot-swap flush) ─────────
+        # 320 bytes = 10 ms @16 kHz 16-bit mono, ×5 multiplier → 1600 bytes
+        chunk_size = 320 * 5  # 1600 bytes = 50 ms of audio
+        sleep_interval = 0.025  # 25 ms → 40 chunks/s, 2× real-time
+
+        logger.info(
+            "stream_proactive: injecting %s (%d bytes, %s)",
+            filename, len(pcm_data), "vision" if has_vision else "general",
+        )
+
+        total_chunks = (len(pcm_data) + chunk_size - 1) // chunk_size
+        mid_chunk = total_chunks // 2  # Insert image at the midpoint
+        image_injected = False
+
+        for chunk_idx, i in enumerate(range(0, len(pcm_data), chunk_size)):
+            # Abort if user starts speaking or AI starts responding
+            if self._client_vad_active or self._is_responding:
+                logger.info("stream_proactive: aborted — user spoke or response started")
+                await self.clear_audio_buffer()
+                return False
+
+            chunk = pcm_data[i : i + chunk_size]
+            if self._is_gemini:
+                if self._gemini_session:
+                    await self._gemini_session.send_realtime_input(
+                        audio={"data": chunk, "mime_type": "audio/pcm"}
+                    )
+            else:
+                audio_b64 = base64.b64encode(chunk).decode()
+                await self.send_event({
+                    "type": "input_audio_buffer.append",
+                    "audio": audio_b64,
+                })
+
+            # Inject cached screenshot at midpoint (only for native-image backends)
+            if can_inject_image and not image_injected and chunk_idx >= mid_chunk and snapshot_image_b64:
+                if self._is_gemini:
+                    if self._gemini_session:
+                        image_bytes = base64.b64decode(snapshot_image_b64)
+                        await self._gemini_session.send_realtime_input(
+                            media={"data": image_bytes, "mime_type": "image/jpeg"}
+                        )
+                elif "gpt" in self.model:
+                    await self.send_event({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{
+                                "type": "input_image",
+                                "image_url": "data:image/jpeg;base64," + snapshot_image_b64,
+                            }],
+                        },
+                    })
+                elif "qwen" in self.model or ("lanlan.app" in self.base_url and "free" in self.model):
+                    await self.send_event({
+                        "type": "input_image_buffer.append",
+                        "image": snapshot_image_b64,
+                    })
+                elif "glm" in self.model:
+                    await self.send_event({
+                        "type": "input_audio_buffer.append_video_frame",
+                        "video_frame": snapshot_image_b64,
+                    })
+                image_injected = True
+                logger.info("stream_proactive: injected screenshot at chunk %d/%d", chunk_idx, total_chunks)
+
+            await asyncio.sleep(sleep_interval)
+
+        # Mark vision context consumed only if the shared image hasn't been
+        # replaced by a newer frame from stream_image() during our async loop.
+        if has_vision and self._latest_image_b64 == snapshot_image_b64:
+            self._proactive_image_consumed = True
+        logger.info("stream_proactive: audio injection complete (%s%s), waiting for VAD → response",
+                     "vision" if has_vision else "general",
+                     "+image" if image_injected else "")
+        return True
 
     async def cancel_response(self) -> None:
         """Cancel the current response."""
@@ -1093,6 +1252,15 @@ class OmniRealtimeClient:
                         continue
                     
                     error_msg_lower = error_msg.lower()
+
+                    # Idle timeout — Qwen 约 25s 无操作断连
+                    if 'too long without operation' in error_msg_lower or 'idle' in error_msg_lower:
+                        logger.warning("⏰ Idle timeout from API: %s", error_msg)
+                        if self.on_connection_error:
+                            await self.on_connection_error(json.dumps({"code": "API_IDLE_TIMEOUT", "details": {"msg": error_msg}}))
+                        await self.close()
+                        continue
+
                     if ('欠费' in error_msg or 'standing' in error_msg_lower or 'time limit' in error_msg_lower or
                         'policy violation' in error_msg_lower or '1008' in error_msg_lower or
                         '429' in error_msg_lower or 'quota' in error_msg_lower or 'too many' in error_msg_lower):

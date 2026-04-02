@@ -98,6 +98,7 @@ class MMDCursorFollow {
         this._headBaseQuat = new THREE.Quaternion();
         this._neckBaseQuat = new THREE.Quaternion();
         this._eyeLastOffsetQuat = new THREE.Quaternion(); // identity = 无偏移
+        this._identityQuat = new THREE.Quaternion();     // 常量：用于比较是否已归零
         this._raycaster = new THREE.Raycaster();
         this._ndcVec = new THREE.Vector2();
         this._headWorldPos = new THREE.Vector3();
@@ -411,12 +412,27 @@ class MMDCursorFollow {
         // 眼球跟踪：Grant 感知的混合策略
         // Grant 运行时（动画播放 / 静态 IK 阶段）已重置眼骨 → 直接叠加偏移
         // Grant 未运行时（暂停等）→ 先撤销上帧偏移再叠加，防止累积
-        const eyeYaw = this._currentYaw * this.eyeYawScale * w;
-        const eyePitch = this._currentPitch * this.eyePitchScale * w;
+        // 无动画播放时（加载中 T-Pose / 显式重置 T-Pose）：
+        // 强制把眼骨恢复到 rest quaternion，防止翻白眼
+        const anim = this.manager.animationModule;
+        const noAnimation = !anim || (!anim.isPlaying && !anim.isPaused);
+        const inTPose = !!this.manager._isTPose || noAnimation;
 
         const hasEyeBones = this._eyesBone || this._eyeLBone || this._eyeRBone;
         if (hasEyeBones && this._eyeLastOffsetQuat) {
-            const anim = this.manager.animationModule;
+            if (inTPose) {
+                // T-Pose：强制撤销之前叠加的眼球偏移，再清空记录
+                // 不依赖 Grant 重置，也不依赖 restQuaternion
+                if (!this._eyeLastOffsetQuat.equals(this._identityQuat)) {
+                    this._tempQuatInv.copy(this._eyeLastOffsetQuat).invert();
+                    if (this._eyesBone) this._eyesBone.quaternion.multiply(this._tempQuatInv);
+                    if (this._eyeLBone) this._eyeLBone.quaternion.multiply(this._tempQuatInv);
+                    if (this._eyeRBone) this._eyeRBone.quaternion.multiply(this._tempQuatInv);
+                    this._eyeLastOffsetQuat.identity();
+                }
+                return;
+            }
+
             const grantActive = anim && (
                 anim.isPlaying ||                               // Grant 在 animationModule.update() 内运行
                 (!anim.isPaused && anim.grantSolver)            // Grant 在 render loop 静态 IK 阶段运行
@@ -430,6 +446,9 @@ class MMDCursorFollow {
                 if (this._eyeRBone) this._eyeRBone.quaternion.multiply(this._tempQuatInv);
             }
             // else: Grant 已重置眼骨到动画值，直接叠加即可
+
+            const eyeYaw = this._currentYaw * this.eyeYawScale * w;
+            const eyePitch = this._currentPitch * this.eyePitchScale * w;
 
             // 计算并应用新偏移
             euler.set(eyePitch, eyeYaw, 0, 'YXZ');

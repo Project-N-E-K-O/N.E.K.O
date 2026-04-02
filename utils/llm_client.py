@@ -329,10 +329,27 @@ def create_chat_llm(
         resolved = get_extra_body(model)
         extra_body = resolved or None
 
+    # Anthropic API 使用 x-api-key 而非 Bearer token，需要注入专用 headers
+    _api_key = api_key
+    if base_url and "api.anthropic.com" in base_url:
+        anthropic_headers = {
+            "x-api-key": api_key or "",
+            "anthropic-version": "2023-06-01",
+        }
+        # 合并 cache_kw / kw / anthropic 的 default_headers，避免重复关键字
+        merged_headers = {
+            **cache_kw.pop("default_headers", {}),
+            **kw.pop("default_headers", {}),
+            **anthropic_headers,
+        }
+        kw["default_headers"] = merged_headers
+        # OpenAI SDK 要求 api_key 非空，给占位值（实际鉴权走 x-api-key header）
+        _api_key = "anthropic-via-header"
+
     return ChatOpenAI(
         model=model,
         base_url=base_url,
-        api_key=api_key,
+        api_key=_api_key,
         temperature=temperature,
         streaming=streaming,
         max_retries=max_retries,

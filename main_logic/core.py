@@ -659,7 +659,16 @@ class LLMSessionManager:
         if message:
             message_text = str(message)
             message_text_lower = message_text.lower()
-            if '欠费' in message_text_lower or 'standing' in message_text_lower:
+
+            # Pre-classified structured errors from omni_realtime_client (JSON with "code")
+            # Forward them directly so the frontend sees the original code.
+            try:
+                _parsed = json.loads(message_text) if message_text.startswith('{') else None
+            except (json.JSONDecodeError, TypeError):
+                _parsed = None
+            if _parsed and isinstance(_parsed, dict) and _parsed.get('code'):
+                await self.send_status(message_text)
+            elif '欠费' in message_text_lower or 'standing' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_ARREARS"}))
             elif 'quota' in message_text_lower or 'time limit' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
@@ -1940,6 +1949,33 @@ class LLMSessionManager:
 
         logger.info("[%s] Proactive task result delivered: %.40s…", self.lanlan_name, text)
         return True
+
+    # ------------------------------------------------------------------
+    # Voice-chat proactive audio nudge (dedicated path)
+    # ------------------------------------------------------------------
+
+    async def trigger_voice_proactive_nudge(self) -> bool:
+        """Inject a pre-recorded audio prompt to nudge the voice model into speaking.
+
+        This is the **only** caller of ``OmniRealtimeClient.stream_proactive``
+        for the voice-chat proactive feature.  It is completely independent of
+        ``deliver_text_proactively`` (which handles text delivery from agents)
+        and ``trigger_agent_callbacks`` (which handles agent task results).
+
+        Returns True if the audio was fully injected, False if skipped.
+        """
+        if not self.is_active or not isinstance(self.session, OmniRealtimeClient):
+            return False
+        if self.is_hot_swap_imminent:
+            logger.info("[%s] voice proactive nudge skipped: hot-swap imminent", self.lanlan_name)
+            return False
+        _lang = normalize_language_code(self.user_language, format='short') or 'zh'
+        delivered = await self.session.stream_proactive(language=_lang)
+        if delivered:
+            logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)
+        else:
+            logger.info("[%s] voice proactive nudge skipped (guard)", self.lanlan_name)
+        return delivered
 
     # ------------------------------------------------------------------
     # Proactive streaming helpers (Phase 2 流式 TTS + 完整文本投递)
