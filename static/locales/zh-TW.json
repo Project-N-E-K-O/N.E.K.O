@@ -7,6 +7,7 @@
         "save": "保存",
         "cancel": "取消",
         "confirm": "確認",
+        "next": "下一個",
         "ok": "確定",
         "delete": "刪除",
         "edit": "編輯",
@@ -679,7 +680,7 @@
             "kimi": "Kimi（月之暗面，支持長上下文）",
             "deepseek": "DeepSeek",
             "doubao": "豆包（字節跳動）",
-            "minimax": "MiniMax（國服）",
+            "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際服）",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
@@ -708,7 +709,7 @@
             "gemini": "Gemini（Google）",
             "kimi": "Kimi（月之暗面）",
             "doubao": "豆包（字節跳動）",
-            "minimax": "MiniMax（國服）",
+            "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際服）",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
@@ -982,6 +983,7 @@
             "deleteModelTitle": "刪除已匯入MMD模型",
             "deleteWarning": "以下列出了所有已匯入的使用者MMD模型。選擇要刪除的模型（模型資料夾及貢圖將一併刪除）。",
             "noUserModels": "暫無可刪除的使用者MMD模型",
+            "noModels": "未找到MMD模型",
             "deleteSelected": "刪除選中"
         },
         "mmdAnimation": {
@@ -1118,12 +1120,12 @@
     "voice": {
         "title": "音色注冊",
         "alibabaApiRequired": "⚠️ 此功能需要阿里CosyVoice模型，請在API密鑰設定頁中保存阿里百煉API Key（不要求啟用輔助API）或配置本地語音伺服器",
-        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（國內版），請在API密鑰設定頁中保存MiniMax API Key（不要求啟用輔助API）",
+        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（中國），請在API密鑰設定頁中保存MiniMax API Key（不要求啟用輔助API）",
         "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（國際版），請在API密鑰設定頁中保存MiniMax國際版API Key（不要求啟用輔助API）",
         "providerLabel": "語音克隆服務商",
         "provider": {
             "cosyvoice": "阿里雲 CosyVoice",
-            "minimax": "MiniMax（國內版）",
+            "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際版）"
         },
         "selectFile": "選擇本地音頻文件（8秒最佳，請勿超過20秒，wav/mp3格式）",
@@ -2609,11 +2611,17 @@
         "idleRestored": "已恢復待機動畫",
         "idleRestoreFailed": "恢復待機動畫失敗",
         "btnNotFoundGiveUp": "點歌台按鈕在重試後仍未找到，放棄綁定",
-        "minimizeBtnNotFoundGiveUp": "最小化按鈕在重試後仍未找到，放棄監聽"
+        "minimizeBtnNotFoundGiveUp": "最小化按鈕在重試後仍未找到，放棄監聽",
+        "noticeDance": "💃 伴舞服務僅在載入 MMD 形象時可用",
+        "noticeMusic": "⚠️ 目前歌曲僅供測試，後續版本將清除版權音樂，請自行匯入"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice 已升級至 3.5，您的舊語音已失效，請重新克隆語音。"
+            "legacyRemoved": "CosyVoice 已升級至 3.5，您的舊語音已失效，請重新克隆語音。",
+            "legacyDetected": "偵測到舊版 CosyVoice 音色可能已失效，建議重新克隆語音。"
+        },
+        "changelog": {
+            "title": "更新內容"
         }
     },
     "proactive": {
