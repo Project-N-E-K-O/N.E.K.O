@@ -118,16 +118,28 @@ class MMDAnimation {
             this.grantSolver = new GrantSolver(mmd.mesh, mmd.grants);
         }
 
-        // 重置骨骼到绑定姿态，防止上一动画残留姿态污染备份
+        // 重置骨骼到绑定姿态（干净的基准状态）
         if (mmd.mesh.skeleton) mmd.mesh.skeleton.pose();
-
-        // 初始化骨骼缓存
-        this._initBoneBackup(mmd.mesh);
 
         // 使用 processBones
         this._processBones = processBones;
 
         this.clock = new THREE.Clock();
+
+        // Pre-warm：立即应用第 0 帧，避免 T-pose 闪烁
+        this.currentAction.play();
+        this.mixer.update(0);
+        if (this.ikSolver) this.ikSolver.update();
+        if (this.grantSolver) this.grantSolver.update();
+        mmd.mesh.updateMatrixWorld(true);
+
+        // 在第 0 帧姿态上初始化骨骼备份（而非 T-pose）
+        this._initBoneBackup(mmd.mesh);
+
+        // 暂停，等待外部调用 play()
+        this.currentAction.paused = true;
+        this.clock.stop();
+
         console.log('[MMD Animation] 动画加载完成:', vmdUrl);
 
         return clip;
@@ -169,6 +181,7 @@ class MMDAnimation {
 
     play() {
         if (!this.currentAction) return;
+        this.currentAction.paused = false;
         this.currentAction.play();
         if (this.clock) this.clock.start();
         this.isPlaying = true;

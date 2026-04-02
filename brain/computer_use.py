@@ -519,10 +519,14 @@ class ComputerUseAdapter:
     # Non-blocking LLM connectivity probe
     # ------------------------------------------------------------------
 
-    def check_connectivity(self) -> bool:
+    def check_connectivity(self, *, _retries: int = 2) -> bool:
         """Synchronous LLM ping using the same OpenAI client that real
         tasks will use, so the TCP/TLS connection pool is warmed up.
-        Meant to be called from a background thread."""
+        Meant to be called from a background thread.
+
+        Retries up to *_retries* times on failure (cold-start DNS/TLS
+        handshake can exceed the per-request timeout on first attempt).
+        """
         cfg = self._config_manager.get_model_api_config("agent")
         api_key = cfg.get("api_key") or "EMPTY"
         base_url = cfg.get("base_url", "")
@@ -531,37 +535,48 @@ class ComputerUseAdapter:
             self.init_ok = False
             self.last_error = "Agent model not configured"
             return False
-        try:
-            if (
-                self._llm_client is None
-                or getattr(self._llm_client, "_base_url", None)
-                and str(self._llm_client._base_url).rstrip("/") != base_url.rstrip("/")
-            ):
-                self._llm_client = OpenAI(
-                    base_url=base_url,
-                    api_key=api_key,
-                    timeout=65.0,
-                    max_retries=0,
+
+        last_exc: Exception | None = None
+        for attempt in range(_retries + 1):
+            try:
+                if (
+                    self._llm_client is None
+                    or getattr(self._llm_client, "_base_url", None)
+                    and str(self._llm_client._base_url).rstrip("/") != base_url.rstrip("/")
+                ):
+                    self._llm_client = OpenAI(
+                        base_url=base_url,
+                        api_key=api_key,
+                        timeout=65.0,
+                        max_retries=0,
+                    )
+                extra = get_agent_extra_body(model) or {}
+                set_call_type("agent_cua")
+                resp = self._llm_client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": "ok"}],
+                    max_completion_tokens=5,
+                    timeout=20,
+                    extra_body=extra or None,
                 )
-            extra = get_agent_extra_body(model) or {}
-            set_call_type("agent_cua")
-            resp = self._llm_client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": "ok"}],
-                max_completion_tokens=5,
-                timeout=15,
-                extra_body=extra or None,
-            )
-            _ = resp.choices[0].message.content
-            self.init_ok = True
-            self.last_error = None
-            logger.info("[CUA] LLM connectivity OK (%s @ %s)", model, base_url)
-            return True
-        except Exception as e:
-            self.init_ok = False
-            self.last_error = str(e)
-            logger.warning("[CUA] LLM connectivity FAIL: %s", e)
-            return False
+                _ = resp.choices[0].message.content
+                self.init_ok = True
+                self.last_error = None
+                logger.info("[CUA] LLM connectivity OK (%s @ %s)", model, base_url)
+                return True
+            except Exception as e:
+                last_exc = e
+                if attempt < _retries:
+                    import time
+                    delay = 3 * (attempt + 1)
+                    logger.info("[CUA] LLM connectivity attempt %d/%d failed (%s), retry in %ds",
+                                attempt + 1, _retries + 1, type(e).__name__, delay)
+                    time.sleep(delay)
+
+        self.init_ok = False
+        self.last_error = str(last_exc)
+        logger.warning("[CUA] LLM connectivity FAIL after %d attempts: %s", _retries + 1, last_exc)
+        return False
 
     # ------------------------------------------------------------------
     # Public interface

@@ -1265,6 +1265,7 @@
         "profileNameTooLong": "檔案名過長",
         "profileNameContainsSlash": "檔案名不能包含路徑分隔符(/或\\)",
         "profileNameContainsDot": "檔案名不能包含點號(.)",
+        "profileNameInvalidChars": "檔案名只能包含文字、數字、空格、底線、連字符、括號、間隔號(·/・)和撇號",
         "newProfileNameRequired": "新檔案名不能為空",
         "newProfileNameTooLong": "檔案名過長",
         "required": "*",
