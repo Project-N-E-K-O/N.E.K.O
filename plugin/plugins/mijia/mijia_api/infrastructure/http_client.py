@@ -313,7 +313,7 @@ class HttpClient:
 
         # 特殊日志处理（复用集中的错误码映射）
         if code == 401:
-            logger.warning(f"Token已过期", extra={"error_code": code, "error_message": message})
+            logger.warning("Token已过期", extra={"error_code": code, "error_message": message})
             raise TokenExpiredError("Token已过期")
         elif code == 404:
             logger.warning(f"设备不存在: {message}", extra={"error_code": code})
@@ -573,7 +573,7 @@ class AsyncHttpClient:
 
         # 特殊日志处理（复用集中的错误码映射）
         if code == 401:
-            logger.warning(f"Token已过期", extra={"error_code": code, "error_message": message})
+            logger.warning("Token已过期", extra={"error_code": code, "error_message": message})
             raise TokenExpiredError("Token已过期")
         elif code == 404:
             logger.warning(f"设备不存在: {message}", extra={"error_code": code})
