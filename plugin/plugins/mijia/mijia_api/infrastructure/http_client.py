@@ -3,6 +3,7 @@
 提供统一的HTTP请求接口，支持重试、日志、加密等功能。
 """
 
+import binascii
 import json as json_module
 import time
 from typing import Any, Dict, Mapping
@@ -21,6 +22,7 @@ from ..domain.exceptions import (
     get_exception_by_code,
 )
 from ..domain.models import Credential
+from ..infrastructure.credential_provider import _mask_user_id
 from .crypto_service import CryptoService
 
 # 响应头中可能包含敏感信息的字段（黑名单）
@@ -205,20 +207,19 @@ class HttpClient:
                      f"PassportDeviceId={credential.device_id};",
         }
 
-        # 加密请求参数
-        encrypted_params = self._crypto.encrypt_params(path, json, credential.ssecurity)
-
         # 设置请求ID用于追踪
         logger.set_request_id()
 
-        # 记录请求开始
+        # 记录请求开始（user_id 已脱敏）
         start_time = time.time()
         logger.info(
             f"发送请求: {path}",
-            extra={"url": url, "user_id": credential.user_id, "path": path},
+            extra={"url": url, "user_id": _mask_user_id(credential.user_id), "path": path},
         )
 
         try:
+            # 加密请求参数（序列化/base64/RC4 异常统一包装）
+            encrypted_params = self._crypto.encrypt_params(path, json, credential.ssecurity)
             should_retry = path in _SAFE_READ_PATHS
             # 发送POST请求
             if should_retry:
@@ -247,12 +248,12 @@ class HttpClient:
             # 计算响应时间
             response_time = time.time() - start_time
 
-            # 记录响应成功
+            # 记录响应成功（user_id 已脱敏）
             logger.info(
                 f"请求成功: {path}",
                 extra={
                     "url": url,
-                    "user_id": credential.user_id,
+                    "user_id": _mask_user_id(credential.user_id),
                     "response_time": f"{response_time:.3f}s",
                     "status_code": response.status_code,
                 },
@@ -264,6 +265,10 @@ class HttpClient:
 
             return result
 
+        except (TypeError, binascii.Error) as e:
+            # 加密参数序列化/base64/RC4 错误，统一转为 API 异常
+            raise MijiaAPIException(f"请求加密失败: {e}") from e
+
         except httpx.TimeoutException as e:
             # 请求超时
             response_time = time.time() - start_time
@@ -271,7 +276,7 @@ class HttpClient:
                 f"请求超时: {path}",
                 extra={
                     "url": url,
-                    "user_id": credential.user_id,
+                    "user_id": _mask_user_id(credential.user_id),
                     "response_time": f"{response_time:.3f}s",
                 },
             )
@@ -284,7 +289,7 @@ class HttpClient:
                 f"HTTP状态码错误: {path}",
                 extra={
                     "url": url,
-                    "user_id": credential.user_id,
+                    "user_id": _mask_user_id(credential.user_id),
                     "status_code": e.response.status_code,
                     "response_time": f"{response_time:.3f}s",
                 },
@@ -298,7 +303,7 @@ class HttpClient:
                 f"连接错误: {path}",
                 extra={
                     "url": url,
-                    "user_id": credential.user_id,
+                    "user_id": _mask_user_id(credential.user_id),
                     "response_time": f"{response_time:.3f}s",
                 },
             )
@@ -311,7 +316,7 @@ class HttpClient:
                 f"HTTP错误: {path}",
                 extra={
                     "url": url,
-                    "user_id": credential.user_id,
+                    "user_id": _mask_user_id(credential.user_id),
                     "response_time": f"{response_time:.3f}s",
                 },
                 exc_info=e,
@@ -325,7 +330,7 @@ class HttpClient:
                 f"响应解析失败: {path}",
                 extra={
                     "url": url,
-                    "user_id": credential.user_id,
+                    "user_id": _mask_user_id(credential.user_id),
                     "response_time": f"{response_time:.3f}s",
                 },
                 exc_info=e,
@@ -450,20 +455,19 @@ class AsyncHttpClient:
                      f"PassportDeviceId={credential.device_id};",
         }
 
-        # 加密请求参数
-        encrypted_params = self._crypto.encrypt_params(path, json, credential.ssecurity)
-
         # 设置请求ID用于追踪
         logger.set_request_id()
 
-        # 记录请求开始
+        # 记录请求开始（user_id 已脱敏）
         start_time = time.time()
         logger.info(
             f"发送异步请求: {path}",
-            extra={"url": url, "user_id": credential.user_id, "path": path},
+            extra={"url": url, "user_id": _mask_user_id(credential.user_id), "path": path},
         )
 
         try:
+            # 加密请求参数（序列化/base64/RC4 异常统一包装）
+            encrypted_params = self._crypto.encrypt_params(path, json, credential.ssecurity)
             should_retry = path in _SAFE_READ_PATHS
             if should_retry:
                 response = await self._do_post_with_retry(url, encrypted_params, headers, **kwargs)
@@ -481,12 +485,12 @@ class AsyncHttpClient:
             # 计算响应时间
             response_time = time.time() - start_time
 
-            # 记录响应成功
+            # 记录响应成功（user_id 已脱敏）
             logger.info(
                 f"异步请求成功: {path}",
                 extra={
                     "url": url,
-                    "user_id": credential.user_id,
+                    "user_id": _mask_user_id(credential.user_id),
                     "response_time": f"{response_time:.3f}s",
                     "status_code": response.status_code,
                 },
@@ -498,6 +502,10 @@ class AsyncHttpClient:
 
             return result
 
+        except (TypeError, binascii.Error) as e:
+            # 加密参数序列化/base64/RC4 错误，统一转为 API 异常
+            raise MijiaAPIException(f"请求加密失败: {e}") from e
+
         except httpx.TimeoutException as e:
             # 请求超时
             response_time = time.time() - start_time
@@ -505,7 +513,7 @@ class AsyncHttpClient:
                 f"异步请求超时: {path}",
                 extra={
                     "url": url,
-                    "user_id": credential.user_id,
+                    "user_id": _mask_user_id(credential.user_id),
                     "response_time": f"{response_time:.3f}s",
                 },
             )
@@ -518,7 +526,7 @@ class AsyncHttpClient:
                 f"异步HTTP状态码错误: {path}",
                 extra={
                     "url": url,
-                    "user_id": credential.user_id,
+                    "user_id": _mask_user_id(credential.user_id),
                     "status_code": e.response.status_code,
                     "response_time": f"{response_time:.3f}s",
                 },
@@ -532,7 +540,7 @@ class AsyncHttpClient:
                 f"异步连接错误: {path}",
                 extra={
                     "url": url,
-                    "user_id": credential.user_id,
+                    "user_id": _mask_user_id(credential.user_id),
                     "response_time": f"{response_time:.3f}s",
                 },
             )
@@ -545,7 +553,7 @@ class AsyncHttpClient:
                 f"异步HTTP错误: {path}",
                 extra={
                     "url": url,
-                    "user_id": credential.user_id,
+                    "user_id": _mask_user_id(credential.user_id),
                     "response_time": f"{response_time:.3f}s",
                 },
                 exc_info=e,
@@ -559,7 +567,7 @@ class AsyncHttpClient:
                 f"异步响应解析失败: {path}",
                 extra={
                     "url": url,
-                    "user_id": credential.user_id,
+                    "user_id": _mask_user_id(credential.user_id),
                     "response_time": f"{response_time:.3f}s",
                 },
                 exc_info=e,
