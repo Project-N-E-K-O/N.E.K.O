@@ -246,7 +246,8 @@ window.addEventListener('load', () => {
         // 2) 版本更新日志
         try {
             const lastVer = localStorage.getItem('neko_last_notified_version') || '';
-            const cr = await fetch(`/api/changelog?since=${encodeURIComponent(lastVer)}`);
+            const lang = (window.i18next && window.i18next.language) || '';
+            const cr = await fetch(`/api/changelog?since=${encodeURIComponent(lastVer)}&lang=${encodeURIComponent(lang)}`);
             const cdata = await cr.json();
             let entries = cdata.entries || [];
             // 全新用户（无历史记录）只展示最新一条，避免堆积过多
@@ -255,11 +256,9 @@ window.addEventListener('load', () => {
             }
             if (entries.length > 0) {
                 const changelogPromises = entries.map(entry => {
-                    const titleZh = `v${entry.version} ${window.safeT ? window.safeT('notice.changelog.title', '更新内容') : '更新内容'}`;
-                    const titleEn = `v${entry.version} ${window.safeT ? window.safeT('notice.changelog.title', 'Changelog') : 'Changelog'}`;
+                    const title = `v${entry.version} ${window.safeT ? window.safeT('notice.changelog.title', '更新内容') : '更新内容'}`;
                     return window.showProminentNotice({
-                        message: `**${titleZh}**\n\n${(entry.content || '').trim()}`,
-                        message_en: `**${titleEn}**\n\n${(entry.content_en || entry.content || '').trim()}`,
+                        message: `**${title}**\n\n${(entry.content || '').trim()}`,
                     });
                 });
                 await Promise.all(changelogPromises);
