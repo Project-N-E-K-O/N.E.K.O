@@ -980,20 +980,7 @@
             }
         }
 
-        // 策略2: capturePage 截取自身窗口（desktopCapturer 无法截取自身窗口时）
-        if (window.electronDesktopCapturer && window.electronDesktopCapturer.captureOwnWindow) {
-            try {
-                var ownResult = await window.electronDesktopCapturer.captureOwnWindow();
-                if (ownResult && ownResult.success && ownResult.dataUrl) {
-                    console.log('[主动搭话截图] capturePage 截取自身窗口成功');
-                    return ownResult.dataUrl;
-                }
-            } catch (ownErr) {
-                console.warn('[主动搭话截图] capturePage 失败:', ownErr);
-            }
-        }
-
-        // 策略3: 后端 pyautogui 兜底
+        // 策略2: 后端 pyautogui 兜底
         var backendResult = await fetchBackendScreenshot();
         if (backendResult.dataUrl) {
             console.log('[主动搭话截图] 后端截图成功');

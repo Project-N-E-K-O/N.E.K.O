@@ -904,37 +904,6 @@
                             height = frame.height;
                         }
                     }
-
-                    // Electron 截取成功但帧为空（如捕获自身窗口导致黑帧）→ capturePage 兜底
-                    if (!dataUrl && electronCaptured) {
-                        console.warn('[截图] Electron 源截取到空帧（可能是捕获自身窗口），尝试 capturePage');
-                        // 释放无用的一次性流
-                        if (captureStream instanceof MediaStream) {
-                            captureStream.getTracks().forEach(function (track) { track.stop(); });
-                            captureStream = null;
-                        }
-                        // 优先使用 capturePage 截取自身窗口
-                        if (window.electronDesktopCapturer && window.electronDesktopCapturer.captureOwnWindow) {
-                            try {
-                                var ownResult = await window.electronDesktopCapturer.captureOwnWindow();
-                                if (ownResult && ownResult.success && ownResult.dataUrl) {
-                                    dataUrl = ownResult.dataUrl;
-                                    width = ownResult.width || 0;
-                                    height = ownResult.height || 0;
-                                    console.log('[截图] capturePage 截取自身窗口成功');
-                                }
-                            } catch (ownErr) {
-                                console.warn('[截图] capturePage 失败:', ownErr);
-                            }
-                        }
-                        // capturePage 也失败则尝试后端 pyautogui
-                        if (!dataUrl) {
-                            var backendResult = await window.fetchBackendScreenshot();
-                            if (backendResult && backendResult.dataUrl) {
-                                dataUrl = backendResult.dataUrl;
-                            }
-                        }
-                    }
                 }
 
                 if (!dataUrl) {
