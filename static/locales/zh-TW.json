@@ -1184,7 +1184,7 @@
         "directLinkUrl": "音訊直鏈URL（8秒最佳，請勿超過20秒，wav/mp3格式）",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "輸入可公開存取的音訊檔案直鏈，系統將跳過上傳步驟直接使用該連結註冊音色",
-        "pleaseEnterDirectLink": "請輸入音訊直鏈URL並填寫前綴",
+        "pleaseEnterDirectLink": "請輸入音訊直鏈URL",
         "invalidDirectLink": "請輸入有效的HTTP/HTTPS連結",
         "silenceModal": {
             "title": "智慧空白音訊檢測結果",

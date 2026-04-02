@@ -1184,7 +1184,7 @@
         "directLinkUrl": "Audio Direct Link URL (8 seconds recommended, max 20 seconds, wav/mp3 format)",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "Enter a publicly accessible audio file direct link. The system will skip the upload step and use this link directly to register the voice.",
-        "pleaseEnterDirectLink": "Please enter audio direct link URL and prefix",
+        "pleaseEnterDirectLink": "Please enter audio direct link URL",
         "invalidDirectLink": "Please enter a valid HTTP/HTTPS link",
         "silenceModal": {
             "title": "Smart Silence Detection Results",
