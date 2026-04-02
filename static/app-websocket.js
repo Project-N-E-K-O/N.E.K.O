@@ -204,6 +204,11 @@
                 }
             }, C.HEARTBEAT_INTERVAL);
             console.log(window.t('console.heartbeatStarted'));
+
+            // ── 首次连接 / 切换角色：暂存 greeting 意图，等模型加载完成后发送 ──
+            S._greetingCheckPending = true;
+            S._greetingCheckIsSwitch = !!S._pendingGreetingSwitch;
+            S._pendingGreetingSwitch = false;
         };
 
         // ---- onmessage ----
@@ -525,7 +530,8 @@
                                                 S.socket.send(JSON.stringify({ action: 'end_session' }));
                                                 console.log(window.t('console.autoRestartTimeoutEndSession'));
                                             }
-                                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
+                                            var timeoutMsg = (window.t && window.t('app.sessionTimeout')) || '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5';
+                                            rejecter(new Error(timeoutMsg));
                                         }
                                     }, 15000);
 
@@ -901,6 +907,10 @@
                     if (S.proactiveChatEnabled && hasChatMode && !S.isRecording) {
                         if (typeof window.resetProactiveChatBackoff === 'function') window.resetProactiveChatBackoff();
                     }
+                    // 语音模式：AI 说完话后才调度下一次 proactive nudge
+                    if (S.isRecording && S.proactiveChatEnabled) {
+                        if (typeof window.scheduleProactiveChat === 'function') window.scheduleProactiveChat();
+                    }
 
                 // -------- session_preparing --------
                 } else if (response.type === 'session_preparing') {
@@ -1248,6 +1258,46 @@
     // ========================  Backward-compat globals  ========================
     window.connectWebSocket = connectWebSocket;
     window.ensureWebSocketOpen = ensureWebSocketOpen;
+
+    // ========================  Greeting check (after model loaded)  ========================
+    // 等模型加载完成后再发送 greeting_check，避免与 TTS/lipsync/模型载入竞态
+    function _sendGreetingCheckIfPending() {
+        if (!S._greetingCheckPending) return;
+        S._greetingCheckPending = false;
+        try {
+            if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                S.socket.send(JSON.stringify({
+                    action: 'greeting_check',
+                    is_switch: !!S._greetingCheckIsSwitch,
+                    language: (window.i18next && window.i18next.language) || ''
+                }));
+                console.log('[greeting_check] sent after model loaded, is_switch=' + !!S._greetingCheckIsSwitch);
+            }
+        } catch (e) {
+            console.warn('[greeting_check] send failed:', e);
+        }
+    }
+    // Live2D
+    var _origOnModelLoaded = null;
+    function _hookLive2dModelLoaded() {
+        if (window.live2dManager && typeof window.live2dManager.onModelLoaded === 'function') {
+            if (window.live2dManager.onModelLoaded._greetingHooked) return;
+            _origOnModelLoaded = window.live2dManager.onModelLoaded;
+        }
+        var prevCb = _origOnModelLoaded;
+        var hookedFn = function () {
+            if (prevCb) prevCb.apply(this, arguments);
+            _sendGreetingCheckIfPending();
+        };
+        hookedFn._greetingHooked = true;
+        if (window.live2dManager) window.live2dManager.onModelLoaded = hookedFn;
+    }
+    // 延迟 hook：live2dManager 可能还没创建
+    if (window.live2dManager) _hookLive2dModelLoaded();
+    else window.addEventListener('DOMContentLoaded', function () { setTimeout(_hookLive2dModelLoaded, 500); });
+    // VRM / MMD
+    window.addEventListener('vrm-model-loaded', _sendGreetingCheckIfPending);
+    window.addEventListener('mmd-model-loaded', _sendGreetingCheckIfPending);
 
     // ========================  Export module  ========================
     window.appWebSocket = mod;

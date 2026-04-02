@@ -16,6 +16,7 @@ class MMDAnimation {
         this.currentClip = null;
         this.clock = null;
         this.isPlaying = false;
+        this.isPaused = false;  // 区分暂停 vs 停止（IK/Grant 仅在非暂停、非播放时运行）
         this.isLoop = true;
 
         // IK + Grant
@@ -90,6 +91,16 @@ class MMDAnimation {
         this.mixer = new THREE.AnimationMixer(mmd.mesh);
         this.currentAction = this.mixer.clipAction(clip);
         this.currentAction.setLoop(this.isLoop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+        this.currentAction.clampWhenFinished = true; // 防止动画结束后 action 被 disable 导致 T-Pose
+
+        // 安全网：如果循环动画意外触发 finished 事件，自动重播
+        this.mixer.addEventListener('finished', (e) => {
+            if (this.isLoop && e.action === this.currentAction) {
+                console.warn('[MMD Animation] 循环动画意外结束，自动重播');
+                e.action.reset();
+                e.action.play();
+            }
+        });
 
         // IK 解算器
         if (mmd.iks && mmd.iks.length > 0) {
@@ -107,16 +118,28 @@ class MMDAnimation {
             this.grantSolver = new GrantSolver(mmd.mesh, mmd.grants);
         }
 
-        // 重置骨骼到绑定姿态，防止上一动画残留姿态污染备份
+        // 重置骨骼到绑定姿态（干净的基准状态）
         if (mmd.mesh.skeleton) mmd.mesh.skeleton.pose();
-
-        // 初始化骨骼缓存
-        this._initBoneBackup(mmd.mesh);
 
         // 使用 processBones
         this._processBones = processBones;
 
         this.clock = new THREE.Clock();
+
+        // Pre-warm：立即应用第 0 帧，避免 T-pose 闪烁
+        this.currentAction.play();
+        this.mixer.update(0);
+        if (this.ikSolver) this.ikSolver.update();
+        if (this.grantSolver) this.grantSolver.update();
+        mmd.mesh.updateMatrixWorld(true);
+
+        // 在第 0 帧姿态上初始化骨骼备份（而非 T-pose）
+        this._initBoneBackup(mmd.mesh);
+
+        // 暂停，等待外部调用 play()
+        this.currentAction.paused = true;
+        this.clock.stop();
+
         console.log('[MMD Animation] 动画加载完成:', vmdUrl);
 
         return clip;
@@ -158,14 +181,18 @@ class MMDAnimation {
 
     play() {
         if (!this.currentAction) return;
+        this.currentAction.paused = false;
         this.currentAction.play();
         if (this.clock) this.clock.start();
         this.isPlaying = true;
+        this.isPaused = false;
+        this.manager._isTPose = false;
     }
 
     pause() {
         if (this.clock) this.clock.stop();
         this.isPlaying = false;
+        this.isPaused = true;
     }
 
     stop() {
@@ -174,6 +201,7 @@ class MMDAnimation {
         }
         if (this.clock) this.clock.stop();
         this.isPlaying = false;
+        this.isPaused = false;
     }
 
     setLoop(loop) {
@@ -358,6 +386,7 @@ class MMDAnimation {
         this.grantSolver = null;
         this._boneBackup = null;
         this.isPlaying = false;
+        this.isPaused = false;
         if (this.clock) {
             this.clock.stop();
             this.clock = null;

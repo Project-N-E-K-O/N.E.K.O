@@ -261,9 +261,8 @@ class MMDCore {
             this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
         }
 
-        // NoToneMapping 与 hime-display 一致（Three.js r180 默认值）
-        // 可通过调试面板切换不同 toneMapping 实时比较效果
-        this.manager.renderer.toneMapping = THREE.NoToneMapping;
+        // 默认使用 NeutralToneMapping（色调平衡、对比度适中）
+        this.manager.renderer.toneMapping = THREE.NeutralToneMapping;
         this.manager.renderer.toneMappingExposure = 1.0;
 
         // Canvas 样式
@@ -835,10 +834,11 @@ class MMDCore {
             this.manager.animationModule.update(clampedDelta);
         }
 
-        // 2. IK/Grant 求解（每帧执行）
+        // 2. IK/Grant 求解（仅在无动画静止状态执行，暂停时跳过）
         //    Grant（付与変換）常用负比率实现骨骼联动（如裙摆反向补偿），
-        //    必须每帧执行，否则 kinematic 骨骼位置错误导致物理镜像分离。
-        if (this.manager.animationModule && !this.manager.animationModule.isPlaying) {
+        //    必须在静止状态每帧执行，否则 kinematic 骨骼位置错误导致物理镜像分离。
+        //    但在暂停时不应运行——暂停保持的是动画帧的快照，IK 会破坏该快照。
+        if (this.manager.animationModule && !this.manager.animationModule.isPlaying && !this.manager.animationModule.isPaused) {
             const anim = this.manager.animationModule;
             const mmd = this.manager.currentModel;
             if (mmd && mmd.mesh) {
@@ -854,18 +854,26 @@ class MMDCore {
         }
 
         // 4. 更新物理（库内部有 substep）
-        if (this.manager.enablePhysics && this.manager.currentModel && this.manager.currentModel.physics) {
+        //    暂停时冻结物理，防止头发/裙摆持续摆动
+        const animPaused = this.manager.animationModule && this.manager.animationModule.isPaused;
+        if (this.manager.enablePhysics && this.manager.currentModel && this.manager.currentModel.physics && !animPaused) {
             this.manager.currentModel.update(clampedDelta);
         }
 
         // 5. 更新表情模块（眨眼、口型同步等）
-        if (this.manager.expression) {
+        //    暂停时冻结表情，防止自动眨眼导致的循环感
+        if (this.manager.expression && !animPaused) {
             this.manager.expression.update(clampedDelta);
         }
 
         // 更新 OrbitControls
         if (this.manager.controls) {
             this.manager.controls.update();
+        }
+
+        // 更新屏幕空间包围盒缓存（用于悬停检测和鼠标穿透判断）
+        if (this.manager.interaction) {
+            this.manager.interaction.updateScreenBounds();
         }
 
         // 渲染
@@ -925,6 +933,9 @@ class MMDCore {
         }
 
         this.manager.enablePhysics = hadPhysics;
+
+        // 标记 T-Pose 状态，让鼠标跟踪模块跳过眼骨旋转
+        this.manager._isTPose = true;
     }
 
     resetModelPosition() {
@@ -1127,10 +1138,16 @@ class MMDCore {
             }
 
             // 恢复缩放（含跨分辨率归一化）
+            // MMD 模型 scale 必须均匀（x=y=z），否则模型变形。
+            // 历史偏好或 bug 可能保存了非均匀值，加载时强制均匀化。
             if (preferences.scale) {
                 const scl = preferences.scale;
                 if (Number.isFinite(scl.x) && Number.isFinite(scl.y) && Number.isFinite(scl.z) &&
                     scl.x > 0 && scl.y > 0 && scl.z > 0) {
+                    let uniformScale = (scl.x + scl.y + scl.z) / 3;
+                    if (Math.abs(scl.x - scl.y) > 0.001 || Math.abs(scl.y - scl.z) > 0.001) {
+                        console.warn(`[MMD Core] 非均匀缩放已修正: (${scl.x.toFixed(3)}, ${scl.y.toFixed(3)}, ${scl.z.toFixed(3)}) → ${uniformScale.toFixed(3)}`);
+                    }
                     const savedViewport = preferences.viewport;
                     const currentScreenH = window.screen.height;
                     const hRatio = (savedViewport &&
@@ -1138,11 +1155,10 @@ class MMDCore {
                         ? currentScreenH / savedViewport.height : 1;
                     const isExtremeChange = hRatio > 1.8 || hRatio < 0.56;
                     if (isExtremeChange) {
-                        mesh.scale.set(scl.x * hRatio, scl.y * hRatio, scl.z * hRatio);
+                        uniformScale *= hRatio;
                         console.log('[MMD Core] 屏幕分辨率大幅变化，缩放已归一化');
-                    } else {
-                        mesh.scale.set(scl.x, scl.y, scl.z);
                     }
+                    mesh.scale.setScalar(uniformScale);
                 }
             }
 

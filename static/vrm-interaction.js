@@ -938,15 +938,28 @@ class VRMInteraction {
         // 注意：vrm-core.js init 时设置了 container.style.opacity='1'（内联样式），
         // CSS class 优先级低于内联样式，因此必须直接操作 style.opacity 才能生效
         const vrmContainer = document.getElementById('vrm-container');
-        let lockedHoverFadeActive = false;
+        let ctrlFadeActive = false;      // Ctrl 按住淡化
+        let stationaryFadeActive = false; // 静止1秒淡化
         let isCtrlPressed = false;
-        const setLockedHoverFade = (shouldFade) => {
+
+        // 静止自动淡化：鼠标在模型范围内静止1秒后自动淡化
+        this._vrmStationaryFadeTimer = null;
+        this._vrmHasEnteredHoverRange = false; // 是否已进入过模型范围
+        const STATIONARY_FADE_DELAY = 1000;
+
+        const clearStationaryFadeTimer = () => {
+            if (this._vrmStationaryFadeTimer !== null) {
+                clearTimeout(this._vrmStationaryFadeTimer);
+                this._vrmStationaryFadeTimer = null;
+            }
+        };
+
+        const applyFade = (forceFade) => {
             if (!vrmContainer) return;
-            if (lockedHoverFadeActive === shouldFade) return;
-            lockedHoverFadeActive = shouldFade;
+            const shouldFade = forceFade !== undefined ? forceFade : (ctrlFadeActive || stationaryFadeActive);
             vrmContainer.style.opacity = shouldFade ? '0.12' : '1';
         };
-        this._setLockedHoverFade = setLockedHoverFade;
+        this._setLockedHoverFade = applyFade;
 
         // 初始化缓存
         this.updateModelBoundsCache();
@@ -1069,6 +1082,10 @@ class VRMInteraction {
         };
 
         const shouldKeepUiVisible = (mouseX, mouseY, distanceToModel) => {
+            const popupUi = window.AvatarPopupUI || null;
+            if (popupUi && typeof popupUi.hasVisibleOverlay === 'function' && popupUi.hasVisibleOverlay('vrm')) {
+                return true;
+            }
             const threshold = getModelThreshold();
             if (distanceToModel < threshold) return true;
             if (isPointerNearUi(mouseX, mouseY)) return true;
@@ -1097,7 +1114,9 @@ class VRMInteraction {
                         mouseY >= lockRect.top && mouseY <= lockRect.bottom;
                 }
 
-                if (this._isMouseOverButtons || isMouseOverLock) {
+                const popupUi = window.AvatarPopupUI || null;
+                const hasOpenOverlay = !!(popupUi && typeof popupUi.hasVisibleOverlay === 'function' && popupUi.hasVisibleOverlay('vrm'));
+                if (this._isMouseOverButtons || isMouseOverLock || hasOpenOverlay) {
                     this._hideButtonsTimer = null;
                     startHideTimer(delay);
                     return;
@@ -1175,7 +1194,7 @@ class VRMInteraction {
 
             // 如果鼠标在按钮或锁图标上，不变淡，直接显示
             if (isOverButtons || isOverLock) {
-                setLockedHoverFade(false);
+                applyFade(false);
                 showButtons();
                 return;
             }
@@ -1183,10 +1202,37 @@ class VRMInteraction {
             // 使用缓存计算距离（避免重复的 Box3 计算）
             const distance = calculateDistanceToModel(mouseX, mouseY);
 
-            // 锁定 + Ctrl + 鼠标在模型附近 → 变淡（与 Live2D 侧逻辑一致）
+            // 静止自动淡化：锁定 + 鼠标在模型附近 + 静止超过1秒 → 变淡
+            // Ctrl 按住淡化：锁定 + Ctrl + 鼠标在模型附近 → 变淡
             const ctrlKeyPressed = isCtrlPressed;
-            const shouldFade = this.checkLocked() && ctrlKeyPressed && distance < hoverFadeThreshold;
-            setLockedHoverFade(shouldFade);
+            const isNearModel = distance < hoverFadeThreshold;
+
+            // 静止时启动定时器，移出范围时清除
+            if (this.checkLocked() && isNearModel) {
+                // 首次进入范围：设置标志并启动定时器
+                if (!this._vrmHasEnteredHoverRange) {
+                    this._vrmHasEnteredHoverRange = true;
+                    if (this._vrmStationaryFadeTimer === null && !stationaryFadeActive) {
+                        this._vrmStationaryFadeTimer = setTimeout(() => {
+                            stationaryFadeActive = true;
+                            applyFade();
+                        }, STATIONARY_FADE_DELAY);
+                    }
+                }
+                // 已在范围内：移动时不重启定时器
+            } else {
+                // 移出范围：清除定时器并重置标志
+                if (this._vrmStationaryFadeTimer !== null || stationaryFadeActive) {
+                    clearStationaryFadeTimer();
+                    stationaryFadeActive = false;
+                    applyFade();
+                }
+                this._vrmHasEnteredHoverRange = false;
+            }
+
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化）
+            ctrlFadeActive = this.checkLocked() && ctrlKeyPressed && isNearModel;
+            applyFade();
 
             // 锁定状态下不处理按钮显示/隐藏
             if (this.checkLocked()) return;
@@ -1229,17 +1275,21 @@ class VRMInteraction {
         const onKeyUp = (event) => {
             if (!event.ctrlKey && !event.metaKey) {
                 isCtrlPressed = false;
-                if (lockedHoverFadeActive) {
-                    setLockedHoverFade(false);
-                }
+                // Ctrl 释放时重新计算淡化状态，让 stationaryFadeActive 有机会生效
+                ctrlFadeActive = false;
+                applyFade();
             }
         };
         const onBlur = () => {
-            isCtrlPressed = false;
-            if (lockedHoverFadeActive) {
-                setLockedHoverFade(false);
+            clearStationaryFadeTimer();
+            // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
+            if (stationaryFadeActive) {
+                stationaryFadeActive = false;
+                applyFade();
             }
+            this._vrmHasEnteredHoverRange = false;
         };
+        this._vrmClearStationaryFadeTimer = clearStationaryFadeTimer;
 
         // 清理旧的键盘 / blur 监听器
         if (this._vrmCtrlKeyDownListener) {
@@ -1314,6 +1364,10 @@ class VRMInteraction {
         if (typeof this._setLockedHoverFade === 'function') {
             this._setLockedHoverFade(false);
             this._setLockedHoverFade = null;
+        }
+        if (this._vrmClearStationaryFadeTimer) {
+            this._vrmClearStationaryFadeTimer();
+            this._vrmClearStationaryFadeTimer = null;
         }
         if (this._hideButtonsTimer) {
             clearTimeout(this._hideButtonsTimer);
@@ -1506,4 +1560,3 @@ class VRMInteraction {
 
 // 导出到全局
 window.VRMInteraction = VRMInteraction;
-

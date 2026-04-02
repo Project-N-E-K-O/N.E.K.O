@@ -1790,9 +1790,10 @@ async def get_voice_preview(voice_id: str):
 
         # 生成音频
         dashscope.api_key = audio_api_key
-        # 参照 复刻.py 使用 cosyvoice-v3.5-plus 模型
         try:
-            synthesizer = SpeechSynthesizer(model="cosyvoice-v3.5-plus", voice=voice_id)
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model()
+            synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
             # 使用 asyncio.to_thread 包装同步阻塞调用
             audio_data = await asyncio.to_thread(lambda: synthesizer.call(text))
             
@@ -2371,17 +2372,23 @@ async def voice_clone(
     # ---------- 按 provider 调用对应克隆 API ----------
     try:
         if provider in ('minimax', 'minimax_intl'):
+            # 为MiniMax生成带随机数的前缀（避免重复）
+            import uuid
+            original_prefix = prefix  # 保存原始前缀用于显示
+            minimax_prefix = f"{prefix}_{uuid.uuid4().hex[:8]}"  # 添加8位随机数
+            
             minimax_lang = minimax_normalize_language(ref_language)
             client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
             voice_id = await client.clone_voice(
                 audio_buffer=normalized_buffer,
                 filename=normalized_filename,
-                prefix=prefix,
+                prefix=minimax_prefix,
                 language=minimax_lang,
             )
             voice_data = {
                 'voice_id': voice_id,
-                'prefix': prefix,
+                'prefix': original_prefix,  # 保存原始前缀（不含随机数）用于显示
+                'minimax_prefix': minimax_prefix,  # 保存实际使用的带随机数前缀
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'minimax_language': minimax_lang,
@@ -2391,13 +2398,16 @@ async def voice_clone(
             }
 
         else:  # cosyvoice
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = get_cosyvoice_clone_model()
             language_hints = qwen_language_hints(ref_language)
             client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
-            voice_id, tmp_url, request_id = await client.clone_voice(
+            voice_id, tmp_url, _request_id = await client.clone_voice(
                 audio_buffer=normalized_buffer,
                 filename=normalized_filename,
                 prefix=prefix,
                 language_hints=language_hints,
+                target_model=clone_model,
             )
             voice_data = {
                 'voice_id': voice_id,
@@ -2406,6 +2416,7 @@ async def voice_clone(
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'provider': 'cosyvoice',
+                'clone_model': clone_model,
                 'created_at': datetime.now().isoformat()
             }
 
@@ -2444,7 +2455,365 @@ async def voice_clone(
         'message': f'{provider_label}音色注册成功并已保存到音色库',
         'provider': provider,
     })
+
+
+@router.post('/voice_clone_direct')
+async def voice_clone_direct(request: Request):
+    """
+    直链语音克隆接口 - 跳过音频上传步骤，直接使用提供的直链URL注册音色
     
+    支持 CosyVoice 和 MiniMax 服务商：
+    - CosyVoice: 直接使用直链URL注册音色
+    - MiniMax: 先下载音频文件，再上传到MiniMax服务器注册音色
+    
+    请求体:
+        {
+            "direct_link": "https://example.com/audio.wav",  // 音频直链URL
+            "prefix": "custom_prefix",                        // 音色前缀名
+            "ref_language": "ch",                             // 参考音频语言
+            "provider": "cosyvoice"                           // 服务商：cosyvoice / minimax / minimax_intl
+        }
+    """
+    try:
+        data = await request.json()
+    except Exception as e:
+        return JSONResponse({'error': f'请求体解析失败: {e}'}, status_code=400)
+
+    direct_link = data.get('direct_link', '').strip()
+    prefix = data.get('prefix', '').strip()
+    ref_language = data.get('ref_language', 'ch').lower().strip()
+    provider = data.get('provider', 'cosyvoice').lower().strip()
+
+    # 参数验证
+    if not direct_link:
+        return JSONResponse({'error': '缺少 direct_link 参数'}, status_code=400)
+    if not prefix:
+        return JSONResponse({'error': '缺少 prefix 参数'}, status_code=400)
+    if not direct_link.startswith(('http://', 'https://')):
+        return JSONResponse({'error': 'direct_link 必须是有效的HTTP/HTTPS链接'}, status_code=400)
+
+    # SSRF防护：验证直链域名不是内网IP
+    try:
+        from urllib.parse import urlparse
+        import socket
+        import ipaddress
+        
+        parsed_url = urlparse(direct_link)
+        hostname = parsed_url.hostname
+        
+        if not hostname:
+            return JSONResponse({'error': '无法解析直链域名'}, status_code=400)
+        
+        # 解析域名到IP
+        try:
+            addr_info = socket.getaddrinfo(hostname, None)
+        except socket.gaierror:
+            return JSONResponse({'error': '无法解析直链域名'}, status_code=400)
+        
+        # 检查每个IP是否是内网IP
+        for _, _, _, _, sockaddr in addr_info:
+            ip = sockaddr[0]
+            try:
+                ip_obj = ipaddress.ip_address(ip)
+                # 检查是否是内网、回环、链路本地、未指定或多播地址
+                if (ip_obj.is_loopback or ip_obj.is_private or 
+                    ip_obj.is_link_local or ip_obj.is_unspecified or 
+                    ip_obj.is_multicast):
+                    return JSONResponse({
+                        'error': '直链不能指向内网地址',
+                        'code': 'PRIVATE_IP_NOT_ALLOWED'
+                    }, status_code=400)
+            except ValueError:
+                continue
+    except Exception as e:
+        logger.warning(f"SSRF检查失败: {e}")
+        return JSONResponse({'error': '直链安全检查失败'}, status_code=400)
+
+    # 验证语言参数
+    valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
+    if ref_language not in valid_languages:
+        ref_language = 'ch'
+
+    # 验证服务商参数
+    valid_providers = ['minimax', 'minimax_intl', 'cosyvoice']
+    if provider not in valid_providers:
+        return JSONResponse({
+            'error': f'无效的服务商: {provider}',
+            'code': 'TTS_PROVIDER_INVALID',
+            'message': f'支持的服务商: {", ".join(valid_providers)}'
+        }, status_code=400)
+
+    # 获取 API Key
+    _config_manager = get_config_manager()
+    api_key = _config_manager.get_tts_api_key(provider)
+    if not api_key:
+        if provider in ('minimax', 'minimax_intl'):
+            return JSONResponse({
+                'error': 'MINIMAX_API_KEY_MISSING',
+                'code': 'MINIMAX_API_KEY_MISSING',
+                'message': '未配置 MiniMax API Key，请先在设置中填写'
+            }, status_code=400)
+        else:
+            return JSONResponse({
+                'error': 'TTS_AUDIO_API_KEY_MISSING',
+                'code': 'TTS_AUDIO_API_KEY_MISSING'
+            }, status_code=400)
+
+    # 导入所有可能用到的异常类（用于后面的异常捕获）
+    from utils.voice_clone import MinimaxVoiceCloneError, QwenVoiceCloneError
+    
+    # 设置服务商相关参数
+    if provider in ('minimax', 'minimax_intl'):
+        from utils.voice_clone import (
+            MinimaxVoiceCloneClient, 
+            minimax_normalize_language,
+            get_minimax_base_url,
+            get_minimax_storage_prefix
+        )
+        base_url = get_minimax_base_url(provider)
+        storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
+        provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
+    else:  # cosyvoice
+        from utils.voice_clone import QwenVoiceCloneClient, qwen_language_hints
+        storage_key = api_key
+        provider_label = '阿里云CosyVoice'
+
+    # 验证直链是否可访问（HEAD失败时回退到GET）
+    try:
+        async with httpx.AsyncClient(timeout=30, proxy=None, trust_env=False) as client:
+            head_resp = await client.head(direct_link, follow_redirects=True)
+            if head_resp.status_code >= 400:
+                # HEAD失败，尝试GET
+                logger.warning(f"HEAD请求失败({head_resp.status_code})，尝试GET请求: {direct_link}")
+                get_resp = await client.get(direct_link, follow_redirects=True)
+                if get_resp.status_code >= 400:
+                    return JSONResponse({
+                        'error': f'直链无法访问，状态码: {get_resp.status_code}',
+                        'code': 'DIRECT_LINK_INACCESSIBLE'
+                    }, status_code=400)
+    except Exception as e:
+        logger.warning(f"直链验证失败: {e}")
+        # 不阻断流程，只是警告
+
+    # 根据服务商类型执行不同的克隆逻辑
+    try:
+        if provider in ('minimax', 'minimax_intl'):
+            # ========== MiniMax 直链克隆流程 ==========
+            # 1. 下载音频文件（使用流式读取避免内存问题）
+            logger.info(f"开始下载直链音频: {direct_link}")
+            MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
+            
+            async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
+                async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
+                    if download_resp.status_code != 200:
+                        return JSONResponse({
+                            'error': f'下载音频失败，状态码: {download_resp.status_code}',
+                            'code': 'DOWNLOAD_FAILED'
+                        }, status_code=400)
+                    
+                    # 从Content-Disposition或URL推断文件名
+                    filename = 'audio.wav'
+                    content_disposition = download_resp.headers.get('content-disposition', '')
+                    if 'filename=' in content_disposition:
+                        import re
+                        match = re.search(r'filename=["\']?([^"\';]+)', content_disposition)
+                        if match:
+                            filename = match.group(1)
+                    else:
+                        # 从URL路径获取文件名
+                        from urllib.parse import urlparse
+                        parsed = urlparse(direct_link)
+                        path_filename = parsed.path.split('/')[-1]
+                        if path_filename and '.' in path_filename:
+                            filename = path_filename
+                    
+                    # 流式读取内容并检查大小
+                    audio_buffer = io.BytesIO()
+                    total_size = 0
+                    async for chunk in download_resp.aiter_bytes(chunk_size=8192):
+                        total_size += len(chunk)
+                        if total_size > MAX_FILE_SIZE:
+                            return JSONResponse({
+                                'error': '音频文件超过100MB限制',
+                                'code': 'FILE_TOO_LARGE'
+                            }, status_code=400)
+                        audio_buffer.write(chunk)
+                    
+                    audio_buffer.seek(0)
+                    audio_bytes = audio_buffer.getvalue()
+            
+            logger.info(f"音频下载完成: {filename}, 大小: {len(audio_bytes)} bytes")
+            
+            # 2. 计算音频内容的 MD5 用于去重（与文件上传路径保持一致）
+            import hashlib
+            audio_md5 = hashlib.md5(audio_bytes).hexdigest()
+            
+            # 3. MD5 去重检查
+            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            if existing:
+                voice_id, voice_data = existing
+                logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")
+                return JSONResponse({
+                    'voice_id': voice_id,
+                    'message': f'已复用现有{provider_label}音色，跳过注册',
+                    'reused': True,
+                    'provider': provider
+                })
+            
+            # 2. 音频归一化处理（与文件上传路径保持一致）
+            from utils.audio import normalize_voice_clone_api_audio
+            original_buffer = io.BytesIO(audio_bytes)
+            normalized_buffer, normalized_filename, _ = normalize_voice_clone_api_audio(
+                original_buffer, filename
+            )
+            
+            # 3. 为MiniMax生成带随机数的前缀（避免重复）
+            import uuid
+            original_prefix = prefix  # 保存原始前缀用于显示
+            minimax_prefix = f"{prefix}_{uuid.uuid4().hex[:8]}"  # 添加8位随机数
+            
+            # 4. 使用 MinimaxVoiceCloneClient 上传并注册音色
+            minimax_lang = minimax_normalize_language(ref_language)
+            client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
+            
+            voice_id = await client.clone_voice(
+                audio_buffer=normalized_buffer,
+                filename=normalized_filename,
+                prefix=minimax_prefix,
+                language=minimax_lang,
+            )
+            
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': original_prefix,  # 保存原始前缀（不含随机数）用于显示
+                'minimax_prefix': minimax_prefix,  # 保存实际使用的带随机数前缀
+                'direct_link': direct_link,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'minimax_language': minimax_lang,
+                'provider': provider,
+                'minimax_base_url': base_url,
+                'created_at': datetime.now().isoformat(),
+                'is_direct_link': True
+            }
+            
+            logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
+            
+        else:  # cosyvoice
+            # ========== CosyVoice 直链克隆流程 ==========
+            # 1. 下载音频文件以计算内容MD5（使用流式读取避免内存问题）
+            logger.info(f"开始下载直链音频用于CosyVoice: {direct_link}")
+            MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
+            
+            async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
+                async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
+                    if download_resp.status_code != 200:
+                        return JSONResponse({
+                            'error': f'下载音频失败，状态码: {download_resp.status_code}',
+                            'code': 'DOWNLOAD_FAILED'
+                        }, status_code=400)
+                    
+                    # 流式读取内容并检查大小
+                    audio_buffer = io.BytesIO()
+                    total_size = 0
+                    async for chunk in download_resp.aiter_bytes(chunk_size=8192):
+                        total_size += len(chunk)
+                        if total_size > MAX_FILE_SIZE:
+                            return JSONResponse({
+                                'error': '音频文件超过100MB限制',
+                                'code': 'FILE_TOO_LARGE'
+                            }, status_code=400)
+                        audio_buffer.write(chunk)
+                    
+                    audio_buffer.seek(0)
+                    audio_bytes = audio_buffer.getvalue()
+            
+            logger.info(f"音频下载完成，大小: {len(audio_bytes)} bytes")
+            
+            # 2. 计算音频内容的 MD5 用于去重
+            import hashlib
+            audio_md5 = hashlib.md5(audio_bytes).hexdigest()
+            
+            # 3. MD5 去重检查
+            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            if existing:
+                voice_id, voice_data = existing
+                logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")
+                return JSONResponse({
+                    'voice_id': voice_id,
+                    'message': f'已复用现有{provider_label}音色，跳过注册',
+                    'reused': True,
+                    'provider': provider
+                })
+            
+            # 4. 使用直链注册音色
+            language_hints = qwen_language_hints(ref_language)
+            client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
+
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = get_cosyvoice_clone_model()
+            voice_id, _ = await asyncio.to_thread(
+                client.create_voice,
+                prefix=prefix,
+                url=direct_link,
+                language_hints=language_hints,
+                target_model=clone_model,
+            )
+
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': prefix,
+                'file_url': direct_link,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'cosyvoice',
+                'clone_model': clone_model,
+                'created_at': datetime.now().isoformat(),
+                'is_direct_link': True
+            }
+
+            logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
+
+    except (MinimaxVoiceCloneError, QwenVoiceCloneError) as e:
+        logger.error(f"{provider_label} 直链音色注册失败: {e}")
+        error_detail = str(e)
+        if '超时' in error_detail:
+            return JSONResponse({'error': error_detail, 'provider': provider}, status_code=408)
+        elif '下载' in error_detail:
+            return JSONResponse({'error': error_detail, 'provider': provider}, status_code=415)
+        return JSONResponse({
+            'error': f'{provider_label}音色注册失败: {error_detail}',
+            'provider': provider
+        }, status_code=500)
+    except Exception as e:
+        logger.error(f"{provider_label} 直链音色注册时发生错误: {e}")
+        return JSONResponse({
+            'error': f'{provider_label}音色注册失败: {str(e)}',
+            'provider': provider
+        }, status_code=500)
+
+    # 保存到本地音色库
+    try:
+        _config_manager.save_voice_for_api_key(storage_key, voice_id, voice_data)
+        logger.info(f"{provider_label} 直链 voice_id 已保存到音色库: {voice_id}")
+    except Exception as save_error:
+        logger.error(f"保存 {provider_label} 直链 voice_id 到音色库失败: {save_error}")
+        return JSONResponse({
+            'voice_id': voice_id,
+            'message': f'{provider_label}直链音色注册成功，但本地保存失败',
+            'local_save_failed': True,
+            'error': str(save_error),
+            'provider': provider,
+        }, status_code=200)
+
+    return JSONResponse({
+        'voice_id': voice_id,
+        'message': f'{provider_label}直链音色注册成功并已保存到音色库',
+        'provider': provider,
+        'is_direct_link': True
+    })
+
+
 @router.get('/character-card/list')
 async def get_character_cards():
     """获取character_cards文件夹中的所有角色卡"""

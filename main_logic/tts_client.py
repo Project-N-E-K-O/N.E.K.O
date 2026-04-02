@@ -829,6 +829,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     from dashscope.audio.tts_v2 import ResultCallback, SpeechSynthesizer, AudioFormat
     
     dashscope.api_key = audio_api_key
+
+    # 从 voice 元数据中读取注册时使用的模型，fallback 到全局配置
+    _voice_meta = _get_voice_meta(voice_id)
+    _enrolled_model = (_voice_meta or {}).get('clone_model') if _voice_meta else None
     
     _RE_KANA = re.compile(r'[\u3040-\u309F\u30A0-\u30FF]')
     MIN_BUFFER_CHARS = 6
@@ -940,15 +944,20 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         """创建新的 SpeechSynthesizer，可选语言提示。
         仅建立 WebSocket 连接，不发送预热文本——调用方会紧接着发送真实文本。
         """
+        from utils.api_config_loader import (
+            cosyvoice_model_supports_language_hints,
+            get_cosyvoice_clone_model,
+        )
         nonlocal last_streaming_call_time
+        clone_model = _enrolled_model or get_cosyvoice_clone_model()
         kwargs = dict(
-            model="cosyvoice-v3.5-plus",
+            model=clone_model,
             voice=voice_id,
             speech_rate=1.05,
             format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,
             callback=callback,
         )
-        if lang_hint:
+        if lang_hint and cosyvoice_model_supports_language_hints(clone_model):
             kwargs["language_hints"] = [lang_hint]
         callback.construct_start_time = time.time()
         syn = SpeechSynthesizer(**kwargs)
@@ -2050,9 +2059,13 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 
-    # 如果有自定义音色，使用 CosyVoice（阿里云）
-    if has_custom_voice:
-        return cosyvoice_vc_tts_worker, None
+    # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
+    # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
+    if has_custom_voice and voice_id:
+        from utils.api_config_loader import get_free_voices
+        if voice_id not in set(get_free_voices().values()):
+            return cosyvoice_vc_tts_worker, None
+        logger.info("voice_id '%s' 是免费预设音色，跳过 CosyVoice，使用默认 TTS", voice_id)
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type == 'qwen':

@@ -590,6 +590,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         const path = e.composedPath ? e.composedPath() : (e.path || []);
         if (path.includes(buttonsContainer)) return;
         if (path.some(n => n && n.id && n.id.startsWith('live2d-popup-'))) return;
+        if (path.some(n => n && typeof n.hasAttribute === 'function' && n.hasAttribute('data-neko-sidepanel'))) return;
         const openPopup = Array.from(document.querySelectorAll('[id^="live2d-popup-"]')).find(el =>
             getComputedStyle(el).display === 'flex');
         if (!openPopup) return;

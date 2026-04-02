@@ -1735,6 +1735,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (tonemapping) {
                     lightingData.lighting.toneMapping = parseInt(tonemapping.value);
                 }
+                const outlineWidthSlider = document.getElementById('vrm-outline-width-slider');
+                if (outlineWidthSlider) {
+                    lightingData.lighting.outlineWidthScale = parseFloat(outlineWidthSlider.value);
+                }
 
                 try {
                     lightingResult = await RequestHelper.fetchJson(
@@ -3036,11 +3040,27 @@ document.addEventListener('DOMContentLoaded', async () => {
             const animationPath = e.target.value;
             if (animationPath && playVrmAnimationBtn) {
                 playVrmAnimationBtn.disabled = false;
-                // 切换动作时，如果正在播放，先停止
-                if (isVrmAnimationPlaying && vrmManager) {
-                    vrmManager.stopVRMAAnimation();
-                    isVrmAnimationPlaying = false;
-                    updateVRMAnimationPlayButtonIcon();
+                // 不在此处 stopVRMAAnimation — playVRMAAnimation 内部会 crossfade
+                // 自动播放选中的动作
+                if (vrmManager) {
+                    const selectedOption = vrmAnimationSelect.options[vrmAnimationSelect.selectedIndex];
+                    const originalPath = selectedOption ? selectedOption.getAttribute('data-path') : animationPath;
+                    const animDisplayName = selectedOption ? selectedOption.getAttribute('data-filename') : '';
+                    const finalAnimationUrl = ModelPathHelper.vrmToUrl(originalPath, 'animation');
+                    try {
+                        showStatus(t('live2d.vrmAnimation.playingAnimation', `正在播放: ${animDisplayName}`, { name: animDisplayName }), 2000);
+                        await vrmManager.playVRMAAnimation(finalAnimationUrl, {
+                            loop: true,
+                            timeScale: 1.0,
+                            isIdle: false
+                        });
+                        isVrmAnimationPlaying = true;
+                        updateVRMAnimationPlayButtonIcon();
+                    } catch (error) {
+                        console.error('自动播放 VRM 动作失败:', error);
+                        isVrmAnimationPlaying = false;
+                        updateVRMAnimationPlayButtonIcon();
+                    }
                 }
             } else {
                 if (playVrmAnimationBtn) playVrmAnimationBtn.disabled = true;
@@ -3763,14 +3783,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 // 加载后播放保存的MMD待机动作（使用独立的待机状态）
                 const mmdIdleSel = mmdIdleAnimationSelect || document.getElementById('mmd-idle-animation-select');
-                if (mmdIdleSel && mmdIdleSel.value) {
+                const defaultMmdIdleUrl = '/static/mmd/animation/wait03.vmd';
+                const mmdIdleUrl = (mmdIdleSel && mmdIdleSel.value) ? mmdIdleSel.value : defaultMmdIdleUrl;
+                if (mmdIdleUrl) {
                     try {
-                        await window.mmdManager.loadAnimation(mmdIdleSel.value);
+                        await window.mmdManager.loadAnimation(mmdIdleUrl);
                         window.mmdManager.playAnimation();
                         isMmdIdlePlaying = true;
                         updateMMDAnimationPlayButtonIcon();
                         if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
-                        console.log('[MMD] 已播放待机动作:', mmdIdleSel.value);
+                        // 同步下拉选择器状态
+                        if (mmdIdleSel && !mmdIdleSel.value && mmdIdleUrl === defaultMmdIdleUrl) {
+                            const matchOpt = Array.from(mmdIdleSel.options).find(o => o.value.includes('wait03'));
+                            if (matchOpt) mmdIdleSel.value = matchOpt.value;
+                        }
+                        console.log('[MMD] 已播放待机动作:', mmdIdleUrl);
                     } catch (e) {
                         console.warn('[MMD] 播放待机动作失败:', e);
                     }
@@ -3802,16 +3829,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!window.mmdManager) return;
 
             try {
-                // 加载新动画前重置播放状态
-                if (isMmdAnimationPlaying) {
-                    window.mmdManager.stopAnimation();
-                    isMmdAnimationPlaying = false;
-                    updateMMDAnimationPlayButtonIcon();
-                }
+                // 不在此处 stopAnimation — loadAnimation 内部会清理旧动画
+                // 保持旧动画播放直到新动画加载完成，避免 T-pose 闪烁
                 showStatus(t('live2d.mmdAnimation.loading', '正在加载VMD动画...'), 0);
                 await window.mmdManager.loadAnimation(animPath);
-                showStatus(t('live2d.mmdAnimation.loadSuccess', 'VMD动画加载成功'), 2000);
                 if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
+                // 加载成功后自动播放
+                window.mmdManager.playAnimation();
+                isMmdAnimationPlaying = true;
+                updateMMDAnimationPlayButtonIcon();
+                showStatus(t('live2d.mmdAnimation.playing', 'VMD动画开始播放'), 2000);
             } catch (error) {
                 console.error('加载VMD动画失败:', error);
                 showStatus(t('live2d.mmdAnimation.loadFailed', 'VMD动画加载失败: {{error}}', { error: error.message }), 3000);
@@ -4149,6 +4176,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    // VRM 描边粗细 — 共用 helper
+    function applyVrmOutlineWidth(scale) {
+        const label = document.getElementById('vrm-outline-width-value');
+        if (label) label.textContent = scale.toFixed(2);
+        if (!vrmManager?.currentModel?.vrm?.scene) return;
+        vrmManager.currentModel.vrm.scene.traverse((object) => {
+            if (!object.isMesh && !object.isSkinnedMesh) return;
+            const mats = Array.isArray(object.material) ? object.material : [object.material];
+            mats.forEach(mat => {
+                if (!mat || !(mat._isOutline || mat.isOutline)) return;
+                if (mat._originalOutlineWidthFactor === undefined) {
+                    mat._originalOutlineWidthFactor = mat.outlineWidthFactor !== undefined ? mat.outlineWidthFactor : 0.002;
+                }
+                if (mat.outlineWidthFactor !== undefined) {
+                    mat.outlineWidthFactor = mat._originalOutlineWidthFactor * scale;
+                    mat.needsUpdate = true;
+                }
+            });
+        });
+    }
+
+    const vrmOutlineWidthSlider = document.getElementById('vrm-outline-width-slider');
+    if (vrmOutlineWidthSlider) {
+        vrmOutlineWidthSlider.addEventListener('input', (e) => {
+            applyVrmOutlineWidth(parseFloat(e.target.value));
+        });
+    }
+
     // 待机动作选择器
     if (idleAnimationSelect) {
         idleAnimationSelect.addEventListener('change', async (e) => {
@@ -4325,6 +4380,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     option.value = finalUrl;
                     option.textContent = displayName;
                     option.style.color = '#2ecc71';
+                    // 默认选中 wait03.vmd
+                    if (finalUrl.includes('wait03.vmd') || animPath.includes('wait03.vmd')) {
+                        option.selected = true;
+                    }
                     selectEl.appendChild(option);
                 });
                 console.log(`[MMD IdleAnimation] 待机动作列表加载成功，共 ${animations.length} 个动画`);
@@ -4683,6 +4742,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             if (exposureValue) {
                 exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+            }
+        }
+
+        // 恢复描边粗细
+        const vrmOutlineWidthSlider = document.getElementById('vrm-outline-width-slider');
+        if (vrmOutlineWidthSlider && lighting.outlineWidthScale !== undefined) {
+            const scale = Number(lighting.outlineWidthScale);
+            if (!Number.isNaN(scale)) {
+                vrmOutlineWidthSlider.value = scale;
+                applyVrmOutlineWidth(scale);
             }
         }
 

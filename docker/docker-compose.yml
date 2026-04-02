@@ -6,6 +6,7 @@ services:
     image: docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
     # 备用镜像源（如果上面的镜像源不可用）
     # image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
+    # image: projectneko/n.e.k.o:latest # DockerHub仓库
     
     # 容器配置
     container_name: neko
