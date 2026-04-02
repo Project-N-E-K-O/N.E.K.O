@@ -1170,6 +1170,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 iconClass: 'mmd-animation-select-icon',
                 iconSrc: '/static/icons/motion_select_icon.png?v=1',
                 defaultText: '选择VMD动画',
+                defaultTextKey: 'live2d.mmdAnimation.selectAnimation',
                 iconAlt: '选择VMD动画',
                 shouldSkipOption: (option) => {
                     return option.value === '' && (
@@ -3160,14 +3161,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 mmdModelSelect.disabled = false;
                 if (mmdModelSelectBtn) mmdModelSelectBtn.disabled = false;
             } else {
-                mmdModelSelect.innerHTML = '<option value="">未找到MMD模型</option>';
+                mmdModelSelect.innerHTML = `<option value="">${t('live2d.mmdModel.noModels', '未找到MMD模型')}</option>`;
             }
             updateMMDModelDropdown();
             updateMMDModelSelectButtonText();
         } catch (error) {
             console.error('加载MMD模型列表失败:', error);
             if (mmdModelSelect) {
-                mmdModelSelect.innerHTML = '<option value="">加载失败</option>';
+                mmdModelSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
             }
             updateMMDModelDropdown();
             updateMMDModelSelectButtonText();
@@ -3214,7 +3215,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             mmdAnimations = (data.success && Array.isArray(data.animations)) ? data.animations : [];
             if (!mmdAnimationSelect) return;
 
-            mmdAnimationSelect.innerHTML = '<option value="">选择VMD动画</option>';
+            mmdAnimationSelect.innerHTML = `<option value="">${t('live2d.mmdAnimation.selectAnimation', '选择VMD动画')}</option>`;
             if (mmdAnimations.length > 0) {
                 mmdAnimations.forEach(anim => {
                     const animPath = anim.path || anim.url || (typeof anim === 'string' ? anim : null);
@@ -3230,14 +3231,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 mmdAnimationSelect.disabled = false;
                 if (mmdAnimationSelectBtn) mmdAnimationSelectBtn.disabled = false;
             } else {
-                mmdAnimationSelect.innerHTML = '<option value="">未找到VMD动画</option>';
+                mmdAnimationSelect.innerHTML = `<option value="">${t('live2d.mmdAnimation.noAnimation', '无动画')}</option>`;
             }
             updateMMDAnimationDropdown();
             updateMMDAnimationSelectButtonText();
         } catch (error) {
             console.error('加载MMD动画列表失败:', error);
             if (mmdAnimationSelect) {
-                mmdAnimationSelect.innerHTML = '<option value="">加载失败</option>';
+                mmdAnimationSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
             }
             updateMMDAnimationDropdown();
             updateMMDAnimationSelectButtonText();

@@ -983,6 +983,7 @@
             "deleteModelTitle": "刪除已匯入MMD模型",
             "deleteWarning": "以下列出了所有已匯入的使用者MMD模型。選擇要刪除的模型（模型資料夾及貢圖將一併刪除）。",
             "noUserModels": "暫無可刪除的使用者MMD模型",
+            "noModels": "未找到MMD模型",
             "deleteSelected": "刪除選中"
         },
         "mmdAnimation": {

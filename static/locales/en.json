@@ -983,6 +983,7 @@
             "deleteModelTitle": "Delete Imported MMD Models",
             "deleteWarning": "Below are all imported user MMD models. Select models to delete (model folder and textures will be deleted together).",
             "noUserModels": "No user MMD models to delete",
+            "noModels": "No MMD models found",
             "deleteSelected": "Delete Selected"
         },
         "mmdAnimation": {

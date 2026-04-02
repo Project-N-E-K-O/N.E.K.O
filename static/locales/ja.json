@@ -983,6 +983,7 @@
             "deleteModelTitle": "インポート済みMMDモデルを削除",
             "deleteWarning": "以下はすべてのインポート済みユーザーMMDモデルです。削除するモデルを選択してください（モデルフォルダとテクスチャも削除されます）。",
             "noUserModels": "削除可能なユーザーMMDモデルはありません",
+            "noModels": "MMDモデルが見つかりません",
             "deleteSelected": "選択を削除"
         },
         "mmdAnimation": {
