@@ -1196,7 +1196,7 @@
         "directLinkUrl": "音频直链URL（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "输入可公网访问的音频文件直链，系统将跳过上传步骤直接使用该链接注册音色",
-        "pleaseEnterDirectLink": "请输入音频直链URL并填写前缀",
+        "pleaseEnterDirectLink": "请输入音频直链URL",
         "invalidDirectLink": "请输入有效的HTTP/HTTPS链接",
         "silenceModal": {
             "title": "智能空白音频检测结果",
