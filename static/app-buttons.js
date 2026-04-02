@@ -179,6 +179,8 @@
         var screenshotThumbnailContainer = S.dom.screenshotThumbnailContainer = document.getElementById('screenshot-thumbnail-container');
         var screenshotCountEl    = S.dom.screenshotCount      = document.getElementById('screenshot-count');
         var clearAllScreenshots  = S.dom.clearAllScreenshots   = document.getElementById('clear-all-screenshots');
+        var textInputComposing = false;
+        var lastTextCompositionEndAt = 0;
 
         // ----------------------------------------------------------------
         // Mic button click
@@ -781,10 +783,27 @@
             }
         });
 
+        // 中文输入法候选确认时，Enter 也会参与组合输入流程；这里单独跟踪，避免误发消息。
+        textInputBox.addEventListener('compositionstart', function () {
+            textInputComposing = true;
+        });
+
+        textInputBox.addEventListener('compositionend', function () {
+            textInputComposing = false;
+            lastTextCompositionEndAt = Date.now();
+        });
+
         // ----------------------------------------------------------------
         // Enter key sends text (Shift+Enter for newline)
         // ----------------------------------------------------------------
         textInputBox.addEventListener('keydown', function (e) {
+            var isImeEnter = e.isComposing || e.keyCode === 229 || textInputComposing;
+            var justEndedComposition = lastTextCompositionEndAt > 0 && (Date.now() - lastTextCompositionEndAt) < 80;
+
+            if (isImeEnter || justEndedComposition) {
+                return;
+            }
+
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 textSendButton.click();
