@@ -7,6 +7,7 @@
         "save": "저장",
         "cancel": "취소",
         "confirm": "확인",
+        "next": "다음",
         "ok": "알았어",
         "delete": "삭제",
         "edit": "편집",
@@ -451,6 +452,7 @@
         "API_RATE_LIMIT": "💥 요청이 너무 많습니다 (429). 잠시 후 다시 시도해 주세요.",
         "API_POLICY_VIOLATION": "💥 정책 위반 또는 보안 차단: {{msg}}",
         "API_1008_FALLBACK": "💥 연결이 끊어졌습니다 (1008): {{msg}}",
+        "API_IDLE_TIMEOUT": "💥 장시간 미사용으로 음성 연결이 끊어졌습니다. 자동 재연결 중...",
         "API_UNKNOWN_ERROR": "💥 API 오류: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 메모리 서버가 시작되지 않았습니다! 먼저 memory_server.py를 실행하세요.",
         "MEMORY_SERVER_CRASHED": "🧠 메모리 서버(포트 {{port}})가 충돌했습니다. memory_server.py를 재시작하세요.",
@@ -618,9 +620,9 @@
         "aliFeature": "Alibaba: 무료 할당량 사용 가능, 가장 포괄적인 기능",
         "glmFeature": "GLM: 속도 제한은 매우 엄격합니다. 오디오/비디오 모델은 단종되어 Core API로 사용할 수 없습니다.",
         "stepFeature": "StepFun: 무료 할당량이 있고 매우 좋은 가치가 있지만 에이전트 모드를 지원하지 않습니다.",
-        "openaiFeature": "OpenAI: 중국에서는 사용할 수 없음, 비싸고 높은 지능 수준",
+        "openaiFeature": "OpenAI: 비싸고 높은 지능 수준",
         "siliconFeature": "SiliconFlow: 무료 할당량, 좋은 가치, 제한된 기능이 있으며 Assist API에만 해당됩니다.",
-        "geminiFeature": "Gemini: 지능과 가치가 뛰어나지만 중국 국내 버전에서는 사용할 수 없음",
+        "geminiFeature": "Gemini: 지능과 가치가 뛰어남",
         "configSuggestion": "구성 제안:",
         "freeVersionSuggestion": "무료 버전: 완전 무료, API 키 필요 없음, 초보자에게 적합(사용자 정의 음성 및 에이전트 모드는 지원되지 않음)",
         "coreApiSuggestion": "핵심 API: 대화 기능을 처리하고 예산과 필요에 따라 선택합니다.",
@@ -630,8 +632,8 @@
         "aliCore": "Alibaba: 무료 할당량 사용 가능, 포괄적인 기능",
         "glmCore": "GLM: 모델이 일시적으로 중단되어 사용할 수 없습니다.",
         "stepCore": "StepFun: 완전 무료, 높은 지능 수준이지만 속도 제한이 너무 엄격하여 권장되지 않음",
-        "openaiCore": "OpenAI: 가장 높은 지능 수준이지만 중국에서는 사용할 수 없으며 비용이 많이 듭니다.",
-        "geminiCore": "Gemini: 지능과 가치가 뛰어나지만 중국 국내 버전에서는 사용할 수 없음",
+        "openaiCore": "OpenAI: 가장 높은 지능 수준이지만 비용이 많이 듭니다.",
+        "geminiCore": "Gemini: 지능과 가치가 뛰어남",
         "assistApiTitle": "Assist API는 메모리 관리, 문자 채팅, 에이전트 모드 및 사용자 정의 음성을 처리합니다.",
         "freeVersionAssist": "무료 버전: 완전 무료, API 키가 필요하지 않지만 사용자 정의 음성은 지원되지 않습니다.",
         "aliAssist": "Alibaba: 권장 선택, 사용자 정의 음성 및 에이전트 모드 지원",
@@ -639,8 +641,8 @@
         "stepAssist": "StepFun: 저렴하지만 동시성/RPM 제한이 매우 엄격하여 권장되지 않습니다.",
         "siliconAssist": "SiliconFlow: 좋은 가치, 에이전트 모드 지원",
         "openaiAssist": "OpenAI: 강력한 메모리 관리 기능",
-        "geminiAssist": "Gemini: 지능과 가치가 뛰어나지만 중국 국내 버전에서는 사용할 수 없음",
-        "kimiAssist": "Kimi: 중국 내 사용 가능, 긴 컨텍스트 및 비전 지원",
+        "geminiAssist": "Gemini: 지능과 가치가 뛰어남",
+        "kimiAssist": "Kimi: 긴 컨텍스트 및 비전 지원",
         "assistApiNote": "참고: Alibaba만이 사용자 정의 음성 기능을 지원합니다. GLM 및 StepFun은 권장되지 않습니다.",
         "assistApiKeyQwen": "지원 API 키 - Alibaba",
         "assistApiKeyOpenai": "지원 API 키 - OpenAI",
@@ -674,12 +676,13 @@
             "glm": "GLM",
             "step": "스텝펀",
             "silicon": "SiliconFlow(좋은 가치, 권장)",
-            "gemini": "Gemini(Google, High Intelligence, 중국에서는 사용할 수 없음)",
-            "kimi": "Kimi(Moonshot, 중국 내 사용 가능, 긴 컨텍스트 지원)",
+            "gemini": "Gemini(Google, High Intelligence)",
+            "kimi": "Kimi(Moonshot, 긴 컨텍스트 지원)",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance(Doubao)",
-            "minimax": "MiniMax(국내 서버)",
+            "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
+            "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)"
         },
         "coreApiAutoFillHint": "API 관리 대장에서 키가 자동 입력됩니다. 직접 입력도 가능합니다",
@@ -706,8 +709,9 @@
             "gemini": "Gemini(Google)",
             "kimi": "Moonshot(Kimi)",
             "doubao": "ByteDance(Doubao)",
-            "minimax": "MiniMax(국내 서버)",
+            "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
+            "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)"
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",
@@ -979,6 +983,7 @@
             "deleteModelTitle": "가져온 MMD 모델 삭제",
             "deleteWarning": "아래는 가져온 모든 사용자 MMD 모델입니다. 삭제할 모델을 선택하세요(모델 폴더와 텍스처가 함께 삭제됩니다).",
             "noUserModels": "삭제할 사용자 MMD 모델이 없습니다",
+            "noModels": "MMD 모델을 찾을 수 없습니다",
             "deleteSelected": "선택 삭제"
         },
         "mmdAnimation": {
@@ -1115,12 +1120,12 @@
     "voice": {
         "title": "음성 등록",
         "alibabaApiRequired": "⚠️ 이 기능에는 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Bailian API 키를 저장하세요 (Assist API 활성화 불필요). 또는 로컬 음성 서버를 구성하세요.",
-        "minimaxApiRequired": "⚠️ 이 기능에는 MiniMax 모델(중국 내수)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
+        "minimaxApiRequired": "⚠️ 이 기능에는 MiniMax 모델 (China)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
         "minimaxIntlApiRequired": "⚠️ 이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
-            "minimax": "MiniMax (중국 내수)",
+            "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (국제판)"
         },
         "selectFile": "로컬 오디오 파일 선택(8초 권장, 최대 20초, wav/mp3 형식)",
@@ -1173,13 +1178,25 @@
         "deleteError": "삭제 실패: {{error}}",
         "freePresetLabel": "무료 사전 설정",
         "freePresetBadge": "사전 설정",
+        "freeVoice": {
+            "playfulGirl": "장난기 많은 소녀",
+            "cuteGirl": "귀여운 소녀",
+            "cuteMaiden": "귀여운 아가씨",
+            "heroine": "여협객",
+            "livelyGirl": "발랄한 소녀",
+            "coolLady": "시크한 누나",
+            "gentleMaiden": "부드러운 아가씨",
+            "sweetLady": "달콤한 누나",
+            "frailMaiden": "병약한 아가씨",
+            "childishMaiden": "철없는 아가씨"
+        },
         "cloneMethod": "클론 방식",
         "cloneMethodFile": "로컬 파일",
         "cloneMethodDirectLink": "직접 링크 클론",
         "directLinkUrl": "오디오 직접 링크 URL (8초 권장, 최대 20초, wav/mp3 형식)",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "공개 접근 가능한 오디오 파일의 직접 링크를 입력하세요. 시스템은 업로드 단계를 건너뛰고 이 링크를 직접 사용하여 음성을 등록합니다.",
-        "pleaseEnterDirectLink": "오디오 직접 링크 URL과 접두사를 입력하세요",
+        "pleaseEnterDirectLink": "오디오 직접 링크 URL을 입력하세요",
         "invalidDirectLink": "유효한 HTTP/HTTPS 링크를 입력하세요",
         "silenceModal": {
             "title": "스마트 무음 감지 결과",
@@ -1258,10 +1275,11 @@
         "apiKeySettings": "API 키",
         "masterProfile": "마스터 프로필(고유): 프로필 이름은 필수이며, 나머지는 선택 사항이며 삭제할 수 있습니다.",
         "profileName": "프로필 이름",
-        "profileNameMaxHint": "최대 20자",
+        "profileNameMaxHint": "최대 60자",
         "profileNameTooLong": "프로필 이름이 너무 깁니다.",
         "profileNameContainsSlash": "프로필 이름에 경로 구분 기호(/ 또는 \\)를 포함할 수 없습니다",
         "profileNameContainsDot": "프로필 이름에 점(.)을 포함할 수 없습니다",
+        "profileNameInvalidChars": "프로필 이름에는 문자, 숫자, 공백, 밑줄, 하이픈, 괄호, 가운데점(·/・), 아포스트로피만 사용할 수 있습니다",
         "newProfileNameRequired": "새 프로필 이름은 비워둘 수 없습니다.",
         "newProfileNameTooLong": "프로필 이름이 너무 깁니다.",
         "required": "*",
@@ -1408,7 +1426,7 @@
         "voiceUpdated": "{{name}}의 음성이 업데이트되었습니다.",
         "audioWorkletFailed": "AudioWorklet을 로드하지 못했습니다.",
         "audioContextError": "오디오 시스템 오류입니다. 다시 시도해 주세요.",
-        "sessionTimeout": "세션 시간 초과",
+        "sessionTimeout": "시작 시간 초과, 서버가 혼잡할 수 있습니다. 수동으로 다시 시도해주세요",
         "websocketNotConnectedError": "WebSocket이 연결되지 않음",
         "sessionStartFailed": "세션 시작이 {{count}}번 실패하고 자동 재시도가 중지되었습니다. 네트워크 및 API 구성을 확인하세요.",
         "sessionStartFailedCount": "세션 시작 오류: {{error}}({{count}}회 실패)",
@@ -1584,6 +1602,7 @@
             "statusQueued": "대기 중",
             "statusCompleted": "완료됨",
             "statusFailed": "실패",
+            "statusCancelled": "취소됨",
             "minimize": "접기/펼치기",
             "cancelAll": "모든 작업 취소",
             "cancelConfirm": "진행 중인 모든 작업을 취소하시겠습니까?",
@@ -1623,6 +1642,7 @@
             "bottomLight": "하단 조명",
             "exposure": "노출",
             "toneMapping": "톤 매핑",
+            "outlineWidth": "외곽선 두께",
             "resetLighting": "기본값 재설정",
             "saveLighting": "조명 저장",
             "selectPreset": "사전 설정 선택",
@@ -2010,7 +2030,7 @@
             },
             "step2": {
                 "title": "📝 프로필 이름 설정",
-                "desc": "이름이나 닉네임을 입력하세요. 동반자는 이것을 사용하여 당신에게 말할 것입니다. 최대 20자."
+                "desc": "이름이나 닉네임을 입력하세요. 동반자는 이것을 사용하여 당신에게 말할 것입니다. 최대 60자."
             },
             "step3": {
                 "title": "👥 성별 설정",
@@ -2594,11 +2614,26 @@
         "loadFailed": "곡 목록 로드 실패",
         "listContainerNotFound": "곡 목록 컨테이너를 찾을 수 없습니다",
         "noSongs": "곡이 없습니다",
-        "playFailed": "재생 실패"
+        "playFailed": "재생 실패",
+        "pause": "일시정지",
+        "resume": "계속",
+        "paused": "일시정지됨",
+        "resumed": "재생을 재개했습니다",
+        "pausedStatus": "일시정지: {{name}}",
+        "idleRestored": "대기 애니메이션이 복원되었습니다",
+        "idleRestoreFailed": "대기 애니메이션 복원 실패",
+        "btnNotFoundGiveUp": "주크박스 버튼을 찾을 수 없습니다, 바인딩 포기",
+        "minimizeBtnNotFoundGiveUp": "최소화 버튼을 찾을 수 없습니다, 모니터링 포기",
+        "noticeDance": "💃 댄스 기능은 MMD 아바타를 로드한 경우에만 사용할 수 있습니다",
+        "noticeMusic": "⚠️ 현재 곡은 테스트용입니다. 향후 버전에서 저작권 음악이 제거되오니 직접 가져오세요"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice가 3.5로 업그레이드되었습니다. 기존 음성이 만료되었으니 다시 클론하세요."
+            "legacyRemoved": "CosyVoice가 3.5로 업그레이드되었습니다. 기존 음성이 만료되었으니 다시 클론하세요.",
+            "legacyDetected": "이전 버전의 CosyVoice 음성이 감지되었습니다. 작동하지 않을 수 있으니 다시 클론하는 것을 권장합니다."
+        },
+        "changelog": {
+            "title": "업데이트 내용"
         }
     },
     "proactive": {

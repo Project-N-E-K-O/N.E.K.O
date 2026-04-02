@@ -33,11 +33,14 @@ class TimeIndexedMemory:
                     db_path = os.path.join(ensure_character_dir(config_mgr.memory_dir, lanlan_name), 'time_indexed.db')
                     logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
 
-            self.db_paths[lanlan_name] = db_path
-            self.engines[lanlan_name] = create_engine(f"sqlite:///{db_path}")
+            engine = create_engine(f"sqlite:///{db_path}")
             connection_string = f"sqlite:///{db_path}"
-            self._ensure_tables_exist(connection_string, lanlan_name)
-            self.check_table_schema(lanlan_name)
+            # 先完成所有初始化/迁移，再注册到 self.engines，
+            # 避免失败后引擎被标记为"已初始化"而跳过后续修复
+            self._ensure_tables_exist_with(engine, connection_string, lanlan_name)
+            self._check_and_migrate_schema(engine, lanlan_name)
+            self.db_paths[lanlan_name] = db_path
+            self.engines[lanlan_name] = engine
             return True
         except Exception:
             logger.exception(f"初始化角色数据库引擎失败: {lanlan_name}")
@@ -56,7 +59,7 @@ class TimeIndexedMemory:
         for name in list(self.engines.keys()):
             self.dispose_engine(name)
 
-    def _ensure_tables_exist(self, connection_string: str, lanlan_name: str) -> None:
+    def _ensure_tables_exist_with(self, engine, connection_string: str, lanlan_name: str) -> None:
         """
         确保原始表和压缩表存在喵~
         注意：此方法利用了 SQLChatMessageHistory 构造函数的副作用（自动创建表）。
@@ -72,41 +75,28 @@ class TimeIndexedMemory:
             session_id="",
             table_name=TIME_COMPRESSED_TABLE_NAME,
         )
-        
+
         # 验证表是否真的被创建了喵~
-        if lanlan_name in self.engines:
-            with self.engines[lanlan_name].connect() as conn:
-                for table in [TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME]:
-                    result = conn.execute(text(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"))
-                    if not result.fetchone():
-                        logger.error(f"[TimeIndexedMemory] 表 {table} 未能成功创建喵！")
+        with engine.connect() as conn:
+            for table in [TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME]:
+                result = conn.execute(text(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"))
+                if not result.fetchone():
+                    logger.error(f"[TimeIndexedMemory] 表 {table} 未能成功创建喵！")
 
-    def add_timestamp_column(self, lanlan_name):
-        if lanlan_name not in self.engines:
-            logger.warning(f"尝试为不存在的引擎 {lanlan_name} 添加列")
-            return
-        
-        original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
-        compressed_table = self._validate_table_name(TIME_COMPRESSED_TABLE_NAME)
-        
-        with self.engines[lanlan_name].connect() as conn:
-            conn.execute(text(f"ALTER TABLE {original_table} ADD COLUMN timestamp DATETIME"))
-            conn.execute(text(f"ALTER TABLE {compressed_table} ADD COLUMN timestamp DATETIME"))
-            conn.commit()
-
-    def check_table_schema(self, lanlan_name):
-        if lanlan_name not in self.engines:
-            return
-            
-        original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
-        
-        with self.engines[lanlan_name].connect() as conn:
-            result = conn.execute(text(f"PRAGMA table_info({original_table})"))
-            columns = result.fetchall()
-            for i in columns:
-                if i[1] == 'timestamp':
-                    return
-            self.add_timestamp_column(lanlan_name)
+    def _check_and_migrate_schema(self, engine, lanlan_name: str) -> None:
+        """逐表检查并补齐 timestamp 列，每张表独立处理避免互相影响。"""
+        for table_name in [TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME]:
+            table = self._validate_table_name(table_name)
+            try:
+                with engine.connect() as conn:
+                    result = conn.execute(text(f"PRAGMA table_info({table})"))
+                    columns = [row[1] for row in result.fetchall()]
+                    if 'timestamp' not in columns:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN timestamp DATETIME"))
+                        conn.commit()
+                        logger.info(f"[TimeIndexedMemory] 已为 {lanlan_name} 的表 {table} 补齐 timestamp 列")
+            except Exception:
+                logger.exception(f"[TimeIndexedMemory] 迁移 {lanlan_name} 表 {table} 失败")
 
     async def store_conversation(self, event_id, messages, lanlan_name, timestamp=None):
         # 确保数据库引擎和路径存在

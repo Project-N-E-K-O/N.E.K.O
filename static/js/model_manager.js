@@ -504,7 +504,41 @@ function sendMessageToMainPage(action, payload = {}) {
 // 全局变量：跟踪未保存的更改
 window.hasUnsavedChanges = false;
 
-// 仅当本页确实保存过配置时，才触发主界面重载（避免退出就把主界面模型/位置“复位”）
+// 采集当前所有可保存设置的快照（模型选择 + 打光 + 待机动作）
+function captureSettingsSnapshot() {
+    const modelSelect = document.getElementById('model-select');
+    const vrmModelSelect = document.getElementById('vrm-model-select');
+    return {
+        modelType: typeof currentModelType !== 'undefined' ? currentModelType : '',
+        live2d: modelSelect ? modelSelect.value : '',
+        live3d: vrmModelSelect ? vrmModelSelect.value : '',
+        // VRM 打光
+        ambient: document.getElementById('ambient-light-slider')?.value ?? '',
+        mainLight: document.getElementById('main-light-slider')?.value ?? '',
+        exposure: document.getElementById('exposure-slider')?.value ?? '',
+        toneMapping: document.getElementById('tonemapping-select')?.value ?? '',
+        outlineWidth: document.getElementById('vrm-outline-width-slider')?.value ?? '',
+        // MMD 打光
+        mmdAmbientIntensity: document.getElementById('mmd-ambient-intensity-slider')?.value ?? '',
+        mmdAmbientColor: document.getElementById('mmd-ambient-color-picker')?.value ?? '',
+        mmdDirectionalIntensity: document.getElementById('mmd-directional-intensity-slider')?.value ?? '',
+        mmdDirectionalColor: document.getElementById('mmd-directional-color-picker')?.value ?? '',
+        mmdExposure: document.getElementById('mmd-exposure-slider')?.value ?? '',
+        mmdToneMapping: document.getElementById('mmd-tonemapping-select')?.value ?? '',
+        mmdOutline: String(document.getElementById('mmd-outline-toggle')?.checked ?? false),
+        // 待机动作
+        idleAnimation: document.getElementById('idle-animation-select')?.value ?? '',
+        mmdIdleAnimation: document.getElementById('mmd-idle-animation-select')?.value ?? '',
+    };
+}
+
+// 比较两个快照是否一致
+function snapshotsEqual(a, b) {
+    if (!a || !b) return false;
+    return Object.keys(a).every(k => String(a[k]) === String(b[k]));
+}
+
+// 仅当本页确实保存过配置时，才触发主界面重载（避免退出就把主界面模型/位置”复位”）
 window._modelManagerHasSaved = false;
 window._modelManagerLanlanName = new URLSearchParams(window.location.search).get('lanlan_name') || '';
 /**
@@ -1170,6 +1204,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 iconClass: 'mmd-animation-select-icon',
                 iconSrc: '/static/icons/motion_select_icon.png?v=1',
                 defaultText: '选择VMD动画',
+                defaultTextKey: 'live2d.mmdAnimation.selectAnimation',
                 iconAlt: '选择VMD动画',
                 shouldSkipOption: (option) => {
                     return option.value === '' && (
@@ -1734,6 +1769,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const tonemapping = document.getElementById('tonemapping-select');
                 if (tonemapping) {
                     lightingData.lighting.toneMapping = parseInt(tonemapping.value);
+                }
+                const outlineWidthSlider = document.getElementById('vrm-outline-width-slider');
+                if (outlineWidthSlider) {
+                    lightingData.lighting.outlineWidthScale = parseFloat(outlineWidthSlider.value);
                 }
 
                 try {
@@ -3036,11 +3075,27 @@ document.addEventListener('DOMContentLoaded', async () => {
             const animationPath = e.target.value;
             if (animationPath && playVrmAnimationBtn) {
                 playVrmAnimationBtn.disabled = false;
-                // 切换动作时，如果正在播放，先停止
-                if (isVrmAnimationPlaying && vrmManager) {
-                    vrmManager.stopVRMAAnimation();
-                    isVrmAnimationPlaying = false;
-                    updateVRMAnimationPlayButtonIcon();
+                // 不在此处 stopVRMAAnimation — playVRMAAnimation 内部会 crossfade
+                // 自动播放选中的动作
+                if (vrmManager) {
+                    const selectedOption = vrmAnimationSelect.options[vrmAnimationSelect.selectedIndex];
+                    const originalPath = selectedOption ? selectedOption.getAttribute('data-path') : animationPath;
+                    const animDisplayName = selectedOption ? selectedOption.getAttribute('data-filename') : '';
+                    const finalAnimationUrl = ModelPathHelper.vrmToUrl(originalPath, 'animation');
+                    try {
+                        showStatus(t('live2d.vrmAnimation.playingAnimation', `正在播放: ${animDisplayName}`, { name: animDisplayName }), 2000);
+                        await vrmManager.playVRMAAnimation(finalAnimationUrl, {
+                            loop: true,
+                            timeScale: 1.0,
+                            isIdle: false
+                        });
+                        isVrmAnimationPlaying = true;
+                        updateVRMAnimationPlayButtonIcon();
+                    } catch (error) {
+                        console.error('自动播放 VRM 动作失败:', error);
+                        isVrmAnimationPlaying = false;
+                        updateVRMAnimationPlayButtonIcon();
+                    }
                 }
             } else {
                 if (playVrmAnimationBtn) playVrmAnimationBtn.disabled = true;
@@ -3140,14 +3195,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 mmdModelSelect.disabled = false;
                 if (mmdModelSelectBtn) mmdModelSelectBtn.disabled = false;
             } else {
-                mmdModelSelect.innerHTML = '<option value="">未找到MMD模型</option>';
+                mmdModelSelect.innerHTML = `<option value="">${t('live2d.mmdModel.noModels', '未找到MMD模型')}</option>`;
             }
             updateMMDModelDropdown();
             updateMMDModelSelectButtonText();
         } catch (error) {
             console.error('加载MMD模型列表失败:', error);
             if (mmdModelSelect) {
-                mmdModelSelect.innerHTML = '<option value="">加载失败</option>';
+                mmdModelSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
             }
             updateMMDModelDropdown();
             updateMMDModelSelectButtonText();
@@ -3194,7 +3249,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             mmdAnimations = (data.success && Array.isArray(data.animations)) ? data.animations : [];
             if (!mmdAnimationSelect) return;
 
-            mmdAnimationSelect.innerHTML = '<option value="">选择VMD动画</option>';
+            mmdAnimationSelect.innerHTML = `<option value="">${t('live2d.mmdAnimation.selectAnimation', '选择VMD动画')}</option>`;
             if (mmdAnimations.length > 0) {
                 mmdAnimations.forEach(anim => {
                     const animPath = anim.path || anim.url || (typeof anim === 'string' ? anim : null);
@@ -3210,14 +3265,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 mmdAnimationSelect.disabled = false;
                 if (mmdAnimationSelectBtn) mmdAnimationSelectBtn.disabled = false;
             } else {
-                mmdAnimationSelect.innerHTML = '<option value="">未找到VMD动画</option>';
+                mmdAnimationSelect.innerHTML = `<option value="">${t('live2d.mmdAnimation.noAnimation', '无动画')}</option>`;
             }
             updateMMDAnimationDropdown();
             updateMMDAnimationSelectButtonText();
         } catch (error) {
             console.error('加载MMD动画列表失败:', error);
             if (mmdAnimationSelect) {
-                mmdAnimationSelect.innerHTML = '<option value="">加载失败</option>';
+                mmdAnimationSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
             }
             updateMMDAnimationDropdown();
             updateMMDAnimationSelectButtonText();
@@ -3763,14 +3818,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 // 加载后播放保存的MMD待机动作（使用独立的待机状态）
                 const mmdIdleSel = mmdIdleAnimationSelect || document.getElementById('mmd-idle-animation-select');
-                if (mmdIdleSel && mmdIdleSel.value) {
+                const defaultMmdIdleUrl = '/static/mmd/animation/wait03.vmd';
+                const mmdIdleUrl = (mmdIdleSel && mmdIdleSel.value) ? mmdIdleSel.value : defaultMmdIdleUrl;
+                if (mmdIdleUrl) {
                     try {
-                        await window.mmdManager.loadAnimation(mmdIdleSel.value);
+                        await window.mmdManager.loadAnimation(mmdIdleUrl);
                         window.mmdManager.playAnimation();
                         isMmdIdlePlaying = true;
                         updateMMDAnimationPlayButtonIcon();
                         if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
-                        console.log('[MMD] 已播放待机动作:', mmdIdleSel.value);
+                        // 同步下拉选择器状态
+                        if (mmdIdleSel && !mmdIdleSel.value && mmdIdleUrl === defaultMmdIdleUrl) {
+                            const matchOpt = Array.from(mmdIdleSel.options).find(o => o.value.includes('wait03'));
+                            if (matchOpt) mmdIdleSel.value = matchOpt.value;
+                        }
+                        console.log('[MMD] 已播放待机动作:', mmdIdleUrl);
                     } catch (e) {
                         console.warn('[MMD] 播放待机动作失败:', e);
                     }
@@ -3802,16 +3864,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!window.mmdManager) return;
 
             try {
-                // 加载新动画前重置播放状态
-                if (isMmdAnimationPlaying) {
-                    window.mmdManager.stopAnimation();
-                    isMmdAnimationPlaying = false;
-                    updateMMDAnimationPlayButtonIcon();
-                }
+                // 不在此处 stopAnimation — loadAnimation 内部会清理旧动画
+                // 保持旧动画播放直到新动画加载完成，避免 T-pose 闪烁
                 showStatus(t('live2d.mmdAnimation.loading', '正在加载VMD动画...'), 0);
                 await window.mmdManager.loadAnimation(animPath);
-                showStatus(t('live2d.mmdAnimation.loadSuccess', 'VMD动画加载成功'), 2000);
                 if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
+                // 加载成功后自动播放
+                window.mmdManager.playAnimation();
+                isMmdAnimationPlaying = true;
+                updateMMDAnimationPlayButtonIcon();
+                showStatus(t('live2d.mmdAnimation.playing', 'VMD动画开始播放'), 2000);
             } catch (error) {
                 console.error('加载VMD动画失败:', error);
                 showStatus(t('live2d.mmdAnimation.loadFailed', 'VMD动画加载失败: {{error}}', { error: error.message }), 3000);
@@ -4053,6 +4115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (vrmManager && vrmManager.ambientLight) {
                 vrmManager.ambientLight.intensity = value;
             }
+            window.hasUnsavedChanges = true;
         });
     }
 
@@ -4064,6 +4127,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (vrmManager && vrmManager.mainLight) {
                 vrmManager.mainLight.intensity = value;
             }
+            window.hasUnsavedChanges = true;
         });
     }
 
@@ -4119,6 +4183,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (vrmManager && vrmManager.renderer) {
                 vrmManager.renderer.toneMappingExposure = value;
             }
+            window.hasUnsavedChanges = true;
         });
     }
 
@@ -4146,6 +4211,36 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (exposureValue) {
                 exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
             }
+            window.hasUnsavedChanges = true;
+        });
+    }
+
+    // VRM 描边粗细 — 共用 helper
+    function applyVrmOutlineWidth(scale) {
+        const label = document.getElementById('vrm-outline-width-value');
+        if (label) label.textContent = scale.toFixed(2);
+        if (!vrmManager?.currentModel?.vrm?.scene) return;
+        vrmManager.currentModel.vrm.scene.traverse((object) => {
+            if (!object.isMesh && !object.isSkinnedMesh) return;
+            const mats = Array.isArray(object.material) ? object.material : [object.material];
+            mats.forEach(mat => {
+                if (!mat || !(mat._isOutline || mat.isOutline)) return;
+                if (mat._originalOutlineWidthFactor === undefined) {
+                    mat._originalOutlineWidthFactor = mat.outlineWidthFactor !== undefined ? mat.outlineWidthFactor : 0.002;
+                }
+                if (mat.outlineWidthFactor !== undefined) {
+                    mat.outlineWidthFactor = mat._originalOutlineWidthFactor * scale;
+                    mat.needsUpdate = true;
+                }
+            });
+        });
+    }
+
+    const vrmOutlineWidthSlider = document.getElementById('vrm-outline-width-slider');
+    if (vrmOutlineWidthSlider) {
+        vrmOutlineWidthSlider.addEventListener('input', (e) => {
+            applyVrmOutlineWidth(parseFloat(e.target.value));
+            window.hasUnsavedChanges = true;
         });
     }
 
@@ -4154,6 +4249,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         idleAnimationSelect.addEventListener('change', async (e) => {
             const selectedUrl = e.target.value;
             if (!selectedUrl) return;
+            window.hasUnsavedChanges = true;
             // 实时切换待机动作：停止当前动画，播放新的循环动画
             if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
                 try {
@@ -4249,6 +4345,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (mmdIdleAnimationSelect) {
         mmdIdleAnimationSelect.addEventListener('change', async (e) => {
             const selectedUrl = e.target.value;
+            window.hasUnsavedChanges = true;
             // 实时切换MMD待机动作：停止当前动画，播放新的循环动画
             if (window.mmdManager && window.mmdManager.currentModel) {
                 try {
@@ -4325,6 +4422,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     option.value = finalUrl;
                     option.textContent = displayName;
                     option.style.color = '#2ecc71';
+                    // 默认选中 wait03.vmd
+                    if (finalUrl.includes('wait03.vmd') || animPath.includes('wait03.vmd')) {
+                        option.selected = true;
+                    }
                     selectEl.appendChild(option);
                 });
                 console.log(`[MMD IdleAnimation] 待机动作列表加载成功，共 ${animations.length} 个动画`);
@@ -4403,6 +4504,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const valEl = document.getElementById(valId);
                     if (valEl) valEl.textContent = fmt ? fmt(v) : v;
                     applyMmdSettings();
+                    window.hasUnsavedChanges = true;
                 });
             }
         });
@@ -4417,6 +4519,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const valEl = document.getElementById(valId);
                     if (valEl) valEl.textContent = e.target.value;
                     applyMmdSettings();
+                    window.hasUnsavedChanges = true;
                 });
             }
         });
@@ -4436,6 +4539,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (mmdExposureValue) {
                     mmdExposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
                 }
+                window.hasUnsavedChanges = true;
             });
         }
 
@@ -4445,6 +4549,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const statusEl = document.getElementById('mmd-outline-status');
                 if (statusEl) statusEl.textContent = e.target.checked ? 'ON' : 'OFF';
                 applyMmdSettings();
+                window.hasUnsavedChanges = true;
             });
         }
 
@@ -4683,6 +4788,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             if (exposureValue) {
                 exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+            }
+        }
+
+        // 恢复描边粗细
+        const vrmOutlineWidthSlider = document.getElementById('vrm-outline-width-slider');
+        if (vrmOutlineWidthSlider && lighting.outlineWidthScale !== undefined) {
+            const scale = Number(lighting.outlineWidthScale);
+            if (!Number.isNaN(scale)) {
+                vrmOutlineWidthSlider.value = scale;
+                applyVrmOutlineWidth(scale);
             }
         }
 
@@ -5310,20 +5425,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (modelSuccess) {
                 showStatus(t('live2d.settingsSaved', '模型设置保存成功!'), 2000);
                 window.hasUnsavedChanges = false;
+                window._savedModelSnapshot = captureSettingsSnapshot();
                 window._modelManagerHasSaved = true;
-                // 不在保存时立即通知主页，而是在返回主页时通知
-                // if (window.opener && !window.opener.closed) {
-                //     try {
-                //         window.opener.postMessage({
-                //             action: 'model_saved',
-                //             timestamp: Date.now()
-                //         }, window.location.origin);
-                //         console.log('[消息发送] VRM模型保存成功，立即发送 model_saved 消息');
-                //     } catch (e) {
-                //         console.warn('发送保存成功消息失败:', e);
-                //     }
-                // }
-                // sendMessageToMainPage('reload_model');
             } else {
                 showStatus(t('live2d.saveFailedGeneral', '保存失败!'), 2000);
             }
@@ -5332,6 +5435,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (positionSuccess && modelSuccess) {
                 showStatus(t('live2d.settingsSaved', '位置和模型设置保存成功!'), 2000);
                 window.hasUnsavedChanges = false; // 保存成功后重置标志
+                window._savedModelSnapshot = captureSettingsSnapshot();
                 window._modelManagerHasSaved = true;
                 // 不在保存时立即通知主页，而是在返回主页时通知
                 // sendMessageToMainPage('reload_model');
@@ -5341,6 +5445,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window._modelManagerHasSaved = true;
             } else if (modelSuccess) {
                 showStatus(t('live2d.modelSavedPositionFailed', '模型设置保存成功，位置保存失败!'), 2000);
+                window._savedModelSnapshot = captureSettingsSnapshot();
                 window._modelManagerHasSaved = true;
                 // 不在保存时立即通知主页，而是在返回主页时通知
                 // sendMessageToMainPage('reload_model');
@@ -5401,7 +5506,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         _earlyBackBtn.removeEventListener('click', _earlyBackHandler);
     }
     backToMainBtn.addEventListener('click', async () => {
-        // 检查是否有未保存的更改
+        // 退出前：比对当前设置和已保存快照，完全一致则视为无更改
+        if (window.hasUnsavedChanges && window._savedModelSnapshot) {
+            if (snapshotsEqual(window._savedModelSnapshot, captureSettingsSnapshot())) {
+                window.hasUnsavedChanges = false;
+            }
+        }
         if (window.hasUnsavedChanges) {
             const message = t('dialogs.unsavedChanges', '您有未保存的设置，确定要离开吗？');
             const title = t('dialogs.confirmLeave', '确认离开');
@@ -5411,7 +5521,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // 用户确认离开，重置未保存状态，避免被 beforeunload 拦截
             window.hasUnsavedChanges = false;
-        } else {
         }
 
         // 如果处于全屏状态，先退出全屏
@@ -7068,6 +7177,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             modelSelect.value = currentModelInfo.name;
         }
     }
+
+    // 等待异步设置（打光、待机动作等）加载完成后记录快照
+    setTimeout(() => {
+        window._savedModelSnapshot = captureSettingsSnapshot();
+    }, 500);
   } catch (_fatalError) {
     console.error('[模型管理] DOMContentLoaded 致命错误:', _fatalError);
     const _s = document.getElementById('status-text');

@@ -7,6 +7,7 @@
         "save": "保存",
         "cancel": "キャンセル",
         "confirm": "確認",
+        "next": "次へ",
         "ok": "OK",
         "delete": "削除",
         "edit": "編集",
@@ -451,6 +452,7 @@
         "API_RATE_LIMIT": "💥 リクエストが多すぎます(429)。しばらくしてからもう一度お試しください。",
         "API_POLICY_VIOLATION": "💥 ポリシー違反またはセキュリティブロック：{{msg}}",
         "API_1008_FALLBACK": "💥 接続が切断されました(1008)：{{msg}}",
+        "API_IDLE_TIMEOUT": "💥 長時間操作がなかったため音声接続が切断されました。自動再接続中...",
         "API_UNKNOWN_ERROR": "💥 APIエラー：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 メモリサーバーが起動していません！先に memory_server.py を実行してください。",
         "MEMORY_SERVER_CRASHED": "🧠 メモリサーバー(ポート{{port}})がクラッシュしました。memory_server.py を再起動してください。",
@@ -618,9 +620,9 @@
         "aliFeature": "Alibaba: 無料枠あり、機能が最も充実",
         "glmFeature": "GLM: 制限が非常に厳格。音声動画モデル停止中によりCore API利用不可",
         "stepFeature": "StepFun: 無料枠あり、コスパ良。Agentモード非対応",
-        "openaiFeature": "OpenAI: 中国内利用不可、高価、知能レベル高",
+        "openaiFeature": "OpenAI: 高価、知能レベル高",
         "siliconFeature": "SiliconFlow: 無料枠あり、コスパ良、機能限定、Assist APIのみ",
-        "geminiFeature": "Gemini: 知能・コスパ共に極めて優秀、中国国内版は非対応",
+        "geminiFeature": "Gemini: 知能・コスパ共に極めて優秀",
         "configSuggestion": "設定の提案:",
         "freeVersionSuggestion": "無料版: 完全無料、キー不要、初心者向け（カスタム音声/Agent不可）",
         "coreApiSuggestion": "Core API: 会話機能を担当。予算とニーズで選択",
@@ -630,8 +632,8 @@
         "aliCore": "Alibaba: 無料枠あり、機能充実",
         "glmCore": "GLM: モデル一時停止中のため利用不可",
         "stepCore": "StepFun: 完全無料、高知能だが制限厳しいため非推奨",
-        "openaiCore": "OpenAI: 最高知能だが中国内不可・高価",
-        "geminiCore": "Gemini: 知能・コスパ共に極めて優秀、中国国内版は非対応",
+        "openaiCore": "OpenAI: 最高知能だが高価",
+        "geminiCore": "Gemini: 知能・コスパ共に極めて優秀",
         "assistApiTitle": "Assist API（記憶/テキスト/Agent/カスタム音声担当）:",
         "freeVersionAssist": "無料版: 完全無料、キー不要（カスタム音声不可）",
         "aliAssist": "Alibaba: 推奨。カスタム音声とAgentモード対応",
@@ -639,8 +641,8 @@
         "stepAssist": "StepFun: 安価だが制限が厳しいため非推奨",
         "siliconAssist": "SiliconFlow: コスパ良、Agentモード対応",
         "openaiAssist": "OpenAI: 記憶管理能力が高い",
-        "geminiAssist": "Gemini: 知能・コスパ共に極めて優秀、中国国内版は非対応",
-        "kimiAssist": "Kimi: 中国国内利用可、ロングコンテキスト・ビジョン対応",
+        "geminiAssist": "Gemini: 知能・コスパ共に極めて優秀",
+        "kimiAssist": "Kimi: ロングコンテキスト・ビジョン対応",
         "assistApiNote": "注: カスタム音声機能はAlibabaのみ対応です。GLMとStepFunは非推奨です。",
         "assistApiKeyQwen": "Assist APIキー - Alibaba",
         "assistApiKeyOpenai": "Assist APIキー - OpenAI",
@@ -665,7 +667,7 @@
             "openai": "GPT-Realtime（OpenAI）",
             "glm": "GLM-realtime（GLM）",
             "step": "Step-2-Audio（StepFun）",
-            "gemini": "Gemini Live（Google、最高レベル、中国国内版非対応）"
+            "gemini": "Gemini Live（Google、最高レベル）"
         },
         "assistProviderNames": {
             "free": "無料版（猫娘特典）",
@@ -674,12 +676,13 @@
             "glm": "GLM",
             "step": "StepFun",
             "silicon": "SiliconFlow（高コスパ、推奨）",
-            "gemini": "Gemini（Google、高知能、中国国内版非対応）",
-            "kimi": "Kimi（Moonshot、中国国内利用可、ロングコンテキスト対応）",
+            "gemini": "Gemini（Google、高知能）",
+            "kimi": "Kimi（Moonshot、ロングコンテキスト対応）",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance（Doubao）",
-            "minimax": "MiniMax（国内版）",
+            "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
+            "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
         },
         "coreApiAutoFillHint": "API管理簿からキーが自動入力されます。直接入力も可能です",
@@ -706,8 +709,9 @@
             "gemini": "Gemini（Google）",
             "kimi": "Moonshot（Kimi）",
             "doubao": "ByteDance（Doubao）",
-            "minimax": "MiniMax（国内版）",
+            "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
+            "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",
@@ -979,6 +983,7 @@
             "deleteModelTitle": "インポート済みMMDモデルを削除",
             "deleteWarning": "以下はすべてのインポート済みユーザーMMDモデルです。削除するモデルを選択してください（モデルフォルダとテクスチャも削除されます）。",
             "noUserModels": "削除可能なユーザーMMDモデルはありません",
+            "noModels": "MMDモデルが見つかりません",
             "deleteSelected": "選択を削除"
         },
         "mmdAnimation": {
@@ -1115,12 +1120,12 @@
     "voice": {
         "title": "ボイス登録",
         "alibabaApiRequired": "⚠️ この機能にはCosyVoiceモデルが必要です。APIキー設定でAlibaba Bailian APIキーを保存してください（Assist APIの有効化は不要）。またはローカル音声サーバーを設定してください",
-        "minimaxApiRequired": "⚠️ この機能にはMiniMaxモデル（国内版）が必要です。APIキー設定でMiniMax APIキーを保存してください（Assist APIの有効化は不要）",
+        "minimaxApiRequired": "⚠️ この機能にはMiniMaxモデル（China）が必要です。APIキー設定でMiniMax APIキーを保存してください（Assist APIの有効化は不要）",
         "minimaxIntlApiRequired": "⚠️ この機能にはMiniMaxモデル（国際版）が必要です。APIキー設定でMiniMax国際版APIキーを保存してください（Assist APIの有効化は不要）",
         "providerLabel": "音声クローンプロバイダー",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
-            "minimax": "MiniMax（国内版）",
+            "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）"
         },
         "selectFile": "ローカル音声ファイルを選択（8秒推奨、最大20秒、wav/mp3形式）",
@@ -1173,13 +1178,25 @@
         "deleteError": "削除失敗：{{error}}",
         "freePresetLabel": "無料プリセット",
         "freePresetBadge": "プリセット",
+        "freeVoice": {
+            "playfulGirl": "陽気な少女",
+            "cuteGirl": "かわいい女の子",
+            "cuteMaiden": "かわいい少女",
+            "heroine": "ヒロイン",
+            "livelyGirl": "元気な少女",
+            "coolLady": "クールな女性",
+            "gentleMaiden": "優しい乙女",
+            "sweetLady": "甘々な女性",
+            "frailMaiden": "病弱な少女",
+            "childishMaiden": "幼い少女"
+        },
         "cloneMethod": "クローン方式",
         "cloneMethodFile": "ローカルファイル",
         "cloneMethodDirectLink": "直リンククローン",
         "directLinkUrl": "音声直リンクURL（8秒が最適、最大20秒、wav/mp3形式）",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "公開アクセス可能な音声ファイルの直リンクを入力してください。システムはアップロード手順をスキップし、このリンクを直接使用して音声を登録します。",
-        "pleaseEnterDirectLink": "音声直リンクURLとプレフィックスを入力してください",
+        "pleaseEnterDirectLink": "音声直リンクURLを入力してください",
         "invalidDirectLink": "有効なHTTP/HTTPSリンクを入力してください",
         "silenceModal": {
             "title": "スマート無音検出結果",
@@ -1258,10 +1275,11 @@
         "apiKeySettings": "APIキー",
         "masterProfile": "マスタープロフィール（ユニーク）: プロフィール名は必須、その他はオプションで削除可能です。",
         "profileName": "プロフィール名",
-        "profileNameMaxHint": "最大20文字",
+        "profileNameMaxHint": "最大60文字",
         "profileNameTooLong": "プロフィール名が長すぎます",
         "profileNameContainsSlash": "プロフィール名にパス区切り文字(/または\\)を含めることはできません",
         "profileNameContainsDot": "プロフィール名にドット(.)を含めることはできません",
+        "profileNameInvalidChars": "プロフィール名には文字、数字、空白、アンダースコア、ハイフン、括弧、中黒(·/・)、アポストロフィのみ使えます",
         "newProfileNameRequired": "新しいプロフィール名は空にできません",
         "newProfileNameTooLong": "プロフィール名が長すぎます",
         "required": "*",
@@ -1408,7 +1426,7 @@
         "voiceUpdated": "{{name}}の声が更新されました",
         "audioWorkletFailed": "AudioWorkletの読み込みに失敗しました",
         "audioContextError": "オーディオシステムエラー。再試行してください",
-        "sessionTimeout": "セッションタイムアウト",
+        "sessionTimeout": "起動がタイムアウトしました。サーバーが混雑している可能性があります。手動で再試行してください",
         "websocketNotConnectedError": "WebSocket未接続",
         "sessionStartFailed": "セッション開始が{{count}}回失敗しました。自動リトライを停止しました。ネットワークとAPI設定を確認してください。",
         "sessionStartFailedCount": "セッション開始エラー: {{error}} ({{count}}回失敗)",
@@ -1584,6 +1602,7 @@
             "statusQueued": "キュー中",
             "statusCompleted": "完了",
             "statusFailed": "失敗",
+            "statusCancelled": "キャンセル済み",
             "minimize": "折りたたみ/展開",
             "cancelAll": "すべてのタスクをキャンセル",
             "cancelConfirm": "実行中のすべてのタスクをキャンセルしますか？",
@@ -1623,6 +1642,7 @@
             "bottomLight": "ボトムライト",
             "exposure": "露出",
             "toneMapping": "トーンマッピング",
+            "outlineWidth": "描線の太さ",
             "resetLighting": "デフォルトにリセット",
             "saveLighting": "ライティングを保存",
             "selectPreset": "プリセットを選択",
@@ -2010,7 +2030,7 @@
             },
             "step2": {
                 "title": "📝 プロフィール名を設定",
-                "desc": "あなたの名前またはニックネームを入力してください。ネコはこの名前であなたに話しかけます。最大20文字です。"
+                "desc": "あなたの名前またはニックネームを入力してください。ネコはこの名前であなたに話しかけます。最大60文字です。"
             },
             "step3": {
                 "title": "👥 性別設定",
@@ -2594,11 +2614,26 @@
         "loadFailed": "曲リストの読み込みに失敗しました",
         "listContainerNotFound": "曲リストコンテナが見つかりません",
         "noSongs": "曲がありません",
-        "playFailed": "再生に失敗しました"
+        "playFailed": "再生に失敗しました",
+        "pause": "一時停止",
+        "resume": "再開",
+        "paused": "一時停止中",
+        "resumed": "再生を再開しました",
+        "pausedStatus": "一時停止中: {{name}}",
+        "idleRestored": "待機アニメーションを復元しました",
+        "idleRestoreFailed": "待機アニメーションの復元に失敗しました",
+        "btnNotFoundGiveUp": "ジュークボックスボタンが見つかりません、バインドを中止",
+        "minimizeBtnNotFoundGiveUp": "最小化ボタンが見つかりません、監視を中止",
+        "noticeDance": "💃 ダンス機能は MMD アバター読み込み時のみ利用可能です",
+        "noticeMusic": "⚠️ 現在の楽曲はテスト用です。今後のバージョンで著作権楽曲は削除されますので、ご自身でインポートしてください"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice が 3.5 にアップグレードされました。旧音声は無効になりました。再度クローンしてください。"
+            "legacyRemoved": "CosyVoice が 3.5 にアップグレードされました。旧音声は無効になりました。再度クローンしてください。",
+            "legacyDetected": "旧バージョンの CosyVoice 音声が検出されました。動作しない可能性があります。再クローンをお勧めします。"
+        },
+        "changelog": {
+            "title": "更新内容"
         }
     },
     "proactive": {

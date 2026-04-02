@@ -609,16 +609,22 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             # 发送就绪信号
             logger.info("Qwen TTS 已就绪，发送就绪信号")
             response_queue.put(("__ready__", True))
-            
+
             # 初始接收任务（会在每次新 speech_id 时重新创建）
             async def receive_messages_initial():
                 """初始接收任务"""
+                nonlocal ws
                 try:
                     async for message in ws:
                         event = json.loads(message)
                         event_type = event.get("type")
-                        
+
                         if event_type == "error":
+                            # 空闲超时 / 会话过期：不报 error，标记连接丢失，按需重连
+                            err_msg = event.get("error", {}).get("message", "")
+                            if "request timeout" in err_msg or "session_expired" in err_msg:
+                                logger.debug(f"Qwen TTS 空闲超时，标记连接已断开: {err_msg}")
+                                break
                             _enqueue_error(response_queue, event)
                         elif event_type == "response.audio.delta":
                             try:
@@ -636,17 +642,31 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     pass
                 except Exception as e:
                     logger.error(f"消息接收出错: {e}")
-            
+                finally:
+                    # 接收循环退出（超时/断开），清理连接状态以便主循环按需重连
+                    if ws:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        ws = None
+                    session_ready.clear()
+
             receive_task = asyncio.create_task(receive_messages_initial())
             
             # 主循环：处理请求队列
             loop = asyncio.get_running_loop()
+            pending = None  # 断线重试时暂存当前片段，保证顺序（不回共享队列）
             while True:
-                # 非阻塞检查队列
-                try:
-                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                except Exception:
-                    break
+                # 优先处理断线暂存的片段，再从队列取新请求
+                if pending:
+                    sid, tts_text = pending
+                    pending = None
+                else:
+                    try:
+                        sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                    except Exception:
+                        break
 
                 if sid == "__interrupt__":
                     # 打断：立即关闭连接，不发 commit、不等服务器确认
@@ -732,12 +752,18 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         
                         # 启动新的接收任务
                         async def receive_messages():
+                            nonlocal ws
                             try:
                                 async for message in ws:
                                     event = json.loads(message)
                                     event_type = event.get("type")
-                                    
+
                                     if event_type == "error":
+                                        # 空闲超时 / 会话过期：不报 error，标记连接丢失，按需重连
+                                        err_msg = event.get("error", {}).get("message", "")
+                                        if "request timeout" in err_msg or "session_expired" in err_msg:
+                                            logger.debug(f"Qwen TTS 空闲超时，标记连接已断开: {err_msg}")
+                                            break
                                         _enqueue_error(response_queue, event)
                                     elif event_type == "response.audio.delta":
                                         try:
@@ -755,6 +781,15 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 pass
                             except Exception as e:
                                 logger.error(f"消息接收出错: {e}")
+                            finally:
+                                # 接收循环退出（超时/断开），清理连接状态以便主循环按需重连
+                                if ws:
+                                    try:
+                                        await ws.close()
+                                    except Exception:
+                                        pass
+                                    ws = None
+                                session_ready.clear()
                         
                         receive_task = asyncio.create_task(receive_messages())
                         
@@ -769,6 +804,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     continue
 
                 if not ws or not session_ready.is_set():
+                    # 连接已因空闲超时断开，暂存当前片段并重置 speech_id 以触发重连
+                    current_speech_id = None
+                    pending = (sid, tts_text)
                     continue
                 
                 # 追加文本到缓冲区（不立即提交，等待响应完成时的终止信号再 commit）
@@ -829,6 +867,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     from dashscope.audio.tts_v2 import ResultCallback, SpeechSynthesizer, AudioFormat
     
     dashscope.api_key = audio_api_key
+
+    # 从 voice 元数据中读取注册时使用的模型，fallback 到全局配置
+    _voice_meta = _get_voice_meta(voice_id)
+    _enrolled_model = (_voice_meta or {}).get('clone_model') if _voice_meta else None
     
     _RE_KANA = re.compile(r'[\u3040-\u309F\u30A0-\u30FF]')
     MIN_BUFFER_CHARS = 6
@@ -940,15 +982,20 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         """创建新的 SpeechSynthesizer，可选语言提示。
         仅建立 WebSocket 连接，不发送预热文本——调用方会紧接着发送真实文本。
         """
+        from utils.api_config_loader import (
+            cosyvoice_model_supports_language_hints,
+            get_cosyvoice_clone_model,
+        )
         nonlocal last_streaming_call_time
+        clone_model = _enrolled_model or get_cosyvoice_clone_model()
         kwargs = dict(
-            model="cosyvoice-v3.5-plus",
+            model=clone_model,
             voice=voice_id,
             speech_rate=1.05,
             format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,
             callback=callback,
         )
-        if lang_hint:
+        if lang_hint and cosyvoice_model_supports_language_hints(clone_model):
             kwargs["language_hints"] = [lang_hint]
         callback.construct_start_time = time.time()
         syn = SpeechSynthesizer(**kwargs)
@@ -2050,9 +2097,13 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 
-    # 如果有自定义音色，使用 CosyVoice（阿里云）
-    if has_custom_voice:
-        return cosyvoice_vc_tts_worker, None
+    # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
+    # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
+    if has_custom_voice and voice_id:
+        from utils.api_config_loader import get_free_voices
+        if voice_id not in set(get_free_voices().values()):
+            return cosyvoice_vc_tts_worker, None
+        logger.info("voice_id '%s' 是免费预设音色，跳过 CosyVoice，使用默认 TTS", voice_id)
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type == 'qwen':

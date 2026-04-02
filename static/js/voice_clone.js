@@ -331,16 +331,30 @@ function registerVoice() {
 
     // 根据克隆方式验证输入
     if (currentCloneMethod === 'file') {
-        if (!fileInput.files.length || !prefix) {
-            resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请上传音频文件并填写前缀';
+        // 先检查文件
+        if (!fileInput.files.length) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请选择音频文件';
+            resultDiv.className = 'result error';
+            return;
+        }
+        // 再检查前缀
+        if (!prefix) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterPrefix') : '请填写自定义前缀';
             resultDiv.className = 'result error';
             return;
         }
     } else {
         // 直链克隆
         const url = directLinkUrl.value.trim();
-        if (!url || !prefix) {
-            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterDirectLink') : '请输入音频直链URL并填写前缀';
+        // 先检查URL
+        if (!url) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterDirectLink') : '请输入音频直链URL';
+            resultDiv.className = 'result error';
+            return;
+        }
+        // 再检查前缀
+        if (!prefix) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterPrefix') : '请填写自定义前缀';
             resultDiv.className = 'result error';
             return;
         }
@@ -727,7 +741,7 @@ async function loadVoices() {
             divider.textContent = '── ' + freeLabel + ' ──';
             container.appendChild(divider);
 
-            Object.entries(data.free_voices).forEach(([displayName, voiceId]) => {
+            Object.entries(data.free_voices).forEach(([voiceKey, voiceId]) => {
                 const item = document.createElement('div');
                 item.className = 'voice-list-item';
                 item.style.opacity = '0.85';
@@ -737,6 +751,8 @@ async function loadVoices() {
 
                 const nameDiv = document.createElement('div');
                 nameDiv.className = 'voice-name';
+                // 使用 i18n 翻译键获取显示名称
+                const displayName = window.t ? window.t(`voice.freeVoice.${voiceKey}`) : voiceKey;
                 nameDiv.textContent = displayName;
                 // 添加预设标签
                 const badge = document.createElement('span');

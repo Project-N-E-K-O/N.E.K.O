@@ -11,8 +11,9 @@ from types import MappingProxyType
 
 from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
 
-# 应用程序名称配置
+# 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
+APP_VERSION = "0.7.3"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -245,8 +246,8 @@ DEFAULT_VISION_MODEL = "qwen3-vl-plus-2025-09-23"
 DEFAULT_AGENT_MODEL = "qwen3.5-plus"
 
 # 用户自定义模型配置（可选，暂未使用）
-DEFAULT_REALTIME_MODEL = "Qwen3-Omni-30B-A3B-Instruct"  # 全模态模型(语音+文字+图片)
-DEFAULT_TTS_MODEL = "Qwen3-Omni-30B-A3B-Instruct"   # 与Realtime对应的TTS模型(Native TTS)
+DEFAULT_REALTIME_MODEL = "qwen3-omni-flash-realtime"  # 全模态模型(语音+文字+图片)，与 api_providers.json 对齐
+DEFAULT_TTS_MODEL = "qwen3-omni-flash-realtime"   # 与Realtime对应的TTS模型(Native TTS)，与 api_providers.json 对齐
 
 
 CONFIG_FILES = [
@@ -302,7 +303,8 @@ _DEFAULT_VRM_LIGHTING_MUTABLE = {
     "top": 0.3,      # 顶光强度
     "bottom": 0.15,  # 底光强度
     "exposure": 0.0, # 曝光值
-    "toneMapping": 0 # 色调映射类型
+    "toneMapping": 7, # 色调映射类型 (7 = Neutral)
+    "outlineWidthScale": 1.0, # 描边粗细倍率
 }
 
 DEFAULT_VRM_LIGHTING = MappingProxyType(_DEFAULT_VRM_LIGHTING_MUTABLE)
@@ -315,7 +317,8 @@ VRM_LIGHTING_RANGES = {
     'top': (0, 1.0),
     'bottom': (0, 0.5),
     'exposure': (-10.0, 10.0),
-    'toneMapping': (0, 5),
+    'toneMapping': (0, 7),
+    'outlineWidthScale': (0, 3.0),
 }
 
 
@@ -340,7 +343,7 @@ MMD_LIGHTING_RANGES = {
 }
 
 _DEFAULT_MMD_RENDERING_MUTABLE = {
-    "toneMapping": 0,
+    "toneMapping": 7,
     "exposure": 1.0,
     "outline": True,
     "pixelRatio": 0,
@@ -417,6 +420,12 @@ _VALUE_TRANSLATIONS = {
         '女': '女',
         'T酱, 小T': 'T醬, 小T',
     },
+    'ru': {
+        '哥哥': 'Братик',
+        '男': 'Мужской',
+        '女': 'Женский',
+        'T酱, 小T': 'Тян-тян, малышка Т',
+    },
     # zh 和 zh-CN 使用原始中文值（不需要翻译）
 }
 
@@ -460,7 +469,9 @@ def get_localized_default_characters(language: str | None = None) -> dict:
             value_trans = _VALUE_TRANSLATIONS.get('ja')
         elif lang_lower.startswith('en'):
             value_trans = _VALUE_TRANSLATIONS.get('en')
-    
+        elif lang_lower.startswith('ru'):
+            value_trans = _VALUE_TRANSLATIONS.get('ru')
+
     # 如果不需要翻译（简体中文），直接返回原始配置
     if value_trans is None:
         return deepcopy(DEFAULT_CHARACTERS_CONFIG)
@@ -507,6 +518,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeySilicon": "",
     "assistApiKeyGemini": "",
     "assistApiKeyMinimax": "",
+    "assistApiKeyClaude": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
@@ -627,6 +639,15 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "kimi-latest",
         'AGENT_MODEL': "kimi-latest",
     },
+    'claude': {
+        'OPENROUTER_URL': "https://api.anthropic.com/v1",
+        'CONVERSATION_MODEL': "claude-sonnet-4-6",
+        'SUMMARY_MODEL': "claude-sonnet-4-6",
+        'CORRECTION_MODEL': "claude-sonnet-4-6",
+        'EMOTION_MODEL': "claude-haiku-4-5-20251001",
+        'VISION_MODEL': "claude-sonnet-4-6",
+        'AGENT_MODEL': "claude-opus-4-6",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -638,6 +659,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'gemini': 'ASSIST_API_KEY_GEMINI',
     'kimi': 'ASSIST_API_KEY_KIMI',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
+    'claude': 'ASSIST_API_KEY_CLAUDE',
 }
 
 DEFAULT_CONFIG_DATA = {
@@ -666,6 +688,7 @@ from config.providers import (  # noqa: E402, F401
 
 __all__ = [
     'APP_NAME',
+    'APP_VERSION',
     'GSV_VOICE_PREFIX',
     'CHARACTER_SYSTEM_RESERVED_FIELDS',
     'CHARACTER_WORKSHOP_RESERVED_FIELDS',

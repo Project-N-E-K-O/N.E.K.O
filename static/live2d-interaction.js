@@ -622,6 +622,10 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     const startHideTimer = (delay = 1000) => {
         const lockIcon = document.getElementById('live2d-lock-icon');
         const floatingButtons = document.getElementById('live2d-floating-buttons');
+        const hasOpenOverlay = () => {
+            const popupUi = window.AvatarPopupUI || null;
+            return !!(popupUi && typeof popupUi.hasVisibleOverlay === 'function' && popupUi.hasVisibleOverlay('live2d'));
+        };
         const isPointerNearLock = () => {
             if (!lockIcon || lockIcon.style.display !== 'block') return false;
             const x = this._lastMouseX;
@@ -649,7 +653,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             }
 
             // 再次检查鼠标是否在按钮区域内
-            if (this._isMouseOverButtons || isPointerNearLock()) {
+            if (this._isMouseOverButtons || isPointerNearLock() || hasOpenOverlay()) {
                 // 鼠标在按钮上，不隐藏，重新启动定时器
                 this._hideButtonsTimer = null;
                 startHideTimer(delay);

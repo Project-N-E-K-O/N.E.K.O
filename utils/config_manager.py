@@ -831,6 +831,8 @@ class ConfigManager:
             suffix = 'en'
         elif lang_lower.startswith('ko'):
             suffix = 'ko'
+        elif lang_lower.startswith('ru'):
+            suffix = 'ru'
         else:
             # 未知语言，回退
             return None
@@ -1097,13 +1099,13 @@ class ConfigManager:
         if is_local_tts:
             storage_key = '__LOCAL_TTS__'
             all_voices = voice_storage.get(storage_key, {})
-            result = {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
+            result = dict(all_voices)
         else:
             tts_api_key = tts_config.get('api_key', '')
             if tts_api_key:
                 storage_key = tts_api_key
                 all_voices = voice_storage.get(storage_key, {})
-                result = {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
+                result = dict(all_voices)
             else:
                 core_config = self.get_core_config()
                 audio_api_key = core_config.get('AUDIO_API_KEY', '')
@@ -1113,7 +1115,7 @@ class ConfigManager:
                 else:
                     storage_key = audio_api_key
                     all_voices = voice_storage.get(storage_key, {})
-                    result = {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
+                    result = dict(all_voices)
 
         # 确保主分区音色有 provider 字段
         default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
@@ -1229,9 +1231,6 @@ class ConfigManager:
         if not voice_id:
             return True
 
-        if self.is_legacy_cosyvoice_id(voice_id):
-            return False
-
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
             return custom_tts_allowed
@@ -1252,9 +1251,6 @@ class ConfigManager:
         """校验 voice_id 是否在指定 API Key 下有效"""
         if not voice_id:
             return True
-
-        if self.is_legacy_cosyvoice_id(voice_id):
-            return False
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
@@ -1280,7 +1276,7 @@ class ConfigManager:
         实际可用性由 core.py 运行时按 free + lanlan.app/lanlan.tech 线路决定。
 
         Returns:
-            (cleaned_count, legacy_cosyvoice_names): 清理总数 及 因旧版 CosyVoice 被清理的角色名列表
+            (cleaned_count, legacy_cosyvoice_names): 清理总数 及 仍在使用旧版 CosyVoice 音色的角色名列表
         """
         character_data = self.load_characters()
         cleaned_count = 0
@@ -1289,18 +1285,21 @@ class ConfigManager:
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',))
-            if voice_id and not self.validate_voice_id(voice_id):
-                is_legacy = self.is_legacy_cosyvoice_id(voice_id)
+            if not voice_id:
+                continue
+            # 旧版 CosyVoice 音色：保留 voice_id 不清空，仅记录供通知
+            if self.is_legacy_cosyvoice_id(voice_id):
+                legacy_cosyvoice_names.append(name)
+                continue
+            # 其他无效 voice_id（storage 中已不存在）：清空
+            if not self.validate_voice_id(voice_id):
                 logger.warning(
-                    "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除%s",
+                    "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",
                     name,
                     voice_id,
-                    "（旧版 CosyVoice 音色）" if is_legacy else "",
                 )
                 set_reserved(config, 'voice_id', '')
                 cleaned_count += 1
-                if is_legacy:
-                    legacy_cosyvoice_names.append(name)
 
         if cleaned_count > 0:
             self.save_characters(character_data)
@@ -1603,6 +1602,7 @@ class ConfigManager:
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
         config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or config['CORE_API_KEY']
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
@@ -1687,74 +1687,47 @@ class ConfigManager:
         
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
-            # API Key 字段：空字符串是合法值（本地服务商可能不需要 key），
-            # 因此不使用 or 回退，直接赋值。
             # URL / Model ID 字段：空值回退到已有配置。
+            # API Key 字段：根据用户选择的 provider 决定是否覆盖：
+            #   - follow_core / follow_assist / ''（老配置无此字段）→ 保留上方派生的值
+            #   - 具体服务商或 'custom' → 允许覆盖（空串合法，本地服务商可能不需要 key）
+            _custom_api_fields = [
+                # (前端字段前缀, 模型config键, URL config键, API Key config键)
+                ('conversation', 'CONVERSATION_MODEL', 'CONVERSATION_MODEL_URL', 'CONVERSATION_MODEL_API_KEY'),
+                ('summary',      'SUMMARY_MODEL',      'SUMMARY_MODEL_URL',      'SUMMARY_MODEL_API_KEY'),
+                ('correction',   'CORRECTION_MODEL',    'CORRECTION_MODEL_URL',   'CORRECTION_MODEL_API_KEY'),
+                ('emotion',      'EMOTION_MODEL',       'EMOTION_MODEL_URL',      'EMOTION_MODEL_API_KEY'),
+                ('vision',       'VISION_MODEL',        'VISION_MODEL_URL',       'VISION_MODEL_API_KEY'),
+                ('agent',        'AGENT_MODEL',         'AGENT_MODEL_URL',        'AGENT_MODEL_API_KEY'),
+                ('omni',         'REALTIME_MODEL',      'REALTIME_MODEL_URL',     'REALTIME_MODEL_API_KEY'),
+                ('tts',          'TTS_MODEL',           'TTS_MODEL_URL',          'TTS_MODEL_API_KEY'),
+            ]
+            for prefix, model_key, url_key, apikey_key in _custom_api_fields:
+                provider = core_cfg.get(f'{prefix}ModelProvider', '')
 
-            # 文本对话模型 模型自定义配置映射
-            if core_cfg.get('conversationModelApiKey') is not None:
-                config['CONVERSATION_MODEL_API_KEY'] = core_cfg.get('conversationModelApiKey', '')
-            if core_cfg.get('conversationModelUrl') is not None:
-                config['CONVERSATION_MODEL_URL'] = core_cfg.get('conversationModelUrl', '') or config.get('CONVERSATION_MODEL_URL', '')
-            if core_cfg.get('conversationModelId') is not None:
-                config['CONVERSATION_MODEL'] = core_cfg.get('conversationModelId', '') or config.get('CONVERSATION_MODEL', '')
+                # URL: 空值回退到已有配置
+                cfg_url = core_cfg.get(f'{prefix}ModelUrl')
+                if cfg_url is not None:
+                    config[url_key] = cfg_url or config.get(url_key, '')
 
-            # Summary（摘要）模型自定义配置映射
-            if core_cfg.get('summaryModelApiKey') is not None:
-                config['SUMMARY_MODEL_API_KEY'] = core_cfg.get('summaryModelApiKey', '')
-            if core_cfg.get('summaryModelUrl') is not None:
-                config['SUMMARY_MODEL_URL'] = core_cfg.get('summaryModelUrl', '') or config.get('SUMMARY_MODEL_URL', '')
-            if core_cfg.get('summaryModelId') is not None:
-                config['SUMMARY_MODEL'] = core_cfg.get('summaryModelId', '') or config.get('SUMMARY_MODEL', '')
+                # Model ID: 空值回退到已有配置
+                cfg_model = core_cfg.get(f'{prefix}ModelId')
+                if cfg_model is not None:
+                    config[model_key] = cfg_model or config.get(model_key, '')
 
-            # Correction（纠错）模型自定义配置映射
-            if core_cfg.get('correctionModelApiKey') is not None:
-                config['CORRECTION_MODEL_API_KEY'] = core_cfg.get('correctionModelApiKey', '')
-            if core_cfg.get('correctionModelUrl') is not None:
-                config['CORRECTION_MODEL_URL'] = core_cfg.get('correctionModelUrl', '') or config.get('CORRECTION_MODEL_URL', '')
-            if core_cfg.get('correctionModelId') is not None:
-                config['CORRECTION_MODEL'] = core_cfg.get('correctionModelId', '') or config.get('CORRECTION_MODEL', '')
+                # API Key 处理：
+                #   follow_core   → 从核心 API Key 派生
+                #   follow_assist → 从辅助 API Key 派生（OPENROUTER_API_KEY 已含 assist→core 回退）
+                #   具体服务商/custom/''(老配置) → 使用存储值（空串合法，本地服务商不需要 key）
+                if provider == 'follow_core':
+                    config[apikey_key] = config.get('CORE_API_KEY', '')
+                elif provider == 'follow_assist':
+                    config[apikey_key] = config.get('OPENROUTER_API_KEY', '')
+                else:
+                    cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
+                    if cfg_key is not None:
+                        config[apikey_key] = cfg_key
 
-            # Emotion（情感分析）模型自定义配置映射
-            if core_cfg.get('emotionModelApiKey') is not None:
-                config['EMOTION_MODEL_API_KEY'] = core_cfg.get('emotionModelApiKey', '')
-            if core_cfg.get('emotionModelUrl') is not None:
-                config['EMOTION_MODEL_URL'] = core_cfg.get('emotionModelUrl', '') or config.get('EMOTION_MODEL_URL', '')
-            if core_cfg.get('emotionModelId') is not None:
-                config['EMOTION_MODEL'] = core_cfg.get('emotionModelId', '') or config.get('EMOTION_MODEL', '')
-
-            # Vision（视觉）模型自定义配置映射
-            if core_cfg.get('visionModelApiKey') is not None:
-                config['VISION_MODEL_API_KEY'] = core_cfg.get('visionModelApiKey', '')
-            if core_cfg.get('visionModelUrl') is not None:
-                config['VISION_MODEL_URL'] = core_cfg.get('visionModelUrl', '') or config.get('VISION_MODEL_URL', '')
-            if core_cfg.get('visionModelId') is not None:
-                config['VISION_MODEL'] = core_cfg.get('visionModelId', '') or config.get('VISION_MODEL', '')
-
-            # Agent（智能体）模型自定义配置映射
-            if core_cfg.get('agentModelApiKey') is not None:
-                config['AGENT_MODEL_API_KEY'] = core_cfg.get('agentModelApiKey', '')
-            if core_cfg.get('agentModelUrl') is not None:
-                config['AGENT_MODEL_URL'] = core_cfg.get('agentModelUrl', '') or config.get('AGENT_MODEL_URL', '')
-            if core_cfg.get('agentModelId') is not None:
-                config['AGENT_MODEL'] = core_cfg.get('agentModelId', '') or config.get('AGENT_MODEL', '')
-
-            # Omni/Realtime（全模态/实时）模型自定义配置映射
-            if core_cfg.get('omniModelApiKey') is not None:
-                config['REALTIME_MODEL_API_KEY'] = core_cfg.get('omniModelApiKey', '')
-            if core_cfg.get('omniModelUrl') is not None:
-                config['REALTIME_MODEL_URL'] = core_cfg.get('omniModelUrl', '') or config.get('REALTIME_MODEL_URL', '')
-            if core_cfg.get('omniModelId') is not None:
-                config['REALTIME_MODEL'] = core_cfg.get('omniModelId', '') or config.get('REALTIME_MODEL', '')
-
-            # TTS 自定义配置映射
-            if core_cfg.get('ttsModelApiKey') is not None:
-                config['TTS_MODEL_API_KEY'] = core_cfg.get('ttsModelApiKey', '')
-            if core_cfg.get('ttsModelUrl') is not None:
-                config['TTS_MODEL_URL'] = core_cfg.get('ttsModelUrl', '') or config.get('TTS_MODEL_URL', '')
-            if core_cfg.get('ttsModelId') is not None:
-                config['TTS_MODEL'] = core_cfg.get('ttsModelId', '') or config.get('TTS_MODEL', '')
-            
             # TTS Voice ID 作为角色 voice_id 的回退
             if core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')

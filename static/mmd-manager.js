@@ -167,10 +167,13 @@ class MMDManager {
         return clip;
     }
 
-    playAnimation() {
-        // 播放动画时禁用鼠标跟踪
+    /**
+     * 播放动画
+     * @param {'idle'|'dance'} mode - 动画模式，影响视线跟踪权重
+     */
+    playAnimation(mode = 'idle') {
         if (this.cursorFollow) {
-            this.cursorFollow.setDisabledByAnimation(true);
+            this.cursorFollow.setAnimationMode(mode);
         }
         if (this.animationModule) {
             this.animationModule.play();
@@ -188,10 +191,6 @@ class MMDManager {
             this.animationModule.stop();
         }
         this.currentAnimationUrl = null;
-        // 恢复鼠标跟踪
-        if (this.cursorFollow) {
-            this.cursorFollow.setDisabledByAnimation(false);
-        }
     }
 
     // ═══════════════════ 表情/口型 ═══════════════════

@@ -7,7 +7,7 @@ from memory import (
     FactStore, PersonaManager, ReflectionEngine,
 )
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, JSONResponse
 import json
 import uvicorn
 from utils.llm_client import convert_to_messages
@@ -17,11 +17,11 @@ from config.prompts_sys import _loc
 from config.prompts_memory import (
     INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
     CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, CHAT_GAP_CURRENT_TIME,
-    ELAPSED_TIME_HM, ELAPSED_TIME_H,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
 )
 from utils.language_utils import get_global_language
+from utils.character_name import validate_character_name
 from utils.config_manager import get_config_manager
 from pydantic import BaseModel
 import re
@@ -34,6 +34,9 @@ from utils.frontend_utils import get_timestamp
 # 配置日志
 from utils.logger_config import setup_logging
 logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
+
+from utils.time_format import format_elapsed as _format_elapsed
+
 
 class HistoryRequest(BaseModel):
     input_history: str
@@ -52,17 +55,12 @@ async def health():
 
 
 def validate_lanlan_name(name: str) -> str:
-    name = name.strip()
-    if not name or len(name) > 50:
+    result = validate_character_name(name, max_length=50)
+    if result.code in {"empty", "too_long_length"}:
         raise HTTPException(status_code=400, detail="Invalid lanlan_name length")
-    # 支持：字母、数字、下划线、连字符、空白、中日韩文字、括号
-    # 与 characters_router.py / memory_router.py 的规则保持一致
-    if not re.match(r"^[\w\-\s\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af()（）]+$", name):
+    if result.code is not None:
         raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
-    # 禁止路径遍历
-    if '/' in name or '\\' in name or '..' in name:
-        raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
-    return name
+    return result.normalized
 
 # 初始化组件（迁移必须在实例化之前，否则旧路径文件找不到）
 _config_manager = get_config_manager()
@@ -796,15 +794,10 @@ async def new_dialog(lanlan_name: str):
             if last_time:
                 gap = _dt.now() - last_time
                 gap_seconds = gap.total_seconds()
-                if gap_seconds >= 3600:  # ≥ 1小时才显示
-                    hours = int(gap_seconds // 3600)
-                    minutes = int((gap_seconds % 3600) // 60)
-                    if minutes:
-                        elapsed = _loc(ELAPSED_TIME_HM, _lang).format(h=hours, m=minutes)
-                    else:
-                        elapsed = _loc(ELAPSED_TIME_H, _lang).format(h=hours)
+                if gap_seconds >= 1800:  # ≥ 30分钟才显示
+                    elapsed = _format_elapsed(_lang, gap_seconds)
 
-                    if gap_seconds >= 18000:  # ≥ 5小时：当前时间 + 间隔 + 长间隔提示，不额外换行
+                    if gap_seconds >= 18000:  # ≥ 5小时：当前时间 + 间隔 + 长间隔提示
                         now_str = _dt.now().strftime("%Y-%m-%d %H:%M")
                         result += _loc(CHAT_GAP_CURRENT_TIME, _lang).format(now=now_str)
                         result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed)
@@ -815,6 +808,20 @@ async def new_dialog(lanlan_name: str):
             logger.warning(f"计算聊天间隔失败: {e}")
 
         return PlainTextResponse(result)
+
+@app.get("/last_conversation_gap/{lanlan_name}")
+async def last_conversation_gap(lanlan_name: str):
+    """返回距上次对话的间隔秒数，供主服务判断是否触发主动搭话。"""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    try:
+        last_time = time_manager.get_last_conversation_time(lanlan_name)
+        if last_time is None:
+            return {"gap_seconds": -1}
+        gap = (datetime.now() - last_time).total_seconds()
+        return {"gap_seconds": gap}
+    except Exception as e:
+        logger.exception(f"查询对话间隔失败: {e}")
+        return JSONResponse({"gap_seconds": -1, "error": "server_error"}, status_code=500)
 
 if __name__ == "__main__":
     import threading

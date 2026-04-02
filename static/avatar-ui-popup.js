@@ -1023,6 +1023,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
     ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
         container.addEventListener(evt, stopEventPropagation, true);
     });
+    container.addEventListener('click', stopEventPropagation);
 
     container._expand = () => {
         if (container.style.display === 'flex' && container.style.opacity !== '0') return;
@@ -1157,6 +1158,7 @@ function createIntervalControl(manager, prefix, toggle) {
     ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
         container.addEventListener(evt, stopEventPropagation, true);
     });
+    container.addEventListener('click', stopEventPropagation);
 
     const sliderRow = document.createElement('div');
     Object.assign(sliderRow.style, { display: 'flex', alignItems: 'center', gap: '4px', width: 'auto' });

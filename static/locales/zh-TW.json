@@ -7,6 +7,7 @@
         "save": "保存",
         "cancel": "取消",
         "confirm": "確認",
+        "next": "下一個",
         "ok": "確定",
         "delete": "刪除",
         "edit": "編輯",
@@ -451,6 +452,7 @@
         "API_RATE_LIMIT": "💥 API達到限額或請求過於頻繁(429)，請稍後再試。",
         "API_POLICY_VIOLATION": "💥 伺服器返回安全策略攔截或政策限制：{{msg}}",
         "API_1008_FALLBACK": "💥 會話斷開(1008)：{{msg}}",
+        "API_IDLE_TIMEOUT": "💥 語音連線因長時間無操作而斷開，正在自動重連...",
         "API_UNKNOWN_ERROR": "💥 API錯誤：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 記憶伺服器未啟動！請先運行 memory_server.py",
         "MEMORY_SERVER_CRASHED": "🧠 記憶伺服器(端口{{port}})已崩潰。請重啟 memory_server.py",
@@ -618,9 +620,9 @@
         "aliFeature": "阿裏：有免費額度，功能最全麵",
         "glmFeature": "智譜：速率限製極其嚴苛。音視頻模型已下架，無法作為核心API使用",
         "stepFeature": "階躍星辰：性價比很高，但並發、速率限製極其嚴格，不支持Agent模式",
-        "openaiFeature": "OpenAI：國內無法使用，價格貴，智能水平高",
+        "openaiFeature": "OpenAI：價格貴，智能水平高",
         "siliconFeature": "矽基流動：有免費額度，性價比高，功能少，隻作為輔助API使用",
-        "geminiFeature": "Gemini：智能和性價比極高，但國內版不支持",
+        "geminiFeature": "Gemini：智能和性價比極高",
         "configSuggestion": "配置建議：",
         "freeVersionSuggestion": "免費版：完全免費，無需API Key，適閤新手體驗（不支持自定義語音、Agent模式）",
         "coreApiSuggestion": "核心API：負責對話功能，建議根據預算和需求選擇",
@@ -630,8 +632,8 @@
         "aliCore": "阿裏：有免費額度，功能全麵",
         "glmCore": "智譜：模型已經暫時下架，無法使用",
         "stepCore": "階躍星辰：完全免費，智能水平高，但速率限製太嚴苛、因此不建議使用",
-        "openaiCore": "OpenAI：智能水平最高，但國內無法使用且價格昂貴",
-        "geminiCore": "Gemini：智能和性價比極高，但國內版不支持",
+        "openaiCore": "OpenAI：智能水平最高，但價格昂貴",
+        "geminiCore": "Gemini：智能和性價比極高",
         "assistApiTitle": "輔助API負責記憶管理、文本對話、Agent模式和自定義語音：",
         "freeVersionAssist": "免費版：完全免費，但不支持自定義語音和Agent模式",
         "aliAssist": "阿裏：推薦選擇，支持自定義語音和Agent模式",
@@ -639,8 +641,8 @@
         "stepAssist": "階躍星辰：價格便宜，但並發、RPM限製極其嚴重，不建議使用",
         "siliconAssist": "矽基流動：性價比高，支持Agent模式",
         "openaiAssist": "OpenAI：記憶管理能力強",
-        "geminiAssist": "Gemini：智能和性價比極高，但國內版不支持",
-        "kimiAssist": "Kimi：國內可用，支持長上下文和視覺",
+        "geminiAssist": "Gemini：智能和性價比極高",
+        "kimiAssist": "Kimi：支持長上下文和視覺",
         "assistApiNote": "注意：隻有阿裏支持自定義語音功能。不建議使用智譜和階躍星辰。",
         "assistApiKeyQwen": "輔助API Key - 阿裏",
         "assistApiKeyOpenai": "輔助API Key - OpenAI",
@@ -665,7 +667,7 @@
             "openai": "GPT-Realtime（OpenAI）",
             "glm": "GLM-realtime（智譜）",
             "step": "Step-2-Audio（階躍星辰）",
-            "gemini": "Gemini Live（谷歌，效果最好，國內版不支持）"
+            "gemini": "Gemini Live（谷歌，效果最好）"
         },
         "assistProviderNames": {
             "free": "免費版（貓娘專屬福利）",
@@ -674,12 +676,13 @@
             "glm": "智譜 (GLM)",
             "step": "階躍星辰 (StepFun)",
             "silicon": "矽基流動 (SiliconFlow，性價比高，推薦⭐)",
-            "gemini": "Gemini（谷歌，智能極高，國內版不支持）",
-            "kimi": "Kimi（月之暗面，國內可用，支持長上下文）",
+            "gemini": "Gemini（谷歌，智能極高）",
+            "kimi": "Kimi（月之暗面，支持長上下文）",
             "deepseek": "DeepSeek",
             "doubao": "豆包（字節跳動）",
-            "minimax": "MiniMax（國服）",
+            "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際服）",
+            "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
         },
         "coreApiAutoFillHint": "Key從API管理簿自動填充，也可在此直接輸入",
@@ -706,8 +709,9 @@
             "gemini": "Gemini（Google）",
             "kimi": "Kimi（月之暗面）",
             "doubao": "豆包（字節跳動）",
-            "minimax": "MiniMax（國服）",
+            "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際服）",
+            "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
         },
         "freeVersionNoApiKey": "免費版無需API Key",
@@ -979,6 +983,7 @@
             "deleteModelTitle": "刪除已匯入MMD模型",
             "deleteWarning": "以下列出了所有已匯入的使用者MMD模型。選擇要刪除的模型（模型資料夾及貢圖將一併刪除）。",
             "noUserModels": "暫無可刪除的使用者MMD模型",
+            "noModels": "未找到MMD模型",
             "deleteSelected": "刪除選中"
         },
         "mmdAnimation": {
@@ -1115,12 +1120,12 @@
     "voice": {
         "title": "音色注冊",
         "alibabaApiRequired": "⚠️ 此功能需要阿里CosyVoice模型，請在API密鑰設定頁中保存阿里百煉API Key（不要求啟用輔助API）或配置本地語音伺服器",
-        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（國內版），請在API密鑰設定頁中保存MiniMax API Key（不要求啟用輔助API）",
+        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（中國），請在API密鑰設定頁中保存MiniMax API Key（不要求啟用輔助API）",
         "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（國際版），請在API密鑰設定頁中保存MiniMax國際版API Key（不要求啟用輔助API）",
         "providerLabel": "語音克隆服務商",
         "provider": {
             "cosyvoice": "阿里雲 CosyVoice",
-            "minimax": "MiniMax（國內版）",
+            "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際版）"
         },
         "selectFile": "選擇本地音頻文件（8秒最佳，請勿超過20秒，wav/mp3格式）",
@@ -1173,13 +1178,25 @@
         "deleteError": "刪除失敗：{{error}}",
         "freePresetLabel": "免費預設",
         "freePresetBadge": "預設",
+        "freeVoice": {
+            "playfulGirl": "俏皮女孩",
+            "cuteGirl": "可愛女孩",
+            "cuteMaiden": "可愛少女",
+            "heroine": "女少俠",
+            "livelyGirl": "活潑女孩",
+            "coolLady": "清冷御姐",
+            "gentleMaiden": "溫柔少女",
+            "sweetLady": "甜美御姐",
+            "frailMaiden": "病弱少女",
+            "childishMaiden": "稚氣少女"
+        },
         "cloneMethod": "克隆方式",
         "cloneMethodFile": "本地檔案",
         "cloneMethodDirectLink": "直鏈克隆",
         "directLinkUrl": "音訊直鏈URL（8秒最佳，請勿超過20秒，wav/mp3格式）",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "輸入可公開存取的音訊檔案直鏈，系統將跳過上傳步驟直接使用該連結註冊音色",
-        "pleaseEnterDirectLink": "請輸入音訊直鏈URL並填寫前綴",
+        "pleaseEnterDirectLink": "請輸入音訊直鏈URL",
         "invalidDirectLink": "請輸入有效的HTTP/HTTPS連結",
         "silenceModal": {
             "title": "智慧空白音訊檢測結果",
@@ -1258,10 +1275,11 @@
         "apiKeySettings": "API Key",
         "masterProfile": "主人檔案（唯一）：檔案名為必填項，其他均為可選項。",
         "profileName": "檔案名",
-        "profileNameMaxHint": "最多20個字符",
+        "profileNameMaxHint": "最多60個字符",
         "profileNameTooLong": "檔案名過長",
         "profileNameContainsSlash": "檔案名不能包含路徑分隔符(/或\\)",
         "profileNameContainsDot": "檔案名不能包含點號(.)",
+        "profileNameInvalidChars": "檔案名只能包含文字、數字、空格、底線、連字符、括號、間隔號(·/・)和撇號",
         "newProfileNameRequired": "新檔案名不能為空",
         "newProfileNameTooLong": "檔案名過長",
         "required": "*",
@@ -1408,7 +1426,7 @@
         "voiceUpdated": "{{name}} 的語音已更新",
         "audioWorkletFailed": "AudioWorklet加載失敗",
         "audioContextError": "音頻係統異常，請重試",
-        "sessionTimeout": "Session啓動超時",
+        "sessionTimeout": "啟動逾時，伺服器可能繁忙，請稍後手動重試",
         "websocketNotConnectedError": "WebSocket未連接",
         "sessionStartFailed": "Session啓動連續失敗{{count}}次，已停止自動重試。請檢查網絡連接和API配置，然後刷新頁麵重試。",
         "sessionStartFailedCount": "Error starting session: {{error}} (失敗{{count}}次)",
@@ -1584,6 +1602,7 @@
             "statusQueued": "隊列中",
             "statusCompleted": "已完成",
             "statusFailed": "失敗",
+            "statusCancelled": "已取消",
             "minimize": "摺疊/展開",
             "cancelAll": "終止所有任務",
             "cancelConfirm": "確定要終止所有正在進行的任務嗎？",
@@ -1623,6 +1642,7 @@
             "bottomLight": "底光強度",
             "exposure": "曝光",
             "toneMapping": "色調映射",
+            "outlineWidth": "描邊粗細",
             "resetLighting": "重置默認",
             "saveLighting": "保存打光",
             "selectPreset": "選擇預設",
@@ -2010,7 +2030,7 @@
             },
             "step2": {
                 "title": "📝 設置檔案名",
-                "desc": "輸入妳的名字或昵稱。貓娘會用這個名字來稱呼妳。最多 20 個字符。"
+                "desc": "輸入妳的名字或昵稱。貓娘會用這個名字來稱呼妳。最多 60 個字符。"
             },
             "step3": {
                 "title": "👥 性別設定",
@@ -2594,11 +2614,26 @@
         "loadFailed": "載入歌曲列表失敗",
         "listContainerNotFound": "歌曲列表容器不存在",
         "noSongs": "暫無歌曲",
-        "playFailed": "播放失敗"
+        "playFailed": "播放失敗",
+        "pause": "暫停",
+        "resume": "繼續",
+        "paused": "已暫停",
+        "resumed": "已恢復播放",
+        "pausedStatus": "已暫停: {{name}}",
+        "idleRestored": "已恢復待機動畫",
+        "idleRestoreFailed": "恢復待機動畫失敗",
+        "btnNotFoundGiveUp": "點歌台按鈕在重試後仍未找到，放棄綁定",
+        "minimizeBtnNotFoundGiveUp": "最小化按鈕在重試後仍未找到，放棄監聽",
+        "noticeDance": "💃 伴舞服務僅在載入 MMD 形象時可用",
+        "noticeMusic": "⚠️ 目前歌曲僅供測試，後續版本將清除版權音樂，請自行匯入"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice 已升級至 3.5，您的舊語音已失效，請重新克隆語音。"
+            "legacyRemoved": "CosyVoice 已升級至 3.5，您的舊語音已失效，請重新克隆語音。",
+            "legacyDetected": "偵測到舊版 CosyVoice 音色可能已失效，建議重新克隆語音。"
+        },
+        "changelog": {
+            "title": "更新內容"
         }
     },
     "proactive": {

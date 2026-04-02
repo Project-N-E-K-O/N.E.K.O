@@ -29,6 +29,7 @@ import httpx
 from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
+from main_logic.omni_realtime_client import OmniRealtimeClient
 from config import get_extra_body, MEMORY_SERVER_PORT
 from config.prompts_sys import _loc
 from config.prompts_memory import emotion_analysis_prompt, PROACTIVE_FOLLOWUP_HEADER
@@ -99,6 +100,47 @@ async def ack_pending_notices(request: Request):
         cursor = 0
     drain_prominent_notices(cursor)
     return {"ok": True}
+
+
+# --- 版本更新日志 ---
+
+@router.get("/changelog")
+async def get_changelog(since: str = ""):
+    """返回自指定版本以来的所有更新日志。
+
+    前端传入 localStorage 中保存的 lastNotifiedVersion，后端返回所有 > since 的
+    changelog 条目（按版本升序），以及当前版本号。
+    """
+    from config import APP_VERSION
+    import glob as _glob
+
+    def _parse_ver(s: str) -> tuple[int, ...]:
+        """将 '0.7.3' 转为可比较的 int 元组；解析失败返回 (0,)。"""
+        try:
+            return tuple(int(x) for x in s.strip().split("."))
+        except (ValueError, AttributeError):
+            return (0,)
+
+    changelog_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "changelog")
+    entries: list[dict] = []
+    since_ver = _parse_ver(since) if since else (0,)
+
+    if os.path.isdir(changelog_dir):
+        for md_file in sorted(_glob.glob(os.path.join(changelog_dir, "*.md")),
+                              key=lambda p: _parse_ver(os.path.splitext(os.path.basename(p))[0])):
+            stem = os.path.splitext(os.path.basename(md_file))[0]
+            file_ver = _parse_ver(stem)
+            if file_ver == (0,):
+                continue
+            if file_ver > since_ver:
+                try:
+                    with open(md_file, "r", encoding="utf-8") as f:
+                        content = f.read()
+                except Exception:
+                    content = ""
+                entries.append({"version": stem, "content": content})
+
+    return {"current_version": APP_VERSION, "entries": entries}
 
 
 # --- 主动搭话近期记录暂存区 ---
@@ -1457,6 +1499,114 @@ async def proxy_meme_image(url: str):
         logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
+
+# ==================== 网易云音乐代理 ====================
+# 解决浏览器无法直接播放网易云外链的问题（需要 Referer 头）
+MUSIC_PROXY_CACHE = TTLCache(maxsize=200, ttl=3600 * 6)  # 6小时缓存
+
+@router.get('/music/proxy-netease')
+async def proxy_netease_music(url: str):
+    """
+    代理网易云音乐外链，解决跨域和 Referer 限制问题
+    
+    网易云音乐的外链 URL 格式为：
+    https://music.163.com/song/media/outer/url?id=xxx.mp3
+    
+    浏览器直接请求会被拒绝，需要带 Referer: https://music.163.com/ 头才能访问
+    """
+    cache_key = url
+    if cache_key in MUSIC_PROXY_CACHE:
+        logger.info(f"[Netease Music Proxy] 命中缓存: {url[:60]}...")
+        cached = MUSIC_PROXY_CACHE[cache_key]
+        return Response(
+            content=cached['body'],
+            media_type='audio/mpeg',
+            headers={
+                'Cache-Control': 'public, max-age=21600',  # 6小时
+                'X-Cache': 'HIT',
+                'Accept-Ranges': 'bytes'
+            }
+        )
+    
+    try:
+        logger.info(f"[Netease Music Proxy] 收到代理请求: {url[:80]}...")
+        
+        if not url:
+            return JSONResponse(content={"success": False, "error": "缺少URL参数"}, status_code=400)
+        
+        decoded_url = unquote(url)
+        if not decoded_url.startswith(('http://', 'https://')):
+            return JSONResponse(content={"success": False, "error": "无效的URL"}, status_code=400)
+        
+        from urllib.parse import urlparse
+        parsed = urlparse(decoded_url)
+        hostname = (parsed.hostname or '').lower()
+        
+        # 只允许网易云音乐的域名
+        allowed_hosts = ['music.163.com']
+        if not any(hostname == host or hostname.endswith('.' + host) for host in allowed_hosts):
+            logger.warning(f"[Netease Music Proxy] 非法域名请求: {hostname}")
+            return JSONResponse(content={"success": False, "error": f"不允许代理该域名: {hostname}"}, status_code=403)
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Referer': 'https://music.163.com/',
+            'Accept': '*/*',
+            'Accept-Encoding': 'identity',  # 不压缩，方便流式传输
+        }
+        
+        MAX_MUSIC_SIZE = 50 * 1024 * 1024  # 50MB 音乐文件限制
+        
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with client.stream("GET", decoded_url, headers=headers) as resp:
+                resp.raise_for_status()
+                
+                content_type = resp.headers.get('Content-Type', 'audio/mpeg').split(';', 1)[0].strip()
+                if 'audio' not in content_type and 'video' not in content_type:
+                    logger.warning(f"[Netease Music Proxy] 非音频内容类型: {content_type}")
+                
+                content_length = resp.headers.get('Content-Length')
+                if content_length:
+                    try:
+                        declared_size = int(content_length)
+                        if declared_size > MAX_MUSIC_SIZE:
+                            logger.warning(f"[Netease Music Proxy] 音乐文件过大: {declared_size}")
+                            return JSONResponse(content={"success": False, "error": "音乐文件超过大小限制 (50MB)"}, status_code=413)
+                    except (ValueError, TypeError):
+                        pass
+                
+                body = bytearray()
+                async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                    body.extend(chunk)
+                    if len(body) > MAX_MUSIC_SIZE:
+                        logger.warning(f"[Netease Music Proxy] 音乐文件过大 (实际读取): {len(body)}")
+                        return JSONResponse(content={"success": False, "error": "音乐文件超过大小限制 (50MB)"}, status_code=413)
+                
+                MUSIC_PROXY_CACHE[cache_key] = {
+                    'body': bytes(body)
+                }
+                
+                logger.info(f"[Netease Music Proxy] 代理成功，大小: {len(body)} bytes")
+                return Response(
+                    content=bytes(body),
+                    media_type='audio/mpeg',
+                    headers={
+                        'Cache-Control': 'public, max-age=21600',
+                        'X-Cache': 'MISS',
+                        'Accept-Ranges': 'bytes'
+                    }
+                )
+    
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[Netease Music Proxy] HTTP错误: {e.response.status_code}")
+        return JSONResponse(content={"success": False, "error": f"请求失败: {e.response.status_code}"}, status_code=e.response.status_code)
+    except httpx.TimeoutException:
+        return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
+    except Exception as e:
+        logger.error(f"[Netease Music Proxy] 代理失败: {str(e)}")
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+
+
 # 辅助函数
 
 @router.get('/steam/proxy-image')
@@ -1786,11 +1936,21 @@ async def proactive_chat(request: Request):
         # 检查是否正在响应中（如果正在说话，不打断）
         if mgr.is_active and hasattr(mgr.session, '_is_responding') and mgr.session._is_responding:
             return JSONResponse({
-                "success": False, 
+                "success": False,
                 "error": "AI正在响应中，无法主动搭话",
                 "message": "请等待当前响应完成"
             }, status_code=409)
-        
+
+        # ========== Voice mode fast path ==========
+        # 语音模式下不走 Phase1/Phase2，直接注入预录音频触发 AI 回复
+        if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
+            delivered = await mgr.trigger_voice_proactive_nudge()
+            return JSONResponse({
+                "success": True,
+                "action": "chat" if delivered else "pass",
+                "message": "voice proactive triggered" if delivered else "voice proactive skipped (guard)",
+            })
+
         print(f"[{lanlan_name}] 开始主动搭话流程（两阶段架构）...")
         
         # ========== 解析 enabled_modes ==========

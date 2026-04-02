@@ -28,6 +28,7 @@ from .workshop_router import _ugc_sync_lock
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.config_manager import get_reserved, set_reserved, flatten_reserved
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
+from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
@@ -51,7 +52,6 @@ router = APIRouter(prefix="/api/characters", tags=["characters"])
 logger = get_module_logger(__name__, "Main")
 
 
-PROFILE_NAME_MAX_UNITS = 20
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
 
 
@@ -61,16 +61,18 @@ def _profile_name_units(name: str) -> int:
 
 
 def _validate_profile_name(name: str) -> str | None:
-    if name is None:
+    result = validate_character_name(name, max_units=PROFILE_NAME_MAX_UNITS)
+    if result.code == 'empty':
         return '档案名为必填项'
-    name = str(name).strip()
-    if not name:
-        return '档案名为必填项'
-    if '/' in name or '\\' in name:
+    if result.code == 'contains_path_separator':
         return '档案名不能包含路径分隔符(/或\\)'
-    if '.' in name:
+    if result.code == 'contains_dot':
         return '档案名不能包含点号(.)'
-    if _profile_name_units(name) > PROFILE_NAME_MAX_UNITS:
+    if result.code == 'reserved_device_name':
+        return '档案名不能使用 Windows 保留设备名'
+    if result.code == 'invalid_character':
+        return '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号'
+    if result.code == 'too_long_units':
         return f'档案名长度不能超过{PROFILE_NAME_MAX_UNITS}单位（ASCII=1，其他=2；PROFILE_NAME_MAX_UNITS={PROFILE_NAME_MAX_UNITS}）'
     return None
 
@@ -1790,9 +1792,10 @@ async def get_voice_preview(voice_id: str):
 
         # 生成音频
         dashscope.api_key = audio_api_key
-        # 参照 复刻.py 使用 cosyvoice-v3.5-plus 模型
         try:
-            synthesizer = SpeechSynthesizer(model="cosyvoice-v3.5-plus", voice=voice_id)
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model()
+            synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
             # 使用 asyncio.to_thread 包装同步阻塞调用
             audio_data = await asyncio.to_thread(lambda: synthesizer.call(text))
             
@@ -2397,13 +2400,16 @@ async def voice_clone(
             }
 
         else:  # cosyvoice
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = get_cosyvoice_clone_model()
             language_hints = qwen_language_hints(ref_language)
             client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
-            voice_id, tmp_url, request_id = await client.clone_voice(
+            voice_id, tmp_url, _request_id = await client.clone_voice(
                 audio_buffer=normalized_buffer,
                 filename=normalized_filename,
                 prefix=prefix,
                 language_hints=language_hints,
+                target_model=clone_model,
             )
             voice_data = {
                 'voice_id': voice_id,
@@ -2412,6 +2418,7 @@ async def voice_clone(
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'provider': 'cosyvoice',
+                'clone_model': clone_model,
                 'created_at': datetime.now().isoformat()
             }
 
@@ -2745,12 +2752,14 @@ async def voice_clone_direct(request: Request):
             language_hints = qwen_language_hints(ref_language)
             client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
 
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = get_cosyvoice_clone_model()
             voice_id, _ = await asyncio.to_thread(
                 client.create_voice,
                 prefix=prefix,
                 url=direct_link,
                 language_hints=language_hints,
-                target_model="cosyvoice-v3.5-plus",
+                target_model=clone_model,
             )
 
             voice_data = {
@@ -2760,6 +2769,7 @@ async def voice_clone_direct(request: Request):
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'provider': 'cosyvoice',
+                'clone_model': clone_model,
                 'created_at': datetime.now().isoformat(),
                 'is_direct_link': True
             }
@@ -2925,6 +2935,10 @@ async def save_character_card(request: Request):
         # 获取角色卡名称（档案名）
         # 兼容中英文字段名
         chara_name = chara_data.get('档案名') or chara_data.get('name') or character_card_name
+        name_error = _validate_profile_name(chara_name)
+        if name_error:
+            return JSONResponse({"success": False, "error": f"角色名称无效: {name_error}"}, status_code=400)
+        chara_name = str(chara_name).strip()
         filtered_chara_data = _filter_mutable_catgirl_fields(chara_data)
         
         # 创建猫娘数据，只保存非空字段

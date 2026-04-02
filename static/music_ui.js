@@ -90,6 +90,8 @@
     const isSafeUrl = (url) => {
         if (!url) return false;
         try {
+            // 对内部代理路径直接放行（后端已做安全检查）
+            if (url.startsWith('/api/')) return true;
             const parsed = new URL(url);
             if (!['http:', 'https:'].includes(parsed.protocol)) return false;
             const hostname = parsed.hostname;
@@ -779,6 +781,15 @@
             } catch (e) {
                 console.warn('[Music UI] URL sanitization failed:', e);
             }
+        }
+
+        // --- 网易云音乐代理：如果检测到网易云外链，替换为后端代理接口 ---
+        // 注意：URL编码后music.163.com依然是music.163.com，需要用/api/music/proxy-netease判断是否已代理
+        if (trackInfo.url && trackInfo.url.includes('music.163.com') && !trackInfo.url.startsWith('/api/music/proxy-netease')) {
+            const originalUrl = trackInfo.url;
+            const encodedUrl = encodeURIComponent(trackInfo.url);
+            trackInfo.url = `/api/music/proxy-netease?url=${encodedUrl}`;
+            console.log('[Music UI] 网易云URL已代理:', originalUrl, '->', trackInfo.url);
         }
 
         const now = Date.now();

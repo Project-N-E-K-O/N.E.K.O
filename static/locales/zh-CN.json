@@ -7,6 +7,7 @@
         "save": "保存",
         "cancel": "取消",
         "confirm": "确认",
+        "next": "下一个",
         "ok": "确定",
         "delete": "删除",
         "edit": "编辑",
@@ -451,6 +452,7 @@
         "API_RATE_LIMIT": "💥 API达到限额或请求过于频繁(429)，请稍后再试。",
         "API_POLICY_VIOLATION": "💥 服务器返回安全策略拦截或政策限制：{{msg}}",
         "API_1008_FALLBACK": "💥 会话断开(1008)：{{msg}}",
+        "API_IDLE_TIMEOUT": "💥 语音连接因长时间无操作而断开，正在自动重连...",
         "API_UNKNOWN_ERROR": "💥 API错误：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 记忆服务器未启动！请先运行 memory_server.py",
         "MEMORY_SERVER_CRASHED": "🧠 记忆服务器(端口{{port}})已崩溃。请重启 memory_server.py",
@@ -680,6 +682,7 @@
             "doubao": "豆包（字节跳动）",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
+            "claude": "Claude（Anthropic，国内无法使用）",
             "grok": "Grok（xAI）"
         },
         "coreApiAutoFillHint": "Key从API管理簿自动填充，也可在此直接输入",
@@ -708,6 +711,7 @@
             "doubao": "豆包（字节跳动）",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
+            "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
         },
         "freeVersionNoApiKey": "免费版无需API Key",
@@ -979,6 +983,7 @@
             "deleteModelTitle": "删除已导入MMD模型",
             "deleteWarning": "以下列出了所有已导入的用户MMD模型。选择要删除的模型（模型所在文件夹及纹理将一并删除）。",
             "noUserModels": "暂无可删除的用户MMD模型",
+            "noModels": "未找到MMD模型",
             "deleteSelected": "删除选中"
         },
         "mmdAnimation": {
@@ -1173,13 +1178,25 @@
         "deleteError": "删除失败：{{error}}",
         "freePresetLabel": "免费预设音色",
         "freePresetBadge": "预设",
+        "freeVoice": {
+            "playfulGirl": "俏皮女孩",
+            "cuteGirl": "可爱女孩",
+            "cuteMaiden": "可爱少女",
+            "heroine": "女少侠",
+            "livelyGirl": "活泼女孩",
+            "coolLady": "清冷御姐",
+            "gentleMaiden": "温柔少女",
+            "sweetLady": "甜美御姐",
+            "frailMaiden": "病弱少女",
+            "childishMaiden": "稚气少女"
+        },
         "cloneMethod": "克隆方式",
         "cloneMethodFile": "本地文件",
         "cloneMethodDirectLink": "直链克隆",
         "directLinkUrl": "音频直链URL（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "输入可公网访问的音频文件直链，系统将跳过上传步骤直接使用该链接注册音色",
-        "pleaseEnterDirectLink": "请输入音频直链URL并填写前缀",
+        "pleaseEnterDirectLink": "请输入音频直链URL",
         "invalidDirectLink": "请输入有效的HTTP/HTTPS链接",
         "silenceModal": {
             "title": "智能空白音频检测结果",
@@ -1258,10 +1275,11 @@
         "apiKeySettings": "API Key",
         "masterProfile": "主人档案（唯一）：档案名为必填项，其他均为可选项。",
         "profileName": "档案名",
-        "profileNameMaxHint": "最多20个字符",
+        "profileNameMaxHint": "最多60个字符",
         "profileNameTooLong": "档案名过长",
         "profileNameContainsSlash": "档案名不能包含路径分隔符(/或\\)",
         "profileNameContainsDot": "档案名不能包含点号(.)",
+        "profileNameInvalidChars": "档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号",
         "newProfileNameRequired": "新档案名不能为空",
         "newProfileNameTooLong": "档案名过长",
         "required": "*",
@@ -1408,7 +1426,7 @@
         "voiceUpdated": "{{name}} 的语音已更新",
         "audioWorkletFailed": "AudioWorklet加载失败",
         "audioContextError": "音频系统异常，请重试",
-        "sessionTimeout": "Session启动超时",
+        "sessionTimeout": "启动超时，服务器可能繁忙，请稍后手动重试",
         "websocketNotConnectedError": "WebSocket未连接",
         "sessionStartFailed": "Session启动连续失败{{count}}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。",
         "sessionStartFailedCount": "Error starting session: {{error}} (失败{{count}}次)",
@@ -1584,6 +1602,7 @@
             "statusQueued": "队列中",
             "statusCompleted": "已完成",
             "statusFailed": "失败",
+            "statusCancelled": "已取消",
             "minimize": "折叠/展开",
             "cancelAll": "终止所有任务",
             "cancelConfirm": "确定要终止所有正在进行的任务吗？",
@@ -1623,6 +1642,7 @@
             "bottomLight": "底光强度",
             "exposure": "曝光",
             "toneMapping": "色调映射",
+            "outlineWidth": "描边粗细",
             "resetLighting": "重置默认",
             "saveLighting": "保存打光",
             "selectPreset": "选择预设",
@@ -2010,7 +2030,7 @@
             },
             "step2": {
                 "title": "📝 设置档案名",
-                "desc": "输入您的名字或昵称。猫娘会用这个名字来称呼您。最多 20 个字符。"
+                "desc": "输入您的名字或昵称。猫娘会用这个名字来称呼您。最多 60 个字符。"
             },
             "step3": {
                 "title": "👥 性别设定",
@@ -2594,11 +2614,26 @@
         "loadFailed": "加载歌曲列表失败",
         "listContainerNotFound": "歌曲列表容器不存在",
         "noSongs": "暂无歌曲",
-        "playFailed": "播放失败"
+        "playFailed": "播放失败",
+        "pause": "暂停",
+        "resume": "继续",
+        "paused": "已暂停",
+        "resumed": "已恢复播放",
+        "pausedStatus": "已暂停: {{name}}",
+        "idleRestored": "已恢复待机动画",
+        "idleRestoreFailed": "恢复待机动画失败",
+        "btnNotFoundGiveUp": "点歌台按钮在重试后仍未找到，放弃绑定",
+        "minimizeBtnNotFoundGiveUp": "最小化按钮在重试后仍未找到，放弃监听",
+        "noticeDance": "💃 伴舞服务仅在载入 MMD 形象时可用",
+        "noticeMusic": "⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。"
+            "legacyRemoved": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
+            "legacyDetected": "检测到旧版 CosyVoice 音色可能已失效，建议重新克隆语音。"
+        },
+        "changelog": {
+            "title": "更新内容"
         }
     },
     "proactive": {
