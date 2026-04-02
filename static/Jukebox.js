@@ -894,6 +894,16 @@ window.Jukebox = {
     }
   },
 
+  _resetToNoneMode: function() {
+    const mesh = window.mmdManager.currentModel?.mesh;
+    if (mesh?.skeleton) {
+      mesh.skeleton.pose();
+    }
+    if (window.mmdManager.cursorFollow) {
+      window.mmdManager.cursorFollow.setAnimationMode('none');
+    }
+  },
+
   restoreIdleAnimation: async function() {
     if (!window.mmdManager) return;
 
@@ -923,13 +933,7 @@ window.Jukebox = {
     if (restoreRequestId !== Jukebox.State.playRequestId) return;
 
     if (!idleUrl) {
-      const mesh = window.mmdManager.currentModel?.mesh;
-      if (mesh?.skeleton) {
-        mesh.skeleton.pose();
-      }
-      if (window.mmdManager.cursorFollow) {
-        window.mmdManager.cursorFollow.setAnimationMode('none');
-      }
+      Jukebox._resetToNoneMode();
       return;
     }
 
@@ -940,13 +944,8 @@ window.Jukebox = {
       console.log('[Jukebox]', window.t('Jukebox.idleRestored', '已恢复待机动画'));
     } catch (error) {
       console.warn('[Jukebox]', window.t('Jukebox.idleRestoreFailed', '恢复待机动画失败'), error);
-      const mesh = window.mmdManager.currentModel?.mesh;
-      if (mesh?.skeleton) {
-        mesh.skeleton.pose();
-      }
-      if (window.mmdManager.cursorFollow) {
-        window.mmdManager.cursorFollow.setAnimationMode('none');
-      }
+      if (restoreRequestId !== Jukebox.State.playRequestId) return;
+      Jukebox._resetToNoneMode();
     }
   },
 
