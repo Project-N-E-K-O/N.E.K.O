@@ -1265,6 +1265,7 @@
         "profileNameTooLong": "プロフィール名が長すぎます",
         "profileNameContainsSlash": "プロフィール名にパス区切り文字(/または\\)を含めることはできません",
         "profileNameContainsDot": "プロフィール名にドット(.)を含めることはできません",
+        "profileNameInvalidChars": "プロフィール名には文字、数字、空白、アンダースコア、ハイフン、括弧、中黒(·/・)、アポストロフィのみ使えます",
         "newProfileNameRequired": "新しいプロフィール名は空にできません",
         "newProfileNameTooLong": "プロフィール名が長すぎます",
         "required": "*",
