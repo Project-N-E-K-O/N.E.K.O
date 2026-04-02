@@ -12,11 +12,11 @@ import httpx
 from ..core.config import ConfigManager
 from ..core.logging import get_logger
 from ..domain.exceptions import (
-    ConnectionError,
+    MijiaConnectionError,
     DeviceNotFoundError,
     MijiaAPIException,
     NetworkError,
-    TimeoutError,
+    MijiaTimeoutError,
     TokenExpiredError,
     get_exception_by_code,
 )
@@ -238,7 +238,7 @@ class HttpClient:
                     "response_time": f"{response_time:.3f}s",
                 },
             )
-            raise TimeoutError(f"请求超时: {path}") from e
+            raise MijiaTimeoutError(f"请求超时: {path}") from e
 
         except httpx.HTTPStatusError as e:
             # HTTP状态码错误
@@ -265,7 +265,7 @@ class HttpClient:
                     "response_time": f"{response_time:.3f}s",
                 },
             )
-            raise ConnectionError(f"连接失败: {str(e)}") from e
+            raise MijiaConnectionError(f"连接失败: {str(e)}") from e
 
         except httpx.HTTPError as e:
             # 其他HTTP错误
@@ -498,7 +498,7 @@ class AsyncHttpClient:
                     "response_time": f"{response_time:.3f}s",
                 },
             )
-            raise TimeoutError(f"请求超时: {path}") from e
+            raise MijiaTimeoutError(f"请求超时: {path}") from e
 
         except httpx.HTTPStatusError as e:
             # HTTP状态码错误
@@ -525,7 +525,7 @@ class AsyncHttpClient:
                     "response_time": f"{response_time:.3f}s",
                 },
             )
-            raise ConnectionError(f"连接失败: {str(e)}") from e
+            raise MijiaConnectionError(f"连接失败: {str(e)}") from e
 
         except httpx.HTTPError as e:
             # 其他HTTP错误

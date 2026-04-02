@@ -9,17 +9,15 @@
 
 from ..domain.exceptions import (
     AuthenticationError,
-    ConnectionError,
+    MijiaConnectionError,
     DeviceError,
     DeviceNotFoundError,
     DeviceOfflineError,
     LoginFailedError,
     MijiaAPIException,
-    MijiaConnectionError,
     MijiaTimeoutError,
     NetworkError,
     PropertyReadOnlyError,
-    TimeoutError,
     TokenExpiredError,
     ValidationError,
 )
@@ -61,7 +59,5 @@ __all__ = [
     "NetworkError",
     "MijiaTimeoutError",
     "MijiaConnectionError",
-    "TimeoutError",  # 向后兼容别名（指向 MijiaTimeoutError）
-    "ConnectionError",  # 向后兼容别名（指向 MijiaConnectionError）
     "ValidationError",
 ]
