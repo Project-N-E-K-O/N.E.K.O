@@ -10,6 +10,9 @@ class MMDAnimation {
         // 异步加载请求 ID（用于取消过期请求）
         this._loadRequestId = 0;
 
+        // stop() rAF 回调序列 ID（用于取消过时的回调）
+        this._stopRafSeqId = 0;
+
         // 动画状态
         this.mixer = null;
         this.currentAction = null;
@@ -222,8 +225,8 @@ class MMDAnimation {
 
         if (this.manager?.cursorFollow) {
             const cf = this.manager.cursorFollow;
-            cf._appliedLastFrame = false;
             const prevTargetWeight = cf._targetWeight;
+            cf._appliedLastFrame = false;
             cf._targetWeight = 0;
             cf._trackingWeight = 0;
             cf._eyeLastOffsetQuat?.identity();
@@ -233,8 +236,11 @@ class MMDAnimation {
             cf._targetPitch = 0;
             if (cf._neckBone) cf._neckBaseQuat.copy(cf._neckBone.quaternion);
             if (cf._headBone) cf._headBaseQuat.copy(cf._headBone.quaternion);
+            const seqId = ++this._stopRafSeqId || 1;
             requestAnimationFrame(() => {
-                cf._targetWeight = prevTargetWeight;
+                if (seqId === this._stopRafSeqId) {
+                    cf._targetWeight = prevTargetWeight;
+                }
             });
         }
 
