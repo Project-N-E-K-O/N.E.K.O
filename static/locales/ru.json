@@ -1263,7 +1263,7 @@
         "apiKeySettings": "API Key",
         "masterProfile": "Профиль хозяина (Уникальный): Имя профиля обязательно, остальное необязательно.",
         "profileName": "Имя профиля",
-        "profileNameMaxHint": "Макс. 20 символов",
+        "profileNameMaxHint": "Макс. 60 символов",
         "profileNameTooLong": "Имя профиля слишком длинное",
         "profileNameContainsSlash": "Имя профиля не может содержать разделители пути (/ или \\)",
         "profileNameContainsDot": "Имя профиля не может содержать точки (.)",
@@ -2018,7 +2018,7 @@
             },
             "step2": {
                 "title": "📝 Set Profile Name",
-                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 20 characters."
+                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 60 characters."
             },
             "step3": {
                 "title": "👥 Gender Setting",

@@ -398,9 +398,9 @@ function toggleFold(fold) {
     fold.classList.toggle('open');
 }
 
-// 档案名长度限制：最多 20 个计数单位（纯中文不超过 10 个字）
+// 档案名长度限制：最多 60 个计数单位（纯中文不超过 30 个字）
 // 计数规则：ASCII(<=0x7F) 计 1，其它字符计 2
-const PROFILE_NAME_MAX_UNITS = 20;
+const PROFILE_NAME_MAX_UNITS = 60;
 
 const PROFILE_NAME_MAX_HINT_KEY = 'character.profileNameMaxHint';
 const PROFILE_NAME_TOO_LONG_KEY = 'character.profileNameTooLong';
@@ -1089,7 +1089,7 @@ function renderMaster() {
         profileInput.type = 'text';
         profileInput.name = '档案名';
         profileInput.required = true;
-        profileInput.maxLength = 20;
+        profileInput.maxLength = 60;
         profileInput.autocomplete = 'off';
         row.appendChild(profileInput);
         wrapper.appendChild(row);

@@ -1263,7 +1263,7 @@
         "apiKeySettings": "API Key",
         "masterProfile": "Master Profile (Unique): Profile name is required, others are optional and can be deleted.",
         "profileName": "Profile Name",
-        "profileNameMaxHint": "Max 20 characters",
+        "profileNameMaxHint": "Max 60 characters",
         "profileNameTooLong": "Profile name is too long",
         "profileNameContainsSlash": "Profile name cannot contain path separators (/ or \\)",
         "profileNameContainsDot": "Profile name cannot contain dots (.)",
@@ -2018,7 +2018,7 @@
             },
             "step2": {
                 "title": "📝 Set Profile Name",
-                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 20 characters."
+                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 60 characters."
             },
             "step3": {
                 "title": "👥 Gender Setting",
