@@ -302,8 +302,8 @@
         const btn = document.createElement('button');
         const _hasMore = _prominentNoticeQueue.length > 0;
         btn.textContent = _hasMore
-            ? ((typeof safeT === 'function') ? safeT('common.next', '下一个') : '下一个')
-            : ((typeof safeT === 'function') ? safeT('common.confirm', '确认') : '确认');
+            ? ((window.t && window.t('common.next')) || '下一个')
+            : ((window.t && window.t('common.confirm')) || '确认');
         btn.style.cssText = `
             background: #3b82f6; color: #fff; border: none;
             border-radius: 10px; padding: 10px 48px;

@@ -126,7 +126,8 @@ async def get_changelog(since: str = ""):
     since_ver = _parse_ver(since) if since else (0,)
 
     if os.path.isdir(changelog_dir):
-        for md_file in sorted(_glob.glob(os.path.join(changelog_dir, "*.md"))):
+        for md_file in sorted(_glob.glob(os.path.join(changelog_dir, "*.md")),
+                              key=lambda p: _parse_ver(os.path.splitext(os.path.basename(p))[0])):
             stem = os.path.splitext(os.path.basename(md_file))[0]
             file_ver = _parse_ver(stem)
             if file_ver == (0,):

@@ -680,7 +680,7 @@
             "kimi": "Kimi（Moonshot、ロングコンテキスト対応）",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance（Doubao）",
-            "minimax": "MiniMax（China）",
+            "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
@@ -709,7 +709,7 @@
             "gemini": "Gemini（Google）",
             "kimi": "Moonshot（Kimi）",
             "doubao": "ByteDance（Doubao）",
-            "minimax": "MiniMax（China）",
+            "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
@@ -1124,7 +1124,7 @@
         "providerLabel": "音声クローンプロバイダー",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
-            "minimax": "MiniMax（China）",
+            "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）"
         },
         "selectFile": "ローカル音声ファイルを選択（8秒推奨、最大20秒、wav/mp3形式）",

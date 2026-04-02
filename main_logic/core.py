@@ -137,6 +137,7 @@ class LLMSessionManager:
         u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
                            "]+", flags=re.UNICODE)
         self.emotion_pattern = re.compile('<(.*?)>')
+        self._notified_legacy_voice_roles: set[str] = set()
 
         self.lanlan_prompt = lanlan_prompt
         self.lanlan_name = lanlan_name
@@ -992,14 +993,22 @@ class LLMSessionManager:
         )
 
     def _enqueue_voice_migration_notice(self, legacy_names: list) -> None:
-        """将语音迁移通知推入缓冲池（两处调用路径共用同一 payload）。"""
+        """将语音迁移通知推入缓冲池（两处调用路径共用同一 payload）。
+
+        通过 self._notified_legacy_voice_roles 去重，避免 start_session / 热切换
+        反复推送相同角色的通知。
+        """
         if not legacy_names:
             return
+        new_names = sorted(set(legacy_names) - self._notified_legacy_voice_roles)
+        if not new_names:
+            return
+        self._notified_legacy_voice_roles.update(new_names)
         enqueue_prominent_notice({
             "code": "notice.voiceMigration.legacyDetected",
             "message": "检测到旧版 CosyVoice 音色可能已失效，建议重新克隆语音。",
             "message_en": "Legacy CosyVoice voices detected that may no longer work. Consider re-cloning your voices.",
-            "details": {"voices": legacy_names},
+            "details": {"voices": new_names},
         })
 
     def normalize_text(self, text): # 对文本进行基本预处理

@@ -232,9 +232,9 @@ window.addEventListener('load', () => {
             const notices = Array.isArray(data) ? data : (data.notices || []);
             const cursor = (data && typeof data.cursor === 'number') ? data.cursor : 0;
             if (notices.length > 0) {
-                for (const n of notices) {
-                    if (n) await window.showProminentNotice(n);
-                }
+                // 先全部入队（不 await），让 UI 能感知队列长度以显示"下一个"按钮
+                const promises = notices.filter(Boolean).map(n => window.showProminentNotice(n));
+                await Promise.all(promises);
                 await fetch('/api/pending-notices/ack', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -254,13 +254,14 @@ window.addEventListener('load', () => {
                 entries = [entries[entries.length - 1]];
             }
             if (entries.length > 0) {
-                for (const entry of entries) {
+                const changelogPromises = entries.map(entry => {
                     const title = `v${entry.version} ${window.safeT ? window.safeT('notice.changelog.title', '更新内容') : '更新内容'}`;
-                    await window.showProminentNotice({
+                    return window.showProminentNotice({
                         message: `**${title}**\n\n${(entry.content || '').trim()}`,
                         message_en: `**${title}**\n\n${(entry.content || '').trim()}`,
                     });
-                }
+                });
+                await Promise.all(changelogPromises);
                 if (cdata.current_version) {
                     localStorage.setItem('neko_last_notified_version', cdata.current_version);
                 }
