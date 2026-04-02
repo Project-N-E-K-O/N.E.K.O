@@ -329,6 +329,34 @@ function applyVRMLighting(lighting, vrmManager) {
     if (lighting.toneMapping !== undefined && vrmManager.renderer) {
         vrmManager.renderer.toneMapping = lighting.toneMapping;
     }
+
+    // 应用描边粗细设置
+    if (lighting.outlineWidthScale !== undefined) {
+        applyVRMOutlineWidth(lighting.outlineWidthScale, vrmManager);
+    }
+}
+
+/**
+ * 应用 VRM 描边粗细设置
+ * @param {number} scale - 描边粗细倍率
+ * @param {Object} vrmManager - VRM 管理器实例
+ */
+function applyVRMOutlineWidth(scale, vrmManager) {
+    if (!vrmManager?.currentModel?.vrm?.scene) return;
+    vrmManager.currentModel.vrm.scene.traverse((object) => {
+        if (!object.isMesh && !object.isSkinnedMesh) return;
+        const mats = Array.isArray(object.material) ? object.material : [object.material];
+        mats.forEach(mat => {
+            if (!mat || !(mat._isOutline || mat.isOutline)) return;
+            if (mat._originalOutlineWidthFactor === undefined) {
+                mat._originalOutlineWidthFactor = mat.outlineWidthFactor !== undefined ? mat.outlineWidthFactor : 0.002;
+            }
+            if (mat.outlineWidthFactor !== undefined) {
+                mat.outlineWidthFactor = mat._originalOutlineWidthFactor * scale;
+                mat.needsUpdate = true;
+            }
+        });
+    });
 }
 
 function initializeVRMManager() {
@@ -558,6 +586,13 @@ async function initVRMModel() {
         // 页面加载时立即应用打光配置（如果初始化时没有传入，这里会应用）
         applyVRMLighting(window.lanlan_config?.lighting, window.vrmManager);
 
+        // 确保描边设置在模型完全加载后应用（延迟一帧确保材质已准备好）
+        requestAnimationFrame(() => {
+            if (window.lanlan_config?.lighting?.outlineWidthScale !== undefined) {
+                applyVRMOutlineWidth(window.lanlan_config.lighting.outlineWidthScale, window.vrmManager);
+            }
+        });
+
     } catch (error) {
         console.error('[VRM Init] 错误详情:', error.stack);
     } finally {
@@ -695,6 +730,13 @@ window.checkAndLoadVRM = async function () {
 
         // 应用打光配置
         applyVRMLighting(lighting, window.vrmManager);
+
+        // 确保描边设置在模型完全加载后应用（延迟一帧确保材质已准备好）
+        requestAnimationFrame(() => {
+            if (lighting?.outlineWidthScale !== undefined) {
+                applyVRMOutlineWidth(lighting.outlineWidthScale, window.vrmManager);
+            }
+        });
 
         // 顺便更新一下全局变量，以防万一
         if (lighting && window.lanlan_config) {
