@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 import unicodedata
 
 
@@ -22,6 +23,8 @@ SAFE_CHARACTER_NAME_EXTRA_CHARS = frozenset({
     "'",
     "’",
 })
+WINDOWS_RESERVED_DEVICE_NAMES = frozenset({"CON", "PRN", "AUX", "NUL", "CLOCK$"})
+WINDOWS_RESERVED_DEVICE_NAME_PATTERN = re.compile(r"^(COM[1-9]|LPT[1-9])$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,17 @@ def find_invalid_character_name_char(name: str, *, allow_dots: bool = False) -> 
     return None
 
 
+def is_reserved_device_name(name: str) -> bool:
+    base_name = str(name or "").split(".", 1)[0]
+    if not base_name:
+        return False
+    upper_base_name = base_name.upper()
+    return (
+        upper_base_name in WINDOWS_RESERVED_DEVICE_NAMES
+        or WINDOWS_RESERVED_DEVICE_NAME_PATTERN.fullmatch(upper_base_name) is not None
+    )
+
+
 def validate_character_name(
     value: object,
     *,
@@ -96,6 +110,8 @@ def validate_character_name(
         return CharacterNameValidationResult(normalized=normalized, code="contains_dot")
     if ".." in normalized:
         return CharacterNameValidationResult(normalized=normalized, code="path_traversal")
+    if is_reserved_device_name(normalized):
+        return CharacterNameValidationResult(normalized=normalized, code="reserved_device_name")
     invalid_char = find_invalid_character_name_char(normalized, allow_dots=allow_dots)
     if invalid_char is not None:
         return CharacterNameValidationResult(

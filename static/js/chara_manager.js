@@ -73,6 +73,9 @@ async function autoSaveMasterField(input) {
     
     const fieldName = input.name;
     if (!fieldName) return;
+
+    const profileValidation = await validateMasterProfileNameBeforeSave(form);
+    if (!profileValidation.ok) return;
     
     const data = {};
     data[fieldName] = input.value;
@@ -592,6 +595,56 @@ function flashProfileNameContainsInvalidChars(inputEl) {
     flashProfileNameError(inputEl, msg);
 }
 
+function flashProfileNameInvalidIssue(inputEl, issue) {
+    if (issue === 'slash') {
+        flashProfileNameContainsSlash(inputEl);
+        return;
+    }
+    if (issue === 'dot') {
+        flashProfileNameContainsDot(inputEl);
+        return;
+    }
+    if (issue === 'invalid') {
+        flashProfileNameContainsInvalidChars(inputEl);
+    }
+}
+
+async function validateMasterProfileNameBeforeSave(form, { showRequiredAlert = false } = {}) {
+    if (!form) {
+        return { ok: false, normalized: '' };
+    }
+
+    const profileInput = form.querySelector('input[name="档案名"]');
+    if (!profileInput) {
+        return { ok: false, normalized: '' };
+    }
+
+    const trimmed = String(profileInput.value ?? '').trim();
+    if (profileInput.value !== trimmed) {
+        profileInput.value = trimmed;
+    }
+
+    if (!trimmed) {
+        if (showRequiredAlert) {
+            await showAlert(window.t ? window.t('character.profileNameRequired') : '档案名为必填项');
+        }
+        return { ok: false, normalized: trimmed, inputEl: profileInput, reason: 'empty' };
+    }
+
+    const invalidIssue = findInvalidProfileNameIssue(trimmed);
+    if (invalidIssue) {
+        flashProfileNameInvalidIssue(profileInput, invalidIssue);
+        return { ok: false, normalized: trimmed, inputEl: profileInput, reason: invalidIssue };
+    }
+
+    if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
+        flashProfileNameTooLong(profileInput);
+        return { ok: false, normalized: trimmed, inputEl: profileInput, reason: 'too_long' };
+    }
+
+    return { ok: true, normalized: trimmed, inputEl: profileInput };
+}
+
 function flashProfileNameError(inputEl, msg) {
     if (!inputEl) return;
 
@@ -638,7 +691,12 @@ function flashProfileNameError(inputEl, msg) {
 }
 
 function attachProfileNameLimiter(inputEl) {
-    if (!inputEl || inputEl.dataset.profileNameLimiterAttached === 'true') return;
+    if (!inputEl) return;
+    if (typeof inputEl._enforceProfileNameLimiter === 'function') {
+        inputEl._enforceProfileNameLimiter();
+        return;
+    }
+    if (inputEl.dataset.profileNameLimiterAttached === 'true') return;
     inputEl.dataset.profileNameLimiterAttached = 'true';
 
     // IME 组合输入期间不要修改 value/selection，否则可能打断中文输入
@@ -697,6 +755,7 @@ function attachProfileNameLimiter(inputEl) {
         // 理论上不会超过（已截断），这里保持表单可提交
         try { inputEl.setCustomValidity(''); } catch (e) { /* ignore */ }
     };
+    inputEl._enforceProfileNameLimiter = enforce;
 
     inputEl.addEventListener('input', enforce);
     inputEl.addEventListener('compositionstart', () => {
@@ -1054,6 +1113,7 @@ function renderMaster() {
 
     // 设置档案名的值
     profileInput.value = master['档案名'] || '';
+    attachProfileNameLimiter(profileInput);
 
     // 确保档案名的修改按钮存在
     const profileWrapper = profileInput.closest('.field-row-wrapper');
@@ -1282,6 +1342,10 @@ if (!window._addMasterFieldHandler) {
 const masterForm = document.getElementById('master-form');
 masterForm.onsubmit = async function (e) {
     e.preventDefault();
+
+    const profileValidation = await validateMasterProfileNameBeforeSave(masterForm, { showRequiredAlert: true });
+    if (!profileValidation.ok) return;
+
     const data = {};
     for (const [k, v] of new FormData(masterForm).entries()) {
         if (k && v) data[k] = v;
@@ -2608,7 +2672,7 @@ window.renameMaster = async function (oldName) {
             normalize: (v) => {
                 const trimmed = String(v ?? '').trim();
                 const sanitized = sanitizeProfileNameValue(trimmed);
-                _renameMasterDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
+                _renameMasterDidOverLimit = profileNameCountUnits(sanitized.value) > PROFILE_NAME_MAX_UNITS;
                 _renameMasterContainsSlash = sanitized.removedSlash;
                 _renameMasterContainsDot = sanitized.removedDot;
                 _renameMasterContainsInvalidChars = sanitized.removedOther;
@@ -2705,7 +2769,7 @@ window.renameCatgirl = async function (oldName) {
             normalize: (v) => {
                 const trimmed = String(v ?? '').trim();
                 const sanitized = sanitizeProfileNameValue(trimmed);
-                _renameCatgirlDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
+                _renameCatgirlDidOverLimit = profileNameCountUnits(sanitized.value) > PROFILE_NAME_MAX_UNITS;
                 _renameCatgirlContainsSlash = sanitized.removedSlash;
                 _renameCatgirlContainsDot = sanitized.removedDot;
                 _renameCatgirlContainsInvalidChars = sanitized.removedOther;
