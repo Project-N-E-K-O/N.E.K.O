@@ -1196,7 +1196,7 @@
         "directLinkUrl": "URL прямой ссылки на аудио (оптимально 8 сек, макс. 20 сек, формат wav/mp3)",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "Введите прямую ссылку на общедоступный аудиофайл. Система пропустит шаг загрузки и напрямую использует эту ссылку для регистрации голоса.",
-        "pleaseEnterDirectLink": "Пожалуйста, введите URL прямой ссылки на аудио и префикс",
+        "pleaseEnterDirectLink": "Пожалуйста, введите URL прямой ссылки на аудио",
         "invalidDirectLink": "Пожалуйста, введите действительную HTTP/HTTPS ссылку",
         "silenceModal": {
             "title": "Результаты обнаружения тишины",
