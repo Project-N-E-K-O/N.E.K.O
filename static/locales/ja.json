@@ -1178,6 +1178,18 @@
         "deleteError": "削除失敗：{{error}}",
         "freePresetLabel": "無料プリセット",
         "freePresetBadge": "プリセット",
+        "freeVoice": {
+            "playfulGirl": "陽気な少女",
+            "cuteGirl": "かわいい女の子",
+            "cuteMaiden": "かわいい少女",
+            "heroine": "女侠",
+            "livelyGirl": "元気な女の子",
+            "coolLady": "クールな御姐",
+            "gentleMaiden": "優しい少女",
+            "sweetLady": "甘い御姐",
+            "frailMaiden": "病弱な少女",
+            "childishMaiden": "幼い少女"
+        },
         "cloneMethod": "クローン方式",
         "cloneMethodFile": "ローカルファイル",
         "cloneMethodDirectLink": "直リンククローン",

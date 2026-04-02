@@ -1178,6 +1178,18 @@
         "deleteError": "刪除失敗：{{error}}",
         "freePresetLabel": "免費預設",
         "freePresetBadge": "預設",
+        "freeVoice": {
+            "playfulGirl": "俏皮女孩",
+            "cuteGirl": "可愛女孩",
+            "cuteMaiden": "可愛少女",
+            "heroine": "女少俠",
+            "livelyGirl": "活潑女孩",
+            "coolLady": "清冷御姐",
+            "gentleMaiden": "溫柔少女",
+            "sweetLady": "甜美御姐",
+            "frailMaiden": "病弱少女",
+            "childishMaiden": "稚氣少女"
+        },
         "cloneMethod": "克隆方式",
         "cloneMethodFile": "本地檔案",
         "cloneMethodDirectLink": "直鏈克隆",

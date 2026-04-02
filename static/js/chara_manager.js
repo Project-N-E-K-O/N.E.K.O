@@ -2316,10 +2316,11 @@ function showCatgirlForm(key, container) {
                     const freeGroup = document.createElement('optgroup');
                     const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
                     freeGroup.label = '── ' + freeLabel + ' ──';
-                    Object.entries(data.free_voices).forEach(([displayName, voiceId]) => {
+                    Object.entries(data.free_voices).forEach(([voiceKey, voiceId]) => {
                         const option = document.createElement('option');
                         option.value = voiceId;
-                        option.textContent = displayName;
+                        // 使用 i18n 翻译键获取显示名称
+                        option.textContent = window.t ? window.t(`voice.freeVoice.${voiceKey}`) : voiceKey;
                         if (voiceId === String(cat['voice_id'] || '').trim()) option.selected = true;
                         freeGroup.appendChild(option);
                     });
@@ -3045,10 +3046,11 @@ window.addEventListener('message', function (event) {
                     const freeGroup = document.createElement('optgroup');
                     const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
                     freeGroup.label = '── ' + freeLabel + ' ──';
-                    Object.entries(data.free_voices).forEach(([displayName, id]) => {
+                    Object.entries(data.free_voices).forEach(([voiceKey, id]) => {
                         const option = document.createElement('option');
                         option.value = id;
-                        option.textContent = displayName;
+                        // 使用 i18n 翻译键获取显示名称
+                        option.textContent = window.t ? window.t(`voice.freeVoice.${voiceKey}`) : voiceKey;
                         freeGroup.appendChild(option);
                     });
                     select.appendChild(freeGroup);

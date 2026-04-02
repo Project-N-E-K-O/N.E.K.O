@@ -1178,6 +1178,18 @@
         "deleteError": "Delete failed: {{error}}",
         "freePresetLabel": "Free Preset Voices",
         "freePresetBadge": "Preset",
+        "freeVoice": {
+            "playfulGirl": "Playful Girl",
+            "cuteGirl": "Cute Girl",
+            "cuteMaiden": "Cute Maiden",
+            "heroine": "Heroine",
+            "livelyGirl": "Lively Girl",
+            "coolLady": "Cool Lady",
+            "gentleMaiden": "Gentle Maiden",
+            "sweetLady": "Sweet Lady",
+            "frailMaiden": "Frail Maiden",
+            "childishMaiden": "Childish Maiden"
+        },
         "cloneMethod": "Clone Method",
         "cloneMethodFile": "Local File",
         "cloneMethodDirectLink": "Direct Link",
