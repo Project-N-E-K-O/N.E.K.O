@@ -784,7 +784,8 @@
         }
 
         // --- 网易云音乐代理：如果检测到网易云外链，替换为后端代理接口 ---
-        if (trackInfo.url && trackInfo.url.includes('music.163.com')) {
+        // 注意：URL编码后music.163.com依然是music.163.com，需要用/api/music/proxy-netease判断是否已代理
+        if (trackInfo.url && trackInfo.url.includes('music.163.com') && !trackInfo.url.startsWith('/api/music/proxy-netease')) {
             const originalUrl = trackInfo.url;
             const encodedUrl = encodeURIComponent(trackInfo.url);
             trackInfo.url = `/api/music/proxy-netease?url=${encodedUrl}`;
