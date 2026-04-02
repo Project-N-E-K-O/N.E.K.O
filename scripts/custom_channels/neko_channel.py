@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8089
 DEFAULT_REPLY_TIMEOUT = 300.0
+LEGACY_CHANNEL_NAME = "openclaw"
 _PROGRESS_REPLY_MARKERS = (
     "好的",
     "收到",
@@ -87,12 +88,31 @@ def _default_neko_channel_config(*, enabled: bool) -> Dict[str, Any]:
     }
 
 
+def _normalize_channel_config_keys(existing: Any) -> Dict[str, Any]:
+    if not isinstance(existing, dict):
+        return {}
+
+    key_aliases = {
+        "botPrefix": "bot_prefix",
+        "filterToolMessages": "filter_tool_messages",
+        "filterThinking": "filter_thinking",
+        "replyTimeout": "reply_timeout",
+        "routePrefix": "route_prefix",
+        "authToken": "auth_token",
+    }
+
+    normalized: Dict[str, Any] = {}
+    for key, value in existing.items():
+        normalized[key_aliases.get(str(key), str(key))] = value
+    return normalized
+
+
 def _merge_channel_defaults(
     existing: Any,
     *,
     enabled_if_missing: bool,
 ) -> Dict[str, Any]:
-    current = dict(existing) if isinstance(existing, dict) else {}
+    current = _normalize_channel_config_keys(existing)
     merged = _default_neko_channel_config(enabled=enabled_if_missing)
     merged.update(current)
     return merged
@@ -117,15 +137,18 @@ def _update_json_file_channel_config(
         channels = {}
         data["channels"] = channels
 
-    updated = _merge_channel_defaults(
-        channels.get("neko"),
-        enabled_if_missing=enable_if_missing,
-    )
+    existing_channel = channels.get("neko")
+    if not isinstance(existing_channel, dict):
+        existing_channel = channels.get(LEGACY_CHANNEL_NAME)
 
-    if channels.get("neko") == updated:
+    updated = _merge_channel_defaults(existing_channel, enabled_if_missing=enable_if_missing)
+
+    if _normalize_channel_config_keys(channels.get("neko")) == updated:
         return False
 
     channels["neko"] = updated
+    if LEGACY_CHANNEL_NAME in channels and LEGACY_CHANNEL_NAME != "neko":
+        channels.pop(LEGACY_CHANNEL_NAME, None)
     try:
         path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2) + "\n",
@@ -709,9 +732,9 @@ class NekoChannel(BaseChannel):
             "channel_id": send_meta.get("origin_channel_id") or self.channel,
         }
 
-    def _desired_channel_config(self) -> Dict[str, Any]:
+    def _desired_channel_config(self, *, enabled_override: Optional[bool] = None) -> Dict[str, Any]:
         return {
-            "enabled": self.enabled,
+            "enabled": self.enabled if enabled_override is None else enabled_override,
             "bot_prefix": self.bot_prefix,
             "filter_tool_messages": self._filter_tool_messages,
             "filter_thinking": self._filter_thinking,
@@ -734,7 +757,13 @@ class NekoChannel(BaseChannel):
         if provided != self.auth_token:
             raise HTTPException(status_code=401, detail="N.E.K.O auth token is required")
 
-    def _merge_channel_config_file(self, config_path: Path, *, create_if_missing: bool = False) -> None:
+    def _merge_channel_config_file(
+        self,
+        config_path: Path,
+        *,
+        create_if_missing: bool = False,
+        enabled_override: Optional[bool] = None,
+    ) -> None:
         if not config_path.exists():
             if not create_if_missing:
                 logger.warning(
@@ -760,20 +789,26 @@ class NekoChannel(BaseChannel):
 
         existing = channels.get(self.channel)
         if not isinstance(existing, dict):
-            existing = {}
+            existing = channels.get(LEGACY_CHANNEL_NAME)
+        normalized_existing = _normalize_channel_config_keys(existing)
 
-        desired = self._desired_channel_config()
-        updated = dict(existing)
+        desired = self._desired_channel_config(enabled_override=enabled_override)
+        updated = dict(normalized_existing)
         changed = self.channel not in channels
         for key, value in desired.items():
             if updated.get(key) != value:
                 updated[key] = value
                 changed = True
 
+        if LEGACY_CHANNEL_NAME in channels and LEGACY_CHANNEL_NAME != self.channel:
+            changed = True
+
         if not changed:
             return
 
         channels[self.channel] = updated
+        if LEGACY_CHANNEL_NAME in channels and LEGACY_CHANNEL_NAME != self.channel:
+            channels.pop(LEGACY_CHANNEL_NAME, None)
         try:
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(
@@ -795,6 +830,7 @@ class NekoChannel(BaseChannel):
             self._merge_channel_config_file(
                 Path(get_config_path()).expanduser(),
                 create_if_missing=True,
+                enabled_override=False,
             )
         except Exception:
             logger.exception("neko auto-config failed for root config")

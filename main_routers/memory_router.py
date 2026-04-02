@@ -10,6 +10,7 @@ Handles memory-related endpoints including:
 import os
 import re
 import json
+import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -30,6 +31,8 @@ VALID_NAME_PATTERN_RELAXED = re.compile(r'^[\w\-.\u4e00-\u9fff\u3040-\u309f\u30a
 # Pattern for valid recent file names: must start with "recent_", have content, and end with .json
 # Uses blacklist approach instead of whitelist to support CJK characters
 VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent_.+\.json$')
+PATH_ERROR_INVALID_REQUEST = "INVALID_REQUEST"
+PATH_ERROR_NOT_FOUND = "NOT_FOUND"
 
 
 def extract_catgirl_name_from_recent_filename(filename: str) -> str | None:
@@ -66,7 +69,12 @@ def iter_recent_memory_files(base_dir: Path) -> list[str]:
     return sorted(logical_names)
 
 
-def resolve_recent_file_path(config_manager, filename: str, *, create: bool = False) -> tuple[Path | None, str, str | None]:
+def resolve_recent_file_path(
+    config_manager,
+    filename: str,
+    *,
+    create: bool = False,
+) -> tuple[Path | None, str, str, str | None]:
     """
     Resolve a logical recent filename to the actual storage path.
 
@@ -76,7 +84,7 @@ def resolve_recent_file_path(config_manager, filename: str, *, create: bool = Fa
     """
     catgirl_name = extract_catgirl_name_from_recent_filename(filename)
     if not catgirl_name:
-        return None, "文件名格式不合法，必须以 recent_ 开头并以 .json 结尾", None
+        return None, "文件名格式不合法，必须以 recent_ 开头并以 .json 结尾", PATH_ERROR_INVALID_REQUEST, None
 
     memory_dir = Path(config_manager.memory_dir)
     project_memory_dir = Path(config_manager.project_memory_dir)
@@ -94,14 +102,20 @@ def resolve_recent_file_path(config_manager, filename: str, *, create: bool = Fa
             continue
         seen.add(candidate)
         if candidate.exists():
-            return candidate, "", catgirl_name
+            return candidate, "", "", catgirl_name
 
     if not create:
-        return None, "文件不存在", catgirl_name
+        return None, "文件不存在", PATH_ERROR_NOT_FOUND, catgirl_name
 
     target_dir = memory_dir / catgirl_name
     target_dir.mkdir(parents=True, exist_ok=True)
-    return target_dir / 'recent.json', "", catgirl_name
+    return target_dir / 'recent.json', "", "", catgirl_name
+
+
+def path_error_status_code(error_code: str) -> int:
+    if error_code == PATH_ERROR_NOT_FOUND:
+        return 404
+    return 400
 
 
 def validate_catgirl_name(name: str, allow_dots: bool = False) -> tuple[bool, str]:
@@ -266,9 +280,9 @@ async def get_recent_file(filename: str):
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
 
-    resolved_path, path_error, _catgirl_name = resolve_recent_file_path(cm, filename)
+    resolved_path, path_error, path_error_code, _catgirl_name = resolve_recent_file_path(cm, filename)
     if resolved_path is None:
-        status_code = 404 if path_error == "文件不存在" else 400
+        status_code = path_error_status_code(path_error_code)
         return JSONResponse({"success": False, "error": path_error}, status_code=status_code)
     
     with open(resolved_path, 'r', encoding='utf-8') as f:
@@ -297,7 +311,7 @@ async def save_recent_file(request: Request):
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
 
-    resolved_path, path_error, catgirl_name = resolve_recent_file_path(cm, filename, create=True)
+    resolved_path, path_error, _path_error_code, catgirl_name = resolve_recent_file_path(cm, filename, create=True)
     if resolved_path is None:
         logger.warning(f"Recent file path resolution failed for filename: {filename!r} - {path_error}")
         return JSONResponse({"success": False, "error": path_error}, status_code=400)
@@ -372,33 +386,36 @@ async def update_catgirl_name(request: Request):
     try:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
-        memory_dir = Path(cm.memory_dir)
-        
-        # Construct and validate file paths
         old_filename = f'recent_{old_name}.json'
         new_filename = f'recent_{new_name}.json'
-        
-        old_file_path, old_path_error = safe_memory_path(memory_dir, old_filename)
+
+        old_file_path, old_path_error, old_path_error_code, _old_catgirl_name = resolve_recent_file_path(cm, old_filename)
         if old_file_path is None:
-            logger.warning(f"Path traversal attempt blocked for old_name: {old_name!r} - {old_path_error}")
-            return JSONResponse({"success": False, "error": old_path_error}, status_code=400)
-        
-        new_file_path, new_path_error = safe_memory_path(memory_dir, new_filename)
+            logger.warning(f"Recent file path resolution failed for old_name: {old_name!r} - {old_path_error}")
+            return JSONResponse(
+                {"success": False, "error": old_path_error},
+                status_code=path_error_status_code(old_path_error_code),
+            )
+
+        new_file_path, new_path_error, new_path_error_code, _new_catgirl_name = resolve_recent_file_path(
+            cm,
+            new_filename,
+            create=True,
+        )
         if new_file_path is None:
-            logger.warning(f"Path traversal attempt blocked for new_name: {new_name!r} - {new_path_error}")
-            return JSONResponse({"success": False, "error": new_path_error}, status_code=400)
-        
-        # 检查旧文件是否存在
-        if not os.path.exists(old_file_path):
-            logger.warning(f"记忆文件不存在: {old_file_path}")
-            return JSONResponse({"success": False, "error": f"记忆文件不存在: {old_filename}"}, status_code=404)
-        
-        # 如果新文件已存在，先删除
-        if os.path.exists(new_file_path):
-            os.remove(new_file_path)
-        
-        # 重命名文件
-        os.rename(old_file_path, new_file_path)
+            logger.warning(f"Recent file path resolution failed for new_name: {new_name!r} - {new_path_error}")
+            return JSONResponse(
+                {"success": False, "error": new_path_error},
+                status_code=path_error_status_code(new_path_error_code),
+            )
+
+        old_file_path = Path(old_file_path)
+        new_file_path = Path(new_file_path)
+
+        if old_file_path.resolve() != new_file_path.resolve():
+            if new_file_path.exists():
+                new_file_path.unlink()
+            shutil.move(str(old_file_path), str(new_file_path))
         
         # 2. 更新文件内容中的猫娘名称引用
         with open(new_file_path, 'r', encoding='utf-8') as f:
