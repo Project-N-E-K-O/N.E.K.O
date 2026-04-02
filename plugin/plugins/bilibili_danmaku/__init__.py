@@ -175,6 +175,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
         # 配置（从 config.json 加载）
         self._room_id: int = DEFAULT_ROOM_ID
         self._interval: int = DEFAULT_INTERVAL  # 秒
+        self._target_lanlan: str = ""  # 弹幕推送的目标 AI 名称（留空不指定）
+        self._danmaku_max_length: int = 20  # 弹幕最大长度限制（B站限制 20 字符）
         self._bilibili_credential = None
         self._is_logged_in: bool = False
         self._last_push_time: float = 0.0  # 上次推送时间戳（内存变量）
@@ -251,7 +253,11 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 self._room_id = int(cfg.get("room_id", DEFAULT_ROOM_ID))
                 raw_interval = int(cfg.get("interval_seconds", DEFAULT_INTERVAL))
                 self._interval = max(MIN_INTERVAL, min(MAX_INTERVAL, raw_interval))
-                self.logger.info(f"已加载配置: room_id={self._room_id}, interval={self._interval}s")
+                self._target_lanlan = str(cfg.get("target_lanlan", "")).strip()
+                self._danmaku_max_length = int(cfg.get("danmaku_max_length", 20))
+                # 弹幕长度限制：B站实际限制为 20 字符/秒
+                self._danmaku_max_length = max(1, min(100, self._danmaku_max_length))
+                self.logger.info(f"已加载配置: room_id={self._room_id}, interval={self._interval}s, target_lanlan='{self._target_lanlan}', danmaku_max_length={self._danmaku_max_length}")
             except Exception as e:
                 self.logger.warning(f"加载配置失败，使用默认值: {e}")
         else:
@@ -274,6 +280,10 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "room_id": self._room_id,
             "interval_seconds": self._interval,
             "_comment_interval": f"推送间隔范围 {MIN_INTERVAL}~{MAX_INTERVAL} 秒",
+            "target_lanlan": self._target_lanlan,
+            "_comment_target_lanlan": "弹幕推送的目标 AI 名称（应与 lanlan_name 一致，留空则不指定）",
+            "danmaku_max_length": self._danmaku_max_length,
+            "_comment_danmaku_max_length": "发送弹幕的最大长度限制（B站限制 20 字符，建议 20）",
         }
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -351,7 +361,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                     "room_id": self._room_id,
                     "plugin_id": "bilibili-danmaku",
                 },
-                target_lanlan="小天",  # 指定目标 AI
+                target_lanlan=self._target_lanlan if self._target_lanlan else None,  # 可配置的目标 AI
             )
             self.logger.info(f"📤 push_message 成功: {summary[:50]}")
         except Exception as e:
@@ -413,6 +423,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             credential=self._bilibili_credential,
             logger=self.logger,
             callbacks=callbacks,
+            danmaku_max_length=self._danmaku_max_length,  # 从配置读取
         )
 
         self._listen_task = asyncio.create_task(self._run_listener())
@@ -432,6 +443,15 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 pass
         self._listener = None
         self._listen_task = None
+
+        # 清空所有缓冲队列，防止停止后继续推送旧弹幕
+        self._danmaku_queue.clear()
+        self._sc_queue.clear()
+        self._gift_queue.clear()
+        self._ui_danmaku_queue.clear()
+        self._ui_gift_queue.clear()
+        self._ui_sc_queue.clear()
+        self.logger.info("已清空弹幕缓冲队列")
 
     async def _run_listener(self):
         """包装 DanmakuListener.start()，连接成功后清除 _connecting 标记"""
@@ -557,15 +577,33 @@ class BiliDanmakuPlugin(NekoPluginBase):
         收集缓冲区中的弹幕/SC/礼物，通过 push_message 推送给 AI。
         AI 回复会自动走 TTS 语音播放给直播间观众。
         """
+        # 未监听时不推送（防止停止后继续推送旧弹幕）
+        is_listening = self._listener is not None and self._listener.is_running()
+        if not is_listening and not self._connecting:
+            return Ok({"skipped": True, "reason": "not_listening"})
+
         now = datetime.now().timestamp()
 
         if now - self._last_push_time < self._interval:
             return Ok({"skipped": True})
 
         # 收集待推送内容
+        # 弹幕较多时，优先推送最新的弹幕，避免旧弹幕积压
+        # 保留最新的弹幕（至少保留 5 条），其余的推送给 AI
+        keep_count = min(5, len(self._danmaku_queue))
+        total_count = len(self._danmaku_queue)
+        to_pop = total_count - keep_count  # 要推送的数量
+
         danmaku_batch = []
-        while self._danmaku_queue and len(danmaku_batch) < 10:
-            danmaku_batch.append(self._danmaku_queue.popleft())
+        if to_pop > 0:
+            # 取最旧的 to_pop 条弹幕推送（从队首取），保留最新的弹幕在队列中
+            for _ in range(to_pop):
+                danmaku_batch.append(self._danmaku_queue.popleft())
+            # 反转顺序（按时间正序，最早的在前）
+            danmaku_batch.reverse()
+        # 最多保留 10 条
+        if len(danmaku_batch) > 10:
+            danmaku_batch = danmaku_batch[-10:]
 
         sc_batch = []
         while self._sc_queue:
@@ -864,6 +902,73 @@ class BiliDanmakuPlugin(NekoPluginBase):
         })
 
     @plugin_entry(
+        id="set_target_lanlan",
+        name="设置目标 AI",
+        description="设置弹幕推送的目标 AI 名称",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "target_lanlan": {
+                    "type": "string",
+                    "description": "目标 AI 名称（应与 lanlan_name 一致，留空则不指定）",
+                },
+            },
+        },
+        llm_result_fields=["message"],
+    )
+    async def set_target_lanlan(self, target_lanlan: str = "", **_):
+        """设置弹幕推送的目标 AI 名称"""
+        old_value = self._target_lanlan
+        self._target_lanlan = str(target_lanlan).strip()
+        self._save_plugin_config()
+        return Ok({
+            "success": True,
+            "message": f"✅ 目标 AI 已从 '{old_value or '(未指定)'}' 更改为 '{self._target_lanlan or '(未指定)'}'",
+            "target_lanlan": self._target_lanlan,
+            "old_value": old_value,
+        })
+
+    @plugin_entry(
+        id="set_danmaku_max_length",
+        name="设置弹幕最大长度",
+        description="设置发送弹幕的最大长度限制",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "max_length": {
+                    "type": "integer",
+                    "description": "弹幕最大长度（范围 1-100，建议 20，B站限制 20 字符/秒）",
+                },
+            },
+        },
+        llm_result_fields=["message"],
+    )
+    async def set_danmaku_max_length(self, max_length: int = 20, **_):
+        """设置弹幕最大长度限制"""
+        try:
+            max_length = int(max_length)
+        except (TypeError, ValueError):
+            return Err(SdkError("max_length 必须是整数"))
+
+        if max_length < 1 or max_length > 100:
+            return Err(SdkError("max_length 超出范围：请设置 1~100 之间"))
+
+        old_value = self._danmaku_max_length
+        self._danmaku_max_length = max_length
+        self._save_plugin_config()
+
+        # 更新监听器的弹幕长度限制（如果监听器已创建）
+        if self._listener:
+            self._listener._danmaku_max_length = max_length
+
+        return Ok({
+            "success": True,
+            "message": f"✅ 弹幕最大长度已从 {old_value} 更改为 {max_length}",
+            "max_length": max_length,
+            "old_value": old_value,
+        })
+
+    @plugin_entry(
         id="connect",
         name="开始监听",
         description="立即开始（或重启）弹幕监听，可选传入直播间ID",
@@ -937,6 +1042,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
             f"账号状态: {'🔐 已登录' if self._is_logged_in else '👤 游客模式'}",
             f"过滤模式: {self._filter.describe_mode() if self._filter else '未初始化'}",
             f"推送间隔: {self._interval}s",
+            f"目标AI: {self._target_lanlan or '(未指定)'}",
+            f"弹幕最大长度: {self._danmaku_max_length} 字符",
             "",
             f"弹幕缓冲: {len(self._danmaku_queue)} 条",
             f"SC缓冲: {len(self._sc_queue)} 条",
@@ -954,6 +1061,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "listening": is_listening,
             "logged_in": self._is_logged_in,
             "interval": self._interval,
+            "target_lanlan": self._target_lanlan,
+            "danmaku_max_length": self._danmaku_max_length,
             "queue_size": len(self._danmaku_queue),
             "stats": {
                 "received": self._total_received,
@@ -1082,7 +1191,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "要发送的弹幕内容（最长100字符）"
+                    "description": "要发送的弹幕内容（建议 20 字符以内，B站限制 20 字符/秒）"
                 }
             },
             "required": ["message"]
@@ -1104,6 +1213,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             message=message,
             room_id=self._room_id,
             credential=self._bilibili_credential,
+            danmaku_max_length=self._danmaku_max_length,
         )
 
         if result.get("success"):

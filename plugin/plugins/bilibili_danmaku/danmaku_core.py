@@ -152,6 +152,7 @@ class DanmakuListener:
         credential=None,
         logger=None,
         callbacks: Dict[str, Callable] = None,
+        danmaku_max_length: int = 20,  # 弹幕最大长度限制（B站限制 20 字符）
     ):
         self.room_id = room_id
         self.credential = credential
@@ -162,6 +163,7 @@ class DanmakuListener:
         self._ws = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._buvid3_temp: str = ""  # 临时 buvid3，无凭据时从 B站首页获取
+        self._danmaku_max_length = max(1, min(100, danmaku_max_length))  # 限制范围 1-100
 
         # 设置模块级日志回调（供 _decompress 使用）
         global _module_logger
@@ -685,14 +687,16 @@ class DanmakuListener:
         message: str,
         room_id: int,
         credential=None,
+        danmaku_max_length: int = 20,
     ) -> dict:
         """
         发送弹幕到 B站直播间。
 
         Args:
-            message: 弹幕文本（最长 100 字符，20 字符/秒限流）
+            message: 弹幕文本
             room_id: 直播间真实房间号
             credential: _BiliCredential 实例（需要 bili_jct + SESSDATA）
+            danmaku_max_length: 弹幕最大长度限制（默认 20，B站限制 20 字符/秒）
 
         Returns:
             dict: {"success": bool, "message": str}
@@ -710,8 +714,9 @@ class DanmakuListener:
         message = str(message).strip()
         if not message:
             return {"success": False, "message": "弹幕内容不能为空"}
-        if len(message) > 100:
-            message = message[:100]
+        max_len = danmaku_max_length or self._danmaku_max_length or 20
+        if len(message) > max_len:
+            message = message[:max_len]
 
         try:
             import aiohttp
