@@ -435,7 +435,7 @@ class VRMCore {
         
         // 默认使用 NeutralToneMapping（色调平衡、对比度适中）
         this.manager.renderer.toneMapping = THREE.NeutralToneMapping;
-        this.manager.renderer.toneMappingExposure = 0.8;
+        this.manager.renderer.toneMappingExposure = 1.1;
 
         const canvas = this.manager.renderer.domElement;
         canvas.style.setProperty('pointer-events', 'auto', 'important');
@@ -464,8 +464,8 @@ class VRMCore {
         // 使用光照配置（如果提供），否则使用默认值
         // VRoid Hub 风格：极高环境光、主灯跟随摄像机、无阴影
         const defaultLighting = {
-            ambient: 0.5,      // 默认环境光
-            main: 0.8,         // 默认主光源
+            ambient: 0.83,     // 默认环境光
+            main: 1.91,        // 默认主光源
             fill: 0.0,         // 不需要补光
             rim: 0.0,          // 不需要外部轮廓光（MToon 内建处理）
             top: 0.0,          // 不需要顶光
