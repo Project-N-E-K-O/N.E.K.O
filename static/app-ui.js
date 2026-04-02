@@ -1206,10 +1206,11 @@
             }
 
             // 保存当前锁定状态，以便"请她回来"时恢复
+            // core.setLocked() 将值写入 manager.isLocked，因此从 manager 级别读取
             window._savedLockState = {
                 live2d: window.live2dManager ? window.live2dManager.isLocked : false,
-                vrm: window.vrmManager && window.vrmManager.core ? window.vrmManager.core.isLocked : false,
-                mmd: window.mmdManager && window.mmdManager.core ? window.mmdManager.core.isLocked : false
+                vrm: window.vrmManager ? window.vrmManager.isLocked : false,
+                mmd: window.mmdManager ? window.mmdManager.isLocked : false
             };
 
             // 设置锁定状态
