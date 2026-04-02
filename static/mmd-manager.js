@@ -191,10 +191,6 @@ class MMDManager {
             this.animationModule.stop();
         }
         this.currentAnimationUrl = null;
-        // 恢复完全跟踪
-        if (this.cursorFollow) {
-            this.cursorFollow.setAnimationMode('none');
-        }
     }
 
     // ═══════════════════ 表情/口型 ═══════════════════
