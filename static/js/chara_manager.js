@@ -1089,7 +1089,7 @@ function renderMaster() {
         profileInput.type = 'text';
         profileInput.name = '档案名';
         profileInput.required = true;
-        profileInput.maxLength = 60;
+        profileInput.maxLength = PROFILE_NAME_MAX_UNITS;
         profileInput.autocomplete = 'off';
         row.appendChild(profileInput);
         wrapper.appendChild(row);
