@@ -49,6 +49,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # Claude 系列
     "claude-sonnet-4-6": EXTRA_BODY_CLAUDE,
     "claude-haiku-4-5-20251001": EXTRA_BODY_CLAUDE,
+    "claude-opus-4-6": EXTRA_BODY_CLAUDE,
     # Doubao Seed 2.0 系列
     "doubao-seed-2-0-lite-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-mini": EXTRA_BODY_CLAUDE,

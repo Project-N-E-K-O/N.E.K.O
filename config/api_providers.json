@@ -207,7 +207,7 @@
       "correction_model": "grok-4-1-fast-non-reasoning",
       "emotion_model": "grok-3-mini-fast",
       "vision_model": "grok-4-1-fast-non-reasoning",
-      "agent_model": "grok-4.1-fast-non-reasoning"
+      "agent_model": "grok-4-1-fast-non-reasoning"
     }
   },
   "default_models": {
