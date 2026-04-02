@@ -1196,7 +1196,7 @@
         "directLinkUrl": "音声直リンクURL（8秒が最適、最大20秒、wav/mp3形式）",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "公開アクセス可能な音声ファイルの直リンクを入力してください。システムはアップロード手順をスキップし、このリンクを直接使用して音声を登録します。",
-        "pleaseEnterDirectLink": "音声直リンクURLとプレフィックスを入力してください",
+        "pleaseEnterDirectLink": "音声直リンクURLを入力してください",
         "invalidDirectLink": "有効なHTTP/HTTPSリンクを入力してください",
         "silenceModal": {
             "title": "スマート無音検出結果",
@@ -1275,7 +1275,7 @@
         "apiKeySettings": "APIキー",
         "masterProfile": "マスタープロフィール（ユニーク）: プロフィール名は必須、その他はオプションで削除可能です。",
         "profileName": "プロフィール名",
-        "profileNameMaxHint": "最大20文字",
+        "profileNameMaxHint": "最大60文字",
         "profileNameTooLong": "プロフィール名が長すぎます",
         "profileNameContainsSlash": "プロフィール名にパス区切り文字(/または\\)を含めることはできません",
         "profileNameContainsDot": "プロフィール名にドット(.)を含めることはできません",
@@ -2030,7 +2030,7 @@
             },
             "step2": {
                 "title": "📝 プロフィール名を設定",
-                "desc": "あなたの名前またはニックネームを入力してください。ネコはこの名前であなたに話しかけます。最大20文字です。"
+                "desc": "あなたの名前またはニックネームを入力してください。ネコはこの名前であなたに話しかけます。最大60文字です。"
             },
             "step3": {
                 "title": "👥 性別設定",
