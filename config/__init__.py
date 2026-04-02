@@ -11,8 +11,9 @@ from types import MappingProxyType
 
 from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
 
-# 应用程序名称配置
+# 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
+APP_VERSION = "0.7.3"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -687,6 +688,7 @@ from config.providers import (  # noqa: E402, F401
 
 __all__ = [
     'APP_NAME',
+    'APP_VERSION',
     'GSV_VOICE_PREFIX',
     'CHARACTER_SYSTEM_RESERVED_FIELDS',
     'CHARACTER_WORKSHOP_RESERVED_FIELDS',

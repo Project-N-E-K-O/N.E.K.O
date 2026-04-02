@@ -7,6 +7,7 @@
         "save": "保存",
         "cancel": "キャンセル",
         "confirm": "確認",
+        "next": "次へ",
         "ok": "OK",
         "delete": "削除",
         "edit": "編集",
@@ -679,7 +680,7 @@
             "kimi": "Kimi（Moonshot、ロングコンテキスト対応）",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance（Doubao）",
-            "minimax": "MiniMax（国内版）",
+            "minimax": "MiniMax（China）",
             "minimax_intl": "MiniMax（国際版）",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
@@ -708,7 +709,7 @@
             "gemini": "Gemini（Google）",
             "kimi": "Moonshot（Kimi）",
             "doubao": "ByteDance（Doubao）",
-            "minimax": "MiniMax（国内版）",
+            "minimax": "MiniMax（China）",
             "minimax_intl": "MiniMax（国際版）",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
@@ -1118,12 +1119,12 @@
     "voice": {
         "title": "ボイス登録",
         "alibabaApiRequired": "⚠️ この機能にはCosyVoiceモデルが必要です。APIキー設定でAlibaba Bailian APIキーを保存してください（Assist APIの有効化は不要）。またはローカル音声サーバーを設定してください",
-        "minimaxApiRequired": "⚠️ この機能にはMiniMaxモデル（国内版）が必要です。APIキー設定でMiniMax APIキーを保存してください（Assist APIの有効化は不要）",
+        "minimaxApiRequired": "⚠️ この機能にはMiniMaxモデル（China）が必要です。APIキー設定でMiniMax APIキーを保存してください（Assist APIの有効化は不要）",
         "minimaxIntlApiRequired": "⚠️ この機能にはMiniMaxモデル（国際版）が必要です。APIキー設定でMiniMax国際版APIキーを保存してください（Assist APIの有効化は不要）",
         "providerLabel": "音声クローンプロバイダー",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
-            "minimax": "MiniMax（国内版）",
+            "minimax": "MiniMax（China）",
             "minimax_intl": "MiniMax（国際版）"
         },
         "selectFile": "ローカル音声ファイルを選択（8秒推奨、最大20秒、wav/mp3形式）",
@@ -2609,11 +2610,17 @@
         "idleRestored": "待機アニメーションを復元しました",
         "idleRestoreFailed": "待機アニメーションの復元に失敗しました",
         "btnNotFoundGiveUp": "ジュークボックスボタンが見つかりません、バインドを中止",
-        "minimizeBtnNotFoundGiveUp": "最小化ボタンが見つかりません、監視を中止"
+        "minimizeBtnNotFoundGiveUp": "最小化ボタンが見つかりません、監視を中止",
+        "noticeDance": "💃 ダンス機能は MMD アバター読み込み時のみ利用可能です",
+        "noticeMusic": "⚠️ 現在の楽曲はテスト用です。今後のバージョンで著作権楽曲は削除されますので、ご自身でインポートしてください"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice が 3.5 にアップグレードされました。旧音声は無効になりました。再度クローンしてください。"
+            "legacyRemoved": "CosyVoice が 3.5 にアップグレードされました。旧音声は無効になりました。再度クローンしてください。",
+            "legacyDetected": "旧バージョンの CosyVoice 音声が検出されました。動作しない可能性があります。再クローンをお勧めします。"
+        },
+        "changelog": {
+            "title": "更新内容"
         }
     },
     "proactive": {

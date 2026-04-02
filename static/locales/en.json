@@ -7,6 +7,7 @@
         "save": "Save",
         "cancel": "Cancel",
         "confirm": "Confirm",
+        "next": "Next",
         "ok": "OK",
         "delete": "Delete",
         "edit": "Edit",
@@ -679,7 +680,7 @@
             "kimi": "Kimi (Moonshot, Long Context)",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance (Doubao)",
-            "minimax": "MiniMax (Domestic)",
+            "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)"
@@ -708,7 +709,7 @@
             "gemini": "Gemini (Google)",
             "kimi": "Moonshot (Kimi)",
             "doubao": "ByteDance (Doubao)",
-            "minimax": "MiniMax (Domestic)",
+            "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)"
@@ -1118,12 +1119,12 @@
     "voice": {
         "title": "Voice Registration",
         "alibabaApiRequired": "⚠️ This feature requires the CosyVoice model. Please save the Alibaba Bailian API Key in API Keys settings (enabling Assist API is not required), or configure a local voice server.",
-        "minimaxApiRequired": "⚠️ This feature requires the MiniMax model (Domestic). Please save the MiniMax API Key in API Keys settings (enabling Assist API is not required).",
+        "minimaxApiRequired": "⚠️ This feature requires the MiniMax model (China). Please save the MiniMax API Key in API Keys settings (enabling Assist API is not required).",
         "minimaxIntlApiRequired": "⚠️ This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
         "providerLabel": "Voice Clone Provider",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
-            "minimax": "MiniMax (Domestic)",
+            "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)"
         },
         "selectFile": "Select local audio file (8 seconds recommended, max 20 seconds, wav/mp3 format)",
@@ -2609,11 +2610,17 @@
         "idleRestored": "Idle animation restored",
         "idleRestoreFailed": "Failed to restore idle animation",
         "btnNotFoundGiveUp": "Jukebox button not found after retries, giving up",
-        "minimizeBtnNotFoundGiveUp": "Minimize button not found after retries, giving up"
+        "minimizeBtnNotFoundGiveUp": "Minimize button not found after retries, giving up",
+        "noticeDance": "💃 Dance service is only available when an MMD avatar is loaded",
+        "noticeMusic": "⚠️ Current songs are for testing only — copyrighted tracks will be removed in future versions, please import your own"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices."
+            "legacyRemoved": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices.",
+            "legacyDetected": "Legacy CosyVoice voices detected that may no longer work. Consider re-cloning your voices."
+        },
+        "changelog": {
+            "title": "What's New"
         }
     },
     "proactive": {

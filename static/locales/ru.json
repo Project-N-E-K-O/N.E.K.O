@@ -7,6 +7,7 @@
         "save": "Сохранить",
         "cancel": "Отмена",
         "confirm": "Подтвердить",
+        "next": "Далее",
         "ok": "ОК",
         "delete": "Удалить",
         "edit": "Редактировать",
@@ -679,7 +680,7 @@
             "kimi": "Kimi (Moonshot AI, поддерживает длинный контекст)",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance (Doubao)",
-            "minimax": "MiniMax (внутренний)",
+            "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)"
@@ -708,7 +709,7 @@
             "gemini": "Gemini (Google)",
             "kimi": "Moonshot (Kimi)",
             "doubao": "ByteDance (Doubao)",
-            "minimax": "MiniMax (внутренний)",
+            "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)"
@@ -2609,11 +2610,17 @@
         "idleRestored": "Анимация ожидания восстановлена",
         "idleRestoreFailed": "Не удалось восстановить анимацию ожидания",
         "btnNotFoundGiveUp": "Кнопка джукбокса не найдена после повторных попыток",
-        "minimizeBtnNotFoundGiveUp": "Кнопка сворачивания не найдена после повторных попыток"
+        "minimizeBtnNotFoundGiveUp": "Кнопка сворачивания не найдена после повторных попыток",
+        "noticeDance": "💃 Танцевальное сопровождение доступно только при загрузке MMD-аватара",
+        "noticeMusic": "⚠️ Текущие треки предназначены только для тестирования — в будущих версиях защищённые авторским правом песни будут удалены, импортируйте свои"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice обновлён до версии 3.5. Ваши старые голоса устарели — пожалуйста, клонируйте их повторно."
+            "legacyRemoved": "CosyVoice обновлён до версии 3.5. Ваши старые голоса устарели — пожалуйста, клонируйте их повторно.",
+            "legacyDetected": "Обнаружены старые голоса CosyVoice, которые могут не работать. Рекомендуем повторно клонировать голоса."
+        },
+        "changelog": {
+            "title": "Что нового"
         }
     },
     "proactive": {

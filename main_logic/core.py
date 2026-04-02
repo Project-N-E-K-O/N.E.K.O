@@ -996,9 +996,9 @@ class LLMSessionManager:
         if not legacy_names:
             return
         enqueue_prominent_notice({
-            "code": "notice.voiceMigration.legacyRemoved",
-            "message": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
-            "message_en": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices.",
+            "code": "notice.voiceMigration.legacyDetected",
+            "message": "检测到旧版 CosyVoice 音色可能已失效，建议重新克隆语音。",
+            "message_en": "Legacy CosyVoice voices detected that may no longer work. Consider re-cloning your voices.",
             "details": {"voices": legacy_names},
         })
 

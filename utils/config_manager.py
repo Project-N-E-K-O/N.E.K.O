@@ -1099,13 +1099,13 @@ class ConfigManager:
         if is_local_tts:
             storage_key = '__LOCAL_TTS__'
             all_voices = voice_storage.get(storage_key, {})
-            result = {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
+            result = dict(all_voices)
         else:
             tts_api_key = tts_config.get('api_key', '')
             if tts_api_key:
                 storage_key = tts_api_key
                 all_voices = voice_storage.get(storage_key, {})
-                result = {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
+                result = dict(all_voices)
             else:
                 core_config = self.get_core_config()
                 audio_api_key = core_config.get('AUDIO_API_KEY', '')
@@ -1115,7 +1115,7 @@ class ConfigManager:
                 else:
                     storage_key = audio_api_key
                     all_voices = voice_storage.get(storage_key, {})
-                    result = {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
+                    result = dict(all_voices)
 
         # 确保主分区音色有 provider 字段
         default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
@@ -1231,9 +1231,6 @@ class ConfigManager:
         if not voice_id:
             return True
 
-        if self.is_legacy_cosyvoice_id(voice_id):
-            return False
-
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
             return custom_tts_allowed
@@ -1254,9 +1251,6 @@ class ConfigManager:
         """校验 voice_id 是否在指定 API Key 下有效"""
         if not voice_id:
             return True
-
-        if self.is_legacy_cosyvoice_id(voice_id):
-            return False
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
@@ -1282,7 +1276,7 @@ class ConfigManager:
         实际可用性由 core.py 运行时按 free + lanlan.app/lanlan.tech 线路决定。
 
         Returns:
-            (cleaned_count, legacy_cosyvoice_names): 清理总数 及 因旧版 CosyVoice 被清理的角色名列表
+            (cleaned_count, legacy_cosyvoice_names): 清理总数 及 仍在使用旧版 CosyVoice 音色的角色名列表
         """
         character_data = self.load_characters()
         cleaned_count = 0
@@ -1291,18 +1285,21 @@ class ConfigManager:
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',))
-            if voice_id and not self.validate_voice_id(voice_id):
-                is_legacy = self.is_legacy_cosyvoice_id(voice_id)
+            if not voice_id:
+                continue
+            # 旧版 CosyVoice 音色：保留 voice_id 不清空，仅记录供通知
+            if self.is_legacy_cosyvoice_id(voice_id):
+                legacy_cosyvoice_names.append(name)
+                continue
+            # 其他无效 voice_id（storage 中已不存在）：清空
+            if not self.validate_voice_id(voice_id):
                 logger.warning(
-                    "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除%s",
+                    "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",
                     name,
                     voice_id,
-                    "（旧版 CosyVoice 音色）" if is_legacy else "",
                 )
                 set_reserved(config, 'voice_id', '')
                 cleaned_count += 1
-                if is_legacy:
-                    legacy_cosyvoice_names.append(name)
 
         if cleaned_count > 0:
             self.save_characters(character_data)

@@ -7,6 +7,7 @@
         "save": "保存",
         "cancel": "取消",
         "confirm": "确认",
+        "next": "下一个",
         "ok": "确定",
         "delete": "删除",
         "edit": "编辑",
@@ -2609,11 +2610,17 @@
         "idleRestored": "已恢复待机动画",
         "idleRestoreFailed": "恢复待机动画失败",
         "btnNotFoundGiveUp": "点歌台按钮在重试后仍未找到，放弃绑定",
-        "minimizeBtnNotFoundGiveUp": "最小化按钮在重试后仍未找到，放弃监听"
+        "minimizeBtnNotFoundGiveUp": "最小化按钮在重试后仍未找到，放弃监听",
+        "noticeDance": "💃 伴舞服务仅在载入 MMD 形象时可用",
+        "noticeMusic": "⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。"
+            "legacyRemoved": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
+            "legacyDetected": "检测到旧版 CosyVoice 音色可能已失效，建议重新克隆语音。"
+        },
+        "changelog": {
+            "title": "更新内容"
         }
     },
     "proactive": {

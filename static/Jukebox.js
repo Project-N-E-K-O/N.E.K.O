@@ -239,6 +239,10 @@ window.Jukebox = {
           <button class="jukebox-close" onclick="Jukebox_close()" title="${window.t('Jukebox.close', '关闭')}">×</button>
         </div>
       </div>
+      <div class="jukebox-notice">
+        <div class="jukebox-notice-item">${window.t('Jukebox.noticeDance', '💃 伴舞服务仅在载入 MMD 形象时可用')}</div>
+        <div class="jukebox-notice-item">${window.t('Jukebox.noticeMusic', '⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入')}</div>
+      </div>
       <div class="jukebox-content">
         <table class="jukebox-table">
           <thead>
@@ -339,7 +343,21 @@ window.Jukebox = {
         font-size: 20px;
         font-weight: 600;
       }
-      
+
+      .jukebox-notice {
+        background: rgba(255, 255, 255, 0.18);
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        border-radius: 8px;
+        padding: 8px 12px;
+        margin-bottom: 12px;
+        font-size: 12.5px;
+        line-height: 1.6;
+      }
+
+      .jukebox-notice-item {
+        padding: 2px 0;
+      }
+
       .jukebox-minimize {
         background: none;
         border: none;

@@ -7,6 +7,7 @@
         "save": "저장",
         "cancel": "취소",
         "confirm": "확인",
+        "next": "다음",
         "ok": "알았어",
         "delete": "삭제",
         "edit": "편집",
@@ -679,7 +680,7 @@
             "kimi": "Kimi(Moonshot, 긴 컨텍스트 지원)",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance(Doubao)",
-            "minimax": "MiniMax(국내 서버)",
+            "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
             "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)"
@@ -708,7 +709,7 @@
             "gemini": "Gemini(Google)",
             "kimi": "Moonshot(Kimi)",
             "doubao": "ByteDance(Doubao)",
-            "minimax": "MiniMax(국내 서버)",
+            "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
             "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)"
@@ -1118,12 +1119,12 @@
     "voice": {
         "title": "음성 등록",
         "alibabaApiRequired": "⚠️ 이 기능에는 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Bailian API 키를 저장하세요 (Assist API 활성화 불필요). 또는 로컬 음성 서버를 구성하세요.",
-        "minimaxApiRequired": "⚠️ 이 기능에는 MiniMax 모델(중국 내수)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
+        "minimaxApiRequired": "⚠️ 이 기능에는 MiniMax 모델 (China)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
         "minimaxIntlApiRequired": "⚠️ 이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
-            "minimax": "MiniMax (중국 내수)",
+            "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (국제판)"
         },
         "selectFile": "로컬 오디오 파일 선택(8초 권장, 최대 20초, wav/mp3 형식)",
@@ -2609,11 +2610,17 @@
         "idleRestored": "대기 애니메이션이 복원되었습니다",
         "idleRestoreFailed": "대기 애니메이션 복원 실패",
         "btnNotFoundGiveUp": "주크박스 버튼을 찾을 수 없습니다, 바인딩 포기",
-        "minimizeBtnNotFoundGiveUp": "최소화 버튼을 찾을 수 없습니다, 모니터링 포기"
+        "minimizeBtnNotFoundGiveUp": "최소화 버튼을 찾을 수 없습니다, 모니터링 포기",
+        "noticeDance": "💃 댄스 기능은 MMD 아바타를 로드한 경우에만 사용할 수 있습니다",
+        "noticeMusic": "⚠️ 현재 곡은 테스트용입니다. 향후 버전에서 저작권 음악이 제거되오니 직접 가져오세요"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice가 3.5로 업그레이드되었습니다. 기존 음성이 만료되었으니 다시 클론하세요."
+            "legacyRemoved": "CosyVoice가 3.5로 업그레이드되었습니다. 기존 음성이 만료되었으니 다시 클론하세요.",
+            "legacyDetected": "이전 버전의 CosyVoice 음성이 감지되었습니다. 작동하지 않을 수 있으니 다시 클론하는 것을 권장합니다."
+        },
+        "changelog": {
+            "title": "업데이트 내용"
         }
     },
     "proactive": {

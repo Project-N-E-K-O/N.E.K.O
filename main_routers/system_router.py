@@ -102,6 +102,46 @@ async def ack_pending_notices(request: Request):
     return {"ok": True}
 
 
+# --- 版本更新日志 ---
+
+@router.get("/changelog")
+async def get_changelog(since: str = ""):
+    """返回自指定版本以来的所有更新日志。
+
+    前端传入 localStorage 中保存的 lastNotifiedVersion，后端返回所有 > since 的
+    changelog 条目（按版本升序），以及当前版本号。
+    """
+    from config import APP_VERSION
+    import glob as _glob
+
+    def _parse_ver(s: str) -> tuple[int, ...]:
+        """将 '0.7.3' 转为可比较的 int 元组；解析失败返回 (0,)。"""
+        try:
+            return tuple(int(x) for x in s.strip().split("."))
+        except (ValueError, AttributeError):
+            return (0,)
+
+    changelog_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "changelog")
+    entries: list[dict] = []
+    since_ver = _parse_ver(since) if since else (0,)
+
+    if os.path.isdir(changelog_dir):
+        for md_file in sorted(_glob.glob(os.path.join(changelog_dir, "*.md"))):
+            stem = os.path.splitext(os.path.basename(md_file))[0]
+            file_ver = _parse_ver(stem)
+            if file_ver == (0,):
+                continue
+            if file_ver > since_ver:
+                try:
+                    with open(md_file, "r", encoding="utf-8") as f:
+                        content = f.read()
+                except Exception:
+                    content = ""
+                entries.append({"version": stem, "content": content})
+
+    return {"current_version": APP_VERSION, "entries": entries}
+
+
 # --- 主动搭话近期记录暂存区 ---
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
 _proactive_chat_history: dict[str, deque] = {}
