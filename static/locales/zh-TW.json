@@ -1275,7 +1275,7 @@
         "apiKeySettings": "API Key",
         "masterProfile": "主人檔案（唯一）：檔案名為必填項，其他均為可選項。",
         "profileName": "檔案名",
-        "profileNameMaxHint": "最多20個字符",
+        "profileNameMaxHint": "最多60個字符",
         "profileNameTooLong": "檔案名過長",
         "profileNameContainsSlash": "檔案名不能包含路徑分隔符(/或\\)",
         "profileNameContainsDot": "檔案名不能包含點號(.)",
@@ -2030,7 +2030,7 @@
             },
             "step2": {
                 "title": "📝 設置檔案名",
-                "desc": "輸入妳的名字或昵稱。貓娘會用這個名字來稱呼妳。最多 20 個字符。"
+                "desc": "輸入妳的名字或昵稱。貓娘會用這個名字來稱呼妳。最多 60 個字符。"
             },
             "step3": {
                 "title": "👥 性別設定",

@@ -1275,7 +1275,7 @@
         "apiKeySettings": "API Key",
         "masterProfile": "主人档案（唯一）：档案名为必填项，其他均为可选项。",
         "profileName": "档案名",
-        "profileNameMaxHint": "最多20个字符",
+        "profileNameMaxHint": "最多60个字符",
         "profileNameTooLong": "档案名过长",
         "profileNameContainsSlash": "档案名不能包含路径分隔符(/或\\)",
         "profileNameContainsDot": "档案名不能包含点号(.)",
@@ -2030,7 +2030,7 @@
             },
             "step2": {
                 "title": "📝 设置档案名",
-                "desc": "输入您的名字或昵称。猫娘会用这个名字来称呼您。最多 20 个字符。"
+                "desc": "输入您的名字或昵称。猫娘会用这个名字来称呼您。最多 60 个字符。"
             },
             "step3": {
                 "title": "👥 性别设定",
