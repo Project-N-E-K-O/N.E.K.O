@@ -1178,6 +1178,18 @@
         "deleteError": "Ошибка удаления: {{error}}",
         "freePresetLabel": "Бесплатные предустановленные голоса",
         "freePresetBadge": "Предустановленный",
+        "freeVoice": {
+            "playfulGirl": "Игривая девушка",
+            "cuteGirl": "Милая девочка",
+            "cuteMaiden": "Милая девушка",
+            "heroine": "Героиня",
+            "livelyGirl": "Живая девочка",
+            "coolLady": "Холодная леди",
+            "gentleMaiden": "Нежная девушка",
+            "sweetLady": "Сладкая леди",
+            "frailMaiden": "Хрупкая девушка",
+            "childishMaiden": "Детская девушка"
+        },
         "cloneMethod": "Способ клонирования",
         "cloneMethodFile": "Локальный файл",
         "cloneMethodDirectLink": "Прямая ссылка",
