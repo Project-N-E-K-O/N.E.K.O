@@ -255,10 +255,11 @@ window.addEventListener('load', () => {
             }
             if (entries.length > 0) {
                 const changelogPromises = entries.map(entry => {
-                    const title = `v${entry.version} ${window.safeT ? window.safeT('notice.changelog.title', '更新内容') : '更新内容'}`;
+                    const titleZh = `v${entry.version} ${window.safeT ? window.safeT('notice.changelog.title', '更新内容') : '更新内容'}`;
+                    const titleEn = `v${entry.version} ${window.safeT ? window.safeT('notice.changelog.title', 'Changelog') : 'Changelog'}`;
                     return window.showProminentNotice({
-                        message: `**${title}**\n\n${(entry.content || '').trim()}`,
-                        message_en: `**${title}**\n\n${(entry.content || '').trim()}`,
+                        message: `**${titleZh}**\n\n${(entry.content || '').trim()}`,
+                        message_en: `**${titleEn}**\n\n${(entry.content_en || entry.content || '').trim()}`,
                     });
                 });
                 await Promise.all(changelogPromises);

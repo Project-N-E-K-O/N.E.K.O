@@ -122,6 +122,7 @@ async def get_changelog(since: str = ""):
             return (0,)
 
     changelog_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "changelog")
+    changelog_en_dir = os.path.join(changelog_dir, "en")
     entries: list[dict] = []
     since_ver = _parse_ver(since) if since else (0,)
 
@@ -138,7 +139,14 @@ async def get_changelog(since: str = ""):
                         content = f.read()
                 except Exception:
                     content = ""
-                entries.append({"version": stem, "content": content})
+                # 英文版：优先读取 en/ 子目录，不存在则回退到中文
+                en_file = os.path.join(changelog_en_dir, f"{stem}.md")
+                try:
+                    with open(en_file, "r", encoding="utf-8") as f:
+                        content_en = f.read()
+                except Exception:
+                    content_en = content
+                entries.append({"version": stem, "content": content, "content_en": content_en})
 
     return {"current_version": APP_VERSION, "entries": entries}
 
