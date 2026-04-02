@@ -106,10 +106,10 @@ def validate_character_name(
         return CharacterNameValidationResult(normalized=normalized, code="empty")
     if "/" in normalized or "\\" in normalized:
         return CharacterNameValidationResult(normalized=normalized, code="contains_path_separator")
-    if not allow_dots and "." in normalized:
-        return CharacterNameValidationResult(normalized=normalized, code="contains_dot")
     if ".." in normalized:
         return CharacterNameValidationResult(normalized=normalized, code="path_traversal")
+    if not allow_dots and "." in normalized:
+        return CharacterNameValidationResult(normalized=normalized, code="contains_dot")
     if is_reserved_device_name(normalized):
         return CharacterNameValidationResult(normalized=normalized, code="reserved_device_name")
     invalid_char = find_invalid_character_name_char(normalized, allow_dots=allow_dots)
