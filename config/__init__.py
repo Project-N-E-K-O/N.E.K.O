@@ -517,6 +517,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeySilicon": "",
     "assistApiKeyGemini": "",
     "assistApiKeyMinimax": "",
+    "assistApiKeyClaude": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
