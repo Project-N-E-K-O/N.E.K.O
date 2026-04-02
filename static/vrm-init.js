@@ -329,11 +329,6 @@ function applyVRMLighting(lighting, vrmManager) {
     if (lighting.toneMapping !== undefined && vrmManager.renderer) {
         vrmManager.renderer.toneMapping = lighting.toneMapping;
     }
-
-    // 应用描边粗细设置
-    if (lighting.outlineWidthScale !== undefined) {
-        applyVRMOutlineWidth(lighting.outlineWidthScale, vrmManager);
-    }
 }
 
 /**
@@ -342,6 +337,15 @@ function applyVRMLighting(lighting, vrmManager) {
  * @param {Object} vrmManager - VRM 管理器实例
  */
 function applyVRMOutlineWidth(scale, vrmManager) {
+    // 参数验证：确保 scale 是有效的有限数字且非负
+    const parsedScale = Number(scale);
+    if (!Number.isFinite(parsedScale) || parsedScale < 0) {
+        console.warn('[VRM Outline] 无效的描边粗细值:', scale, '使用默认值 1.0');
+        scale = 1.0;
+    } else {
+        scale = parsedScale;
+    }
+
     if (!vrmManager?.currentModel?.vrm?.scene) return;
     vrmManager.currentModel.vrm.scene.traverse((object) => {
         if (!object.isMesh && !object.isSkinnedMesh) return;
@@ -587,9 +591,16 @@ async function initVRMModel() {
         applyVRMLighting(window.lanlan_config?.lighting, window.vrmManager);
 
         // 确保描边设置在模型完全加载后应用（延迟一帧确保材质已准备好）
+        const currentModelRef = window.vrmManager?.currentModel;
+        const outlineScale = window.lanlan_config?.lighting?.outlineWidthScale;
         requestAnimationFrame(() => {
-            if (window.lanlan_config?.lighting?.outlineWidthScale !== undefined) {
-                applyVRMOutlineWidth(window.lanlan_config.lighting.outlineWidthScale, window.vrmManager);
+            // 防止竞态条件：验证模型是否仍然是同一个
+            if (window.vrmManager?.currentModel !== currentModelRef) {
+                console.debug('[VRM Outline] 模型已切换，跳过描边设置应用');
+                return;
+            }
+            if (outlineScale !== undefined) {
+                applyVRMOutlineWidth(outlineScale, window.vrmManager);
             }
         });
 
@@ -732,9 +743,16 @@ window.checkAndLoadVRM = async function () {
         applyVRMLighting(lighting, window.vrmManager);
 
         // 确保描边设置在模型完全加载后应用（延迟一帧确保材质已准备好）
+        const currentModelRef = window.vrmManager?.currentModel;
+        const outlineScale = lighting?.outlineWidthScale;
         requestAnimationFrame(() => {
-            if (lighting?.outlineWidthScale !== undefined) {
-                applyVRMOutlineWidth(lighting.outlineWidthScale, window.vrmManager);
+            // 防止竞态条件：验证模型是否仍然是同一个
+            if (window.vrmManager?.currentModel !== currentModelRef) {
+                console.debug('[VRM Outline] 模型已切换，跳过描边设置应用');
+                return;
+            }
+            if (outlineScale !== undefined) {
+                applyVRMOutlineWidth(outlineScale, window.vrmManager);
             }
         });
 
