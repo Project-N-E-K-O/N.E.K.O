@@ -419,6 +419,12 @@ _VALUE_TRANSLATIONS = {
         '女': '女',
         'T酱, 小T': 'T醬, 小T',
     },
+    'ru': {
+        '哥哥': 'Братик',
+        '男': 'Мужской',
+        '女': 'Женский',
+        'T酱, 小T': 'Тян-тян, малышка Т',
+    },
     # zh 和 zh-CN 使用原始中文值（不需要翻译）
 }
 
@@ -462,7 +468,9 @@ def get_localized_default_characters(language: str | None = None) -> dict:
             value_trans = _VALUE_TRANSLATIONS.get('ja')
         elif lang_lower.startswith('en'):
             value_trans = _VALUE_TRANSLATIONS.get('en')
-    
+        elif lang_lower.startswith('ru'):
+            value_trans = _VALUE_TRANSLATIONS.get('ru')
+
     # 如果不需要翻译（简体中文），直接返回原始配置
     if value_trans is None:
         return deepcopy(DEFAULT_CHARACTERS_CONFIG)
@@ -509,6 +517,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeySilicon": "",
     "assistApiKeyGemini": "",
     "assistApiKeyMinimax": "",
+    "assistApiKeyClaude": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
@@ -629,6 +638,15 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "kimi-latest",
         'AGENT_MODEL': "kimi-latest",
     },
+    'claude': {
+        'OPENROUTER_URL': "https://api.anthropic.com/v1",
+        'CONVERSATION_MODEL': "claude-sonnet-4-6",
+        'SUMMARY_MODEL': "claude-sonnet-4-6",
+        'CORRECTION_MODEL': "claude-sonnet-4-6",
+        'EMOTION_MODEL': "claude-haiku-4-5-20251001",
+        'VISION_MODEL': "claude-sonnet-4-6",
+        'AGENT_MODEL': "claude-opus-4-6",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -640,6 +658,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'gemini': 'ASSIST_API_KEY_GEMINI',
     'kimi': 'ASSIST_API_KEY_KIMI',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
+    'claude': 'ASSIST_API_KEY_CLAUDE',
 }
 
 DEFAULT_CONFIG_DATA = {

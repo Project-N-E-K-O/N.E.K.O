@@ -411,8 +411,10 @@ class MMDCursorFollow {
         // 眼球跟踪：Grant 感知的混合策略
         // Grant 运行时（动画播放 / 静态 IK 阶段）已重置眼骨 → 直接叠加偏移
         // Grant 未运行时（暂停等）→ 先撤销上帧偏移再叠加，防止累积
-        const eyeYaw = this._currentYaw * this.eyeYawScale * w;
-        const eyePitch = this._currentPitch * this.eyePitchScale * w;
+        // T-Pose 状态下眼球归零，避免无动画时眼珠乱转
+        const inTPose = !!this.manager._isTPose;
+        const eyeYaw = inTPose ? 0 : this._currentYaw * this.eyeYawScale * w;
+        const eyePitch = inTPose ? 0 : this._currentPitch * this.eyePitchScale * w;
 
         const hasEyeBones = this._eyesBone || this._eyeLBone || this._eyeRBone;
         if (hasEyeBones && this._eyeLastOffsetQuat) {

@@ -27,6 +27,9 @@ logger = get_module_logger(__name__, "Main")
 # Lock for session management
 _lock = asyncio.Lock()
 
+# 每个角色的 WS 断开时间戳（epoch），用于区分"首次连接"与"刷新/重连"
+_ws_disconnect_time: dict[str, float] = {}
+
 
 @router.websocket("/ws/{lanlan_name}")
 async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
@@ -125,6 +128,19 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 b64 = raw.split(",", 1)[1] if "," in raw else raw
                 session_manager[lanlan_name].resolve_screenshot_request(b64)
 
+            elif action == "greeting_check":
+                # 首次连接或切换角色时，前端请求检查是否需要主动搭话
+                # is_switch=true 时始终触发；否则检查上次断开距今是否 >15s（排除刷新/重连）
+                import time as _time
+                is_switch = message.get("is_switch", False)
+                last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)
+                since_disconnect = _time.time() - last_disconnect if last_disconnect else float('inf')
+                if is_switch or since_disconnect > 15:
+                    logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s → triggering")
+                    asyncio.create_task(session_manager[lanlan_name].trigger_greeting())
+                else:
+                    logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s → skip (refresh/reconnect)")
+
             elif action == "ping":
                 # 心跳保活消息，回复pong
                 await websocket.send_text(json.dumps({"type": "pong"}))
@@ -146,13 +162,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             pass
     finally:
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
+        # 记录 WS 断开时间，供下次连接时判断是否为"刷新/重连"
+        import time as _time
+        _ws_disconnect_time[lanlan_name] = _time.time()
         # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
         async with _lock:
             session_id = get_session_id()
             is_current = session_id.get(lanlan_name) == this_session_id
             if is_current:
                 session_id.pop(lanlan_name, None)
-        
+
         if is_current and lanlan_name in session_manager:
             await session_manager[lanlan_name].cleanup(expected_websocket=websocket)
 

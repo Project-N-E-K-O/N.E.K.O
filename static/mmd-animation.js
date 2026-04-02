@@ -91,6 +91,16 @@ class MMDAnimation {
         this.mixer = new THREE.AnimationMixer(mmd.mesh);
         this.currentAction = this.mixer.clipAction(clip);
         this.currentAction.setLoop(this.isLoop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+        this.currentAction.clampWhenFinished = true; // 防止动画结束后 action 被 disable 导致 T-Pose
+
+        // 安全网：如果循环动画意外触发 finished 事件，自动重播
+        this.mixer.addEventListener('finished', (e) => {
+            if (this.isLoop && e.action === this.currentAction) {
+                console.warn('[MMD Animation] 循环动画意外结束，自动重播');
+                e.action.reset();
+                e.action.play();
+            }
+        });
 
         // IK 解算器
         if (mmd.iks && mmd.iks.length > 0) {
@@ -163,6 +173,7 @@ class MMDAnimation {
         if (this.clock) this.clock.start();
         this.isPlaying = true;
         this.isPaused = false;
+        this.manager._isTPose = false;
     }
 
     pause() {

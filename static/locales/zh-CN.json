@@ -451,6 +451,7 @@
         "API_RATE_LIMIT": "💥 API达到限额或请求过于频繁(429)，请稍后再试。",
         "API_POLICY_VIOLATION": "💥 服务器返回安全策略拦截或政策限制：{{msg}}",
         "API_1008_FALLBACK": "💥 会话断开(1008)：{{msg}}",
+        "API_IDLE_TIMEOUT": "💥 语音连接因长时间无操作而断开，正在自动重连...",
         "API_UNKNOWN_ERROR": "💥 API错误：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 记忆服务器未启动！请先运行 memory_server.py",
         "MEMORY_SERVER_CRASHED": "🧠 记忆服务器(端口{{port}})已崩溃。请重启 memory_server.py",
@@ -680,6 +681,7 @@
             "doubao": "豆包（字节跳动）",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
+            "claude": "Claude（Anthropic，国内无法使用）",
             "grok": "Grok（xAI）"
         },
         "coreApiAutoFillHint": "Key从API管理簿自动填充，也可在此直接输入",
@@ -708,6 +710,7 @@
             "doubao": "豆包（字节跳动）",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
+            "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）"
         },
         "freeVersionNoApiKey": "免费版无需API Key",
@@ -1584,6 +1587,7 @@
             "statusQueued": "队列中",
             "statusCompleted": "已完成",
             "statusFailed": "失败",
+            "statusCancelled": "已取消",
             "minimize": "折叠/展开",
             "cancelAll": "终止所有任务",
             "cancelConfirm": "确定要终止所有正在进行的任务吗？",

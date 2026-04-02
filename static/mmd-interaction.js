@@ -318,14 +318,28 @@ class MMDInteraction {
             this._debouncedSavePosition();
         };
 
-        // 鼠标悬停光标
+        // 鼠标悬停光标（仅用屏幕包围盒判断，避免高频射线检测掉帧）
+        let _lastHoverHitTestAt = 0;
         this.mouseHoverHandler = (e) => {
             if (this.isDragging) return;
-            if (this._hitTestModel(e.clientX, e.clientY)) {
-                canvas.style.cursor = 'pointer';
-            } else {
+            if (this.checkLocked()) {
                 canvas.style.cursor = 'default';
+                return;
             }
+            const now = performance.now();
+            if ((now - _lastHoverHitTestAt) < 80) return;
+            _lastHoverHitTestAt = now;
+            const bounds = this._cachedScreenBounds;
+            if (!bounds) {
+                canvas.style.cursor = 'default';
+                return;
+            }
+            const padding = 10;
+            const isNearModel = e.clientX >= (bounds.minX - padding) &&
+                e.clientX <= (bounds.maxX + padding) &&
+                e.clientY >= (bounds.minY - padding) &&
+                e.clientY <= (bounds.maxY + padding);
+            canvas.style.cursor = isNearModel ? 'grab' : 'default';
         };
 
         // 绑定事件

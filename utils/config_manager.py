@@ -831,6 +831,8 @@ class ConfigManager:
             suffix = 'en'
         elif lang_lower.startswith('ko'):
             suffix = 'ko'
+        elif lang_lower.startswith('ru'):
+            suffix = 'ru'
         else:
             # 未知语言，回退
             return None
@@ -1603,6 +1605,7 @@ class ConfigManager:
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
         config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or config['CORE_API_KEY']
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']

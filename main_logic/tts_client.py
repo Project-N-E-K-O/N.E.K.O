@@ -2059,9 +2059,13 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 
-    # 如果有自定义音色，使用 CosyVoice（阿里云）
-    if has_custom_voice:
-        return cosyvoice_vc_tts_worker, None
+    # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
+    # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
+    if has_custom_voice and voice_id:
+        from utils.api_config_loader import get_free_voices
+        if voice_id not in set(get_free_voices().values()):
+            return cosyvoice_vc_tts_worker, None
+        logger.info("voice_id '%s' 是免费预设音色，跳过 CosyVoice，使用默认 TTS", voice_id)
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type == 'qwen':
