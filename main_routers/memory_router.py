@@ -106,7 +106,7 @@ def resolve_recent_file_path(
         if candidate in seen:
             continue
         seen.add(candidate)
-        if candidate.exists():
+        if candidate.is_file():
             return candidate, "", "", catgirl_name
 
     return None, "文件不存在", PATH_ERROR_NOT_FOUND, catgirl_name
@@ -464,7 +464,13 @@ async def update_catgirl_name(request: Request):
         # 保存更新后的内容；写入成功后再删除旧路径，避免改名过程中数据丢失
         atomic_write_json(new_file_path, file_content, ensure_ascii=False, indent=2)
 
-        if old_file_path.resolve() != new_file_path.resolve() and old_file_path.exists():
+        user_memory_dir = Path(cm.memory_dir).resolve()
+        resolved_old_file_path = old_file_path.resolve()
+        if (
+            resolved_old_file_path != new_file_path.resolve()
+            and old_file_path.exists()
+            and resolved_old_file_path.is_relative_to(user_memory_dir)
+        ):
             if old_file_path.is_dir():
                 shutil.rmtree(old_file_path)
             else:

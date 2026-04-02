@@ -102,8 +102,22 @@ def _normalize_channel_config_keys(existing: Any) -> Dict[str, Any]:
     }
 
     normalized: Dict[str, Any] = {}
+    original_keys = {str(key) for key in existing.keys()}
+
     for key, value in existing.items():
-        normalized[key_aliases.get(str(key), str(key))] = value
+        key_name = str(key)
+        if key_name in key_aliases:
+            continue
+        normalized[key_name] = value
+
+    for key, value in existing.items():
+        key_name = str(key)
+        target_name = key_aliases.get(key_name)
+        if not target_name:
+            continue
+        if target_name in original_keys or target_name in normalized:
+            continue
+        normalized[target_name] = value
     return normalized
 
 
@@ -143,7 +157,7 @@ def _update_json_file_channel_config(
 
     updated = _merge_channel_defaults(existing_channel, enabled_if_missing=enable_if_missing)
 
-    if _normalize_channel_config_keys(channels.get("neko")) == updated:
+    if _normalize_channel_config_keys(channels.get("neko")) == updated and LEGACY_CHANNEL_NAME not in channels:
         return False
 
     channels["neko"] = updated
