@@ -681,6 +681,8 @@
                     live2dCanvas.style.transition = '';
                     live2dCanvas.style.opacity = '';
                 }
+                // 清除容器的内联 opacity，使 CSS class（如 locked-hover-fade）能正常生效
+                container.style.removeProperty('opacity');
                 window._returnFadeTimer = null;
             }, 550);
         }
@@ -1203,6 +1205,13 @@
                 window.vrmManager.resetAllButtons();
             }
 
+            // 保存当前锁定状态，以便"请她回来"时恢复
+            window._savedLockState = {
+                live2d: window.live2dManager ? window.live2dManager.isLocked : false,
+                vrm: window.vrmManager && window.vrmManager.core ? window.vrmManager.core.isLocked : false,
+                mmd: window.mmdManager && window.mmdManager.core ? window.mmdManager.core.isLocked : false
+            };
+
             // 设置锁定状态
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
                 window.live2dManager.setLocked(true, { updateFloatingButtons: false });
@@ -1659,15 +1668,18 @@
                 mmdLockIcon.style.removeProperty('visibility');
                 mmdLockIcon.style.removeProperty('opacity');
             }
+            // 恢复"请她离开"之前的锁定状态（而非强制解锁）
+            const savedLock = window._savedLockState || { live2d: false, vrm: false, mmd: false };
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
-                window.live2dManager.setLocked(false, { updateFloatingButtons: false });
+                window.live2dManager.setLocked(savedLock.live2d, { updateFloatingButtons: false });
             }
             if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
-                window.vrmManager.core.setLocked(false);
+                window.vrmManager.core.setLocked(savedLock.vrm);
             }
             if (window.mmdManager && window.mmdManager.core && typeof window.mmdManager.core.setLocked === 'function') {
-                window.mmdManager.core.setLocked(false);
+                window.mmdManager.core.setLocked(savedLock.mmd);
             }
+            window._savedLockState = null;
 
             // 恢复浮动按钮系统
             const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
