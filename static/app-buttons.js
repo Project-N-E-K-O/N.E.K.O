@@ -848,25 +848,49 @@
                     if (U.isMobile()) {
                         captureStream = await window.getMobileCameraStream();
                     } else {
-                        // Desktop: try getDisplayMedia
-                        try {
-                            if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-                                captureStream = await navigator.mediaDevices.getDisplayMedia({
-                                    video: { cursor: 'always' },
-                                    audio: false,
-                                });
-                            } else {
-                                throw new Error('UNSUPPORTED_API');
-                            }
-                        } catch (displayErr) {
-                            if (displayErr.name === 'NotAllowedError') throw displayErr;
+                        // Desktop: try Electron selected source first, then getDisplayMedia
+                        var selectedSourceId = S.selectedScreenSourceId;
+                        var electronCaptured = false;
 
-                            console.warn('[\u622A\u56FE] getDisplayMedia \u5931\u8D25\uFF0C\u5C1D\u8BD5\u540E\u7AEF\u622A\u56FE:', displayErr);
-                            var result = await window.fetchBackendScreenshot();
-                            if (result && result.dataUrl) {
-                                dataUrl = result.dataUrl;
-                            } else {
-                                throw displayErr;
+                        if (selectedSourceId && window.electronDesktopCapturer) {
+                            try {
+                                captureStream = await navigator.mediaDevices.getUserMedia({
+                                    audio: false,
+                                    video: {
+                                        mandatory: {
+                                            chromeMediaSource: 'desktop',
+                                            chromeMediaSourceId: selectedSourceId,
+                                            maxFrameRate: 1
+                                        }
+                                    }
+                                });
+                                electronCaptured = true;
+                            } catch (electronErr) {
+                                console.warn('[截图] Electron 源截取失败，回退到 getDisplayMedia:', electronErr);
+                                captureStream = null;
+                            }
+                        }
+
+                        if (!electronCaptured) {
+                            try {
+                                if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+                                    captureStream = await navigator.mediaDevices.getDisplayMedia({
+                                        video: { cursor: 'always' },
+                                        audio: false,
+                                    });
+                                } else {
+                                    throw new Error('UNSUPPORTED_API');
+                                }
+                            } catch (displayErr) {
+                                if (displayErr.name === 'NotAllowedError') throw displayErr;
+
+                                console.warn('[截图] getDisplayMedia 失败，尝试后端截图:', displayErr);
+                                var result = await window.fetchBackendScreenshot();
+                                if (result && result.dataUrl) {
+                                    dataUrl = result.dataUrl;
+                                } else {
+                                    throw displayErr;
+                                }
                             }
                         }
                     }
@@ -878,6 +902,37 @@
                             dataUrl = frame.dataUrl;
                             width = frame.width;
                             height = frame.height;
+                        }
+                    }
+
+                    // Electron 截取成功但帧为空（如捕获自身窗口导致黑帧）→ capturePage 兜底
+                    if (!dataUrl && electronCaptured) {
+                        console.warn('[截图] Electron 源截取到空帧（可能是捕获自身窗口），尝试 capturePage');
+                        // 释放无用的一次性流
+                        if (captureStream instanceof MediaStream) {
+                            captureStream.getTracks().forEach(function (track) { track.stop(); });
+                            captureStream = null;
+                        }
+                        // 优先使用 capturePage 截取自身窗口
+                        if (window.electronDesktopCapturer && window.electronDesktopCapturer.captureOwnWindow) {
+                            try {
+                                var ownResult = await window.electronDesktopCapturer.captureOwnWindow();
+                                if (ownResult && ownResult.success && ownResult.dataUrl) {
+                                    dataUrl = ownResult.dataUrl;
+                                    width = ownResult.width || 0;
+                                    height = ownResult.height || 0;
+                                    console.log('[截图] capturePage 截取自身窗口成功');
+                                }
+                            } catch (ownErr) {
+                                console.warn('[截图] capturePage 失败:', ownErr);
+                            }
+                        }
+                        // capturePage 也失败则尝试后端 pyautogui
+                        if (!dataUrl) {
+                            var backendResult = await window.fetchBackendScreenshot();
+                            if (backendResult && backendResult.dataUrl) {
+                                dataUrl = backendResult.dataUrl;
+                            }
                         }
                     }
                 }
