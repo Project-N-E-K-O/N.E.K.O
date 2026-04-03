@@ -43,6 +43,8 @@ AUTO_CONFIRM_DAYS = 3       # pending → confirmed
 AUTO_PROMOTE_DAYS = 3       # confirmed → promoted (persona)
 # Cooldown between proactive chat candidacy
 REFLECTION_COOLDOWN_MINUTES = 30
+# promoted/denied reflections older than this are moved to archive
+_REFLECTION_ARCHIVE_DAYS = 30
 
 
 class ReflectionEngine:
@@ -58,6 +60,10 @@ class ReflectionEngine:
     def _reflections_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'reflections.json')
+
+    def _reflections_archive_path(self, name: str) -> str:
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'reflections_archive.json')
 
     def _surfaced_path(self, name: str) -> str:
         from memory import ensure_character_dir
@@ -83,7 +89,10 @@ class ReflectionEngine:
         return []
 
     def save_reflections(self, name: str, reflections: list[dict]) -> None:
-        """Save reflections, merging with archived entries on disk."""
+        """Save reflections, merging with archived entries on disk.
+
+        promoted/denied 超过 _REFLECTION_ARCHIVE_DAYS 的条目自动移入归档文件。
+        """
         path = self._reflections_path(name)
         # Load all (including archived) to preserve them
         all_on_disk = []
@@ -101,9 +110,43 @@ class ReflectionEngine:
         # Build id→entry map from active list
         active_ids = {r['id'] for r in reflections if 'id' in r}
         # Keep archived entries that aren't in the active list
-        archived = [r for r in all_on_disk if r.get('id') not in active_ids
+        finished = [r for r in all_on_disk if r.get('id') not in active_ids
                      and r.get('status') in ('promoted', 'denied')]
-        merged = reflections + archived
+
+        # 分离需要归档的旧条目
+        cutoff = datetime.now() - timedelta(days=_REFLECTION_ARCHIVE_DAYS)
+        keep_in_main, to_archive = [], []
+        for r in finished:
+            ts_key = r.get('promoted_at') or r.get('denied_at') or r.get('created_at', '')
+            try:
+                if datetime.fromisoformat(ts_key) < cutoff:
+                    to_archive.append(r)
+                    continue
+            except (ValueError, TypeError):
+                pass
+            keep_in_main.append(r)
+
+        # 归档到独立文件
+        if to_archive:
+            archive_path = self._reflections_archive_path(name)
+            existing: list[dict] = []
+            if os.path.exists(archive_path):
+                try:
+                    with open(archive_path, encoding='utf-8') as f:
+                        data = json.load(f)
+                    if isinstance(data, list):
+                        existing = data
+                except (json.JSONDecodeError, OSError) as e:
+                    # 归档文件损坏 → 放弃本次归档，保留在主文件中，避免覆盖丢数据
+                    logger.warning(f"[Reflection] {name}: 读取归档文件失败，跳过本次归档: {e}")
+                    keep_in_main.extend(to_archive)
+                    to_archive = []
+            if to_archive:
+                existing.extend(to_archive)
+                atomic_write_json(archive_path, existing, indent=2, ensure_ascii=False)
+                logger.info(f"[Reflection] {name}: 归档 {len(to_archive)} 条旧 reflections")
+
+        merged = reflections + keep_in_main
         atomic_write_json(path, merged, indent=2, ensure_ascii=False)
 
     def load_surfaced(self, name: str) -> list[dict]:
