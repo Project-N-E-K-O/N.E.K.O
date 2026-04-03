@@ -133,8 +133,7 @@
                 console.log('[ProactiveChat] 语音模式连续5轮无回复，停止主动搭话');
                 return;
             }
-            var baseInterval = Math.min(S.proactiveChatInterval, S.proactiveVisionInterval);
-            var delay = baseInterval * 1000;
+            var delay = S.proactiveChatInterval * 1000;
             console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/10）');
 
             S.proactiveChatTimer = setTimeout(async function () {
@@ -904,6 +903,10 @@
         if (S.proactiveChatTimer) {
             clearTimeout(S.proactiveChatTimer);
             S.proactiveChatTimer = null;
+        }
+        if (S._voiceSessionInitialTimer) {
+            clearTimeout(S._voiceSessionInitialTimer);
+            S._voiceSessionInitialTimer = null;
         }
     }
     mod.stopProactiveChatSchedule = stopProactiveChatSchedule;
