@@ -299,6 +299,7 @@ class OmniOfflineClient:
         assistant_message = ""
         status_reported = False
         guard_exhausted = False
+        temporary_messages = self._consume_temporary_system_messages()
         
         try:
             self._is_responding = True
@@ -316,7 +317,7 @@ class OmniOfflineClient:
                 return
             for attempt in range(max_retries):
                 try:
-                    messages_to_send = self._conversation_history + self._temporary_system_messages
+                    messages_to_send = self._conversation_history + temporary_messages
                     assistant_message = ""
                     guard_attempt = 0
                     while guard_attempt <= self.max_response_rerolls:
@@ -502,7 +503,6 @@ class OmniOfflineClient:
                     break
         finally:
             self._is_responding = False
-            self._temporary_system_messages.clear()
             
             if not assistant_message and not guard_exhausted and not status_reported:
                 logger.warning("OmniOfflineClient: 所有重试均未产生文本回复")
@@ -550,6 +550,12 @@ class OmniOfflineClient:
         """Queue a one-shot system message for the next user turn only."""
         if instructions and instructions.strip():
             self._temporary_system_messages.append(SystemMessage(content=instructions.strip()))
+
+    def _consume_temporary_system_messages(self) -> list[SystemMessage]:
+        """Atomically consume queued one-shot system messages for the current response only."""
+        consumed = list(self._temporary_system_messages)
+        self._temporary_system_messages.clear()
+        return consumed
     
     async def stream_proactive(self, instruction: str) -> bool:
         """Generate and stream a proactive AI response driven by a system instruction.

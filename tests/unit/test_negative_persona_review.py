@@ -45,7 +45,9 @@ def test_negative_signal_first_soft_then_hard() -> None:
             assert second["policy"] == "avoid"
             assert "不要继续展开这个话题" in second["response_instruction"]
 
-            persona = pm.get_persona("测试猫娘")
+            fresh_pm = PersonaManager()
+            fresh_pm._config_manager = mock_cm
+            persona = fresh_pm.get_persona("测试猫娘")
             guidance = persona["_topic_guidance"]
             assert guidance["soft_avoid"] == []
             assert guidance["hard_avoid"][0]["topic"] == "工作"
@@ -66,7 +68,9 @@ def test_negative_signal_explicit_avoid_immediately_hard() -> None:
             assert result["topic"] == "考试"
             assert result["policy"] == "avoid"
 
-            md = pm.render_persona_markdown("测试猫娘")
+            fresh_pm = PersonaManager()
+            fresh_pm._config_manager = mock_cm
+            md = fresh_pm.render_persona_markdown("测试猫娘")
             assert "不要主动提及的话题" in md
             assert "考试" in md
 
@@ -110,3 +114,24 @@ def test_negative_signal_explicit_avoid_uses_referenced_topic() -> None:
             assert result["matched"] is True
             assert result["topic"] == "工作上的安排"
             assert result["policy"] == "avoid"
+
+
+def test_negative_signal_english_topic_detection() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            first = pm.register_negative_signal("测试猫娘", "work is annoying")
+            assert first["matched"] is True
+            assert first["topic"] == "work"
+            assert first["policy"] == "de_emphasize"
+
+            second = pm.register_negative_signal("测试猫娘", "don't mention work anymore")
+            assert second["matched"] is True
+            assert second["topic"] == "work"
+            assert second["policy"] == "avoid"

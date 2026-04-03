@@ -320,7 +320,7 @@ class LLMSessionManager:
         # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
         self.audio_resampler.clear()
         await self._clear_tts_pipeline()
-        self._current_assistant_turn_text = ""
+        self._reset_assistant_turn_tracking()
         
         await self.send_user_activity()
         
@@ -462,6 +462,7 @@ class LLMSessionManager:
         # After each turn: deliver any queued agent task callbacks via LLM rephrase
         if self.pending_agent_callbacks:
             asyncio.create_task(self.trigger_agent_callbacks())
+        self._reset_assistant_turn_tracking()
 
     async def handle_response_discarded(self, reason: str, attempt: int, max_attempts: int, will_retry: bool, message: Optional[str] = None):
         """
@@ -552,6 +553,11 @@ class LLMSessionManager:
     def _clear_transient_response_instruction_state(self) -> None:
         self._transient_response_instruction_active = ""
         self._transient_response_instruction_base = None
+
+    def _reset_assistant_turn_tracking(self, *, clear_last: bool = False) -> None:
+        self._current_assistant_turn_text = ""
+        if clear_last:
+            self._last_assistant_turn_text = ""
 
     def _get_recent_assistant_utterance(self) -> str:
         current = (self._current_assistant_turn_text or "").strip()
@@ -1136,6 +1142,8 @@ class LLMSessionManager:
         # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
         self.user_language = normalize_language_code(get_global_language(), format='short')
         self._clear_transient_response_instruction_state()
+        if new:
+            self._reset_assistant_turn_tracking(clear_last=True)
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
@@ -2673,6 +2681,7 @@ class LLMSessionManager:
                     except Exception as _neg_err:
                         logger.debug(f"负面情绪指令获取失败: {_neg_err}")
 
+                    self._reset_assistant_turn_tracking()
                     await self.session.stream_text(data)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
