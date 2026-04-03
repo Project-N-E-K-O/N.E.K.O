@@ -1350,48 +1350,52 @@ async def emotion_analysis(request: Request):
         emotion = "neutral"
         confidence = 0.5
 
+        def _apply_degraded_emotion_fallback():
+            heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
+            if heuristic_emotion:
+                return heuristic_emotion, min(0.62, 0.34 + heuristic_score * 0.1)
+            # 当模型结果不可用或缺少足够关键词线索时，回退到 neutral。
+            return "neutral", 0.5
+
         try:
             import json
             result = json.loads(result_text)
-            # 获取emotion和confidence
-            raw_emotion = result.get("emotion", "neutral")
-            raw_confidence = result.get("confidence", 0.5)
-            emotion = _normalize_emotion_label(raw_emotion, raw_confidence)
-            confidence = _coerce_emotion_confidence(raw_confidence)
-            decision_source = "model"
-
-            heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
-            if heuristic_emotion:
-                if heuristic_emotion != emotion and heuristic_score >= 4 and confidence < 0.85:
-                    emotion = heuristic_emotion
-                    confidence = max(confidence, min(0.86, 0.44 + heuristic_score * 0.07))
-                    decision_source = "heuristic_strong_override"
-                elif heuristic_emotion == "sad" and emotion == "happy" and heuristic_score >= 2:
-                    emotion = heuristic_emotion
-                    confidence = max(confidence, min(0.84, 0.5 + heuristic_score * 0.08))
-                    decision_source = "heuristic_sad_override"
-                elif emotion == "neutral" and confidence < 0.6:
-                    emotion = heuristic_emotion
-                    confidence = max(confidence, min(0.78, 0.42 + heuristic_score * 0.12))
-                    decision_source = "heuristic_from_neutral"
-                elif confidence < 0.25:
-                    emotion = heuristic_emotion
-                    confidence = max(confidence, min(0.65, 0.35 + heuristic_score * 0.1))
-                    decision_source = "heuristic_from_low_confidence"
-
-            # 当confidence很低时，自动将emotion设置为neutral，避免误报
-            if confidence < 0.2:
-                emotion = "neutral"
-                decision_source = "neutral_fallback"
-        except json.JSONDecodeError:
-            heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
-            if heuristic_emotion:
-                confidence = min(0.62, 0.34 + heuristic_score * 0.1)
-                emotion = heuristic_emotion
+            if not isinstance(result, dict):
+                # 有效 JSON 也可能是 null/[]/"text"，此时复用降级启发式处理。
+                emotion, confidence = _apply_degraded_emotion_fallback()
             else:
-                # 如果JSON解析失败且没有足够关键词线索，则回退到 neutral
-                emotion = "neutral"
-                confidence = 0.5
+                # 获取emotion和confidence
+                raw_emotion = result.get("emotion", "neutral")
+                raw_confidence = result.get("confidence", 0.5)
+                emotion = _normalize_emotion_label(raw_emotion, raw_confidence)
+                confidence = _coerce_emotion_confidence(raw_confidence)
+                decision_source = "model"
+
+                heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
+                if heuristic_emotion:
+                    if heuristic_emotion != emotion and heuristic_score >= 4 and confidence < 0.85:
+                        emotion = heuristic_emotion
+                        confidence = max(confidence, min(0.86, 0.44 + heuristic_score * 0.07))
+                        decision_source = "heuristic_strong_override"
+                    elif heuristic_emotion == "sad" and emotion == "happy" and heuristic_score >= 2:
+                        emotion = heuristic_emotion
+                        confidence = max(confidence, min(0.84, 0.5 + heuristic_score * 0.08))
+                        decision_source = "heuristic_sad_override"
+                    elif emotion == "neutral" and confidence < 0.6:
+                        emotion = heuristic_emotion
+                        confidence = max(confidence, min(0.78, 0.42 + heuristic_score * 0.12))
+                        decision_source = "heuristic_from_neutral"
+                    elif confidence < 0.25:
+                        emotion = heuristic_emotion
+                        confidence = max(confidence, min(0.65, 0.35 + heuristic_score * 0.1))
+                        decision_source = "heuristic_from_low_confidence"
+
+                # 当confidence很低时，自动将emotion设置为neutral，避免误报
+                if confidence < 0.2:
+                    emotion = "neutral"
+                    decision_source = "neutral_fallback"
+        except json.JSONDecodeError:
+            emotion, confidence = _apply_degraded_emotion_fallback()
 
         lanlan_name = data.get('lanlan_name')
         _push_emotion_update(lanlan_name, emotion, confidence)

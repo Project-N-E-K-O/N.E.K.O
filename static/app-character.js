@@ -371,6 +371,8 @@
             // 重置聊天相关的全局状态
             window.currentGeminiMessage = null;
             window._geminiTurnFullText = '';
+            window.currentTurnGeminiBubbles = [];
+            window.currentTurnGeminiAttachments = [];
             // 清空realistic synthesis队列和缓冲区，防止旧角色的语音继续播放
             window._realisticGeminiQueue = [];
             window._realisticGeminiBuffer = '';

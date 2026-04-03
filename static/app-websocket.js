@@ -54,17 +54,54 @@
         }));
     }
 
+    function websocketTraceEnabled() {
+        return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
+    }
+
+    function logAssistantLifecycle(label, extra) {
+        if (!websocketTraceEnabled()) {
+            return;
+        }
+        console.log('[WSTrace]', label, Object.assign({
+            assistantTurnId: S.assistantTurnId,
+            pendingTurnServerId: S.assistantPendingTurnServerId,
+            assistantTurnAwaitingBubble: S.assistantTurnAwaitingBubble,
+            assistantTurnCompletedId: S.assistantTurnCompletedId,
+            assistantSpeechActiveTurnId: S.assistantSpeechActiveTurnId,
+            currentPlayingSpeechId: S.currentPlayingSpeechId,
+            pendingAudioMetaQueue: S.pendingAudioChunkMetaQueue.length,
+            incomingAudioBlobQueue: S.incomingAudioBlobQueue.length
+        }, extra || {}));
+    }
+
     function clearPendingAssistantTurnStart() {
         S.assistantPendingTurnServerId = null;
         S.assistantTurnAwaitingBubble = false;
     }
 
+    function resolveAssistantLifecycleTurnId(turnId) {
+        return normalizeAssistantTurnId(
+            turnId ||
+            S.assistantTurnId ||
+            S.assistantPendingTurnServerId ||
+            S.assistantTurnCompletedId ||
+            S.assistantSpeechActiveTurnId
+        );
+    }
+
     function ensureAssistantTurnStarted(source, serverTurnId) {
         if (S.assistantTurnId) {
             clearPendingAssistantTurnStart();
+            logAssistantLifecycle('ensureAssistantTurnStarted:reuse_existing', {
+                source: source || 'visible_gemini_bubble',
+                serverTurnId: normalizeAssistantTurnId(serverTurnId)
+            });
             return S.assistantTurnId;
         }
         if (!S.assistantTurnAwaitingBubble && serverTurnId === undefined) {
+            logAssistantLifecycle('ensureAssistantTurnStarted:skip', {
+                source: source || 'visible_gemini_bubble'
+            });
             return null;
         }
 
@@ -76,12 +113,21 @@
             turnId: S.assistantTurnId,
             source: source || 'visible_gemini_bubble'
         });
+        logAssistantLifecycle('ensureAssistantTurnStarted:emitted', {
+            source: source || 'visible_gemini_bubble',
+            serverTurnId: normalizeAssistantTurnId(serverTurnId),
+            turnId: S.assistantTurnId
+        });
         return S.assistantTurnId;
     }
 
     function emitAssistantSpeechCancel(source) {
-        var currentTurnId = normalizeAssistantTurnId(S.assistantTurnId || S.assistantSpeechActiveTurnId);
+        var currentTurnId = resolveAssistantLifecycleTurnId();
         S.assistantSpeechActiveTurnId = null;
+        logAssistantLifecycle('emitAssistantSpeechCancel', {
+            source: source,
+            turnId: currentTurnId
+        });
         if (currentTurnId) {
             emitAssistantLifecycleEvent('neko-assistant-speech-cancel', {
                 turnId: currentTurnId,
@@ -493,6 +539,13 @@
 
                     S.pendingAudioChunkMetaQueue.push({
                         speechId: speechId || S.currentPlayingSpeechId || null,
+                        turnId: resolveAssistantLifecycleTurnId(),
+                        shouldSkip: shouldSkip,
+                        epoch: S.incomingAudioEpoch
+                    });
+                    logAssistantLifecycle('ws:audio_chunk_header', {
+                        speechId: speechId || S.currentPlayingSpeechId || null,
+                        turnId: resolveAssistantLifecycleTurnId(),
                         shouldSkip: shouldSkip,
                         epoch: S.incomingAudioEpoch
                     });
@@ -876,6 +929,7 @@
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
                     console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
+                    logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
                         window._pendingMusicCommand = '';
                         var rest = typeof window._realisticGeminiBuffer === 'string'
@@ -894,19 +948,24 @@
                     } catch (e3) {
                         console.warn('[WS] turn end agent_callback flush failed:', e3);
                     }
-                    var agentCallbackTurnId = normalizeAssistantTurnId(S.assistantTurnId);
+                    var agentCallbackTurnId = resolveAssistantLifecycleTurnId();
                     if (agentCallbackTurnId) {
+                        logAssistantLifecycle('ws:turn_end_agent_callback:emit', {
+                            turnId: agentCallbackTurnId
+                        });
                         emitAssistantLifecycleEvent('neko-assistant-turn-end', {
                             turnId: agentCallbackTurnId,
                             source: 'turn_end_agent_callback'
                         });
                     } else {
+                        logAssistantLifecycle('ws:turn_end_agent_callback:clear_pending');
                         clearPendingAssistantTurnStart();
                     }
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log(window.t('console.turnEndReceived'));
+                    logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer
                     try {
                         window._pendingMusicCommand = '';
@@ -926,13 +985,17 @@
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
                     }
-                    var assistantTurnId = normalizeAssistantTurnId(S.assistantTurnId);
+                    var assistantTurnId = resolveAssistantLifecycleTurnId();
                     if (assistantTurnId) {
+                        logAssistantLifecycle('ws:turn_end:emit', {
+                            turnId: assistantTurnId
+                        });
                         emitAssistantLifecycleEvent('neko-assistant-turn-end', {
                             turnId: assistantTurnId,
                             source: 'turn_end'
                         });
                     } else {
+                        logAssistantLifecycle('ws:turn_end:clear_pending');
                         clearPendingAssistantTurnStart();
                     }
 

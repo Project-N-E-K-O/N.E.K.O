@@ -101,6 +101,26 @@
         return Date.now();
     }
 
+    function bubbleTraceEnabled() {
+        return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
+    }
+
+    function logBubbleLifecycle(label, extra) {
+        if (!bubbleTraceEnabled()) {
+            return;
+        }
+        console.log('[BubbleTrace]', label, Object.assign({
+            turnId: state.turnId,
+            visible: state.visible,
+            phase: state.phase,
+            theme: state.theme,
+            emotion: state.emotion,
+            speechStartedAt: state.speechStartedAt,
+            turnEndedAt: state.turnEndedAt,
+            shownAt: state.shownAt
+        }, extra || {}));
+    }
+
     function clamp(value, min, max) {
         return Math.max(min, Math.min(max, value));
     }
@@ -497,6 +517,7 @@
     }
 
     function forceHide(resetTurn) {
+        logBubbleLifecycle('forceHide:enter', { resetTurn: resetTurn });
         clearTurnTimers();
         stopFollowLoop();
         state.visible = false;
@@ -533,7 +554,14 @@
 
     function beginHide(turnId, extraHoldMs) {
         var normalizedTurnId = normalizeTurnId(turnId);
+        logBubbleLifecycle('beginHide:enter', {
+            requestedTurnId: normalizedTurnId,
+            extraHoldMs: extraHoldMs || 0
+        });
         if (normalizedTurnId && state.turnId !== normalizedTurnId) {
+            logBubbleLifecycle('beginHide:skip_turn_mismatch', {
+                requestedTurnId: normalizedTurnId
+            });
             return;
         }
 
@@ -551,15 +579,27 @@
 
         state.hideTimerId = window.setTimeout(function () {
             if (normalizedTurnId && state.turnId !== normalizedTurnId) {
+                logBubbleLifecycle('beginHide:skip_pre_fade_turn_mismatch', {
+                    requestedTurnId: normalizedTurnId
+                });
                 return;
             }
             state.phase = 'fading';
+            logBubbleLifecycle('beginHide:phase_fading', {
+                requestedTurnId: normalizedTurnId
+            });
             applyVisualState();
 
             state.hideTimerId = window.setTimeout(function () {
                 if (normalizedTurnId && state.turnId !== normalizedTurnId) {
+                    logBubbleLifecycle('beginHide:skip_force_hide_turn_mismatch', {
+                        requestedTurnId: normalizedTurnId
+                    });
                     return;
                 }
+                logBubbleLifecycle('beginHide:force_hide', {
+                    requestedTurnId: normalizedTurnId
+                });
                 forceHide(true);
             }, TIMING.fadeDurationMs);
         }, preFadeDelay);
@@ -567,8 +607,18 @@
 
     function scheduleTextFallbackHide(turnId) {
         clearTimer('textFallbackTimerId');
+        logBubbleLifecycle('scheduleTextFallbackHide:scheduled', {
+            requestedTurnId: turnId,
+            delayMs: TIMING.textOnlyFallbackMs
+        });
         state.textFallbackTimerId = window.setTimeout(function () {
-            if (state.turnId !== turnId || state.speechStartedAt > 0 || state.phase === 'emotion-ready') {
+            logBubbleLifecycle('scheduleTextFallbackHide:fired', {
+                requestedTurnId: turnId
+            });
+            if (state.turnId !== turnId || state.speechStartedAt > 0) {
+                logBubbleLifecycle('scheduleTextFallbackHide:skip', {
+                    requestedTurnId: turnId
+                });
                 return;
             }
             beginHide(turnId, 0);
@@ -580,6 +630,9 @@
             return;
         }
 
+        logBubbleLifecycle('showThinking:enter', {
+            requestedTurnId: turnId
+        });
         clearTurnTimers();
         stopFollowLoop();
 
@@ -598,10 +651,16 @@
         applyVisualState();
         startFollowLoop();
         scheduleThinkingTimeout(turnId);
+        logBubbleLifecycle('showThinking:applied', {
+            requestedTurnId: turnId
+        });
     }
 
     function handleTurnStart(detail) {
         var turnId = normalizeTurnId(detail && detail.turnId);
+        logBubbleLifecycle('handleTurnStart', {
+            detailTurnId: turnId
+        });
         if (!turnId) {
             return;
         }
@@ -610,7 +669,14 @@
 
     function handleEmotionReady(detail) {
         var turnId = normalizeTurnId(detail && detail.turnId);
+        logBubbleLifecycle('handleEmotionReady:enter', {
+            detailTurnId: turnId,
+            detailEmotion: detail && detail.emotion ? String(detail.emotion) : null
+        });
         if (!turnId || state.turnId !== turnId || !state.visible || state.phase === 'fading') {
+            logBubbleLifecycle('handleEmotionReady:skip', {
+                detailTurnId: turnId
+            });
             return;
         }
 
@@ -619,6 +685,9 @@
 
         var applyEmotionState = function () {
             if (state.turnId !== turnId || !state.visible || state.phase === 'fading') {
+                logBubbleLifecycle('handleEmotionReady:apply_skip', {
+                    detailTurnId: turnId
+                });
                 return;
             }
 
@@ -629,6 +698,9 @@
             state.content = pickContent(state.theme, turnId);
             applyVisualState();
             updatePosition();
+            logBubbleLifecycle('handleEmotionReady:applied', {
+                detailTurnId: turnId
+            });
 
             if (state.turnEndedAt > 0 && state.speechStartedAt <= 0) {
                 beginHide(turnId, TIMING.textOnlyHoldMs);
@@ -647,6 +719,9 @@
 
     function handleSpeechStart(detail) {
         var turnId = normalizeTurnId(detail && detail.turnId);
+        logBubbleLifecycle('handleSpeechStart:enter', {
+            detailTurnId: turnId
+        });
         if (!turnId) {
             return;
         }
@@ -659,22 +734,37 @@
         clearTimer('textFallbackTimerId');
         clearTimer('timeoutTimerId');
 
-        if (state.turnId !== turnId || !state.visible || state.phase === 'fading') {
+        if (state.turnId !== turnId || !state.visible) {
             showThinking(turnId);
+        } else if (state.phase === 'fading') {
+            // 同一轮语音在淡出期间恢复时，保留既有表情态并切回可见阶段。
+            state.phase = state.theme === 'thinking' ? 'thinking' : 'emotion-ready';
         }
 
         state.speechStartedAt = now();
         applyVisualState();
         startFollowLoop();
+        logBubbleLifecycle('handleSpeechStart:applied', {
+            detailTurnId: turnId
+        });
     }
 
     function handleTurnEnd(detail) {
         var turnId = normalizeTurnId(detail && detail.turnId);
+        logBubbleLifecycle('handleTurnEnd:enter', {
+            detailTurnId: turnId
+        });
         if (!turnId || state.turnId !== turnId || !state.visible) {
+            logBubbleLifecycle('handleTurnEnd:skip', {
+                detailTurnId: turnId
+            });
             return;
         }
 
         state.turnEndedAt = now();
+        logBubbleLifecycle('handleTurnEnd:applied', {
+            detailTurnId: turnId
+        });
         if (state.speechStartedAt <= 0) {
             scheduleTextFallbackHide(turnId);
         }
@@ -682,7 +772,13 @@
 
     function handleSpeechEnd(detail) {
         var turnId = normalizeTurnId(detail && detail.turnId);
+        logBubbleLifecycle('handleSpeechEnd:enter', {
+            detailTurnId: turnId
+        });
         if (!turnId || state.turnId !== turnId || !state.visible) {
+            logBubbleLifecycle('handleSpeechEnd:skip', {
+                detailTurnId: turnId
+            });
             return;
         }
         beginHide(turnId, TIMING.speechEndHoldMs);
@@ -690,7 +786,13 @@
 
     function handleSpeechCancel(detail) {
         var turnId = normalizeTurnId(detail && detail.turnId);
+        logBubbleLifecycle('handleSpeechCancel:enter', {
+            detailTurnId: turnId
+        });
         if (!turnId || state.turnId !== turnId || !state.visible) {
+            logBubbleLifecycle('handleSpeechCancel:skip', {
+                detailTurnId: turnId
+            });
             return;
         }
         forceHide(true);

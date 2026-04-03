@@ -44,9 +44,73 @@ import json
 import logging
 import uuid
 import importlib
+import importlib.util
 from datetime import datetime, timezone
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
+
+SUPPORTED_PYTHON_MIN = (3, 11)
+SUPPORTED_PYTHON_MAX = (3, 13)
+REQUIRED_RUNTIME_MODULES = ("openai", "fastapi", "uvicorn")
+
+
+def _repo_python_path() -> str:
+    if sys.platform == "win32":
+        return os.path.join(bundle_dir, ".venv", "Scripts", "python.exe")
+    return os.path.join(bundle_dir, ".venv", "bin", "python")
+
+
+def _is_supported_runtime(executable: str | None = None) -> bool:
+    if executable is None:
+        version_ok = SUPPORTED_PYTHON_MIN <= sys.version_info[:2] < SUPPORTED_PYTHON_MAX
+        if not version_ok:
+            return False
+        return all(importlib.util.find_spec(module_name) is not None for module_name in REQUIRED_RUNTIME_MODULES)
+
+    if not os.path.exists(executable):
+        return False
+
+    probe_code = (
+        "import importlib.util, sys; "
+        f"mods={REQUIRED_RUNTIME_MODULES!r}; "
+        f"version_ok={SUPPORTED_PYTHON_MIN!r} <= sys.version_info[:2] < {SUPPORTED_PYTHON_MAX!r}; "
+        "missing=[m for m in mods if importlib.util.find_spec(m) is None]; "
+        "raise SystemExit(0 if version_ok and not missing else 1)"
+    )
+    result = subprocess.run([executable, "-c", probe_code], cwd=bundle_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
+
+
+def _bootstrap_runtime() -> None:
+    if getattr(sys, "frozen", False):
+        return
+    if _is_supported_runtime():
+        return
+
+    repo_python = _repo_python_path()
+    if not _is_supported_runtime(repo_python):
+        print("[Launcher] Preparing project runtime with uv sync...", flush=True)
+        try:
+            subprocess.run(["uv", "sync"], cwd=bundle_dir, check=True)
+        except FileNotFoundError:
+            print("[Launcher] uv is not installed or not available in PATH.", flush=True)
+            raise SystemExit(1)
+        except subprocess.CalledProcessError as exc:
+            print(f"[Launcher] uv sync failed with exit code {exc.returncode}.", flush=True)
+            raise SystemExit(exc.returncode)
+
+    repo_python = _repo_python_path()
+    if not _is_supported_runtime(repo_python):
+        print("[Launcher] Project virtual environment is still unavailable after uv sync.", flush=True)
+        raise SystemExit(1)
+
+    print(f"[Launcher] Relaunching with project runtime: {repo_python}", flush=True)
+    result = subprocess.run([repo_python, os.path.abspath(__file__), *sys.argv[1:]], cwd=bundle_dir)
+    raise SystemExit(result.returncode)
+
+
+_bootstrap_runtime()
+
 import config as config_module
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils.port_utils import (
@@ -600,6 +664,8 @@ def get_port_owners(port: int) -> list[int]:
                 ["netstat", "-ano", "-p", "tcp"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=3,
                 check=False,
             )
@@ -619,6 +685,8 @@ def get_port_owners(port: int) -> list[int]:
                 ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=3,
                 check=False,
             )
@@ -1134,6 +1202,8 @@ def _ensure_playwright_browsers():
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=300,
         )
 

@@ -23,6 +23,28 @@
         return String(turnId);
     }
 
+    function audioTraceEnabled() {
+        return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
+    }
+
+    function logAudioLifecycle(label, extra) {
+        if (!audioTraceEnabled()) {
+            return;
+        }
+        console.log('[AudioTrace]', label, Object.assign({
+            assistantTurnId: S.assistantTurnId,
+            pendingTurnServerId: S.assistantPendingTurnServerId,
+            assistantTurnCompletedId: S.assistantTurnCompletedId,
+            assistantSpeechActiveTurnId: S.assistantSpeechActiveTurnId,
+            currentPlayingSpeechId: S.currentPlayingSpeechId,
+            scheduledSources: S.scheduledSources.length,
+            audioBufferQueue: S.audioBufferQueue.length,
+            pendingAudioMetaQueue: S.pendingAudioChunkMetaQueue.length,
+            incomingAudioBlobQueue: S.incomingAudioBlobQueue.length,
+            isPlaying: S.isPlaying
+        }, extra || {}));
+    }
+
     function emitAssistantSpeechLifecycleEvent(eventName, detail) {
         window.dispatchEvent(new CustomEvent(eventName, {
             detail: Object.assign({
@@ -37,6 +59,9 @@
             return;
         }
         S.assistantSpeechActiveTurnId = normalizedTurnId;
+        logAudioLifecycle('dispatchAssistantSpeechStart', {
+            turnId: normalizedTurnId
+        });
         emitAssistantSpeechLifecycleEvent('neko-assistant-speech-start', {
             turnId: normalizedTurnId,
             source: 'audio_playback'
@@ -46,9 +71,15 @@
     function dispatchAssistantSpeechEnd(turnId) {
         var normalizedTurnId = normalizeAssistantTurnId(turnId);
         if (!normalizedTurnId || S.assistantSpeechActiveTurnId !== normalizedTurnId) {
+            logAudioLifecycle('dispatchAssistantSpeechEnd:skip', {
+                turnId: normalizedTurnId
+            });
             return;
         }
         S.assistantSpeechActiveTurnId = null;
+        logAudioLifecycle('dispatchAssistantSpeechEnd', {
+            turnId: normalizedTurnId
+        });
         emitAssistantSpeechLifecycleEvent('neko-assistant-speech-end', {
             turnId: normalizedTurnId,
             source: 'audio_playback'
@@ -58,9 +89,16 @@
     function dispatchAssistantSpeechCancel(source) {
         var normalizedTurnId = normalizeAssistantTurnId(S.assistantSpeechActiveTurnId);
         if (!normalizedTurnId) {
+            logAudioLifecycle('dispatchAssistantSpeechCancel:skip', {
+                source: source || 'audio_playback'
+            });
             return;
         }
         S.assistantSpeechActiveTurnId = null;
+        logAudioLifecycle('dispatchAssistantSpeechCancel', {
+            turnId: normalizedTurnId,
+            source: source || 'audio_playback'
+        });
         emitAssistantSpeechLifecycleEvent('neko-assistant-speech-cancel', {
             turnId: normalizedTurnId,
             source: source || 'audio_playback'
@@ -69,6 +107,17 @@
 
     function clearAssistantTurnCompletion() {
         S.assistantTurnCompletedId = null;
+    }
+
+    function resolveAssistantAudioTurnId(turnId, speechId) {
+        return normalizeAssistantTurnId(
+            turnId ||
+            S.assistantTurnId ||
+            S.assistantPendingTurnServerId ||
+            S.assistantTurnCompletedId ||
+            S.assistantSpeechActiveTurnId ||
+            speechId
+        );
     }
 
     function isAssistantTurnPlaybackDrained(turnId) {
@@ -85,7 +134,7 @@
         }
 
         var hasQueuedBuffer = S.audioBufferQueue.some(function (item) {
-            return normalizeAssistantTurnId(item && item.turnId) === normalizedTurnId;
+            return resolveAssistantAudioTurnId(item && item.turnId, item && item.speechId) === normalizedTurnId;
         });
         if (hasQueuedBuffer) {
             return false;
@@ -95,7 +144,7 @@
             return item &&
                 !item.shouldSkip &&
                 item.epoch === S.incomingAudioEpoch &&
-                normalizeAssistantTurnId(item.speechId) === normalizedTurnId;
+                resolveAssistantAudioTurnId(item.turnId, item.speechId) === normalizedTurnId;
         });
         if (hasPendingMeta) {
             return false;
@@ -105,8 +154,21 @@
             return item &&
                 !item.shouldSkip &&
                 item.epoch === S.incomingAudioEpoch &&
-                normalizeAssistantTurnId(item.speechId) === normalizedTurnId;
+                resolveAssistantAudioTurnId(item.turnId, item.speechId) === normalizedTurnId;
         });
+    }
+
+    function hasAssistantSpeechActivity(turnId) {
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!normalizedTurnId) {
+            return false;
+        }
+
+        if (normalizeAssistantTurnId(S.assistantSpeechActiveTurnId) === normalizedTurnId) {
+            return true;
+        }
+
+        return !isAssistantTurnPlaybackDrained(normalizedTurnId);
     }
 
     function stopActiveLipSync() {
@@ -132,10 +194,19 @@
         var normalizedTurnId = normalizeAssistantTurnId(
             turnId || S.assistantSpeechActiveTurnId || S.assistantTurnCompletedId
         );
+        logAudioLifecycle('maybeFinalizeAssistantSpeech:enter', {
+            requestedTurnId: normalizedTurnId
+        });
         if (!normalizedTurnId || S.assistantTurnCompletedId !== normalizedTurnId) {
+            logAudioLifecycle('maybeFinalizeAssistantSpeech:skip_completion_mismatch', {
+                requestedTurnId: normalizedTurnId
+            });
             return false;
         }
         if (!isAssistantTurnPlaybackDrained(normalizedTurnId)) {
+            logAudioLifecycle('maybeFinalizeAssistantSpeech:skip_not_drained', {
+                requestedTurnId: normalizedTurnId
+            });
             return false;
         }
 
@@ -143,6 +214,9 @@
         S.isPlaying = false;
         dispatchAssistantSpeechEnd(normalizedTurnId);
         S.assistantTurnCompletedId = null;
+        logAudioLifecycle('maybeFinalizeAssistantSpeech:completed', {
+            requestedTurnId: normalizedTurnId
+        });
 
         if (S.isRecording && S.proactiveChatEnabled) {
             if (typeof window.scheduleProactiveChat === 'function') {
@@ -163,17 +237,26 @@
 
         window.addEventListener('neko-assistant-turn-start', function () {
             clearAssistantTurnCompletion();
+            logAudioLifecycle('event:turn-start');
         });
 
         window.addEventListener('neko-assistant-turn-end', function (event) {
-            if (event.detail && event.detail.source === 'turn_end_agent_callback') {
-                return;
-            }
             var turnId = normalizeAssistantTurnId(event.detail && event.detail.turnId);
+            logAudioLifecycle('event:turn-end', {
+                turnId: turnId,
+                source: event.detail && event.detail.source
+            });
             if (!turnId) {
                 return;
             }
+            // Some flows only emit the agent callback turn-end before audio drains.
             S.assistantTurnCompletedId = turnId;
+            if (!hasAssistantSpeechActivity(turnId)) {
+                logAudioLifecycle('event:turn-end:defer_finalize_until_speech', {
+                    turnId: turnId
+                });
+                return;
+            }
             maybeFinalizeAssistantSpeech(turnId);
         });
 
@@ -348,7 +431,7 @@
 
                     var source = S.audioPlayerContext.createBufferSource();
                     source.buffer = nextBuffer;
-                    source._nekoAssistantTurnId = normalizeAssistantTurnId(item.turnId);
+                    source._nekoAssistantTurnId = resolveAssistantAudioTurnId(item.turnId, item.speechId);
                     if (hasAnalyser) {
                         source.connect(S.globalAnalyser);
                     } else {
@@ -426,7 +509,7 @@
 
     // ======================== Audio blob handling ========================
 
-    async function handleAudioBlob(blob, expectedEpoch, speechId) {
+    async function handleAudioBlob(blob, expectedEpoch, speechId, turnId) {
         if (expectedEpoch === undefined) expectedEpoch = S.incomingAudioEpoch;
 
         var arrayBuffer = await blob.arrayBuffer();
@@ -496,7 +579,8 @@
         var bufferObj = {
             seq: S.seqCounter++,
             buffer: audioBuffer,
-            turnId: normalizeAssistantTurnId(speechId || S.assistantTurnId)
+            turnId: resolveAssistantAudioTurnId(turnId, speechId),
+            speechId: normalizeAssistantTurnId(speechId)
         };
         S.audioBufferQueue.push(bufferObj);
 
@@ -526,21 +610,31 @@
     function enqueueIncomingAudioBlob(blob) {
         var meta = S.pendingAudioChunkMetaQueue.shift();
         if (!meta) {
+            logAudioLifecycle('enqueueIncomingAudioBlob:missing_meta');
             if (window.DEBUG_AUDIO) {
                 console.warn('[Audio] 收到无匹配 header 的音频 blob，已丢弃');
             }
             return;
         }
         if (!meta.speechId) {
+            logAudioLifecycle('enqueueIncomingAudioBlob:missing_speech_id', {
+                turnId: meta.turnId || null
+            });
             if (window.DEBUG_AUDIO) {
                 console.warn('[Audio] 收到 speechId 为空的音频 blob，已丢弃');
             }
             return;
         }
+        logAudioLifecycle('enqueueIncomingAudioBlob', {
+            turnId: meta.turnId || null,
+            speechId: meta.speechId,
+            shouldSkip: !!meta.shouldSkip
+        });
         S.incomingAudioBlobQueue.push({
             blob: blob,
             shouldSkip: !!meta.shouldSkip,
             speechId: meta.speechId,
+            turnId: resolveAssistantAudioTurnId(meta.turnId, meta.speechId),
             epoch: meta.epoch
         });
         if (!S.isProcessingIncomingAudioBlob) {
@@ -561,6 +655,10 @@
                 }
 
                 if (item.shouldSkip) {
+                    logAudioLifecycle('processIncomingAudioBlobQueue:skip_item', {
+                        turnId: item.turnId || null,
+                        speechId: item.speechId
+                    });
                     if (window.DEBUG_AUDIO) {
                         console.log('[Audio] 跳过被打断的音频 blob', item.speechId);
                     }
@@ -584,7 +682,11 @@
                     continue;
                 }
 
-                await handleAudioBlob(item.blob, item.epoch, item.speechId);
+                await handleAudioBlob(item.blob, item.epoch, item.speechId, item.turnId);
+                logAudioLifecycle('processIncomingAudioBlobQueue:handled', {
+                    turnId: item.turnId || null,
+                    speechId: item.speechId
+                });
             }
         } finally {
             S.isProcessingIncomingAudioBlob = false;
