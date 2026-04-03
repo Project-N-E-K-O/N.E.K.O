@@ -76,6 +76,7 @@
         sessionStartedRejecter: null,
         assistantTurnId: null,
         assistantTurnSeq: 0,
+        assistantTurnCompletedId: null,
         assistantSpeechActiveTurnId: null,
 
         // --- 屏幕共享 ---

@@ -14,6 +14,7 @@ import sys
 import asyncio
 import base64
 import difflib
+import math
 import re
 import time
 from collections import deque
@@ -154,6 +155,8 @@ def _coerce_emotion_confidence(raw_confidence, default=0.5):
     try:
         confidence = float(raw_confidence)
     except (TypeError, ValueError):
+        confidence = float(default)
+    if not math.isfinite(confidence):
         confidence = float(default)
     return max(0.0, min(1.0, confidence))
 
@@ -1156,21 +1159,6 @@ async def emotion_analysis(request: Request):
                 emotion = "neutral"
                 decision_source = "neutral_fallback"
 
-            text_preview = re.sub(r"\s+", " ", str(text or "")).strip()[:80]
-            logger.info(
-                "[Emotion] lang=%s model=%s raw=(%s, %.3f) final=(%s, %.3f) source=%s heuristic=%s/%s text=%r",
-                prompt_lang,
-                model,
-                raw_emotion,
-                _coerce_emotion_confidence(raw_confidence),
-                emotion,
-                confidence,
-                decision_source,
-                heuristic_emotion,
-                heuristic_score,
-                text_preview,
-            )
-            
             # 获取 lanlan_name 并推送到 monitor
             lanlan_name = data.get('lanlan_name')
             sync_message_queue = get_sync_message_queue()
@@ -1192,22 +1180,12 @@ async def emotion_analysis(request: Request):
             heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
             if heuristic_emotion:
                 confidence = min(0.62, 0.34 + heuristic_score * 0.1)
-                logger.warning(
-                    "[Emotion] JSON parse failed; fallback to heuristic emotion=%s confidence=%.3f text=%r",
-                    heuristic_emotion,
-                    confidence,
-                    re.sub(r"\s+", " ", str(text or "")).strip()[:80],
-                )
                 return {
                     "emotion": heuristic_emotion,
                     "confidence": confidence
                 }
 
             # 如果JSON解析失败且没有足够关键词线索，则回退到 neutral
-            logger.warning(
-                "[Emotion] JSON parse failed; fallback to neutral text=%r",
-                re.sub(r"\s+", " ", str(text or "")).strip()[:80],
-            )
             return {
                 "emotion": "neutral",
                 "confidence": 0.5

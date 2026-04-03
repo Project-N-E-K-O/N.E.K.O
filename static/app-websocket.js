@@ -979,10 +979,6 @@
                     if (S.proactiveChatEnabled && hasChatMode && !S.isRecording) {
                         if (typeof window.resetProactiveChatBackoff === 'function') window.resetProactiveChatBackoff();
                     }
-                    // 语音模式：AI 说完话后才调度下一次 proactive nudge
-                    if (S.isRecording && S.proactiveChatEnabled) {
-                        if (typeof window.scheduleProactiveChat === 'function') window.scheduleProactiveChat();
-                    }
 
                 // -------- session_preparing --------
                 } else if (response.type === 'session_preparing') {

@@ -77,6 +77,8 @@
         lastRenderY: null,
         lastRenderWidth: null,
         lastRenderHeight: null,
+        lastAnchorBounds: null,
+        lastHeadAnchor: null,
         lastBoundsCenterX: null,
         lastBoundsCenterY: null
     };
@@ -265,6 +267,23 @@
         return anchor;
     }
 
+    function cloneBounds(bounds) {
+        if (!bounds) {
+            return null;
+        }
+        return Object.assign({}, bounds);
+    }
+
+    function clonePoint(point) {
+        if (!point) {
+            return null;
+        }
+        return {
+            x: point.x,
+            y: point.y
+        };
+    }
+
     function getActiveAvatarBubbleAnchor() {
         var mmdBounds = isContainerVisible('mmd-container')
             ? getBoundsFromManager(window.mmdManager, 'getModelScreenBounds')
@@ -308,15 +327,17 @@
         }
 
         var anchorInfo = getActiveAvatarBubbleAnchor();
-        if (!anchorInfo || !anchorInfo.bounds) {
-            forceHide(false);
+        if (anchorInfo && anchorInfo.bounds) {
+            state.lastAnchorBounds = cloneBounds(anchorInfo.bounds);
+            state.lastHeadAnchor = clonePoint(anchorInfo.head);
+        } else if (!state.lastAnchorBounds) {
             return;
         }
 
         ensureDom();
 
-        var bounds = anchorInfo.bounds;
-        var headAnchor = anchorInfo.head;
+        var bounds = anchorInfo && anchorInfo.bounds ? anchorInfo.bounds : state.lastAnchorBounds;
+        var headAnchor = anchorInfo && anchorInfo.bounds ? anchorInfo.head : state.lastHeadAnchor;
         var boundsCenterX = Number.isFinite(bounds.centerX) ? bounds.centerX : (bounds.left + bounds.right) * 0.5;
         var boundsCenterY = Number.isFinite(bounds.centerY) ? bounds.centerY : (bounds.top + bounds.bottom) * 0.5;
         var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
@@ -490,6 +511,8 @@
         state.lastRenderY = null;
         state.lastRenderWidth = null;
         state.lastRenderHeight = null;
+        state.lastAnchorBounds = null;
+        state.lastHeadAnchor = null;
         state.lastBoundsCenterX = null;
         state.lastBoundsCenterY = null;
         if (resetTurn !== false) {
