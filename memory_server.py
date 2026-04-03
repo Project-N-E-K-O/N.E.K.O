@@ -21,6 +21,7 @@ from config.prompts_memory import (
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
 )
 from utils.language_utils import get_global_language
+from utils.character_name import validate_character_name
 from utils.config_manager import get_config_manager
 from pydantic import BaseModel
 import re
@@ -54,17 +55,12 @@ async def health():
 
 
 def validate_lanlan_name(name: str) -> str:
-    name = name.strip()
-    if not name or len(name) > 50:
+    result = validate_character_name(name, max_length=50)
+    if result.code in {"empty", "too_long_length"}:
         raise HTTPException(status_code=400, detail="Invalid lanlan_name length")
-    # 支持：字母、数字、下划线、连字符、空白、中日韩文字、括号
-    # 与 characters_router.py / memory_router.py 的规则保持一致
-    if not re.match(r"^[\w\-\s\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af()（）]+$", name):
+    if result.code is not None:
         raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
-    # 禁止路径遍历
-    if '/' in name or '\\' in name or '..' in name:
-        raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
-    return name
+    return result.normalized
 
 # 初始化组件（迁移必须在实例化之前，否则旧路径文件找不到）
 _config_manager = get_config_manager()

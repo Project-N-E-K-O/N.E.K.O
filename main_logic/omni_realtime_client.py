@@ -199,6 +199,7 @@ class OmniRealtimeClient:
         self.base_url = base_url
         self.api_key = api_key
         self.model = model
+        self._model_lower = model.lower() if model else ''
         self.voice = voice
         self.ws = None
         self.instructions = None
@@ -310,15 +311,15 @@ class OmniRealtimeClient:
         # Whether this API returns server-side VAD events (speech_started/speech_stopped)
         # Gemini (direct) and lanlan.app+free (Gemini proxy) do NOT have server VAD
         self._has_server_vad = not self._is_gemini and not (
-            'lanlan.app' in (base_url or '') and 'free' in (model or '')
+            'lanlan.app' in (base_url or '') and 'free' in self._model_lower
         )
-        
+
         # Whether this client supports native image input
         # qwen/glm/gpt/gemini have native vision; lanlan.app replacement server (free, non-mainland) also does
         self._supports_native_image = (
-            any(m in (model or '') for m in ['qwen', 'glm', 'gpt'])
+            any(m in self._model_lower for m in ['qwen', 'glm', 'gpt'])
             or self._is_gemini
-            or ('lanlan.app' in (base_url or '') and 'free' in (model or ''))
+            or ('lanlan.app' in (base_url or '') and 'free' in self._model_lower)
         )
         self._gemini_client = None  # genai.Client instance
         self._gemini_session = None  # Live session from SDK
@@ -460,7 +461,7 @@ class OmniRealtimeClient:
             self._audio_processor.reset()
 
         # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
-        url = f"{self.base_url}?model={self.model}" if self.model != "free-model" else self.base_url
+        url = f"{self.base_url}?model={self.model}" if self._model_lower != "free-model" else self.base_url
         headers = {
             "Authorization": f"Bearer {self.api_key}"
         }
@@ -482,7 +483,7 @@ class OmniRealtimeClient:
             raise NotImplementedError("Manual turn detection is not supported")
         elif self.turn_detection_mode == TurnDetectionMode.SERVER_VAD:
             self._modalities = ["text", "audio"] if native_audio else ["text"]
-            if 'glm' in self.model:
+            if 'glm' in self._model_lower:
                 await self.update_session({
                     "instructions": instructions,
                     "modalities": self._modalities ,
@@ -501,7 +502,7 @@ class OmniRealtimeClient:
                     },
                     "temperature": 1.0
                 })
-            elif "qwen" in self.model:
+            elif "qwen" in self._model_lower:
                 await self.update_session({
                     "instructions": instructions,
                     "modalities": self._modalities ,
@@ -522,7 +523,7 @@ class OmniRealtimeClient:
                     # "enable_search": True,
                     # "search_options": {'enable_source': True}
                 })
-            elif "gpt" in self.model:
+            elif "gpt" in self._model_lower:
                 await self.update_session({
                     "type": "realtime",
                     "model": self.model,
@@ -543,7 +544,7 @@ class OmniRealtimeClient:
                         }
                     }
                 })
-            elif "step" in self.model:
+            elif "step" in self._model_lower:
                 await self.update_session({
                     "instructions": instructions,
                     "modalities": ['text', 'audio'], # Step API只支持这一个模式
@@ -562,7 +563,7 @@ class OmniRealtimeClient:
                         }
                     ]
                 })
-            elif "free" in self.model:
+            elif "free" in self._model_lower:
                 await self.update_session({
                     "instructions": instructions,
                     "modalities": ['text', 'audio'], # Step API只支持这一个模式
@@ -865,7 +866,7 @@ class OmniRealtimeClient:
                             self._fatal_error_occurred = True
                 return
 
-            if ('lanlan.app' in self.base_url and 'free' in self.model):
+            if ('lanlan.app' in self.base_url and 'free' in self._model_lower):
                 append_event = {
                     "type": "input_image_buffer.append" ,
                     "image": image_b64
@@ -874,17 +875,17 @@ class OmniRealtimeClient:
                 return
 
             if self._audio_in_buffer:
-                if "qwen" in self.model:
+                if "qwen" in self._model_lower:
                     append_event = {
                         "type": "input_image_buffer.append" ,
                         "image": image_b64
                     }
-                elif "glm" in self.model:
+                elif "glm" in self._model_lower:
                     append_event = {
                         "type": "input_audio_buffer.append_video_frame",
                         "video_frame": image_b64
                     }
-                elif "gpt" in self.model:
+                elif "gpt" in self._model_lower:
                     append_event = {
                         "type": "conversation.item.create",
                         "item": {
@@ -955,7 +956,7 @@ class OmniRealtimeClient:
             await self._create_response_gemini(instructions)
             return
 
-        if "qwen" in self.model:
+        if "qwen" in self._model_lower:
             await self.update_session({"instructions": self.instructions + '\n' + instructions})
 
             logger.info("Creating response with instructions override")
@@ -1121,7 +1122,7 @@ class OmniRealtimeClient:
                         await self._gemini_session.send_realtime_input(
                             media={"data": image_bytes, "mime_type": "image/jpeg"}
                         )
-                elif "gpt" in self.model:
+                elif "gpt" in self._model_lower:
                     await self.send_event({
                         "type": "conversation.item.create",
                         "item": {
@@ -1133,12 +1134,12 @@ class OmniRealtimeClient:
                             }],
                         },
                     })
-                elif "qwen" in self.model or ("lanlan.app" in self.base_url and "free" in self.model):
+                elif "qwen" in self._model_lower or ("lanlan.app" in self.base_url and "free" in self._model_lower):
                     await self.send_event({
                         "type": "input_image_buffer.append",
                         "image": snapshot_image_b64,
                     })
-                elif "glm" in self.model:
+                elif "glm" in self._model_lower:
                     await self.send_event({
                         "type": "input_audio_buffer.append_video_frame",
                         "video_frame": snapshot_image_b64,
@@ -1344,7 +1345,7 @@ class OmniRealtimeClient:
                 if not self._skip_until_next_response and not self._interrupted:
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
                         if self.on_text_delta:
-                            if "glm" not in self.model:
+                            if "glm" not in self._model_lower:
                                 await self.on_text_delta(event["delta"], self._is_first_text_chunk)
                                 self._is_first_text_chunk = False
                     elif event_type in ["response.audio.delta", "response.output_audio.delta"]:
