@@ -459,6 +459,9 @@
                 returnSessionButton.disabled = false;
 
                 window.stopProactiveChatSchedule();
+                if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+                    window.stopProactiveVisionDuringSpeech();
+                }
 
                 window.showStatusToast('', 0);
             }
