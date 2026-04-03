@@ -179,6 +179,12 @@
         const currentMouseTracking = typeof window.mouseTrackingEnabled !== 'undefined'
             ? window.mouseTrackingEnabled
             : true;
+        const currentLive2dFullscreenTracking = typeof window.live2dFullscreenTrackingEnabled !== 'undefined'
+            ? window.live2dFullscreenTrackingEnabled
+            : false;
+        const currentHumanoidLocalTracking = typeof window.humanoidLocalTrackingEnabled !== 'undefined'
+            ? window.humanoidLocalTrackingEnabled
+            : false;
 
         // 读取字幕设置（从 S 读取，因为 subtitle.js 会写入 S）
         const currentSubtitleEnabled = typeof S.subtitleEnabled !== 'undefined' ? S.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true');
@@ -200,6 +206,8 @@
             renderQuality: currentRenderQuality,
             targetFrameRate: currentTargetFrameRate,
             mouseTrackingEnabled: currentMouseTracking,
+            live2dFullscreenTrackingEnabled: currentLive2dFullscreenTracking,
+            humanoidLocalTrackingEnabled: currentHumanoidLocalTracking,
             subtitleEnabled: currentSubtitleEnabled,
             userLanguage: currentUserLanguage
         };
@@ -290,10 +298,10 @@
                 S.proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
                 S.proactiveVisionChatEnabled = settings.proactiveVisionChatEnabled ?? true;
                 S.proactiveNewsChatEnabled = settings.proactiveNewsChatEnabled ?? false;
-                S.proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? false;
+                S.proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? true;
                 S.proactivePersonalChatEnabled = settings.proactivePersonalChatEnabled ?? false;
-                S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? false;
-                S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? false;
+                S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? true;
+                S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? true;
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
@@ -301,7 +309,7 @@
                 // 画质设置
                 S.renderQuality = settings.renderQuality ?? 'medium';
                 window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
-                // 帧率设置
+                // 帧率设置（0 = 不限帧 / VSync）
                 S.targetFrameRate = settings.targetFrameRate ?? 60;
                 // 鼠标跟踪设置（严格转换为布尔值）
                 if (typeof settings.mouseTrackingEnabled === 'boolean') {
@@ -310,6 +318,30 @@
                     window.mouseTrackingEnabled = settings.mouseTrackingEnabled === 'true';
                 } else {
                     window.mouseTrackingEnabled = true;
+                }
+
+                // 跟踪模式设置
+                if (typeof settings.live2dFullscreenTrackingEnabled === 'boolean') {
+                    window.live2dFullscreenTrackingEnabled = settings.live2dFullscreenTrackingEnabled;
+                } else if (typeof settings.live2dFullscreenTrackingEnabled === 'string') {
+                    window.live2dFullscreenTrackingEnabled = settings.live2dFullscreenTrackingEnabled === 'true';
+                }
+
+                if (typeof settings.humanoidLocalTrackingEnabled === 'boolean') {
+                    window.humanoidLocalTrackingEnabled = settings.humanoidLocalTrackingEnabled;
+                } else if (typeof settings.humanoidLocalTrackingEnabled === 'string') {
+                    window.humanoidLocalTrackingEnabled = settings.humanoidLocalTrackingEnabled === 'true';
+                }
+
+                // 同步到运行中的实例
+                if (typeof window.live2dManager !== 'undefined' && window.live2dManager && typeof window.live2dManager.setFullscreenTrackingEnabled === 'function') {
+                    window.live2dManager.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
+                }
+                if (typeof window.vrmManager !== 'undefined' && window.vrmManager && window.vrmManager._cursorFollow && typeof window.vrmManager._cursorFollow.setLocalTrackingEnabled === 'function') {
+                    window.vrmManager._cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
+                }
+                if (typeof window.mmdManager !== 'undefined' && window.mmdManager && window.mmdManager.cursorFollow && typeof window.mmdManager.cursorFollow.setLocalTrackingEnabled === 'function') {
+                    window.mmdManager.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
                 }
 
                 console.log('已加载设置:', {
@@ -332,9 +364,15 @@
                     console.log('首次启动：检测到中国地区用户，已自动开启自主视觉');
                 }
 
+                // 首次启动默认开启音乐/meme搭话
+                S.proactiveMusicEnabled = true;
+                S.proactiveMemeEnabled = true;
+
                 console.log('未找到保存的设置，使用默认值');
                 window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
                 window.mouseTrackingEnabled = true;
+                window.live2dFullscreenTrackingEnabled = false;
+                window.humanoidLocalTrackingEnabled = false;
 
                 // 持久化首次启动设置，避免每次重新检测
                 saveSettings();
@@ -345,6 +383,8 @@
             // 出错时也要确保全局变量被初始化
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
             window.mouseTrackingEnabled = true;
+            window.live2dFullscreenTrackingEnabled = false;
+            window.humanoidLocalTrackingEnabled = false;
         }
 
         // 以下逻辑不依赖本地 JSON 解析结果，始终执行

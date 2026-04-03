@@ -1,9 +1,21 @@
-# 在 Dockerfile 顶部添加构建参数定义
+# --- Stage 1: Build plugin manager frontend ---
+FROM node:24-slim AS frontend-builder
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
+RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
+    apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
+    git clone --depth 1 --branch main https://github.com/Project-N-E-K-O/N.E.K.O.git .
+WORKDIR /src/plugin/frontend/vue-project
+RUN npm ci && npm run build-only
 
-# 使用 Debian bookworm 作为基础镜像
+# --- Stage 2: Runtime ---
 FROM debian:bookworm
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
 
 # 设置环境变量
 ENV DEBIAN_FRONTEND=noninteractive
@@ -85,16 +97,19 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     unset http_proxy && \
     unset https_proxy
 
-# 7. 设置环境变量
+# 7. 复制前端构建产物
+COPY --from=frontend-builder /src/plugin/frontend/vue-project/dist /app/plugin/frontend/vue-project/dist
+
+# 8. 设置环境变量
 ENV PATH="/root/.cargo/bin:/usr/bin:/usr/local/bin:$PATH"
 ENV PYTHONPATH="/app:$PYTHONPATH"
 
-# 8. 复制 entrypoint 脚本
+# 9. 复制 entrypoint 脚本
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# 9. 创建数据持久化目录
+# 10. 创建数据持久化目录
 VOLUME ["/data"]
 
-# 10. 设置入口点
+# 11. 设置入口点
 ENTRYPOINT ["/entrypoint.sh"]

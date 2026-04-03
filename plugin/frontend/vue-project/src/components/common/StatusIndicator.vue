@@ -44,6 +44,7 @@ const tagType = computed(() => {
     case PluginStatus.STOPPED:
       return 'info'
     case PluginStatus.CRASHED:
+    case PluginStatus.LOAD_FAILED:
       return 'danger'
     case PluginStatus.LOADING:
     case PluginStatus.PENDING:
@@ -76,4 +77,3 @@ const tagType = computed(() => {
   flex-shrink: 0;
 }
 </style>
-

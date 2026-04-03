@@ -26,6 +26,24 @@
     // const C = window.appConst;  // not used in this module currently
 
     // =====================================================================
+    // Message deduplication (BC + postMessage deliver the same message twice)
+    // =====================================================================
+    var _processedMsgKeys = {};
+
+    /**
+     * Returns true if this action+timestamp was already processed (duplicate).
+     * First call for a given key returns false and registers it.
+     */
+    function isDuplicateMessage(action, timestamp) {
+        if (!timestamp) return false;  // no timestamp → cannot deduplicate
+        var key = action + '_' + timestamp;
+        if (_processedMsgKeys[key]) return true;
+        _processedMsgKeys[key] = true;
+        setTimeout(function () { delete _processedMsgKeys[key]; }, 5000);
+        return false;
+    }
+
+    // =====================================================================
     // Overlay cleanup helpers
     // =====================================================================
 
@@ -224,18 +242,13 @@
                     newPath: newModelPath
                 });
 
-                // Empty model path -> fall back to default for VRM, keep current for Live2D
+                // Empty model path -> fall back to default for VRM/Live3D-VRM
                 if (!newModelPath) {
-                    if (newModelType === 'vrm') {
+                    if (newModelType === 'vrm' || (newModelType === 'live3d' && live3dSubType === 'vrm')) {
                         newModelPath = '/static/vrm/sister1.0.vrm';
                         console.info('[Model] VRM模型路径为空，使用默认模型:', newModelPath);
                     } else {
-                        console.warn('[Model] 模型路径为空，保持当前模型不变');
-                        window.showStatusToast(
-                            window.t ? window.t('app.modelPathEmpty') : '模型路径为空',
-                            2000
-                        );
-                        return;
+                        console.warn('[Model] 模型路径为空，仍然执行模型类型切换');
                     }
                 }
 
@@ -281,6 +294,10 @@
                     }
                     if (window.live2dManager && typeof window.live2dManager.pauseRendering === 'function') {
                         window.live2dManager.pauseRendering();
+                    }
+                    // 清空 Live2D 画布残留像素，避免透明窗口穿透
+                    if (window.live2dManager && window.live2dManager.pixi_app && window.live2dManager.pixi_app.renderer) {
+                        window.live2dManager.pixi_app.renderer.clear();
                     }
 
                     // Show & reload VRM
@@ -345,8 +362,14 @@
                     if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
                         window.vrmManager.pauseRendering();
                     }
+                    if (window.vrmManager && window.vrmManager.renderer) {
+                        window.vrmManager.renderer.clear();
+                    }
                     if (window.live2dManager && typeof window.live2dManager.pauseRendering === 'function') {
                         window.live2dManager.pauseRendering();
+                    }
+                    if (window.live2dManager && window.live2dManager.pixi_app && window.live2dManager.pixi_app.renderer) {
+                        window.live2dManager.pixi_app.renderer.clear();
                     }
 
                     // Show MMD container
@@ -374,17 +397,47 @@
 
                     // Load MMD model
                     if (window.mmdManager) {
-                        await window.mmdManager.loadModel(newModelPath);
-
-                        // 从后端获取并应用 MMD 设置（光照、渲染、物理、鼠标跟踪）
+                        // 提前获取设置并预置物理开关
+                        let savedSettings = null;
                         try {
                             var settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(nameForConfig) + '/mmd_settings');
                             var settingsData = await settingsRes.json();
                             if (settingsData.success && settingsData.settings) {
-                                window.mmdManager.applySettings(settingsData.settings);
+                                savedSettings = settingsData.settings;
+                                if (savedSettings.physics?.enabled != null) {
+                                    window.mmdManager.enablePhysics = !!savedSettings.physics.enabled;
+                                }
                             }
                         } catch (settingsErr) {
                             console.warn('[Model] 获取MMD设置失败:', settingsErr);
+                        }
+                        await window.mmdManager.loadModel(newModelPath);
+
+                        // 应用完整设置（光照、渲染、物理、鼠标跟踪）
+                        if (savedSettings) {
+                            window.mmdManager.applySettings(savedSettings);
+                        }
+
+                        // 播放待机动作（使用已确定的 nameForConfig，确保目标一致）
+                        if (nameForConfig) {
+                            try {
+                                const charRes = await fetch('/api/characters/');
+                                if (charRes.ok) {
+                                    const charData = await charRes.json();
+                                    const mmdIdleAnimation = charData?.['猫娘']?.[nameForConfig]?.mmd_idle_animation;
+                                    if (mmdIdleAnimation) {
+                                        try {
+                                            await window.mmdManager.loadAnimation(mmdIdleAnimation);
+                                            window.mmdManager.playAnimation();
+                                            console.log('[Model] 已播放待机动作:', mmdIdleAnimation);
+                                        } catch (idleErr) {
+                                            console.warn('[Model] 播放待机动作失败:', idleErr);
+                                        }
+                                    }
+                                }
+                            } catch (idleErr) {
+                                console.warn('[Model] 获取角色待机动作失败:', idleErr);
+                            }
                         }
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
@@ -422,19 +475,30 @@
                     if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
                         window.vrmManager.pauseRendering();
                     }
+                    // 清空VRM画布残留像素，避免透明窗口穿透
+                    if (window.vrmManager && window.vrmManager.renderer) {
+                        window.vrmManager.renderer.clear();
+                    }
                     if (window.mmdManager && typeof window.mmdManager.pauseRendering === 'function') {
                         window.mmdManager.pauseRendering();
                     }
 
                     // Show & reload Live2D
+                    var live2dContainer2 = document.getElementById('live2d-container');
+                    if (live2dContainer2) {
+                        live2dContainer2.classList.remove('hidden');
+                        live2dContainer2.style.display = 'block';
+                        live2dContainer2.style.visibility = 'visible';
+                        live2dContainer2.style.removeProperty('pointer-events');
+                    }
+                    var live2dCanvas2 = document.getElementById('live2d-canvas');
+                    if (live2dCanvas2) {
+                        live2dCanvas2.style.visibility = 'visible';
+                        live2dCanvas2.style.pointerEvents = 'auto';
+                    }
+
                     if (newModelPath) {
                         console.log('[Model] 加载 Live2D 模型:', newModelPath);
-
-                        var live2dContainer2 = document.getElementById('live2d-container');
-                        if (live2dContainer2) {
-                            live2dContainer2.classList.remove('hidden');
-                            live2dContainer2.style.display = 'block';
-                        }
 
                         // Ensure Live2D manager is initialised
                         if (!window.live2dManager) {
@@ -448,6 +512,17 @@
                         if (window.live2dManager) {
                             // Ensure PIXI app is initialised
                             if (!window.live2dManager.pixi_app) {
+                                // 安全网：如果 canvas 被 PIXI.destroy(true) 从 DOM 移除，重新创建
+                                var live2dCanvasEl = document.getElementById('live2d-canvas');
+                                if (!live2dCanvasEl) {
+                                    console.log('[Model] live2d-canvas 不存在，重新创建');
+                                    live2dCanvasEl = document.createElement('canvas');
+                                    live2dCanvasEl.id = 'live2d-canvas';
+                                    var live2dContainerEl = document.getElementById('live2d-container');
+                                    if (live2dContainerEl) {
+                                        live2dContainerEl.appendChild(live2dCanvasEl);
+                                    }
+                                }
                                 console.log('[Model] PIXI 应用未初始化，正在初始化...');
                                 await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
                             }
@@ -474,6 +549,12 @@
                         } else {
                             console.error('[Model] Live2D 管理器初始化失败');
                         }
+                    } else {
+                        console.warn('[Model] Live2D 模型路径为空，已切换容器但跳过模型加载');
+                        window.showStatusToast(
+                            window.t ? window.t('app.modelPathEmpty') : '模型路径为空',
+                            2000
+                        );
                     }
                 }
 
@@ -586,6 +667,13 @@
      * Show main-page model rendering (returning to main page).
      */
     function handleShowMainUI() {
+        // 模型重载进行中时跳过：handleModelReload 自己会正确切换容器，
+        // 此时 lanlan_config.model_type 尚未更新，handleShowMainUI 会
+        // 错误地恢复旧模型类型的容器，导致需要切换两次才能成功。
+        if (window._modelReloadInFlight) {
+            console.log('[UI] 模型重载进行中，跳过显示主界面（避免覆盖正在切换的容器）');
+            return;
+        }
         console.log('[UI] 显示主界面并恢复渲染');
 
         try {
@@ -686,6 +774,12 @@
                     return;
                 }
 
+                // Deduplicate: same message arrives via both BC and postMessage
+                if (isDuplicateMessage(event.data.action, event.data.timestamp)) {
+                    console.log('[BroadcastChannel] 跳过重复消息:', event.data.action);
+                    return;
+                }
+
                 console.log('[BroadcastChannel] 收到消息:', event.data.action);
 
                 switch (event.data.action) {
@@ -740,6 +834,11 @@
         }
 
         if (event.data && (event.data.action === 'model_saved' || event.data.action === 'reload_model')) {
+            // Deduplicate: same message arrives via both BC and postMessage
+            if (isDuplicateMessage(event.data.action, event.data.timestamp)) {
+                console.log('[Model] 跳过重复 postMessage:', event.data.action);
+                return;
+            }
             console.log('[Model] 通过 postMessage 收到模型重载通知');
             await handleModelReload(event.data?.lanlan_name);
         }

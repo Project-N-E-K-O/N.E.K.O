@@ -296,16 +296,10 @@ VRMManager.prototype.setupFloatingButtons = function() {
     });
 
     // 处理"请她离开"事件
+    // 注意：返回按钮的位置、显示、以及浮动按钮的隐藏均由 app-ui.js 统一处理，
+    // 此处仅更新内部状态标志。不能在此隐藏按钮容器，否则 app-ui.js 无法读取按钮位置。
     const goodbyeHandler = () => {
         this._isInReturnState = true;
-        if (this._floatingButtonsContainer) this._floatingButtonsContainer.style.display = 'none';
-        if (this._vrmLockIcon) this._vrmLockIcon.style.display = 'none';
-        if (this._returnButtonContainer) {
-            this._returnButtonContainer.style.left = '50%';
-            this._returnButtonContainer.style.top = '50%';
-            this._returnButtonContainer.style.transform = 'translate(-50%, -50%)';
-            this._returnButtonContainer.style.display = 'flex';
-        }
     };
     this._uiWindowHandlers.push({ event: 'live2d-goodbye-click', handler: goodbyeHandler });
     window.addEventListener('live2d-goodbye-click', goodbyeHandler);
@@ -313,6 +307,7 @@ VRMManager.prototype.setupFloatingButtons = function() {
     // 处理"请她回来"事件
     const returnHandler = () => {
         this._isInReturnState = false;
+        this._snapUIPosition = true;
         if (this._returnButtonContainer) this._returnButtonContainer.style.display = 'none';
 
         const bc = document.getElementById('vrm-floating-buttons');
@@ -538,9 +533,12 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                     buttonsContainer.style.transformOrigin = 'left top';
                     const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
                     const hoveringButtons = this._vrmButtonsHovered === true;
-                    const hasOpenPopup = Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
-                        .some(popup => popup.style.display === 'flex' && popup.style.opacity !== '0');
-                    const shouldShowButtons = !isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenPopup);
+                    const popupUi = window.AvatarPopupUI || null;
+                    const hasOpenOverlay = popupUi && typeof popupUi.hasVisibleOverlay === 'function'
+                        ? popupUi.hasVisibleOverlay('vrm')
+                        : Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
+                            .some(popup => popup.style.display === 'flex' && popup.style.opacity !== '0');
+                    const shouldShowButtons = !isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenOverlay);
                     buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;
@@ -556,16 +554,21 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                     const boundedY = Math.max(20, Math.min(targetY, screenHeight - actualToolbarHeight - 20));
                     const boundedX = Math.max(0, Math.min(targetX, screenWidth - actualToolbarWidth));
 
-                    const currentLeft = parseFloat(buttonsContainer.style.left) || 0;
-                    const currentTop = parseFloat(buttonsContainer.style.top) || 0;
-                    const dist = Math.sqrt(Math.pow(boundedX - currentLeft, 2) + Math.pow(boundedY - currentTop, 2));
-                    if (dist > 0.5) {
-                        // 平滑插值防止旋转时闪烁抖动
-                        const lerpFactor = 0.15;
-                        const smoothX = currentLeft + (boundedX - currentLeft) * lerpFactor;
-                        const smoothY = currentTop + (boundedY - currentTop) * lerpFactor;
-                        buttonsContainer.style.left = `${smoothX}px`;
-                        buttonsContainer.style.top = `${smoothY}px`;
+                    const rawLeft = parseFloat(buttonsContainer.style.left);
+                    if (this._snapUIPosition || Number.isNaN(rawLeft)) {
+                        if (canvasWidth > 0 && canvasHeight > 0) {
+                            buttonsContainer.style.left = `${boundedX}px`;
+                            buttonsContainer.style.top = `${boundedY}px`;
+                            this._snapUIPosition = false;
+                        }
+                    } else {
+                        const currentTop = parseFloat(buttonsContainer.style.top) || boundedY;
+                        const dist = Math.sqrt(Math.pow(boundedX - rawLeft, 2) + Math.pow(boundedY - currentTop, 2));
+                        if (dist > 0.5) {
+                            const lerpFactor = 0.15;
+                            buttonsContainer.style.left = `${rawLeft + (boundedX - rawLeft) * lerpFactor}px`;
+                            buttonsContainer.style.top = `${currentTop + (boundedY - currentTop) * lerpFactor}px`;
+                        }
                     }
 
                     if (lockIcon && !this._isInReturnState) {
@@ -582,15 +585,20 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                         const boundedLockX = Math.max(0, Math.min(lockTargetX, maxLockX));
                         const boundedLockY = Math.max(20, Math.min(lockTargetY, maxLockY));
 
-                        const currentLockLeft = parseFloat(lockIcon.style.left) || 0;
-                        const currentLockTop = parseFloat(lockIcon.style.top) || 0;
-                        const lockDist = Math.sqrt(Math.pow(boundedLockX - currentLockLeft, 2) + Math.pow(boundedLockY - currentLockTop, 2));
-                        if (lockDist > 0.5) {
-                            const lerpFactor = 0.15;
-                            const smoothLockX = currentLockLeft + (boundedLockX - currentLockLeft) * lerpFactor;
-                            const smoothLockY = currentLockTop + (boundedLockY - currentLockTop) * lerpFactor;
-                            lockIcon.style.left = `${smoothLockX}px`;
-                            lockIcon.style.top = `${smoothLockY}px`;
+                        const rawLockLeft = parseFloat(lockIcon.style.left);
+                        if (Number.isNaN(rawLockLeft)) {
+                            if (canvasWidth > 0 && canvasHeight > 0) {
+                                lockIcon.style.left = `${boundedLockX}px`;
+                                lockIcon.style.top = `${boundedLockY}px`;
+                            }
+                        } else {
+                            const currentLockTop = parseFloat(lockIcon.style.top) || boundedLockY;
+                            const lockDist = Math.sqrt(Math.pow(boundedLockX - rawLockLeft, 2) + Math.pow(boundedLockY - currentLockTop, 2));
+                            if (lockDist > 0.5) {
+                                const lerpFactor = 0.15;
+                                lockIcon.style.left = `${rawLockLeft + (boundedLockX - rawLockLeft) * lerpFactor}px`;
+                                lockIcon.style.top = `${currentLockTop + (boundedLockY - currentLockTop) * lerpFactor}px`;
+                            }
                         }
                         lockIcon.style.display = (this._shouldShowVrmLockIcon && this._shouldShowVrmLockIcon()) ? 'block' : 'none';
 
@@ -619,4 +627,42 @@ VRMManager.prototype._startUIUpdateLoop = function() {
     };
 
     this._uiUpdateLoopId = requestAnimationFrame(update);
+};
+
+/**
+ * 将屏幕像素偏移量应用到 VRM 模型的世界坐标
+ * 用于"请她回来"按钮被拖拽后，模型跟随出现在新位置
+ */
+VRMManager.prototype.applyScreenDelta = function(screenDx, screenDy) {
+    const scene = this.currentModel && this.currentModel.scene;
+    if (!scene || !this.camera || !this.renderer) return;
+
+    const camera = this.camera;
+
+    // canvas 在 goodbye 状态下被 display:none 隐藏，getBoundingClientRect 全为 0
+    const canvasRect = this.renderer.domElement.getBoundingClientRect();
+    const viewWidth = canvasRect.width > 0 ? canvasRect.width : window.innerWidth;
+    const viewHeight = canvasRect.height > 0 ? canvasRect.height : window.innerHeight;
+    if (viewWidth <= 0 || viewHeight <= 0) return;
+
+    const cameraDistance = camera.position.distanceTo(scene.position);
+    if (cameraDistance < 0.001) return;
+
+    const fov = camera.fov * (Math.PI / 180);
+    const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
+    const worldWidth = worldHeight * camera.aspect;
+
+    const pixelToWorldX = worldWidth / viewWidth;
+    const pixelToWorldY = worldHeight / viewHeight;
+
+    const right = new window.THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    const up = new window.THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+    scene.position.add(right.clone().multiplyScalar(screenDx * pixelToWorldX));
+    scene.position.add(up.clone().multiplyScalar(-screenDy * pixelToWorldY));
+
+    if (this.interaction && typeof this.interaction.clampModelPosition === 'function') {
+        const clamped = this.interaction.clampModelPosition(scene.position.clone());
+        if (clamped && clamped.isVector3) scene.position.copy(clamped);
+    }
 };

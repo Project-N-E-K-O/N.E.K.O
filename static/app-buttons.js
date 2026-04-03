@@ -179,6 +179,8 @@
         var screenshotThumbnailContainer = S.dom.screenshotThumbnailContainer = document.getElementById('screenshot-thumbnail-container');
         var screenshotCountEl    = S.dom.screenshotCount      = document.getElementById('screenshot-count');
         var clearAllScreenshots  = S.dom.clearAllScreenshots   = document.getElementById('clear-all-screenshots');
+        var textInputComposing = false;
+        var lastTextCompositionEndAt = 0;
 
         // ----------------------------------------------------------------
         // Mic button click
@@ -256,8 +258,9 @@
                             console.log(window.t('console.sessionTimeoutEndSession'));
                         }
 
-                        window.showVoicePreparingToast(window.t ? window.t('app.sessionTimeout') || '\u8FDE\u63A5\u8D85\u65F6' : '\u8FDE\u63A5\u8D85\u65F6\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC\u8FDE\u63A5');
-                        rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session\u542F\u52A8\u8D85\u65F6'));
+                        var timeoutMsg = (window.t && window.t('app.sessionTimeout')) || '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5';
+                        window.showVoicePreparingToast(timeoutMsg);
+                        rejecter(new Error(timeoutMsg));
                     } else {
                         window.sessionTimeoutId = null;
                     }
@@ -456,6 +459,9 @@
                 returnSessionButton.disabled = false;
 
                 window.stopProactiveChatSchedule();
+                if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+                    window.stopProactiveVisionDuringSpeech();
+                }
 
                 window.showStatusToast('', 0);
             }
@@ -477,6 +483,9 @@
                 }
                 if (window.vrmManager) {
                     window.vrmManager._goodbyeClicked = false;
+                }
+                if (window.mmdManager) {
+                    window.mmdManager._goodbyeClicked = false;
                 }
 
                 micButton.classList.remove('recording');
@@ -515,7 +524,8 @@
                                 console.log(window.t('console.returnSessionTimeoutEndSession'));
                             }
 
-                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session\u542F\u52A8\u8D85\u65F6'));
+                            var timeoutMsg = (window.t && window.t('app.sessionTimeout')) || '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5';
+                            rejecter(new Error(timeoutMsg));
                         }
                     }, 15000);
                 });
@@ -665,7 +675,8 @@
                                 console.log('[TextSession] timeout \u2192 sent end_session');
                             }
 
-                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session\u542F\u52A8\u8D85\u65F6'));
+                            var timeoutMsg = (window.t && window.t('app.sessionTimeout')) || '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5';
+                            rejecter(new Error(timeoutMsg));
                         }
                     }, 15000);
 
@@ -778,11 +789,28 @@
             }
         });
 
+        // 中文输入法候选确认时，Enter 也会参与组合输入流程；这里单独跟踪，避免误发消息。
+        textInputBox.addEventListener('compositionstart', function () {
+            textInputComposing = true;
+        });
+
+        textInputBox.addEventListener('compositionend', function () {
+            textInputComposing = false;
+            lastTextCompositionEndAt = Date.now();
+        });
+
         // ----------------------------------------------------------------
         // Enter key sends text (Shift+Enter for newline)
         // ----------------------------------------------------------------
         textInputBox.addEventListener('keydown', function (e) {
             if (e.key === 'Enter' && !e.shiftKey) {
+                var isImeEnter = e.isComposing || e.keyCode === 229 || textInputComposing;
+                var justEndedComposition = lastTextCompositionEndAt > 0 && (Date.now() - lastTextCompositionEndAt) < 80;
+
+                if (isImeEnter || justEndedComposition) {
+                    return;
+                }
+
                 e.preventDefault();
                 textSendButton.click();
             }
@@ -826,25 +854,49 @@
                     if (U.isMobile()) {
                         captureStream = await window.getMobileCameraStream();
                     } else {
-                        // Desktop: try getDisplayMedia
-                        try {
-                            if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-                                captureStream = await navigator.mediaDevices.getDisplayMedia({
-                                    video: { cursor: 'always' },
-                                    audio: false,
-                                });
-                            } else {
-                                throw new Error('UNSUPPORTED_API');
-                            }
-                        } catch (displayErr) {
-                            if (displayErr.name === 'NotAllowedError') throw displayErr;
+                        // Desktop: try Electron selected source first, then getDisplayMedia
+                        var selectedSourceId = S.selectedScreenSourceId;
+                        var electronCaptured = false;
 
-                            console.warn('[\u622A\u56FE] getDisplayMedia \u5931\u8D25\uFF0C\u5C1D\u8BD5\u540E\u7AEF\u622A\u56FE:', displayErr);
-                            var result = await window.fetchBackendScreenshot();
-                            if (result && result.dataUrl) {
-                                dataUrl = result.dataUrl;
-                            } else {
-                                throw displayErr;
+                        if (selectedSourceId && window.electronDesktopCapturer) {
+                            try {
+                                captureStream = await navigator.mediaDevices.getUserMedia({
+                                    audio: false,
+                                    video: {
+                                        mandatory: {
+                                            chromeMediaSource: 'desktop',
+                                            chromeMediaSourceId: selectedSourceId,
+                                            maxFrameRate: 1
+                                        }
+                                    }
+                                });
+                                electronCaptured = true;
+                            } catch (electronErr) {
+                                console.warn('[截图] Electron 源截取失败，回退到 getDisplayMedia:', electronErr);
+                                captureStream = null;
+                            }
+                        }
+
+                        if (!electronCaptured) {
+                            try {
+                                if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+                                    captureStream = await navigator.mediaDevices.getDisplayMedia({
+                                        video: { cursor: 'always' },
+                                        audio: false,
+                                    });
+                                } else {
+                                    throw new Error('UNSUPPORTED_API');
+                                }
+                            } catch (displayErr) {
+                                if (displayErr.name === 'NotAllowedError') throw displayErr;
+
+                                console.warn('[截图] getDisplayMedia 失败，尝试后端截图:', displayErr);
+                                var result = await window.fetchBackendScreenshot();
+                                if (result && result.dataUrl) {
+                                    dataUrl = result.dataUrl;
+                                } else {
+                                    throw displayErr;
+                                }
                             }
                         }
                     }

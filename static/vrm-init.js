@@ -331,6 +331,38 @@ function applyVRMLighting(lighting, vrmManager) {
     }
 }
 
+/**
+ * 应用 VRM 描边粗细设置
+ * @param {number} scale - 描边粗细倍率
+ * @param {Object} vrmManager - VRM 管理器实例
+ */
+function applyVRMOutlineWidth(scale, vrmManager) {
+    // 参数验证：确保 scale 是有效的有限数字且非负
+    const parsedScale = Number(scale);
+    if (!Number.isFinite(parsedScale) || parsedScale < 0) {
+        console.warn('[VRM Outline] 无效的描边粗细值:', scale, '使用默认值 1.0');
+        scale = 1.0;
+    } else {
+        scale = parsedScale;
+    }
+
+    if (!vrmManager?.currentModel?.vrm?.scene) return;
+    vrmManager.currentModel.vrm.scene.traverse((object) => {
+        if (!object.isMesh && !object.isSkinnedMesh) return;
+        const mats = Array.isArray(object.material) ? object.material : [object.material];
+        mats.forEach(mat => {
+            if (!mat || !(mat._isOutline || mat.isOutline)) return;
+            if (mat._originalOutlineWidthFactor === undefined) {
+                mat._originalOutlineWidthFactor = mat.outlineWidthFactor !== undefined ? mat.outlineWidthFactor : 0.002;
+            }
+            if (mat.outlineWidthFactor !== undefined) {
+                mat.outlineWidthFactor = mat._originalOutlineWidthFactor * scale;
+                mat.needsUpdate = true;
+            }
+        });
+    });
+}
+
 function initializeVRMManager() {
     if (window.vrmManager) return;
 
@@ -519,9 +551,10 @@ async function initVRMModel() {
                     if (window.live2dManager.pixi_app.stage) {
                         window.live2dManager.pixi_app.stage.removeChildren();
                     }
-                    // 完全销毁PIXI应用释放WebGL上下文
+                    // 销毁PIXI应用释放WebGL上下文，但保留canvas元素在DOM中
+                    // 第一个参数传 false：不移除 canvas view，以便切回 Live2D 时复用
                     try {
-                        window.live2dManager.pixi_app.destroy(true, {
+                        window.live2dManager.pixi_app.destroy(false, {
                             children: true,
                             texture: true,
                             baseTexture: true
@@ -530,6 +563,12 @@ async function initVRMModel() {
                         console.warn('[VRM Init] PIXI应用销毁时出现警告:', destroyError);
                     }
                     window.live2dManager.pixi_app = null;
+                    // 注销 initPIXI 注册的 resize 监听器，避免泄露和空引用报错
+                    if (window.live2dManager._screenChangeHandler) {
+                        window.removeEventListener('resize', window.live2dManager._screenChangeHandler);
+                        window.live2dManager._screenChangeHandler = null;
+                    }
+                    window.live2dManager.isInitialized = false;
                 }
             } catch (cleanupError) {
                 console.warn('[VRM Init] Live2D清理时出现警告:', cleanupError);
@@ -550,6 +589,20 @@ async function initVRMModel() {
 
         // 页面加载时立即应用打光配置（如果初始化时没有传入，这里会应用）
         applyVRMLighting(window.lanlan_config?.lighting, window.vrmManager);
+
+        // 确保描边设置在模型完全加载后应用（延迟一帧确保材质已准备好）
+        const currentModelRef = window.vrmManager?.currentModel;
+        const outlineScale = window.lanlan_config?.lighting?.outlineWidthScale;
+        requestAnimationFrame(() => {
+            // 防止竞态条件：验证模型是否仍然是同一个
+            if (window.vrmManager?.currentModel !== currentModelRef) {
+                console.debug('[VRM Outline] 模型已切换，跳过描边设置应用');
+                return;
+            }
+            if (outlineScale !== undefined) {
+                applyVRMOutlineWidth(outlineScale, window.vrmManager);
+            }
+        });
 
     } catch (error) {
         console.error('[VRM Init] 错误详情:', error.stack);
@@ -688,6 +741,20 @@ window.checkAndLoadVRM = async function () {
 
         // 应用打光配置
         applyVRMLighting(lighting, window.vrmManager);
+
+        // 确保描边设置在模型完全加载后应用（延迟一帧确保材质已准备好）
+        const currentModelRef = window.vrmManager?.currentModel;
+        const outlineScale = lighting?.outlineWidthScale;
+        requestAnimationFrame(() => {
+            // 防止竞态条件：验证模型是否仍然是同一个
+            if (window.vrmManager?.currentModel !== currentModelRef) {
+                console.debug('[VRM Outline] 模型已切换，跳过描边设置应用');
+                return;
+            }
+            if (outlineScale !== undefined) {
+                applyVRMOutlineWidth(outlineScale, window.vrmManager);
+            }
+        });
 
         // 顺便更新一下全局变量，以防万一
         if (lighting && window.lanlan_config) {

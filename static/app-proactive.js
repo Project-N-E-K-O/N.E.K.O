@@ -54,6 +54,15 @@
     // ======================== proactive chat core ========================
 
     /**
+     * 检查是否处于「请她离开」状态
+     */
+    function isGoodbyeActive() {
+        return (window.live2dManager && window.live2dManager._goodbyeClicked) ||
+            (window.vrmManager && window.vrmManager._goodbyeClicked) ||
+            (window.mmdManager && window.mmdManager._goodbyeClicked);
+    }
+
+    /**
      * 检查是否有任何搭话方式被选中
      */
     function hasAnyChatModeEnabled() {
@@ -67,6 +76,11 @@
      * 检查主动搭话前置条件是否满足
      */
     function canTriggerProactively() {
+        // 「请她离开」状态下禁止一切主动搭话
+        if (isGoodbyeActive()) {
+            return false;
+        }
+
         // 必须开启主动搭话
         if (!S.proactiveChatEnabled) {
             return false;
@@ -127,15 +141,41 @@
             return;
         }
 
-        // 只在非语音模式下执行（语音模式下不触发主动搭话）
-        // 文本模式或待机模式都可以触发主动搭话
+        // 语音模式：固定间隔（不退避），连续5轮无回复则停止
         if (S.isRecording) {
-            console.log('语音模式中，不安排主动搭话');
+            if (S._voiceProactiveNoResponseCount >= 10) {
+                console.log('[ProactiveChat] 语音模式连续5轮无回复，停止主动搭话');
+                return;
+            }
+            var delay = S.proactiveChatInterval * 1000;
+            console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/10）');
+
+            S.proactiveChatTimer = setTimeout(async function () {
+                if (S.isProactiveChatRunning) return;
+                S.isProactiveChatRunning = true;
+                try {
+                    await triggerProactiveChat();
+                } finally {
+                    S.isProactiveChatRunning = false;
+                }
+                S._voiceProactiveNoResponseCount = (S._voiceProactiveNoResponseCount || 0) + 1;
+                // 不在这里 scheduleProactiveChat()——等 AI turn end 后再调度下一次，
+                // 避免 AI 还在说话就被下一次 nudge 打断。
+                // turn end handler 中会对语音模式调用 scheduleProactiveChat()。
+                // 如果本次 nudge 被 guard 跳过（pass），AI 不会响应也不会有 turn end，
+                // 所以 pass 时仍需自行调度。
+                if (S._voiceProactiveLastResult === 'pass') {
+                    scheduleProactiveChat();
+                }
+            }, delay);
             return;
         }
 
+        // 文本模式：指数退避
+        var baseInterval = S.proactiveChatInterval;
+
         // 计算延迟时间（指数退避，倍率2.5）
-        var delay = (S.proactiveChatInterval * 1000) * Math.pow(2.5, S.proactiveChatBackoffLevel);
+        var delay = (baseInterval * 1000) * Math.pow(2.5, S.proactiveChatBackoffLevel);
 
         // 首次启动时额外等待5秒，避免程序刚启动就触发音乐推荐
         var startupDelay = S.proactiveChatBackoffLevel === 0 ? 6000 : 0;
@@ -204,6 +244,34 @@
 
     async function triggerProactiveChat() {
         try {
+            // 「请她离开」状态下不触发
+            if (isGoodbyeActive()) {
+                console.log('[ProactiveChat] goodbye 状态，跳过本次触发');
+                return;
+            }
+            // ── 语音模式快速路径：直接发 voice_mode 请求，后端注入预录音频 ──
+            if (S.isRecording) {
+                var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                var voiceModes = [];
+                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+                    voiceModes.push('vision');
+                }
+                console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
+                var resp = await fetch('/api/proactive_chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        lanlan_name: lanlanName,
+                        enabled_modes: voiceModes,
+                        voice_mode: true
+                    })
+                });
+                var result = await resp.json();
+                S._voiceProactiveLastResult = result.action || 'unknown';
+                console.log('[ProactiveChat] 语音模式结果:', S._voiceProactiveLastResult);
+                return;
+            }
+
             var availableModes = [];
             // 收集所有启用的搭话方式
             // 视觉搭话：需要同时开启主动搭话和自主视觉
@@ -264,6 +332,22 @@
                 is_playing_music: (typeof window.isMusicPlaying === 'function') ? window.isMusicPlaying() : false,
                 current_track: (typeof window.getMusicCurrentTrack === 'function') ? window.getMusicCurrentTrack() : null
             };
+
+            // 独立计时器：确保 vision/window 模式的屏幕感知间隔不低于 proactiveVisionInterval
+            if (availableModes.includes('vision') || availableModes.includes('window')) {
+                var now = Date.now();
+                var minIntervalMs = S.proactiveVisionInterval * 1000;
+                var elapsed = now - S._lastProactiveChatScreenTime;
+                if (elapsed < minIntervalMs) {
+                    console.log('[ProactiveChat] 屏幕感知间隔不足（已过 ' + Math.round(elapsed / 1000) + '秒，最低 ' + S.proactiveVisionInterval + '秒），本轮跳过 vision/window');
+                    availableModes = availableModes.filter(function (m) { return m !== 'vision' && m !== 'window'; });
+                    requestBody.enabled_modes = availableModes;
+                    if (availableModes.length === 0) {
+                        console.log('跳过屏幕感知后无其他可用模式，取消本次搭话');
+                        return;
+                    }
+                }
+            }
 
             // 如果包含 vision 模式，需要在前端获取截图和窗口标题
             if (availableModes.includes('vision') || availableModes.includes('window')) {
@@ -355,6 +439,11 @@
                     console.log('所有附加模式均失败，移除后无其他可用模式，跳过本次搭话');
                     return;
                 }
+
+                // 更新屏幕感知时间戳（仅当 vision/window 实际保留时才消耗冷却）
+                if (availableModes.includes('vision') || availableModes.includes('window')) {
+                    S._lastProactiveChatScreenTime = Date.now();
+                }
             }
 
             // 发送请求前最终检查：确保功能状态未在 await 期间改变
@@ -401,10 +490,10 @@
                                 cover: musicLink.cover
                             };
                             console.log('[ProactiveChat] 发送音乐消息:', track);
-                            var dispatchResult = window.dispatchMusicPlay(track, { source: 'proactive' });
+                            var dispatchResult = await window.dispatchMusicPlay(track, { source: 'proactive' });
 
-                            // 仅在成功派发（非拦截）时标记，以便在聊天区域隐藏对应链接
-                            if (dispatchResult !== false) {
+                            // 仅在明确成功派发时标记；'queued' 仍是等待态，不应提前隐藏链接
+                            if (dispatchResult === true) {
                                 dispatchedTrackUrl = musicLink.url;
                             }
                         } else if (musicLink) {
@@ -729,6 +818,8 @@
     function resetProactiveChatBackoff() {
         // 重置退避级别
         S.proactiveChatBackoffLevel = 0;
+        // 语音模式：用户说话了，重置无回复计数
+        S._voiceProactiveNoResponseCount = 0;
         // 重新安排定时器
         scheduleProactiveChat();
     }
@@ -795,6 +886,11 @@
             S.proactiveVisionFrameTimer = null;
         }
 
+        // 「请她离开」状态下禁止启动
+        if (isGoodbyeActive()) {
+            return;
+        }
+
         // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
         if (!S.proactiveVisionEnabled || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
@@ -802,7 +898,7 @@
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
-            if (!S.proactiveVisionEnabled || !S.isRecording) {
+            if (!S.proactiveVisionEnabled || !S.isRecording || isGoodbyeActive()) {
                 stopProactiveVisionDuringSpeech();
                 return;
             }
@@ -831,6 +927,10 @@
         if (S.proactiveChatTimer) {
             clearTimeout(S.proactiveChatTimer);
             S.proactiveChatTimer = null;
+        }
+        if (S._voiceSessionInitialTimer) {
+            clearTimeout(S._voiceSessionInitialTimer);
+            S._voiceSessionInitialTimer = null;
         }
     }
     mod.stopProactiveChatSchedule = stopProactiveChatSchedule;

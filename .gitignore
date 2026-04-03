@@ -30,6 +30,7 @@ utils/cache/
 config/api.py
 config/*.json
 !config/api_providers.json
+!config/characters.*.json
 env/*
 lanlan_frd.exe
 
@@ -75,9 +76,6 @@ node_modules/
 *.cache/
 dist/
 build/
-
-# Plugin frontend exported artifacts
-plugin/frontend/exported/
 
 # Python venvs and wheels
 *.egg-info/
@@ -132,3 +130,11 @@ plugin/.plugin_server_admin_code
 
 # 插件备忘提醒运行时数据库
 plugin/plugins/memo_reminder/store.db
+
+# Local nested plugin repos (keep them out of the parent repo index)
+plugin/neko-plugin-docs/
+plugin/rust/
+
+# 本地调试/测试用插件
+plugin/plugins/music_tester/
+plugin/plugins/web_radio/

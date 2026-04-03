@@ -7,6 +7,30 @@
     let currentCatName = '';
     let memoryFileRequestId = 0;
 
+    /** Normalize message body from recent_*.json (string or OpenAI-style content blocks). */
+    function extractDataContent(data) {
+        if (!data || data.content === undefined || data.content === null) {
+            return '';
+        }
+        const c = data.content;
+        if (typeof c === 'string') {
+            return c;
+        }
+        if (Array.isArray(c)) {
+            const parts = [];
+            for (let i = 0; i < c.length; i++) {
+                const block = c[i];
+                if (block && typeof block === 'object' && block.type === 'text' && block.text != null) {
+                    parts.push(String(block.text));
+                } else if (typeof block === 'string') {
+                    parts.push(block);
+                }
+            }
+            return parts.join('\n');
+        }
+        return String(c);
+    }
+
     async function loadMemoryFileList() {
         const ul = document.getElementById('memory-file-list');
         ul.innerHTML = `<li style="color:#888; padding: 8px;">${window.t ? window.t('memory.loading') : '加载中...'}</li>`;
@@ -67,7 +91,12 @@
             container.className = 'chat-item';
 
             if (msg.role === 'system') {
-                let text = msg.text || '';
+                let text = msg.text;
+                if (typeof text !== 'string') {
+                    text = extractDataContent({ content: text });
+                } else {
+                    text = text || '';
+                }
                 // 去掉任何现有的前缀（支持多语言切换时的旧前缀）
                 // 定义已知的备忘录前缀列表
                 const knownPrefixes = [
@@ -231,19 +260,19 @@
                 }
                 chatData = arr.map(item => {
                     if (item.type === 'system') {
-                        return { role: 'system', text: item.data && item.data.content ? item.data.content : '' };
-                    } else if (item.type === 'ai' || item.type === 'human') {
-                        let text = '';
-                        const content = item.data && item.data.content;
-                        if (Array.isArray(content) && content[0] && content[0].type === 'text') {
-                            text = content[0].text;
-                        } else if (typeof content === 'string') {
-                            text = content;
-                        }
-                        return { role: item.type, text };
-                    } else {
-                        return null;
+                        return { role: 'system', text: extractDataContent(item.data) };
                     }
+                    if (item.type === 'ai' || item.type === 'human') {
+                        return { role: item.type, text: extractDataContent(item.data) };
+                    }
+                    if (item.role === 'system') {
+                        return { role: 'system', text: extractDataContent({ content: item.content }) };
+                    }
+                    if (item.role === 'user' || item.role === 'assistant') {
+                        const role = item.role === 'assistant' ? 'ai' : 'human';
+                        return { role, text: extractDataContent({ content: item.content }) };
+                    }
+                    return null;
                 }).filter(Boolean);
                 renderChatEdit();
             } else {
@@ -332,10 +361,10 @@
         }
     };
     document.getElementById('clear-memory-btn').onclick = function () {
-        // 只保留 system 类型（备忘录），其余全部清除
-        chatData = chatData.filter(msg => msg.role === 'system');
+        // 只清空对话轮次（用户 / AI）；system＝先前对话的备忘录，一律保留
+        chatData = chatData.filter(msg => msg && msg.role !== 'human' && msg.role !== 'ai');
         renderChatEdit();
-        showSaveStatus(window.t ? window.t('memory.clearedMemory') : '已清空近期记忆，未保存', false);
+        showSaveStatus(window.t ? window.t('memory.clearedChatKeptMemo') : '已清空对话记录，备忘录已保留（未保存）', false);
     };
     function showSaveStatus(msg, success) {
         const el = document.getElementById('save-status');

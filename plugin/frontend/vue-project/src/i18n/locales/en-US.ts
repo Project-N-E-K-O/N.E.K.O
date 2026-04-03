@@ -27,7 +27,8 @@ export default {
     darkMode: 'Dark Mode',
     lightMode: 'Light Mode',
     logoutConfirmTitle: 'Notice',
-    disconnected: 'Server disconnected'
+    disconnected: 'Server disconnected',
+    languageAuto: 'Auto'
   },
   nav: {
     dashboard: 'Dashboard',
@@ -240,6 +241,7 @@ export default {
     running: 'Running',
     stopped: 'Stopped',
     crashed: 'Crashed',
+    loadFailed: 'Load Failed',
     loading: 'Loading',
     disabled: 'Disabled',
     injected: 'Injected',
@@ -268,6 +270,7 @@ export default {
     stopFailed: 'Failed to stop',
     reloadFailed: 'Failed to reload',
     pluginDisabled: 'Plugin is disabled. Please enable it first.',
+    pluginLoadFailed: 'Plugin load failed and cannot be started.',
     confirmDisableExt: 'Disable this extension? Its functionality will be unloaded from the host plugin.',
     extensionDisabled: 'Extension disabled',
     extensionEnabled: 'Extension enabled',
@@ -325,4 +328,3 @@ export default {
     titleSuffix: 'N.E.K.O Plugin Manager'
   }
 }
-

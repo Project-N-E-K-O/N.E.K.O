@@ -25,6 +25,7 @@ import functools
 import hashlib
 import hmac
 import json
+import logging
 import os
 import threading
 import time
@@ -164,7 +165,7 @@ def _file_lock(lock_path: Path, timeout: float = 10.0):
 # ---------------------------------------------------------------------------
 
 # ★ 发版前修改：遥测服务器地址。为空则不上报。
-_TELEMETRY_SERVER_URL = "http://project-neko.cn:8099"
+_TELEMETRY_SERVER_URL = "http://118.31.122.91:8099"
 
 if _TELEMETRY_SERVER_URL and not _TELEMETRY_SERVER_URL.startswith(("http://", "https://")):
     logger.warning("Token tracker: invalid telemetry URL scheme, disabling remote reporting")
@@ -183,10 +184,9 @@ _DO_NOT_TRACK = any(
 # 节流设计：
 #   record() → 即时写入内存（零 I/O）
 #   save()   → 每 60s 本地落盘，然后调用 _report_to_server()
-#   _report_to_server() → 仅当距上次上报 ≥ 180s 时才真正发 HTTP
-#   所以每个进程最多每 3 分钟发一次请求。3 个 server 进程 = 60 req/h/device。
-#   20k DAU × 60 × 8h = 9.6M req/day ≈ 110 req/s peak → SQLite WAL (~500 w/s) 仍够用
-_TELEMETRY_REPORT_INTERVAL = 180
+#   _report_to_server() → 仅当距上次上报 ≥ 60s 时才真正发 HTTP
+#   所以每个进程最多每 1 分钟发一次请求。3 个 server 进程 = 180 req/h/device。
+_TELEMETRY_REPORT_INTERVAL = 60
 
 # 上报超时
 _TELEMETRY_TIMEOUT = 10  # 秒
@@ -271,6 +271,7 @@ class TokenTracker:
         self._report_interval = _TELEMETRY_REPORT_INTERVAL
         self._unsent_daily: dict = {}  # 尚未成功上报到服务器的增量
         self._unsent_records: list = []
+        self._has_recorded_app_start: bool = False  # 🔒 app_start 单次上报锁
 
         # 首次启动：迁移旧版 per-instance 文件
         self._migrate_legacy_files()
@@ -314,9 +315,15 @@ class TokenTracker:
         不覆盖：SIGKILL (kill -9) / 断电 — 此时最多丢 60s 数据
         """
         try:
+            # save() first: persists delta to disk and attempts remote report
+            # (best-effort final push). Then disable remote URL so no further
+            # network calls happen during interpreter teardown.
             self.save()
         except Exception:
             pass
+        finally:
+            global _TELEMETRY_SERVER_URL
+            _TELEMETRY_SERVER_URL = ""
 
     def _load_unsent_queue(self):
         """启动时加载上次未成功上报的远程数据。"""
@@ -554,6 +561,28 @@ class TokenTracker:
                 _merge_day_stats(merged, self._delta_daily[today])
 
         return {"date": today, "stats": merged}
+
+    def record_app_start(self):
+        """记录客户端启动事件（app_start）。
+
+        用于统计 DAU，与 LLM 调用分开计数。
+        保证在单次进程生命周期内只上报一次（线程安全）。
+        """
+        with self._lock:
+            if self._has_recorded_app_start:
+                return
+            self._has_recorded_app_start = True
+
+        self.record(
+            model="app_start",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cached_tokens=0,
+            call_type="app_start",
+            source="",
+            success=True,
+        )
 
     # ---- 持久化 ----
 
@@ -898,6 +927,27 @@ def _extract_cached_tokens(usage_dict: dict) -> int:
             return int(val)
 
     return 0
+
+
+def calculate_cache_hit_rate(prompt_tokens: int, cached_tokens: int) -> float:
+    """计算缓存命中率。
+
+    Args:
+        prompt_tokens: 总 prompt tokens（含缓存命中和未命中）
+        cached_tokens: 缓存命中的 tokens
+
+    Returns:
+        缓存命中率，范围 0.0 ~ 1.0
+        如果 prompt_tokens 为 0，返回 0.0
+
+    Example:
+        >>> calculate_cache_hit_rate(2911, 2888)
+        0.9920989350738585
+    """
+    if prompt_tokens <= 0:
+        return 0.0
+    cached_tokens = max(0, min(cached_tokens, prompt_tokens))
+    return cached_tokens / prompt_tokens
 
 
 def _record_usage_from_response(response, call_type: str):

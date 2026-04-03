@@ -77,9 +77,10 @@ class MMDCore {
 
     /**
      * 应用画质设置（模仿 VRM 的画质分级系统）
-     * low:    pixelRatio=0.8, 物理关, 描边关
-     * medium: pixelRatio=1.0, 物理开, 描边关
+     * low:    pixelRatio=0.8, 物理关
+     * medium: pixelRatio=1.0, 物理开
      * high:   pixelRatio=auto, 物理开, 描边开
+     * 注意：描边设置由用户手动控制，画质设置不会覆盖用户的选择
      */
     applyQualitySettings(quality) {
         if (!this.manager.renderer) return;
@@ -89,19 +90,24 @@ class MMDCore {
         if (quality === 'low') {
             this.manager.renderer.setPixelRatio(Math.min(0.8, devicePixelRatio));
             this.manager.enablePhysics = false;
-            this.manager.useOutlineEffect = false;
         } else if (quality === 'medium') {
             this.manager.renderer.setPixelRatio(Math.min(1.0, devicePixelRatio));
             this.manager.enablePhysics = true;
-            this.manager.useOutlineEffect = false;
         } else {
-            // high: 使用性能检测的原始像素比
             this.applyPerformanceSettings();
             this.manager.enablePhysics = true;
-            this.manager.useOutlineEffect = true;
+            if (!this.manager._userForcedOutline) {
+                this.manager.useOutlineEffect = true;
+            }
         }
 
-        console.log(`[MMD] 画质设置: ${quality}, physics=${this.manager.enablePhysics}, outline=${this.manager.useOutlineEffect}`);
+        if (!this.manager._userForcedOutline) {
+            if (quality === 'low' || quality === 'medium') {
+                this.manager.useOutlineEffect = false;
+            }
+        }
+
+        console.log(`[MMD] 画质设置: ${quality}, physics=${this.manager.enablePhysics}, outline=${this.manager.useOutlineEffect}, userForcedOutline=${this.manager._userForcedOutline}`);
     }
 
     // ═══════════════════ 模块动态导入 ═══════════════════
@@ -255,9 +261,8 @@ class MMDCore {
             this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
         }
 
-        // NoToneMapping 与 hime-display 一致（Three.js r180 默认值）
-        // 可通过调试面板切换不同 toneMapping 实时比较效果
-        this.manager.renderer.toneMapping = THREE.NoToneMapping;
+        // 默认使用 NeutralToneMapping（色调平衡、对比度适中）
+        this.manager.renderer.toneMapping = THREE.NeutralToneMapping;
         this.manager.renderer.toneMappingExposure = 1.0;
 
         // Canvas 样式
@@ -683,12 +688,42 @@ class MMDCore {
             console.log('[MMD Core] 物理引擎已绑定');
 
             // 物理 warmup：预计算 60 帧以稳定物理状态
-            const warmupFrames = 60;
+            // 关键修复：warmup 期间运行 Grant 求解器（付与変換），
+            // 确保 kinematic 骨骼在 warmup 时处于与渲染时一致的位置。
+            // 大模型（>200 刚体）需要更多 warmup 帧让复杂约束链稳定
+            const bodyCount = mmd.physics && typeof mmd.physics.getPhysics === 'function'
+                ? mmd.physics.getPhysics().bodies.length : 0;
+            const warmupFrames = bodyCount > 200 ? 180 : 60;
             const warmupDelta = 1 / 60;
+
+            let warmupGrantSolver = null;
+            try {
+                const mmdModule = await this._getMMDModule();
+                if (mmdModule && mmdModule.GrantSolver && mmd.grants && mmd.grants.length > 0) {
+                    warmupGrantSolver = new mmdModule.GrantSolver(mmd.mesh, mmd.grants);
+                    console.log(`[MMD Physics] Warmup Grant solver created (${mmd.grants.length} grants)`);
+                }
+            } catch (e) {
+                console.warn('[MMD Physics] Failed to create warmup Grant solver:', e);
+            }
+
+            if (mmd.mesh) mmd.mesh.updateMatrixWorld(true);
+            if (warmupGrantSolver) warmupGrantSolver.update();
+
             for (let i = 0; i < warmupFrames; i++) {
+                if (warmupGrantSolver) warmupGrantSolver.update();
                 mmd.update(warmupDelta);
             }
-            console.log(`[MMD Core] 物理 warmup 完成 (${warmupFrames} 帧)`);
+
+            // Refresh stability baselines after the full warmup so frozen-body
+            // restorations use the settled (post-warmup) pose, not the pre-warmup one.
+            if (typeof mmd.physics.getPhysics === 'function') {
+                const inner = mmd.physics.getPhysics();
+                if (typeof inner.refreshStabilityBaseline === 'function') {
+                    inner.refreshStabilityBaseline();
+                }
+            }
+            console.log(`[MMD Core] 物理 warmup 完成 (${warmupFrames} 帧, Grant: ${!!warmupGrantSolver})`);
         } catch (error) {
             console.warn('[MMD Core] 物理初始化失败:', error);
         }
@@ -799,10 +834,11 @@ class MMDCore {
             this.manager.animationModule.update(clampedDelta);
         }
 
-        // 2. IK/Grant 求解（每帧执行）
+        // 2. IK/Grant 求解（仅在无动画静止状态执行，暂停时跳过）
         //    Grant（付与変換）常用负比率实现骨骼联动（如裙摆反向补偿），
-        //    必须每帧执行，否则 kinematic 骨骼位置错误导致物理镜像分离。
-        if (this.manager.animationModule && !this.manager.animationModule.isPlaying) {
+        //    必须在静止状态每帧执行，否则 kinematic 骨骼位置错误导致物理镜像分离。
+        //    但在暂停时不应运行——暂停保持的是动画帧的快照，IK 会破坏该快照。
+        if (this.manager.animationModule && !this.manager.animationModule.isPlaying && !this.manager.animationModule.isPaused) {
             const anim = this.manager.animationModule;
             const mmd = this.manager.currentModel;
             if (mmd && mmd.mesh) {
@@ -818,18 +854,26 @@ class MMDCore {
         }
 
         // 4. 更新物理（库内部有 substep）
-        if (this.manager.enablePhysics && this.manager.currentModel && this.manager.currentModel.physics) {
+        //    暂停时冻结物理，防止头发/裙摆持续摆动
+        const animPaused = this.manager.animationModule && this.manager.animationModule.isPaused;
+        if (this.manager.enablePhysics && this.manager.currentModel && this.manager.currentModel.physics && !animPaused) {
             this.manager.currentModel.update(clampedDelta);
         }
 
         // 5. 更新表情模块（眨眼、口型同步等）
-        if (this.manager.expression) {
+        //    暂停时冻结表情，防止自动眨眼导致的循环感
+        if (this.manager.expression && !animPaused) {
             this.manager.expression.update(clampedDelta);
         }
 
         // 更新 OrbitControls
         if (this.manager.controls) {
             this.manager.controls.update();
+        }
+
+        // 更新屏幕空间包围盒缓存（用于悬停检测和鼠标穿透判断）
+        if (this.manager.interaction) {
+            this.manager.interaction.updateScreenBounds();
         }
 
         // 渲染
@@ -871,26 +915,49 @@ class MMDCore {
     }
 
     resetModelPose() {
-        if (!this.manager.currentModel || !this.manager.currentModel.mesh) return;
-        const mesh = this.manager.currentModel.mesh;
+        const mmd = this.manager.currentModel;
+        if (!mmd || !mmd.mesh) return;
+
+        const hadPhysics = this.manager.enablePhysics;
+        this.manager.enablePhysics = false;
+
+        const mesh = mmd.mesh;
         mesh.skeleton.bones.forEach(bone => {
             bone.position.copy(bone.userData?.restPosition || bone.position);
             bone.quaternion.copy(bone.userData?.restQuaternion || bone.quaternion);
         });
+
+        if (mmd.physics && typeof mmd.physics.reset === 'function') {
+            mesh.updateMatrixWorld(true);
+            mmd.physics.reset();
+        }
+
+        this.manager.enablePhysics = hadPhysics;
+
+        // 标记 T-Pose 状态，让鼠标跟踪模块跳过眼骨旋转
+        this.manager._isTPose = true;
     }
 
     resetModelPosition() {
         const mmd = this.manager.currentModel;
         if (!mmd || !mmd.mesh) return;
 
+        // 禁用物理，防止位置变更期间拉丝
+        const hadPhysics = this.manager.enablePhysics;
+        this.manager.enablePhysics = false;
+
         const mesh = mmd.mesh;
         mesh.position.set(0, 0, 0);
         mesh.quaternion.identity();
         mesh.scale.set(1, 1, 1);
 
-        if (mmd.physics) {
+        if (mmd.physics && typeof mmd.physics.reset === 'function') {
+            mesh.updateMatrixWorld(true);
             mmd.physics.reset();
         }
+
+        // 恢复物理
+        this.manager.enablePhysics = hadPhysics;
 
         const modelPath = mmd.url;
         if (modelPath) {
@@ -1057,6 +1124,11 @@ class MMDCore {
 
             const mesh = mmd.mesh;
 
+            // 禁用物理：防止位置变更期间渲染循环跑物理导致拉丝
+            const hadPhysics = this.manager.enablePhysics;
+            this.manager.enablePhysics = false;
+            try {
+
             // 恢复位置
             if (preferences.position) {
                 const pos = preferences.position;
@@ -1066,10 +1138,16 @@ class MMDCore {
             }
 
             // 恢复缩放（含跨分辨率归一化）
+            // MMD 模型 scale 必须均匀（x=y=z），否则模型变形。
+            // 历史偏好或 bug 可能保存了非均匀值，加载时强制均匀化。
             if (preferences.scale) {
                 const scl = preferences.scale;
                 if (Number.isFinite(scl.x) && Number.isFinite(scl.y) && Number.isFinite(scl.z) &&
                     scl.x > 0 && scl.y > 0 && scl.z > 0) {
+                    let uniformScale = (scl.x + scl.y + scl.z) / 3;
+                    if (Math.abs(scl.x - scl.y) > 0.001 || Math.abs(scl.y - scl.z) > 0.001) {
+                        console.warn(`[MMD Core] 非均匀缩放已修正: (${scl.x.toFixed(3)}, ${scl.y.toFixed(3)}, ${scl.z.toFixed(3)}) → ${uniformScale.toFixed(3)}`);
+                    }
                     const savedViewport = preferences.viewport;
                     const currentScreenH = window.screen.height;
                     const hRatio = (savedViewport &&
@@ -1077,11 +1155,10 @@ class MMDCore {
                         ? currentScreenH / savedViewport.height : 1;
                     const isExtremeChange = hRatio > 1.8 || hRatio < 0.56;
                     if (isExtremeChange) {
-                        mesh.scale.set(scl.x * hRatio, scl.y * hRatio, scl.z * hRatio);
+                        uniformScale *= hRatio;
                         console.log('[MMD Core] 屏幕分辨率大幅变化，缩放已归一化');
-                    } else {
-                        mesh.scale.set(scl.x, scl.y, scl.z);
                     }
+                    mesh.scale.setScalar(uniformScale);
                 }
             }
 
@@ -1094,9 +1171,14 @@ class MMDCore {
                 }
             }
 
-            // 物理重置（確保物理状态与新位置/旋转同步）
+            // 物理重置：更新世界矩阵后重置所有刚体到新骨骼位置
             if (mmd.physics && typeof mmd.physics.reset === 'function') {
+                mesh.updateMatrixWorld(true);
                 mmd.physics.reset();
+            }
+
+            } finally {
+                this.manager.enablePhysics = hadPhysics;
             }
 
             console.log('[MMD Core] 偏好设置已恢复:', {

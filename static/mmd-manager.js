@@ -14,6 +14,7 @@ class MMDManager {
         this.controls = null;
         this.effect = null; // OutlineEffect
         this.useOutlineEffect = true;
+        this._userForcedOutline = false; // 用户是否手动设置过描边
         this.enablePhysics = true;
         this.physicsStrength = 1.0;
         this._baseGravityY = -98;  // Ammo.js 默认重力 Y 分量
@@ -93,6 +94,7 @@ class MMDManager {
         // 初始化鼠标跟踪
         if (this.cursorFollow) {
             this.cursorFollow.init();
+            this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
         }
 
         // 设置浮动按钮
@@ -139,6 +141,11 @@ class MMDManager {
 
             this._isModelReadyForInteraction = true;
 
+            // 应用保存的局部跟踪设置
+            if (this.cursorFollow) {
+                this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
+            }
+
             // 派发模型加载完成事件
             window.dispatchEvent(new CustomEvent('mmd-model-loaded', {
                 detail: { modelInfo, modelPath }
@@ -160,10 +167,13 @@ class MMDManager {
         return clip;
     }
 
-    playAnimation() {
-        // 播放动画时禁用鼠标跟踪
+    /**
+     * 播放动画
+     * @param {'idle'|'dance'} mode - 动画模式，影响视线跟踪权重
+     */
+    playAnimation(mode = 'idle') {
         if (this.cursorFollow) {
-            this.cursorFollow.setDisabledByAnimation(true);
+            this.cursorFollow.setAnimationMode(mode);
         }
         if (this.animationModule) {
             this.animationModule.play();
@@ -181,10 +191,6 @@ class MMDManager {
             this.animationModule.stop();
         }
         this.currentAnimationUrl = null;
-        // 恢复鼠标跟踪
-        if (this.cursorFollow) {
-            this.cursorFollow.setDisabledByAnimation(false);
-        }
     }
 
     // ═══════════════════ 表情/口型 ═══════════════════
@@ -298,6 +304,7 @@ class MMDManager {
             }
             if (r.outline != null) {
                 this.useOutlineEffect = r.outline;
+                this._userForcedOutline = true; // 用户手动设置描边
             }
         }
         // 物理
@@ -323,6 +330,20 @@ class MMDManager {
             if (typeof this.cursorFollow.applyConfig === 'function') {
                 this.cursorFollow.applyConfig(settings.cursorFollow);
             }
+        }
+    }
+
+    // ═══════════════════ 模型位置/姿态重置 ═══════════════════
+
+    resetModelPosition() {
+        if (this.core && typeof this.core.resetModelPosition === 'function') {
+            this.core.resetModelPosition();
+        }
+    }
+
+    resetModelPose() {
+        if (this.core && typeof this.core.resetModelPose === 'function') {
+            this.core.resetModelPose();
         }
     }
 
@@ -369,6 +390,67 @@ class MMDManager {
         }
 
         console.log('[MMD Manager] UI 已清理');
+    }
+
+    /**
+     * 获取 MMD 模型在屏幕上的边界（用于局部跟踪）
+     * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
+     */
+    getModelScreenBounds() {
+        if (!this.currentModel || !this.camera || !this.renderer) {
+            return null;
+        }
+
+        const canvasRect = this.renderer.domElement.getBoundingClientRect();
+        const canvasWidth = canvasRect.width;
+        const canvasHeight = canvasRect.height;
+
+        const mesh = this.currentModel.mesh;
+        if (!mesh) return null;
+
+        const box = new window.THREE.Box3().setFromObject(mesh);
+        const corners = [
+            new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
+            new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
+            new window.THREE.Vector3(box.min.x, box.max.y, box.min.z),
+            new window.THREE.Vector3(box.min.x, box.max.y, box.max.z),
+            new window.THREE.Vector3(box.max.x, box.min.y, box.min.z),
+            new window.THREE.Vector3(box.max.x, box.min.y, box.max.z),
+            new window.THREE.Vector3(box.max.x, box.max.y, box.min.z),
+            new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
+        ];
+
+        let screenLeft = Infinity, screenRight = -Infinity;
+        let screenTop = Infinity, screenBottom = -Infinity;
+
+        for (const corner of corners) {
+            corner.project(this.camera);
+            const sx = canvasRect.left + (corner.x * 0.5 + 0.5) * canvasWidth;
+            const sy = canvasRect.top + (-corner.y * 0.5 + 0.5) * canvasHeight;
+            screenLeft = Math.min(screenLeft, sx);
+            screenRight = Math.max(screenRight, sx);
+            screenTop = Math.min(screenTop, sy);
+            screenBottom = Math.max(screenBottom, sy);
+        }
+
+        if (!Number.isFinite(screenLeft) || !Number.isFinite(screenRight) ||
+            !Number.isFinite(screenTop) || !Number.isFinite(screenBottom)) {
+            return null;
+        }
+
+        const width = screenRight - screenLeft;
+        const height = screenBottom - screenTop;
+
+        return {
+            left: screenLeft,
+            right: screenRight,
+            top: screenTop,
+            bottom: screenBottom,
+            width: width,
+            height: height,
+            centerX: (screenLeft + screenRight) / 2,
+            centerY: (screenTop + screenBottom) / 2
+        };
     }
 
     dispose() {

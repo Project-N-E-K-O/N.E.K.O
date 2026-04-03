@@ -330,28 +330,15 @@
                 }
 
                 // 清理 MMD UI 资源（浮动按钮、锁图标等）
-                // MMD→MMD 切换时也需要清理旧 UI（return-state 等），后续会重建
-                if (window.mmdManager && typeof window.mmdManager.cleanupUI === 'function') {
-                    window.mmdManager.cleanupUI();
-                } else if (effectiveModelType !== 'mmd') {
+                // MMD→MMD 切换时需要完全销毁旧实例，避免状态残留导致的问题
+                if (window.mmdManager && typeof window.mmdManager.dispose === 'function') {
+                    console.log('[猫娘切换] 完全销毁旧 MMD 管理器实例');
+                    window.mmdManager.dispose();
+                    window.mmdManager = null;
+                }
+                if (effectiveModelType !== 'mmd') {
                     document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
                         .forEach(el => el.remove());
-                }
-
-                if (window.mmdManager) {
-                    // 停止 MMD 动画循环
-                    if (window.mmdManager._animationFrameId) {
-                        cancelAnimationFrame(window.mmdManager._animationFrameId);
-                        window.mmdManager._animationFrameId = null;
-                    }
-
-                    // 隐藏渲染器
-                    if (window.mmdManager.renderer && window.mmdManager.renderer.domElement) {
-                        window.mmdManager.renderer.domElement.style.display = 'none';
-                    }
-
-                    // 清空当前模型引用，让 preload 穿透逻辑不再将 MMD 视为活跃
-                    window.mmdManager.currentModel = null;
                 }
             } catch (e) {
                 console.warn('[猫娘切换] MMD 清理出错:', e);
@@ -395,6 +382,7 @@
             window.lanlan_config.lanlan_name = newCatgirl;
 
             await new Promise(resolve => setTimeout(resolve, 100));
+            S._pendingGreetingSwitch = true;  // 标记为切换连接，onopen 时发送 greeting_check
             connectWebSocket();
             document.title = `${newCatgirl} Terminal - Project N.E.K.O.`;
 
@@ -873,32 +861,48 @@
                     mmdCanvasShow.style.pointerEvents = 'auto';
                 }
 
-                // 初始化 MMD 管理器（如果未初始化）
-                if (!window.mmdManager) {
-                    console.log('[猫娘切换] MMD 管理器未初始化，等待初始化');
-                    if (typeof window.initMMDModel === 'function') {
-                        await window.initMMDModel();
-                    } else if (typeof initMMDModel === 'function') {
-                        await initMMDModel();
-                    }
+                // 初始化 MMD 管理器（MMD→MMD 切换时需要完全重新初始化以避免状态残留）
+                console.log('[猫娘切换] 重新初始化 MMD 管理器');
+                if (typeof window.initMMDModel === 'function') {
+                    await window.initMMDModel();
+                } else if (typeof initMMDModel === 'function') {
+                    await initMMDModel();
                 }
 
                 // 加载 MMD 模型
                 if (window.mmdManager) {
                     // 重置 goodbyeClicked 标志
                     window.mmdManager._goodbyeClicked = false;
-                    await window.mmdManager.loadModel(mmdModelUrl);
-                    console.log('[猫娘切换] MMD 模型加载完成');
-
-                    // 从后端获取并应用 MMD 设置（光照、渲染、物理、鼠标跟踪）
+                    // 提前获取设置并预置物理开关
+                    let savedSettings = null;
                     try {
                         const settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(newCatgirl) + '/mmd_settings');
                         const settingsData = await settingsRes.json();
                         if (settingsData.success && settingsData.settings) {
-                            window.mmdManager.applySettings(settingsData.settings);
+                            savedSettings = settingsData.settings;
+                            if (savedSettings.physics?.enabled != null) {
+                                window.mmdManager.enablePhysics = !!savedSettings.physics.enabled;
+                            }
                         }
-                    } catch (settingsErr) {
-                        console.warn('[猫娘切换] 获取MMD设置失败:', settingsErr);
+                    } catch (e) { /* ignore - will use current enablePhysics */ }
+                    await window.mmdManager.loadModel(mmdModelUrl);
+                    console.log('[猫娘切换] MMD 模型加载完成');
+
+                    // 应用完整设置（光照、渲染、物理、鼠标跟踪）
+                    if (savedSettings) {
+                        window.mmdManager.applySettings(savedSettings);
+                    }
+
+                    // 播放待机动作（使用已获取的 catgirlConfig，无需重复请求）
+                    const mmdIdleAnimation = catgirlConfig?.mmd_idle_animation;
+                    if (mmdIdleAnimation) {
+                        try {
+                            await window.mmdManager.loadAnimation(mmdIdleAnimation);
+                            window.mmdManager.playAnimation();
+                            console.log('[猫娘切换] 已播放待机动作:', mmdIdleAnimation);
+                        } catch (idleErr) {
+                            console.warn('[猫娘切换] 播放待机动作失败:', idleErr);
+                        }
                     }
                 } else {
                     console.error('[猫娘切换] MMD 管理器初始化失败');

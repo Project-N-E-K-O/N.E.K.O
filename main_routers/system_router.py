@@ -24,21 +24,22 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage
+from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
 import httpx
 from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
+from main_logic.omni_realtime_client import OmniRealtimeClient
 from config import get_extra_body, MEMORY_SERVER_PORT
-from config.prompts_sys import (
-    emotion_analysis_prompt,
+from config.prompts_sys import _loc
+from config.prompts_memory import emotion_analysis_prompt, PROACTIVE_FOLLOWUP_HEADER
+from config.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
     get_proactive_music_unknown_track_name,
     get_proactive_music_failsafe_hint,
     get_proactive_music_strict_constraint,
     get_proactive_format_sections,
-    _loc,
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
     RECENT_PROACTIVE_TIME_LABELS, RECENT_PROACTIVE_CHANNEL_LABELS,
     BEGIN_GENERATE,
@@ -99,6 +100,70 @@ async def ack_pending_notices(request: Request):
         cursor = 0
     drain_prominent_notices(cursor)
     return {"ok": True}
+
+
+# --- 版本更新日志 ---
+
+@router.get("/changelog")
+async def get_changelog(since: str = "", lang: str = ""):
+    """返回自指定版本以来的所有更新日志。
+
+    前端传入 localStorage 中保存的 lastNotifiedVersion，后端返回所有 > since 的
+    changelog 条目（按版本升序），以及当前版本号。
+    lang 参数为前端 locale（如 zh-CN / en / ja / ko / ru / zh-TW），非中文时
+    优先返回对应语言翻译，不存在则 fallback 到 en，再 fallback 到中文原文。
+    """
+    from config import APP_VERSION
+    import glob as _glob
+
+    def _parse_ver(s: str) -> tuple[int, ...]:
+        """将 '0.7.3' 转为可比较的 int 元组；解析失败返回 (0,)。"""
+        try:
+            return tuple(int(x) for x in s.strip().split("."))
+        except (ValueError, AttributeError):
+            return (0,)
+
+    changelog_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "changelog")
+    entries: list[dict] = []
+    since_ver = _parse_ver(since) if since else (0,)
+
+    # 确定 fallback 链：用户语言 -> en -> 中文原文
+    is_chinese = lang.startswith("zh") if lang else True
+    fallback_langs: list[str] = []
+    if not is_chinese:
+        if lang:
+            fallback_langs.append(lang)
+        if "en" not in fallback_langs:
+            fallback_langs.append("en")
+
+    def _read_localized(stem: str, zh_content: str) -> str:
+        """按 fallback 链查找本地化版本，找不到返回中文原文。"""
+        for loc in fallback_langs:
+            loc_file = os.path.join(changelog_dir, loc, f"{stem}.md")
+            try:
+                with open(loc_file, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                continue
+        return zh_content
+
+    if os.path.isdir(changelog_dir):
+        for md_file in sorted(_glob.glob(os.path.join(changelog_dir, "*.md")),
+                              key=lambda p: _parse_ver(os.path.splitext(os.path.basename(p))[0])):
+            stem = os.path.splitext(os.path.basename(md_file))[0]
+            file_ver = _parse_ver(stem)
+            if file_ver == (0,):
+                continue
+            if file_ver > since_ver:
+                try:
+                    with open(md_file, "r", encoding="utf-8") as f:
+                        zh_content = f.read()
+                except Exception:
+                    zh_content = ""
+                content = _read_localized(stem, zh_content) if not is_chinese else zh_content
+                entries.append({"version": stem, "content": content})
+
+    return {"current_version": APP_VERSION, "entries": entries}
 
 
 # --- 主动搭话近期记录暂存区 ---
@@ -318,9 +383,16 @@ def _parse_unified_phase1_result(text: str) -> dict:
         return result
 
     # --- 解析 web 段 ---
+    # 先尝试提取结构化字段；LLM 经常同时输出话题详情和模板里的
+    # "If nothing is worth sharing: [WEB] [PASS]" 行，导致 [PASS]
+    # 误杀已填好的话题。因此优先以 parse 结果为准。
     web_text = sections.get('web', '')
-    if web_text and '[PASS]' not in web_text.upper():
-        result['web'] = _parse_web_screening_result(web_text)
+    if web_text:
+        parsed_web = _parse_web_screening_result(web_text)
+        if parsed_web:
+            result['web'] = parsed_web
+        elif '[PASS]' in web_text.upper():
+            pass  # 确实是 PASS，web 保持 None
 
     # --- 解析 music 段 ---
     music_text = sections.get('music', '')
@@ -1450,6 +1522,114 @@ async def proxy_meme_image(url: str):
         logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
+
+# ==================== 网易云音乐代理 ====================
+# 解决浏览器无法直接播放网易云外链的问题（需要 Referer 头）
+MUSIC_PROXY_CACHE = TTLCache(maxsize=200, ttl=3600 * 6)  # 6小时缓存
+
+@router.get('/music/proxy-netease')
+async def proxy_netease_music(url: str):
+    """
+    代理网易云音乐外链，解决跨域和 Referer 限制问题
+    
+    网易云音乐的外链 URL 格式为：
+    https://music.163.com/song/media/outer/url?id=xxx.mp3
+    
+    浏览器直接请求会被拒绝，需要带 Referer: https://music.163.com/ 头才能访问
+    """
+    cache_key = url
+    if cache_key in MUSIC_PROXY_CACHE:
+        logger.info(f"[Netease Music Proxy] 命中缓存: {url[:60]}...")
+        cached = MUSIC_PROXY_CACHE[cache_key]
+        return Response(
+            content=cached['body'],
+            media_type='audio/mpeg',
+            headers={
+                'Cache-Control': 'public, max-age=21600',  # 6小时
+                'X-Cache': 'HIT',
+                'Accept-Ranges': 'bytes'
+            }
+        )
+    
+    try:
+        logger.info(f"[Netease Music Proxy] 收到代理请求: {url[:80]}...")
+        
+        if not url:
+            return JSONResponse(content={"success": False, "error": "缺少URL参数"}, status_code=400)
+        
+        decoded_url = unquote(url)
+        if not decoded_url.startswith(('http://', 'https://')):
+            return JSONResponse(content={"success": False, "error": "无效的URL"}, status_code=400)
+        
+        from urllib.parse import urlparse
+        parsed = urlparse(decoded_url)
+        hostname = (parsed.hostname or '').lower()
+        
+        # 只允许网易云音乐的域名
+        allowed_hosts = ['music.163.com']
+        if not any(hostname == host or hostname.endswith('.' + host) for host in allowed_hosts):
+            logger.warning(f"[Netease Music Proxy] 非法域名请求: {hostname}")
+            return JSONResponse(content={"success": False, "error": f"不允许代理该域名: {hostname}"}, status_code=403)
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Referer': 'https://music.163.com/',
+            'Accept': '*/*',
+            'Accept-Encoding': 'identity',  # 不压缩，方便流式传输
+        }
+        
+        MAX_MUSIC_SIZE = 50 * 1024 * 1024  # 50MB 音乐文件限制
+        
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with client.stream("GET", decoded_url, headers=headers) as resp:
+                resp.raise_for_status()
+                
+                content_type = resp.headers.get('Content-Type', 'audio/mpeg').split(';', 1)[0].strip()
+                if 'audio' not in content_type and 'video' not in content_type:
+                    logger.warning(f"[Netease Music Proxy] 非音频内容类型: {content_type}")
+                
+                content_length = resp.headers.get('Content-Length')
+                if content_length:
+                    try:
+                        declared_size = int(content_length)
+                        if declared_size > MAX_MUSIC_SIZE:
+                            logger.warning(f"[Netease Music Proxy] 音乐文件过大: {declared_size}")
+                            return JSONResponse(content={"success": False, "error": "音乐文件超过大小限制 (50MB)"}, status_code=413)
+                    except (ValueError, TypeError):
+                        pass
+                
+                body = bytearray()
+                async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                    body.extend(chunk)
+                    if len(body) > MAX_MUSIC_SIZE:
+                        logger.warning(f"[Netease Music Proxy] 音乐文件过大 (实际读取): {len(body)}")
+                        return JSONResponse(content={"success": False, "error": "音乐文件超过大小限制 (50MB)"}, status_code=413)
+                
+                MUSIC_PROXY_CACHE[cache_key] = {
+                    'body': bytes(body)
+                }
+                
+                logger.info(f"[Netease Music Proxy] 代理成功，大小: {len(body)} bytes")
+                return Response(
+                    content=bytes(body),
+                    media_type='audio/mpeg',
+                    headers={
+                        'Cache-Control': 'public, max-age=21600',
+                        'X-Cache': 'MISS',
+                        'Accept-Ranges': 'bytes'
+                    }
+                )
+    
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[Netease Music Proxy] HTTP错误: {e.response.status_code}")
+        return JSONResponse(content={"success": False, "error": f"请求失败: {e.response.status_code}"}, status_code=e.response.status_code)
+    except httpx.TimeoutException:
+        return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
+    except Exception as e:
+        logger.error(f"[Netease Music Proxy] 代理失败: {str(e)}")
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+
+
 # 辅助函数
 
 @router.get('/steam/proxy-image')
@@ -1779,11 +1959,21 @@ async def proactive_chat(request: Request):
         # 检查是否正在响应中（如果正在说话，不打断）
         if mgr.is_active and hasattr(mgr.session, '_is_responding') and mgr.session._is_responding:
             return JSONResponse({
-                "success": False, 
+                "success": False,
                 "error": "AI正在响应中，无法主动搭话",
                 "message": "请等待当前响应完成"
             }, status_code=409)
-        
+
+        # ========== Voice mode fast path ==========
+        # 语音模式下不走 Phase1/Phase2，直接注入预录音频触发 AI 回复
+        if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
+            delivered = await mgr.trigger_voice_proactive_nudge()
+            return JSONResponse({
+                "success": True,
+                "action": "chat" if delivered else "pass",
+                "message": "voice proactive triggered" if delivered else "voice proactive skipped (guard)",
+            })
+
         print(f"[{lanlan_name}] 开始主动搭话流程（两阶段架构）...")
         
         # ========== 解析 enabled_modes ==========
@@ -1979,6 +2169,40 @@ async def proactive_chat(request: Request):
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(lanlan_name, proactive_lang)
 
+        # ========== 3.5 反思 + 回调话题（通过 memory_server API） ==========
+        # 认知框架：Facts → Reflection(pending) → 主动搭话自然提及 → 用户反馈 → Persona
+        followup_topics_prompt = ""
+        _surfaced_reflection_ids = []  # 记录本次搭话提及了哪些 pending 反思
+        try:
+            _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
+            async with httpx.AsyncClient(proxy=None, trust_env=False) as _mem_client:
+                # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
+                _reflect_resp = await _mem_client.post(
+                    f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
+                )
+                if _reflect_resp.status_code == 200:
+                    _reflect_data = _reflect_resp.json()
+                    if _reflect_data.get('auto_transitions'):
+                        print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
+                    if _reflect_data.get('reflection'):
+                        print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
+
+                # 2. 获取回调话题候选
+                _topics_resp = await _mem_client.get(
+                    f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
+                )
+                if _topics_resp.status_code == 200:
+                    _followup_topics = _topics_resp.json().get('topics', [])
+                    if _followup_topics:
+                        followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
+                        for topic in _followup_topics:
+                            followup_topics_prompt += f"- {topic['text']}\n"
+                            if topic.get('id'):
+                                _surfaced_reflection_ids.append(topic['id'])
+                        print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
+        except Exception as e:
+            logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
+
         # ========== 4. 获取 LLM 配置 ==========
         try:
             correction_config = _config_manager.get_model_api_config('correction')
@@ -2018,38 +2242,36 @@ async def proactive_chat(request: Request):
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
             else:
                 m, bu, ak = correction_model, correction_base_url, correction_api_key
-            kwargs = dict(
-                model=m, base_url=bu, api_key=ak,
+            kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_tokens,
                 streaming=True,
             )
-            if disable_thinking:
-                extra_body = get_extra_body(m)
-                if extra_body:
-                    kwargs['model_kwargs'] = {"extra_body": extra_body}
-            return ChatOpenAI(**kwargs)
+            if not disable_thinking:
+                kw["extra_body"] = None  # skip auto-resolved extra_body
+            return create_chat_llm(m, bu, ak, **kw)
         
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,
             temperature: float = 1.0, max_tokens: int = 1024, timeout: float = 16.0,
             use_vision: bool = False, disable_thinking: bool = True,
             image_b64: str = '',
+            dynamic_context: str = '',
         ) -> str:
             """
             带重试的 LLM 调用。image_b64 非空时以多模态方式发送截图。
+            dynamic_context: 动态上下文，注入到 HumanMessage 中使 SystemMessage 可被缓存。
             """
             actual_model = (vision_model_name if use_vision and has_vision_model else correction_model)
-            # [临时调试]
-            print(f"\n{'='*60}\n[PROACTIVE-DEBUG] LLM call: [{label}] | model={actual_model} | temp={temperature} | max_tokens={max_tokens} | vision={use_vision} | img={'yes' if image_b64 else 'no'}\n{'='*60}\n{system_prompt}\n{'='*60}\n")
             begin_text = _loc(BEGIN_GENERATE, proactive_lang)
+            human_text = f"{dynamic_context}\n\n{begin_text}" if dynamic_context else begin_text
             if image_b64:
                 human_content = [
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                    {"type": "text", "text": begin_text},
+                    {"type": "text", "text": human_text},
                 ]
             else:
-                human_content = begin_text
+                human_content = human_text
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_content)]
 
             from utils.token_tracker import set_call_type
@@ -2066,7 +2288,7 @@ async def proactive_chat(request: Request):
                             timeout=timeout
                         )
                         # [临时调试]
-                        print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:200]}...\n")
+                        print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:500]}...\n")
                         return response.content.strip()
                 except (asyncio.TimeoutError, APIConnectionError, InternalServerError, RateLimitError) as e:
                     if attempt < max_retries - 1:
@@ -2259,13 +2481,18 @@ async def proactive_chat(request: Request):
 
         # 只要有至少一个任务就发起 LLM 调用
         unified_parsed: dict = {'web': None, 'music_keyword': None, 'meme_keyword': None}
+        # 先定义 enriched_memory_context 保证后续引用不报 UnboundLocalError
+        enriched_memory_context = memory_context
+        if followup_topics_prompt:
+            enriched_memory_context = memory_context + "\n" + followup_topics_prompt
+
         if has_web_task or has_music_task or has_meme_task:
             try:
-                from config.prompts_sys import build_unified_phase1_prompt
+                from config.prompts_proactive import build_unified_phase1_prompt
                 unified_prompt = build_unified_phase1_prompt(
                     proactive_lang,
                     merged_content=merged_web_content if has_web_task else None,
-                    memory_context=memory_context,
+                    memory_context=enriched_memory_context,
                     recent_chats_section=proactive_chat_history_prompt,
                     music_ctx={'lanlan_name': lanlan_name, 'master_name': master_name_current} if has_music_task else None,
                     meme_enabled=has_meme_task,
@@ -2273,7 +2500,7 @@ async def proactive_chat(request: Request):
                     master_name=master_name_current,
                 )
                 unified_result_text = await _llm_call_with_retry(unified_prompt, "unified_phase1")
-                print(f"[{lanlan_name}] Phase 1 合并 LLM 结果: {unified_result_text[:200]}")
+                print(f"[{lanlan_name}] Phase 1 合并 LLM 结果: {unified_result_text[:500]}")
                 unified_parsed = _parse_unified_phase1_result(unified_result_text)
                 logger.info(f"[{lanlan_name}] Phase 1 解析: web={'有' if unified_parsed.get('web') else '无'}, "
                            f"music_kw={unified_parsed.get('music_keyword', 'N/A')}, "
@@ -2560,13 +2787,17 @@ async def proactive_chat(request: Request):
             track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
             music_playing_hint = get_proactive_music_playing_hint(track_name, proactive_lang)
 
+        # 静动分离：generate_prompt 作为静态 SystemMessage（可被缓存），
+        # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
+        # 使用 enriched_memory_context（含回调话题）而非原始 memory_context
+        phase2_memory_context = enriched_memory_context if followup_topics_prompt else memory_context
         generate_prompt = get_proactive_generate_prompt(
             proactive_lang, music_playing_hint,
             has_music=bool(music_section), has_meme=bool(meme_section),
         ).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
-            memory_context=memory_context,
+            memory_context=phase2_memory_context,
             recent_chats_section=proactive_chat_history_prompt,
             screen_section=screen_section,
             external_section=external_section,
@@ -2576,23 +2807,20 @@ async def proactive_chat(request: Request):
             source_instruction=source_instruction,
             output_format_section=output_format_section,
         )
+        dynamic_context_for_phase2 = ""
         if music_topic:
-            # 防混淆强调：确保 AI 用 [MUSIC] 而不是 [WEB]/[CHAT]
-            generate_prompt += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
+            dynamic_context_for_phase2 += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
                 proactive_lang,
                 PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
             )
-            # 【核心补齐】如果搜索结果是模糊匹配，注入 failsafe hint
-            # 注意：random 状态（随机推荐）不应触发 failsafe hint，因为这是正常的随机推荐行为
             raw_data = music_content.get('raw_data', {}) if music_content else {}
             if raw_data.get('best_match', {}).get('status') == 'fuzzy':
-                generate_prompt += get_proactive_music_failsafe_hint(proactive_lang)
+                dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(proactive_lang)
 
-        # 【强制约束】放歌时禁止产生任何换歌念头
         if is_playing_music:
-            generate_prompt += get_proactive_music_strict_constraint(proactive_lang)
-        print(f"[{lanlan_name}] Phase 2 完整 prompt 长度: {len(generate_prompt)} 字符")
-        
+            dynamic_context_for_phase2 += get_proactive_music_strict_constraint(proactive_lang)
+        print(f"[{lanlan_name}] Phase 2 prompt 长度: {len(generate_prompt)}, 动态上下文: {len(dynamic_context_for_phase2)} 字符")
+
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
         if not await mgr.prepare_proactive_delivery(min_idle_secs=30.0):
             return JSONResponse({
@@ -2600,23 +2828,24 @@ async def proactive_chat(request: Request):
                 "action": "pass",
                 "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
             })
-        
-        # --- 构建 LLM + messages ---
+
+        # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
-        
+
         begin_text = _loc(BEGIN_GENERATE, proactive_lang)
+        human_text = f"{dynamic_context_for_phase2}\n\n{begin_text}" if dynamic_context_for_phase2 else begin_text
         if phase2_use_vision:
             human_content = [
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64_for_phase2}"}},
-                {"type": "text", "text": begin_text},
+                {"type": "text", "text": human_text},
             ]
         else:
-            human_content = begin_text
+            human_content = human_text
         messages = [SystemMessage(content=generate_prompt), HumanMessage(content=human_content)]
-        
+
         actual_model = (vision_model_name if phase2_use_vision else correction_model)
         print(f"\n{'='*60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: model={actual_model} | vision={phase2_use_vision} | img={'yes' if phase2_use_vision else 'no'}\n{'='*60}\n{generate_prompt}\n{'='*60}\n")
-        
+
         # --- 流式调用 + 在线拦截 ---
         from utils.token_tracker import set_call_type
         set_call_type("proactive")
@@ -2780,7 +3009,25 @@ async def proactive_chat(request: Request):
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
-        
+
+        # 后台长期记忆维护（通过 memory_server API）
+        try:
+            _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
+            async with httpx.AsyncClient(proxy=None, trust_env=False) as _mem_client:
+                # 保存本次搭话实际提及的 pending 反思 ID（供下次 /process 做反馈检查）
+                if _surfaced_reflection_ids:
+                    await _mem_client.post(
+                        f"{_mem_base}/record_surfaced/{lanlan_name}",
+                        json={"reflection_ids": _surfaced_reflection_ids},
+                        timeout=5.0,
+                    )
+                    print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")
+
+                # 记录 persona 提及次数（疲劳跟踪） — persona 文件由 memory_server 管理
+                # record_mentions 已在 memory_server 的 _extract_facts_and_check_feedback 中调用
+        except Exception as e:
+            logger.debug(f"[{lanlan_name}] 长期记忆后处理失败（不影响主流程）: {e}")
+
         # 【逻辑优化】精准的话题去重记录：仅当链接真正被加入 source_links 时才记录已使用
         def _is_link_selected(selected_link):
             if not selected_link:

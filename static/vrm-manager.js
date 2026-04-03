@@ -627,11 +627,13 @@ class VRMManager {
 
             this._animationFrameId = requestAnimationFrame(animateLoop);
 
-            // 帧率限制：根据 targetFrameRate 跳帧
+            // 帧率限制：根据 targetFrameRate 跳帧（0 = 不限帧，跟随 VSync）
             const now = performance.now();
-            const targetFps = window.targetFrameRate || 60;
-            const frameInterval = 1000 / targetFps;
-            if (now - this._lastRenderTime < frameInterval * 0.9) return;
+            const targetFps = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
+            if (targetFps > 0) {
+                const frameInterval = 1000 / targetFps;
+                if (now - this._lastRenderTime < frameInterval * 0.9) return;
+            }
             this._lastRenderTime = now;
 
             // 获取时间增量并限制最大值，防止切屏或卡顿导致物理"爆炸"
@@ -769,6 +771,38 @@ class VRMManager {
             return this._cursorFollow.getPerformanceLevel();
         }
         return window.cursorFollowPerformanceLevel || 'high';
+    }
+
+    /**
+     * 重置模型位置/旋转/缩放到默认值（供外部调用，如 N.E.K.O.-PC）
+     */
+    resetModelPosition() {
+        const model = this.currentModel;
+        const scene = model?.vrm?.scene ?? model?.scene;
+        if (!scene) return;
+
+        const vrm = model.vrm || model;
+
+        scene.position.set(0, 0, 0);
+        scene.rotation.set(0, 0, 0);
+        this.setModelScaleScalar(1);
+
+        if (window.VRMOrientationDetector && vrm) {
+            const detectedRotation = window.VRMOrientationDetector.detectAndFixOrientation(vrm, null);
+            window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
+        }
+
+        const modelUrl = model.url || '';
+        if (modelUrl && this.core && typeof this.core.saveUserPreferences === 'function') {
+            this.core.saveUserPreferences(
+                modelUrl,
+                { x: 0, y: 0, z: 0 },
+                { x: 1, y: 1, z: 1 },
+                { x: scene.rotation.x, y: scene.rotation.y, z: scene.rotation.z }
+            ).catch(err => console.warn('[VRM Manager] 保存重置偏好失败:', err));
+        }
+
+        console.log('[VRM Manager] 模型位置已重置');
     }
 
     /**
@@ -977,6 +1011,11 @@ class VRMManager {
             this.setupFloatingButtons();
         }
 
+        // 应用保存的局部跟踪设置
+        if (this._cursorFollow) {
+            this._cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
+        }
+
         // 同时等待场景稳定和待机动画加载完成，确保模型不以 T-pose 显示
         this._loadState = 'settling';
         const stabilityPromise = (result && result.vrm && result.vrm.scene && this._isLoadTokenActive(loadToken))
@@ -1001,6 +1040,13 @@ class VRMManager {
                     console.warn('[VRM Manager] 首次加载围栏检查失败:', e);
                 }
             }
+
+            window.dispatchEvent(new CustomEvent('vrm-model-loaded', {
+                detail: {
+                    modelUrl,
+                    model: this.currentModel
+                }
+            }));
 
             showAndFadeIn();
         } else if (this._isLoadTokenActive(loadToken)) {
@@ -1316,6 +1362,67 @@ class VRMManager {
      */
     isMouseTrackingEnabled() {
         return this._mouseTrackingEnabled !== false;
+    }
+
+    /**
+     * 获取 VRM 模型在屏幕上的边界（用于局部跟踪）
+     * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
+     */
+    getModelScreenBounds() {
+        if (!this.currentModel || !this.camera || !this.renderer) {
+            return null;
+        }
+
+        const canvasRect = this.renderer.domElement.getBoundingClientRect();
+        const canvasWidth = canvasRect.width;
+        const canvasHeight = canvasRect.height;
+
+        const scene = this.currentModel.vrm?.scene ?? this.currentModel.scene;
+        if (!scene) return null;
+
+        const box = new window.THREE.Box3().setFromObject(scene);
+        const corners = [
+            new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
+            new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
+            new window.THREE.Vector3(box.min.x, box.max.y, box.min.z),
+            new window.THREE.Vector3(box.min.x, box.max.y, box.max.z),
+            new window.THREE.Vector3(box.max.x, box.min.y, box.min.z),
+            new window.THREE.Vector3(box.max.x, box.min.y, box.max.z),
+            new window.THREE.Vector3(box.max.x, box.max.y, box.min.z),
+            new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
+        ];
+
+        let screenLeft = Infinity, screenRight = -Infinity;
+        let screenTop = Infinity, screenBottom = -Infinity;
+
+        for (const corner of corners) {
+            corner.project(this.camera);
+            const sx = canvasRect.left + (corner.x * 0.5 + 0.5) * canvasWidth;
+            const sy = canvasRect.top + (-corner.y * 0.5 + 0.5) * canvasHeight;
+            screenLeft = Math.min(screenLeft, sx);
+            screenRight = Math.max(screenRight, sx);
+            screenTop = Math.min(screenTop, sy);
+            screenBottom = Math.max(screenBottom, sy);
+        }
+
+        if (!Number.isFinite(screenLeft) || !Number.isFinite(screenRight) ||
+            !Number.isFinite(screenTop) || !Number.isFinite(screenBottom)) {
+            return null;
+        }
+
+        const width = screenRight - screenLeft;
+        const height = screenBottom - screenTop;
+
+        return {
+            left: screenLeft,
+            right: screenRight,
+            top: screenTop,
+            bottom: screenBottom,
+            width: width,
+            height: height,
+            centerX: (screenLeft + screenRight) / 2,
+            centerY: (screenTop + screenBottom) / 2
+        };
     }
 }
 

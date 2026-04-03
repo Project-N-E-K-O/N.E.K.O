@@ -271,11 +271,8 @@ class MMDInteraction {
                 totalQuat.multiplyQuaternions(yQuat, xQuat);
 
                 // 绕 bounding box 中心旋转：旋转后调整位置使中心点保持不动
-                // offset = 起始位置 - 轴心（从轴心指向模型原点的向量）
                 const offset = new THREE.Vector3().subVectors(this._orbitStartPos, this._orbitPivot);
-                // 旋转这个偏移
                 const rotatedOffset = offset.clone().applyQuaternion(totalQuat);
-                // 新位置 = 轴心 + 旋转后的偏移
                 mesh.position.copy(this._orbitPivot).add(rotatedOffset);
                 // 从起始状态重新计算旋转（幂等）
                 mesh.quaternion.copy(this._orbitStartQuat).premultiply(totalQuat);
@@ -321,14 +318,28 @@ class MMDInteraction {
             this._debouncedSavePosition();
         };
 
-        // 鼠标悬停光标
+        // 鼠标悬停光标（仅用屏幕包围盒判断，避免高频射线检测掉帧）
+        let _lastHoverHitTestAt = 0;
         this.mouseHoverHandler = (e) => {
             if (this.isDragging) return;
-            if (this._hitTestModel(e.clientX, e.clientY)) {
-                canvas.style.cursor = 'pointer';
-            } else {
+            if (this.checkLocked()) {
                 canvas.style.cursor = 'default';
+                return;
             }
+            const now = performance.now();
+            if ((now - _lastHoverHitTestAt) < 80) return;
+            _lastHoverHitTestAt = now;
+            const bounds = this._cachedScreenBounds;
+            if (!bounds) {
+                canvas.style.cursor = 'default';
+                return;
+            }
+            const padding = 10;
+            const isNearModel = e.clientX >= (bounds.minX - padding) &&
+                e.clientX <= (bounds.maxX + padding) &&
+                e.clientY >= (bounds.minY - padding) &&
+                e.clientY <= (bounds.maxY + padding);
+            canvas.style.cursor = isNearModel ? 'grab' : 'default';
         };
 
         // 绑定事件

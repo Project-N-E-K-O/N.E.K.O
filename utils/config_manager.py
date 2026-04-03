@@ -8,6 +8,7 @@ import os
 import json
 import shutil
 import threading
+import math
 from datetime import date
 from copy import deepcopy
 from pathlib import Path
@@ -830,6 +831,8 @@ class ConfigManager:
             suffix = 'en'
         elif lang_lower.startswith('ko'):
             suffix = 'ko'
+        elif lang_lower.startswith('ru'):
+            suffix = 'ru'
         else:
             # 未知语言，回退
             return None
@@ -1010,38 +1013,127 @@ class ConfigManager:
             voice_id.startswith("cosyvoice-v2") or voice_id.startswith("cosyvoice-v3-")
         )
 
+    def get_tts_api_key(self, provider: str) -> str | None:
+        """根据 provider 统一获取 TTS API Key，返回 None 表示未配置。
+
+        - cosyvoice: tts_custom 配置的 api_key
+        - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
+        - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
+        """
+        if provider == 'cosyvoice':
+            tts_config = self.get_model_api_config('tts_custom')
+            key = (tts_config.get('api_key') or '').strip()
+            return key or None
+        if provider in ('minimax', 'minimax_intl'):
+            core_config = self.get_core_config()
+            if provider == 'minimax_intl':
+                key = (core_config.get('ASSIST_API_KEY_MINIMAX_INTL') or '').strip()
+            else:
+                key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+            if not key:
+                try:
+                    import utils.minimax_api_keys as _mm_keys
+                    fallback = getattr(_mm_keys, 'MINIMAX_INTL_API_KEY', None) if provider == 'minimax_intl' else getattr(_mm_keys, 'MINIMAX_API_KEY', None)
+                    key = (fallback or '').strip()
+                except ImportError:
+                    logger.debug("utils.minimax_api_keys not found, no fallback MiniMax keys available")
+            return key or None
+        return None
+
+    def _get_minimax_storage_keys(self) -> list[str]:
+        """返回当前 MiniMax API Key 对应的 voice_storage key 列表。
+
+        通过 get_tts_api_key 获取已解析的 key（含 env fallback），
+        分别为国服和国际服生成 bucket 前缀。
+        """
+        voice_storage = self.load_voice_storage()
+        result = []
+
+        # 国服 key → __MINIMAX__{suffix}
+        cn_key = self.get_tts_api_key('minimax')
+        if cn_key:
+            suffix = cn_key[-8:] if len(cn_key) >= 8 else cn_key
+            bucket = f'__MINIMAX__{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+
+        # 国际服 key → __MINIMAX_INTL__{suffix}
+        intl_key = self.get_tts_api_key('minimax_intl')
+        if intl_key:
+            suffix = intl_key[-8:] if len(intl_key) >= 8 else intl_key
+            bucket = f'__MINIMAX_INTL__{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+
+        return result
+
+    @staticmethod
+    def _infer_provider_from_storage_key(storage_key: str) -> str:
+        """根据 voice_storage 的分区 key 推断 provider（仅用于兼容旧数据）。"""
+        if storage_key == '__LOCAL_TTS__':
+            return 'local'
+        if storage_key.startswith('__MINIMAX_INTL__'):
+            return 'minimax_intl'
+        if storage_key.startswith('__MINIMAX__'):
+            return 'minimax'
+        return 'cosyvoice'
+
     def get_voices_for_current_api(self):
         """获取当前 TTS 配置对应的所有音色
-        
+
         根据实际使用的 TTS 配置返回音色：
         1. 本地 TTS（ws/wss 协议）→ 返回 __LOCAL_TTS__ 下的音色
         2. 阿里云 TTS（通过 ASSIST_API_KEY_QWEN）→ 返回该 API Key 下的音色
         3. 其他情况 → 返回 AUDIO_API_KEY 下的音色
+        结果中同时合并 MiniMax 音色（__MINIMAX__ 下的音色）。
+
+        返回的每个 voice_data 都保证包含 ``provider`` 字段
+        （``local`` / ``minimax`` / ``minimax_intl`` / ``cosyvoice``）。
         """
         voice_storage = self.load_voice_storage()
-        
+
         tts_config = self.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url', '')
         is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
-        
+
         if is_local_tts:
-            all_voices = voice_storage.get('__LOCAL_TTS__', {})
-            return {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
-        
-        tts_api_key = tts_config.get('api_key', '')
-        if tts_api_key:
-            all_voices = voice_storage.get(tts_api_key, {})
-            return {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
-        
-        core_config = self.get_core_config()
-        audio_api_key = core_config.get('AUDIO_API_KEY', '')
+            storage_key = '__LOCAL_TTS__'
+            all_voices = voice_storage.get(storage_key, {})
+            result = dict(all_voices)
+        else:
+            tts_api_key = tts_config.get('api_key', '')
+            if tts_api_key:
+                storage_key = tts_api_key
+                all_voices = voice_storage.get(storage_key, {})
+                result = dict(all_voices)
+            else:
+                core_config = self.get_core_config()
+                audio_api_key = core_config.get('AUDIO_API_KEY', '')
+                if not audio_api_key:
+                    storage_key = ''
+                    result = {}
+                else:
+                    storage_key = audio_api_key
+                    all_voices = voice_storage.get(storage_key, {})
+                    result = dict(all_voices)
 
-        if not audio_api_key:
-            logger.warning("未配置 AUDIO_API_KEY")
-            return {}
+        # 确保主分区音色有 provider 字段
+        default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
+        for vdata in result.values():
+            if isinstance(vdata, dict) and 'provider' not in vdata:
+                vdata['provider'] = default_provider
 
-        all_voices = voice_storage.get(audio_api_key, {})
-        return {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
+        # 合并 MiniMax 音色，并确保 provider 字段
+        for mk in self._get_minimax_storage_keys():
+            mm_provider = self._infer_provider_from_storage_key(mk)
+            minimax_voices = voice_storage.get(mk, {})
+            for vid, vdata in minimax_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = mm_provider
+                    result[vid] = vdata
+
+        return result
 
     def save_voice_for_current_api(self, voice_id, voice_data):
         """为当前 AUDIO_API_KEY 保存音色"""
@@ -1090,8 +1182,15 @@ class ConfigManager:
         return None
 
     def delete_voice_for_current_api(self, voice_id):
-        """删除当前 TTS 配置下的指定音色"""
+        """删除当前 TTS 配置下的指定音色（含 MiniMax 音色）"""
         voice_storage = self.load_voice_storage()
+
+        # 先检查 MiniMax 存储（__MINIMAX__ / __MINIMAX_INTL__ 开头的 key）
+        for storage_key in list(voice_storage.keys()):
+            if (storage_key.startswith('__MINIMAX__') or storage_key.startswith('__MINIMAX_INTL__')) and voice_id in voice_storage.get(storage_key, {}):
+                del voice_storage[storage_key][voice_id]
+                self.save_voice_storage(voice_storage)
+                return True
         
         tts_config = self.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url', '')
@@ -1132,9 +1231,6 @@ class ConfigManager:
         if not voice_id:
             return True
 
-        if self.is_legacy_cosyvoice_id(voice_id):
-            return False
-
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
             return custom_tts_allowed
@@ -1155,9 +1251,6 @@ class ConfigManager:
         """校验 voice_id 是否在指定 API Key 下有效"""
         if not voice_id:
             return True
-
-        if self.is_legacy_cosyvoice_id(voice_id):
-            return False
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
@@ -1183,7 +1276,7 @@ class ConfigManager:
         实际可用性由 core.py 运行时按 free + lanlan.app/lanlan.tech 线路决定。
 
         Returns:
-            (cleaned_count, legacy_cosyvoice_names): 清理总数 及 因旧版 CosyVoice 被清理的角色名列表
+            (cleaned_count, legacy_cosyvoice_names): 清理总数 及 仍在使用旧版 CosyVoice 音色的角色名列表
         """
         character_data = self.load_characters()
         cleaned_count = 0
@@ -1192,18 +1285,21 @@ class ConfigManager:
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',))
-            if voice_id and not self.validate_voice_id(voice_id):
-                is_legacy = self.is_legacy_cosyvoice_id(voice_id)
+            if not voice_id:
+                continue
+            # 旧版 CosyVoice 音色：保留 voice_id 不清空，仅记录供通知
+            if self.is_legacy_cosyvoice_id(voice_id):
+                legacy_cosyvoice_names.append(name)
+                continue
+            # 其他无效 voice_id（storage 中已不存在）：清空
+            if not self.validate_voice_id(voice_id):
                 logger.warning(
-                    "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除%s",
+                    "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",
                     name,
                     voice_id,
-                    "（旧版 CosyVoice 音色）" if is_legacy else "",
                 )
                 set_reserved(config, 'voice_id', '')
                 cleaned_count += 1
-                if is_legacy:
-                    legacy_cosyvoice_names.append(name)
 
         if cleaned_count > 0:
             self.save_characters(character_data)
@@ -1257,9 +1353,11 @@ class ConfigManager:
             lanlan_prompt_map[name] = prompt_value
 
         memory_base = str(self.memory_dir)
-        time_store = {name: f'{memory_base}/time_indexed_{name}' for name in catgirl_names}
-        setting_store = {name: f'{memory_base}/settings_{name}.json' for name in catgirl_names}
-        recent_log = {name: f'{memory_base}/recent_{name}.json' for name in catgirl_names}
+        # 角色专属子目录: memory_dir/{name}/
+        import os as _os
+        time_store = {name: _os.path.join(memory_base, name, 'time_indexed.db') for name in catgirl_names}
+        setting_store = {name: _os.path.join(memory_base, name, 'settings.json') for name in catgirl_names}
+        recent_log = {name: _os.path.join(memory_base, name, 'recent.json') for name in catgirl_names}
 
         return (
             master_name,
@@ -1438,6 +1536,12 @@ class ConfigManager:
             'ASSIST_API_KEY_STEP': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_SILICON': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_GEMINI': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_KIMI': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_DEEPSEEK': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_DOUBAO': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_MINIMAX': '',
+            'ASSIST_API_KEY_MINIMAX_INTL': '',
+            'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
             'IS_FREE_VERSION': False,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
@@ -1459,6 +1563,9 @@ class ConfigManager:
             'REALTIME_MODEL_API_KEY': DEFAULT_REALTIME_MODEL_API_KEY,
             'TTS_MODEL_URL': DEFAULT_TTS_MODEL_URL,
             'TTS_MODEL_API_KEY': DEFAULT_TTS_MODEL_API_KEY,
+            'OPENCLAW_URL': "http://127.0.0.1:8089",
+            'OPENCLAW_TIMEOUT': 300.0,
+            'OPENCLAW_DEFAULT_SENDER_ID': "neko_user",
         }
 
         core_cfg = deepcopy(DEFAULT_CONFIG_DATA['core_config.json'])
@@ -1490,9 +1597,30 @@ class ConfigManager:
         config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
+        config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
+        config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or config['CORE_API_KEY']
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
+
+        openclaw_url = core_cfg.get('openclawUrl')
+        if isinstance(openclaw_url, str) and openclaw_url.strip():
+            config['OPENCLAW_URL'] = openclaw_url.strip()
+        try:
+            openclaw_timeout = core_cfg.get('openclawTimeout', config['OPENCLAW_TIMEOUT'])
+            openclaw_timeout = float(openclaw_timeout)
+            if not math.isfinite(openclaw_timeout) or openclaw_timeout <= 0:
+                raise ValueError("openclawTimeout must be a positive finite number")
+            config['OPENCLAW_TIMEOUT'] = openclaw_timeout
+        except (TypeError, ValueError):
+            config['OPENCLAW_TIMEOUT'] = 300.0
+        openclaw_sender = core_cfg.get('openclawDefaultSenderId')
+        if isinstance(openclaw_sender, str) and openclaw_sender.strip():
+            config['OPENCLAW_DEFAULT_SENDER_ID'] = openclaw_sender.strip()
 
         core_api_profiles = get_core_api_profiles()
         assist_api_profiles = get_assist_api_profiles()
@@ -1559,70 +1687,47 @@ class ConfigManager:
         
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
-            # 文本对话模型 模型自定义配置映射
-            if core_cfg.get('conversationModelApiKey') is not None:
-                config['CONVERSATION_MODEL_API_KEY'] = core_cfg.get('conversationModelApiKey', '') or config.get('CONVERSATION_MODEL_API_KEY', '')
-            if core_cfg.get('conversationModelUrl') is not None:
-                config['CONVERSATION_MODEL_URL'] = core_cfg.get('conversationModelUrl', '') or config.get('CONVERSATION_MODEL_URL', '')
-            if core_cfg.get('conversationModelId') is not None:
-                config['CONVERSATION_MODEL'] = core_cfg.get('conversationModelId', '') or config.get('CONVERSATION_MODEL', '')
-            
-            # Summary（摘要）模型自定义配置映射
-            if core_cfg.get('summaryModelApiKey') is not None:
-                config['SUMMARY_MODEL_API_KEY'] = core_cfg.get('summaryModelApiKey', '') or config.get('SUMMARY_MODEL_API_KEY', '')
-            if core_cfg.get('summaryModelUrl') is not None:
-                config['SUMMARY_MODEL_URL'] = core_cfg.get('summaryModelUrl', '') or config.get('SUMMARY_MODEL_URL', '')
-            if core_cfg.get('summaryModelId') is not None:
-                config['SUMMARY_MODEL'] = core_cfg.get('summaryModelId', '') or config.get('SUMMARY_MODEL', '')
-            
-            # Correction（纠错）模型自定义配置映射
-            if core_cfg.get('correctionModelApiKey') is not None:
-                config['CORRECTION_MODEL_API_KEY'] = core_cfg.get('correctionModelApiKey', '') or config.get('CORRECTION_MODEL_API_KEY', '')
-            if core_cfg.get('correctionModelUrl') is not None:
-                config['CORRECTION_MODEL_URL'] = core_cfg.get('correctionModelUrl', '') or config.get('CORRECTION_MODEL_URL', '')
-            if core_cfg.get('correctionModelId') is not None:
-                config['CORRECTION_MODEL'] = core_cfg.get('correctionModelId', '') or config.get('CORRECTION_MODEL', '')
-            
-            # Emotion（情感分析）模型自定义配置映射
-            if core_cfg.get('emotionModelApiKey') is not None:
-                config['EMOTION_MODEL_API_KEY'] = core_cfg.get('emotionModelApiKey', '') or config.get('EMOTION_MODEL_API_KEY', '')
-            if core_cfg.get('emotionModelUrl') is not None:
-                config['EMOTION_MODEL_URL'] = core_cfg.get('emotionModelUrl', '') or config.get('EMOTION_MODEL_URL', '')
-            if core_cfg.get('emotionModelId') is not None:
-                config['EMOTION_MODEL'] = core_cfg.get('emotionModelId', '') or config.get('EMOTION_MODEL', '')
-            
-            # Vision（视觉）模型自定义配置映射
-            if core_cfg.get('visionModelApiKey') is not None:
-                config['VISION_MODEL_API_KEY'] = core_cfg.get('visionModelApiKey', '') or config.get('VISION_MODEL_API_KEY', '')
-            if core_cfg.get('visionModelUrl') is not None:
-                config['VISION_MODEL_URL'] = core_cfg.get('visionModelUrl', '') or config.get('VISION_MODEL_URL', '')
-            if core_cfg.get('visionModelId') is not None:
-                config['VISION_MODEL'] = core_cfg.get('visionModelId', '') or config.get('VISION_MODEL', '')
-            
-            # Agent（智能体）模型自定义配置映射
-            if core_cfg.get('agentModelApiKey') is not None:
-                config['AGENT_MODEL_API_KEY'] = core_cfg.get('agentModelApiKey', '') or config.get('AGENT_MODEL_API_KEY', '')
-            if core_cfg.get('agentModelUrl') is not None:
-                config['AGENT_MODEL_URL'] = core_cfg.get('agentModelUrl', '') or config.get('AGENT_MODEL_URL', '')
-            if core_cfg.get('agentModelId') is not None:
-                config['AGENT_MODEL'] = core_cfg.get('agentModelId', '') or config.get('AGENT_MODEL', '')
-            
-            # Omni/Realtime（全模态/实时）模型自定义配置映射
-            if core_cfg.get('omniModelApiKey') is not None:
-                config['REALTIME_MODEL_API_KEY'] = core_cfg.get('omniModelApiKey', '') or config.get('REALTIME_MODEL_API_KEY', '')
-            if core_cfg.get('omniModelUrl') is not None:
-                config['REALTIME_MODEL_URL'] = core_cfg.get('omniModelUrl', '') or config.get('REALTIME_MODEL_URL', '')
-            if core_cfg.get('omniModelId') is not None:
-                config['REALTIME_MODEL'] = core_cfg.get('omniModelId', '') or config.get('REALTIME_MODEL', '')
-            
-            # TTS 自定义配置映射
-            if core_cfg.get('ttsModelApiKey') is not None:
-                config['TTS_MODEL_API_KEY'] = core_cfg.get('ttsModelApiKey', '') or config.get('TTS_MODEL_API_KEY', '')
-            if core_cfg.get('ttsModelUrl') is not None:
-                config['TTS_MODEL_URL'] = core_cfg.get('ttsModelUrl', '') or config.get('TTS_MODEL_URL', '')
-            if core_cfg.get('ttsModelId') is not None:
-                config['TTS_MODEL'] = core_cfg.get('ttsModelId', '') or config.get('TTS_MODEL', '')
-            
+            # URL / Model ID 字段：空值回退到已有配置。
+            # API Key 字段：根据用户选择的 provider 决定是否覆盖：
+            #   - follow_core / follow_assist / ''（老配置无此字段）→ 保留上方派生的值
+            #   - 具体服务商或 'custom' → 允许覆盖（空串合法，本地服务商可能不需要 key）
+            _custom_api_fields = [
+                # (前端字段前缀, 模型config键, URL config键, API Key config键)
+                ('conversation', 'CONVERSATION_MODEL', 'CONVERSATION_MODEL_URL', 'CONVERSATION_MODEL_API_KEY'),
+                ('summary',      'SUMMARY_MODEL',      'SUMMARY_MODEL_URL',      'SUMMARY_MODEL_API_KEY'),
+                ('correction',   'CORRECTION_MODEL',    'CORRECTION_MODEL_URL',   'CORRECTION_MODEL_API_KEY'),
+                ('emotion',      'EMOTION_MODEL',       'EMOTION_MODEL_URL',      'EMOTION_MODEL_API_KEY'),
+                ('vision',       'VISION_MODEL',        'VISION_MODEL_URL',       'VISION_MODEL_API_KEY'),
+                ('agent',        'AGENT_MODEL',         'AGENT_MODEL_URL',        'AGENT_MODEL_API_KEY'),
+                ('omni',         'REALTIME_MODEL',      'REALTIME_MODEL_URL',     'REALTIME_MODEL_API_KEY'),
+                ('tts',          'TTS_MODEL',           'TTS_MODEL_URL',          'TTS_MODEL_API_KEY'),
+            ]
+            for prefix, model_key, url_key, apikey_key in _custom_api_fields:
+                provider = core_cfg.get(f'{prefix}ModelProvider', '')
+
+                # URL: 空值回退到已有配置
+                cfg_url = core_cfg.get(f'{prefix}ModelUrl')
+                if cfg_url is not None:
+                    config[url_key] = cfg_url or config.get(url_key, '')
+
+                # Model ID: 空值回退到已有配置
+                cfg_model = core_cfg.get(f'{prefix}ModelId')
+                if cfg_model is not None:
+                    config[model_key] = cfg_model or config.get(model_key, '')
+
+                # API Key 处理：
+                #   follow_core   → 从核心 API Key 派生
+                #   follow_assist → 从辅助 API Key 派生（OPENROUTER_API_KEY 已含 assist→core 回退）
+                #   具体服务商/custom/''(老配置) → 使用存储值（空串合法，本地服务商不需要 key）
+                if provider == 'follow_core':
+                    config[apikey_key] = config.get('CORE_API_KEY', '')
+                elif provider == 'follow_assist':
+                    config[apikey_key] = config.get('OPENROUTER_API_KEY', '')
+                else:
+                    cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
+                    if cfg_key is not None:
+                        config[apikey_key] = cfg_key
+
             # TTS Voice ID 作为角色 voice_id 的回退
             if core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
@@ -1734,19 +1839,20 @@ class ConfigManager:
         
         mapping = model_type_mapping[model_type]
         
-        # agent 不依赖 enable_custom_api 开关；其余模型遵循原逻辑
+        # agent 始终走专用字段（AGENT_MODEL_URL 有 lanlan.app 归一化），
+        # 但 is_custom 仅在 enableCustomApi 开启时为 True。
         if enable_custom_api or model_type == 'agent':
             custom_model = core_config.get(mapping['custom_model'], '')
             custom_url = core_config.get(mapping['custom_url'], '')
             custom_key = core_config.get(mapping['custom_key'], '')
-            
+
             # 自定义配置完整时使用自定义配置
             if custom_model and custom_url:
                 return {
                     'model': custom_model,
                     'api_key': custom_key,
                     'base_url': custom_url,
-                    'is_custom': True,
+                    'is_custom': enable_custom_api,
                     # 对于 realtime 模型，自定义配置时 api_type 设为 'local'
                     # TODO: 后续完善 'local' 类型的具体实现（如本地推理服务等）
                     'api_type': 'local' if model_type == 'realtime' else None,
@@ -2265,4 +2371,3 @@ if __name__ == "__main__":
                 print(f"  {k}: {v}")
         else:
             print(f"{key}: {value}")
-

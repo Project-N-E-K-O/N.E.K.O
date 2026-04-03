@@ -894,23 +894,26 @@
 
     // ======================== updateScreenSourceListSelection ========================
     function updateScreenSourceListSelection() {
-        var screenPopup = document.getElementById('live2d-popup-screen');
-        if (!screenPopup) return;
+        var popupIds = ['live2d-popup-screen', 'vrm-popup-screen', 'mmd-popup-screen'];
+        popupIds.forEach(function (popupId) {
+            var screenPopup = document.getElementById(popupId);
+            if (!screenPopup) return;
 
-        var options = screenPopup.querySelectorAll('.screen-source-option');
-        options.forEach(function (option) {
-            var sourceId = option.dataset.sourceId;
-            var isSelected = sourceId === S.selectedScreenSourceId;
+            var options = screenPopup.querySelectorAll('.screen-source-option');
+            options.forEach(function (option) {
+                var sourceId = option.dataset.sourceId;
+                var isSelected = sourceId === S.selectedScreenSourceId;
 
-            if (isSelected) {
-                option.classList.add('selected');
-                option.style.background = 'var(--neko-popup-selected-bg)';
-                option.style.borderColor = '#4f8cff';
-            } else {
-                option.classList.remove('selected');
-                option.style.background = 'transparent';
-                option.style.borderColor = 'transparent';
-            }
+                if (isSelected) {
+                    option.classList.add('selected');
+                    option.style.background = 'var(--neko-popup-selected-bg)';
+                    option.style.borderColor = '#4f8cff';
+                } else {
+                    option.classList.remove('selected');
+                    option.style.background = 'transparent';
+                    option.style.borderColor = 'transparent';
+                }
+            });
         });
     }
     mod.updateScreenSourceListSelection = updateScreenSourceListSelection;
@@ -975,9 +978,9 @@
                 var grid = document.createElement('div');
                 Object.assign(grid.style, {
                     display: 'grid',
-                    gridTemplateColumns: 'repeat(4, 1fr)',
-                    gap: '6px',
-                    padding: '4px',
+                    gridTemplateColumns: 'repeat(3, 1fr)',
+                    gap: '8px',
+                    padding: '6px',
                     width: '100%',
                     boxSizing: 'border-box'
                 });

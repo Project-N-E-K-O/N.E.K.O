@@ -11,8 +11,9 @@ from types import MappingProxyType
 
 from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
 
-# 应用程序名称配置
+# 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
+APP_VERSION = "0.7.3"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -179,6 +180,10 @@ USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)
 AGENT_MQ_PORT = _read_port_env("AGENT_MQ_PORT", 48917)
 MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
 
+# OpenFang Agent 执行后端端口 (由 Electron 并行启动，端口写入 port_config.json)
+OPENFANG_PORT = _read_port_env("OPENFANG_PORT", 50051)
+OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
+
 # 实例 ID：同一次启动的所有服务共享。
 # launcher 会在拉起子进程前写入 NEKO_INSTANCE_ID 环境变量。
 # 若源码直跑绕过 launcher，则每次导入使用随机回退值，确保 /health
@@ -241,8 +246,8 @@ DEFAULT_VISION_MODEL = "qwen3-vl-plus-2025-09-23"
 DEFAULT_AGENT_MODEL = "qwen3.5-plus"
 
 # 用户自定义模型配置（可选，暂未使用）
-DEFAULT_REALTIME_MODEL = "Qwen3-Omni-30B-A3B-Instruct"  # 全模态模型(语音+文字+图片)
-DEFAULT_TTS_MODEL = "Qwen3-Omni-30B-A3B-Instruct"   # 与Realtime对应的TTS模型(Native TTS)
+DEFAULT_REALTIME_MODEL = "qwen3-omni-flash-realtime"  # 全模态模型(语音+文字+图片)，与 api_providers.json 对齐
+DEFAULT_TTS_MODEL = "qwen3-omni-flash-realtime"   # 与Realtime对应的TTS模型(Native TTS)，与 api_providers.json 对齐
 
 
 CONFIG_FILES = [
@@ -298,7 +303,8 @@ _DEFAULT_VRM_LIGHTING_MUTABLE = {
     "top": 0.3,      # 顶光强度
     "bottom": 0.15,  # 底光强度
     "exposure": 0.0, # 曝光值
-    "toneMapping": 0 # 色调映射类型
+    "toneMapping": 7, # 色调映射类型 (7 = Neutral)
+    "outlineWidthScale": 1.0, # 描边粗细倍率
 }
 
 DEFAULT_VRM_LIGHTING = MappingProxyType(_DEFAULT_VRM_LIGHTING_MUTABLE)
@@ -311,7 +317,8 @@ VRM_LIGHTING_RANGES = {
     'top': (0, 1.0),
     'bottom': (0, 0.5),
     'exposure': (-10.0, 10.0),
-    'toneMapping': (0, 5),
+    'toneMapping': (0, 7),
+    'outlineWidthScale': (0, 3.0),
 }
 
 
@@ -336,7 +343,7 @@ MMD_LIGHTING_RANGES = {
 }
 
 _DEFAULT_MMD_RENDERING_MUTABLE = {
-    "toneMapping": 0,
+    "toneMapping": 7,
     "exposure": 1.0,
     "outline": True,
     "pixelRatio": 0,
@@ -413,6 +420,12 @@ _VALUE_TRANSLATIONS = {
         '女': '女',
         'T酱, 小T': 'T醬, 小T',
     },
+    'ru': {
+        '哥哥': 'Братик',
+        '男': 'Мужской',
+        '女': 'Женский',
+        'T酱, 小T': 'Тян-тян, малышка Т',
+    },
     # zh 和 zh-CN 使用原始中文值（不需要翻译）
 }
 
@@ -456,7 +469,9 @@ def get_localized_default_characters(language: str | None = None) -> dict:
             value_trans = _VALUE_TRANSLATIONS.get('ja')
         elif lang_lower.startswith('en'):
             value_trans = _VALUE_TRANSLATIONS.get('en')
-    
+        elif lang_lower.startswith('ru'):
+            value_trans = _VALUE_TRANSLATIONS.get('ru')
+
     # 如果不需要翻译（简体中文），直接返回原始配置
     if value_trans is None:
         return deepcopy(DEFAULT_CHARACTERS_CONFIG)
@@ -502,10 +517,15 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyStep": "",
     "assistApiKeySilicon": "",
     "assistApiKeyGemini": "",
+    "assistApiKeyMinimax": "",
+    "assistApiKeyClaude": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
     "agentModelApiKey": "",
+    "openclawUrl": "http://127.0.0.1:8089",
+    "openclawTimeout": 300.0,
+    "openclawDefaultSenderId": "neko_user",
     "textGuardMaxLength": 300,
 }
 
@@ -558,12 +578,12 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        'CONVERSATION_MODEL' : "qwen3-235b-a22b-instruct-2507",
-        'SUMMARY_MODEL': "qwen3-next-80b-a3b-instruct",
-        'CORRECTION_MODEL': "qwen3-235b-a22b-instruct-2507",
+        'CONVERSATION_MODEL' : "qwen3.6-plus",
+        'SUMMARY_MODEL': "qwen3.6-plus",
+        'CORRECTION_MODEL': "qwen3.6-plus",
         'EMOTION_MODEL': "qwen-flash",
-        'VISION_MODEL': "qwen3-vl-plus-2025-09-23",
-        'AGENT_MODEL': "qwen3.5-plus",
+        'VISION_MODEL': "qwen3.6-plus",
+        'AGENT_MODEL': "qwen3.6-plus",
     },
     'openai': {
         'OPENROUTER_URL': "https://api.openai.com/v1",
@@ -619,6 +639,15 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "kimi-latest",
         'AGENT_MODEL': "kimi-latest",
     },
+    'claude': {
+        'OPENROUTER_URL': "https://api.anthropic.com/v1",
+        'CONVERSATION_MODEL': "claude-sonnet-4-6",
+        'SUMMARY_MODEL': "claude-sonnet-4-6",
+        'CORRECTION_MODEL': "claude-sonnet-4-6",
+        'EMOTION_MODEL': "claude-haiku-4-5-20251001",
+        'VISION_MODEL': "claude-sonnet-4-6",
+        'AGENT_MODEL': "claude-opus-4-6",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -629,6 +658,8 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'silicon': 'ASSIST_API_KEY_SILICON',
     'gemini': 'ASSIST_API_KEY_GEMINI',
     'kimi': 'ASSIST_API_KEY_KIMI',
+    'minimax': 'ASSIST_API_KEY_MINIMAX',
+    'claude': 'ASSIST_API_KEY_CLAUDE',
 }
 
 DEFAULT_CONFIG_DATA = {
@@ -643,67 +674,21 @@ TIME_ORIGINAL_TABLE_NAME = "time_indexed_original"
 TIME_COMPRESSED_TABLE_NAME = "time_indexed_compressed"
 
 
-# 不同模型供应商需要的 extra_body 格式
-EXTRA_BODY_OPENAI = {"enable_thinking": False}
-EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
-EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
-EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
-
-# Agent 调用统一开关：是否加载 extra_body。
-# 默认开启，配合 MODELS_EXTRA_BODY_MAP 实现默认关闭 thinking。
-AGENT_USE_EXTRA_BODY = True
-
-# 模型到 extra_body 的映射
-MODELS_EXTRA_BODY_MAP = {
-    # Qwen 系列
-    "qwen-flash": EXTRA_BODY_OPENAI,
-    "qwen3-vl-plus-2025-09-23": EXTRA_BODY_OPENAI,
-    "qwen3-vl-plus": EXTRA_BODY_OPENAI,
-    "qwen3-vl-flash": EXTRA_BODY_OPENAI,
-    "qwen3.5-plus": EXTRA_BODY_OPENAI,
-    "qwen-plus": EXTRA_BODY_OPENAI,
-    "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
-    # GLM 系列
-    "glm-4.5-air": EXTRA_BODY_CLAUDE,
-    "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
-    "glm-4.7-flash": EXTRA_BODY_CLAUDE,
-    "glm-4.6v": EXTRA_BODY_CLAUDE,
-    # Silicon (zai-org) - 使用 Qwen 格式
-    "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
-    # "free-model": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
-    "step-2-mini": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
-    # Gemini 系列
-    "gemini-2.5-flash": EXTRA_BODY_GEMINI,  # 禁用 thinking
-    "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,  # 禁用 thinking
-    "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,  # 低级别 thinking
-}
-
-
-def get_extra_body(model: str) -> dict | None:
-    """根据模型名称返回对应的 extra_body 配置。
-
-    Args:
-        model: 模型名称
-
-    Returns:
-        对应的 extra_body dict，如果模型不需要特殊配置则返回 None
-    """
-    if not model:
-        return None
-    if model in MODELS_EXTRA_BODY_MAP:
-        return MODELS_EXTRA_BODY_MAP[model]
-    return {}
-
-
-def get_agent_extra_body(model: str) -> dict | None:
-    """Return extra_body for Agent calls based on a single global switch."""
-    if not AGENT_USE_EXTRA_BODY:
-        return None
-    return get_extra_body(model)
+# Provider 相关配置已统一迁移至 config.providers, 此处仅 re-export 保持向后兼容
+from config.providers import (  # noqa: E402, F401
+    EXTRA_BODY_OPENAI,
+    EXTRA_BODY_CLAUDE,
+    EXTRA_BODY_GEMINI,
+    AGENT_USE_EXTRA_BODY,
+    MODELS_EXTRA_BODY_MAP,
+    get_extra_body,
+    get_agent_extra_body,
+)
 
 
 __all__ = [
     'APP_NAME',
+    'APP_VERSION',
     'GSV_VOICE_PREFIX',
     'CHARACTER_SYSTEM_RESERVED_FIELDS',
     'CHARACTER_WORKSHOP_RESERVED_FIELDS',
@@ -804,5 +789,7 @@ __all__ = [
     'DEFAULT_TTS_MODEL_API_KEY',
     'DEFAULT_AGENT_MODEL_URL',
     'DEFAULT_AGENT_MODEL_API_KEY',
+    # OpenFang
+    'OPENFANG_PORT',
+    'OPENFANG_BASE_URL',
 ]
-

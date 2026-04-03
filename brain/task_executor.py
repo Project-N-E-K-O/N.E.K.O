@@ -11,13 +11,79 @@ from dataclasses import dataclass
 from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLimitError
 import httpx
 from config import get_extra_body, USER_PLUGIN_SERVER_PORT
+from config.prompts_agent import (
+    UNIFIED_CHANNEL_SYSTEM_PROMPT,
+    CHANNEL_DESC_COPAW,
+    CHANNEL_DESC_OPENFANG,
+    CHANNEL_DESC_BROWSER_USE,
+    CHANNEL_DESC_COMPUTER_USE,
+    USER_PLUGIN_SYSTEM_PROMPT,
+)
+from config.prompts_sys import _loc
+from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 from .computer_use import ComputerUseAdapter
 from .browser_use_adapter import BrowserUseAdapter
+from .openclaw_adapter import OpenClawAdapter
+from .openfang_adapter import OpenFangAdapter
 
 logger = get_module_logger(__name__, "Agent")
+_TIMEOUT_UNSET = object()
+
+
+def _normalize_timeout_value(value: Any) -> float | None | object:
+    """Normalize timeout values.
+
+    Returns:
+        `_TIMEOUT_UNSET` when the value is missing/invalid,
+        `None` for explicit no-timeout (`None` or `<= 0`),
+        or a positive float timeout.
+    """
+    if value is _TIMEOUT_UNSET:
+        return _TIMEOUT_UNSET
+    if value is None:
+        return None
+    try:
+        timeout_value = float(value)
+    except (TypeError, ValueError):
+        return _TIMEOUT_UNSET
+    return timeout_value if timeout_value > 0 else None
+
+
+def _resolve_plugin_entry_timeout(meta: Optional[Dict[str, Any]], entry: Optional[str]) -> float | None:
+    default_timeout = PLUGIN_EXECUTION_TIMEOUT
+    if not isinstance(meta, dict):
+        return default_timeout
+    entries = meta.get("entries")
+    if not isinstance(entries, list):
+        return default_timeout
+    target_entry = entry or "run"
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        if item.get("id") != target_entry:
+            continue
+        resolved = _normalize_timeout_value(item.get("timeout", _TIMEOUT_UNSET))
+        if resolved is not _TIMEOUT_UNSET:
+            return resolved
+        break
+    return default_timeout
+
+
+def _resolve_ctx_entry_timeout(ctx_obj: Any, fallback_timeout: float | None) -> float | None:
+    if isinstance(ctx_obj, dict):
+        resolved = _normalize_timeout_value(ctx_obj.get("entry_timeout", _TIMEOUT_UNSET))
+        if resolved is not _TIMEOUT_UNSET:
+            return resolved
+    return fallback_timeout
+
+
+def _compute_run_wait_timeout(entry_timeout: float | None) -> float | None:
+    if entry_timeout is None:
+        return None
+    return max(entry_timeout + 15.0, 315.0)
 
 
 @dataclass
@@ -26,7 +92,7 @@ class TaskResult:
     task_id: str
     has_task: bool = False
     task_description: str = ""
-    execution_method: str = "none"  # "computer_use" | "browser_use" | "user_plugin" | "none"
+    execution_method: str = "none"  # "computer_use" | "browser_use" | "user_plugin" | "openclaw" | "openfang" | "none"
     success: bool = False
     result: Any = None
     error: Optional[str] = None
@@ -64,14 +130,58 @@ class UserPluginDecision:
     plugin_args: Optional[Dict] = None
     reason: str = ""
 
+
+@dataclass
+class OpenFangDecision:
+    """OpenFang 多 Agent 执行决策"""
+    has_task: bool = False
+    can_execute: bool = False
+    task_description: str = ""
+    suggested_tools: Optional[List[str]] = None
+    reason: str = ""
+
+
+@dataclass
+class OpenClawDecision:
+    """OpenClaw 独立 Agent 执行决策"""
+    has_task: bool = False
+    can_execute: bool = False
+    task_description: str = ""
+    instruction: str = ""
+    reason: str = ""
+
+
+@dataclass
+class UnifiedChannelDecision:
+    """统一渠道评估结果 — 每个渠道为 dict 或 None"""
+    copaw: Optional[Dict[str, Any]] = None       # {"can_execute": bool, "task_description": str, "reason": str}
+    openfang: Optional[Dict[str, Any]] = None
+    browser_use: Optional[Dict[str, Any]] = None
+    computer_use: Optional[Dict[str, Any]] = None
+
+
+# 优先级：copaw > openfang > browser_use > computer_use
+_CHANNEL_PRIORITY = ["copaw", "openfang", "browser_use", "computer_use"]
+_CHANNEL_TO_METHOD = {
+    "copaw": "openclaw",
+    "openfang": "openfang",
+    "browser_use": "browser_use",
+    "computer_use": "computer_use",
+}
+
+
 class DirectTaskExecutor:
     """
     直接任务执行器：并行评估 BrowserUse / ComputerUse / UserPlugin 可行性并执行
     """
     
-    def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None):
+    def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None,
+                 openclaw: Optional[OpenClawAdapter] = None,
+                 openfang: Optional[OpenFangAdapter] = None):
         self.computer_use = computer_use or ComputerUseAdapter()
         self.browser_use = browser_use
+        self.openclaw = openclaw
+        self.openfang: Optional[OpenFangAdapter] = openfang
         self._config_manager = get_config_manager()
         self.plugin_list = []
         self.user_plugin_enabled_default = False
@@ -186,57 +296,84 @@ class DirectTaskExecutor:
                 lines.extend(param_desc)
         
         return "\n".join(lines)
-    
-    async def _assess_computer_use(
-        self, 
+
+    def _extract_latest_user_intent(self, conversation: str) -> str:
+        """Extract the latest user request from formatted conversation text."""
+        user_intent = ""
+        conv_lines = conversation.splitlines()
+        for line in conv_lines:
+            if line.startswith("LATEST_USER_REQUEST:"):
+                user_intent = line[len("LATEST_USER_REQUEST:"):].strip()
+                break
+
+        if not user_intent:
+            for line in reversed(conv_lines):
+                if line.startswith("user:") or line.startswith("User:"):
+                    user_intent = line[5:].strip()
+                    break
+        return user_intent
+
+    async def _assess_unified_channels(
+        self,
         conversation: str,
-        cu_available: bool
-    ) -> ComputerUseDecision:
+        *,
+        copaw_available: bool = False,
+        openfang_available: bool = False,
+        browser_available: bool = False,
+        cu_available: bool = False,
+        lang: str = "en",
+    ) -> UnifiedChannelDecision:
+        """一次 LLM 调用评估所有非 plugin 渠道（copaw / openfang / browser / computer）。
+
+        根据 available 标志动态组装 prompt，要求 LLM 选出最合适的渠道。
+        如果 LLM 输出多个 can_execute=true，由调用方按优先级选取。
         """
-        独立评估 ComputerUse 可行性（专注于 GUI 操作）
-        """
-        if not cu_available:
-            return ComputerUseDecision(
-                has_task=False, 
-                can_execute=False, 
-                reason="ComputerUse not available"
-            )
-        
-        system_prompt = """You are a GUI automation assessment agent, your ONLY job is to determine if the user's request requires GUI/desktop automation.
+        # 动态组装渠道描述 ──────────────────────────────────
+        channel_descs: List[str] = []
+        available_keys: List[str] = []
 
-GUI AUTOMATION CAPABILITIES:
-- Control mouse (click, move, drag)
-- Control keyboard (type, hotkeys)
-- Open/close applications
-- Browse the web
-- Interact with Windows UI elements
+        if copaw_available:
+            available_keys.append("copaw")
+            channel_descs.append(_loc(CHANNEL_DESC_COPAW, lang))
 
-INSTRUCTIONS:
-1. Analyze if the conversation contains an actionable task request
-2. Determine if the task REQUIRES GUI interaction (e.g., opening apps, clicking buttons, web browsing)
-3. Tasks like "open Chrome", "click on X", "type something" require GUI
-4. Tasks that can be done via API/tools (file operations, data queries) do NOT need GUI
-5. If `LATEST_USER_REQUEST` exists, prioritize it over assistant claims like "already done".
+        if openfang_available:
+            available_keys.append("openfang")
+            channel_descs.append(_loc(CHANNEL_DESC_OPENFANG, lang))
 
-OUTPUT FORMAT (strict JSON):
-{
-    "has_task": boolean,
-    "can_execute": boolean,
-    "task_description": "brief description of the task",
-    "reason": "why this decision"
-}"""
+        if browser_available:
+            available_keys.append("browser_use")
+            channel_descs.append(_loc(CHANNEL_DESC_BROWSER_USE, lang))
+
+        if cu_available:
+            available_keys.append("computer_use")
+            channel_descs.append(_loc(CHANNEL_DESC_COMPUTER_USE, lang))
+
+        if not available_keys:
+            return UnifiedChannelDecision()
+
+        channels_block = "\n".join(channel_descs)
+        keys_json = json.dumps(available_keys)
+        json_fields = "\n".join(
+            f'  "{k}": {{"can_execute": boolean, "task_description": "brief description", "reason": "why"}},'
+            for k in available_keys
+        )
+
+        system_prompt = _loc(UNIFIED_CHANNEL_SYSTEM_PROMPT, lang).format(
+            channels_block=channels_block,
+            keys_json=keys_json,
+            json_fields=json_fields,
+        )
 
         user_prompt = f"Conversation:\n{conversation}"
-        
-        # Retry策略：重试2次，间隔1秒、2秒
+
         max_retries = 3
         retry_delays = [1, 2]
-        
+
         for attempt in range(max_retries):
             try:
                 client = self._get_client()
                 model = self._get_model()
-                
+
                 request_params = {
                     "model": model,
                     "messages": [
@@ -244,123 +381,87 @@ OUTPUT FORMAT (strict JSON):
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_completion_tokens": 500
+                    "max_completion_tokens": 600,
                 }
-                
+
                 extra_body = get_extra_body(model)
                 if extra_body:
                     request_params["extra_body"] = extra_body
 
-                quota_error = self._check_agent_quota("task_executor.assess_computer_use")
+                quota_error = self._check_agent_quota("task_executor.assess_unified")
                 if quota_error:
-                    return ComputerUseDecision(
-                        has_task=False, can_execute=False, reason=quota_error
-                    )
+                    return UnifiedChannelDecision()
+
                 response = await client.chat.completions.create(**request_params)
-                text = response.choices[0].message.content.strip()
-                
-                logger.debug(f"[ComputerUse Assessment] Raw response: {text[:200]}...")
-                
-                # 解析 JSON
+                text = (response.choices[0].message.content or "").strip()
+
+                logger.debug("[UnifiedAssessment] Raw response: %s", text[:500])
+
                 if text.startswith("```"):
                     text = text.replace("```json", "").replace("```", "").strip()
-                try:
-                    decision = json.loads(text)
-                except json.JSONDecodeError as e:
-                    logger.error(
-                        "[ComputerUse Assessment] Invalid JSON response: error=%s, raw=%r",
-                        e,
-                        text,
-                    )
-                    return ComputerUseDecision(
-                        has_task=False,
-                        can_execute=False,
-                        reason=f"Assessment parse error: {e}",
-                    )
-                
-                return ComputerUseDecision(
-                    has_task=decision.get('has_task', False),
-                    can_execute=decision.get('can_execute', False),
-                    task_description=decision.get('task_description', ''), 
-                    reason=decision.get('reason', '')
-                )
-                
-            except (APIConnectionError, InternalServerError, RateLimitError) as e:
-                logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
-                if attempt < max_retries - 1:
-                    wait_time = retry_delays[attempt]
-                    logger.warning(f"[ComputerUse Assessment] 调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.error(f"[ComputerUse Assessment] Failed after {max_retries} attempts: {e}")
-                    return ComputerUseDecision(has_task=False, can_execute=False, reason=f"Assessment error after {max_retries} attempts: {e}")
-            except Exception as e:
-                logger.error(f"[ComputerUse Assessment] Failed: {e}")
-                return ComputerUseDecision(has_task=False, can_execute=False, reason=f"Assessment error: {e}")
+                text = re.sub(r',(\s*[}\]])', r'\1', text)
 
-    async def _assess_browser_use(self, conversation: str, browser_available: bool) -> BrowserUseDecision:
-        if not browser_available:
-            return BrowserUseDecision(has_task=False, can_execute=False, reason="BrowserUse not available")
-        system_prompt = """You are a browser automation assessment agent, assess if the task should be handled by browser automation.
-Return strict JSON:
-{
-  "has_task": boolean,
-  "can_execute": boolean,
-  "task_description": "brief description",
-  "reason": "why"
-}
-Rules:
-- ONLY choose browser automation for tasks that require interacting with websites, web pages, web forms, web search engines, or downloading from the internet.
-- REJECT (has_task=false or can_execute=false) tasks that are purely local OS operations such as: opening local applications (calculator, file explorer, notepad, settings), managing files/folders, controlling system settings, or any task that does not need a web browser.
-- If unsure whether a task needs a browser, default to REJECT."""
-        user_prompt = f"Conversation:\n{conversation}"
-        try:
-            client = self._get_client()
-            model = self._get_model()
-            req = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0,
-                "max_completion_tokens": 500,
-            }
-            extra_body = get_extra_body(model)
-            if extra_body:
-                req["extra_body"] = extra_body
-            quota_error = self._check_agent_quota("task_executor.assess_browser_use")
-            if quota_error:
-                return BrowserUseDecision(has_task=False, can_execute=False, reason=quota_error)
-            response = await client.chat.completions.create(**req)
-            text = response.choices[0].message.content.strip()
-            if text.startswith("```"):
-                text = text.replace("```json", "").replace("```", "").strip()
-            try:
-                decision = json.loads(text)
-            except json.JSONDecodeError as e:
-                raw_prefix = (text or "")[:10]
-                logger.warning(
-                    "[BrowserUse Assessment] Invalid JSON, prefix=%r, len=%d, error=%s",
-                    raw_prefix,
-                    len(text or ""),
-                    e,
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    json_match = re.search(r'\{[\s\S]*\}', text)
+                    if json_match:
+                        try:
+                            parsed = json.loads(re.sub(r',(\s*[}\]])', r'\1', json_match.group(0)))
+                        except json.JSONDecodeError as e2:
+                            logger.warning("[UnifiedAssessment] JSON parse failed after extraction: %s", e2)
+                            return UnifiedChannelDecision()
+                    else:
+                        logger.warning("[UnifiedAssessment] No JSON found in response")
+                        return UnifiedChannelDecision()
+
+                result = UnifiedChannelDecision()
+                for key in available_keys:
+                    ch_data = parsed.get(key)
+                    if isinstance(ch_data, dict):
+                        setattr(result, key, ch_data)
+
+                logger.info(
+                    "[UnifiedAssessment] result: %s",
+                    {k: (getattr(result, k) or {}).get("can_execute") for k in available_keys},
                 )
-                return BrowserUseDecision(
-                    has_task=False,
-                    can_execute=False,
-                    reason=f"Assessment parse error: {e}; prefix={raw_prefix!r}",
-                )
-            return BrowserUseDecision(
-                has_task=decision.get("has_task", False),
-                can_execute=decision.get("can_execute", False),
-                task_description=decision.get("task_description", ""),
-                reason=decision.get("reason", ""),
-            )
-        except Exception as e:
-            return BrowserUseDecision(has_task=False, can_execute=False, reason=f"Assessment error: {e}")
-    
-    async def _assess_user_plugin(self, conversation: str, plugins: Any) -> UserPluginDecision:
+                return result
+
+            except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                if attempt < max_retries - 1:
+                    logger.warning("[UnifiedAssessment] Attempt %d failed: %s, retrying...", attempt + 1, e)
+                    await asyncio.sleep(retry_delays[attempt])
+                else:
+                    logger.error("[UnifiedAssessment] Failed after %d attempts: %s", max_retries, e)
+                    return UnifiedChannelDecision()
+            except Exception as e:
+                logger.error("[UnifiedAssessment] Unexpected error: %s", e)
+                return UnifiedChannelDecision()
+
+        return UnifiedChannelDecision()
+
+    def _find_plugin_entry(self, plugins: Any, plugin_id: str, preferred_entry: str) -> tuple[Optional[dict], Optional[dict]]:
+        """Find a plugin and a usable entry, falling back to the first declared entry."""
+        iterable = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
+        for _, plugin in iterable:
+            if not isinstance(plugin, dict) or plugin.get("id") != plugin_id:
+                continue
+            entries = plugin.get("entries") or []
+            if not isinstance(entries, list):
+                return plugin, None
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("id") == preferred_entry:
+                    return plugin, entry
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("id"):
+                    return plugin, entry
+            return plugin, None
+        return None, None
+
+    # NOTE: _rule_assess_openclaw / _assess_computer_use / _assess_browser_use / _assess_openfang
+    # have been replaced by the unified _assess_unified_channels() method above.
+
+    async def _assess_user_plugin(self, conversation: str, plugins: Any, lang: str = "en") -> UserPluginDecision:
         """
         评估本地用户插件可行性（plugins 为外部传入的插件列表）
         返回结构与 MCP 决策类似，但包含 plugin_id/plugin_args
@@ -372,7 +473,7 @@ Rules:
         except Exception:
             logger.debug("[UserPlugin] Failed to check plugins validity", exc_info=True)
             return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Invalid plugins")
-    
+
         # 构建插件描述供 LLM 参考（包含 id, description, input_schema 以及 entries 列表）
         lines = []
         try:
@@ -431,57 +532,8 @@ Rules:
         
         # Strongly enforce JSON-only output to reduce parsing errors
         # NOTE: Require the model to return entry_id when has_task and can_execute are true.
-        system_prompt = f"""You are a User Plugin automation assessment agent, AVAILABLE PLUGINS:
-{plugins_desc}
-
-INSTRUCTIONS:
-1. Analyze the conversation and determine if any available plugin can handle the user's request.
-2. If yes, you MUST return the plugin id, the entry_id (the specific entry inside that plugin to invoke), and plugin_args matching the entry's schema.
-3. If you cannot determine a specific plugin entry, return has_task=false or can_execute=false and explain why in the 'reason' field.
-4. OUTPUT MUST BE ONLY a single JSON object and NOTHING ELSE. Do NOT include any explanatory text, markdown, or code fences.
-
-EXAMPLE (must follow this structure exactly):
-{{
-    "has_task": true,
-    "can_execute": true,
-    "task_description": "example: call testPlugin open entry",
-    "plugin_id": "testPlugin",
-    "entry_id": "open",
-    "plugin_args": {{"message": "hello"}},
-    "reason": ""
-}}
-
-OUTPUT FORMAT (strict JSON):
-{{
-    "has_task": boolean,
-    "can_execute": boolean,
-    "task_description": "brief description",
-    "plugin_id": "plugin id or null",
-    "entry_id": "entry id inside the plugin or null",
-    "plugin_args": {{...}} or null,
-    "reason": "why"
-}}
-
-VERY IMPORTANT:
-- If has_task and can_execute are true, entry_id is REQUIRED.
-- If entry_id is missing or null when has_task/can_execute are true, the response will be treated as non-executable.
-- STRICT MATCHING: plugin_id and entry_id are code identifiers. You MUST copy them EXACTLY (case-sensitive, character-for-character) from the AVAILABLE PLUGINS list above. Do NOT invent, abbreviate, or paraphrase them. If you cannot find an exact match, set can_execute=false.
-- If an entry has args(...) info, use those field names in plugin_args. Only include fields listed in the schema.
-- If the user's intent does not clearly match any plugin's described functionality, set has_task=false.
-Return only the JSON object, nothing else.
-"""
-        user_intent = ""
-        conv_lines = conversation.splitlines()
-        for line in conv_lines:
-            if line.startswith("LATEST_USER_REQUEST:"):
-                user_intent = line[len("LATEST_USER_REQUEST:"):].strip()
-                break
-        
-        if not user_intent:
-            for line in reversed(conv_lines):
-                if line.startswith("user:") or line.startswith("User:"):
-                    user_intent = line[5:].strip()
-                    break
+        system_prompt = _loc(USER_PLUGIN_SYSTEM_PROMPT, lang).format(plugins_desc=plugins_desc)
+        user_intent = self._extract_latest_user_intent(conversation)
 
         user_prompt = f"Conversation:\n{conversation}\n\nUser intent (one-line): {user_intent}"
 
@@ -667,13 +719,15 @@ Return only the JSON object, nothing else.
                         decision["can_execute"] = False
                         decision["reason"] = f"entry_id '{final_eid}' not found in plugin '{final_pid}'"
 
+                plugin_args = decision.get("plugin_args")
+
                 return UserPluginDecision(
                     has_task=decision.get("has_task", False),
                     can_execute=decision.get("can_execute", False),
                     task_description=decision.get("task_description", ""),
                     plugin_id=decision.get("plugin_id"),
                     entry_id=final_eid,
-                    plugin_args=decision.get("plugin_args"),
+                    plugin_args=plugin_args,
                     reason=decision.get("reason", "")
                 )
                 
@@ -687,123 +741,136 @@ Return only the JSON object, nothing else.
                 return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"Assessment error: {e}")
     
     async def analyze_and_execute(
-        self, 
-        messages: List[Dict[str, str]], 
+        self,
+        messages: List[Dict[str, str]],
         lanlan_name: Optional[str] = None,
         agent_flags: Optional[Dict[str, bool]] = None,
-        conversation_id: Optional[str] = None
+        conversation_id: Optional[str] = None,
+        lang: str = "en",
     ) -> Optional[TaskResult]:
         """
-        并行评估 ComputerUse / BrowserUse / UserPlugin 可行性，返回 Decision（不执行）。
+        评估各渠道可行性，返回 Decision（不执行）。
+        Plugin 单独判定；copaw/openfang/browser/computer 合并为一次 LLM 调用。
         实际执行由 agent_server 统一 dispatch。
         """
         import uuid
         task_id = str(uuid.uuid4())
-        
-        # conversation_id 通过显式传参传递，避免并发时共享状态串用
-        
+
         if agent_flags is None:
             agent_flags = {"computer_use_enabled": False, "browser_use_enabled": False}
-        
+
         computer_use_enabled = agent_flags.get("computer_use_enabled", False)
         browser_use_enabled = agent_flags.get("browser_use_enabled", False)
         user_plugin_enabled = agent_flags.get("user_plugin_enabled", False)
-        
+        openfang_enabled = agent_flags.get("openfang_enabled", False)
+        openclaw_enabled = agent_flags.get("openclaw_enabled", False)
+
         logger.debug(
-            "[TaskExecutor] analyze_and_execute: task_id=%s lanlan=%s flags={cu=%s, bu=%s, up=%s}",
-            task_id, lanlan_name, computer_use_enabled, browser_use_enabled, user_plugin_enabled,
+            "[TaskExecutor] analyze_and_execute: task_id=%s lanlan=%s flags={cu=%s, bu=%s, up=%s, nk=%s, of=%s}",
+            task_id, lanlan_name, computer_use_enabled, browser_use_enabled, user_plugin_enabled, openclaw_enabled, openfang_enabled,
         )
 
-        if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled:
+        if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled and not openclaw_enabled and not openfang_enabled:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
-        
+
         # 格式化对话
         conversation = self._format_messages(messages)
         if not conversation.strip():
             return None
-        
-        # 准备并行评估任务
-        assessment_tasks = []
-        
-        # ComputerUse 可用性检查
+
+        # ── 可用性检查 ──────────────────────────────────────
         cu_available = False
         if computer_use_enabled:
             try:
-                cu_status = self.computer_use.is_available()
-                cu_available = cu_status.get('ready', False)
-                logger.info(f"[TaskExecutor] ComputerUse available: {cu_available}")
+                cu_available = self.computer_use.is_available().get('ready', False)
+                logger.info("[TaskExecutor] ComputerUse available: %s", cu_available)
             except Exception as e:
-                logger.warning(f"[TaskExecutor] Failed to check ComputerUse: {e}")
+                logger.warning("[TaskExecutor] Failed to check ComputerUse: %s", e)
+
         browser_available = False
         if browser_use_enabled:
             try:
                 browser_available = self.browser_use.is_available().get("ready", False)
-                logger.info(f"[TaskExecutor] BrowserUse available: {browser_available}")
+                logger.info("[TaskExecutor] BrowserUse available: %s", browser_available)
             except Exception as e:
-                logger.warning(f"[TaskExecutor] Failed to check BrowserUse: {e}")
-        
-        # 并行执行评估（包含 user_plugin 分支）
-        cu_decision = None
-        bu_decision = None
-        up_decision = None
+                logger.warning("[TaskExecutor] Failed to check BrowserUse: %s", e)
 
-        # user plugin 支路（由外部 provider 提供插件列表）
+        of_available = False
+        if openfang_enabled and self.openfang:
+            try:
+                of_available = self.openfang.init_ok
+                logger.info("[TaskExecutor] OpenFang available: %s", of_available)
+            except Exception as e:
+                logger.warning("[TaskExecutor] Failed to check OpenFang: %s", e)
+
+        copaw_available = False
+        if openclaw_enabled and self.openclaw:
+            try:
+                copaw_available = self.openclaw.is_available().get("ready", False)
+                logger.info("[TaskExecutor] CoPaw available: %s", copaw_available)
+            except Exception as e:
+                logger.warning("[TaskExecutor] Failed to check CoPaw: %s", e)
+
+        # ── 并行执行：plugin 单独 + 统一渠道评估 ──────────────
+        parallel_tasks: List[tuple] = []   # [(key, coro), ...]
+
+        # Plugin 支路
         plugins = []
         if user_plugin_enabled:
             await self.plugin_list_provider()
             plugins = self.plugin_list
-
         if user_plugin_enabled and plugins:
-            assessment_tasks.append(('up', self._assess_user_plugin(conversation, plugins)))
-        
-        if browser_use_enabled and browser_available:
-            assessment_tasks.append(('bu', self._assess_browser_use(conversation, browser_available)))
-        
-        if computer_use_enabled and cu_available:
-            assessment_tasks.append(('cu', self._assess_computer_use(conversation, cu_available)))
-        
-        if not assessment_tasks:
+            parallel_tasks.append(('up', self._assess_user_plugin(conversation, plugins, lang=lang)))
+
+        # 统一渠道评估（copaw / openfang / browser / computer）
+        has_any_unified = copaw_available or of_available or browser_available or cu_available
+        if has_any_unified:
+            parallel_tasks.append(('unified', self._assess_unified_channels(
+                conversation,
+                copaw_available=copaw_available,
+                openfang_available=of_available,
+                browser_available=browser_available,
+                cu_available=cu_available,
+                lang=lang,
+            )))
+
+        if not parallel_tasks:
             logger.debug("[TaskExecutor] No assessment tasks to run")
             return None
-        
-        # 并行执行所有评估
-        logger.info(f"[TaskExecutor] Running {len(assessment_tasks)} assessments in parallel...")
-        results = await asyncio.gather(*[task[1] for task in assessment_tasks], return_exceptions=True)
-        
-        # 收集结果（安全访问，先过滤异常）
-        for i, (task_type, _) in enumerate(assessment_tasks):
-            result = results[i]
-            if isinstance(result, Exception):
-                logger.error(f"[TaskExecutor] {task_type} assessment failed: {result}")
+
+        logger.info("[TaskExecutor] Running %d assessment(s) in parallel...", len(parallel_tasks))
+        results = await asyncio.gather(*[t[1] for t in parallel_tasks], return_exceptions=True)
+
+        up_decision: Optional[UserPluginDecision] = None
+        unified: Optional[UnifiedChannelDecision] = None
+
+        for i, (key, _) in enumerate(parallel_tasks):
+            r = results[i]
+            if isinstance(r, Exception):
+                logger.error("[TaskExecutor] %s assessment failed: %s", key, r)
                 continue
-            # safe attribute access via getattr to avoid type issues
-            if task_type == 'up':
-                up_decision = result
-                logger.info(f"[UserPlugin] has_task={getattr(up_decision,'has_task',None)}, can_execute={getattr(up_decision,'can_execute',None)}, reason={getattr(up_decision,'reason',None)}")
-            elif task_type == 'cu':
-                cu_decision = result
-                logger.info(f"[ComputerUse] has_task={getattr(cu_decision,'has_task',None)}, can_execute={getattr(cu_decision,'can_execute',None)}, reason={getattr(cu_decision,'reason',None)}")
-            elif task_type == 'bu':
-                bu_decision = result
-                logger.info(f"[BrowserUse] has_task={getattr(bu_decision,'has_task',None)}, can_execute={getattr(bu_decision,'can_execute',None)}, reason={getattr(bu_decision,'reason',None)}")
-        
-        # 决策逻辑
-        # 1. UserPlugin — 只返回 Decision，不执行（与 CU/BU 一致，由 agent_server dispatch）
-        #    can_execute is a hard requirement; if false, refuse and return has_task=False.
+            if key == 'up':
+                up_decision = r
+                logger.info(
+                    "[UserPlugin] has_task=%s, can_execute=%s, reason=%s",
+                    getattr(up_decision, 'has_task', None),
+                    getattr(up_decision, 'can_execute', None),
+                    getattr(up_decision, 'reason', None),
+                )
+            elif key == 'unified':
+                unified = r
+
+        # ── 决策逻辑 ──────────────────────────────────────
+        # 1. UserPlugin（plugin 单独判定，优先级最高）
         if isinstance(up_decision, UserPluginDecision) and up_decision.has_task and up_decision.plugin_id and up_decision.entry_id:
             if not up_decision.can_execute:
                 logger.info(
-                    "[TaskExecutor] ⛔ UserPlugin refused (can_execute=False): "
-                    "plugin_id=%s, entry_id=%s, reason=%s",
+                    "[TaskExecutor] UserPlugin refused (can_execute=False): plugin_id=%s, entry_id=%s, reason=%s",
                     up_decision.plugin_id, up_decision.entry_id, up_decision.reason,
                 )
-                return TaskResult(
-                    task_id=task_id,
-                    has_task=False,
-                    reason=up_decision.reason
-                )
-            logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={up_decision.plugin_id}")
+                return TaskResult(task_id=task_id, has_task=False, reason=up_decision.reason)
+            logger.info("[TaskExecutor] Using UserPlugin: %s, plugin_id=%s", up_decision.task_description, up_decision.plugin_id)
             return TaskResult(
                 task_id=task_id,
                 has_task=True,
@@ -813,67 +880,71 @@ Return only the JSON object, nothing else.
                 tool_name=up_decision.plugin_id,
                 tool_args=up_decision.plugin_args,
                 entry_id=up_decision.entry_id,
-                reason=up_decision.reason
+                reason=up_decision.reason,
             )
 
-        # 2. BrowserUse
-        if bu_decision and bu_decision.has_task and bu_decision.can_execute:
-            logger.info(f"[TaskExecutor] ✅ Using BrowserUse: {bu_decision.task_description}")
-            return TaskResult(
-                task_id=task_id,
-                has_task=True,
-                task_description=bu_decision.task_description,
-                execution_method='browser_use',
-                success=False,
-                reason=bu_decision.reason
-            )
+        # 2. 统一渠道 — 按优先级 copaw > openfang > browser_use > computer_use
+        if isinstance(unified, UnifiedChannelDecision):
+            user_intent = self._extract_latest_user_intent(conversation)
 
-        # 3. ComputerUse
-        if cu_decision and cu_decision.has_task and cu_decision.can_execute:
-            logger.info(f"[TaskExecutor] ✅ Using ComputerUse: {cu_decision.task_description}")
-            return TaskResult(
-                task_id=task_id,
-                has_task=True,
-                task_description=cu_decision.task_description,
-                execution_method='computer_use',
-                success=False,  # 标记为待执行
-                reason=cu_decision.reason
-            )
-                
-        # 4. 没有可执行的分支，汇总原因
+            for ch_key in _CHANNEL_PRIORITY:
+                ch_info = getattr(unified, ch_key, None)
+                if not isinstance(ch_info, dict) or not ch_info.get("can_execute"):
+                    continue
+
+                method = _CHANNEL_TO_METHOD[ch_key]
+                task_desc = ch_info.get("task_description", "")
+                reason = ch_info.get("reason", "")
+                logger.info("[TaskExecutor] Using %s: %s", method, task_desc)
+
+                tool_args = None
+                if method == "openclaw":
+                    tool_args = {"instruction": user_intent}
+
+                return TaskResult(
+                    task_id=task_id,
+                    has_task=True,
+                    task_description=task_desc,
+                    execution_method=method,
+                    success=False,
+                    tool_args=tool_args,
+                    reason=reason,
+                )
+
+        # 3. 没有可执行的分支，汇总原因
         reason_parts = []
-        if cu_decision:
-            reason_parts.append(f"ComputerUse: {cu_decision.reason}")
-        if bu_decision:
-            reason_parts.append(f"BrowserUse: {bu_decision.reason}")
         if isinstance(up_decision, UserPluginDecision):
             reason_parts.append(f"UserPlugin: {up_decision.reason}")
-        
-        has_any_task = (
-            (bu_decision and bu_decision.has_task)
-            or (cu_decision and cu_decision.has_task)
-            or (isinstance(up_decision, UserPluginDecision) and up_decision.has_task)
-        )
+        if isinstance(unified, UnifiedChannelDecision):
+            for ch_key in _CHANNEL_PRIORITY:
+                ch_info = getattr(unified, ch_key, None)
+                if isinstance(ch_info, dict):
+                    reason_parts.append(f"{ch_key}: {ch_info.get('reason', 'N/A')}")
+
+        has_any_task = False
+        task_desc = ""
+        if isinstance(unified, UnifiedChannelDecision):
+            for ch_key in _CHANNEL_PRIORITY:
+                ch_info = getattr(unified, ch_key, None)
+                if isinstance(ch_info, dict) and ch_info.get("task_description"):
+                    has_any_task = True
+                    task_desc = ch_info["task_description"]
+                    break
+        if not has_any_task and isinstance(up_decision, UserPluginDecision) and up_decision.has_task:
+            has_any_task = True
+            task_desc = up_decision.task_description
+
         if has_any_task:
-            if cu_decision and cu_decision.has_task:
-                task_desc = cu_decision.task_description
-            elif bu_decision and bu_decision.has_task:
-                task_desc = bu_decision.task_description
-            elif isinstance(up_decision, UserPluginDecision) and up_decision.has_task:
-                task_desc = up_decision.task_description
-            else:
-                task_desc = ""
-            logger.info(f"[TaskExecutor] Task detected but cannot execute: {task_desc}")
+            logger.info("[TaskExecutor] Task detected but cannot execute: %s", task_desc)
             return TaskResult(
                 task_id=task_id,
                 has_task=True,
                 task_description=task_desc,
                 execution_method='none',
                 success=False,
-                reason=" | ".join(reason_parts) if reason_parts else "No suitable method"
+                reason=" | ".join(reason_parts) if reason_parts else "No suitable method",
             )
-        
-        # 没有检测到任务
+
         logger.debug("[TaskExecutor] No task detected")
         return None
 
@@ -999,6 +1070,9 @@ Return only the JSON object, nothing else.
                 # 添加 conversation_id，用于关联触发事件和对话上下文
                 if conversation_id:
                     ctx_obj["conversation_id"] = conversation_id
+                entry_timeout = _resolve_plugin_entry_timeout(plugin_meta, plugin_entry_id)
+                effective_entry_timeout = _resolve_ctx_entry_timeout(ctx_obj, entry_timeout)
+                ctx_obj["entry_timeout"] = effective_entry_timeout
                 if ctx_obj:
                     safe_args["_ctx"] = ctx_obj
             except Exception as e:
@@ -1006,6 +1080,9 @@ Return only the JSON object, nothing else.
                     "[TaskExecutor] Failed to build _ctx: lanlan=%s conversation_id=%s error=%s",
                     lanlan_name, conversation_id, e
                 )
+                effective_entry_timeout = _resolve_plugin_entry_timeout(plugin_meta, plugin_entry_id)
+
+            run_wait_timeout = _compute_run_wait_timeout(effective_entry_timeout)
 
             run_body: Dict[str, Any] = {
                 "task_id": task_id,
@@ -1069,7 +1146,7 @@ Return only the JSON object, nothing else.
             # Phase 2: await run completion and fetch actual result
             try:
                 completion = await self._await_run_completion(
-                    run_id, timeout=300.0, on_progress=on_progress,
+                    run_id, timeout=run_wait_timeout, on_progress=on_progress,
                 )
             except Exception as e:
                 logger.warning("[TaskExecutor] _await_run_completion error: %r", e)
@@ -1127,7 +1204,7 @@ Return only the JSON object, nothing else.
         self,
         run_id: str,
         *,
-        timeout: float = 300.0,
+        timeout: float | None = 300.0,
         poll_interval: float = 0.5,
         on_progress: Optional[Callable[..., Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
@@ -1143,7 +1220,7 @@ Return only the JSON object, nothing else.
         """
         base = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
         terminal = frozenset(("succeeded", "failed", "canceled", "timeout"))
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = None if timeout is None else asyncio.get_event_loop().time() + timeout
         last_status: Optional[str] = None
         # Track last-seen progress fingerprint to avoid redundant callbacks
         _last_progress_key: Optional[tuple] = None
@@ -1153,8 +1230,8 @@ Return only the JSON object, nothing else.
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=2.0), proxy=None, trust_env=False) as client:
             # ── Phase 1: poll until terminal ──
             while True:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
+                remaining = None if deadline is None else deadline - asyncio.get_event_loop().time()
+                if remaining is not None and remaining <= 0:
                     return {"status": "timeout", "success": False, "data": None,
                             "error": f"Timed out waiting for run {run_id} ({timeout}s)"}
                 try:
@@ -1198,8 +1275,16 @@ Return only the JSON object, nothing else.
                         if last_status in terminal:
                             break
                 except Exception as e:
-                    logger.debug("[_await_run_completion] poll error: %s", e)
-                await asyncio.sleep(min(poll_interval, remaining))
+                    _consecutive_errors += 1
+                    logger.warning(
+                        "[_await_run_completion] poll error for run %s (%d/%d): %s",
+                        run_id, _consecutive_errors, _MAX_CONSECUTIVE_ERRORS, e,
+                    )
+                    if _consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                        return {"status": "failed", "success": False, "data": None,
+                                "error": f"Run {run_id} polling failed ({_consecutive_errors} consecutive transport errors)"}
+                sleep_for = poll_interval if remaining is None else min(poll_interval, remaining)
+                await asyncio.sleep(sleep_for)
 
             # ── Phase 2: fetch export to get plugin_response ──
             plugin_result: Dict[str, Any] = {

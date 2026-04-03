@@ -1,14 +1,18 @@
-from config import get_extra_body
 from utils.config_manager import get_config_manager
 from utils.token_tracker import set_call_type
-from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage, AIMessage, messages_to_dict, messages_from_dict
+from utils.llm_client import SystemMessage, HumanMessage, AIMessage, messages_to_dict, messages_from_dict, create_chat_llm
+import re
 import json
 import os
 import asyncio
 import logging
 from openai import APIConnectionError, InternalServerError, RateLimitError
 
-from config.prompts_sys import recent_history_manager_prompt, detailed_recent_history_manager_prompt, further_summarize_prompt, history_review_prompt
+from config.prompts_memory import (
+    get_recent_history_manager_prompt, get_detailed_recent_history_manager_prompt,
+    get_further_summarize_prompt, get_history_review_prompt,
+)
+from utils.language_utils import get_global_language
 
 # Setup logger
 from utils.file_utils import atomic_write_json
@@ -30,9 +34,22 @@ class CompressedRecentHistoryManager:
             else:
                 self.user_histories[ln] = []
 
+    def _get_default_path(self, lanlan_name: str) -> str:
+        """统一获取默认路径，避免重复代码。"""
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, lanlan_name), 'recent.json')
+
+    def _ensure_path_for_character(self, lanlan_name: str) -> str:
+        """确保角色有有效的文件路径，返回路径。"""
+        if lanlan_name not in self.log_file_path:
+            self.log_file_path[lanlan_name] = self._get_default_path(lanlan_name)
+            logger.info(f"[RecentHistory] 角色 '{lanlan_name}' 不在配置中，使用默认路径")
+        return self.log_file_path[lanlan_name]
+
     def _reset_history_file(self, file_path, lanlan_name, reason):
         """当 recent 文件损坏或为空时，重置为合法的空 JSON 数组。"""
         try:
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
             atomic_write_json(file_path, [], indent=2, ensure_ascii=False)
             logger.warning(f"[RecentHistory] {lanlan_name} 的历史记录文件无效（{reason}），已重置为空列表: {file_path}")
         except Exception as reset_error:
@@ -64,55 +81,28 @@ class CompressedRecentHistoryManager:
     def _get_llm(self):
         """动态获取LLM实例以支持配置热重载"""
         api_config = self._config_manager.get_model_api_config('summary')
-        return ChatOpenAI(
-            model=api_config['model'],
-            base_url=api_config['base_url'],
-            api_key=api_config['api_key'] if api_config['api_key'] else None,
-            temperature=0.3,
-            extra_body=get_extra_body(api_config['model']) or None
+        return create_chat_llm(
+            api_config['model'], api_config['base_url'],
+            api_config['api_key'] or None, temperature=0.3,
         )
-    
+
     def _get_review_llm(self):
         """动态获取审核LLM实例以支持配置热重载"""
         api_config = self._config_manager.get_model_api_config('correction')
-        return ChatOpenAI(
-            model=api_config['model'],
-            base_url=api_config['base_url'],
-            api_key=api_config['api_key'] if api_config['api_key'] else None,
-            temperature=0.1,
-            extra_body=get_extra_body(api_config['model']) or None
+        return create_chat_llm(
+            api_config['model'], api_config['base_url'],
+            api_config['api_key'] or None, temperature=0.1,
         )
 
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True):
-        # 检查角色是否存在于配置中，如果不存在则创建默认路径
         try:
             _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
-            # 更新文件路径映射
             self.log_file_path = recent_log
-            
-            # 如果角色不在配置中，使用默认路径创建
-            if lanlan_name not in recent_log:
-                # 确保memory目录存在
-                self._config_manager.ensure_memory_directory()
-                memory_base = str(self._config_manager.memory_dir)
-                default_path = os.path.join(memory_base, f'recent_{lanlan_name}.json')
-                self.log_file_path[lanlan_name] = default_path
-                logger.info(f"[RecentHistory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {default_path}")
         except Exception as e:
-            logger.error(f"检查角色配置失败: {e}")
-            # 即使配置检查失败，也尝试使用默认路径
-            try:
-                # 确保memory目录存在
-                self._config_manager.ensure_memory_directory()
-                memory_base = str(self._config_manager.memory_dir)
-                default_path = os.path.join(memory_base, f'recent_{lanlan_name}.json')
-                if lanlan_name not in self.log_file_path:
-                    self.log_file_path[lanlan_name] = default_path
-                    logger.debug(f"[RecentHistory] 使用默认路径: {default_path}")
-            except Exception as e2:
-                logger.error(f"创建默认路径失败: {e2}")
-                return
-        
+            logger.error(f"获取角色配置失败: {e}")
+
+        self._ensure_path_for_character(lanlan_name)
+
         # 确保角色在 user_histories 中
         if lanlan_name not in self.user_histories:
             self.user_histories[lanlan_name] = []
@@ -131,7 +121,7 @@ class CompressedRecentHistoryManager:
             # 确保文件目录存在
             file_path = self.log_file_path[lanlan_name]
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            
+
             atomic_write_json(
                 file_path,
                 messages_to_dict(self.user_histories[lanlan_name]),
@@ -157,9 +147,8 @@ class CompressedRecentHistoryManager:
                 )
             except Exception as save_error:
                 logger.error(f"[RecentHistory] 保存历史记录失败: {save_error}", exc_info=True)
-            return
 
-        # 最终保存
+        # 统一保存
         try:
             file_path = self.log_file_path[lanlan_name]
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -171,7 +160,7 @@ class CompressedRecentHistoryManager:
             )
             logger.debug(f"[RecentHistory] {lanlan_name} 历史记录已保存到文件: {file_path}")
         except Exception as e:
-            logger.error(f"[RecentHistory] 最终保存历史记录失败: {e}", exc_info=True)
+            logger.error(f"[RecentHistory] 保存历史记录失败: {e}", exc_info=True)
 
 
     # detailed: 保留尽可能多的细节
@@ -199,9 +188,9 @@ class CompressedRecentHistoryManager:
             lines.append(line)
         messages_text = "\n".join(lines)
         if not detailed:
-            prompt = recent_history_manager_prompt % messages_text
+            prompt = get_recent_history_manager_prompt(get_global_language()).replace("%s", messages_text)
         else:
-            prompt = detailed_recent_history_manager_prompt % messages_text
+            prompt = get_detailed_recent_history_manager_prompt(get_global_language()) % messages_text
 
         retries = 0
         max_retries = 3
@@ -210,12 +199,14 @@ class CompressedRecentHistoryManager:
                 # 尝试将响应内容解析为JSON
                 set_call_type("memory_compression")
                 llm = self._get_llm()
-                response_content = (await llm.ainvoke(prompt)).content
-                # 修复类型问题：确保response_content是字符串
-                if isinstance(response_content, list):
-                    response_content = str(response_content)
-                if response_content.startswith("```"):
-                    response_content = response_content.replace('```json','').replace('```', '')
+                try:
+                    response_content = (await llm.ainvoke(prompt)).content
+                finally:
+                    await llm.aclose()
+                response_content = str(response_content).strip()
+                match = re.search(r'```(?:json)?\s*([\s\S]*?)```', response_content)
+                if match:
+                    response_content = match.group(1).strip()
                 summary_json = json.loads(response_content)
                 # 从JSON字典中提取对话摘要，假设摘要存储在名为'key'的键下
                 if '对话摘要' in summary_json:
@@ -255,12 +246,14 @@ class CompressedRecentHistoryManager:
                 # 尝试将响应内容解析为JSON
                 set_call_type("memory_compression")
                 llm = self._get_llm()
-                response_content = (await llm.ainvoke(further_summarize_prompt % initial_summary)).content
-                # 修复类型问题：确保response_content是字符串
-                if isinstance(response_content, list):
-                    response_content = str(response_content)
-                if response_content.startswith("```"):
-                    response_content = response_content.replace('```json', '').replace('```', '')
+                try:
+                    response_content = (await llm.ainvoke(get_further_summarize_prompt(get_global_language()) % initial_summary)).content
+                finally:
+                    await llm.aclose()
+                response_content = str(response_content).strip()
+                match = re.search(r'```(?:json)?\s*([\s\S]*?)```', response_content)
+                if match:
+                    response_content = match.group(1).strip()
                 summary_json = json.loads(response_content)
                 # 从JSON字典中提取对话摘要，假设摘要存储在名为'key'的键下
                 if '对话摘要' in summary_json:
@@ -285,32 +278,14 @@ class CompressedRecentHistoryManager:
         return None
 
     def get_recent_history(self, lanlan_name):
-        # 检查角色是否存在于配置中，如果不存在则创建默认路径
         try:
             _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
-            # 更新文件路径映射
             self.log_file_path = recent_log
-            
-            # 如果角色不在配置中，使用默认路径
-            if lanlan_name not in recent_log:
-                # 确保memory目录存在
-                self._config_manager.ensure_memory_directory()
-                memory_base = str(self._config_manager.memory_dir)
-                default_path = os.path.join(memory_base, f'recent_{lanlan_name}.json')
-                self.log_file_path[lanlan_name] = default_path
-                logger.info(f"[RecentHistory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {default_path}")
         except Exception as e:
-            logger.error(f"检查角色配置失败: {e}")
-            # 即使配置检查失败，也尝试使用默认路径
-            try:
-                memory_base = str(self._config_manager.memory_dir)
-                default_path = f'{memory_base}/recent_{lanlan_name}.json'
-                if lanlan_name not in self.log_file_path:
-                    self.log_file_path[lanlan_name] = default_path
-            except Exception as e2:
-                logger.error(f"创建默认路径失败: {e2}")
-                return []
-        
+            logger.error(f"获取角色配置失败: {e}")
+
+        self._ensure_path_for_character(lanlan_name)
+
         # 确保角色在 user_histories 中
         if lanlan_name not in self.user_histories:
             self.user_histories[lanlan_name] = []
@@ -396,9 +371,12 @@ class CompressedRecentHistoryManager:
             try:
                 # 使用LLM审阅历史记录
                 set_call_type("memory_review")
-                prompt = history_review_prompt % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
+                prompt = get_history_review_prompt(get_global_language()) % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
                 review_llm = self._get_review_llm()
-                response_content = (await review_llm.ainvoke(prompt)).content
+                try:
+                    response_content = (await review_llm.ainvoke(prompt)).content
+                finally:
+                    await review_llm.aclose()
                 
                 # 检查是否被取消（LLM调用后）
                 if cancel_event and cancel_event.is_set():
@@ -406,13 +384,13 @@ class CompressedRecentHistoryManager:
                     return False
                 
                 # 确保response_content是字符串
-                if isinstance(response_content, list):
-                    response_content = str(response_content)
-                
-                # 清理响应内容
-                if response_content.startswith("```"):
-                    response_content = response_content.replace('```json', '').replace('```', '')
-                
+                response_content = str(response_content).strip()
+
+                # 清理响应内容（使用正则安全提取）
+                match = re.search(r'```(?:json)?\s*([\s\S]*?)```', response_content)
+                if match:
+                    response_content = match.group(1).strip()
+
                 # 解析JSON响应
                 review_result = json.loads(response_content)
                 

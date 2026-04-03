@@ -622,6 +622,10 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     const startHideTimer = (delay = 1000) => {
         const lockIcon = document.getElementById('live2d-lock-icon');
         const floatingButtons = document.getElementById('live2d-floating-buttons');
+        const hasOpenOverlay = () => {
+            const popupUi = window.AvatarPopupUI || null;
+            return !!(popupUi && typeof popupUi.hasVisibleOverlay === 'function' && popupUi.hasVisibleOverlay('live2d'));
+        };
         const isPointerNearLock = () => {
             if (!lockIcon || lockIcon.style.display !== 'block') return false;
             const x = this._lastMouseX;
@@ -649,7 +653,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             }
 
             // 再次检查鼠标是否在按钮区域内
-            if (this._isMouseOverButtons || isPointerNearLock()) {
+            if (this._isMouseOverButtons || isPointerNearLock() || hasOpenOverlay()) {
                 // 鼠标在按钮上，不隐藏，重新启动定时器
                 this._hideButtonsTimer = null;
                 startHideTimer(delay);
@@ -666,16 +670,29 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     };
 
     const live2dContainer = document.getElementById('live2d-container');
-    let lockedHoverFadeActive = false;
-    const setLockedHoverFade = (shouldFade) => {
+    let ctrlFadeActive = false;      // Ctrl 按住淡化
+    let stationaryFadeActive = false; // 静止1秒淡化
+    const applyFade = () => {
         if (!live2dContainer) return;
-        if (lockedHoverFadeActive === shouldFade) return;
-        lockedHoverFadeActive = shouldFade;
+        const shouldFade = ctrlFadeActive || stationaryFadeActive;
         live2dContainer.classList.toggle('locked-hover-fade', shouldFade);
     };
 
     // 跟踪 Ctrl 键状态（作为备用，主要从事件中直接读取）
     let isCtrlPressed = false;
+
+    // 静止自动淡化：鼠标在模型范围内静止1秒后自动淡化
+    this._stationaryFadeTimer = null;
+    this._hasEnteredHoverRange = false; // 是否已进入过模型范围
+    const STATIONARY_FADE_DELAY = 1000;
+
+    const clearStationaryFadeTimer = () => {
+        if (this._stationaryFadeTimer !== null) {
+            clearTimeout(this._stationaryFadeTimer);
+            this._stationaryFadeTimer = null;
+        }
+    };
+    this._clearStationaryFadeTimer = clearStationaryFadeTimer;
 
     // 清理旧的键盘监听器（在添加新监听器之前）
     if (this._ctrlKeyDownListener) {
@@ -697,10 +714,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         // 检查 Ctrl 或 Cmd 键是否释放
         if (!event.ctrlKey && !event.metaKey) {
             isCtrlPressed = false;
-            // Ctrl/Cmd 键释放时，如果正在变淡，立即取消变淡效果
-            if (lockedHoverFadeActive) {
-                setLockedHoverFade(false);
-            }
+            // Ctrl 释放时重新计算淡化状态，让 stationaryFadeActive 有机会生效
+            ctrlFadeActive = false;
+            applyFade();
         }
     };
 
@@ -739,13 +755,17 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
         // 检查模型是否存在，防止切换模型时出现错误
         if (!model) {
-            setLockedHoverFade(false);
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
             return;
         }
 
         // 检查模型是否已被销毁或不在舞台上
         if (model.destroyed || !model.parent || !this.pixi_app || !this.pixi_app.stage) {
-            setLockedHoverFade(false);
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
             return;
         }
         
@@ -784,7 +804,6 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         if ((model.interactive && model.dragging) || this._isDraggingModel) {
             return;
         }
-
         // 如果已经点击了"请她离开"，特殊处理
         if (this._goodbyeClicked) {
             const lockIcon = document.getElementById('live2d-lock-icon');
@@ -801,7 +820,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             if (returnButtonContainer) {
                 returnButtonContainer.style.display = 'block';
             }
-            setLockedHoverFade(false);
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
             return;
         }
 
@@ -840,37 +861,65 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 distance = ellipseDistance <= 1 ? 0 : (ellipseDistance - 1) * Math.min(ellipseRadiusX, ellipseRadiusY);
             }
 
-            // 额外检查：鼠标必须在模型可见区域附近
+            // 检查是否启用了全屏跟踪
+            const isFullscreenTracking = this.isFullscreenTrackingEnabled ? this.isFullscreenTrackingEnabled() : false;
+
+            // 额外检查：鼠标必须在模型可见区域附近（除非启用全屏跟踪）
             const isPointerNearVisibleModel = pointer.x >= bounds.left - threshold && pointer.x <= bounds.right + threshold &&
                                               pointer.y >= Math.max(bounds.top, 0) - threshold && pointer.y <= Math.min(bounds.bottom, window.innerHeight) + threshold;
-            
-            // 如果鼠标不在屏幕内或不在模型可见区域附近，视为远离模型
-            if (!isPointerNearVisibleModel) {
+
+            // 如果鼠标不在屏幕内或不在模型可见区域附近，且未启用全屏跟踪，则视为远离模型
+            if (!isPointerNearVisibleModel && !isFullscreenTracking) {
                 this.isFocusing = false;
                 startHideTimer();
-                setLockedHoverFade(false);
+                clearStationaryFadeTimer();
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                applyFade();
                 return;
             }
-            // 只有在锁定、按住 Ctrl 键且鼠标在模型附近时才变淡
-            const shouldFade = this.isLocked && ctrlKeyPressed && distance < HoverFadethreshold;
-            setLockedHoverFade(shouldFade);
+
+            const isNearModel = distance < HoverFadethreshold;
+
+            // 静止时启动定时器，移出范围时清除
+            if (this.isLocked && isNearModel) {
+                // 首次进入范围：设置标志并启动定时器
+                if (!this._hasEnteredHoverRange) {
+                    this._hasEnteredHoverRange = true;
+                    if (this._stationaryFadeTimer === null && !stationaryFadeActive) {
+                        this._stationaryFadeTimer = setTimeout(() => {
+                            stationaryFadeActive = true;
+                            applyFade();
+                        }, STATIONARY_FADE_DELAY);
+                    }
+                }
+                // 已在范围内：移动时不重启定时器，只更新位置
+            } else {
+                // 移出范围：清除定时器并重置标志
+                if (this._stationaryFadeTimer !== null || stationaryFadeActive) {
+                    clearStationaryFadeTimer();
+                    stationaryFadeActive = false;
+                    applyFade();
+                }
+                this._hasEnteredHoverRange = false;
+            }
+
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化）
+            ctrlFadeActive = this.isLocked && ctrlKeyPressed && isNearModel;
+            applyFade();
 
             const canvasEl = document.getElementById('live2d-canvas');
+
             if (distance < threshold) {
                 showButtons();
                 if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
                     canvasEl.style.cursor = 'grab';
                 }
-                // 只有当鼠标在模型附近时才调用 focus，避免 Electron 透明窗口中的全局跟踪问题
-                // 同时检查鼠标跟踪是否启用
                 const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
                 if (this.isFocusing) {
                     if (isMouseTrackingEnabled) {
                         model.focus(pointer.x, pointer.y);
                     } else {
-                        // 鼠标跟踪禁用时，清除 focusController 外部输入
-                        // 头部仍可按 updateNaturalMovements（呼吸、轻微摆动等）自主运动，
-                        // 但不受鼠标移动、拖拽等外部因素影响
                         if (model.internalModel && model.internalModel.focusController) {
                             const fc = model.internalModel.focusController;
                             fc.targetX = 0;
@@ -878,8 +927,21 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                         }
                     }
                 }
+            } else if (isFullscreenTracking) {
+                if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
+                    canvasEl.style.cursor = 'grab';
+                }
+                const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
+                if (isMouseTrackingEnabled) {
+                    model.focus(pointer.x, pointer.y);
+                } else {
+                    if (model.internalModel && model.internalModel.focusController) {
+                        const fc = model.internalModel.focusController;
+                        fc.targetX = 0;
+                        fc.targetY = 0;
+                    }
+                }
             } else {
-                // 鼠标离开模型区域，启动隐藏定时器
                 this.isFocusing = false;
                 if (canvasEl && !(model.interactive && model.dragging)) {
                     canvasEl.style.cursor = '';
@@ -895,12 +957,16 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         }
     };
 
-    // 窗口失去焦点时重置 Ctrl 键状态和变淡效果
+    // 窗口失去焦点时，只重置淡化效果，不重置 Ctrl 键状态
+    // 这样窗口重新获得焦点后，如果 Ctrl 仍被按住，淡化功能可以恢复
     const onBlur = () => {
-        isCtrlPressed = false;
-        if (lockedHoverFadeActive) {
-            setLockedHoverFade(false);
+        clearStationaryFadeTimer();
+        // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
+        if (stationaryFadeActive) {
+            stationaryFadeActive = false;
+            applyFade();
         }
+        this._hasEnteredHoverRange = false;
     };
 
     // 清理旧的监听器
@@ -1414,6 +1480,12 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     if (this._windowBlurListener) {
         window.removeEventListener('blur', this._windowBlurListener);
         this._windowBlurListener = null;
+    }
+
+    // 清理静止淡化定时器
+    if (this._clearStationaryFadeTimer) {
+        this._clearStationaryFadeTimer();
+        this._clearStationaryFadeTimer = null;
     }
 
     // resize 吸附监听器已移除（setupResizeSnapDetection 不再存在）

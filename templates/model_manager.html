@@ -355,11 +355,21 @@
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <select id="tonemapping-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
                         <option value="0" style="color: #4f8cff;">None (无)</option>
-                        <option value="1" selected style="color: #4f8cff;">Linear (线性)</option>
+                        <option value="1" style="color: #4f8cff;">Linear (线性)</option>
                         <option value="2" style="color: #4f8cff;">Reinhard</option>
                         <option value="3" style="color: #4f8cff;">Cineon (电影)</option>
                         <option value="4" style="color: #4f8cff;">ACES Filmic</option>
+                        <option value="6" style="color: #4f8cff;">AgX</option>
+                        <option value="7" selected style="color: #4f8cff;">Neutral</option>
                     </select>
+                </div>
+            </div>
+
+            <div class="lighting-control" id="vrm-outline-width-control">
+                <label for="vrm-outline-width-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.outlineWidth">描边粗细</label>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <input type="range" id="vrm-outline-width-slider" min="0" max="3" step="0.1" value="1.0" style="flex: 1;">
+                    <span id="vrm-outline-width-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">1.00</span>
                 </div>
             </div>
 
@@ -383,48 +393,7 @@
         </div>
         </div>
 
-        <!-- VRM 鼠标跟踪设置 -->
-        <div class="control-group" id="vrm-cursor-follow-group">
-            <div class="vrm-lighting-wrapper">
-                <div class="vrm-lighting-header">
-                    <span class="vrm-lighting-header-text" data-i18n="vrm.cursorFollow.title">鼠标跟踪</span>
-                </div>
-                <div class="vrm-lighting-content">
-                    <div class="lighting-control">
-                        <label for="vrm-cursor-follow-preset" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.cursorFollow.preset">跟踪强度</label>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <select id="vrm-cursor-follow-preset" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
-                                <option value="none" data-i18n="vrm.cursorFollow.none">关闭</option>
-                                <option value="low" data-i18n="vrm.cursorFollow.low">低</option>
-                                <option value="medium" data-i18n="vrm.cursorFollow.medium">中</option>
-                                <option value="high" selected data-i18n="vrm.cursorFollow.high">高</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="lighting-control">
-                        <label for="vrm-eye-sensitivity-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.cursorFollow.eyeSensitivity">眼睛灵敏度</label>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <input type="range" id="vrm-eye-sensitivity-slider" min="10" max="50" step="1" value="30" style="flex: 1;">
-                            <span id="vrm-eye-sensitivity-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">30°</span>
-                        </div>
-                    </div>
-                    <div class="lighting-control">
-                        <label for="vrm-head-sensitivity-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.cursorFollow.headSensitivity">头部灵敏度</label>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <input type="range" id="vrm-head-sensitivity-slider" min="15" max="60" step="1" value="45" style="flex: 1;">
-                            <span id="vrm-head-sensitivity-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">45°</span>
-                        </div>
-                    </div>
-                    <div class="lighting-control">
-                        <label for="vrm-head-speed-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.cursorFollow.headSpeed">头部跟踪速度</label>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <input type="range" id="vrm-head-speed-slider" min="1.0" max="8.0" step="0.5" value="3.0" style="flex: 1;">
-                            <span id="vrm-head-speed-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">3.0</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+        <!-- VRM 鼠标跟踪已移至 popup-ui 统一控制 -->
 
         </div><!-- /vrm-settings-section -->
 
@@ -485,13 +454,13 @@
                             <label for="mmd-tonemapping-select" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.rendering.toneMapping">色调映射</label>
                             <div style="display: flex; align-items: center; gap: 10px;">
                                 <select id="mmd-tonemapping-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #2ecc71;">
-                                    <option value="0" selected style="color: #2ecc71;">None (无)</option>
+                                    <option value="0" style="color: #2ecc71;">None (无)</option>
                                     <option value="1" style="color: #2ecc71;">Linear (线性)</option>
                                     <option value="2" style="color: #2ecc71;">Reinhard</option>
                                     <option value="3" style="color: #2ecc71;">Cineon (电影)</option>
                                     <option value="4" style="color: #2ecc71;">ACES Filmic</option>
                                     <option value="6" style="color: #2ecc71;">AgX</option>
-                                    <option value="7" style="color: #2ecc71;">Neutral</option>
+                                    <option value="7" selected style="color: #2ecc71;">Neutral</option>
                                 </select>
                             </div>
                         </div>
@@ -512,90 +481,26 @@
                                 <span id="mmd-outline-status" style="color: #2ecc71; font-size: 14px;">ON</span>
                             </div>
                         </div>
-                        <div class="lighting-control">
-                            <label for="mmd-pixel-ratio-select" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.rendering.pixelRatio">像素比例</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <select id="mmd-pixel-ratio-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #2ecc71;">
-                                    <option value="0" selected style="color: #2ecc71;">Auto (自动)</option>
-                                    <option value="1" style="color: #2ecc71;">1.0x</option>
-                                    <option value="1.5" style="color: #2ecc71;">1.5x</option>
-                                    <option value="2" style="color: #2ecc71;">2.0x</option>
-                                </select>
-                            </div>
-                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- MMD 物理设置 -->
-            <div class="control-group" id="mmd-physics-group">
-                <div class="vrm-lighting-wrapper mmd-lighting-wrapper">
-                    <div class="vrm-lighting-header mmd-lighting-header">
-                        <span class="vrm-lighting-header-text" data-i18n="mmd.physics.title">MMD物理设置</span>
-                    </div>
-                    <div class="vrm-lighting-content">
-                        <div class="lighting-control">
-                            <label style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.physics.enabled">物理模拟</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <label class="toggle-switch">
-                                    <input type="checkbox" id="mmd-physics-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </label>
-                                <span id="mmd-physics-status" style="color: #2ecc71; font-size: 14px;">ON</span>
-                            </div>
-                        </div>
-                        <div class="lighting-control">
-                            <label for="mmd-physics-strength-slider" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.physics.strength">拟真强度</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="mmd-physics-strength-slider" min="0.1" max="2.0" step="0.1" value="1.0" style="flex: 1;">
-                                <span id="mmd-physics-strength-value" style="min-width: 40px; color: #2ecc71; font-size: 14px; font-weight: 500;">1.0</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
 
-            <!-- MMD 鼠标跟踪设置 -->
-            <div class="control-group" id="mmd-cursor-follow-group">
-                <div class="vrm-lighting-wrapper mmd-lighting-wrapper">
-                    <div class="vrm-lighting-header mmd-lighting-header">
-                        <span class="vrm-lighting-header-text" data-i18n="mmd.cursorFollow.title">鼠标跟踪</span>
-                    </div>
-                    <div class="vrm-lighting-content">
-                        <div class="lighting-control">
-                            <label style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.cursorFollow.enabled">头部跟踪</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <label class="toggle-switch">
-                                    <input type="checkbox" id="mmd-cursor-follow-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </label>
-                                <span id="mmd-cursor-follow-status" style="color: #2ecc71; font-size: 14px;">ON</span>
-                            </div>
-                        </div>
-                        <div class="lighting-control">
-                            <label for="mmd-head-yaw-slider" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.cursorFollow.headYaw">左右转角范围</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="mmd-head-yaw-slider" min="10" max="50" step="1" value="30" style="flex: 1;">
-                                <span id="mmd-head-yaw-value" style="min-width: 40px; color: #2ecc71; font-size: 14px; font-weight: 500;">30°</span>
-                            </div>
-                        </div>
-                        <div class="lighting-control">
-                            <label for="mmd-head-pitch-slider" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.cursorFollow.headPitch">上下转角范围</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="mmd-head-pitch-slider" min="5" max="30" step="1" value="20" style="flex: 1;">
-                                <span id="mmd-head-pitch-value" style="min-width: 40px; color: #2ecc71; font-size: 14px; font-weight: 500;">20°</span>
-                            </div>
-                        </div>
-                        <div class="lighting-control">
-                            <label for="mmd-head-smooth-slider" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.cursorFollow.smoothSpeed">跟踪平滑度</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="mmd-head-smooth-slider" min="1.0" max="8.0" step="0.5" value="3.0" style="flex: 1;">
-                                <span id="mmd-head-smooth-value" style="min-width: 40px; color: #2ecc71; font-size: 14px; font-weight: 500;">3.0</span>
-                            </div>
+        <!-- MMD 待机动作选择 -->
+        <div class="control-group" id="mmd-idle-animation-group" style="display:none;">
+            <div class="mmd-idle-animation-wrapper">
+                <div class="mmd-idle-animation-content">
+                    <div class="lighting-control" id="mmd-idle-animation-control">
+                        <label for="mmd-idle-animation-select" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.idleAnimation.title">待机动作</label>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <select id="mmd-idle-animation-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #2ecc71;">
+                                <option value="" style="color: #2ecc71;" data-i18n="common.loading">加载中...</option>
+                            </select>
                         </div>
                     </div>
                 </div>
             </div>
+        </div>
 
         </div><!-- /mmd-settings-section -->
 
@@ -707,7 +612,7 @@
             "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
             "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js",
             "@moeru/three-mmd": "/static/libs/three-mmd.module.js",
-            "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v=8",
+            "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v=23",
             "ammojs-typed": "/static/libs/ammojs-typed.module.js"
         }
     }
@@ -721,6 +626,7 @@
         window.dispatchEvent(new CustomEvent('three-ready'));
     </script>
     <!-- VRM模块（按顺序加载，失败不影响Live2D）-->
+    <script src="/static/avatar-portrait.js"></script>
 
     <script src="/static/js/model_manager.js"></script>
 
@@ -730,6 +636,7 @@
 
     <!-- 通用教程管理器 -->
     <script src="/static/universal-tutorial-manager.js"></script>
+    <link rel="stylesheet" href="/static/css/touch-config.css">
     <script src="/static/touch-config.js"></script>
     <!-- 初始化 -->
     <script>

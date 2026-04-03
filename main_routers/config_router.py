@@ -495,33 +495,24 @@ async def get_core_config_api():
             "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', ''),
             "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', ''),
             "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', ''),
-            "mcpToken": core_cfg.get('mcpToken', ''),  
-            "enableCustomApi": core_cfg.get('enableCustomApi', False),  
-            # 自定义API相关字段
-            "conversationModelUrl": core_cfg.get('conversationModelUrl', ''),
-            "conversationModelId": core_cfg.get('conversationModelId', ''),
-            "conversationModelApiKey": core_cfg.get('conversationModelApiKey', ''),
-            "summaryModelUrl": core_cfg.get('summaryModelUrl', ''),
-            "summaryModelId": core_cfg.get('summaryModelId', ''),
-            "summaryModelApiKey": core_cfg.get('summaryModelApiKey', ''),
-            "correctionModelUrl": core_cfg.get('correctionModelUrl', ''),
-            "correctionModelId": core_cfg.get('correctionModelId', ''),
-            "correctionModelApiKey": core_cfg.get('correctionModelApiKey', ''),
-            "emotionModelUrl": core_cfg.get('emotionModelUrl', ''),
-            "emotionModelId": core_cfg.get('emotionModelId', ''),
-            "emotionModelApiKey": core_cfg.get('emotionModelApiKey', ''),
-            "visionModelUrl": core_cfg.get('visionModelUrl', ''),
-            "visionModelId": core_cfg.get('visionModelId', ''),
-            "visionModelApiKey": core_cfg.get('visionModelApiKey', ''),
-            "agentModelUrl": core_cfg.get('agentModelUrl', ''),
-            "agentModelId": core_cfg.get('agentModelId', ''),
-            "agentModelApiKey": core_cfg.get('agentModelApiKey', ''),
-            "omniModelUrl": core_cfg.get('omniModelUrl', ''),
-            "omniModelId": core_cfg.get('omniModelId', ''),
-            "omniModelApiKey": core_cfg.get('omniModelApiKey', ''),
-            "ttsModelUrl": core_cfg.get('ttsModelUrl', ''),
-            "ttsModelId": core_cfg.get('ttsModelId', ''),
-            "ttsModelApiKey": core_cfg.get('ttsModelApiKey', ''),
+            "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', ''),
+            "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', ''),
+            "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
+            "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
+            "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', ''),
+            "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', ''),
+            "mcpToken": core_cfg.get('mcpToken', ''),
+            "openclawUrl": core_cfg.get('openclawUrl'),
+            "openclawTimeout": core_cfg.get('openclawTimeout'),
+            "openclawDefaultSenderId": core_cfg.get('openclawDefaultSenderId'),
+            "enableCustomApi": core_cfg.get('enableCustomApi', False),
+            # 自定义API相关字段（Provider / Url / Id / ApiKey per model type）
+            **{
+                f'{mt}Model{suffix}': core_cfg.get(f'{mt}Model{suffix}', '')
+                for mt in ('conversation', 'summary', 'correction', 'emotion',
+                           'vision', 'agent', 'omni', 'tts')
+                for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
+            },
             "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
             "success": True
         }
@@ -592,81 +583,37 @@ async def update_core_config(request: Request):
             core_cfg['coreApi'] = data['coreApi']
         if 'assistApi' in data:
             core_cfg['assistApi'] = data['assistApi']
-        if 'assistApiKeyQwen' in data:
-            core_cfg['assistApiKeyQwen'] = data['assistApiKeyQwen']
-        if 'assistApiKeyOpenai' in data:
-            core_cfg['assistApiKeyOpenai'] = data['assistApiKeyOpenai']
-        if 'assistApiKeyGlm' in data:
-            core_cfg['assistApiKeyGlm'] = data['assistApiKeyGlm']
-        if 'assistApiKeyStep' in data:
-            core_cfg['assistApiKeyStep'] = data['assistApiKeyStep']
-        if 'assistApiKeySilicon' in data:
-            core_cfg['assistApiKeySilicon'] = data['assistApiKeySilicon']
-        if 'assistApiKeyGemini' in data:
-            core_cfg['assistApiKeyGemini'] = data['assistApiKeyGemini']
-        if 'assistApiKeyKimi' in data:
-            core_cfg['assistApiKeyKimi'] = data['assistApiKeyKimi']
+        _api_key_fields = [
+            'assistApiKeyQwen', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
+            'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
+            'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
+            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyGrok',
+            'assistApiKeyClaude',
+        ]
+        for field in _api_key_fields:
+            if field in data:
+                core_cfg[field] = data[field]
         if 'mcpToken' in data:
             core_cfg['mcpToken'] = data['mcpToken']
+        if 'openclawUrl' in data:
+            core_cfg['openclawUrl'] = data['openclawUrl']
+        if 'openclawTimeout' in data:
+            core_cfg['openclawTimeout'] = data['openclawTimeout']
+        if 'openclawDefaultSenderId' in data:
+            core_cfg['openclawDefaultSenderId'] = data['openclawDefaultSenderId']
         if 'enableCustomApi' in data:
             core_cfg['enableCustomApi'] = data['enableCustomApi']
-        
-        # 添加用户自定义API配置
-        if 'conversationModelUrl' in data:
-            core_cfg['conversationModelUrl'] = data['conversationModelUrl']
-        if 'conversationModelId' in data:
-            core_cfg['conversationModelId'] = data['conversationModelId']
-        if 'conversationModelApiKey' in data:
-            core_cfg['conversationModelApiKey'] = data['conversationModelApiKey']
-            
-        if 'summaryModelUrl' in data:
-            core_cfg['summaryModelUrl'] = data['summaryModelUrl']
-        if 'summaryModelId' in data:
-            core_cfg['summaryModelId'] = data['summaryModelId']
-        if 'summaryModelApiKey' in data:
-            core_cfg['summaryModelApiKey'] = data['summaryModelApiKey']
-            
-        if 'correctionModelUrl' in data:
-            core_cfg['correctionModelUrl'] = data['correctionModelUrl']
-        if 'correctionModelId' in data:
-            core_cfg['correctionModelId'] = data['correctionModelId']
-        if 'correctionModelApiKey' in data:
-            core_cfg['correctionModelApiKey'] = data['correctionModelApiKey']
-            
-        if 'emotionModelUrl' in data:
-            core_cfg['emotionModelUrl'] = data['emotionModelUrl']
-        if 'emotionModelId' in data:
-            core_cfg['emotionModelId'] = data['emotionModelId']
-        if 'emotionModelApiKey' in data:
-            core_cfg['emotionModelApiKey'] = data['emotionModelApiKey']
-            
-        if 'visionModelUrl' in data:
-            core_cfg['visionModelUrl'] = data['visionModelUrl']
-        if 'visionModelId' in data:
-            core_cfg['visionModelId'] = data['visionModelId']
-        if 'visionModelApiKey' in data:
-            core_cfg['visionModelApiKey'] = data['visionModelApiKey']
-            
-        if 'agentModelUrl' in data:
-            core_cfg['agentModelUrl'] = data['agentModelUrl']
-        if 'agentModelId' in data:
-            core_cfg['agentModelId'] = data['agentModelId']
-        if 'agentModelApiKey' in data:
-            core_cfg['agentModelApiKey'] = data['agentModelApiKey']
-            
-        if 'omniModelUrl' in data:
-            core_cfg['omniModelUrl'] = data['omniModelUrl']
-        if 'omniModelId' in data:
-            core_cfg['omniModelId'] = data['omniModelId']
-        if 'omniModelApiKey' in data:
-            core_cfg['omniModelApiKey'] = data['omniModelApiKey']
-            
-        if 'ttsModelUrl' in data:
-            core_cfg['ttsModelUrl'] = data['ttsModelUrl']
-        if 'ttsModelId' in data:
-            core_cfg['ttsModelId'] = data['ttsModelId']
-        if 'ttsModelApiKey' in data:
-            core_cfg['ttsModelApiKey'] = data['ttsModelApiKey']
+
+        # 自定义API配置（Provider / Url / Id / ApiKey per model type）
+        _model_types = [
+            'conversation', 'summary', 'correction', 'emotion',
+            'vision', 'agent', 'omni', 'tts',
+        ]
+        for mt in _model_types:
+            for suffix in ['Provider', 'Url', 'Id', 'ApiKey']:
+                field = f'{mt}Model{suffix}'
+                if field in data:
+                    core_cfg[field] = data[field]
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
         
@@ -735,18 +682,23 @@ async def get_api_providers_config():
     """获取API服务商配置（供前端使用）"""
     try:
         from utils.api_config_loader import (
+            get_config,
             get_core_api_providers_for_frontend,
             get_assist_api_providers_for_frontend,
         )
-        
+
+        full_config = get_config()
         # 使用缓存加载配置（性能更好，配置更新后需要重启服务）
         core_providers = get_core_api_providers_for_frontend()
         assist_providers = get_assist_api_providers_for_frontend()
-        
+
         return {
             "success": True,
             "core_api_providers": core_providers,
             "assist_api_providers": assist_providers,
+            "api_key_registry": full_config.get("api_key_registry", {}),
+            "assist_api_providers_full": full_config.get("assist_api_providers", {}),
+            "core_api_providers_full": full_config.get("core_api_providers", {}),
         }
     except Exception as e:
         logger.error(f"获取API服务商配置失败: {e}")
