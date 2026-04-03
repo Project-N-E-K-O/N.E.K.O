@@ -533,15 +533,93 @@ history_review_prompt = HISTORY_REVIEW_PROMPT['zh']
 # =====================================================================
 
 EMOTION_ANALYSIS_PROMPT = {
-    'zh': """你是一个情感分析专家。请分析用户输入的文本情感，并返回以下格式的JSON：{"emotion": "情感类型", "confidence": 置信度(0-1)}。情感类型包括：happy, sad, angry, neutral, surprised.""",
+    'zh': """你是一个情感分析专家。请判断输入文本里最主导、最外显的一种情绪，并只返回 JSON：{"emotion": "情感类型", "confidence": 置信度}。
 
-    'en': """你是一个情感分析专家. Analyze the emotion of the user's input text and return JSON in the following format: {"emotion": "emotion_type", "confidence": confidence(0-1)}. Emotion types: happy, sad, angry, neutral, surprised.""",
+可选情感只有这五种：
+- happy：开心、兴奋、满足、轻快、宠溺、可爱、调皮、得意、热情
+- sad：失落、难过、委屈、沮丧、低落、遗憾、脆弱
+- angry：生气、不满、烦躁、攻击性、强烈指责、炸毛
+- surprised：惊讶、震惊、意外、被逗到、夸张感叹、强烈新奇感
+- neutral：平静、陈述事实、情绪很弱、难以判断
 
-    'ja': """你是一个情感分析专家。ユーザーの入力テキストの感情を分析し、以下のJSON形式で返してください：{"emotion": "感情タイプ", "confidence": 信頼度(0-1)}。感情タイプ：happy, sad, angry, neutral, surprised.""",
+判断规则：
+1. 必须优先选择“最强主情绪”，不要因为语气里带一点克制就轻易返回 neutral。
+2. 只有在文本整体真的平铺直叙、情绪信号很弱时，才返回 neutral。
+3. 可爱、开心、撒娇、兴奋、被逗乐，优先判为 happy，而不是 neutral。
+4. 明显吐槽、炸毛、抱怨、恼火，优先判为 angry，而不是 sad。
+5. 明显惊叹、夸张反应、被意外到，优先判为 surprised。
+6. sad 只在文本明显体现低落、委屈、难过、遗憾时使用，不要把普通温和语气误判成 sad。
+7. confidence 取 0 到 1 之间的小数；情绪很明确时应给出较高置信度。
 
-    'ko': """你是一个情感分析专家. 사용자 입력 텍스트의 감정을 분석하고 다음 JSON 형식으로 반환해 주세요: {"emotion": "감정유형", "confidence": 신뢰도(0-1)}. 감정 유형: happy, sad, angry, neutral, surprised.""",
+只返回 JSON，不要附加任何解释文本。""",
 
-    'ru': """你是一个情感分析专家. Проанализируйте эмоцию во вводимом пользователем тексте и верните JSON в следующем формате: {"emotion": "тип_эмоции", "confidence": уверенность(0-1)}. Типы эмоций: happy, sad, angry, neutral, surprised.""",
+    'en': """You are an emotion analysis expert. Identify the single most dominant and outward emotion in the input text and return JSON only: {"emotion": "emotion_type", "confidence": confidence}.
+
+Allowed emotions only:
+- happy: joyful, excited, affectionate, playful, cute, delighted, warm
+- sad: upset, hurt, disappointed, low, regretful, vulnerable
+- angry: angry, annoyed, irritated, hostile, complaining, explosive
+- surprised: surprised, shocked, startled, unexpected, exaggerated reaction
+- neutral: calm, factual, weak emotion, hard to judge
+
+Rules:
+1. Choose the strongest main emotion, not the safest one.
+2. Do not return neutral unless the text is truly emotionally weak or flat.
+3. Cute, cheerful, playful, affectionate, excited reactions should prefer happy.
+4. Complaining, snapping, irritated, explosive reactions should prefer angry over sad.
+5. Obvious exclamations or unexpected reactions should prefer surprised.
+6. Use sad only when the text clearly shows hurt, disappointment, regret, or low mood.
+7. confidence must be a number between 0 and 1.
+
+Return JSON only, with no explanation.""",
+
+    'ja': """あなたは感情分析の専門家です。入力文の中で最も支配的で外に出ている感情を1つだけ選び、JSONのみで返してください：{"emotion": "emotion_type", "confidence": confidence}。
+
+使用できる感情は次の5つのみです：
+happy, sad, angry, neutral, surprised
+
+判断ルール：
+1. もっとも強い主感情を選び、無難だからという理由で neutral を選ばない。
+2. 本当に感情が弱い・平坦な文章だけ neutral にする。
+3. かわいい、うれしい、甘える、はしゃぐ、楽しそうな反応は happy を優先する。
+4. 文句、不満、イライラ、怒った反応は sad ではなく angry を優先する。
+5. 驚き、意外さ、大げさな感嘆は surprised を優先する。
+6. sad は、落ち込み、つらさ、悔しさ、悲しさが明確な場合のみ使う。
+7. confidence は 0〜1 の数値にする。
+
+JSONのみを返し、説明文は付けないでください。""",
+
+    'ko': """당신은 감정 분석 전문가입니다. 입력 텍스트에서 가장 지배적이고 겉으로 드러나는 감정 하나만 고르고 JSON만 반환하세요: {"emotion": "emotion_type", "confidence": confidence}.
+
+허용되는 감정은 다음 다섯 가지뿐입니다:
+happy, sad, angry, neutral, surprised
+
+판단 규칙:
+1. 가장 강한 주감정을 고르고, 안전해 보여서 neutral 을 고르지 마세요.
+2. 감정 신호가 정말 약하고 평이한 문장일 때만 neutral 을 사용하세요.
+3. 귀엽다, 즐겁다, 들뜸, 애교, 신남 같은 반응은 happy 를 우선하세요.
+4. 불만, 짜증, 공격적 반응, 폭발적인 반응은 sad 보다 angry 를 우선하세요.
+5. 놀람, 의외성, 과장된 감탄은 surprised 를 우선하세요.
+6. sad 는 우울함, 상처, 서운함, 실망이 분명할 때만 사용하세요.
+7. confidence 는 0~1 사이 숫자여야 합니다.
+
+설명 없이 JSON만 반환하세요.""",
+
+    'ru': """Вы эксперт по анализу эмоций. Определите одну наиболее доминирующую и внешне выраженную эмоцию во входном тексте и верните только JSON: {"emotion": "emotion_type", "confidence": confidence}.
+
+Допустимы только 5 эмоций:
+happy, sad, angry, neutral, surprised
+
+Правила:
+1. Выбирайте самую сильную основную эмоцию, а не самую безопасную.
+2. Возвращайте neutral только если эмоция действительно слабая или почти отсутствует.
+3. Радость, милое/игривое настроение, восторг, тёплая привязанность — это happy.
+4. Раздражение, жалобы, резкие и взрывные реакции — это angry, а не sad.
+5. Удивление, неожиданность, сильные восклицания — это surprised.
+6. sad используйте только при явной грусти, обиде, сожалении или подавленности.
+7. confidence должно быть числом от 0 до 1.
+
+Верните только JSON без пояснений.""",
 }
 
 

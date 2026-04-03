@@ -49,6 +49,7 @@
 #avatar-reaction-bubble .avatar-reaction-bubble-shell {
     position: absolute;
     inset: 0;
+    opacity: 0.75;
     background-image: var(--bubble-shell-image);
     background-repeat: no-repeat;
     background-position: center;
@@ -87,7 +88,7 @@
 }
 
 #avatar-reaction-bubble.has-emotion-art .avatar-reaction-bubble-mascot {
-    opacity: 1;
+    opacity: 0.92;
     transform: translate(-50%, -50%) scale(1);
 }
 
@@ -108,6 +109,7 @@
     font-weight: 700;
     line-height: 1;
     letter-spacing: 0.02em;
+    opacity: 0.88;
     transform: none;
 }
 

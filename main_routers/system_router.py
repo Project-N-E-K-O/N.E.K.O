@@ -32,7 +32,7 @@ from .shared_state import get_steamworks, get_config_manager, get_sync_message_q
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from config import get_extra_body, MEMORY_SERVER_PORT
 from config.prompts_sys import _loc
-from config.prompts_memory import emotion_analysis_prompt, PROACTIVE_FOLLOWUP_HEADER
+from config.prompts_memory import get_emotion_analysis_prompt, PROACTIVE_FOLLOWUP_HEADER
 from config.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
@@ -68,6 +68,128 @@ router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
+
+_EMOTION_LABEL_ALIASES = {
+    "happy": "happy",
+    "happiness": "happy",
+    "joy": "happy",
+    "joyful": "happy",
+    "excited": "happy",
+    "cute": "happy",
+    "playful": "happy",
+    "开心": "happy",
+    "高兴": "happy",
+    "兴奋": "happy",
+    "快乐": "happy",
+    "sad": "sad",
+    "sadness": "sad",
+    "down": "sad",
+    "upset": "sad",
+    "depressed": "sad",
+    "难过": "sad",
+    "伤心": "sad",
+    "失落": "sad",
+    "委屈": "sad",
+    "angry": "angry",
+    "anger": "angry",
+    "mad": "angry",
+    "annoyed": "angry",
+    "irritated": "angry",
+    "生气": "angry",
+    "愤怒": "angry",
+    "烦躁": "angry",
+    "恼火": "angry",
+    "surprised": "surprised",
+    "surprise": "surprised",
+    "shock": "surprised",
+    "shocked": "surprised",
+    "astonished": "surprised",
+    "惊讶": "surprised",
+    "震惊": "surprised",
+    "意外": "surprised",
+    "neutral": "neutral",
+    "calm": "neutral",
+    "平静": "neutral",
+    "冷静": "neutral",
+    "中性": "neutral",
+}
+
+_EMOTION_KEYWORDS = {
+    "happy": ("哈哈", "嘿嘿", "嘻嘻", "开心", "高兴", "喜欢", "太棒", "可爱", "好耶", "真好", "好开心", "爱你",
+              "haha", "hehe", "happy", "glad", "love", "lovely", "cute", "yay", "great", "awesome",
+              "うれしい", "嬉しい", "楽しい", "かわいい", "好き", "やった", "最高",
+              "좋아", "행복", "기뻐", "신나", "귀여워", "좋다", "최고",
+              "счастлив", "рада", "рад", "весело", "люблю", "милый", "класс"),
+    "sad": ("难过", "伤心", "委屈", "想哭", "呜呜", "遗憾", "失落", "沮丧", "低落", "心疼",
+            "sad", "cry", "upset", "depressed", "sorry", "regret", "heartbroken",
+            "悲しい", "つらい", "寂しい", "落ち込", "しんどい", "泣きたい",
+            "슬퍼", "우울", "속상", "서운", "힘들", "울고",
+            "грустно", "печально", "обидно", "жаль", "тоск", "плак"),
+    "angry": ("气死", "生气", "烦死", "烦", "恼火", "可恶", "离谱", "无语", "讨厌", "炸毛", "火大",
+              "angry", "mad", "annoyed", "irritated", "furious", "damn", "hate",
+              "ムカつく", "腹立", "うざい", "最悪", "イライラ", "ふざけ",
+              "짜증", "화나", "열받", "빡쳐", "어이없", "최악",
+              "злюсь", "бесит", "раздраж", "ужас", "ненавиж", "достал"),
+    "surprised": ("哇", "居然", "竟然", "不会吧", "诶", "欸", "啊这", "天哪", "真的假的", "怎么会",
+                  "wow", "whoa", "omg", "really", "seriously", "what", "unexpected", "surprised",
+                  "えっ", "うそ", "まじ", "本当", "びっくり", "なんで",
+                  "헉", "우와", "진짜", "설마", "뭐야", "깜짝",
+                  "ого", "ничего себе", "серьезно", "правда", "внезапно", "удив"),
+}
+
+
+def _normalize_emotion_label(raw_emotion):
+    emotion_text = str(raw_emotion or "").strip().lower()
+    if not emotion_text:
+        return "neutral"
+    if emotion_text in _EMOTION_LABEL_ALIASES:
+        return _EMOTION_LABEL_ALIASES[emotion_text]
+    for alias, canonical in _EMOTION_LABEL_ALIASES.items():
+        if alias and alias in emotion_text:
+            return canonical
+    return "neutral"
+
+
+def _coerce_emotion_confidence(raw_confidence, default=0.5):
+    try:
+        confidence = float(raw_confidence)
+    except (TypeError, ValueError):
+        confidence = float(default)
+    return max(0.0, min(1.0, confidence))
+
+
+def _infer_emotion_from_text(text):
+    text_value = str(text or "").lower()
+    if not text_value:
+        return None, 0
+
+    scores = {key: 0 for key in _EMOTION_KEYWORDS}
+    for emotion, keywords in _EMOTION_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword and keyword in text_value:
+                scores[emotion] += 1
+
+    if "!!" in text_value or "！？" in text_value or "!?" in text_value or "??" in text_value:
+        scores["surprised"] += 1
+
+    best_emotion = None
+    best_score = 0
+    for emotion, score in scores.items():
+        if score > best_score:
+            best_emotion = emotion
+            best_score = score
+
+    if best_score <= 0:
+        return None, 0
+    return best_emotion, best_score
+
+
+def _resolve_emotion_prompt_language(text):
+    try:
+        detected_lang = detect_language(str(text or ""))
+        return normalize_language_code(detected_lang, format='short')
+    except Exception:
+        return 'zh'
 
 
 @router.get("/token-usage")
@@ -931,12 +1053,14 @@ async def emotion_analysis(request: Request):
         
         if not model:
             return {"error": "情绪分析模型配置缺失: 模型名称未提供且配置中未设置默认模型"}
-        
+       
+        prompt_lang = _resolve_emotion_prompt_language(text)
+
         # 构建请求消息
         messages = [
             {
                 "role": "system", 
-                "content": emotion_analysis_prompt
+                "content": get_emotion_analysis_prompt(prompt_lang)
             },
             {
                 "role": "user", 
@@ -987,12 +1111,42 @@ async def emotion_analysis(request: Request):
             import json
             result = json.loads(result_text)
             # 获取emotion和confidence
-            emotion = result.get("emotion", "neutral")
-            confidence = result.get("confidence", 0.5)
-            
-            # 当confidence小于0.3时，自动将emotion设置为neutral
-            if confidence < 0.3:
+            raw_emotion = result.get("emotion", "neutral")
+            raw_confidence = result.get("confidence", 0.5)
+            emotion = _normalize_emotion_label(raw_emotion)
+            confidence = _coerce_emotion_confidence(raw_confidence)
+            decision_source = "model"
+
+            heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
+            if heuristic_emotion:
+                if emotion == "neutral" and confidence < 0.6:
+                    emotion = heuristic_emotion
+                    confidence = max(confidence, min(0.78, 0.42 + heuristic_score * 0.12))
+                    decision_source = "heuristic_from_neutral"
+                elif confidence < 0.25:
+                    emotion = heuristic_emotion
+                    confidence = max(confidence, min(0.65, 0.35 + heuristic_score * 0.1))
+                    decision_source = "heuristic_from_low_confidence"
+
+            # 当confidence很低时，自动将emotion设置为neutral，避免误报
+            if confidence < 0.2:
                 emotion = "neutral"
+                decision_source = "neutral_fallback"
+
+            text_preview = re.sub(r"\s+", " ", str(text or "")).strip()[:80]
+            logger.info(
+                "[Emotion] lang=%s model=%s raw=(%s, %.3f) final=(%s, %.3f) source=%s heuristic=%s/%s text=%r",
+                prompt_lang,
+                model,
+                raw_emotion,
+                _coerce_emotion_confidence(raw_confidence),
+                emotion,
+                confidence,
+                decision_source,
+                heuristic_emotion,
+                heuristic_score,
+                text_preview,
+            )
             
             # 获取 lanlan_name 并推送到 monitor
             lanlan_name = data.get('lanlan_name')
@@ -1012,7 +1166,25 @@ async def emotion_analysis(request: Request):
                 "confidence": confidence
             }
         except json.JSONDecodeError:
-            # 如果JSON解析失败，返回简单的情感判断
+            heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
+            if heuristic_emotion:
+                confidence = min(0.62, 0.34 + heuristic_score * 0.1)
+                logger.warning(
+                    "[Emotion] JSON parse failed; fallback to heuristic emotion=%s confidence=%.3f text=%r",
+                    heuristic_emotion,
+                    confidence,
+                    re.sub(r"\s+", " ", str(text or "")).strip()[:80],
+                )
+                return {
+                    "emotion": heuristic_emotion,
+                    "confidence": confidence
+                }
+
+            # 如果JSON解析失败且没有足够关键词线索，则回退到 neutral
+            logger.warning(
+                "[Emotion] JSON parse failed; fallback to neutral text=%r",
+                re.sub(r"\s+", " ", str(text or "")).strip()[:80],
+            )
             return {
                 "emotion": "neutral",
                 "confidence": 0.5
