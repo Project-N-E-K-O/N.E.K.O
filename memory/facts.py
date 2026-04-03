@@ -58,6 +58,10 @@ def _sanitize_json(raw: str) -> str:
     return s
 
 
+_ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
+_ARCHIVE_COOLDOWN_HOURS = 24   # 两次归档尝试之间的最小间隔
+
+
 class FactStore:
     """Manages raw fact extraction, deduplication, and persistence."""
 
@@ -108,7 +112,86 @@ class FactStore:
 
     def save_facts(self, name: str) -> None:
         facts = self._facts.get(name, [])
-        atomic_write_json(self._facts_path(name), facts, indent=2, ensure_ascii=False)
+        path = self._facts_path(name)
+        # Read-merge-write: 保护其他进程写入的 absorbed 标记
+        if os.path.exists(path):
+            try:
+                with open(path, encoding='utf-8') as f:
+                    disk_facts = json.load(f)
+                if isinstance(disk_facts, list):
+                    absorbed_ids = {
+                        f['id'] for f in disk_facts
+                        if isinstance(f, dict) and f.get('absorbed')
+                    }
+                    if absorbed_ids:
+                        for f in facts:
+                            if f.get('id') in absorbed_ids:
+                                f['absorbed'] = True
+            except (json.JSONDecodeError, OSError):
+                pass
+        atomic_write_json(path, facts, indent=2, ensure_ascii=False)
+        # 基于文件修改时间节流归档：距上次归档超过 _ARCHIVE_COOLDOWN_HOURS 才尝试
+        try:
+            archive_path = self._facts_archive_path(name)
+            if os.path.exists(archive_path):
+                mtime = datetime.fromtimestamp(os.path.getmtime(archive_path))
+                if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
+                    return
+            # 用 marker 文件记录上次归档尝试时间（即使归档文件尚不存在）
+            marker_path = archive_path + '.last_attempt'
+            if os.path.exists(marker_path):
+                mtime = datetime.fromtimestamp(os.path.getmtime(marker_path))
+                if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
+                    return
+            self._archive_absorbed(name)
+            # 更新 marker（无论归档是否有实际条目都 touch 一次）
+            with open(marker_path, 'w') as f:
+                f.write(datetime.now().isoformat())
+        except Exception:
+            pass
+
+    def _facts_archive_path(self, name: str) -> str:
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts_archive.json')
+
+    def _archive_absorbed(self, name: str) -> int:
+        """将已 absorbed 且超过 _ARCHIVE_AGE_DAYS 的 facts 移入归档文件。"""
+        from datetime import timedelta
+        facts = self._facts.get(name, [])
+        cutoff = datetime.now() - timedelta(days=_ARCHIVE_AGE_DAYS)
+        active, to_archive = [], []
+        for f in facts:
+            try:
+                created = datetime.fromisoformat(f.get('created_at', ''))
+            except (ValueError, TypeError):
+                active.append(f)
+                continue
+            if f.get('absorbed') and created < cutoff:
+                to_archive.append(f)
+            else:
+                active.append(f)
+        if not to_archive:
+            return 0
+        # 追加到归档文件
+        archive_path = self._facts_archive_path(name)
+        existing_archive: list[dict] = []
+        if os.path.exists(archive_path):
+            try:
+                with open(archive_path, encoding='utf-8') as fh:
+                    data = json.load(fh)
+                if isinstance(data, list):
+                    existing_archive = data
+            except (json.JSONDecodeError, OSError) as e:
+                # 归档文件损坏 → 放弃本次归档，避免覆盖丢数据
+                logger.warning(f"[FactStore] {name}: 读取归档文件失败，跳过本次归档: {e}")
+                return 0
+        existing_archive.extend(to_archive)
+        atomic_write_json(archive_path, existing_archive, indent=2, ensure_ascii=False)
+        # 更新活跃文件
+        self._facts[name] = active
+        atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
+        logger.info(f"[FactStore] {name}: 归档 {len(to_archive)} 条已吸收的旧 facts，剩余 {len(active)} 条")
+        return len(to_archive)
 
     # ── extraction ───────────────────────────────────────────────────
 
