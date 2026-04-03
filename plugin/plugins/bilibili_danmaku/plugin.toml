@@ -1,0 +1,25 @@
+[plugin]
+id = "bilibili-danmaku"
+name = "B站弹幕监听"
+description = "实时监听B站直播间弹幕，过滤后推送给AI分析和回复"
+version = "1.0.0"
+entry = "plugins.bilibili_danmaku:BiliDanmakuPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin.store]
+enabled = false
+
+# 运行时依赖（均由 NEKO 内置，无需额外安装）：
+#   - websockets  (WebSocket 连接 B站弹幕服务器)
+#   - aiohttp     (HTTP 请求获取直播间信息)
+
