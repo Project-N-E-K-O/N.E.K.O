@@ -15,16 +15,28 @@
         anchorGapPx: 10,
         positionSnapPx: 3,
         sizeSnapPx: 2,
+        horizontalMoveLockThresholdPx: 10,
+        verticalNoiseTolerancePx: 8,
+        horizontalMoveMaxVerticalDriftPx: 18,
+        verticalMoveLockThresholdPx: 10,
+        horizontalNoiseTolerancePx: 8,
+        verticalMoveMaxHorizontalDriftPx: 18,
         baseWidthShrinkPx: 92,
         baseHeightShrinkPx: 66,
         verticalOffsetPx: 0,
         modelOverlapRatio: 0.28,
-        shortModelHeightPx: 360,
-        tallModelHeightPx: 760,
+        compactModelAspectRatio: 1.15,
+        tallModelAspectRatio: 1.8,
+        headHeightFromModelRatio: 0.28,
+        headHeightFromWidthRatio: 0.56,
+        accessoryTrimRatio: 2.1,
+        accessoryTrimMaxPx: 96,
         shortHeadAnchorRatio: 0.7,
-        tallHeadAnchorRatio: 0.54,
-        shortModelOffsetPx: 12,
-        tallModelOffsetPx: -18
+        tallHeadAnchorRatio: 0.42,
+        shortModelOffsetRatio: 0.12,
+        tallModelOffsetRatio: -0.4,
+        accessoryDropBasePx: 0,
+        accessoryDropRatio: 0
     });
 
     const PRESETS = Object.freeze({
@@ -60,7 +72,9 @@
         lastRenderX: null,
         lastRenderY: null,
         lastRenderWidth: null,
-        lastRenderHeight: null
+        lastRenderHeight: null,
+        lastBoundsCenterX: null,
+        lastBoundsCenterY: null
     };
 
     let bubbleEl = null;
@@ -287,11 +301,22 @@
         ensureDom();
 
         var bounds = anchorInfo.bounds;
+        var boundsCenterX = Number.isFinite(bounds.centerX) ? bounds.centerX : (bounds.left + bounds.right) * 0.5;
+        var boundsCenterY = Number.isFinite(bounds.centerY) ? bounds.centerY : (bounds.top + bounds.bottom) * 0.5;
         var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
         var viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
         var margin = TIMING.edgeMarginPx;
+        var rawHeadHeight = bounds.height * TIMING.headHeightFromModelRatio;
+        var cappedHeadHeight = bounds.width * TIMING.headHeightFromWidthRatio;
+        var accessoryOvershootPx = Math.max(0, rawHeadHeight - cappedHeadHeight);
+        var accessoryTrimPx = Math.min(
+            TIMING.accessoryTrimMaxPx,
+            accessoryOvershootPx * TIMING.accessoryTrimRatio
+        );
+        var effectiveTop = bounds.top + accessoryTrimPx;
+        var effectiveHeight = Math.max(bounds.height - accessoryTrimPx, cappedHeadHeight * 2);
         var headWidth = bounds.width * 0.34;
-        var headHeight = bounds.height * 0.28;
+        var headHeight = Math.min(effectiveHeight * TIMING.headHeightFromModelRatio, cappedHeadHeight);
         var headSpan = Math.max(headWidth, headHeight);
         var viewportCap = Math.round(Math.min(viewportWidth, viewportHeight) * 0.46);
         var headSize = Math.max(84, Math.min(viewportCap, Math.round(headSpan * 1.38)));
@@ -300,22 +325,23 @@
         var headCenterX = bounds.left + bounds.width * 0.5;
         var rightAnchorX = headCenterX + bounds.width * 0.13;
         var leftAnchorX = headCenterX - bounds.width * 0.13;
-        var modelHeightProgress = clamp(
-            (bounds.height - TIMING.shortModelHeightPx) / (TIMING.tallModelHeightPx - TIMING.shortModelHeightPx),
+        var modelAspectRatio = effectiveHeight / Math.max(bounds.width, 1);
+        var modelShapeProgress = clamp(
+            (modelAspectRatio - TIMING.compactModelAspectRatio) / (TIMING.tallModelAspectRatio - TIMING.compactModelAspectRatio),
             0,
             1
         );
         var headAnchorRatio = lerp(
             TIMING.shortHeadAnchorRatio,
             TIMING.tallHeadAnchorRatio,
-            modelHeightProgress
+            modelShapeProgress
         );
-        var modelOffsetPx = lerp(
-            TIMING.shortModelOffsetPx,
-            TIMING.tallModelOffsetPx,
-            modelHeightProgress
+        var modelOffsetRatio = lerp(
+            TIMING.shortModelOffsetRatio,
+            TIMING.tallModelOffsetRatio,
+            modelShapeProgress
         );
-        var anchorY = bounds.top + headHeight * headAnchorRatio;
+        var anchorY = effectiveTop + headHeight * headAnchorRatio;
 
         if (state.lastRenderWidth === null || Math.abs(state.lastRenderWidth - width) >= TIMING.sizeSnapPx) {
             bubbleEl.style.setProperty('--bubble-width', width + 'px');
@@ -332,7 +358,8 @@
         var preferredLeftX = leftAnchorX - width + tailInset + overlapPx;
         var rightFits = preferredRightX + width <= viewportWidth - margin;
         var leftFits = preferredLeftX >= margin;
-        var topY = anchorY - height * 0.5 + modelOffsetPx + TIMING.verticalOffsetPx;
+        var accessoryDropPx = 0;
+        var topY = anchorY - height * 0.5 + headSize * modelOffsetRatio + accessoryDropPx + TIMING.verticalOffsetPx;
         var y = Math.max(margin, Math.min(topY, viewportHeight - height - margin));
         var side = 'right';
         var x = preferredRightX;
@@ -369,6 +396,25 @@
 
         var roundedX = Math.round(x);
         var roundedY = Math.round(y);
+        var shouldLockHorizontalDrift = state.lastBoundsCenterX !== null &&
+            state.lastBoundsCenterY !== null &&
+            state.lastRenderX !== null &&
+            Math.abs(boundsCenterY - state.lastBoundsCenterY) >= TIMING.verticalMoveLockThresholdPx &&
+            Math.abs(boundsCenterX - state.lastBoundsCenterX) <= TIMING.horizontalNoiseTolerancePx &&
+            Math.abs(roundedX - state.lastRenderX) <= TIMING.verticalMoveMaxHorizontalDriftPx;
+        var shouldLockVerticalDrift = state.lastBoundsCenterX !== null &&
+            state.lastBoundsCenterY !== null &&
+            state.lastRenderY !== null &&
+            Math.abs(boundsCenterX - state.lastBoundsCenterX) >= TIMING.horizontalMoveLockThresholdPx &&
+            Math.abs(boundsCenterY - state.lastBoundsCenterY) <= TIMING.verticalNoiseTolerancePx &&
+            Math.abs(roundedY - state.lastRenderY) <= TIMING.horizontalMoveMaxVerticalDriftPx;
+
+        if (shouldLockHorizontalDrift) {
+            roundedX = state.lastRenderX;
+        }
+        if (shouldLockVerticalDrift) {
+            roundedY = state.lastRenderY;
+        }
 
         bubbleEl.dataset.side = side;
         if (state.lastRenderX === null || Math.abs(state.lastRenderX - roundedX) >= TIMING.positionSnapPx) {
@@ -379,6 +425,8 @@
             bubbleEl.style.top = roundedY + 'px';
             state.lastRenderY = roundedY;
         }
+        state.lastBoundsCenterX = boundsCenterX;
+        state.lastBoundsCenterY = boundsCenterY;
     }
 
     function startFollowLoop() {
@@ -414,6 +462,8 @@
         state.lastRenderY = null;
         state.lastRenderWidth = null;
         state.lastRenderHeight = null;
+        state.lastBoundsCenterX = null;
+        state.lastBoundsCenterY = null;
         if (resetTurn !== false) {
             state.turnId = null;
         }
@@ -589,9 +639,10 @@
 
     function handleSpeechCancel(detail) {
         var turnId = normalizeTurnId(detail && detail.turnId);
-        if (!turnId || state.turnId === turnId || state.turnId === null) {
-            forceHide(true);
+        if (!turnId || state.turnId !== turnId || !state.visible) {
+            return;
         }
+        forceHide(true);
     }
 
     function handleSettingChanged(detail) {
