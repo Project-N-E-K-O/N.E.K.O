@@ -1556,7 +1556,8 @@
             "unlimited": "無制限",
             "characters": "文字",
             "textGuardUnlimitedWarning": "猫娘に深刻な問題が発生する可能性があり、必要な場合を除き無制限は推奨されません",
-            "textGuardHighWarning": "設定が大きすぎると猫娘の記憶と言語が混乱する可能性があります。500文字以内を推奨します"
+            "textGuardHighWarning": "設定が大きすぎると猫娘の記憶と言語が混乱する可能性があります。500文字以内を推奨します",
+            "textGuardNote": "テキスト返信にのみ適用され、音声セッションには影響しません"
         }
     },
     "subtitle": {

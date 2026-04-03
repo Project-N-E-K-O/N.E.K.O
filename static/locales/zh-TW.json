@@ -1556,7 +1556,8 @@
             "unlimited": "無限制",
             "characters": "字",
             "textGuardUnlimitedWarning": "可能導致貓娘出現嚴重問題，非必要不建議無限制",
-            "textGuardHighWarning": "設定過大可能導致貓娘記憶和語言混亂，建議500字以內"
+            "textGuardHighWarning": "設定過大可能導致貓娘記憶和語言混亂，建議500字以內",
+            "textGuardNote": "僅對文字回覆有效，不影響語音對話"
         }
     },
     "subtitle": {

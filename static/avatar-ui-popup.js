@@ -430,7 +430,8 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
     container.style.gap = '2px';
-    container.style.minWidth = '160px';
+    container.style.width = '200px';
+    container.style.minWidth = '0';
     container.style.padding = '4px 4px';
 
     const chatToggles = [
@@ -602,10 +603,24 @@ function createTextGuardSlider(manager, prefix) {
     slider.addEventListener('mousedown', (e) => e.stopPropagation());
 
     sliderRow.appendChild(slider);
-    labelRow.appendChild(sliderRow);
+
+    // 底部提示（仅对文本回复有效）
+    const noteRow = document.createElement('div');
+    Object.assign(noteRow.style, {
+        fontSize: '10px',
+        color: '#888',
+        lineHeight: '1.4',
+        marginTop: '4px'
+    });
+    const noteText = (typeof window.t === 'function')
+        ? window.t('settings.toggles.textGuardNote')
+        : '仅对文本回复有效，不影响语音对话';
+    noteRow.textContent = noteText;
 
     container.appendChild(labelRow);
+    container.appendChild(sliderRow);
     container.appendChild(warningRow);
+    container.appendChild(noteRow);
 
     return container;
 }
@@ -618,7 +633,8 @@ function createCharacterSettingsSidePanel(manager, prefix) {
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
     container.style.gap = '2px';
-    container.style.minWidth = '140px';
+    container.style.width = '160px';
+    container.style.minWidth = '0';
     container.style.padding = '4px 8px';
 
     const items = manager._characterMenuItems || [];

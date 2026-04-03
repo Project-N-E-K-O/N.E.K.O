@@ -286,7 +286,7 @@ class LLMSessionManager:
             if 'textGuardMaxLength' in conversation_settings:
                 value = int(conversation_settings['textGuardMaxLength'])
             else:
-                value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 300))
+                value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 350))
             # 0 表示无限制，返回一个很大的数
             if value == 0:
                 return 999999
@@ -294,7 +294,7 @@ class LLMSessionManager:
                 raise ValueError
             return value
         except Exception:
-            return 300
+            return 350
 
     async def _clear_tts_pipeline(self):
         """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""

@@ -1556,7 +1556,8 @@
             "unlimited": "무제한",
             "characters": "자",
             "textGuardUnlimitedWarning": "냥이에게 심각한 문제가 발생할 수 있으며, 필요한 경우가 아니면 무제한을 권장하지 않습니다",
-            "textGuardHighWarning": "설정이 너무 크면 냥이의 기억과 언어가 혼란스러워질 수 있습니다. 500자 이내를 권장합니다"
+            "textGuardHighWarning": "설정이 너무 크면 냥이의 기억과 언어가 혼란스러워질 수 있습니다. 500자 이내를 권장합니다",
+            "textGuardNote": "텍스트 응답에만 적용되며, 음성 세션에는 영향을 주지 않습니다"
         }
     },
     "subtitle": {

@@ -396,6 +396,8 @@
         } catch (error) {
             console.error('加载本地设置失败:', error);
             // 出错时也要确保全局变量被初始化
+            S.textGuardMaxLength = 350;
+            window.textGuardMaxLength = 350;
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
             window.mouseTrackingEnabled = true;
             window.live2dFullscreenTrackingEnabled = false;

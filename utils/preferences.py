@@ -366,7 +366,7 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
                 if isinstance(v, str) and v:
                     validated[k] = v
             elif k in _INT_LIMIT_FIELDS:
-                if isinstance(v, int) and 0 <= v <= 2000:
+                if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 2000:
                     validated[k] = v
         filtered_settings = validated
 
