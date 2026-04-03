@@ -544,6 +544,157 @@ class Live2DManager {
         return this.pixi_app;
     }
 
+    _getDrawableLogicalRect(drawableIndex) {
+        const internalModel = this.currentModel?.internalModel;
+        if (!internalModel || typeof internalModel.getDrawableBounds !== 'function') {
+            return null;
+        }
+
+        const rect = internalModel.getDrawableBounds(drawableIndex, {});
+        if (!rect || !Number.isFinite(rect.x) || !Number.isFinite(rect.y) ||
+            !Number.isFinite(rect.width) || !Number.isFinite(rect.height)) {
+            return null;
+        }
+
+        return {
+            x: rect.x,
+            y: rect.y,
+            width: Math.max(1, rect.width),
+            height: Math.max(1, rect.height)
+        };
+    }
+
+    _getModelLogicalRect() {
+        const internalModel = this.currentModel?.internalModel;
+        const drawableCount = internalModel?.coreModel?.getDrawableCount?.();
+        if (!internalModel || !Number.isInteger(drawableCount) || drawableCount <= 0) {
+            return null;
+        }
+
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+
+        for (let index = 0; index < drawableCount; index += 1) {
+            const rect = this._getDrawableLogicalRect(index);
+            if (!rect) continue;
+            minX = Math.min(minX, rect.x);
+            maxX = Math.max(maxX, rect.x + rect.width);
+            minY = Math.min(minY, rect.y);
+            maxY = Math.max(maxY, rect.y + rect.height);
+        }
+
+        if (!Number.isFinite(minX) || !Number.isFinite(maxX) ||
+            !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+            return null;
+        }
+
+        return {
+            x: minX,
+            y: minY,
+            width: Math.max(1, maxX - minX),
+            height: Math.max(1, maxY - minY)
+        };
+    }
+
+    _mapLogicalRectToScreen(logicalRect, modelLogicalRect, modelBounds) {
+        if (!logicalRect || !modelLogicalRect || !modelBounds) {
+            return null;
+        }
+
+        const logicalWidth = Math.max(1, modelLogicalRect.width);
+        const logicalHeight = Math.max(1, modelLogicalRect.height);
+
+        const relLeft = (logicalRect.x - modelLogicalRect.x) / logicalWidth;
+        const relTop = (logicalRect.y - modelLogicalRect.y) / logicalHeight;
+        const relWidth = logicalRect.width / logicalWidth;
+        const relHeight = logicalRect.height / logicalHeight;
+
+        return {
+            left: modelBounds.left + modelBounds.width * relLeft,
+            top: modelBounds.top + modelBounds.height * relTop,
+            width: modelBounds.width * relWidth,
+            height: modelBounds.height * relHeight
+        };
+    }
+
+    _getHeadHitAreaLogicalRect() {
+        const model = this.currentModel;
+        const internalModel = model?.internalModel;
+        const hitAreaDefs = internalModel?.settings?.hitAreas;
+        const hitAreas = internalModel?.hitAreas;
+        if (!Array.isArray(hitAreaDefs) || !hitAreas) {
+            return null;
+        }
+
+        const normalizeKey = (value) => String(value || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff]/g, '');
+        const matchScore = (value) => {
+            const key = normalizeKey(value);
+            if (!key) return -1;
+            if (key === 'face' || key === 'hitareaface' || key === '顔' || key === '脸' || key === '脸部' || key === '面') {
+                return 4;
+            }
+            if (key.indexOf('face') !== -1 || key.indexOf('顔') !== -1 || key.indexOf('脸') !== -1 || key.indexOf('面') !== -1) {
+                return 3;
+            }
+            if (key === 'head' || key === 'hitareahead' || key === '頭' || key === '头') {
+                return 2;
+            }
+            if (key.indexOf('head') !== -1 || key.indexOf('頭') !== -1 || key.indexOf('头') !== -1) {
+                return 1;
+            }
+            return -1;
+        };
+
+        let bestRect = null;
+        let bestScore = -1;
+
+        for (const hitAreaDef of hitAreaDefs) {
+            if (!hitAreaDef) continue;
+
+            const name = String(hitAreaDef.Name || '');
+            const id = String(hitAreaDef.Id || '');
+            const score = Math.max(matchScore(name), matchScore(id));
+            if (score < 0) continue;
+
+            const hitArea = hitAreas[name] || hitAreas[id];
+            const drawableIndex = Number.isInteger(hitArea?.index)
+                ? hitArea.index
+                : internalModel.coreModel?.getDrawableIndex?.(id);
+            if (!Number.isInteger(drawableIndex) || drawableIndex < 0) {
+                continue;
+            }
+
+            const rect = this._getDrawableLogicalRect(drawableIndex);
+            if (!rect) continue;
+
+            if (!bestRect || score > bestScore) {
+                bestRect = rect;
+                bestScore = score;
+            }
+        }
+
+        return bestRect;
+    }
+
+    getHeadScreenAnchor() {
+        const modelBounds = this.getModelScreenBounds();
+        const modelLogicalRect = this._getModelLogicalRect();
+        const headLogicalRect = this._getHeadHitAreaLogicalRect();
+        const headScreenRect = this._mapLogicalRectToScreen(headLogicalRect, modelLogicalRect, modelBounds);
+        if (!headScreenRect) {
+            return null;
+        }
+
+        return {
+            x: headScreenRect.left + headScreenRect.width * 0.5,
+            y: headScreenRect.top + headScreenRect.height * 0.58
+        };
+    }
+
     /**
      * 获取 Live2D 模型在屏幕上的边界
      * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null

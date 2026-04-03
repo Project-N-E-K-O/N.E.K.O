@@ -36,7 +36,11 @@
         shortModelOffsetRatio: 0.12,
         tallModelOffsetRatio: -0.4,
         accessoryDropBasePx: 0,
-        accessoryDropRatio: 0
+        accessoryDropRatio: 1.2,
+        accessoryDropMaxPx: 56,
+        headAnchorCorrectionDeadzonePx: 16,
+        headAnchorCorrectionRatio: 0.82,
+        headAnchorCorrectionMaxPx: 72
     });
 
     const PRESETS = Object.freeze({
@@ -253,6 +257,14 @@
         }
     }
 
+    function getHeadAnchorFromManager(manager) {
+        var anchor = getBoundsFromManager(manager, 'getHeadScreenAnchor');
+        if (!anchor || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y)) {
+            return null;
+        }
+        return anchor;
+    }
+
     function getActiveAvatarBubbleAnchor() {
         var mmdBounds = isContainerVisible('mmd-container')
             ? getBoundsFromManager(window.mmdManager, 'getModelScreenBounds')
@@ -260,7 +272,8 @@
         if (mmdBounds) {
             return {
                 type: 'mmd',
-                bounds: mmdBounds
+                bounds: mmdBounds,
+                head: getHeadAnchorFromManager(window.mmdManager)
             };
         }
 
@@ -270,7 +283,8 @@
         if (vrmBounds) {
             return {
                 type: 'vrm',
-                bounds: vrmBounds
+                bounds: vrmBounds,
+                head: getHeadAnchorFromManager(window.vrmManager)
             };
         }
 
@@ -280,7 +294,8 @@
         if (live2dBounds) {
             return {
                 type: 'live2d',
-                bounds: live2dBounds
+                bounds: live2dBounds,
+                head: getHeadAnchorFromManager(window.live2dManager)
             };
         }
 
@@ -301,6 +316,7 @@
         ensureDom();
 
         var bounds = anchorInfo.bounds;
+        var headAnchor = anchorInfo.head;
         var boundsCenterX = Number.isFinite(bounds.centerX) ? bounds.centerX : (bounds.left + bounds.right) * 0.5;
         var boundsCenterY = Number.isFinite(bounds.centerY) ? bounds.centerY : (bounds.top + bounds.bottom) * 0.5;
         var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
@@ -341,7 +357,16 @@
             TIMING.tallModelOffsetRatio,
             modelShapeProgress
         );
-        var anchorY = effectiveTop + headHeight * headAnchorRatio;
+        var fallbackAnchorY = effectiveTop + headHeight * headAnchorRatio;
+        var headAnchorCorrectionPx = 0;
+        if (headAnchor) {
+            headAnchorCorrectionPx = clamp(
+                Math.max(0, headAnchor.y - fallbackAnchorY) - TIMING.headAnchorCorrectionDeadzonePx,
+                0,
+                TIMING.headAnchorCorrectionMaxPx
+            ) * TIMING.headAnchorCorrectionRatio;
+        }
+        var anchorY = fallbackAnchorY + headAnchorCorrectionPx;
 
         if (state.lastRenderWidth === null || Math.abs(state.lastRenderWidth - width) >= TIMING.sizeSnapPx) {
             bubbleEl.style.setProperty('--bubble-width', width + 'px');
@@ -358,7 +383,10 @@
         var preferredLeftX = leftAnchorX - width + tailInset + overlapPx;
         var rightFits = preferredRightX + width <= viewportWidth - margin;
         var leftFits = preferredLeftX >= margin;
-        var accessoryDropPx = 0;
+        var accessoryDropPx = Math.min(
+            TIMING.accessoryDropMaxPx,
+            TIMING.accessoryDropBasePx + accessoryOvershootPx * TIMING.accessoryDropRatio
+        );
         var topY = anchorY - height * 0.5 + headSize * modelOffsetRatio + accessoryDropPx + TIMING.verticalOffsetPx;
         var y = Math.max(margin, Math.min(topY, viewportHeight - height - margin));
         var side = 'right';
