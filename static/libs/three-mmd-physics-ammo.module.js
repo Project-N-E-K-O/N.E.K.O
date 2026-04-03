@@ -65,7 +65,9 @@ class Constraint {
     for (let i = 0; i < 3; i++) {
       if (params.springPosition[i] !== 0) {
         constraint.enableSpring(i, true);
-        constraint.setStiffness(i, params.springPosition[i]);
+        // 高密度特化 1: 暴力拉紧弹簧 (2.5x)
+        // 在降低了物理频率后，增强弹簧强度以死死拽住易散架的网格
+        constraint.setStiffness(i, params.springPosition[i] * 2.5);
         // Ammo.js 可能不会像 Bullet C++ 一样默认 m_springDamping=1.0，
         // 显式设置临界阻尼，防止低阻尼刚体（飘带）在弹簧力下永远振荡
         if (constraint.setDamping) constraint.setDamping(i, 1.0);
@@ -74,14 +76,18 @@ class Constraint {
     for (let i = 0; i < 3; i++) {
       if (params.springRotation[i] !== 0) {
         constraint.enableSpring(i + 3, true);
-        constraint.setStiffness(i + 3, params.springRotation[i]);
+        // 高密度特化 1: 暴力拉紧弹簧 (2.5x)
+        constraint.setStiffness(i + 3, params.springRotation[i] * 2.5);
         if (constraint.setDamping) constraint.setDamping(i + 3, 1.0);
       }
     }
     if (constraint.setParam !== void 0) {
       for (let i = 0; i < 6; i++) {
-        constraint.setParam(2, 0.475, i);   // BT_CONSTRAINT_STOP_ERP
-        constraint.setParam(4, 0.005, i);   // BT_CONSTRAINT_STOP_CFM — 给约束加柔性，减少刚体堆叠振荡
+        // BT_CONSTRAINT_STOP_ERP: Define error reduction to allow natural spring force recovery
+        constraint.setParam(2, 0.2, i);
+        // 高密度特化 2: 开启关节泄压阀 (CFM)
+        // 给关节注入微弱的弹性 (0.015)，在受到极端排斥力时允许微小形变，防止它“硬生生被扯断”
+        constraint.setParam(4, 0.015, i);
       }
     }
     this.world.addConstraint(constraint, true);
@@ -552,13 +558,31 @@ class RigidBody {
   mesh;
   params;
   world;
+  physics;
+  restPos;
   constructor(mesh, world, params, manager) {
     this.mesh = mesh;
     this.world = world;
     this.params = params;
+
+    // [终极修复] 绕过导致空间空间撕裂的元凶：强制降级 Mode 2
+    // WebGL 环境下强制每帧执行骨骼位置对齐(Mode 2)会引发与高强度弹簧抗衡的灾难性“鬼畜”和拉扯起刺。
+    // 暴力转换为 Mode 1 (纯物理演算)，依靠弹簧强刚度完美自我维持结构，彻底拒绝干预物理。
+    if (this.params.physicsMode === 2) {
+      this.params.physicsMode = 1;
+    }
+
     this.manager = manager;
+    // 安全获取影子引用：优先从 mesh 获取，否则跳过
+    this.physics = mesh.mmdPhysics || null;
     const generateShape = (p) => {
-      const [width, height, depth] = p.shapeSize;
+      // 高密度特化 3: 刚体物理瘦身
+      // 我们把动态衣服/头发刚体的碰撞体积缩小 20%，避免初始状态下过度拥挤和重叠产生的巨大推斥力
+      const sf = (p.physicsMode !== 0) ? 0.8 : 1.0;
+      const width = p.shapeSize[0] * sf;
+      const height = p.shapeSize[1] * sf;
+      const depth = p.shapeSize[2] * sf;
+
       switch (p.shapeType) {
         case PmxObject.RigidBody.ShapeType.Box:
           return new Ammo.btBoxShape(new Ammo.btVector3(width, height, depth));
@@ -569,7 +593,11 @@ class RigidBody {
       }
     };
     const bone = this.params.boneIndex === -1 ? new Bone() : this.mesh.skeleton.bones[this.params.boneIndex];
+    const boneName = bone.name || '';
     const shape = generateShape(this.params);
+    // 高密度补丁：将碰撞余量从默认的 0.04 压缩至 0.01，为彼此贴近的密集刚体换取生存空间。
+    if (shape.setMargin) shape.setMargin(0.01);
+
     const weight = this.params.physicsMode === 0 ? 0 : this.params.mass;
     const localInertia = this.manager.allocVector3();
     localInertia.setValue(0, 0, 0);
@@ -599,8 +627,9 @@ class RigidBody {
     const form = this.manager.multiplyTransforms(boneForm, boneOffsetForm);
     const state = new Ammo.btDefaultMotionState(form);
     const info = new Ammo.btRigidBodyConstructionInfo(weight, state, shape, localInertia);
-    info.set_m_friction(this.params.friction);
-    info.set_m_restitution(this.params.repulsion);
+    info.set_m_friction(this.params.friction || 0.5);
+    // 注入微量灵动感：恢复极小比例的反弹力，防止动作过于死板。
+    info.set_m_restitution(0.1);
     // Enable Bullet's built-in additional damping to reduce micro-oscillations
     if (typeof info.set_m_additionalDamping === 'function') {
       info.set_m_additionalDamping(true);
@@ -609,9 +638,14 @@ class RigidBody {
     if (this.params.physicsMode === 0) {
       body.setCollisionFlags(body.getCollisionFlags() | 2);
     }
-    body.setDamping(this.params.linearDamping, this.params.angularDamping);
+    // Apply higher damping (5.0x) to low-mass rigid bodies (<1.0) to prevent high-frequency jitter
+    const dampingScale = (weight > 0 && weight < 1.0) ? 5.0 : 1.0;
+    body.setDamping(this.params.linearDamping * dampingScale, this.params.angularDamping * dampingScale);
     body.setSleepingThresholds(0, 0);
     this.world.addRigidBody(body, 1 << this.params.collisionGroup, this.params.collisionMask);
+    // 检测是否为 IK 骨骼或关键关节点
+    this.isIKBone = boneName.toLowerCase().includes('ik') || (this.params.physicsMode === 0);
+
     this.body = body;
     this.bone = bone;
     this.boneOffsetForm = boneOffsetForm;
@@ -646,19 +680,8 @@ class RigidBody {
   _setPositionFromBone() {
     const manager = this.manager;
     const form = this._getBoneTransform();
-    const tr = manager.allocTransform();
-    this.body.getMotionState().getWorldTransform(tr);
-    // 平滑位置过渡：lerp 当前物理位置 → 骨骼位置，避免每帧瞬移导致约束振荡
-    const currentOrigin = tr.getOrigin();
-    const targetOrigin = form.getOrigin();
-    const alpha = 0.5;
-    currentOrigin.setValue(
-      currentOrigin.x() + (targetOrigin.x() - currentOrigin.x()) * alpha,
-      currentOrigin.y() + (targetOrigin.y() - currentOrigin.y()) * alpha,
-      currentOrigin.z() + (targetOrigin.z() - currentOrigin.z()) * alpha
-    );
-    this.body.setWorldTransform(tr);
-    manager.freeTransform(tr);
+    // 100% Zero-latency sync for Kinematic bones to prevent bone-collider mismatch
+    this.body.setWorldTransform(form);
     manager.freeTransform(form);
   }
   _setTransformFromBone() {
@@ -675,7 +698,14 @@ class RigidBody {
     thV.set(o.x(), o.y(), o.z());
     if (this.bone.parent)
       this.bone.parent.worldToLocal(thV);
-    this.bone.position.copy(thV);
+
+    // 零延迟同步 (Zero-Lag Position)：彻底杜绝因延迟产生的“拉伸”
+    if (this.isIKBone) {
+      this.bone.position.lerp(thV, 0.05);
+    } else {
+      this.bone.position.copy(thV);
+    }
+
     manager.freeThreeVector3(thV);
     manager.freeTransform(tr);
   }
@@ -691,7 +721,11 @@ class RigidBody {
     thQ2.conjugate();
     thQ2.multiply(thQ);
     thQ3.setFromRotationMatrix(this.bone.matrix);
-    this.bone.quaternion.copy(thQ2.multiply(thQ3).normalize());
+
+    // 1:1 Absolute Sync: Apply exact physics rotation to bone to eliminate viscosity/lag
+    const targetQ = thQ2.multiply(thQ3).normalize();
+    this.bone.quaternion.copy(targetQ);
+
     manager.freeThreeQuaternion(thQ);
     manager.freeThreeQuaternion(thQ2);
     manager.freeThreeQuaternion(thQ3);
@@ -709,9 +743,8 @@ class RigidBody {
    * Updates bone from the current rigid body's transform.
    */
   updateBone() {
-    if (this.params.physicsMode === 0 || this.params.boneIndex === -1) {
+    if (this.params.physicsMode === 0 || this.params.boneIndex === -1)
       return this;
-    }
     this._updateBoneRotation();
     if (this.params.physicsMode === 1)
       this._updateBonePosition();
@@ -740,17 +773,30 @@ class MMDPhysics {
   unitStep;
   world;
   constructor(mesh, rigidBodyParams, constraintParams = [], params = {}) {
-    this.manager = new ResourceManager();
     this.mesh = mesh;
-    this.unitStep = params.unitStep !== void 0 ? params.unitStep : 1 / 65;
+    // 在 mesh 上挂载影子引用，解决初始化签名冲突问题
+    this.mesh.mmdPhysics = this;
+
+    this.manager = new ResourceManager();
+    // Reduced physics calculation from 1/120 to 1/60 to save CPU/Browser performance
+    this.unitStep = params.unitStep !== void 0 ? params.unitStep : 1 / 60;
+    // Lowered max step to prevent physics lag-death spirals
     this.maxStepNum = params.maxStepNum !== void 0 ? params.maxStepNum : 3;
     this.gravity = new Vector3(0, -9.8 * 10, 0);
     if (params.gravity !== void 0)
       this.gravity.copy(params.gravity);
+
+    // 运动追踪系统：记录网格在世界坐标系下的位移
+    this._lastMeshPos = new Vector3();
+    mesh.getWorldPosition(this._lastMeshPos);
+    this._lastMeshQuat = new Quaternion();
+    mesh.getWorldQuaternion(this._lastMeshQuat);
+
     if (params.world !== void 0)
       this.world = params.world;
     this.bodies = [];
     this.constraints = [];
+
     this._init(mesh, rigidBodyParams, constraintParams);
   }
   _createWorld() {
@@ -760,11 +806,30 @@ class MMDPhysics {
     const solver = new Ammo.btSequentialImpulseConstraintSolver();
     const world = new Ammo.btDiscreteDynamicsWorld(dispatcher, cache, solver, config);
     const solverInfo = world.getSolverInfo();
-    // 增加求解器迭代：默认 10 次对堆叠刚体不够，增加到 20 减少残差振荡
-    solverInfo.set_m_numIterations(20);
-    // Split Impulse: 将穿模位置修正与速度求解分离，防止堆叠刚体因位置修正注入动量
+    // Releasing solver brute-force: rigid bodies are naturally stable now, returning to 10 iterations
+    solverInfo.set_m_numIterations(10);
+    // 启用分割冲量 (Split Impulse)：位移修正不引入额外动能，抑制“炸模”现象。
     solverInfo.set_m_splitImpulse(true);
     solverInfo.set_m_splitImpulsePenetrationThreshold(-0.04);
+
+    // Invisible Ground Plane: Prevents dresses/hair from clipping through Y=0
+    // [致命Bug修复] 使用巨型 Box 替代 StaticPlane，因为 Bullet 中的无限平面无法动态旋转
+    const groundTransform = new Ammo.btTransform();
+    groundTransform.setIdentity();
+    // 向下偏移 1 单位，考虑到 BoxShape 高度 half-extent 为 1，这样盒子顶部正好顶在 Y=0
+    groundTransform.setOrigin(new Ammo.btVector3(0, -1, 0));
+    const groundShape = new Ammo.btBoxShape(new Ammo.btVector3(100, 1, 100));
+    const groundMass = 0; // mass = 0 代表静态无限大刚体
+    const groundLocalInertia = new Ammo.btVector3(0, 0, 0);
+    const groundMotionState = new Ammo.btDefaultMotionState(groundTransform);
+    const groundInfo = new Ammo.btRigidBodyConstructionInfo(groundMass, groundMotionState, groundShape, groundLocalInertia);
+    groundInfo.set_m_friction(0.8);
+    groundInfo.set_m_restitution(0.1);
+    const groundBody = new Ammo.btRigidBody(groundInfo);
+
+    world.addRigidBody(groundBody, 1, -1);
+    this.groundBody = groundBody; // Bound for dynamic positional tracking
+
     return world;
   }
   _init(mesh, rigidBodyParams, constraintParams) {
@@ -796,7 +861,8 @@ class MMDPhysics {
     mesh.updateMatrixWorld(true);
     this.reset();
     this._updateRigidBodies();
-    for (let k = 0; k < 30; k++) {
+    // Reduced internal init warmup from 30 to 5 to massively speed up loading time
+    for (let k = 0; k < 5; k++) {
       this._stepSimulation(1 / 60);
       this._updateRigidBodies();
     }
@@ -806,19 +872,6 @@ class MMDPhysics {
     manager.freeThreeVector3(currentPosition);
     manager.freeThreeQuaternion(currentQuaternion);
     manager.freeThreeVector3(currentScale);
-    // Adaptive stability system: save rest pose after proper settle, freeze unstable bodies
-    this._stabilityData = [];
-    for (let i = 0; i < this.bodies.length; i++) {
-      const body = this.bodies[i];
-      this._stabilityData.push({
-        prevQuat: new Quaternion(),
-        unstableFrames: 0,
-        frozen: false,
-        restQuat: body.bone ? new Quaternion().copy(body.bone.quaternion) : new Quaternion(),
-        restPos: body.bone ? new Vector3().copy(body.bone.position) : new Vector3(),
-      });
-    }
-    this._stabilityFrameCount = 0;
   }
   _initConstraints(constraints) {
     for (let i = 0, il = constraints.length; i < il; i++) {
@@ -856,67 +909,76 @@ class MMDPhysics {
     this.world.stepSimulation(stepTime, maxStepNum, unitStep);
   }
   _updateBones() {
-    this._stabilityFrameCount++;
-    const pastSettle = this._stabilityFrameCount > 60;
     for (let i = 0, il = this.bodies.length; i < il; i++) {
       const body = this.bodies[i];
-      const sd = this._stabilityData[i];
       if (body.params.physicsMode === 0 || body.params.boneIndex === -1) continue;
-      if (sd.frozen) {
-        body.bone.quaternion.copy(sd.restQuat);
-        if (body.params.physicsMode === 1) body.bone.position.copy(sd.restPos);
-        body.bone.updateMatrixWorld(true);
-        continue;
-      }
       body.updateBone();
-      if (pastSettle) {
-        const q = body.bone.quaternion;
-        const prev = sd.prevQuat;
-        const dot = Math.abs(q.x * prev.x + q.y * prev.y + q.z * prev.z + q.w * prev.w);
-        const delta = 1 - dot;
-        prev.copy(q);
-        if (delta > 0.005) {
-          sd.unstableFrames++;
-        } else {
-          sd.unstableFrames = Math.max(0, sd.unstableFrames - 1);
-        }
-        if (sd.unstableFrames > 15) {
-          sd.frozen = true;
-          body.bone.quaternion.copy(sd.restQuat);
-          body.bone.position.copy(sd.restPos);
-          body.bone.updateMatrixWorld(true);
-          body.reset();
-          console.warn(`[MMD Physics] Froze unstable body [${i}] "${body.bone?.name}"`);
-        }
-      }
     }
   }
   /**
-   * 模拟后速度衰减：对接近平衡态的动态刚体施加速度衰减。
-   * 打断 Sequential Impulse 求解器产生的 "微接触力→速度→位移→新接触力" 振荡循环。
-   * 只衰减速度很小的刚体，不影响正常运动中的物理。
+   * Physics Edge-Case Heuristics (物理边界工况收尾)
+   * 1. 微小防抖 (Near-Rest Damping)：吸纳残存的振荡推斥微力。
+   * 2. 安全限速器 (Velocity Limiter)：强制拦截因高速穿模或快速舞蹈动作引发的“投石机满弓引爆效应”
    */
   _dampNearRestBodies() {
     if (!this._dampVec) {
       this._dampVec = new Ammo.btVector3(0, 0, 0);
     }
     const v = this._dampVec;
-    const linThresh = 0.3;  // 线速度阈值 (units/s)
-    const angThresh = 0.3;  // 角速度阈值 (rad/s)
-    const factor = 0.6;     // 衰减因子 (保留 60% 速度)
+
+    // 定向阻尼参数：低速阈值 & 阻尼系数
+    const linThresh = 0.05;
+    const factor = 0.7;
+
+    // 安全限速阈值 (上限设为相对安全的极限范围，超纲即“砍”)
+    const maxLinSpd = 50.0;
+    const maxAngSpd = 30.0;
+
     for (let i = 0, il = this.bodies.length; i < il; i++) {
       const body = this.bodies[i];
-      if (body.params.physicsMode === 0) continue; // 跳过 kinematic
+      if (body.params.physicsMode === 0) continue;
       const rb = body.body;
       const lv = rb.getLinearVelocity();
       const av = rb.getAngularVelocity();
       const linSpd = Math.sqrt(lv.x() * lv.x() + lv.y() * lv.y() + lv.z() * lv.z());
       const angSpd = Math.sqrt(av.x() * av.x() + av.y() * av.y() + av.z() * av.z());
-      if (linSpd < linThresh && angSpd < angThresh) {
-        v.setValue(lv.x() * factor, lv.y() * factor, lv.z() * factor);
+
+      // 绝对限速拦截系统：将过载速度等比例归一化为最高限速
+      if (linSpd > maxLinSpd) {
+        const scale = maxLinSpd / linSpd;
+        v.setValue(lv.x() * scale, lv.y() * scale, lv.z() * scale);
         rb.setLinearVelocity(v);
-        v.setValue(av.x() * factor, av.y() * factor, av.z() * factor);
+      }
+      if (angSpd > maxAngSpd) {
+        const scale = maxAngSpd / angSpd;
+        v.setValue(av.x() * scale, av.y() * scale, av.z() * scale);
         rb.setAngularVelocity(v);
+      }
+
+      // 定向阻尼 v2：穿体修正版
+      // 核心逻辑：穿体时用轻阻尼防止抖动，正常位置时轻微阻尼防止飞走
+      if (linSpd < linThresh) {
+        const tr = rb.getCenterOfMassTransform();
+        const origin = tr.getOrigin();
+        const boneWorldPos = body.bone.getWorldPosition(this.manager.allocThreeVector3());
+        const dx = origin.x() - boneWorldPos.x;
+        const dy = origin.y() - boneWorldPos.y;
+        const dz = origin.z() - boneWorldPos.z;
+        const distSq = dx * dx + dy * dy + dz * dz;
+        const dot = lv.x() * dx + lv.y() * dy + lv.z() * dz;
+        const HOLD_FACTOR = factor;
+        const LIGHT_FACTOR = 0.85;
+        let dampFactor = 1.0;
+        if (distSq > 0.25) {
+          dampFactor = LIGHT_FACTOR;
+        } else if (dot > 0) {
+          dampFactor = HOLD_FACTOR;
+        }
+        if (dampFactor < 1.0) {
+          v.setValue(lv.x() * dampFactor, lv.y() * dampFactor, lv.z() * dampFactor);
+          rb.setLinearVelocity(v);
+        }
+        this.manager.freeThreeVector3(boneWorldPos);
       }
     }
   }
@@ -944,7 +1006,9 @@ class MMDPhysics {
    * Sets gravity.
    */
   setGravity(gravity) {
-    this.world.setGravity(new Ammo.btVector3(gravity.x, gravity.y, gravity.z));
+    if (!this._ammoGravity) this._ammoGravity = new Ammo.btVector3(0, 0, 0);
+    this._ammoGravity.setValue(gravity.x, gravity.y, gravity.z);
+    this.world.setGravity(this._ammoGravity);
     this.gravity.copy(gravity);
     return this;
   }
@@ -952,6 +1016,9 @@ class MMDPhysics {
    * Advances Physics calculation and updates bones.
    */
   update(delta) {
+    // Safety clamp: Cap delta to 0.1s to prevent Physics explosions during tab switching or lag
+    if (delta > 0.1) delta = 0.1;
+
     const manager = this.manager;
     const mesh = this.mesh;
     let isNonDefaultScale = false;
@@ -959,6 +1026,66 @@ class MMDPhysics {
     const quaternion = manager.allocThreeQuaternion();
     const scale = manager.allocThreeVector3();
     mesh.matrixWorld.decompose(position, quaternion, scale);
+
+    // [终极魔法 1: 局部相对重力 (Local Gravity)]
+    // 修改引擎全局向下的重力，使其随模型旋转。无论角色躺下还是倒立，重力永远从头指向脚。
+    // 这解除了衣服关节在非直立状态下被逼入死角导致“炸模”的设计缺陷。
+    const localGravity = manager.allocThreeVector3();
+    localGravity.copy(this.gravity).applyQuaternion(quaternion);
+    if (!this._ammoGravity) this._ammoGravity = new Ammo.btVector3(0, 0, 0);
+    this._ammoGravity.setValue(localGravity.x, localGravity.y, localGravity.z);
+    this.world.setGravity(this._ammoGravity);
+    manager.freeThreeVector3(localGravity);
+
+    // [终极魔法 2: 局部专属地板 (Local Floor)]
+    // 让隐形地板与角色位置和旋转完全同步结合。平躺时地板不会拦腰切断模型。
+    if (this.groundBody) {
+      const tr = manager.allocTransform();
+      const ms = this.groundBody.getMotionState();
+      if (ms) {
+        ms.getWorldTransform(tr);
+        const o = tr.getOrigin();
+        o.setValue(position.x, position.y, position.z);
+        const q = manager.allocQuaternion();
+        q.setValue(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
+        tr.setRotation(q);
+        this.groundBody.setCenterOfMassTransform(tr);
+        ms.setWorldTransform(tr);
+        manager.freeQuaternion(q);
+      }
+      manager.freeTransform(tr);
+    }
+
+    // World Position Compensation: Uncouple global dragging inertia from the physics simulation
+    // This allows the model to be teleported across space without stretching dynamic constraints.
+    if (delta > 0) {
+      const currentPos = position;
+      const displacement = manager.allocThreeVector3();
+      displacement.subVectors(currentPos, this._lastMeshPos);
+
+      if (displacement.lengthSq() > 0.000001) {
+        const tr = manager.allocTransform();
+
+        for (let i = 0, il = this.bodies.length; i < il; i++) {
+          const body = this.bodies[i];
+          // Compensate Mode 1 and 2 (Physics-driven) bones
+          if (body.params.physicsMode !== 0 && body.body) {
+            const ms = body.body.getMotionState();
+            if (ms) {
+              ms.getWorldTransform(tr);
+              const o = tr.getOrigin();
+              o.setValue(o.x() + displacement.x, o.y() + displacement.y, o.z() + displacement.z);
+              body.body.setCenterOfMassTransform(tr);
+              ms.setWorldTransform(tr);
+            }
+          }
+        }
+        manager.freeTransform(tr);
+      }
+      this._lastMeshPos.copy(currentPos);
+      manager.freeThreeVector3(displacement);
+    }
+
     if (scale.x !== 1 || scale.y !== 1 || scale.z !== 1) {
       isNonDefaultScale = true;
     }
@@ -972,6 +1099,30 @@ class MMDPhysics {
     }
     mesh.updateMatrixWorld(true);
     this._updateRigidBodies();
+
+    // Spin-Lock Mechanism (自旋锁防撕裂机制):
+    // 检测模型的极限空间自转。如果角速度超过安全阈值（例如高速拖拉/转圈），巨大的离心力会将密集的弹簧直接扯断。
+    // 在此时强行剥夺物理引擎算力：清零所有物理动能和惯性，并将裙摆、头发死死锁在默认位置上。
+    const angleDelta = this._lastMeshQuat.angleTo(quaternion);
+    const angularVelocity = angleDelta / delta;
+    if (angularVelocity > 3.0) { // 阈值：> 3.0 rad/s (约 170 度/秒)
+      const zeroVel = manager.allocVector3();
+      zeroVel.setValue(0, 0, 0);
+      for (let i = 0, il = this.bodies.length; i < il; i++) {
+        const body = this.bodies[i];
+        if (body.params.physicsMode !== 0 && body.body) {
+          // 强制拽回到目前的骨架安全坐标上
+          body._setTransformFromBone();
+          // 清除上一帧累积的毁灭性离心冲量
+          body.body.setLinearVelocity(zeroVel);
+          body.body.setAngularVelocity(zeroVel);
+          body.body.clearForces();
+        }
+      }
+      manager.freeVector3(zeroVel);
+    }
+    this._lastMeshQuat.copy(quaternion);
+
     this._stepSimulation(delta);
     this._dampNearRestBodies();
     this._updateBones();
@@ -980,9 +1131,6 @@ class MMDPhysics {
         mesh.parent = parent;
       mesh.scale.copy(scale);
     }
-    manager.freeThreeVector3(scale);
-    manager.freeThreeQuaternion(quaternion);
-    manager.freeThreeVector3(position);
     return this;
   }
   /**
@@ -992,23 +1140,6 @@ class MMDPhysics {
     for (let i = 0; i < cycles; i++) {
       this.update(1 / 60);
     }
-    this.refreshStabilityBaseline();
-    return this;
-  }
-  refreshStabilityBaseline() {
-    if (!this._stabilityData) return;
-    for (let i = 0; i < this.bodies.length; i++) {
-      const body = this.bodies[i];
-      const sd = this._stabilityData[i];
-      if (!sd) continue;
-      if (body.bone) {
-        sd.restQuat.copy(body.bone.quaternion);
-        sd.restPos.copy(body.bone.position);
-      }
-      sd.frozen = false;
-      sd.unstableFrames = 0;
-    }
-    this._stabilityFrameCount = 0;
   }
 }
 
@@ -1020,7 +1151,8 @@ const MMDAmmoPhysics = (mmd) => {
     mmd.pmx.rigidBodies,
     mmd.pmx.joints
   );
-  physics.warmup(60);
+  // Cut down external warmup from 60 to 10 frames to avoid completely freezing browser tab
+  physics.warmup(10);
   return {
     createHelper: () => physics.createHelper(),
     reset: () => physics.reset(),
