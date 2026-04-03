@@ -301,6 +301,14 @@
                                 S.lipSyncActive = false;
                                 S.isPlaying = false;
                                 dispatchAssistantSpeechEnd(src._nekoAssistantTurnId);
+
+                                // 语音模式：AI 播放完成后重新调度 proactive chat 计时器
+                                if (S.isRecording && S.proactiveChatEnabled) {
+                                    if (typeof window.scheduleProactiveChat === 'function') {
+                                        console.log('[ProactiveChat] AI 音频播放完成，重新调度计时器');
+                                        window.scheduleProactiveChat();
+                                    }
+                                }
                             }
                         };
                     })(source);

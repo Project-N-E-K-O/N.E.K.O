@@ -385,6 +385,11 @@
 
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
+                    // 收到 transcription，清除 session 初始 5 秒计时器
+                    if (S._voiceSessionInitialTimer) {
+                        clearTimeout(S._voiceSessionInitialTimer);
+                        S._voiceSessionInitialTimer = null;
+                    }
                     var now = Date.now();
                     var shouldMerge = S.isRecording &&
                         S.lastVoiceUserMessage &&
@@ -1002,6 +1007,20 @@
                             S.sessionStartedRejecter = null;
                         }
                     }, 500);
+
+                    // 语音模式：session 开始 5 秒内无 transcription，启动 proactive chat 计时器
+                    if (response.input_mode !== 'text' && S.proactiveChatEnabled) {
+                        if (S._voiceSessionInitialTimer) {
+                            clearTimeout(S._voiceSessionInitialTimer);
+                        }
+                        S._voiceSessionInitialTimer = setTimeout(function () {
+                            S._voiceSessionInitialTimer = null;
+                            if (S.isRecording && S.proactiveChatEnabled) {
+                                console.log('[ProactiveChat] Session 开始 5 秒无 transcription，启动计时器');
+                                if (typeof window.scheduleProactiveChat === 'function') window.scheduleProactiveChat();
+                            }
+                        }, 5000);
+                    }
 
                 // -------- session_failed --------
                 } else if (response.type === 'session_failed') {

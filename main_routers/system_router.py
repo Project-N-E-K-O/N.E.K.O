@@ -227,11 +227,13 @@ async def ack_pending_notices(request: Request):
 # --- 版本更新日志 ---
 
 @router.get("/changelog")
-async def get_changelog(since: str = ""):
+async def get_changelog(since: str = "", lang: str = ""):
     """返回自指定版本以来的所有更新日志。
 
     前端传入 localStorage 中保存的 lastNotifiedVersion，后端返回所有 > since 的
     changelog 条目（按版本升序），以及当前版本号。
+    lang 参数为前端 locale（如 zh-CN / en / ja / ko / ru / zh-TW），非中文时
+    优先返回对应语言翻译，不存在则 fallback 到 en，再 fallback 到中文原文。
     """
     from config import APP_VERSION
     import glob as _glob
@@ -247,6 +249,26 @@ async def get_changelog(since: str = ""):
     entries: list[dict] = []
     since_ver = _parse_ver(since) if since else (0,)
 
+    # 确定 fallback 链：用户语言 -> en -> 中文原文
+    is_chinese = lang.startswith("zh") if lang else True
+    fallback_langs: list[str] = []
+    if not is_chinese:
+        if lang:
+            fallback_langs.append(lang)
+        if "en" not in fallback_langs:
+            fallback_langs.append("en")
+
+    def _read_localized(stem: str, zh_content: str) -> str:
+        """按 fallback 链查找本地化版本，找不到返回中文原文。"""
+        for loc in fallback_langs:
+            loc_file = os.path.join(changelog_dir, loc, f"{stem}.md")
+            try:
+                with open(loc_file, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                continue
+        return zh_content
+
     if os.path.isdir(changelog_dir):
         for md_file in sorted(_glob.glob(os.path.join(changelog_dir, "*.md")),
                               key=lambda p: _parse_ver(os.path.splitext(os.path.basename(p))[0])):
@@ -257,9 +279,10 @@ async def get_changelog(since: str = ""):
             if file_ver > since_ver:
                 try:
                     with open(md_file, "r", encoding="utf-8") as f:
-                        content = f.read()
+                        zh_content = f.read()
                 except Exception:
-                    content = ""
+                    zh_content = ""
+                content = _read_localized(stem, zh_content) if not is_chinese else zh_content
                 entries.append({"version": stem, "content": content})
 
     return {"current_version": APP_VERSION, "entries": entries}
