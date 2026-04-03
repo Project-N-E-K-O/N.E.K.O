@@ -1535,7 +1535,7 @@
             "enabled": "{{name}}已開啓",
             "disabled": "{{name}}已關閉",
             "enableFailed": "{{name}}開啓失敗",
-            "openfang": "虛擬機",
+            "openfang": "專屬桌面",
             "userPluginAdapting": "用戶插件（開發中）",
             "openclawConnect": "OpenClaw",
             "chatSettings": "對話設定",
@@ -1609,7 +1609,8 @@
             "typeUserPlugin": "使用者插件",
             "typeComputerUse": "鍵鼠控制",
             "typeBrowserUse": "瀏覽器控制",
-            "typeMCP": "MCP工具"
+            "typeMCP": "MCP工具",
+            "typeOpenFang": "專屬桌面"
         }
     },
     "vrm": {
