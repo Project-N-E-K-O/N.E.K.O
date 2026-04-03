@@ -441,12 +441,7 @@ async def initialize_character_data():
     # 清理无效的voice_id引用；如果发现旧版 CosyVoice 音色，推入通知缓冲池等前端连接后弹出
     _cleaned, _legacy_names = _config_manager.cleanup_invalid_voice_ids()
     if _legacy_names:
-        core.enqueue_prominent_notice({
-            "code": "notice.voiceMigration.legacyRemoved",
-            "message": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
-            "message_en": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices.",
-            "details": {"voices": _legacy_names},
-        })
+        core.enqueue_voice_migration_notice(_legacy_names)
     
     # 加载最新的角色数据
     master_name, her_name, master_basic_config, lanlan_basic_config, name_mapping, lanlan_prompt, time_store, setting_store, recent_log = _config_manager.get_character_data()

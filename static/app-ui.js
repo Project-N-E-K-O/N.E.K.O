@@ -234,6 +234,30 @@
         });
     }
 
+    /**
+     * 轻量 markdown → HTML：# 标题转加粗、**加粗**、*斜体*、- 列表项、换行保留。
+     * 先转义 HTML 实体，再按顺序替换 markdown 标记。
+     */
+    function _miniMarkdown(text) {
+        let s = text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        // # 标题 → 加粗（支持 1~6 级，去掉 #）
+        s = s.replace(/^#{1,6}\s+(.+)$/gm, '<strong>$1</strong>');
+        // **加粗**（先于 *斜体*）
+        s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        // *斜体*
+        s = s.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
+        // - 列表项 → <li>（连续 <li> 后续用 CSS 处理）
+        s = s.replace(/^[-•]\s+(.+)$/gm, '<li style="margin-left:18px;list-style:disc;text-align:left;">$1</li>');
+        // 换行
+        s = s.replace(/\n/g, '<br>');
+        // 清理连续 <li> 之间多余的 <br>
+        s = s.replace(/<\/li><br><li/g, '</li><li');
+        return s;
+    }
+
     function _renderProminentNotice(notice, onDismiss) {
         // 回退文本优先级：按用户 locale 选择语言
         const _isChinese = (typeof _isUserRegionChina === 'function' && _isUserRegionChina())
@@ -276,7 +300,10 @@
         `;
 
         const btn = document.createElement('button');
-        btn.textContent = (typeof safeT === 'function') ? safeT('common.confirm', '确认') : '确认';
+        const _hasMore = _prominentNoticeQueue.length > 0;
+        btn.textContent = _hasMore
+            ? ((window.t && window.t('common.next')) || '下一个')
+            : ((window.t && window.t('common.confirm')) || '确认');
         btn.style.cssText = `
             background: #3b82f6; color: #fff; border: none;
             border-radius: 10px; padding: 10px 48px;
@@ -291,8 +318,8 @@
         icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;';
 
         const textDiv = document.createElement('div');
-        textDiv.style.cssText = 'font-size:16px;font-weight:600;line-height:1.7;margin-bottom:22px;';
-        textDiv.textContent = displayText;
+        textDiv.style.cssText = 'font-size:16px;font-weight:600;line-height:1.7;margin-bottom:22px;text-align:left;';
+        textDiv.innerHTML = _miniMarkdown(displayText);
 
         box.appendChild(icon);
         box.appendChild(textDiv);
@@ -654,6 +681,8 @@
                     live2dCanvas.style.transition = '';
                     live2dCanvas.style.opacity = '';
                 }
+                // 清除容器的内联 opacity，使 CSS class（如 locked-hover-fade）能正常生效
+                container.style.removeProperty('opacity');
                 window._returnFadeTimer = null;
             }, 550);
         }
@@ -1176,6 +1205,14 @@
                 window.vrmManager.resetAllButtons();
             }
 
+            // 保存当前锁定状态，以便"请她回来"时恢复
+            // core.setLocked() 将值写入 manager.isLocked，因此从 manager 级别读取
+            window._savedLockState = {
+                live2d: window.live2dManager ? window.live2dManager.isLocked : false,
+                vrm: window.vrmManager ? window.vrmManager.isLocked : false,
+                mmd: window.mmdManager ? window.mmdManager.isLocked : false
+            };
+
             // 设置锁定状态
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
                 window.live2dManager.setLocked(true, { updateFloatingButtons: false });
@@ -1632,15 +1669,18 @@
                 mmdLockIcon.style.removeProperty('visibility');
                 mmdLockIcon.style.removeProperty('opacity');
             }
+            // 恢复"请她离开"之前的锁定状态（而非强制解锁）
+            const savedLock = window._savedLockState || { live2d: false, vrm: false, mmd: false };
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
-                window.live2dManager.setLocked(false, { updateFloatingButtons: false });
+                window.live2dManager.setLocked(savedLock.live2d, { updateFloatingButtons: false });
             }
             if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
-                window.vrmManager.core.setLocked(false);
+                window.vrmManager.core.setLocked(savedLock.vrm);
             }
             if (window.mmdManager && window.mmdManager.core && typeof window.mmdManager.core.setLocked === 'function') {
-                window.mmdManager.core.setLocked(false);
+                window.mmdManager.core.setLocked(savedLock.mmd);
             }
+            window._savedLockState = null;
 
             // 恢复浮动按钮系统
             const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');

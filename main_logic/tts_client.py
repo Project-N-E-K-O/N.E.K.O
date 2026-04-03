@@ -609,16 +609,22 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             # 发送就绪信号
             logger.info("Qwen TTS 已就绪，发送就绪信号")
             response_queue.put(("__ready__", True))
-            
+
             # 初始接收任务（会在每次新 speech_id 时重新创建）
             async def receive_messages_initial():
                 """初始接收任务"""
+                nonlocal ws
                 try:
                     async for message in ws:
                         event = json.loads(message)
                         event_type = event.get("type")
-                        
+
                         if event_type == "error":
+                            # 空闲超时 / 会话过期：不报 error，标记连接丢失，按需重连
+                            err_msg = event.get("error", {}).get("message", "")
+                            if "request timeout" in err_msg or "session_expired" in err_msg:
+                                logger.debug(f"Qwen TTS 空闲超时，标记连接已断开: {err_msg}")
+                                break
                             _enqueue_error(response_queue, event)
                         elif event_type == "response.audio.delta":
                             try:
@@ -636,17 +642,31 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     pass
                 except Exception as e:
                     logger.error(f"消息接收出错: {e}")
-            
+                finally:
+                    # 接收循环退出（超时/断开），清理连接状态以便主循环按需重连
+                    if ws:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        ws = None
+                    session_ready.clear()
+
             receive_task = asyncio.create_task(receive_messages_initial())
             
             # 主循环：处理请求队列
             loop = asyncio.get_running_loop()
+            pending = None  # 断线重试时暂存当前片段，保证顺序（不回共享队列）
             while True:
-                # 非阻塞检查队列
-                try:
-                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                except Exception:
-                    break
+                # 优先处理断线暂存的片段，再从队列取新请求
+                if pending:
+                    sid, tts_text = pending
+                    pending = None
+                else:
+                    try:
+                        sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                    except Exception:
+                        break
 
                 if sid == "__interrupt__":
                     # 打断：立即关闭连接，不发 commit、不等服务器确认
@@ -732,12 +752,18 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         
                         # 启动新的接收任务
                         async def receive_messages():
+                            nonlocal ws
                             try:
                                 async for message in ws:
                                     event = json.loads(message)
                                     event_type = event.get("type")
-                                    
+
                                     if event_type == "error":
+                                        # 空闲超时 / 会话过期：不报 error，标记连接丢失，按需重连
+                                        err_msg = event.get("error", {}).get("message", "")
+                                        if "request timeout" in err_msg or "session_expired" in err_msg:
+                                            logger.debug(f"Qwen TTS 空闲超时，标记连接已断开: {err_msg}")
+                                            break
                                         _enqueue_error(response_queue, event)
                                     elif event_type == "response.audio.delta":
                                         try:
@@ -755,6 +781,15 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 pass
                             except Exception as e:
                                 logger.error(f"消息接收出错: {e}")
+                            finally:
+                                # 接收循环退出（超时/断开），清理连接状态以便主循环按需重连
+                                if ws:
+                                    try:
+                                        await ws.close()
+                                    except Exception:
+                                        pass
+                                    ws = None
+                                session_ready.clear()
                         
                         receive_task = asyncio.create_task(receive_messages())
                         
@@ -769,6 +804,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     continue
 
                 if not ws or not session_ready.is_set():
+                    # 连接已因空闲超时断开，暂存当前片段并重置 speech_id 以触发重连
+                    current_speech_id = None
+                    pending = (sid, tts_text)
                     continue
                 
                 # 追加文本到缓冲区（不立即提交，等待响应完成时的终止信号再 commit）
