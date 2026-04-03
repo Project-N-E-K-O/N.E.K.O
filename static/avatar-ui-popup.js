@@ -58,6 +58,20 @@ function injectPopupStyles(prefix) {
             opacity: 1;
             transform: translateX(0);
         }
+        /* 弹窗滚动条 - 透明背景 */
+        .${prefix}-popup::-webkit-scrollbar {
+            width: 6px;
+        }
+        .${prefix}-popup::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .${prefix}-popup::-webkit-scrollbar-thumb {
+            background: rgba(128, 128, 128, 0.6);
+            border-radius: 3px;
+        }
+        .${prefix}-popup::-webkit-scrollbar-thumb:hover {
+            background: rgba(128, 128, 128, 0.8);
+        }
         .${prefix}-popup-item {
             display: flex;
             align-items: center;
@@ -204,7 +218,7 @@ function createPopup(manager, prefix, buttonId) {
         popup.style.gap = '0';
         popup.style.overflowY = 'hidden';
     } else if (buttonId === 'screen') {
-        popup.style.width = '420px';
+        popup.style.width = '360px';
         popup.style.maxHeight = '400px';
         popup.style.overflowX = 'hidden';
         popup.style.overflowY = 'auto';
@@ -2093,7 +2107,7 @@ const AvatarPopupMixin = {
                     popup.appendChild(header);
 
                     const grid = document.createElement('div');
-                    Object.assign(grid.style, { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', padding: '4px 8px' });
+                    Object.assign(grid.style, { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', padding: '6px' });
 
                     items.forEach(source => {
                         const option = document.createElement('div');
