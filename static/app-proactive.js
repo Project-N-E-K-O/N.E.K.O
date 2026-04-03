@@ -54,6 +54,15 @@
     // ======================== proactive chat core ========================
 
     /**
+     * 检查是否处于「请她离开」状态
+     */
+    function isGoodbyeActive() {
+        return (window.live2dManager && window.live2dManager._goodbyeClicked) ||
+            (window.vrmManager && window.vrmManager._goodbyeClicked) ||
+            (window.mmdManager && window.mmdManager._goodbyeClicked);
+    }
+
+    /**
      * 检查是否有任何搭话方式被选中
      */
     function hasAnyChatModeEnabled() {
@@ -67,6 +76,11 @@
      * 检查主动搭话前置条件是否满足
      */
     function canTriggerProactively() {
+        // 「请她离开」状态下禁止一切主动搭话
+        if (isGoodbyeActive()) {
+            return false;
+        }
+
         // 必须开启主动搭话
         if (!S.proactiveChatEnabled) {
             return false;
@@ -230,6 +244,11 @@
 
     async function triggerProactiveChat() {
         try {
+            // 「请她离开」状态下不触发
+            if (isGoodbyeActive()) {
+                console.log('[ProactiveChat] goodbye 状态，跳过本次触发');
+                return;
+            }
             // ── 语音模式快速路径：直接发 voice_mode 请求，后端注入预录音频 ──
             if (S.isRecording) {
                 var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -867,6 +886,11 @@
             S.proactiveVisionFrameTimer = null;
         }
 
+        // 「请她离开」状态下禁止启动
+        if (isGoodbyeActive()) {
+            return;
+        }
+
         // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
         if (!S.proactiveVisionEnabled || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
@@ -874,7 +898,7 @@
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
-            if (!S.proactiveVisionEnabled || !S.isRecording) {
+            if (!S.proactiveVisionEnabled || !S.isRecording || isGoodbyeActive()) {
                 stopProactiveVisionDuringSpeech();
                 return;
             }
