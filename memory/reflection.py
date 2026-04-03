@@ -136,11 +136,15 @@ class ReflectionEngine:
                         data = json.load(f)
                     if isinstance(data, list):
                         existing = data
-                except (json.JSONDecodeError, OSError):
-                    pass
-            existing.extend(to_archive)
-            atomic_write_json(archive_path, existing, indent=2, ensure_ascii=False)
-            logger.info(f"[Reflection] {name}: 归档 {len(to_archive)} 条旧 reflections")
+                except (json.JSONDecodeError, OSError) as e:
+                    # 归档文件损坏 → 放弃本次归档，保留在主文件中，避免覆盖丢数据
+                    logger.warning(f"[Reflection] {name}: 读取归档文件失败，跳过本次归档: {e}")
+                    keep_in_main.extend(to_archive)
+                    to_archive = []
+            if to_archive:
+                existing.extend(to_archive)
+                atomic_write_json(archive_path, existing, indent=2, ensure_ascii=False)
+                logger.info(f"[Reflection] {name}: 归档 {len(to_archive)} 条旧 reflections")
 
         merged = reflections + keep_in_main
         atomic_write_json(path, merged, indent=2, ensure_ascii=False)
