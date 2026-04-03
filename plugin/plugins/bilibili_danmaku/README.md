@@ -15,9 +15,9 @@
 
 ## 安装
 
-将本目录放置于 `plugin/plugins/Bilibili-Danmaku/`，NEKO 将自动加载。
+将本目录放置于 `plugin/plugins/bilibili_danmaku/`，NEKO 将自动加载。
 
-**依赖**：需要安装 `bilibili-api-python`（NEKO 原生支持，通常已安装）。
+**依赖**：需要安装 `cryptography`（用于凭据加密）和 `aiohttp`、`websockets`（NEKO 原生支持，通常已安装）。本插件**不**依赖 `bilibili-api-python`，使用纯 WebSocket 实现。
 
 ## 入口说明
 

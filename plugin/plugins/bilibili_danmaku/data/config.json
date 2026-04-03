@@ -1,9 +1,9 @@
 {
-  "room_id": 2751313,
+  "room_id": 0,
   "interval_seconds": 30,
   "_comment_interval": "推送间隔范围 10~180 秒",
-  "target_lanlan": "小天",
+  "target_lanlan": "",
   "_comment_target_lanlan": "弹幕推送的目标 AI 名称（应与 lanlan_name 一致，留空则不指定）",
   "danmaku_max_length": 20,
-  "_comment_danmaku_max_length": "发送弹幕的最大长度限制（B站限制 20 字符，建议 20）"
+  "_comment_danmaku_max_length": "发送弹幕的最大长度限制（B站单条弹幕上限 20 字符）"
 }

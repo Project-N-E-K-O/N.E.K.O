@@ -155,6 +155,7 @@ class DanmakuListener:
         danmaku_max_length: int = 20,  # 弹幕最大长度限制（B站限制 20 字符）
     ):
         self.room_id = room_id
+        self.real_room_id: int = room_id  # 连接后更新为真实房间号（处理短号）
         self.credential = credential
         self.logger = logger
         self.callbacks = callbacks or {}
@@ -615,6 +616,8 @@ class DanmakuListener:
         real_room_id = await self._get_real_room_id(self.room_id)
         if self._stop_event.is_set():
             return
+        # 保存真实房间号供 send_danmaku 等接口使用
+        self.real_room_id = real_room_id
 
         # 2. 获取服务器和 token
         ws_url, token = await self._get_danmaku_server_info(real_room_id)

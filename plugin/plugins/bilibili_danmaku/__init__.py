@@ -129,15 +129,17 @@ def _load_credential_encrypted(data_dir: Path) -> Optional[Dict[str, str]]:
         return None
 
 
-def _delete_credential_files(data_dir: Path):
-    """删除插件本地凭据文件"""
+def _delete_credential_files(data_dir: Path) -> list[str]:
+    """删除插件本地凭据文件，返回删除失败的文件名列表"""
+    failed = []
     for fname in (_PLUGIN_CRED_FILE, _PLUGIN_KEY_FILE):
         p = data_dir / fname
         if p.exists():
             try:
                 p.unlink()
-            except Exception:
-                pass
+            except Exception as e:
+                failed.append(fname)
+    return failed
 
 
 @neko_plugin
@@ -255,8 +257,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 self._interval = max(MIN_INTERVAL, min(MAX_INTERVAL, raw_interval))
                 self._target_lanlan = str(cfg.get("target_lanlan", "")).strip()
                 self._danmaku_max_length = int(cfg.get("danmaku_max_length", 20))
-                # 弹幕长度限制：B站实际限制为 20 字符/秒
-                self._danmaku_max_length = max(1, min(100, self._danmaku_max_length))
+                # 弹幕长度限制：B站单条弹幕上限为 20 字符
+                self._danmaku_max_length = max(1, min(20, self._danmaku_max_length))
                 self.logger.info(f"已加载配置: room_id={self._room_id}, interval={self._interval}s, target_lanlan='{self._target_lanlan}', danmaku_max_length={self._danmaku_max_length}")
             except Exception as e:
                 self.logger.warning(f"加载配置失败，使用默认值: {e}")
@@ -588,20 +590,11 @@ class BiliDanmakuPlugin(NekoPluginBase):
             return Ok({"skipped": True})
 
         # 收集待推送内容
-        # 弹幕较多时，优先推送最新的弹幕，避免旧弹幕积压
-        # 保留最新的弹幕（至少保留 5 条），其余的推送给 AI
-        keep_count = min(5, len(self._danmaku_queue))
-        total_count = len(self._danmaku_queue)
-        to_pop = total_count - keep_count  # 要推送的数量
-
+        # 按 FIFO 顺序取出本轮所有积压弹幕（最多 10 条），按时间正序推送
         danmaku_batch = []
-        if to_pop > 0:
-            # 取最旧的 to_pop 条弹幕推送（从队首取），保留最新的弹幕在队列中
-            for _ in range(to_pop):
-                danmaku_batch.append(self._danmaku_queue.popleft())
-            # 反转顺序（按时间正序，最早的在前）
-            danmaku_batch.reverse()
-        # 最多保留 10 条
+        while self._danmaku_queue:
+            danmaku_batch.append(self._danmaku_queue.popleft())
+        # 弹幕过多时只保留最新 10 条（避免单次消息过长）
         if len(danmaku_batch) > 10:
             danmaku_batch = danmaku_batch[-10:]
 
@@ -937,7 +930,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "properties": {
                 "max_length": {
                     "type": "integer",
-                    "description": "弹幕最大长度（范围 1-100，建议 20，B站限制 20 字符/秒）",
+                    "description": "弹幕最大长度（范围 1-20，B站单条弹幕上限为 20 字符）",
                 },
             },
         },
@@ -950,8 +943,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
         except (TypeError, ValueError):
             return Err(SdkError("max_length 必须是整数"))
 
-        if max_length < 1 or max_length > 100:
-            return Err(SdkError("max_length 超出范围：请设置 1~100 之间"))
+        if max_length < 1 or max_length > 20:
+            return Err(SdkError("max_length 超出范围：请设置 1~20 之间（B站单条弹幕上限为 20 字符）"))
 
         old_value = self._danmaku_max_length
         self._danmaku_max_length = max_length
@@ -1129,6 +1122,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
             dedeuserid=dedeuserid,
         )
         self._is_logged_in = True
+        # 重建过滤器为登录态，确保立刻生效
+        self._filter = DanmakuFilter(logged_in=True)
         self.logger.info(f"✅ B站凭据已加密保存 (UID={dedeuserid})")
 
         # 如果当前在监听，重启以使新凭据生效
@@ -1154,15 +1149,31 @@ class BiliDanmakuPlugin(NekoPluginBase):
     async def clear_credential(self, **_):
         """清除插件本地加密凭据，切换回游客模式"""
         data_dir = self.data_path()
-        _delete_credential_files(data_dir)
+        failed = _delete_credential_files(data_dir)
+        if failed:
+            self.logger.warning(f"⚠️ 以下凭据文件删除失败（可能仍留在磁盘）: {', '.join(failed)}")
 
         self._bilibili_credential = None
         self._is_logged_in = False
+        # 重建过滤器为游客模式
+        self._filter = DanmakuFilter(logged_in=False)
         self.logger.info("🗑️ 已清除插件本地 B站凭据，切换为游客模式")
 
+        # 如果当前在监听，重连以断开旧的登录态连接
+        if self._listener and self._listener.is_running():
+            asyncio.create_task(self._start_listening())
+            reconnect_msg = "，已重连弹幕监听以清除登录态"
+        else:
+            reconnect_msg = ""
+
+        if failed:
+            return Ok({
+                "success": True,
+                "message": f"⚠️ B站凭据已从内存清除，但以下文件删除失败，请手动处理：{', '.join(failed)}{reconnect_msg}",
+            })
         return Ok({
             "success": True,
-            "message": "✅ 已清除 B站凭据，切换为游客模式\n如需重新登录，请在控制台输入 Cookie 字段并保存。",
+            "message": f"✅ 已清除 B站凭据，切换为游客模式{reconnect_msg}\n如需重新登录，请在控制台输入 Cookie 字段并保存。",
         })
 
     @plugin_entry(
@@ -1211,7 +1222,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
         result = await self._listener.send_danmaku(
             message=message,
-            room_id=self._room_id,
+            room_id=self._listener.real_room_id,
             credential=self._bilibili_credential,
             danmaku_max_length=self._danmaku_max_length,
         )
