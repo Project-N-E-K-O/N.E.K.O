@@ -1,0 +1,8 @@
+{
+  "enable": false,
+  "network": {
+    "httpServers": [],
+    "websocketServers": [],
+    "websocketClients": []
+  }
+}
