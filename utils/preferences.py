@@ -275,7 +275,8 @@ _ALLOWED_CONVERSATION_SETTINGS = {
     'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
     'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
     'proactiveMusicEnabled', 'proactiveMemeEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
-    'proactiveChatInterval', 'proactiveVisionInterval', 'subtitleEnabled', 'userLanguage'
+    'proactiveChatInterval', 'proactiveVisionInterval', 'subtitleEnabled', 'userLanguage',
+    'textGuardMaxLength'
 }
 
 
@@ -351,6 +352,7 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
         }
         _INT_INTERVAL_FIELDS = {'proactiveChatInterval', 'proactiveVisionInterval'}
         _STRING_FIELDS = {'userLanguage'}
+        _INT_LIMIT_FIELDS = {'textGuardMaxLength'}
 
         validated = {}
         for k, v in filtered_settings.items():
@@ -362,6 +364,9 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
                     validated[k] = v
             elif k in _STRING_FIELDS:
                 if isinstance(v, str) and v:
+                    validated[k] = v
+            elif k in _INT_LIMIT_FIELDS:
+                if isinstance(v, int) and 0 <= v <= 2000:
                     validated[k] = v
         filtered_settings = validated
 
