@@ -113,7 +113,7 @@
 
         // --- UI / 杂项 ---
         focusModeEnabled: false,
-        avatarReactionBubbleEnabled: false,
+        avatarReactionBubbleEnabled: true,
         renderQuality: 'medium',
         targetFrameRate: 60,
         screenshotCounter: 0,

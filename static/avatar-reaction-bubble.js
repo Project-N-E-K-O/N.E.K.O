@@ -16,7 +16,15 @@
         positionSnapPx: 3,
         sizeSnapPx: 2,
         baseWidthShrinkPx: 92,
-        baseHeightShrinkPx: 72
+        baseHeightShrinkPx: 66,
+        verticalOffsetPx: 0,
+        modelOverlapRatio: 0.28,
+        shortModelHeightPx: 360,
+        tallModelHeightPx: 760,
+        shortHeadAnchorRatio: 0.7,
+        tallHeadAnchorRatio: 0.54,
+        shortModelOffsetPx: 12,
+        tallModelOffsetPx: -18
     });
 
     const PRESETS = Object.freeze({
@@ -71,6 +79,14 @@
 
     function now() {
         return Date.now();
+    }
+
+    function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    function lerp(start, end, progress) {
+        return start + (end - start) * progress;
     }
 
     function clearTimer(timerKey) {
@@ -284,7 +300,22 @@
         var headCenterX = bounds.left + bounds.width * 0.5;
         var rightAnchorX = headCenterX + bounds.width * 0.13;
         var leftAnchorX = headCenterX - bounds.width * 0.13;
-        var anchorY = bounds.top + bounds.height * 0.14;
+        var modelHeightProgress = clamp(
+            (bounds.height - TIMING.shortModelHeightPx) / (TIMING.tallModelHeightPx - TIMING.shortModelHeightPx),
+            0,
+            1
+        );
+        var headAnchorRatio = lerp(
+            TIMING.shortHeadAnchorRatio,
+            TIMING.tallHeadAnchorRatio,
+            modelHeightProgress
+        );
+        var modelOffsetPx = lerp(
+            TIMING.shortModelOffsetPx,
+            TIMING.tallModelOffsetPx,
+            modelHeightProgress
+        );
+        var anchorY = bounds.top + headHeight * headAnchorRatio;
 
         if (state.lastRenderWidth === null || Math.abs(state.lastRenderWidth - width) >= TIMING.sizeSnapPx) {
             bubbleEl.style.setProperty('--bubble-width', width + 'px');
@@ -296,11 +327,12 @@
         }
 
         var tailInset = Math.round(width * -0.06);
-        var preferredRightX = rightAnchorX - tailInset;
-        var preferredLeftX = leftAnchorX - width + tailInset;
+        var overlapPx = Math.round(width * TIMING.modelOverlapRatio);
+        var preferredRightX = rightAnchorX - tailInset - overlapPx;
+        var preferredLeftX = leftAnchorX - width + tailInset + overlapPx;
         var rightFits = preferredRightX + width <= viewportWidth - margin;
         var leftFits = preferredLeftX >= margin;
-        var topY = anchorY - height * 0.56;
+        var topY = anchorY - height * 0.5 + modelOffsetPx + TIMING.verticalOffsetPx;
         var y = Math.max(margin, Math.min(topY, viewportHeight - height - margin));
         var side = 'right';
         var x = preferredRightX;

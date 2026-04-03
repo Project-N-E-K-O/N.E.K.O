@@ -26,7 +26,7 @@
 }
 
 #avatar-reaction-bubble.avatar-reaction-bubble.is-visible {
-    opacity: 1;
+    opacity: 0.92;
     visibility: visible;
     transform: translateY(0) scale(1);
 }
@@ -49,7 +49,7 @@
 #avatar-reaction-bubble .avatar-reaction-bubble-shell {
     position: absolute;
     inset: 0;
-    opacity: 0.75;
+    opacity: 0.9;
     background-image: var(--bubble-shell-image);
     background-repeat: no-repeat;
     background-position: center;
@@ -88,7 +88,7 @@
 }
 
 #avatar-reaction-bubble.has-emotion-art .avatar-reaction-bubble-mascot {
-    opacity: 0.92;
+    opacity: 0.86;
     transform: translate(-50%, -50%) scale(1);
 }
 
@@ -109,7 +109,7 @@
     font-weight: 700;
     line-height: 1;
     letter-spacing: 0.02em;
-    opacity: 0.88;
+    opacity: 0.8;
     transform: none;
 }
 
@@ -119,6 +119,8 @@
 }
 
 #avatar-reaction-bubble[data-phase="thinking"] .avatar-reaction-bubble-content {
+    color: #6f85a0;
+    opacity: 0.68;
     letter-spacing: 0.08em;
     animation: neko-bubble-thinking 1.6s ease-in-out infinite;
 }
@@ -132,7 +134,7 @@
 }
 
 #avatar-reaction-bubble[data-theme="thinking"] {
-    --bubble-text: #2d4c72;
+    --bubble-text: #5c7693;
 }
 
 #avatar-reaction-bubble[data-theme="happy"] {

@@ -310,7 +310,7 @@
                 S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? true;
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
-                S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? false;
+                S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
                 S.proactiveVisionInterval = settings.proactiveVisionInterval ?? C.DEFAULT_PROACTIVE_VISION_INTERVAL;
                 // 画质设置

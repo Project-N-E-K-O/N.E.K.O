@@ -44,6 +44,7 @@ import json
 import logging
 import uuid
 import importlib
+import importlib.util
 from datetime import datetime, timezone
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
@@ -100,6 +101,96 @@ MODULE_TO_PORT_KEY: dict[str, str] = {
     "agent_server": "TOOL_SERVER_PORT",
     "main_server": "MAIN_SERVER_PORT",
 }
+LAUNCHER_REQUIRED_MODULES = ("fastapi", "uvicorn", "openai")
+LAUNCHER_REEXEC_GUARD_ENV = "NEKO_LAUNCHER_REEXEC"
+
+
+def _same_path(path_a: str | None, path_b: str | None) -> bool:
+    if not path_a or not path_b:
+        return False
+    try:
+        return os.path.samefile(path_a, path_b)
+    except Exception:
+        return os.path.abspath(path_a) == os.path.abspath(path_b)
+
+
+def _find_missing_modules(module_names: tuple[str, ...]) -> list[str]:
+    return [name for name in module_names if importlib.util.find_spec(name) is None]
+
+
+def _get_project_venv_python() -> str | None:
+    candidates: list[str] = []
+    if sys.platform == "win32":
+        candidates.extend(
+            [
+                os.path.join(bundle_dir, ".venv", "Scripts", "python.exe"),
+                os.path.join(bundle_dir, ".venv", "Scripts", "python"),
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                os.path.join(bundle_dir, ".venv", "bin", "python"),
+                os.path.join(bundle_dir, ".venv", "bin", "python3"),
+            ]
+        )
+
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _format_missing_dependency_message(missing_modules: list[str]) -> str:
+    modules_text = ", ".join(missing_modules)
+    if sys.platform == "win32":
+        venv_cmd = r".\.venv\Scripts\python.exe launcher.py"
+    else:
+        venv_cmd = "./.venv/bin/python launcher.py"
+
+    lines = [
+        f"Startup blocked: current Python environment is missing required packages: {modules_text}",
+        f"Current Python: {sys.executable}",
+    ]
+
+    project_venv = _get_project_venv_python()
+    if project_venv and not _same_path(project_venv, sys.executable):
+        lines.append(f"Project virtualenv detected: {project_venv}")
+
+    lines.extend(
+        [
+            "Install dependencies with `uv sync`, then restart with `uv run python launcher.py`.",
+            f"Or launch directly with the project virtualenv: `{venv_cmd}`",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _maybe_reexec_in_project_venv() -> bool:
+    if getattr(sys, "frozen", False):
+        return False
+    if os.environ.get(LAUNCHER_REEXEC_GUARD_ENV) == "1":
+        return False
+
+    missing_modules = _find_missing_modules(LAUNCHER_REQUIRED_MODULES)
+    if not missing_modules:
+        return False
+
+    project_venv = _get_project_venv_python()
+    if not project_venv or _same_path(project_venv, sys.executable):
+        return False
+
+    print(
+        f"[Launcher] Missing startup modules {missing_modules}; retrying with project virtualenv: {project_venv}",
+        flush=True,
+    )
+    os.environ[LAUNCHER_REEXEC_GUARD_ENV] = "1"
+    try:
+        os.execv(project_venv, [project_venv, *sys.argv])
+    except Exception as exc:
+        print(f"[Launcher] Failed to switch to project virtualenv: {exc}", flush=True)
+        os.environ.pop(LAUNCHER_REEXEC_GUARD_ENV, None)
+    return False
 
 
 def _sync_runtime_config_globals(
@@ -443,6 +534,7 @@ def run_memory_server(
         print(f"Memory Server error: {e}")
         import traceback
         traceback.print_exc()
+        sys.exit(1)
 
 def run_agent_server(
     ready_event: Event,
@@ -505,6 +597,7 @@ def run_agent_server(
         print(f"Agent Server error: {e}")
         import traceback
         traceback.print_exc()
+        sys.exit(1)
 
 def run_main_server(
     ready_event: Event,
@@ -578,6 +671,7 @@ def run_main_server(
         print(f"Main Server error: {e}")
         import traceback
         traceback.print_exc()
+        sys.exit(1)
 
 def check_port(port: int, timeout: float = 0.5) -> bool:
     """检查端口是否已开放"""
@@ -1156,6 +1250,13 @@ def main():
     """主函数"""
     # 支持 multiprocessing 在 Windows 上的打包
     freeze_support()
+
+    _maybe_reexec_in_project_venv()
+
+    missing_modules = _find_missing_modules(LAUNCHER_REQUIRED_MODULES)
+    if missing_modules:
+        report_startup_failure(_format_missing_dependency_message(missing_modules))
+        return 1
 
     # ── 发送 startup_begin，便于前端绑定本次启动会话 ──
     emit_frontend_event("startup_begin", {"instance_id": INSTANCE_ID})
