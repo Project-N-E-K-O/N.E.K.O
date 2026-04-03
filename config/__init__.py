@@ -578,12 +578,12 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        'CONVERSATION_MODEL' : "qwen3-235b-a22b-instruct-2507",
-        'SUMMARY_MODEL': "qwen3-next-80b-a3b-instruct",
-        'CORRECTION_MODEL': "qwen3-235b-a22b-instruct-2507",
+        'CONVERSATION_MODEL' : "qwen3.6-plus",
+        'SUMMARY_MODEL': "qwen3.6-plus",
+        'CORRECTION_MODEL': "qwen3.6-plus",
         'EMOTION_MODEL': "qwen-flash",
-        'VISION_MODEL': "qwen3-vl-plus-2025-09-23",
-        'AGENT_MODEL': "qwen3.5-plus",
+        'VISION_MODEL': "qwen3.6-plus",
+        'AGENT_MODEL': "qwen3.6-plus",
     },
     'openai': {
         'OPENROUTER_URL': "https://api.openai.com/v1",

@@ -1536,7 +1536,7 @@
             "enabled": "{{name}}を有効にしました",
             "disabled": "{{name}}を無効にしました",
             "enableFailed": "{{name}}の有効化に失敗しました",
-            "openfang": "仮想マシン",
+            "openfang": "専用PC",
             "userPluginAdapting": "ユーザープラグイン（開発中）",
             "openclawConnect": "OpenClaw",
             "chatSettings": "チャット設定",
@@ -1610,7 +1610,8 @@
             "typeUserPlugin": "ユーザープラグイン",
             "typeComputerUse": "キーボード/マウス操作",
             "typeBrowserUse": "ブラウザ制御",
-            "typeMCP": "MCPツール"
+            "typeMCP": "MCPツール",
+            "typeOpenFang": "専用PC"
         }
     },
     "vrm": {

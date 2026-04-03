@@ -1536,7 +1536,7 @@
             "enabled": "{{name}} Enabled",
             "disabled": "{{name}} Disabled",
             "enableFailed": "{{name}} Enable Failed",
-            "openfang": "Virtual Machine",
+            "openfang": "Her Desktop",
             "userPluginAdapting": "User Plugin (Developing)",
             "openclawConnect": "OpenClaw",
             "chatSettings": "Chat Settings",
@@ -1610,7 +1610,8 @@
             "typeUserPlugin": "User Plugin",
             "typeComputerUse": "Computer Use",
             "typeBrowserUse": "Browser Control",
-            "typeMCP": "MCP Tool"
+            "typeMCP": "MCP Tool",
+            "typeOpenFang": "Her Desktop"
         }
     },
     "vrm": {
