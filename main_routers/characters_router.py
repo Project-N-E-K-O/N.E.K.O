@@ -28,6 +28,7 @@ from .workshop_router import _ugc_sync_lock
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.config_manager import get_reserved, set_reserved, flatten_reserved
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
+from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
@@ -51,7 +52,6 @@ router = APIRouter(prefix="/api/characters", tags=["characters"])
 logger = get_module_logger(__name__, "Main")
 
 
-PROFILE_NAME_MAX_UNITS = 20
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
 
 
@@ -61,16 +61,18 @@ def _profile_name_units(name: str) -> int:
 
 
 def _validate_profile_name(name: str) -> str | None:
-    if name is None:
+    result = validate_character_name(name, max_units=PROFILE_NAME_MAX_UNITS)
+    if result.code == 'empty':
         return '档案名为必填项'
-    name = str(name).strip()
-    if not name:
-        return '档案名为必填项'
-    if '/' in name or '\\' in name:
+    if result.code == 'contains_path_separator':
         return '档案名不能包含路径分隔符(/或\\)'
-    if '.' in name:
+    if result.code == 'contains_dot':
         return '档案名不能包含点号(.)'
-    if _profile_name_units(name) > PROFILE_NAME_MAX_UNITS:
+    if result.code == 'reserved_device_name':
+        return '档案名不能使用 Windows 保留设备名'
+    if result.code == 'invalid_character':
+        return '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号'
+    if result.code == 'too_long_units':
         return f'档案名长度不能超过{PROFILE_NAME_MAX_UNITS}单位（ASCII=1，其他=2；PROFILE_NAME_MAX_UNITS={PROFILE_NAME_MAX_UNITS}）'
     return None
 
@@ -2933,6 +2935,10 @@ async def save_character_card(request: Request):
         # 获取角色卡名称（档案名）
         # 兼容中英文字段名
         chara_name = chara_data.get('档案名') or chara_data.get('name') or character_card_name
+        name_error = _validate_profile_name(chara_name)
+        if name_error:
+            return JSONResponse({"success": False, "error": f"角色名称无效: {name_error}"}, status_code=400)
+        chara_name = str(chara_name).strip()
         filtered_chara_data = _filter_mutable_catgirl_fields(chara_data)
         
         # 创建猫娘数据，只保存非空字段

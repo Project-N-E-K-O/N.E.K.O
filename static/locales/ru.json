@@ -7,6 +7,7 @@
         "save": "Сохранить",
         "cancel": "Отмена",
         "confirm": "Подтвердить",
+        "next": "Далее",
         "ok": "ОК",
         "delete": "Удалить",
         "edit": "Редактировать",
@@ -679,7 +680,7 @@
             "kimi": "Kimi (Moonshot AI, поддерживает длинный контекст)",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance (Doubao)",
-            "minimax": "MiniMax (внутренний)",
+            "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)"
@@ -708,7 +709,7 @@
             "gemini": "Gemini (Google)",
             "kimi": "Moonshot (Kimi)",
             "doubao": "ByteDance (Doubao)",
-            "minimax": "MiniMax (внутренний)",
+            "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)"
@@ -982,6 +983,7 @@
             "deleteModelTitle": "Удалить импортированные MMD модели",
             "deleteWarning": "Ниже перечислены все импортированные пользовательские MMD модели. Выберите модели для удаления (папка модели и текстуры будут удалены).",
             "noUserModels": "Нет пользовательских MMD моделей для удаления",
+            "noModels": "MMD-модели не найдены",
             "deleteSelected": "Удалить выбранные"
         },
         "mmdAnimation": {
@@ -1176,13 +1178,25 @@
         "deleteError": "Ошибка удаления: {{error}}",
         "freePresetLabel": "Бесплатные предустановленные голоса",
         "freePresetBadge": "Предустановленный",
+        "freeVoice": {
+            "playfulGirl": "Игривая девушка",
+            "cuteGirl": "Милая девочка",
+            "cuteMaiden": "Милая девушка",
+            "heroine": "Героиня",
+            "livelyGirl": "Живая девочка",
+            "coolLady": "Холодная леди",
+            "gentleMaiden": "Нежная девушка",
+            "sweetLady": "Сладкая леди",
+            "frailMaiden": "Хрупкая девушка",
+            "childishMaiden": "Детская девушка"
+        },
         "cloneMethod": "Способ клонирования",
         "cloneMethodFile": "Локальный файл",
         "cloneMethodDirectLink": "Прямая ссылка",
         "directLinkUrl": "URL прямой ссылки на аудио (оптимально 8 сек, макс. 20 сек, формат wav/mp3)",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "Введите прямую ссылку на общедоступный аудиофайл. Система пропустит шаг загрузки и напрямую использует эту ссылку для регистрации голоса.",
-        "pleaseEnterDirectLink": "Пожалуйста, введите URL прямой ссылки на аудио и префикс",
+        "pleaseEnterDirectLink": "Пожалуйста, введите URL прямой ссылки на аудио",
         "invalidDirectLink": "Пожалуйста, введите действительную HTTP/HTTPS ссылку",
         "silenceModal": {
             "title": "Результаты обнаружения тишины",
@@ -1261,10 +1275,11 @@
         "apiKeySettings": "API Key",
         "masterProfile": "Профиль хозяина (Уникальный): Имя профиля обязательно, остальное необязательно.",
         "profileName": "Имя профиля",
-        "profileNameMaxHint": "Макс. 20 символов",
+        "profileNameMaxHint": "Макс. 60 символов",
         "profileNameTooLong": "Имя профиля слишком длинное",
         "profileNameContainsSlash": "Имя профиля не может содержать разделители пути (/ или \\)",
         "profileNameContainsDot": "Имя профиля не может содержать точки (.)",
+        "profileNameInvalidChars": "Имя профиля может содержать только буквы, цифры, пробелы, подчёркивания, дефисы, скобки, средние точки (·/・) и апострофы",
         "newProfileNameRequired": "Новое имя профиля не может быть пустым",
         "newProfileNameTooLong": "Имя профиля слишком длинное",
         "required": "*",
@@ -2015,7 +2030,7 @@
             },
             "step2": {
                 "title": "📝 Set Profile Name",
-                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 20 characters."
+                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 60 characters."
             },
             "step3": {
                 "title": "👥 Gender Setting",
@@ -2608,11 +2623,17 @@
         "idleRestored": "Анимация ожидания восстановлена",
         "idleRestoreFailed": "Не удалось восстановить анимацию ожидания",
         "btnNotFoundGiveUp": "Кнопка джукбокса не найдена после повторных попыток",
-        "minimizeBtnNotFoundGiveUp": "Кнопка сворачивания не найдена после повторных попыток"
+        "minimizeBtnNotFoundGiveUp": "Кнопка сворачивания не найдена после повторных попыток",
+        "noticeDance": "💃 Танцевальное сопровождение доступно только при загрузке MMD-аватара",
+        "noticeMusic": "⚠️ Текущие треки предназначены только для тестирования — в будущих версиях защищённые авторским правом песни будут удалены, импортируйте свои"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice обновлён до версии 3.5. Ваши старые голоса устарели — пожалуйста, клонируйте их повторно."
+            "legacyRemoved": "CosyVoice обновлён до версии 3.5. Ваши старые голоса устарели — пожалуйста, клонируйте их повторно.",
+            "legacyDetected": "Обнаружены старые голоса CosyVoice, которые могут не работать. Рекомендуем повторно клонировать голоса."
+        },
+        "changelog": {
+            "title": "Что нового"
         }
     },
     "proactive": {

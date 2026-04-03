@@ -7,6 +7,7 @@
         "save": "保存",
         "cancel": "取消",
         "confirm": "确认",
+        "next": "下一个",
         "ok": "确定",
         "delete": "删除",
         "edit": "编辑",
@@ -982,6 +983,7 @@
             "deleteModelTitle": "删除已导入MMD模型",
             "deleteWarning": "以下列出了所有已导入的用户MMD模型。选择要删除的模型（模型所在文件夹及纹理将一并删除）。",
             "noUserModels": "暂无可删除的用户MMD模型",
+            "noModels": "未找到MMD模型",
             "deleteSelected": "删除选中"
         },
         "mmdAnimation": {
@@ -1176,13 +1178,25 @@
         "deleteError": "删除失败：{{error}}",
         "freePresetLabel": "免费预设音色",
         "freePresetBadge": "预设",
+        "freeVoice": {
+            "playfulGirl": "俏皮女孩",
+            "cuteGirl": "可爱女孩",
+            "cuteMaiden": "可爱少女",
+            "heroine": "女少侠",
+            "livelyGirl": "活泼女孩",
+            "coolLady": "清冷御姐",
+            "gentleMaiden": "温柔少女",
+            "sweetLady": "甜美御姐",
+            "frailMaiden": "病弱少女",
+            "childishMaiden": "稚气少女"
+        },
         "cloneMethod": "克隆方式",
         "cloneMethodFile": "本地文件",
         "cloneMethodDirectLink": "直链克隆",
         "directLinkUrl": "音频直链URL（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "输入可公网访问的音频文件直链，系统将跳过上传步骤直接使用该链接注册音色",
-        "pleaseEnterDirectLink": "请输入音频直链URL并填写前缀",
+        "pleaseEnterDirectLink": "请输入音频直链URL",
         "invalidDirectLink": "请输入有效的HTTP/HTTPS链接",
         "silenceModal": {
             "title": "智能空白音频检测结果",
@@ -1261,10 +1275,11 @@
         "apiKeySettings": "API Key",
         "masterProfile": "主人档案（唯一）：档案名为必填项，其他均为可选项。",
         "profileName": "档案名",
-        "profileNameMaxHint": "最多20个字符",
+        "profileNameMaxHint": "最多60个字符",
         "profileNameTooLong": "档案名过长",
         "profileNameContainsSlash": "档案名不能包含路径分隔符(/或\\)",
         "profileNameContainsDot": "档案名不能包含点号(.)",
+        "profileNameInvalidChars": "档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号",
         "newProfileNameRequired": "新档案名不能为空",
         "newProfileNameTooLong": "档案名过长",
         "required": "*",
@@ -2015,7 +2030,7 @@
             },
             "step2": {
                 "title": "📝 设置档案名",
-                "desc": "输入您的名字或昵称。猫娘会用这个名字来称呼您。最多 20 个字符。"
+                "desc": "输入您的名字或昵称。猫娘会用这个名字来称呼您。最多 60 个字符。"
             },
             "step3": {
                 "title": "👥 性别设定",
@@ -2608,11 +2623,17 @@
         "idleRestored": "已恢复待机动画",
         "idleRestoreFailed": "恢复待机动画失败",
         "btnNotFoundGiveUp": "点歌台按钮在重试后仍未找到，放弃绑定",
-        "minimizeBtnNotFoundGiveUp": "最小化按钮在重试后仍未找到，放弃监听"
+        "minimizeBtnNotFoundGiveUp": "最小化按钮在重试后仍未找到，放弃监听",
+        "noticeDance": "💃 伴舞服务仅在载入 MMD 形象时可用",
+        "noticeMusic": "⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。"
+            "legacyRemoved": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
+            "legacyDetected": "检测到旧版 CosyVoice 音色可能已失效，建议重新克隆语音。"
+        },
+        "changelog": {
+            "title": "更新内容"
         }
     },
     "proactive": {
