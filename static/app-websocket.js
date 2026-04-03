@@ -273,6 +273,11 @@
                 if (response.type === 'gemini_response') {
                     var isNewMessage = response.isNewMessage || false;
                     if (isNewMessage) {
+                        // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
+                        if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
+                            !S.lastVoiceUserMessage.textContent.trim()) {
+                            S.lastVoiceUserMessage.textContent = '...';
+                        }
                         S.lastVoiceUserMessage = null;
                         S.lastVoiceUserMessageTime = 0;
                         S.assistantTurnId = allocateAssistantTurnId(response.turn_id);

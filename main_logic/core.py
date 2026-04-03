@@ -110,6 +110,30 @@ def drain_prominent_notices(up_to_cursor: int) -> list[dict]:
     return drained
 
 
+# ---------------------------------------------------------------------------
+# CosyVoice 旧版音色通知去重（模块级，startup 和 LLMSessionManager 共享）
+# ---------------------------------------------------------------------------
+_notified_legacy_voices: set[str] = set()
+
+
+def enqueue_voice_migration_notice(legacy_names: list) -> None:
+    """去重后推送旧版 CosyVoice 音色通知。供 main_server 启动路径和
+    LLMSessionManager 共同调用，避免重复弹出相同角色通知。"""
+    global _notified_legacy_voices
+    if not legacy_names:
+        return
+    new_names = sorted(set(legacy_names) - _notified_legacy_voices)
+    if not new_names:
+        return
+    _notified_legacy_voices.update(new_names)
+    enqueue_prominent_notice({
+        "code": "notice.voiceMigration.legacyDetected",
+        "message": "检测到旧版 CosyVoice 音色可能已失效，建议重新克隆语音。",
+        "message_en": "Legacy CosyVoice voices detected that may no longer work. Consider re-cloning your voices.",
+        "details": {"voices": new_names},
+    })
+
+
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
     def __init__(self, sync_message_queue, lanlan_name, lanlan_prompt):
@@ -992,15 +1016,8 @@ class LLMSessionManager:
         )
 
     def _enqueue_voice_migration_notice(self, legacy_names: list) -> None:
-        """将语音迁移通知推入缓冲池（两处调用路径共用同一 payload）。"""
-        if not legacy_names:
-            return
-        enqueue_prominent_notice({
-            "code": "notice.voiceMigration.legacyRemoved",
-            "message": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
-            "message_en": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices.",
-            "details": {"voices": legacy_names},
-        })
+        """将语音迁移通知推入缓冲池，委托模块级函数统一去重。"""
+        enqueue_voice_migration_notice(legacy_names)
 
     def normalize_text(self, text): # 对文本进行基本预处理
         text = text.strip()

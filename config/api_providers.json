@@ -294,16 +294,17 @@
       "restricted": true
     }
   },
+  "_comment_free_voices": "Shape: {voiceKey: voice_id}. Keys are i18n identifiers (e.g., playfulGirl, cuteGirl) that the frontend must localize for display. Do not treat keys as display names.",
   "free_voices": {
-    "俏皮女孩": "voice-tone-PGLiTXeJCS",
-    "可爱女孩": "voice-tone-PGLiyZt65w",
-    "可爱少女": "voice-tone-PGLjbHIMbI",
-    "女少侠": "voice-tone-PGLk8KQgrI",
-    "活泼女孩": "voice-tone-PGLkr9LeGu",
-    "清冷御姐": "voice-tone-PGLlMvr0Ai",
-    "温柔少女": "voice-tone-PGLlrd5SNM",
-    "甜美御姐": "voice-tone-PGLmTEeUOu",
-    "病弱少女": "voice-tone-PGLmzXEX44",
-    "稚气少女": "voice-tone-PGLnVNQn7A"
+    "playfulGirl": "voice-tone-PGLiTXeJCS",
+    "cuteGirl": "voice-tone-PGLiyZt65w",
+    "cuteMaiden": "voice-tone-PGLjbHIMbI",
+    "heroine": "voice-tone-PGLk8KQgrI",
+    "livelyGirl": "voice-tone-PGLkr9LeGu",
+    "coolLady": "voice-tone-PGLlMvr0Ai",
+    "gentleMaiden": "voice-tone-PGLlrd5SNM",
+    "sweetLady": "voice-tone-PGLmTEeUOu",
+    "frailMaiden": "voice-tone-PGLmzXEX44",
+    "childishMaiden": "voice-tone-PGLnVNQn7A"
   }
 }
