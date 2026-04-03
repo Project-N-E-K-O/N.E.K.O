@@ -98,6 +98,7 @@
         proactiveChatTimer: null,
         proactiveChatBackoffLevel: 0,
         _voiceProactiveNoResponseCount: 0,
+        _voiceSessionInitialTimer: null,
         isProactiveChatRunning: false,
         _proactiveSchedulerInitialized: false,
         proactiveChatInterval: 15,
