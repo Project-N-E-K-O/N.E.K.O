@@ -217,6 +217,9 @@ class LLMSessionManager:
         self.pending_extra_replies = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
+        # 当前轮临时响应指令：用于负面情绪命中后的即时安抚/换题
+        self._transient_response_instruction_base: str | None = None
+        self._transient_response_instruction_active: str = ""
         # 防止 trigger_agent_callbacks 重入
         self._agent_delivery_in_progress: bool = False
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
@@ -388,6 +391,7 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
+        await self._restore_transient_response_instruction()
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
@@ -528,9 +532,80 @@ class LLMSessionManager:
                 self.message_cache_for_new_session.append({"role": self.master_name, "text": transcript.strip()})
             elif self.message_cache_for_new_session[-1]['role'] == self.master_name:
                 self.message_cache_for_new_session[-1]['text'] += transcript.strip()
+
+        if isinstance(self.session, OmniRealtimeClient):
+            try:
+                negative_instruction = await self._fetch_negative_signal_instruction(transcript.strip())
+                if negative_instruction:
+                    await self._apply_transient_response_instruction(negative_instruction)
+            except Exception as e:
+                logger.debug(f"负面情绪即时指令应用失败: {e}")
         # 注意: 这里不能修改 current_speech_id.
         # speech_id 仅应在“模型新回复开始”时更新 (handle_new_message / 文本模式 stream 入口),
         # 否则会导致前端把同一轮 AI 语音误判为新轮次, 出现首包被重置/吞掉的问题.
+
+    async def _fetch_negative_signal_instruction(self, transcript: str) -> str:
+        if not transcript:
+            return ""
+        try:
+            async with httpx.AsyncClient(timeout=1.2, proxy=None, trust_env=False) as client:
+                resp = await client.post(
+                    f"http://127.0.0.1:{self.memory_server_port}/negative_signal/{self.lanlan_name}",
+                    json={"message": transcript},
+                )
+                if not resp.is_success:
+                    return ""
+                data = resp.json()
+                if not isinstance(data, dict):
+                    return ""
+                return str(data.get("response_instruction", "")).strip()
+        except Exception:
+            return ""
+
+    async def _apply_transient_response_instruction(self, instruction: str) -> None:
+        instruction = (instruction or "").strip()
+        if not instruction or not self.session:
+            return
+
+        if isinstance(self.session, OmniOfflineClient):
+            await self.session.queue_temporary_system_message(instruction)
+            return
+
+        if not isinstance(self.session, OmniRealtimeClient):
+            return
+
+        if getattr(self.session, "_is_gemini", False):
+            # Gemini Live 当前没有稳定的单轮 instructions 覆写入口；降级为仅记录记忆策略。
+            return
+
+        base_instructions = self._transient_response_instruction_base or getattr(self.session, "instructions", "") or ""
+        if instruction == self._transient_response_instruction_active:
+            return
+
+        transient_instructions = base_instructions.rstrip() + "\n" + instruction
+        await self.session.update_session({"instructions": transient_instructions})
+        self.session.instructions = transient_instructions
+        self._transient_response_instruction_base = base_instructions
+        self._transient_response_instruction_active = instruction
+
+    async def _restore_transient_response_instruction(self) -> None:
+        if not self._transient_response_instruction_active:
+            return
+
+        base_instructions = self._transient_response_instruction_base
+        self._transient_response_instruction_active = ""
+        self._transient_response_instruction_base = None
+
+        if base_instructions is None or not isinstance(self.session, OmniRealtimeClient):
+            return
+        if getattr(self.session, "_is_gemini", False):
+            return
+
+        try:
+            await self.session.update_session({"instructions": base_instructions})
+            self.session.instructions = base_instructions
+        except Exception as e:
+            logger.debug(f"恢复临时响应指令失败: {e}")
 
     async def handle_output_transcript(self, text: str, is_first_chunk: bool = False):
         """输出转录回调：处理文本显示和TTS（用于语音模式）"""        
@@ -2569,6 +2644,13 @@ class LLMSessionManager:
                                 )
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
+
+                    try:
+                        negative_instruction = await self._fetch_negative_signal_instruction(data.strip())
+                        if negative_instruction:
+                            await self._apply_transient_response_instruction(negative_instruction)
+                    except Exception as _neg_err:
+                        logger.debug(f"负面情绪指令获取失败: {_neg_err}")
 
                     await self.session.stream_text(data)
                 else:

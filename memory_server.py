@@ -41,6 +41,10 @@ from utils.time_format import format_elapsed as _format_elapsed
 class HistoryRequest(BaseModel):
     input_history: str
 
+
+class NegativeSignalRequest(BaseModel):
+    message: str
+
 app = FastAPI()
 
 
@@ -463,6 +467,23 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
             logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
     except Exception as e:
         logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
+
+
+@app.post("/negative_signal/{lanlan_name}")
+async def handle_negative_signal(request: NegativeSignalRequest, lanlan_name: str):
+    """识别用户负面信号，并返回当前轮可直接注入模型的回复策略。"""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    try:
+        result = persona_manager.register_negative_signal(lanlan_name, request.message)
+        return JSONResponse(result)
+    except Exception as e:
+        logger.warning(f"[MemoryServer] 负面信号处理失败: {e}")
+        return JSONResponse({
+            "matched": False,
+            "topic": "",
+            "policy": "none",
+            "response_instruction": "",
+        })
 
 
 @app.post("/cache/{lanlan_name}")

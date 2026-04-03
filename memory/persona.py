@@ -42,6 +42,32 @@ SIMILARITY_THRESHOLD = 0.6           # 余弦相似度(如有embedding)或关键
 # ── 自动晋升冷却 ─────────────────────────────────────────────────
 AUTO_CONFIRM_DAYS = 3                # pending reflection N 天无反对 → 自动晋升
 
+# ── 负面话题回避 ─────────────────────────────────────────────────
+TOPIC_HARD_AVOID_THRESHOLD = 2       # 同一话题命中 2 次后升级为长期不提
+
+_NEGATIVE_PATTERNS = (
+    (re.compile(r'(?:别提|不要提|别再提|不要再提|不想聊|别聊|不要聊|不想提|别说|不要说)(?P<topic>.+?)(?:了|啦|呀|啊|吧|。|！|!|？|\?|,|，|$)'), True),
+    (re.compile(r'(?P<topic>.+?)(?:这个|这件事|这话题|这个话题)?(?:很烦|好烦|烦死了|烦透了|讨厌|恶心|让我难受|让我不舒服)(?:了|。|！|!|？|\?|,|，|$)'), False),
+)
+_NEGATIVE_KEYWORDS = (
+    "烦", "烦死", "烦透", "讨厌", "恶心", "难受", "不舒服", "不爽", "生气",
+    "焦虑", "崩溃", "郁闷", "失望", "无语", "受不了", "痛苦", "别提",
+    "不要提", "不想聊", "别聊", "不要聊", "不想提", "别说", "不要说",
+    "hate", "annoying", "upset", "frustrated", "anxious", "depressed",
+    "don't mention", "dont mention", "stop talking about",
+)
+_TOPIC_PREFIX_CLEANUPS = (
+    "这个", "这件事", "这话题", "这个话题", "关于", "聊", "提", "说", "讲",
+    "我", "你", "你们", "咱们", "我们", "一下", "一下子", "一直",
+)
+_TOPIC_SUFFIX_CLEANUPS = (
+    "了", "啦", "呀", "啊", "吧", "嘛", "呢", "哦", "噢", "这个", "这件事",
+    "这话题", "这个话题", "的话题", "这件事情",
+)
+_GENERIC_TOPIC_WORDS = {
+    "这个", "那个", "这件事", "这话题", "这个话题", "事情", "话题", "内容",
+}
+
 # Split on any CJK/Latin punctuation, symbols, whitespace
 _SPLIT_RE = re.compile(r'[，。、！？；：\u201c\u201d\u2018\u2019（）()\[\]{}<>《》【】\s,.!?;:\-\u2014\u2026\xb7\u3000]+')
 
@@ -81,6 +107,69 @@ def _is_mentioned(fact_text: str, response_text: str) -> bool:
     if not keywords:
         return False
     return any(kw in response_text for kw in keywords)
+
+
+def _contains_negative_signal(text: str) -> bool:
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return False
+    return any(keyword in lowered for keyword in _NEGATIVE_KEYWORDS)
+
+
+def _clean_topic_candidate(text: str) -> str:
+    topic = (text or "").strip()
+    if not topic:
+        return ""
+    topic = re.sub(r'^[\s:：,，.\-]+|[\s:：,，.。!！?？]+$', '', topic)
+    topic = topic.replace("这个话题", " ").replace("这话题", " ").replace("这件事", " ")
+    topic = re.sub(r'\b(?:really|actually|just|now)\b', ' ', topic, flags=re.IGNORECASE)
+    topic = topic.replace("真的", " ").replace("现在", " ").replace("最近", " ")
+    topic = re.sub(r'\s+', ' ', topic).strip()
+    changed = True
+    while changed and topic:
+        changed = False
+        for prefix in _TOPIC_PREFIX_CLEANUPS:
+            if topic.startswith(prefix) and len(topic) > len(prefix):
+                topic = topic[len(prefix):].strip()
+                changed = True
+        for suffix in _TOPIC_SUFFIX_CLEANUPS:
+            if topic.endswith(suffix) and len(topic) > len(suffix):
+                topic = topic[:-len(suffix)].strip()
+                changed = True
+    topic = re.sub(r'^(?:关于|聊|提|说|讲)+', '', topic).strip()
+    topic = re.sub(r'(?:一下|一下子)$', '', topic).strip()
+    topic = re.sub(r'(?:真的|现在|最近)$', '', topic).strip()
+    if topic in _GENERIC_TOPIC_WORDS:
+        return ""
+    return topic[:40]
+
+
+def _extract_negative_topic(text: str) -> tuple[str, bool]:
+    """从负面表达中提取被触发的话题，并判断是否属于明确“不要再提”类信号。"""
+    raw = (text or "").strip()
+    if not raw:
+        return "", False
+
+    for pattern, explicit in _NEGATIVE_PATTERNS:
+        match = pattern.search(raw)
+        if match:
+            topic = _clean_topic_candidate(match.group("topic"))
+            if topic:
+                return topic, explicit
+
+    explicit = any(token in raw for token in ("别提", "不要提", "别再提", "不要再提", "不想聊", "别聊", "不要聊"))
+    # 回退：尝试从句子中剥离负面词，保留剩余较具体的主题描述。
+    fallback = raw
+    for token in _NEGATIVE_KEYWORDS:
+        fallback = fallback.replace(token, " ")
+    fallback = re.sub(r'[，。、！？；：,.!?]', ' ', fallback)
+    segments = [seg.strip() for seg in fallback.split() if seg.strip()]
+    if segments:
+        longest = max(segments, key=len)
+        topic = _clean_topic_candidate(longest)
+        if topic:
+            return topic, explicit
+    return "", explicit
 
 
 class PersonaManager:
@@ -390,6 +479,145 @@ class PersonaManager:
 
     def get_persona(self, name: str) -> dict:
         return self.ensure_persona(name)
+
+    # ── topic guidance ───────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_topic_entry(entry, *, default_state: str = 'soft') -> dict:
+        defaults = {
+            'topic': '',
+            'state': default_state,      # soft | hard
+            'trigger_count': 1,
+            'created_at': None,
+            'last_triggered_at': None,
+            'source': 'negative_signal',
+        }
+        if isinstance(entry, dict):
+            for key, value in defaults.items():
+                entry.setdefault(key, value)
+            return entry
+        normalized = dict(defaults)
+        normalized['topic'] = str(entry)
+        return normalized
+
+    def _get_topic_guidance(self, persona: dict) -> dict:
+        guidance = persona.setdefault('_topic_guidance', {})
+        soft = guidance.setdefault('soft_avoid', [])
+        hard = guidance.setdefault('hard_avoid', [])
+        normalized_soft = []
+        for item in soft:
+            entry = self._normalize_topic_entry(item, default_state='soft')
+            if entry.get('topic'):
+                normalized_soft.append(entry)
+        normalized_hard = []
+        for item in hard:
+            entry = self._normalize_topic_entry(item, default_state='hard')
+            if entry.get('topic'):
+                normalized_hard.append(entry)
+        guidance['soft_avoid'] = normalized_soft
+        guidance['hard_avoid'] = normalized_hard
+        return guidance
+
+    @staticmethod
+    def _find_topic_entry(entries: list[dict], topic: str) -> dict | None:
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get('topic') == topic:
+                return entry
+        return None
+
+    def register_negative_signal(self, name: str, user_text: str) -> dict:
+        """记录负面信号，并返回当前轮应该采用的回复指令。"""
+        text = (user_text or "").strip()
+        if not text or not _contains_negative_signal(text):
+            return {
+                'matched': False,
+                'topic': '',
+                'policy': 'none',
+                'response_instruction': '',
+            }
+
+        topic, explicit_avoid = _extract_negative_topic(text)
+        policy = 'tone_only'
+        persona = self.ensure_persona(name)
+        now_str = datetime.now().isoformat()
+        changed = False
+
+        if topic:
+            guidance = self._get_topic_guidance(persona)
+            soft_entries = guidance.get('soft_avoid', [])
+            hard_entries = guidance.get('hard_avoid', [])
+            soft_entry = self._find_topic_entry(soft_entries, topic)
+            hard_entry = self._find_topic_entry(hard_entries, topic)
+
+            if hard_entry is not None:
+                hard_entry['trigger_count'] = int(hard_entry.get('trigger_count', 1)) + 1
+                hard_entry['last_triggered_at'] = now_str
+                policy = 'avoid'
+                changed = True
+            elif explicit_avoid:
+                if soft_entry is not None:
+                    soft_entries[:] = [entry for entry in soft_entries if entry.get('topic') != topic]
+                hard_entries.append({
+                    'topic': topic,
+                    'state': 'hard',
+                    'trigger_count': max(2, int(soft_entry.get('trigger_count', 1)) + 1 if soft_entry else 2),
+                    'created_at': soft_entry.get('created_at', now_str) if soft_entry else now_str,
+                    'last_triggered_at': now_str,
+                    'source': 'negative_signal',
+                })
+                policy = 'avoid'
+                changed = True
+            elif soft_entry is not None:
+                soft_entry['trigger_count'] = int(soft_entry.get('trigger_count', 1)) + 1
+                soft_entry['last_triggered_at'] = now_str
+                if soft_entry['trigger_count'] >= TOPIC_HARD_AVOID_THRESHOLD:
+                    soft_entries[:] = [entry for entry in soft_entries if entry.get('topic') != topic]
+                    hard_entries.append({
+                        'topic': topic,
+                        'state': 'hard',
+                        'trigger_count': soft_entry['trigger_count'],
+                        'created_at': soft_entry.get('created_at', now_str),
+                        'last_triggered_at': now_str,
+                        'source': 'negative_signal',
+                    })
+                    policy = 'avoid'
+                else:
+                    policy = 'de_emphasize'
+                changed = True
+            else:
+                soft_entries.append({
+                    'topic': topic,
+                    'state': 'soft',
+                    'trigger_count': 1,
+                    'created_at': now_str,
+                    'last_triggered_at': now_str,
+                    'source': 'negative_signal',
+                })
+                policy = 'de_emphasize'
+                changed = True
+
+        if changed:
+            self.save_persona(name, persona)
+
+        if policy == 'avoid' and topic:
+            instruction = (
+                f"用户刚刚对“{topic}”表现出明显负面情绪。当前回复先共情安抚，"
+                f"不要继续展开这个话题，也不要主动再次提起它；如需回应，只做简短承接并温和换题。"
+            )
+        elif policy == 'de_emphasize' and topic:
+            instruction = (
+                f"用户刚刚对“{topic}”表现出负面情绪。当前回复先共情安抚，"
+                f"尽量减少对这个话题的提及，不要继续深挖或主动延展，优先缓和情绪。"
+            )
+        else:
+            instruction = "用户刚刚表现出负面情绪。当前回复请先共情安抚，语气更柔和，避免追问和说教。"
+
+        return {
+            'matched': True,
+            'topic': topic,
+            'policy': policy,
+            'response_instruction': instruction,
+        }
 
     # ── entry normalization ──────────────────────────────────────────
 
@@ -825,6 +1053,28 @@ class PersonaManager:
                     f"### {ai_name}比较确定的印象\n"
                     + "\n".join(confirmed_lines)
                 )
+
+        topic_guidance = self._get_topic_guidance(persona)
+        soft_topics = [entry.get('topic', '') for entry in topic_guidance.get('soft_avoid', []) if entry.get('topic')]
+        hard_topics = [entry.get('topic', '') for entry in topic_guidance.get('hard_avoid', []) if entry.get('topic')]
+
+        if soft_topics:
+            sections.append(
+                "### 当前应谨慎提及的话题\n"
+                + "\n".join(
+                    f"- {topic}（用户最近对此表现出负面情绪；若再次聊到，先安抚，不要主动展开）"
+                    for topic in soft_topics
+                )
+            )
+
+        if hard_topics:
+            sections.append(
+                "### 不要主动提及的话题\n"
+                + "\n".join(
+                    f"- {topic}（用户已经明确表现出抗拒，除非用户主动重新提起，否则不要主动提及）"
+                    for topic in hard_topics
+                )
+            )
 
         # Suppressed section (記得但别主动提)
         if suppressed_lines:
