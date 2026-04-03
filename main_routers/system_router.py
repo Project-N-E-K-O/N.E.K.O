@@ -2169,39 +2169,37 @@ async def proactive_chat(request: Request):
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(lanlan_name, proactive_lang)
 
-        # ========== 3.5 反思 + 回调话题（融合主动搭话，几乎免费） ==========
+        # ========== 3.5 反思 + 回调话题（通过 memory_server API） ==========
         # 认知框架：Facts → Reflection(pending) → 主动搭话自然提及 → 用户反馈 → Persona
         followup_topics_prompt = ""
         _surfaced_reflection_ids = []  # 记录本次搭话提及了哪些 pending 反思
-        _reflection_engine = None
-        _persona_mgr = None
         try:
-            from memory import ReflectionEngine, FactStore, PersonaManager
-            _fact_store = FactStore()
-            _persona_mgr = PersonaManager()
-            _reflection_engine = ReflectionEngine(_fact_store, _persona_mgr)
+            _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
+            async with httpx.AsyncClient(proxy=None, trust_env=False) as _mem_client:
+                # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
+                _reflect_resp = await _mem_client.post(
+                    f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
+                )
+                if _reflect_resp.status_code == 200:
+                    _reflect_data = _reflect_resp.json()
+                    if _reflect_data.get('auto_transitions'):
+                        print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
+                    if _reflect_data.get('reflection'):
+                        print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
 
-            # 1. 自动状态迁移：pending→confirmed→promoted
-            _auto_transitions = _reflection_engine.auto_promote_stale(lanlan_name)
-            if _auto_transitions:
-                print(f"[{lanlan_name}] 自动迁移 {_auto_transitions} 条反思状态")
-
-            # 2. 异步反思（>=3 条新事实才触发 LLM 调用）
-            _reflection_result = await _reflection_engine.reflect(lanlan_name)
-            if _reflection_result:
-                print(f"[{lanlan_name}] 反思完成(pending): {_reflection_result['text'][:50]}...")
-
-            # 3. 获取回调话题候选（list[dict]，带 id）
-            #    注意：此处只获取候选，不标记为 surfaced。
-            #    surfaced 标记在 Phase 2 生成回复后才做。
-            _followup_topics = _reflection_engine.get_followup_topics(lanlan_name)
-            if _followup_topics:
-                followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
-                for topic in _followup_topics:
-                    followup_topics_prompt += f"- {topic['text']}\n"
-                    if topic.get('id'):
-                        _surfaced_reflection_ids.append(topic['id'])
-                print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
+                # 2. 获取回调话题候选
+                _topics_resp = await _mem_client.get(
+                    f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
+                )
+                if _topics_resp.status_code == 200:
+                    _followup_topics = _topics_resp.json().get('topics', [])
+                    if _followup_topics:
+                        followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
+                        for topic in _followup_topics:
+                            followup_topics_prompt += f"- {topic['text']}\n"
+                            if topic.get('id'):
+                                _surfaced_reflection_ids.append(topic['id'])
+                        print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
 
@@ -3012,16 +3010,21 @@ async def proactive_chat(request: Request):
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
 
-        # 后台长期记忆维护（同步，轻量操作）
+        # 后台长期记忆维护（通过 memory_server API）
         try:
-            # 保存本次搭话实际提及的 pending 反思 ID（供下次 /process 做反馈检查）
-            if _reflection_engine is not None and _surfaced_reflection_ids:
-                _reflection_engine.record_surfaced(lanlan_name, _surfaced_reflection_ids)
-                print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")
+            _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
+            async with httpx.AsyncClient(proxy=None, trust_env=False) as _mem_client:
+                # 保存本次搭话实际提及的 pending 反思 ID（供下次 /process 做反馈检查）
+                if _surfaced_reflection_ids:
+                    await _mem_client.post(
+                        f"{_mem_base}/record_surfaced/{lanlan_name}",
+                        json={"reflection_ids": _surfaced_reflection_ids},
+                        timeout=5.0,
+                    )
+                    print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")
 
-            # 记录 persona 提及次数（疲劳跟踪）
-            if _persona_mgr is not None:
-                _persona_mgr.record_mentions(lanlan_name, response_text)
+                # 记录 persona 提及次数（疲劳跟踪） — persona 文件由 memory_server 管理
+                # record_mentions 已在 memory_server 的 _extract_facts_and_check_feedback 中调用
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 长期记忆后处理失败（不影响主流程）: {e}")
 
