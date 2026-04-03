@@ -2093,7 +2093,7 @@ const AvatarPopupMixin = {
                     popup.appendChild(header);
 
                     const grid = document.createElement('div');
-                    Object.assign(grid.style, { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', padding: '4px 8px' });
+                    Object.assign(grid.style, { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', padding: '6px' });
 
                     items.forEach(source => {
                         const option = document.createElement('div');
