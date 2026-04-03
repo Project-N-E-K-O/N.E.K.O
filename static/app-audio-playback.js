@@ -166,6 +166,9 @@
         });
 
         window.addEventListener('neko-assistant-turn-end', function (event) {
+            if (event.detail && event.detail.source === 'turn_end_agent_callback') {
+                return;
+            }
             var turnId = normalizeAssistantTurnId(event.detail && event.detail.turnId);
             if (!turnId) {
                 return;
@@ -196,6 +199,7 @@
         S.scheduledSources.forEach(function (source) {
             try { source.stop(); } catch (_) { /* noop */ }
         });
+        stopActiveLipSync();
         S.scheduledSources = [];
         S.audioBufferQueue = [];
         S.isPlaying = false;
@@ -216,6 +220,7 @@
         S.scheduledSources.forEach(function (source) {
             try { source.stop(); } catch (_) { /* noop */ }
         });
+        stopActiveLipSync();
         S.scheduledSources = [];
         S.audioBufferQueue = [];
         S.isPlaying = false;

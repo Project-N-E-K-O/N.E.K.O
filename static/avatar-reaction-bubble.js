@@ -659,7 +659,7 @@
         clearTimer('textFallbackTimerId');
         clearTimer('timeoutTimerId');
 
-        if (state.turnId !== turnId || !state.visible) {
+        if (state.turnId !== turnId || !state.visible || state.phase === 'fading') {
             showThinking(turnId);
         }
 

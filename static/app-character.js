@@ -76,6 +76,8 @@
     function emitAssistantSpeechCancel(source) {
         var turnId = S.assistantTurnId || S.assistantSpeechActiveTurnId || null;
         S.assistantTurnId = null;
+        S.assistantPendingTurnServerId = null;
+        S.assistantTurnAwaitingBubble = false;
         S.assistantSpeechActiveTurnId = null;
         window.dispatchEvent(new CustomEvent('neko-assistant-speech-cancel', {
             detail: {

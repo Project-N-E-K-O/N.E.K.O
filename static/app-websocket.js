@@ -54,6 +54,31 @@
         }));
     }
 
+    function clearPendingAssistantTurnStart() {
+        S.assistantPendingTurnServerId = null;
+        S.assistantTurnAwaitingBubble = false;
+    }
+
+    function ensureAssistantTurnStarted(source, serverTurnId) {
+        if (S.assistantTurnId) {
+            clearPendingAssistantTurnStart();
+            return S.assistantTurnId;
+        }
+        if (!S.assistantTurnAwaitingBubble && serverTurnId === undefined) {
+            return null;
+        }
+
+        S.assistantTurnId = allocateAssistantTurnId(
+            serverTurnId === undefined ? S.assistantPendingTurnServerId : serverTurnId
+        );
+        clearPendingAssistantTurnStart();
+        emitAssistantLifecycleEvent('neko-assistant-turn-start', {
+            turnId: S.assistantTurnId,
+            source: source || 'visible_gemini_bubble'
+        });
+        return S.assistantTurnId;
+    }
+
     function emitAssistantSpeechCancel(source) {
         var currentTurnId = normalizeAssistantTurnId(S.assistantTurnId || S.assistantSpeechActiveTurnId);
         S.assistantSpeechActiveTurnId = null;
@@ -280,14 +305,19 @@
                         }
                         S.lastVoiceUserMessage = null;
                         S.lastVoiceUserMessageTime = 0;
-                        S.assistantTurnId = allocateAssistantTurnId(response.turn_id);
-                        emitAssistantLifecycleEvent('neko-assistant-turn-start', {
-                            turnId: S.assistantTurnId,
-                            source: 'gemini_response'
-                        });
+                        S.assistantTurnId = null;
+                        S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
+                        S.assistantTurnAwaitingBubble = true;
+                    }
+                    var hasVisibleGeminiChunk = false;
+                    if (typeof window.hasVisibleGeminiTextChunk === 'function') {
+                        hasVisibleGeminiChunk = window.hasVisibleGeminiTextChunk(response.text);
                     }
                     if (typeof window.appendMessage === 'function') {
                         window.appendMessage(response.text, 'gemini', isNewMessage);
+                    }
+                    if (!S.assistantTurnId && S.assistantTurnAwaitingBubble && hasVisibleGeminiChunk) {
+                        ensureAssistantTurnStarted('gemini_response_visible_chunk', response.turn_id);
                     }
                     if (response.turn_id) {
                         window.realisticGeminiCurrentTurnId = response.turn_id;
@@ -302,6 +332,7 @@
                     window.invalidatePendingMusicSearch();
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
+                    clearPendingAssistantTurnStart();
                     var attempt = response.attempt || 0;
                     var maxAttempts = response.max_attempts || 0;
                     console.log('[Discard] AI回复被丢弃 reason=' + response.reason + ' attempt=' + attempt + '/' + maxAttempts + ' retry=' + response.will_retry);
@@ -419,6 +450,7 @@
                 } else if (response.type === 'user_activity') {
                     emitAssistantSpeechCancel('user_activity');
                     S.assistantTurnId = null;
+                    clearPendingAssistantTurnStart();
                     S.interruptedSpeechId = response.interrupted_speech_id || null;
                     S.pendingDecoderReset = true;
                     S.skipNextAudioBlob = false;
@@ -844,13 +876,6 @@
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
                     console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
-                    var agentCallbackTurnId = normalizeAssistantTurnId(S.assistantTurnId);
-                    if (agentCallbackTurnId) {
-                        emitAssistantLifecycleEvent('neko-assistant-turn-end', {
-                            turnId: agentCallbackTurnId,
-                            source: 'turn_end_agent_callback'
-                        });
-                    }
                     try {
                         window._pendingMusicCommand = '';
                         var rest = typeof window._realisticGeminiBuffer === 'string'
@@ -869,17 +894,19 @@
                     } catch (e3) {
                         console.warn('[WS] turn end agent_callback flush failed:', e3);
                     }
+                    var agentCallbackTurnId = normalizeAssistantTurnId(S.assistantTurnId);
+                    if (agentCallbackTurnId) {
+                        emitAssistantLifecycleEvent('neko-assistant-turn-end', {
+                            turnId: agentCallbackTurnId,
+                            source: 'turn_end_agent_callback'
+                        });
+                    } else {
+                        clearPendingAssistantTurnStart();
+                    }
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log(window.t('console.turnEndReceived'));
-                    var assistantTurnId = normalizeAssistantTurnId(S.assistantTurnId);
-                    if (assistantTurnId) {
-                        emitAssistantLifecycleEvent('neko-assistant-turn-end', {
-                            turnId: assistantTurnId,
-                            source: 'turn_end'
-                        });
-                    }
                     // Flush remaining buffer
                     try {
                         window._pendingMusicCommand = '';
@@ -898,6 +925,15 @@
                         }
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
+                    }
+                    var assistantTurnId = normalizeAssistantTurnId(S.assistantTurnId);
+                    if (assistantTurnId) {
+                        emitAssistantLifecycleEvent('neko-assistant-turn-end', {
+                            turnId: assistantTurnId,
+                            source: 'turn_end'
+                        });
+                    } else {
+                        clearPendingAssistantTurnStart();
                     }
 
                     // Emotion analysis & translation on turn completion
@@ -1059,6 +1095,7 @@
                     S.isTextSessionActive = false;
                     emitAssistantSpeechCancel('session_ended_by_server');
                     S.assistantTurnId = null;
+                    clearPendingAssistantTurnStart();
 
                     if (S.sessionStartedRejecter) {
                         try { S.sessionStartedRejecter(new Error('Session ended by server')); } catch (_e2) { }
@@ -1320,6 +1357,8 @@
         };
     }
     mod.connectWebSocket = connectWebSocket;
+    mod.ensureAssistantTurnStarted = ensureAssistantTurnStarted;
+    mod.clearPendingAssistantTurnStart = clearPendingAssistantTurnStart;
 
     // ========================  Exported methods  ========================
 
@@ -1349,6 +1388,8 @@
     // ========================  Backward-compat globals  ========================
     window.connectWebSocket = connectWebSocket;
     window.ensureWebSocketOpen = ensureWebSocketOpen;
+    window.ensureAssistantTurnStarted = ensureAssistantTurnStarted;
+    window.clearPendingAssistantTurnStart = clearPendingAssistantTurnStart;
 
     // ========================  Greeting check (after model loaded)  ========================
     // 等模型加载完成后再发送 greeting_check，避免与 TTS/lipsync/模型载入竞态

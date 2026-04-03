@@ -75,6 +75,8 @@
         sessionStartedResolver: null,
         sessionStartedRejecter: null,
         assistantTurnId: null,
+        assistantPendingTurnServerId: null,
+        assistantTurnAwaitingBubble: false,
         assistantTurnSeq: 0,
         assistantTurnCompletedId: null,
         assistantSpeechActiveTurnId: null,

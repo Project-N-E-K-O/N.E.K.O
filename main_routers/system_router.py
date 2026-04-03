@@ -33,7 +33,8 @@ from .shared_state import get_steamworks, get_config_manager, get_sync_message_q
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from config import get_extra_body, MEMORY_SERVER_PORT
 from config.prompts_sys import _loc
-from config.prompts_memory import get_emotion_analysis_prompt, PROACTIVE_FOLLOWUP_HEADER
+from config.prompts_emotion import get_outward_emotion_analysis_prompt
+from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
 from config.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
@@ -82,6 +83,22 @@ _EMOTION_LABEL_ALIASES = {
     "高兴": "happy",
     "兴奋": "happy",
     "快乐": "happy",
+    "嬉しい": "happy",
+    "うれしい": "happy",
+    "喜び": "happy",
+    "幸せ": "happy",
+    "楽しい": "happy",
+    "행복": "happy",
+    "행복해": "happy",
+    "행복하다": "happy",
+    "기쁨": "happy",
+    "신남": "happy",
+    "радость": "happy",
+    "счастье": "happy",
+    "счастливый": "happy",
+    "счастлива": "happy",
+    "доволен": "happy",
+    "довольна": "happy",
     "sad": "sad",
     "sadness": "sad",
     "down": "sad",
@@ -91,6 +108,24 @@ _EMOTION_LABEL_ALIASES = {
     "伤心": "sad",
     "失落": "sad",
     "委屈": "sad",
+    "悲しい": "sad",
+    "かなしい": "sad",
+    "悲しみ": "sad",
+    "寂しい": "sad",
+    "슬퍼": "sad",
+    "슬픈": "sad",
+    "슬픔": "sad",
+    "우울": "sad",
+    "우울함": "sad",
+    "속상해": "sad",
+    "서운해": "sad",
+    "грустно": "sad",
+    "грусть": "sad",
+    "грустный": "sad",
+    "грустная": "sad",
+    "печаль": "sad",
+    "расстроен": "sad",
+    "расстроена": "sad",
     "angry": "angry",
     "anger": "angry",
     "mad": "angry",
@@ -100,6 +135,20 @@ _EMOTION_LABEL_ALIASES = {
     "愤怒": "angry",
     "烦躁": "angry",
     "恼火": "angry",
+    "怒り": "angry",
+    "怒ってる": "angry",
+    "怒った": "angry",
+    "腹が立つ": "angry",
+    "화남": "angry",
+    "화난": "angry",
+    "분노": "angry",
+    "짜증남": "angry",
+    "злой": "angry",
+    "злая": "angry",
+    "злость": "angry",
+    "сержусь": "angry",
+    "рассержен": "angry",
+    "рассержена": "angry",
     "surprised": "surprised",
     "surprise": "surprised",
     "shock": "surprised",
@@ -108,12 +157,58 @@ _EMOTION_LABEL_ALIASES = {
     "惊讶": "surprised",
     "震惊": "surprised",
     "意外": "surprised",
+    "驚き": "surprised",
+    "驚いた": "surprised",
+    "驚いてる": "surprised",
+    "びっくり": "surprised",
+    "놀람": "surprised",
+    "놀란": "surprised",
+    "놀랐어": "surprised",
+    "깜짝": "surprised",
+    "удивлен": "surprised",
+    "удивлена": "surprised",
+    "удивление": "surprised",
+    "шок": "surprised",
     "neutral": "neutral",
     "calm": "neutral",
     "平静": "neutral",
     "冷静": "neutral",
     "中性": "neutral",
+    "普通": "neutral",
+    "平穏": "neutral",
+    "穏やか": "neutral",
+    "落ち着いてる": "neutral",
+    "보통": "neutral",
+    "차분": "neutral",
+    "차분함": "neutral",
+    "평온": "neutral",
+    "нейтрально": "neutral",
+    "спокойно": "neutral",
+    "спокойный": "neutral",
+    "спокойная": "neutral",
 }
+
+_EMOTION_CANONICAL_LABELS = ("happy", "sad", "angry", "surprised", "neutral")
+_EMOTION_NORMALIZED_ALIAS_LOOKUP = {}
+_EMOTION_COMPACT_ALIAS_LOOKUP = {}
+for _alias, _canonical in _EMOTION_LABEL_ALIASES.items():
+    _normalized_alias = re.sub(r"[\s\-_]+", " ", str(_alias).strip().lower())
+    if not _normalized_alias:
+        continue
+    _EMOTION_NORMALIZED_ALIAS_LOOKUP[_normalized_alias] = _canonical
+    _compact_alias = re.sub(r"[\W_]+", "", _normalized_alias, flags=re.UNICODE)
+    if _compact_alias and _compact_alias not in _EMOTION_COMPACT_ALIAS_LOOKUP:
+        _EMOTION_COMPACT_ALIAS_LOOKUP[_compact_alias] = _canonical
+
+_EMOTION_FUZZY_ALIAS_KEYS = tuple(_EMOTION_NORMALIZED_ALIAS_LOOKUP.keys())
+_EMOTION_FUZZY_COMPACT_KEYS = tuple(_EMOTION_COMPACT_ALIAS_LOOKUP.keys())
+
+_ASCII_EMOTION_ALIAS_RE = re.compile(r"^[a-z0-9]+(?:\s+[a-z0-9]+)*$")
+_EMOTION_NEGATION_WORDS = frozenset(("not", "no", "never", "without"))
+_EMOTION_NEGATION_PREFIXES = (
+    "不是", "并不", "并非", "不太", "没那么", "没有", "并没有",
+    "不", "没", "無", "无", "非", "别", "別",
+)
 
 _EMOTION_KEYWORDS = {
     "happy": ("哈哈", "嘿嘿", "嘻嘻", "开心", "高兴", "喜欢", "太棒", "可爱", "好耶", "真好", "好开心", "爱你",
@@ -153,16 +248,107 @@ _HAPPY_PLAYFUL_PATTERNS = (
 )
 
 
-def _normalize_emotion_label(raw_emotion):
+def _normalize_emotion_label(raw_emotion, raw_confidence=None):
     emotion_text = str(raw_emotion or "").strip().lower()
     if not emotion_text:
         return "neutral"
-    if emotion_text in _EMOTION_LABEL_ALIASES:
-        return _EMOTION_LABEL_ALIASES[emotion_text]
-    for alias, canonical in _EMOTION_LABEL_ALIASES.items():
-        if alias and alias in emotion_text:
-            return canonical
+    normalized_text = re.sub(r"[\s\-_]+", " ", emotion_text)
+    if normalized_text in _EMOTION_NORMALIZED_ALIAS_LOOKUP:
+        return _EMOTION_NORMALIZED_ALIAS_LOOKUP[normalized_text]
+
+    compact_text = re.sub(r"[\W_]+", "", emotion_text, flags=re.UNICODE)
+    if compact_text in _EMOTION_COMPACT_ALIAS_LOOKUP:
+        return _EMOTION_COMPACT_ALIAS_LOOKUP[compact_text]
+
+    def _is_negated_ascii_match(match_start):
+        prefix_tokens = re.findall(r"[a-z0-9]+", normalized_text[:match_start])
+        return any(token in _EMOTION_NEGATION_WORDS for token in prefix_tokens[-3:])
+
+    def _is_negated_compact_match(match_start):
+        prefix = compact_text[max(0, match_start - 6):match_start]
+        return any(prefix.endswith(negation) for negation in _EMOTION_NEGATION_PREFIXES)
+
+    alias_items = sorted(
+        _EMOTION_NORMALIZED_ALIAS_LOOKUP.items(),
+        key=lambda item: len(item[0]),
+        reverse=True
+    )
+    for alias, canonical in alias_items:
+        if not alias:
+            continue
+        if _ASCII_EMOTION_ALIAS_RE.match(alias):
+            pattern = r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])"
+            for match in re.finditer(pattern, normalized_text):
+                if not _is_negated_ascii_match(match.start()):
+                    return canonical
+            continue
+
+        compact_alias = re.sub(r"[\W_]+", "", alias, flags=re.UNICODE)
+        if not compact_alias:
+            continue
+        search_start = 0
+        while True:
+            match_start = compact_text.find(compact_alias, search_start)
+            if match_start < 0:
+                break
+            if not _is_negated_compact_match(match_start):
+                return canonical
+            search_start = match_start + len(compact_alias)
+
+    high_confidence = raw_confidence is not None and _coerce_emotion_confidence(raw_confidence, 0.0) >= 0.72
+    fuzzy_alias_cutoff = 0.74 if high_confidence else 0.9
+    fuzzy_compact_cutoff = 0.72 if high_confidence else 0.88
+
+    fuzzy_alias_match = difflib.get_close_matches(
+        normalized_text,
+        _EMOTION_FUZZY_ALIAS_KEYS,
+        n=1,
+        cutoff=fuzzy_alias_cutoff
+    )
+    if fuzzy_alias_match:
+        return _EMOTION_NORMALIZED_ALIAS_LOOKUP[fuzzy_alias_match[0]]
+
+    if compact_text:
+        fuzzy_compact_match = difflib.get_close_matches(
+            compact_text,
+            _EMOTION_FUZZY_COMPACT_KEYS,
+            n=1,
+            cutoff=fuzzy_compact_cutoff
+        )
+        if fuzzy_compact_match:
+            return _EMOTION_COMPACT_ALIAS_LOOKUP[fuzzy_compact_match[0]]
+
+    if high_confidence:
+        fuzzy_canonical = difflib.get_close_matches(
+            normalized_text,
+            _EMOTION_CANONICAL_LABELS,
+            n=1,
+            cutoff=0.55
+        )
+        if fuzzy_canonical:
+            return fuzzy_canonical[0]
+
     return "neutral"
+
+
+def _push_emotion_update(lanlan_name, emotion, confidence):
+    sync_message_queue = get_sync_message_queue()
+    if lanlan_name and lanlan_name in sync_message_queue:
+        sync_message_queue[lanlan_name].put({
+            "type": "json",
+            "data": {
+                "type": "emotion",
+                "emotion": emotion,
+                "confidence": confidence
+            }
+        })
+
+
+def _emotion_response(emotion, confidence):
+    return {
+        "emotion": emotion,
+        "confidence": confidence
+    }
 
 
 def _coerce_emotion_confidence(raw_confidence, default=0.5):
@@ -1114,7 +1300,7 @@ async def emotion_analysis(request: Request):
         messages = [
             {
                 "role": "system", 
-                "content": get_emotion_analysis_prompt(prompt_lang)
+                "content": get_outward_emotion_analysis_prompt(prompt_lang)
             },
             {
                 "role": "user", 
@@ -1161,13 +1347,16 @@ async def emotion_analysis(request: Request):
             result_text = "\n".join(lines).strip()
         
         # 尝试解析JSON响应
+        emotion = "neutral"
+        confidence = 0.5
+
         try:
             import json
             result = json.loads(result_text)
             # 获取emotion和confidence
             raw_emotion = result.get("emotion", "neutral")
             raw_confidence = result.get("confidence", 0.5)
-            emotion = _normalize_emotion_label(raw_emotion)
+            emotion = _normalize_emotion_label(raw_emotion, raw_confidence)
             confidence = _coerce_emotion_confidence(raw_confidence)
             decision_source = "model"
 
@@ -1194,38 +1383,19 @@ async def emotion_analysis(request: Request):
             if confidence < 0.2:
                 emotion = "neutral"
                 decision_source = "neutral_fallback"
-
-            # 获取 lanlan_name 并推送到 monitor
-            lanlan_name = data.get('lanlan_name')
-            sync_message_queue = get_sync_message_queue()
-            if lanlan_name and lanlan_name in sync_message_queue:
-                sync_message_queue[lanlan_name].put({
-                    "type": "json",
-                    "data": {
-                        "type": "emotion",
-                        "emotion": emotion,
-                        "confidence": confidence
-                    }
-                })
-            
-            return {
-                "emotion": emotion,
-                "confidence": confidence
-            }
         except json.JSONDecodeError:
             heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
             if heuristic_emotion:
                 confidence = min(0.62, 0.34 + heuristic_score * 0.1)
-                return {
-                    "emotion": heuristic_emotion,
-                    "confidence": confidence
-                }
+                emotion = heuristic_emotion
+            else:
+                # 如果JSON解析失败且没有足够关键词线索，则回退到 neutral
+                emotion = "neutral"
+                confidence = 0.5
 
-            # 如果JSON解析失败且没有足够关键词线索，则回退到 neutral
-            return {
-                "emotion": "neutral",
-                "confidence": 0.5
-            }
+        lanlan_name = data.get('lanlan_name')
+        _push_emotion_update(lanlan_name, emotion, confidence)
+        return _emotion_response(emotion, confidence)
             
     except Exception as e:
         logger.error(f"情感分析失败: {e}")
