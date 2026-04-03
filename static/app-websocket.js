@@ -295,6 +295,7 @@
                     var cc = chatContainer();
                     if ((!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) &&
                         cc && cc.children && cc.children.length > 0) {
+                        var _fallbackHost = window.reactChatWindowHost;
                         var toRemove = [];
                         for (var i = cc.children.length - 1; i >= 0; i--) {
                             var el = cc.children[i];
@@ -305,6 +306,10 @@
                             }
                         }
                         toRemove.forEach(function (el) {
+                            if (_fallbackHost && typeof _fallbackHost.removeMessage === 'function' &&
+                                el && el.dataset && el.dataset.reactChatMessageId) {
+                                _fallbackHost.removeMessage(el.dataset.reactChatMessageId);
+                            }
                             if (el && el.parentNode) el.parentNode.removeChild(el);
                         });
                     }
@@ -849,11 +854,11 @@
                             ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
                             : '';
                         rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+                        window._realisticGeminiBuffer = '';
                         var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
                         if (trimmed) {
                             window._realisticGeminiQueue = window._realisticGeminiQueue || [];
                             window._realisticGeminiQueue.push(trimmed);
-                            window._realisticGeminiBuffer = '';
                             if (typeof window.processRealisticQueue === 'function') {
                                 window.processRealisticQueue(window._realisticGeminiVersion || 0);
                             }

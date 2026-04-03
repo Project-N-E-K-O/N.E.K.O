@@ -1379,8 +1379,6 @@ if __name__ == "__main__":
         _original_handle_exit(sig, frame)
 
     server.handle_exit = _custom_handle_exit
-    signal.signal(signal.SIGINT, _custom_handle_exit)
-    signal.signal(signal.SIGTERM, _custom_handle_exit)
 
     # 4) 启动服务器（阻塞，直到 server.should_exit=True）
     logger.info("--- Starting FastAPI Server ---")
