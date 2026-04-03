@@ -73,6 +73,9 @@ async function autoSaveMasterField(input) {
     
     const fieldName = input.name;
     if (!fieldName) return;
+
+    const profileValidation = await validateMasterProfileNameBeforeSave(form);
+    if (!profileValidation.ok) return;
     
     const data = {};
     data[fieldName] = input.value;
@@ -395,9 +398,9 @@ function toggleFold(fold) {
     fold.classList.toggle('open');
 }
 
-// 档案名长度限制：最多 20 个计数单位（纯中文不超过 10 个字）
+// 档案名长度限制：最多 60 个计数单位（纯中文不超过 30 个字）
 // 计数规则：ASCII(<=0x7F) 计 1，其它字符计 2
-const PROFILE_NAME_MAX_UNITS = 20;
+const PROFILE_NAME_MAX_UNITS = 60;
 
 const PROFILE_NAME_MAX_HINT_KEY = 'character.profileNameMaxHint';
 const PROFILE_NAME_TOO_LONG_KEY = 'character.profileNameTooLong';
@@ -448,6 +451,66 @@ function tOrFallback(key, fallback, params) {
 
 const PROFILE_NAME_CONTAINS_SLASH_KEY = 'character.profileNameContainsSlash';
 const PROFILE_NAME_CONTAINS_DOT_KEY = 'character.profileNameContainsDot';
+const PROFILE_NAME_INVALID_CHARS_KEY = 'character.profileNameInvalidChars';
+const PROFILE_NAME_WINDOWS_FORBIDDEN_CHARS = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*']);
+const PROFILE_NAME_SAFE_EXTRA_CHARS = new Set([' ', '_', '-', '(', ')', '（', '）', '·', '・', '•', "'", '’']);
+
+function getProfileNameCharIssue(ch) {
+    if (!ch) return '';
+    if (ch === '/' || ch === '\\') return 'slash';
+    if (ch === '.') return 'dot';
+    if (PROFILE_NAME_WINDOWS_FORBIDDEN_CHARS.has(ch)) return 'invalid';
+    if (/[\p{L}\p{N}]/u.test(ch)) return '';
+    if (PROFILE_NAME_SAFE_EXTRA_CHARS.has(ch)) return '';
+    if (/\p{Zs}/u.test(ch)) return '';
+    return 'invalid';
+}
+
+function findInvalidProfileNameIssue(value) {
+    for (const ch of String(value ?? '')) {
+        const issue = getProfileNameCharIssue(ch);
+        if (issue) return issue;
+    }
+    return '';
+}
+
+function sanitizeProfileNameValue(value, caretPos = null) {
+    const raw = String(value ?? '');
+    let sanitized = '';
+    let removedBeforeCaret = 0;
+    let cursor = 0;
+    let removedSlash = false;
+    let removedDot = false;
+    let removedOther = false;
+    const caret = (typeof caretPos === 'number') ? caretPos : null;
+
+    for (const ch of raw) {
+        const issue = getProfileNameCharIssue(ch);
+        if (!issue) {
+            sanitized += ch;
+        } else {
+            if (issue === 'slash') {
+                removedSlash = true;
+            } else if (issue === 'dot') {
+                removedDot = true;
+            } else {
+                removedOther = true;
+            }
+            if (caret !== null && cursor < caret) {
+                removedBeforeCaret += ch.length;
+            }
+        }
+        cursor += ch.length;
+    }
+
+    return {
+        value: sanitized,
+        removedBeforeCaret,
+        removedSlash,
+        removedDot,
+        removedOther
+    };
+}
 
 function translateBackendError(errorMessage) {
     if (!errorMessage || typeof errorMessage !== 'string') return errorMessage;
@@ -456,6 +519,9 @@ function translateBackendError(errorMessage) {
     }
     if (errorMessage.includes('点号') || errorMessage.includes('不能包含"."')) {
         return tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, errorMessage);
+    }
+    if (errorMessage.includes('只能包含文字、数字')) {
+        return tOrFallback(PROFILE_NAME_INVALID_CHARS_KEY, errorMessage);
     }
     if (errorMessage.includes('档案名为必填项')) {
         return tOrFallback('character.profileNameRequired', errorMessage);
@@ -518,6 +584,67 @@ function flashProfileNameContainsDot(inputEl) {
     flashProfileNameError(inputEl, msg);
 }
 
+function flashProfileNameContainsInvalidChars(inputEl) {
+    if (!inputEl) return;
+
+    const msg = tOrFallback(
+        PROFILE_NAME_INVALID_CHARS_KEY,
+        '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号'
+    );
+
+    flashProfileNameError(inputEl, msg);
+}
+
+function flashProfileNameInvalidIssue(inputEl, issue) {
+    if (issue === 'slash') {
+        flashProfileNameContainsSlash(inputEl);
+        return;
+    }
+    if (issue === 'dot') {
+        flashProfileNameContainsDot(inputEl);
+        return;
+    }
+    if (issue === 'invalid') {
+        flashProfileNameContainsInvalidChars(inputEl);
+    }
+}
+
+async function validateMasterProfileNameBeforeSave(form, { showRequiredAlert = false } = {}) {
+    if (!form) {
+        return { ok: false, normalized: '' };
+    }
+
+    const profileInput = form.querySelector('input[name="档案名"]');
+    if (!profileInput) {
+        return { ok: false, normalized: '' };
+    }
+
+    const trimmed = String(profileInput.value ?? '').trim();
+    if (profileInput.value !== trimmed) {
+        profileInput.value = trimmed;
+    }
+
+    if (!trimmed) {
+        if (showRequiredAlert) {
+            await showAlert(window.t ? window.t('character.profileNameRequired') : '档案名为必填项');
+        }
+        return { ok: false, normalized: trimmed, inputEl: profileInput, reason: 'empty' };
+    }
+
+    const invalidIssue = findInvalidProfileNameIssue(trimmed);
+    if (invalidIssue) {
+        flashProfileNameInvalidIssue(profileInput, invalidIssue);
+        return { ok: false, normalized: trimmed, inputEl: profileInput, reason: invalidIssue };
+    }
+
+    if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
+        flashProfileNameTooLong(profileInput);
+        return { ok: false, normalized: trimmed, inputEl: profileInput, reason: 'too_long' };
+    }
+
+    return { ok: true, normalized: trimmed, inputEl: profileInput };
+}
+
 function flashProfileNameError(inputEl, msg) {
     if (!inputEl) return;
 
@@ -564,7 +691,12 @@ function flashProfileNameError(inputEl, msg) {
 }
 
 function attachProfileNameLimiter(inputEl) {
-    if (!inputEl || inputEl.dataset.profileNameLimiterAttached === 'true') return;
+    if (!inputEl) return;
+    if (typeof inputEl._enforceProfileNameLimiter === 'function') {
+        inputEl._enforceProfileNameLimiter();
+        return;
+    }
+    if (inputEl.dataset.profileNameLimiterAttached === 'true') return;
     inputEl.dataset.profileNameLimiterAttached = 'true';
 
     // IME 组合输入期间不要修改 value/selection，否则可能打断中文输入
@@ -583,37 +715,27 @@ function attachProfileNameLimiter(inputEl) {
         if (composing) return;
         if (inputEl.readOnly || inputEl.disabled) return;
         let before = inputEl.value;
-        
-        // 检查是否包含路径分隔符，移除并显示警告
-        if (before.includes('/') || before.includes('\\')) {
-            const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
-            inputEl.value = before.replace(/[/\\]/g, '');
+
+        const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
+        const sanitizedResult = sanitizeProfileNameValue(before, caret);
+        if (before !== sanitizedResult.value) {
+            inputEl.value = sanitizedResult.value;
             if (caret !== null) {
-                // 计算光标之前被移除的路径分隔符数量
-                const beforeCaret = before.substring(0, caret);
-                const removedCount = (beforeCaret.match(/[/\\]/g) || []).length;
-                const newPos = Math.max(0, caret - removedCount);
+                const newPos = Math.max(0, caret - sanitizedResult.removedBeforeCaret);
                 try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
             }
-            flashProfileNameContainsSlash(inputEl);
-            before = inputEl.value;
-        }
-        
-        // 检查是否包含点号，移除并显示警告
-        if (before.includes('.')) {
-            const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
-            inputEl.value = before.replace(/\./g, '');
-            if (caret !== null) {
-                // 计算光标之前被移除的点号数量
-                const beforeCaret = before.substring(0, caret);
-                const removedCount = (beforeCaret.match(/\./g) || []).length;
-                const newPos = Math.max(0, caret - removedCount);
-                try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
+            if (sanitizedResult.removedSlash) {
+                flashProfileNameContainsSlash(inputEl);
             }
-            flashProfileNameContainsDot(inputEl);
+            if (sanitizedResult.removedDot) {
+                flashProfileNameContainsDot(inputEl);
+            }
+            if (sanitizedResult.removedOther) {
+                flashProfileNameContainsInvalidChars(inputEl);
+            }
             before = inputEl.value;
         }
-        
+
         const beforeUnits = profileNameCountUnits(before);
         const after = profileNameTrimToMaxUnits(before, PROFILE_NAME_MAX_UNITS);
         if (before !== after) {
@@ -633,6 +755,7 @@ function attachProfileNameLimiter(inputEl) {
         // 理论上不会超过（已截断），这里保持表单可提交
         try { inputEl.setCustomValidity(''); } catch (e) { /* ignore */ }
     };
+    inputEl._enforceProfileNameLimiter = enforce;
 
     inputEl.addEventListener('input', enforce);
     inputEl.addEventListener('compositionstart', () => {
@@ -966,7 +1089,7 @@ function renderMaster() {
         profileInput.type = 'text';
         profileInput.name = '档案名';
         profileInput.required = true;
-        profileInput.maxLength = 20;
+        profileInput.maxLength = PROFILE_NAME_MAX_UNITS;
         profileInput.autocomplete = 'off';
         row.appendChild(profileInput);
         wrapper.appendChild(row);
@@ -990,6 +1113,7 @@ function renderMaster() {
 
     // 设置档案名的值
     profileInput.value = master['档案名'] || '';
+    attachProfileNameLimiter(profileInput);
 
     // 确保档案名的修改按钮存在
     const profileWrapper = profileInput.closest('.field-row-wrapper');
@@ -1218,6 +1342,10 @@ if (!window._addMasterFieldHandler) {
 const masterForm = document.getElementById('master-form');
 masterForm.onsubmit = async function (e) {
     e.preventDefault();
+
+    const profileValidation = await validateMasterProfileNameBeforeSave(masterForm, { showRequiredAlert: true });
+    if (!profileValidation.ok) return;
+
     const data = {};
     for (const [k, v] of new FormData(masterForm).entries()) {
         if (k && v) data[k] = v;
@@ -2188,10 +2316,11 @@ function showCatgirlForm(key, container) {
                     const freeGroup = document.createElement('optgroup');
                     const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
                     freeGroup.label = '── ' + freeLabel + ' ──';
-                    Object.entries(data.free_voices).forEach(([displayName, voiceId]) => {
+                    Object.entries(data.free_voices).forEach(([voiceKey, voiceId]) => {
                         const option = document.createElement('option');
                         option.value = voiceId;
-                        option.textContent = displayName;
+                        // 使用 i18n 翻译键获取显示名称
+                        option.textContent = window.t ? window.t(`voice.freeVoice.${voiceKey}`) : voiceKey;
                         if (voiceId === String(cat['voice_id'] || '').trim()) option.selected = true;
                         freeGroup.appendChild(option);
                     });
@@ -2531,6 +2660,7 @@ window.renameMaster = async function (oldName) {
     let _renameMasterDidOverLimit = false;
     let _renameMasterContainsSlash = false;
     let _renameMasterContainsDot = false;
+    let _renameMasterContainsInvalidChars = false;
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的主人档案名',
         oldName,
@@ -2542,10 +2672,12 @@ window.renameMaster = async function (oldName) {
             },
             normalize: (v) => {
                 const trimmed = String(v ?? '').trim();
-                _renameMasterDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
-                _renameMasterContainsSlash = trimmed.includes('/') || trimmed.includes('\\');
-                _renameMasterContainsDot = trimmed.includes('.');
-                return profileNameTrimToMaxUnits(trimmed.replace(/[/\\.]/g, ''), PROFILE_NAME_MAX_UNITS);
+                const sanitized = sanitizeProfileNameValue(trimmed);
+                _renameMasterDidOverLimit = profileNameCountUnits(sanitized.value) > PROFILE_NAME_MAX_UNITS;
+                _renameMasterContainsSlash = sanitized.removedSlash;
+                _renameMasterContainsDot = sanitized.removedDot;
+                _renameMasterContainsInvalidChars = sanitized.removedOther;
+                return profileNameTrimToMaxUnits(sanitized.value, PROFILE_NAME_MAX_UNITS);
             },
             validator: (v) => {
                 const trimmed = String(v ?? '').trim();
@@ -2553,8 +2685,15 @@ window.renameMaster = async function (oldName) {
                 if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
                 }
-                if (trimmed.includes('.')) {
+                const invalidIssue = findInvalidProfileNameIssue(trimmed);
+                if (invalidIssue === 'slash') {
+                    return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符(/或\\)');
+                }
+                if (invalidIssue === 'dot') {
                     return tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, '档案名不能包含点号(.)');
+                }
+                if (invalidIssue === 'invalid') {
+                    return tOrFallback(PROFILE_NAME_INVALID_CHARS_KEY, '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号');
                 }
                 return '';
             },
@@ -2570,6 +2709,10 @@ window.renameMaster = async function (oldName) {
                 if (_renameMasterContainsDot) {
                     _renameMasterContainsDot = false;
                     flashProfileNameContainsDot(inputEl);
+                }
+                if (_renameMasterContainsInvalidChars) {
+                    _renameMasterContainsInvalidChars = false;
+                    flashProfileNameContainsInvalidChars(inputEl);
                 }
             }
         }
@@ -2614,6 +2757,7 @@ window.renameCatgirl = async function (oldName) {
     let _renameCatgirlDidOverLimit = false;
     let _renameCatgirlContainsSlash = false;
     let _renameCatgirlContainsDot = false;
+    let _renameCatgirlContainsInvalidChars = false;
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的猫娘档案名',
         oldName,
@@ -2625,10 +2769,12 @@ window.renameCatgirl = async function (oldName) {
             },
             normalize: (v) => {
                 const trimmed = String(v ?? '').trim();
-                _renameCatgirlDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
-                _renameCatgirlContainsSlash = trimmed.includes('/') || trimmed.includes('\\');
-                _renameCatgirlContainsDot = trimmed.includes('.');
-                return profileNameTrimToMaxUnits(trimmed.replace(/[/\\.]/g, ''), PROFILE_NAME_MAX_UNITS);
+                const sanitized = sanitizeProfileNameValue(trimmed);
+                _renameCatgirlDidOverLimit = profileNameCountUnits(sanitized.value) > PROFILE_NAME_MAX_UNITS;
+                _renameCatgirlContainsSlash = sanitized.removedSlash;
+                _renameCatgirlContainsDot = sanitized.removedDot;
+                _renameCatgirlContainsInvalidChars = sanitized.removedOther;
+                return profileNameTrimToMaxUnits(sanitized.value, PROFILE_NAME_MAX_UNITS);
             },
             validator: (v) => {
                 const trimmed = String(v ?? '').trim();
@@ -2636,8 +2782,15 @@ window.renameCatgirl = async function (oldName) {
                 if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
                 }
-                if (trimmed.includes('.')) {
+                const invalidIssue = findInvalidProfileNameIssue(trimmed);
+                if (invalidIssue === 'slash') {
+                    return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符(/或\\)');
+                }
+                if (invalidIssue === 'dot') {
                     return tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, '档案名不能包含点号(.)');
+                }
+                if (invalidIssue === 'invalid') {
+                    return tOrFallback(PROFILE_NAME_INVALID_CHARS_KEY, '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号');
                 }
                 return '';
             },
@@ -2653,6 +2806,10 @@ window.renameCatgirl = async function (oldName) {
                 if (_renameCatgirlContainsDot) {
                     _renameCatgirlContainsDot = false;
                     flashProfileNameContainsDot(inputEl);
+                }
+                if (_renameCatgirlContainsInvalidChars) {
+                    _renameCatgirlContainsInvalidChars = false;
+                    flashProfileNameContainsInvalidChars(inputEl);
                 }
             }
         }
@@ -2889,10 +3046,11 @@ window.addEventListener('message', function (event) {
                     const freeGroup = document.createElement('optgroup');
                     const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
                     freeGroup.label = '── ' + freeLabel + ' ──';
-                    Object.entries(data.free_voices).forEach(([displayName, id]) => {
+                    Object.entries(data.free_voices).forEach(([voiceKey, id]) => {
                         const option = document.createElement('option');
                         option.value = id;
-                        option.textContent = displayName;
+                        // 使用 i18n 翻译键获取显示名称
+                        option.textContent = window.t ? window.t(`voice.freeVoice.${voiceKey}`) : voiceKey;
                         freeGroup.appendChild(option);
                     });
                     select.appendChild(freeGroup);
