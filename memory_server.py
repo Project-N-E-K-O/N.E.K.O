@@ -44,6 +44,7 @@ class HistoryRequest(BaseModel):
 
 class NegativeSignalRequest(BaseModel):
     message: str
+    referenced_topic: str = ""
 
 app = FastAPI()
 
@@ -474,7 +475,11 @@ async def handle_negative_signal(request: NegativeSignalRequest, lanlan_name: st
     """识别用户负面信号，并返回当前轮可直接注入模型的回复策略。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
-        result = persona_manager.register_negative_signal(lanlan_name, request.message)
+        result = persona_manager.register_negative_signal(
+            lanlan_name,
+            request.message,
+            referenced_topic=request.referenced_topic,
+        )
         return JSONResponse(result)
     except Exception as e:
         logger.warning(f"[MemoryServer] 负面信号处理失败: {e}")

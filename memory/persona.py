@@ -67,6 +67,10 @@ _TOPIC_SUFFIX_CLEANUPS = (
 _GENERIC_TOPIC_WORDS = {
     "这个", "那个", "这件事", "这话题", "这个话题", "事情", "话题", "内容",
 }
+_REFERENCE_TOPIC_PATTERNS = (
+    re.compile(r'(?:关于|聊聊|继续聊|说说|提到|提起|讲到)(?P<topic>[^，。！？!?]{1,24})'),
+    re.compile(r'(?P<topic>[^，。！？!?]{1,24})(?:这个话题|这件事|这个事情)'),
+)
 
 # Split on any CJK/Latin punctuation, symbols, whitespace
 _SPLIT_RE = re.compile(r'[，。、！？；：\u201c\u201d\u2018\u2019（）()\[\]{}<>《》【】\s,.!?;:\-\u2014\u2026\xb7\u3000]+')
@@ -144,7 +148,36 @@ def _clean_topic_candidate(text: str) -> str:
     return topic[:40]
 
 
-def _extract_negative_topic(text: str) -> tuple[str, bool]:
+def _is_specific_topic(topic: str) -> bool:
+    topic = (topic or "").strip()
+    if len(topic) < 2:
+        return False
+    if topic in _GENERIC_TOPIC_WORDS:
+        return False
+    if re.fullmatch(r'[了啊呀吧嘛呢哦噢很太真就都还又也好]+', topic):
+        return False
+    return True
+
+
+def _extract_topic_from_reference_text(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    for pattern in _REFERENCE_TOPIC_PATTERNS:
+        match = pattern.search(raw)
+        if match:
+            topic = _clean_topic_candidate(match.group("topic"))
+            if _is_specific_topic(topic):
+                return topic
+    sentences = [seg.strip() for seg in re.split(r'[，。！？!?]', raw) if seg.strip()]
+    if sentences:
+        topic = _clean_topic_candidate(sentences[0])
+        if _is_specific_topic(topic):
+            return topic
+    return ""
+
+
+def _extract_negative_topic(text: str, referenced_topic: str = "") -> tuple[str, bool]:
     """从负面表达中提取被触发的话题，并判断是否属于明确“不要再提”类信号。"""
     raw = (text or "").strip()
     if not raw:
@@ -154,21 +187,25 @@ def _extract_negative_topic(text: str) -> tuple[str, bool]:
         match = pattern.search(raw)
         if match:
             topic = _clean_topic_candidate(match.group("topic"))
-            if topic:
+            if _is_specific_topic(topic):
                 return topic, explicit
 
     explicit = any(token in raw for token in ("别提", "不要提", "别再提", "不要再提", "不想聊", "别聊", "不要聊"))
+    referenced = _extract_topic_from_reference_text(referenced_topic)
+    if explicit and referenced:
+        return referenced, True
     # 回退：尝试从句子中剥离负面词，保留剩余较具体的主题描述。
-    fallback = raw
-    for token in _NEGATIVE_KEYWORDS:
-        fallback = fallback.replace(token, " ")
-    fallback = re.sub(r'[，。、！？；：,.!?]', ' ', fallback)
-    segments = [seg.strip() for seg in fallback.split() if seg.strip()]
-    if segments:
-        longest = max(segments, key=len)
-        topic = _clean_topic_candidate(longest)
-        if topic:
-            return topic, explicit
+    if explicit:
+        fallback = raw
+        for token in _NEGATIVE_KEYWORDS:
+            fallback = fallback.replace(token, " ")
+        fallback = re.sub(r'[，。、！？；：,.!?]', ' ', fallback)
+        segments = [seg.strip() for seg in fallback.split() if seg.strip()]
+        if segments:
+            longest = max(segments, key=len)
+            topic = _clean_topic_candidate(longest)
+            if _is_specific_topic(topic):
+                return topic, explicit
     return "", explicit
 
 
@@ -525,7 +562,7 @@ class PersonaManager:
                 return entry
         return None
 
-    def register_negative_signal(self, name: str, user_text: str) -> dict:
+    def register_negative_signal(self, name: str, user_text: str, referenced_topic: str = "") -> dict:
         """记录负面信号，并返回当前轮应该采用的回复指令。"""
         text = (user_text or "").strip()
         if not text or not _contains_negative_signal(text):
@@ -536,7 +573,7 @@ class PersonaManager:
                 'response_instruction': '',
             }
 
-        topic, explicit_avoid = _extract_negative_topic(text)
+        topic, explicit_avoid = _extract_negative_topic(text, referenced_topic=referenced_topic)
         policy = 'tone_only'
         persona = self.ensure_persona(name)
         now_str = datetime.now().isoformat()

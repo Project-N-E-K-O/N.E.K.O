@@ -220,6 +220,8 @@ class LLMSessionManager:
         # 当前轮临时响应指令：用于负面情绪命中后的即时安抚/换题
         self._transient_response_instruction_base: str | None = None
         self._transient_response_instruction_active: str = ""
+        self._last_assistant_turn_text: str = ""
+        self._current_assistant_turn_text: str = ""
         # 防止 trigger_agent_callbacks 重入
         self._agent_delivery_in_progress: bool = False
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
@@ -318,6 +320,7 @@ class LLMSessionManager:
         # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
         self.audio_resampler.clear()
         await self._clear_tts_pipeline()
+        self._current_assistant_turn_text = ""
         
         await self.send_user_activity()
         
@@ -391,6 +394,8 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
+        if self._current_assistant_turn_text.strip():
+            self._last_assistant_turn_text = self._current_assistant_turn_text.strip()
         await self._restore_transient_response_instruction()
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
@@ -544,6 +549,16 @@ class LLMSessionManager:
         # speech_id 仅应在“模型新回复开始”时更新 (handle_new_message / 文本模式 stream 入口),
         # 否则会导致前端把同一轮 AI 语音误判为新轮次, 出现首包被重置/吞掉的问题.
 
+    def _clear_transient_response_instruction_state(self) -> None:
+        self._transient_response_instruction_active = ""
+        self._transient_response_instruction_base = None
+
+    def _get_recent_assistant_utterance(self) -> str:
+        current = (self._current_assistant_turn_text or "").strip()
+        if current:
+            return current
+        return (self._last_assistant_turn_text or "").strip()
+
     async def _fetch_negative_signal_instruction(self, transcript: str) -> str:
         if not transcript:
             return ""
@@ -551,7 +566,10 @@ class LLMSessionManager:
             async with httpx.AsyncClient(timeout=1.2, proxy=None, trust_env=False) as client:
                 resp = await client.post(
                     f"http://127.0.0.1:{self.memory_server_port}/negative_signal/{self.lanlan_name}",
-                    json={"message": transcript},
+                    json={
+                        "message": transcript,
+                        "referenced_topic": self._get_recent_assistant_utterance(),
+                    },
                 )
                 if not resp.is_success:
                     return ""
@@ -593,17 +611,18 @@ class LLMSessionManager:
             return
 
         base_instructions = self._transient_response_instruction_base
-        self._transient_response_instruction_active = ""
-        self._transient_response_instruction_base = None
 
         if base_instructions is None or not isinstance(self.session, OmniRealtimeClient):
+            self._clear_transient_response_instruction_state()
             return
         if getattr(self.session, "_is_gemini", False):
+            self._clear_transient_response_instruction_state()
             return
 
         try:
             await self.session.update_session({"instructions": base_instructions})
             self.session.instructions = base_instructions
+            self._clear_transient_response_instruction_state()
         except Exception as e:
             logger.debug(f"恢复临时响应指令失败: {e}")
 
@@ -649,6 +668,7 @@ class LLMSessionManager:
                 await self.websocket.send_json(message)
                 if is_first_chunk:
                     logger.debug("[%s] send_lanlan_response: first chunk sent via WS (len=%d)", self.lanlan_name, len(text))
+                self._current_assistant_turn_text += text
                 self.sync_message_queue.put({"type": "json", "data": message})
                 if hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
                     if not hasattr(self, 'message_cache_for_new_session'):
@@ -1115,6 +1135,7 @@ class LLMSessionManager:
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
         self.user_language = normalize_language_code(get_global_language(), format='short')
+        self._clear_transient_response_instruction_state()
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
@@ -2839,6 +2860,7 @@ class LLMSessionManager:
                 logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
                 return
             self.is_active = False
+            self._clear_transient_response_instruction_state()
             # 重置 is_starting_session：如果 start_session 正在执行中（比如卡在预热），
             # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
             # 静默丢弃（is_starting_session=True → return），导致"必须重启应用才能恢复"。
@@ -2942,7 +2964,6 @@ class LLMSessionManager:
             if self.websocket != expected_websocket:
                 logger.info("⏭️ cleanup 跳过：当前 websocket 已被新连接替换")
                 return
-        
         await self.end_session(by_server=True, expected_session=expected_session)
         # 清理websocket引用，防止保留失效的连接
         # 使用共享锁保护websocket操作，防止与initialize_character_data()中的restore竞争

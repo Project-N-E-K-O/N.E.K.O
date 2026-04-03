@@ -69,3 +69,44 @@ def test_negative_signal_explicit_avoid_immediately_hard() -> None:
             md = pm.render_persona_markdown("测试猫娘")
             assert "不要主动提及的话题" in md
             assert "考试" in md
+
+
+def test_negative_signal_topicless_emotion_falls_back_to_tone_only() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            result = pm.register_negative_signal("测试猫娘", "我好焦虑")
+            assert result["matched"] is True
+            assert result["topic"] == ""
+            assert result["policy"] == "tone_only"
+
+            persona = pm.get_persona("测试猫娘")
+            guidance = persona.get("_topic_guidance", {})
+            assert guidance.get("soft_avoid", []) == []
+            assert guidance.get("hard_avoid", []) == []
+
+
+def test_negative_signal_explicit_avoid_uses_referenced_topic() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            result = pm.register_negative_signal(
+                "测试猫娘",
+                "别提了",
+                referenced_topic="那我们继续聊工作上的安排吧",
+            )
+            assert result["matched"] is True
+            assert result["topic"] == "工作上的安排"
+            assert result["policy"] == "avoid"
