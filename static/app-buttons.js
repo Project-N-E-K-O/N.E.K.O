@@ -459,6 +459,9 @@
                 returnSessionButton.disabled = false;
 
                 window.stopProactiveChatSchedule();
+                if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+                    window.stopProactiveVisionDuringSpeech();
+                }
 
                 window.showStatusToast('', 0);
             }
@@ -480,6 +483,9 @@
                 }
                 if (window.vrmManager) {
                     window.vrmManager._goodbyeClicked = false;
+                }
+                if (window.mmdManager) {
+                    window.mmdManager._goodbyeClicked = false;
                 }
 
                 micButton.classList.remove('recording');
