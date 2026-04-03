@@ -121,7 +121,7 @@ _EMOTION_KEYWORDS = {
               "うれしい", "嬉しい", "楽しい", "かわいい", "好き", "やった", "最高",
               "좋아", "행복", "기뻐", "신나", "귀여워", "좋다", "최고",
               "счастлив", "рада", "рад", "весело", "люблю", "милый", "класс"),
-    "sad": ("难过", "伤心", "委屈", "想哭", "呜呜", "遗憾", "失落", "沮丧", "低落", "心疼",
+    "sad": ("难过", "伤心", "委屈", "想哭", "要哭", "哭了", "哭", "呜呜", "呜", "遗憾", "失落", "沮丧", "低落", "心疼", "欺负", "最怕",
             "sad", "cry", "upset", "depressed", "sorry", "regret", "heartbroken",
             "悲しい", "つらい", "寂しい", "落ち込", "しんどい", "泣きたい",
             "슬퍼", "우울", "속상", "서운", "힘들", "울고",
@@ -137,6 +137,20 @@ _EMOTION_KEYWORDS = {
                   "헉", "우와", "진짜", "설마", "뭐야", "깜짝",
                   "ого", "ничего себе", "серьезно", "правда", "внезапно", "удив"),
 }
+
+_SAD_VULNERABLE_PATTERNS = (
+    "委屈", "想哭", "要哭", "哭了", "哭", "呜呜", "呜", "别欺负", "不要欺负", "欺负我",
+    "不要这样对我", "别这样对我", "最怕", "怕你这样说", "心里难受", "好难过", "可怜"
+)
+
+_ANGRY_ATTACK_PATTERNS = (
+    "气死", "生气", "烦死", "恼火", "可恶", "讨厌", "离谱", "无语", "火大",
+    "别烦", "闭嘴", "滚", "受不了"
+)
+
+_HAPPY_PLAYFUL_PATTERNS = (
+    "哈哈", "嘿嘿", "嘻嘻", "贴贴", "撒娇", "可爱", "好耶"
+)
 
 
 def _normalize_emotion_label(raw_emotion):
@@ -174,6 +188,20 @@ def _infer_emotion_from_text(text):
 
     if "!!" in text_value or "！？" in text_value or "!?" in text_value or "??" in text_value:
         scores["surprised"] += 1
+
+    sad_vulnerable_hits = sum(1 for pattern in _SAD_VULNERABLE_PATTERNS if pattern in text_value)
+    angry_attack_hits = sum(1 for pattern in _ANGRY_ATTACK_PATTERNS if pattern in text_value)
+    happy_playful_hits = sum(1 for pattern in _HAPPY_PLAYFUL_PATTERNS if pattern in text_value)
+
+    if sad_vulnerable_hits:
+        scores["sad"] += sad_vulnerable_hits * 2
+    if angry_attack_hits:
+        scores["angry"] += angry_attack_hits * 2
+    if happy_playful_hits and not sad_vulnerable_hits and not angry_attack_hits:
+        scores["happy"] += 1
+    if sad_vulnerable_hits and happy_playful_hits:
+        # 撒娇外壳下的委屈/想哭，优先视为 sad 而不是 happy
+        scores["sad"] += 1
 
     best_emotion = None
     best_score = 0
@@ -1145,7 +1173,15 @@ async def emotion_analysis(request: Request):
 
             heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
             if heuristic_emotion:
-                if emotion == "neutral" and confidence < 0.6:
+                if heuristic_emotion != emotion and heuristic_score >= 4 and confidence < 0.85:
+                    emotion = heuristic_emotion
+                    confidence = max(confidence, min(0.86, 0.44 + heuristic_score * 0.07))
+                    decision_source = "heuristic_strong_override"
+                elif heuristic_emotion == "sad" and emotion == "happy" and heuristic_score >= 2:
+                    emotion = heuristic_emotion
+                    confidence = max(confidence, min(0.84, 0.5 + heuristic_score * 0.08))
+                    decision_source = "heuristic_sad_override"
+                elif emotion == "neutral" and confidence < 0.6:
                     emotion = heuristic_emotion
                     confidence = max(confidence, min(0.78, 0.42 + heuristic_score * 0.12))
                     decision_source = "heuristic_from_neutral"

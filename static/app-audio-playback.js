@@ -71,11 +71,42 @@
         S.assistantTurnCompletedId = null;
     }
 
-    function isAssistantTurnPlaybackDrained() {
-        return S.scheduledSources.length === 0 &&
-            S.audioBufferQueue.length === 0 &&
-            S.pendingAudioChunkMetaQueue.length === 0 &&
-            S.incomingAudioBlobQueue.length === 0;
+    function isAssistantTurnPlaybackDrained(turnId) {
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!normalizedTurnId) {
+            return false;
+        }
+
+        var hasScheduledSource = S.scheduledSources.some(function (source) {
+            return normalizeAssistantTurnId(source && source._nekoAssistantTurnId) === normalizedTurnId;
+        });
+        if (hasScheduledSource) {
+            return false;
+        }
+
+        var hasQueuedBuffer = S.audioBufferQueue.some(function (item) {
+            return normalizeAssistantTurnId(item && item.turnId) === normalizedTurnId;
+        });
+        if (hasQueuedBuffer) {
+            return false;
+        }
+
+        var hasPendingMeta = S.pendingAudioChunkMetaQueue.some(function (item) {
+            return item &&
+                !item.shouldSkip &&
+                item.epoch === S.incomingAudioEpoch &&
+                normalizeAssistantTurnId(item.speechId) === normalizedTurnId;
+        });
+        if (hasPendingMeta) {
+            return false;
+        }
+
+        return !S.incomingAudioBlobQueue.some(function (item) {
+            return item &&
+                !item.shouldSkip &&
+                item.epoch === S.incomingAudioEpoch &&
+                normalizeAssistantTurnId(item.speechId) === normalizedTurnId;
+        });
     }
 
     function stopActiveLipSync() {
@@ -104,7 +135,7 @@
         if (!normalizedTurnId || S.assistantTurnCompletedId !== normalizedTurnId) {
             return false;
         }
-        if (!isAssistantTurnPlaybackDrained()) {
+        if (!isAssistantTurnPlaybackDrained(normalizedTurnId)) {
             return false;
         }
 
@@ -312,7 +343,7 @@
 
                     var source = S.audioPlayerContext.createBufferSource();
                     source.buffer = nextBuffer;
-                    source._nekoAssistantTurnId = normalizeAssistantTurnId(S.assistantTurnId);
+                    source._nekoAssistantTurnId = normalizeAssistantTurnId(item.turnId);
                     if (hasAnalyser) {
                         source.connect(S.globalAnalyser);
                     } else {
@@ -390,7 +421,7 @@
 
     // ======================== Audio blob handling ========================
 
-    async function handleAudioBlob(blob, expectedEpoch) {
+    async function handleAudioBlob(blob, expectedEpoch, speechId) {
         if (expectedEpoch === undefined) expectedEpoch = S.incomingAudioEpoch;
 
         var arrayBuffer = await blob.arrayBuffer();
@@ -457,7 +488,11 @@
         var audioBuffer = S.audioPlayerContext.createBuffer(1, float32Data.length, sampleRate);
         audioBuffer.copyToChannel(float32Data, 0);
 
-        var bufferObj = { seq: S.seqCounter++, buffer: audioBuffer };
+        var bufferObj = {
+            seq: S.seqCounter++,
+            buffer: audioBuffer,
+            turnId: normalizeAssistantTurnId(speechId || S.assistantTurnId)
+        };
         S.audioBufferQueue.push(bufferObj);
 
         var j = S.audioBufferQueue.length - 1;
@@ -544,7 +579,7 @@
                     continue;
                 }
 
-                await handleAudioBlob(item.blob, item.epoch);
+                await handleAudioBlob(item.blob, item.epoch, item.speechId);
             }
         } finally {
             S.isProcessingIncomingAudioBlob = false;

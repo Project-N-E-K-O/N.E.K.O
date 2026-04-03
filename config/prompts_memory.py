@@ -545,11 +545,12 @@ EMOTION_ANALYSIS_PROMPT = {
 判断规则：
 1. 必须优先选择“最强主情绪”，不要因为语气里带一点克制就轻易返回 neutral。
 2. 只有在文本整体真的平铺直叙、情绪信号很弱时，才返回 neutral。
-3. 可爱、开心、撒娇、兴奋、被逗乐，优先判为 happy，而不是 neutral。
-4. 明显吐槽、炸毛、抱怨、恼火，优先判为 angry，而不是 sad。
-5. 明显惊叹、夸张反应、被意外到，优先判为 surprised。
-6. sad 只在文本明显体现低落、委屈、难过、遗憾时使用，不要把普通温和语气误判成 sad。
-7. confidence 取 0 到 1 之间的小数；情绪很明确时应给出较高置信度。
+3. 只有在文本明确表达开心、喜欢、得意、轻快、被逗乐、享受互动时，才判为 happy，不要把单纯可爱说法、卖萌语气、口头禅误判成 happy。
+4. 如果文本主轴是委屈、想哭、脆弱、受伤、被欺负、害怕、求安慰、低落，即使语气可爱或撒娇，也应优先判为 sad。
+5. 如果文本主轴是抱怨、指责、烦躁、警告、拒绝、炸毛、不耐烦，即使夹杂可爱语气，也应优先判为 angry。
+6. surprised 只用于明显的突发惊讶、意外、震惊、夸张反应；不要只因为有感叹号、语气词就判为 surprised。
+7. 语气助词、口癖、拟声词、宠物叫声这类风格词本身不代表情绪，不能单独作为判断依据。
+8. confidence 取 0 到 1 之间的小数；情绪很明确时应给出较高置信度。
 
 只返回 JSON，不要附加任何解释文本。""",
 
@@ -565,11 +566,12 @@ Allowed emotions only:
 Rules:
 1. Choose the strongest main emotion, not the safest one.
 2. Do not return neutral unless the text is truly emotionally weak or flat.
-3. Cute, cheerful, playful, affectionate, excited reactions should prefer happy.
-4. Complaining, snapping, irritated, explosive reactions should prefer angry over sad.
-5. Obvious exclamations or unexpected reactions should prefer surprised.
-6. Use sad only when the text clearly shows hurt, disappointment, regret, or low mood.
-7. confidence must be a number between 0 and 1.
+3. Use happy only when the text clearly expresses positive enjoyment, affection, delight, playful pleasure, or being genuinely amused; do not treat cute phrasing or verbal tics alone as happy.
+4. If the core emotion is hurt, vulnerability, wanting to cry, feeling bullied, fear, pleading, or seeking comfort, prefer sad even if the wording sounds cute or clingy.
+5. If the core emotion is complaint, blame, irritation, warning, rejection, or hostility, prefer angry even if the tone is softened with cute wording.
+6. Use surprised only for clear shock, sudden surprise, or exaggerated astonishment; do not label something surprised just because it has exclamation marks or filler particles.
+7. Catchphrases, sound effects, pet-like speech, and filler words are style markers, not emotions by themselves.
+8. confidence must be a number between 0 and 1.
 
 Return JSON only, with no explanation.""",
 
@@ -585,11 +587,12 @@ Return JSON only, with no explanation.""",
 判断ルール：
 1. もっとも強い主感情を選び、無難だからという理由で neutral を選ばない。
 2. 本当に感情が弱い・平坦な文章だけ neutral にする。
-3. かわいい、うれしい、甘える、はしゃぐ、楽しそうな反応は happy を優先する。
-4. 文句、不満、イライラ、怒った反応は sad ではなく angry を優先する。
-5. 驚き、意外さ、大げさな感嘆は surprised を優先する。
-6. sad は、落ち込み、つらさ、悔しさ、悲しさが明確な場合のみ使う。
-7. confidence は 0〜1 の数値にする。
+3. happy は、嬉しさ・好意・楽しさ・はしゃぎ・本当に喜んでいる反応が明確なときだけ使い、かわいい言い回しや口ぐせだけで happy にしない。
+4. 文の中心が、傷つき・しんどさ・泣きたさ・いじけ・甘えを含む弱さ・慰めを求める気持ちなら、言い方がかわいくても sad を優先する。
+5. 文の中心が、文句・苛立ち・責め・拒絶・警告・きつい不満なら、かわいい語尾があっても angry を優先する。
+6. surprised は、はっきりした驚き・意外さ・衝撃・大げさな驚愕にだけ使い、感嘆符や語気だけで surprised にしない。
+7. 口ぐせ、擬音、語尾、キャラっぽい言い回しは、それ自体では感情根拠にならない。
+8. confidence は 0〜1 の数値にする。
 
 JSONのみを返し、説明文は付けないでください。""",
 
@@ -605,11 +608,12 @@ JSONのみを返し、説明文は付けないでください。""",
 판단 규칙:
 1. 가장 강한 주감정을 고르고, 안전해 보여서 neutral 을 고르지 마세요.
 2. 감정 신호가 정말 약하고 평이한 문장일 때만 neutral 을 사용하세요.
-3. 귀엽다, 즐겁다, 들뜸, 애교, 신남 같은 반응은 happy 를 우선하세요.
-4. 불만, 짜증, 공격적 반응, 폭발적인 반응은 sad 보다 angry 를 우선하세요.
-5. 놀람, 의외성, 과장된 감탄은 surprised 를 우선하세요.
-6. sad 는 우울함, 상처, 서운함, 실망이 분명할 때만 사용하세요.
-7. confidence 는 0~1 사이 숫자여야 합니다.
+3. happy 는 실제로 즐거움, 애정, 들뜸, 만족, 장난스러운 즐거움이 분명할 때만 사용하고, 단순히 귀여운 말투나 말버릇만으로 happy 로 판단하지 마세요.
+4. 문장의 핵심이 속상함, 상처, 울고 싶음, 서러움, 괴롭힘당하는 느낌, 두려움, 위로를 바라는 마음이라면 말투가 귀여워도 sad 를 우선하세요.
+5. 문장의 핵심이 불만, 짜증, 비난, 경고, 거절, 공격성이라면 말투가 부드럽거나 귀여워도 angry 를 우선하세요.
+6. surprised 는 분명한 놀람, 충격, 뜻밖의 상황, 과장된 경악에만 사용하고, 느낌표나 말끝 표현만으로 surprised 로 판단하지 마세요.
+7. 말버릇, 의성어, 캐릭터 말투, 동물 흉내 같은 표현은 그 자체로 감정을 뜻하지 않습니다.
+8. confidence 는 0~1 사이 숫자여야 합니다.
 
 설명 없이 JSON만 반환하세요.""",
 
@@ -625,11 +629,12 @@ JSONのみを返し、説明文は付けないでください。""",
 Правила:
 1. Выбирайте самую сильную основную эмоцию, а не самую безопасную.
 2. Возвращайте neutral только если эмоция действительно слабая или почти отсутствует.
-3. Радость, милое/игривое настроение, восторг, тёплая привязанность — это happy.
-4. Раздражение, жалобы, резкие и взрывные реакции — это angry, а не sad.
-5. Удивление, неожиданность, сильные восклицания — это surprised.
-6. sad используйте только при явной грусти, обиде, сожалении или подавленности.
-7. confidence должно быть числом от 0 до 1.
+3. Используйте happy только когда в тексте явно есть радость, удовольствие, тёплая привязанность, игривое удовольствие или искреннее веселье; милый стиль речи или словечки сами по себе не означают happy.
+4. Если в центре текста обида, уязвимость, желание заплакать, ощущение, что обижают, страх, мольба или поиск утешения, выбирайте sad, даже если формулировка звучит мило.
+5. Если в центре текста жалоба, раздражение, упрёк, предупреждение, отказ или резкая враждебность, выбирайте angry, даже если тон смягчён милой манерой речи.
+6. surprised используйте только для явного шока, внезапного удивления или преувеличенного изумления; одних восклицаний или частиц для этого недостаточно.
+7. Слова-паразиты, звукоподражания, повторяющиеся словечки и «персонажная» манера речи сами по себе не являются признаком эмоции.
+8. confidence должно быть числом от 0 до 1.
 
 Верните только JSON без пояснений.""",
 }

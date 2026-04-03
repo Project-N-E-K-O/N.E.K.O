@@ -844,6 +844,13 @@
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
                     console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
+                    var agentCallbackTurnId = normalizeAssistantTurnId(S.assistantTurnId);
+                    if (agentCallbackTurnId) {
+                        emitAssistantLifecycleEvent('neko-assistant-turn-end', {
+                            turnId: agentCallbackTurnId,
+                            source: 'turn_end_agent_callback'
+                        });
+                    }
                     try {
                         window._pendingMusicCommand = '';
                         var rest = typeof window._realisticGeminiBuffer === 'string'

@@ -610,7 +610,7 @@
 
     function handleEmotionReady(detail) {
         var turnId = normalizeTurnId(detail && detail.turnId);
-        if (!turnId || state.turnId !== turnId || !state.visible) {
+        if (!turnId || state.turnId !== turnId || !state.visible || state.phase === 'fading') {
             return;
         }
 
@@ -618,7 +618,7 @@
         clearTimer('emotionSwapTimerId');
 
         var applyEmotionState = function () {
-            if (state.turnId !== turnId || !state.visible) {
+            if (state.turnId !== turnId || !state.visible || state.phase === 'fading') {
                 return;
             }
 
