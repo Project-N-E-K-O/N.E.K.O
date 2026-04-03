@@ -394,9 +394,7 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
-        if self._current_assistant_turn_text.strip():
-            self._last_assistant_turn_text = self._current_assistant_turn_text.strip()
-        await self._restore_transient_response_instruction()
+        await self._finalize_or_discard_current_assistant_turn(commit=True)
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
@@ -462,14 +460,14 @@ class LLMSessionManager:
         # After each turn: deliver any queued agent task callbacks via LLM rephrase
         if self.pending_agent_callbacks:
             asyncio.create_task(self.trigger_agent_callbacks())
-        self._reset_assistant_turn_tracking()
 
     async def handle_response_discarded(self, reason: str, attempt: int, max_attempts: int, will_retry: bool, message: Optional[str] = None):
         """
         处理响应被丢弃的通知：清空 TTS 管线 + 前端输出，必要时发送 turn end
         """
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
-        
+
+        await self._finalize_or_discard_current_assistant_turn(commit=False)
         await self._clear_tts_pipeline()
         
         if self.websocket and hasattr(self.websocket, 'client_state') and \
@@ -559,6 +557,18 @@ class LLMSessionManager:
         if clear_last:
             self._last_assistant_turn_text = ""
 
+    async def _finalize_or_discard_current_assistant_turn(
+        self,
+        *,
+        commit: bool,
+        session_override=None,
+    ) -> None:
+        current = (self._current_assistant_turn_text or "").strip()
+        if commit and current:
+            self._last_assistant_turn_text = current
+        self._current_assistant_turn_text = ""
+        await self._restore_transient_response_instruction(session_override=session_override)
+
     def _get_recent_assistant_utterance(self) -> str:
         current = (self._current_assistant_turn_text or "").strip()
         if current:
@@ -612,22 +622,23 @@ class LLMSessionManager:
         self._transient_response_instruction_base = base_instructions
         self._transient_response_instruction_active = instruction
 
-    async def _restore_transient_response_instruction(self) -> None:
+    async def _restore_transient_response_instruction(self, session_override=None) -> None:
         if not self._transient_response_instruction_active:
             return
 
         base_instructions = self._transient_response_instruction_base
+        session = session_override or self.session
 
-        if base_instructions is None or not isinstance(self.session, OmniRealtimeClient):
+        if base_instructions is None or not isinstance(session, OmniRealtimeClient):
             self._clear_transient_response_instruction_state()
             return
-        if getattr(self.session, "_is_gemini", False):
+        if getattr(session, "_is_gemini", False):
             self._clear_transient_response_instruction_state()
             return
 
         try:
-            await self.session.update_session({"instructions": base_instructions})
-            self.session.instructions = base_instructions
+            await session.update_session({"instructions": base_instructions})
+            session.instructions = base_instructions
             self._clear_transient_response_instruction_state()
         except Exception as e:
             logger.debug(f"恢复临时响应指令失败: {e}")
@@ -2869,7 +2880,6 @@ class LLMSessionManager:
                 logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
                 return
             self.is_active = False
-            self._clear_transient_response_instruction_state()
             # 重置 is_starting_session：如果 start_session 正在执行中（比如卡在预热），
             # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
             # 静默丢弃（is_starting_session=True → return），导致"必须重启应用才能恢复"。
@@ -2884,6 +2894,12 @@ class LLMSessionManager:
             tts_thread_ref = self.tts_thread
             tts_request_queue_ref = self.tts_request_queue
             tts_response_queue_ref = self.tts_response_queue
+
+        await self._finalize_or_discard_current_assistant_turn(
+            commit=False,
+            session_override=main_session_ref,
+        )
+        self._clear_transient_response_instruction_state()
 
         logger.info("End Session: Starting cleanup...")
         self.sync_message_queue.put({'type': 'system', 'data': 'session end'})

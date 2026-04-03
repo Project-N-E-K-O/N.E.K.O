@@ -81,7 +81,17 @@ _GENERIC_TOPIC_WORDS = {
 _REFERENCE_TOPIC_PATTERNS = (
     re.compile(r'(?:关于|聊聊|继续聊|说说|提到|提起|讲到)(?P<topic>[^，。！？!?]{1,24})'),
     re.compile(r'(?P<topic>[^，。！？!?]{1,24})(?:这个话题|这件事|这个事情)'),
+    re.compile(
+        r"\b(?:about|talk(?:ing)? about|mention|discuss|continue (?:talking|chatting|speaking) about|keep (?:talking|chatting|speaking) about)\s+(?P<topic>[a-z0-9][\w\s\-]{0,40}?)(?:\s+(?:again|later|today|tonight|tomorrow))?(?:[.!?,]+|$)",
+        re.IGNORECASE,
+    ),
 )
+_REFERENCE_LATIN_FALLBACK_STOPWORDS = {
+    "a", "an", "about", "again", "can", "chat", "continue", "could", "discuss",
+    "i", "it", "keep", "later", "lets", "let's", "mention", "our", "should",
+    "speak", "talk", "talking", "the", "this", "today", "tomorrow", "tonight",
+    "we", "will", "with", "you", "your",
+}
 
 # Split on any CJK/Latin punctuation, symbols, whitespace
 _SPLIT_RE = re.compile(r'[，。、！？；：\u201c\u201d\u2018\u2019（）()\[\]{}<>《》【】\s,.!?;:\-\u2014\u2026\xb7\u3000]+')
@@ -131,6 +141,13 @@ def _contains_negative_signal(text: str) -> bool:
     return any(keyword in lowered for keyword in _NEGATIVE_KEYWORDS)
 
 
+def _contains_cjk(text: str) -> bool:
+    return any(
+        '\u4e00' <= ch <= '\u9fff' or '\u3040' <= ch <= '\u30ff' or '\uac00' <= ch <= '\ud7af'
+        for ch in (text or "")
+    )
+
+
 def _clean_topic_candidate(text: str) -> str:
     topic = (text or "").strip()
     if not topic:
@@ -154,6 +171,8 @@ def _clean_topic_candidate(text: str) -> str:
     topic = re.sub(r'^(?:关于|聊|提|说|讲)+', '', topic).strip()
     topic = re.sub(r'(?:一下|一下子)$', '', topic).strip()
     topic = re.sub(r'(?:真的|现在|最近)$', '', topic).strip()
+    if re.search(r'[A-Za-z]', topic) and not _contains_cjk(topic):
+        topic = topic.casefold()
     if topic in _GENERIC_TOPIC_WORDS:
         return ""
     return topic[:40]
@@ -183,9 +202,28 @@ def _extract_topic_from_reference_text(text: str) -> str:
     sentences = [seg.strip() for seg in re.split(r'[，。！？!?]', raw) if seg.strip()]
     if sentences:
         topic = _clean_topic_candidate(sentences[0])
-        if _is_specific_topic(topic):
+        if _is_specific_topic(topic) and _is_safe_reference_fallback_topic(topic):
             return topic
     return ""
+
+
+def _is_safe_reference_fallback_topic(topic: str) -> bool:
+    if not topic:
+        return False
+    if _contains_cjk(topic):
+        return True
+    tokens = [
+        re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", token.casefold())
+        for token in topic.split()
+    ]
+    tokens = [token for token in tokens if token]
+    if not tokens:
+        return False
+    if len(tokens) == 1:
+        return True
+    if len(tokens) <= 3 and not any(token in _REFERENCE_LATIN_FALLBACK_STOPWORDS for token in tokens):
+        return True
+    return False
 
 
 def _extract_negative_topic(text: str, referenced_topic: str = "") -> tuple[str, bool]:
@@ -544,10 +582,19 @@ class PersonaManager:
         if isinstance(entry, dict):
             for key, value in defaults.items():
                 entry.setdefault(key, value)
+            entry['topic'] = _clean_topic_candidate(entry.get('topic', ''))
             return entry
         normalized = dict(defaults)
-        normalized['topic'] = str(entry)
+        normalized['topic'] = _clean_topic_candidate(str(entry))
         return normalized
+
+    @staticmethod
+    def _topic_key(topic: str) -> str:
+        return _clean_topic_candidate(topic)
+
+    @classmethod
+    def _topic_matches(cls, lhs: str, rhs: str) -> bool:
+        return cls._topic_key(lhs) == cls._topic_key(rhs)
 
     def _get_topic_guidance(self, persona: dict) -> dict:
         guidance = persona.setdefault('_topic_guidance', {})
@@ -569,8 +616,14 @@ class PersonaManager:
 
     @staticmethod
     def _find_topic_entry(entries: list[dict], topic: str) -> dict | None:
+        topic_key = PersonaManager._topic_key(topic)
+        if not topic_key:
+            return None
         for entry in entries:
-            if isinstance(entry, dict) and entry.get('topic') == topic:
+            if not isinstance(entry, dict):
+                continue
+            if PersonaManager._topic_matches(entry.get('topic', ''), topic_key):
+                entry['topic'] = topic_key
                 return entry
         return None
 
@@ -599,13 +652,17 @@ class PersonaManager:
             hard_entry = self._find_topic_entry(hard_entries, topic)
 
             if hard_entry is not None:
+                hard_entry['topic'] = topic
                 hard_entry['trigger_count'] = int(hard_entry.get('trigger_count', 1)) + 1
                 hard_entry['last_triggered_at'] = now_str
                 policy = 'avoid'
                 changed = True
             elif explicit_avoid:
                 if soft_entry is not None:
-                    soft_entries[:] = [entry for entry in soft_entries if entry.get('topic') != topic]
+                    soft_entries[:] = [
+                        entry for entry in soft_entries
+                        if not self._topic_matches(entry.get('topic', ''), topic)
+                    ]
                 hard_entries.append({
                     'topic': topic,
                     'state': 'hard',
@@ -617,10 +674,14 @@ class PersonaManager:
                 policy = 'avoid'
                 changed = True
             elif soft_entry is not None:
+                soft_entry['topic'] = topic
                 soft_entry['trigger_count'] = int(soft_entry.get('trigger_count', 1)) + 1
                 soft_entry['last_triggered_at'] = now_str
                 if soft_entry['trigger_count'] >= TOPIC_HARD_AVOID_THRESHOLD:
-                    soft_entries[:] = [entry for entry in soft_entries if entry.get('topic') != topic]
+                    soft_entries[:] = [
+                        entry for entry in soft_entries
+                        if not self._topic_matches(entry.get('topic', ''), topic)
+                    ]
                     hard_entries.append({
                         'topic': topic,
                         'state': 'hard',

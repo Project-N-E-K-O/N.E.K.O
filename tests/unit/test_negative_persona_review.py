@@ -116,6 +116,26 @@ def test_negative_signal_explicit_avoid_uses_referenced_topic() -> None:
             assert result["policy"] == "avoid"
 
 
+def test_negative_signal_explicit_avoid_uses_english_referenced_topic() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            result = pm.register_negative_signal(
+                "测试猫娘",
+                "别提了",
+                referenced_topic="Let's talk about Work later.",
+            )
+            assert result["matched"] is True
+            assert result["topic"] == "work"
+            assert result["policy"] == "avoid"
+
+
 def test_negative_signal_english_topic_detection() -> None:
     with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
         mock_cm = _build_mock_config_manager(tmpdir)
@@ -126,7 +146,7 @@ def test_negative_signal_english_topic_detection() -> None:
             pm = PersonaManager()
             pm._config_manager = mock_cm
 
-            first = pm.register_negative_signal("测试猫娘", "work is annoying")
+            first = pm.register_negative_signal("测试猫娘", "Work is annoying")
             assert first["matched"] is True
             assert first["topic"] == "work"
             assert first["policy"] == "de_emphasize"
@@ -135,3 +155,10 @@ def test_negative_signal_english_topic_detection() -> None:
             assert second["matched"] is True
             assert second["topic"] == "work"
             assert second["policy"] == "avoid"
+
+            fresh_pm = PersonaManager()
+            fresh_pm._config_manager = mock_cm
+            persona = fresh_pm.get_persona("测试猫娘")
+            guidance = persona["_topic_guidance"]
+            assert guidance["soft_avoid"] == []
+            assert guidance["hard_avoid"][0]["topic"] == "work"
