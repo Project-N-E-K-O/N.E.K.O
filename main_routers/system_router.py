@@ -102,6 +102,70 @@ async def ack_pending_notices(request: Request):
     return {"ok": True}
 
 
+# --- 版本更新日志 ---
+
+@router.get("/changelog")
+async def get_changelog(since: str = "", lang: str = ""):
+    """返回自指定版本以来的所有更新日志。
+
+    前端传入 localStorage 中保存的 lastNotifiedVersion，后端返回所有 > since 的
+    changelog 条目（按版本升序），以及当前版本号。
+    lang 参数为前端 locale（如 zh-CN / en / ja / ko / ru / zh-TW），非中文时
+    优先返回对应语言翻译，不存在则 fallback 到 en，再 fallback 到中文原文。
+    """
+    from config import APP_VERSION
+    import glob as _glob
+
+    def _parse_ver(s: str) -> tuple[int, ...]:
+        """将 '0.7.3' 转为可比较的 int 元组；解析失败返回 (0,)。"""
+        try:
+            return tuple(int(x) for x in s.strip().split("."))
+        except (ValueError, AttributeError):
+            return (0,)
+
+    changelog_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "changelog")
+    entries: list[dict] = []
+    since_ver = _parse_ver(since) if since else (0,)
+
+    # 确定 fallback 链：用户语言 -> en -> 中文原文
+    is_chinese = lang.startswith("zh") if lang else True
+    fallback_langs: list[str] = []
+    if not is_chinese:
+        if lang:
+            fallback_langs.append(lang)
+        if "en" not in fallback_langs:
+            fallback_langs.append("en")
+
+    def _read_localized(stem: str, zh_content: str) -> str:
+        """按 fallback 链查找本地化版本，找不到返回中文原文。"""
+        for loc in fallback_langs:
+            loc_file = os.path.join(changelog_dir, loc, f"{stem}.md")
+            try:
+                with open(loc_file, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                continue
+        return zh_content
+
+    if os.path.isdir(changelog_dir):
+        for md_file in sorted(_glob.glob(os.path.join(changelog_dir, "*.md")),
+                              key=lambda p: _parse_ver(os.path.splitext(os.path.basename(p))[0])):
+            stem = os.path.splitext(os.path.basename(md_file))[0]
+            file_ver = _parse_ver(stem)
+            if file_ver == (0,):
+                continue
+            if file_ver > since_ver:
+                try:
+                    with open(md_file, "r", encoding="utf-8") as f:
+                        zh_content = f.read()
+                except Exception:
+                    zh_content = ""
+                content = _read_localized(stem, zh_content) if not is_chinese else zh_content
+                entries.append({"version": stem, "content": content})
+
+    return {"current_version": APP_VERSION, "entries": entries}
+
+
 # --- 主动搭话近期记录暂存区 ---
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
 _proactive_chat_history: dict[str, deque] = {}
@@ -1458,6 +1522,114 @@ async def proxy_meme_image(url: str):
         logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
+
+# ==================== 网易云音乐代理 ====================
+# 解决浏览器无法直接播放网易云外链的问题（需要 Referer 头）
+MUSIC_PROXY_CACHE = TTLCache(maxsize=200, ttl=3600 * 6)  # 6小时缓存
+
+@router.get('/music/proxy-netease')
+async def proxy_netease_music(url: str):
+    """
+    代理网易云音乐外链，解决跨域和 Referer 限制问题
+    
+    网易云音乐的外链 URL 格式为：
+    https://music.163.com/song/media/outer/url?id=xxx.mp3
+    
+    浏览器直接请求会被拒绝，需要带 Referer: https://music.163.com/ 头才能访问
+    """
+    cache_key = url
+    if cache_key in MUSIC_PROXY_CACHE:
+        logger.info(f"[Netease Music Proxy] 命中缓存: {url[:60]}...")
+        cached = MUSIC_PROXY_CACHE[cache_key]
+        return Response(
+            content=cached['body'],
+            media_type='audio/mpeg',
+            headers={
+                'Cache-Control': 'public, max-age=21600',  # 6小时
+                'X-Cache': 'HIT',
+                'Accept-Ranges': 'bytes'
+            }
+        )
+    
+    try:
+        logger.info(f"[Netease Music Proxy] 收到代理请求: {url[:80]}...")
+        
+        if not url:
+            return JSONResponse(content={"success": False, "error": "缺少URL参数"}, status_code=400)
+        
+        decoded_url = unquote(url)
+        if not decoded_url.startswith(('http://', 'https://')):
+            return JSONResponse(content={"success": False, "error": "无效的URL"}, status_code=400)
+        
+        from urllib.parse import urlparse
+        parsed = urlparse(decoded_url)
+        hostname = (parsed.hostname or '').lower()
+        
+        # 只允许网易云音乐的域名
+        allowed_hosts = ['music.163.com']
+        if not any(hostname == host or hostname.endswith('.' + host) for host in allowed_hosts):
+            logger.warning(f"[Netease Music Proxy] 非法域名请求: {hostname}")
+            return JSONResponse(content={"success": False, "error": f"不允许代理该域名: {hostname}"}, status_code=403)
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Referer': 'https://music.163.com/',
+            'Accept': '*/*',
+            'Accept-Encoding': 'identity',  # 不压缩，方便流式传输
+        }
+        
+        MAX_MUSIC_SIZE = 50 * 1024 * 1024  # 50MB 音乐文件限制
+        
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with client.stream("GET", decoded_url, headers=headers) as resp:
+                resp.raise_for_status()
+                
+                content_type = resp.headers.get('Content-Type', 'audio/mpeg').split(';', 1)[0].strip()
+                if 'audio' not in content_type and 'video' not in content_type:
+                    logger.warning(f"[Netease Music Proxy] 非音频内容类型: {content_type}")
+                
+                content_length = resp.headers.get('Content-Length')
+                if content_length:
+                    try:
+                        declared_size = int(content_length)
+                        if declared_size > MAX_MUSIC_SIZE:
+                            logger.warning(f"[Netease Music Proxy] 音乐文件过大: {declared_size}")
+                            return JSONResponse(content={"success": False, "error": "音乐文件超过大小限制 (50MB)"}, status_code=413)
+                    except (ValueError, TypeError):
+                        pass
+                
+                body = bytearray()
+                async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                    body.extend(chunk)
+                    if len(body) > MAX_MUSIC_SIZE:
+                        logger.warning(f"[Netease Music Proxy] 音乐文件过大 (实际读取): {len(body)}")
+                        return JSONResponse(content={"success": False, "error": "音乐文件超过大小限制 (50MB)"}, status_code=413)
+                
+                MUSIC_PROXY_CACHE[cache_key] = {
+                    'body': bytes(body)
+                }
+                
+                logger.info(f"[Netease Music Proxy] 代理成功，大小: {len(body)} bytes")
+                return Response(
+                    content=bytes(body),
+                    media_type='audio/mpeg',
+                    headers={
+                        'Cache-Control': 'public, max-age=21600',
+                        'X-Cache': 'MISS',
+                        'Accept-Ranges': 'bytes'
+                    }
+                )
+    
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[Netease Music Proxy] HTTP错误: {e.response.status_code}")
+        return JSONResponse(content={"success": False, "error": f"请求失败: {e.response.status_code}"}, status_code=e.response.status_code)
+    except httpx.TimeoutException:
+        return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
+    except Exception as e:
+        logger.error(f"[Netease Music Proxy] 代理失败: {str(e)}")
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+
+
 # 辅助函数
 
 @router.get('/steam/proxy-image')
@@ -1997,39 +2169,37 @@ async def proactive_chat(request: Request):
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(lanlan_name, proactive_lang)
 
-        # ========== 3.5 反思 + 回调话题（融合主动搭话，几乎免费） ==========
+        # ========== 3.5 反思 + 回调话题（通过 memory_server API） ==========
         # 认知框架：Facts → Reflection(pending) → 主动搭话自然提及 → 用户反馈 → Persona
         followup_topics_prompt = ""
         _surfaced_reflection_ids = []  # 记录本次搭话提及了哪些 pending 反思
-        _reflection_engine = None
-        _persona_mgr = None
         try:
-            from memory import ReflectionEngine, FactStore, PersonaManager
-            _fact_store = FactStore()
-            _persona_mgr = PersonaManager()
-            _reflection_engine = ReflectionEngine(_fact_store, _persona_mgr)
+            _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
+            async with httpx.AsyncClient(proxy=None, trust_env=False) as _mem_client:
+                # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
+                _reflect_resp = await _mem_client.post(
+                    f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
+                )
+                if _reflect_resp.status_code == 200:
+                    _reflect_data = _reflect_resp.json()
+                    if _reflect_data.get('auto_transitions'):
+                        print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
+                    if _reflect_data.get('reflection'):
+                        print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
 
-            # 1. 自动状态迁移：pending→confirmed→promoted
-            _auto_transitions = _reflection_engine.auto_promote_stale(lanlan_name)
-            if _auto_transitions:
-                print(f"[{lanlan_name}] 自动迁移 {_auto_transitions} 条反思状态")
-
-            # 2. 异步反思（>=3 条新事实才触发 LLM 调用）
-            _reflection_result = await _reflection_engine.reflect(lanlan_name)
-            if _reflection_result:
-                print(f"[{lanlan_name}] 反思完成(pending): {_reflection_result['text'][:50]}...")
-
-            # 3. 获取回调话题候选（list[dict]，带 id）
-            #    注意：此处只获取候选，不标记为 surfaced。
-            #    surfaced 标记在 Phase 2 生成回复后才做。
-            _followup_topics = _reflection_engine.get_followup_topics(lanlan_name)
-            if _followup_topics:
-                followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
-                for topic in _followup_topics:
-                    followup_topics_prompt += f"- {topic['text']}\n"
-                    if topic.get('id'):
-                        _surfaced_reflection_ids.append(topic['id'])
-                print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
+                # 2. 获取回调话题候选
+                _topics_resp = await _mem_client.get(
+                    f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
+                )
+                if _topics_resp.status_code == 200:
+                    _followup_topics = _topics_resp.json().get('topics', [])
+                    if _followup_topics:
+                        followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
+                        for topic in _followup_topics:
+                            followup_topics_prompt += f"- {topic['text']}\n"
+                            if topic.get('id'):
+                                _surfaced_reflection_ids.append(topic['id'])
+                        print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
 
@@ -2840,16 +3010,21 @@ async def proactive_chat(request: Request):
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
 
-        # 后台长期记忆维护（同步，轻量操作）
+        # 后台长期记忆维护（通过 memory_server API）
         try:
-            # 保存本次搭话实际提及的 pending 反思 ID（供下次 /process 做反馈检查）
-            if _reflection_engine is not None and _surfaced_reflection_ids:
-                _reflection_engine.record_surfaced(lanlan_name, _surfaced_reflection_ids)
-                print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")
+            _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
+            async with httpx.AsyncClient(proxy=None, trust_env=False) as _mem_client:
+                # 保存本次搭话实际提及的 pending 反思 ID（供下次 /process 做反馈检查）
+                if _surfaced_reflection_ids:
+                    await _mem_client.post(
+                        f"{_mem_base}/record_surfaced/{lanlan_name}",
+                        json={"reflection_ids": _surfaced_reflection_ids},
+                        timeout=5.0,
+                    )
+                    print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")
 
-            # 记录 persona 提及次数（疲劳跟踪）
-            if _persona_mgr is not None:
-                _persona_mgr.record_mentions(lanlan_name, response_text)
+                # 记录 persona 提及次数（疲劳跟踪） — persona 文件由 memory_server 管理
+                # record_mentions 已在 memory_server 的 _extract_facts_and_check_feedback 中调用
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 长期记忆后处理失败（不影响主流程）: {e}")
 

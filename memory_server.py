@@ -6,7 +6,7 @@ from memory import (
     CompressedRecentHistoryManager, ImportantSettingsManager, TimeIndexedMemory,
     FactStore, PersonaManager, ReflectionEngine,
 )
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, JSONResponse
 import json
 import uvicorn
@@ -21,6 +21,7 @@ from config.prompts_memory import (
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
 )
 from utils.language_utils import get_global_language
+from utils.character_name import validate_character_name
 from utils.config_manager import get_config_manager
 from pydantic import BaseModel
 import re
@@ -54,17 +55,12 @@ async def health():
 
 
 def validate_lanlan_name(name: str) -> str:
-    name = name.strip()
-    if not name or len(name) > 50:
+    result = validate_character_name(name, max_length=50)
+    if result.code in {"empty", "too_long_length"}:
         raise HTTPException(status_code=400, detail="Invalid lanlan_name length")
-    # 支持：字母、数字、下划线、连字符、空白、中日韩文字、括号
-    # 与 characters_router.py / memory_router.py 的规则保持一致
-    if not re.match(r"^[\w\-\s\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af()（）]+$", name):
+    if result.code is not None:
         raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
-    # 禁止路径遍历
-    if '/' in name or '\\' in name or '..' in name:
-        raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
-    return name
+    return result.normalized
 
 # 初始化组件（迁移必须在实例化之前，否则旧路径文件找不到）
 _config_manager = get_config_manager()
@@ -411,6 +407,59 @@ def _extract_user_messages(messages: list) -> list[str]:
                         if text:
                             user_msgs.append(text)
     return user_msgs
+
+
+# --- Reflection API（供 main_server/system_router 通过 HTTP 调用） ---
+
+@app.post("/reflect/{lanlan_name}")
+async def api_reflect(lanlan_name: str):
+    """合成反思 + 自动状态迁移，返回结果。
+
+    集中在 memory_server 进程内执行，避免 main_server 本地实例化导致的
+    absorbed 标记竞态问题。
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    auto_transitions = 0
+    reflection_result = None
+    try:
+        auto_transitions = reflection_engine.auto_promote_stale(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: auto_promote_stale 失败: {e}")
+    try:
+        reflection_result = await reflection_engine.reflect(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: reflect 失败: {e}")
+    return {
+        "reflection": reflection_result,
+        "auto_transitions": auto_transitions,
+    }
+
+
+@app.get("/followup_topics/{lanlan_name}")
+async def api_followup_topics(lanlan_name: str):
+    """获取回调话题候选（不标记 surfaced，调用方需后续调 /record_surfaced）。"""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    try:
+        topics = reflection_engine.get_followup_topics(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: get_followup_topics 失败: {e}")
+        topics = []
+    return {"topics": topics}
+
+
+@app.post("/record_surfaced/{lanlan_name}")
+async def api_record_surfaced(request: Request, lanlan_name: str):
+    """记录本次主动搭话提及了哪些反思，刷新 cooldown。"""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    body = await request.json()
+    reflection_ids = body.get("reflection_ids", [])
+    if not reflection_ids:
+        return {"ok": True}
+    try:
+        reflection_engine.record_surfaced(lanlan_name, reflection_ids)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: record_surfaced 失败: {e}")
+    return {"ok": True}
 
 
 async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):

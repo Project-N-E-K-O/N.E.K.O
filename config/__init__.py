@@ -11,8 +11,9 @@ from types import MappingProxyType
 
 from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
 
-# 应用程序名称配置
+# 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
+APP_VERSION = "0.7.3"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -245,8 +246,8 @@ DEFAULT_VISION_MODEL = "qwen3-vl-plus-2025-09-23"
 DEFAULT_AGENT_MODEL = "qwen3.5-plus"
 
 # 用户自定义模型配置（可选，暂未使用）
-DEFAULT_REALTIME_MODEL = "Qwen3-Omni-30B-A3B-Instruct"  # 全模态模型(语音+文字+图片)
-DEFAULT_TTS_MODEL = "Qwen3-Omni-30B-A3B-Instruct"   # 与Realtime对应的TTS模型(Native TTS)
+DEFAULT_REALTIME_MODEL = "qwen3-omni-flash-realtime"  # 全模态模型(语音+文字+图片)，与 api_providers.json 对齐
+DEFAULT_TTS_MODEL = "qwen3-omni-flash-realtime"   # 与Realtime对应的TTS模型(Native TTS)，与 api_providers.json 对齐
 
 
 CONFIG_FILES = [
@@ -577,12 +578,12 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        'CONVERSATION_MODEL' : "qwen3-235b-a22b-instruct-2507",
-        'SUMMARY_MODEL': "qwen3-next-80b-a3b-instruct",
-        'CORRECTION_MODEL': "qwen3-235b-a22b-instruct-2507",
+        'CONVERSATION_MODEL' : "qwen3.6-plus",
+        'SUMMARY_MODEL': "qwen3.6-plus",
+        'CORRECTION_MODEL': "qwen3.6-plus",
         'EMOTION_MODEL': "qwen-flash",
-        'VISION_MODEL': "qwen3-vl-plus-2025-09-23",
-        'AGENT_MODEL': "qwen3.5-plus",
+        'VISION_MODEL': "qwen3.6-plus",
+        'AGENT_MODEL': "qwen3.6-plus",
     },
     'openai': {
         'OPENROUTER_URL': "https://api.openai.com/v1",
@@ -687,6 +688,7 @@ from config.providers import (  # noqa: E402, F401
 
 __all__ = [
     'APP_NAME',
+    'APP_VERSION',
     'GSV_VOICE_PREFIX',
     'CHARACTER_SYSTEM_RESERVED_FIELDS',
     'CHARACTER_WORKSHOP_RESERVED_FIELDS',

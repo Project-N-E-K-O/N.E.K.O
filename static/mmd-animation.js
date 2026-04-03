@@ -121,6 +121,18 @@ class MMDAnimation {
         // 重置骨骼到绑定姿态（干净的基准状态）
         if (mmd.mesh.skeleton) mmd.mesh.skeleton.pose();
 
+        // 重置 cursorFollow 的眼骨偏移状态（新动画的骨骼基准已重置）
+        if (this.manager?.cursorFollow) {
+            this.manager.cursorFollow._eyeLastOffsetQuat?.identity();
+            this.manager.cursorFollow._currentYaw = 0;
+            this.manager.cursorFollow._currentPitch = 0;
+            this.manager.cursorFollow._targetYaw = 0;
+            this.manager.cursorFollow._targetPitch = 0;
+        }
+
+        // 初始化骨骼缓存
+        this._initBoneBackup(mmd.mesh);
+
         // 使用 processBones
         this._processBones = processBones;
 
@@ -180,7 +192,9 @@ class MMDAnimation {
     // ═══════════════════ 播放控制 ═══════════════════
 
     play() {
-        if (!this.currentAction) return;
+        if (!this.currentAction) {
+            return;
+        }
         this.currentAction.paused = false;
         this.currentAction.play();
         if (this.clock) this.clock.start();
@@ -200,6 +214,26 @@ class MMDAnimation {
             this.currentAction.stop();
         }
         if (this.clock) this.clock.stop();
+
+        const mesh = this.manager.currentModel?.mesh;
+        if (mesh?.skeleton) {
+            mesh.skeleton.pose();
+        }
+
+        if (this.manager?.cursorFollow) {
+            const cf = this.manager.cursorFollow;
+            cf._appliedLastFrame = false;
+            cf._targetWeight = 0;
+            cf._trackingWeight = 0;
+            cf._eyeLastOffsetQuat?.identity();
+            cf._currentYaw = 0;
+            cf._currentPitch = 0;
+            cf._targetYaw = 0;
+            cf._targetPitch = 0;
+            if (cf._neckBone) cf._neckBaseQuat.copy(cf._neckBone.quaternion);
+            if (cf._headBone) cf._headBaseQuat.copy(cf._headBone.quaternion);
+        }
+
         this.isPlaying = false;
         this.isPaused = false;
     }

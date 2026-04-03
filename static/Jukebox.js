@@ -239,6 +239,10 @@ window.Jukebox = {
           <button class="jukebox-close" onclick="Jukebox_close()" title="${window.t('Jukebox.close', '关闭')}">×</button>
         </div>
       </div>
+      <div class="jukebox-notice">
+        <div class="jukebox-notice-item">${window.t('Jukebox.noticeDance', '💃 伴舞服务仅在载入 MMD 形象时可用')}</div>
+        <div class="jukebox-notice-item">${window.t('Jukebox.noticeMusic', '⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入')}</div>
+      </div>
       <div class="jukebox-content">
         <table class="jukebox-table">
           <thead>
@@ -339,7 +343,21 @@ window.Jukebox = {
         font-size: 20px;
         font-weight: 600;
       }
-      
+
+      .jukebox-notice {
+        background: rgba(255, 255, 255, 0.18);
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        border-radius: 8px;
+        padding: 8px 12px;
+        margin-bottom: 12px;
+        font-size: 12.5px;
+        line-height: 1.6;
+      }
+
+      .jukebox-notice-item {
+        padding: 2px 0;
+      }
+
       .jukebox-minimize {
         background: none;
         border: none;
@@ -782,7 +800,8 @@ window.Jukebox = {
 
     try {
       // 保存当前待机动画 URL（用于停止后恢复）
-      if (window.mmdManager.currentAnimationUrl) {
+      // 只在未保存过待机动画 URL 时保存，避免被舞蹈 VMD 覆盖
+      if (!Jukebox.State.savedIdleAnimationUrl && window.mmdManager.currentAnimationUrl) {
         Jukebox.State.savedIdleAnimationUrl = window.mmdManager.currentAnimationUrl;
       }
 
@@ -875,12 +894,27 @@ window.Jukebox = {
     }
   },
 
+  _resetToNoneMode: function() {
+    const mesh = window.mmdManager.currentModel?.mesh;
+    if (mesh?.skeleton) {
+      mesh.skeleton.pose();
+    }
+    if (window.mmdManager.cursorFollow) {
+      window.mmdManager.cursorFollow.setAnimationMode('none');
+    }
+  },
+
   restoreIdleAnimation: async function() {
     if (!window.mmdManager) return;
 
     const restoreRequestId = Jukebox.State.playRequestId;
 
     let idleUrl = Jukebox.State.savedIdleAnimationUrl;
+
+    // 如果保存的是点歌台舞蹈 VMD（不是真正的待机动画），则忽略
+    if (idleUrl && idleUrl.includes('/jukebox/song_')) {
+      idleUrl = null;
+    }
 
     // 如果没有保存的待机动画 URL，从角色配置获取
     if (!idleUrl) {
@@ -899,22 +933,19 @@ window.Jukebox = {
     if (restoreRequestId !== Jukebox.State.playRequestId) return;
 
     if (!idleUrl) {
-      if (window.mmdManager.cursorFollow) {
-        window.mmdManager.cursorFollow.setAnimationMode('none');
-      }
+      Jukebox._resetToNoneMode();
       return;
     }
 
     try {
       await window.mmdManager.loadAnimation(idleUrl);
       if (restoreRequestId !== Jukebox.State.playRequestId) return;
-      window.mmdManager.playAnimation();
+      window.mmdManager.playAnimation('idle');
       console.log('[Jukebox]', window.t('Jukebox.idleRestored', '已恢复待机动画'));
     } catch (error) {
       console.warn('[Jukebox]', window.t('Jukebox.idleRestoreFailed', '恢复待机动画失败'), error);
-      if (window.mmdManager.cursorFollow) {
-        window.mmdManager.cursorFollow.setAnimationMode('none');
-      }
+      if (restoreRequestId !== Jukebox.State.playRequestId) return;
+      Jukebox._resetToNoneMode();
     }
   },
 

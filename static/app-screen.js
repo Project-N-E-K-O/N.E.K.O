@@ -978,9 +978,9 @@
                 var grid = document.createElement('div');
                 Object.assign(grid.style, {
                     display: 'grid',
-                    gridTemplateColumns: 'repeat(4, 1fr)',
-                    gap: '6px',
-                    padding: '4px',
+                    gridTemplateColumns: 'repeat(3, 1fr)',
+                    gap: '8px',
+                    padding: '6px',
                     width: '100%',
                     boxSizing: 'border-box'
                 });
