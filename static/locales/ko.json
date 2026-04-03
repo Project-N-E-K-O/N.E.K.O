@@ -1196,7 +1196,7 @@
         "directLinkUrl": "오디오 직접 링크 URL (8초 권장, 최대 20초, wav/mp3 형식)",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "공개 접근 가능한 오디오 파일의 직접 링크를 입력하세요. 시스템은 업로드 단계를 건너뛰고 이 링크를 직접 사용하여 음성을 등록합니다.",
-        "pleaseEnterDirectLink": "오디오 직접 링크 URL과 접두사를 입력하세요",
+        "pleaseEnterDirectLink": "오디오 직접 링크 URL을 입력하세요",
         "invalidDirectLink": "유효한 HTTP/HTTPS 링크를 입력하세요",
         "silenceModal": {
             "title": "스마트 무음 감지 결과",
@@ -1275,7 +1275,7 @@
         "apiKeySettings": "API 키",
         "masterProfile": "마스터 프로필(고유): 프로필 이름은 필수이며, 나머지는 선택 사항이며 삭제할 수 있습니다.",
         "profileName": "프로필 이름",
-        "profileNameMaxHint": "최대 20자",
+        "profileNameMaxHint": "최대 60자",
         "profileNameTooLong": "프로필 이름이 너무 깁니다.",
         "profileNameContainsSlash": "프로필 이름에 경로 구분 기호(/ 또는 \\)를 포함할 수 없습니다",
         "profileNameContainsDot": "프로필 이름에 점(.)을 포함할 수 없습니다",
@@ -2030,7 +2030,7 @@
             },
             "step2": {
                 "title": "📝 프로필 이름 설정",
-                "desc": "이름이나 닉네임을 입력하세요. 동반자는 이것을 사용하여 당신에게 말할 것입니다. 최대 20자."
+                "desc": "이름이나 닉네임을 입력하세요. 동반자는 이것을 사용하여 당신에게 말할 것입니다. 최대 60자."
             },
             "step3": {
                 "title": "👥 성별 설정",

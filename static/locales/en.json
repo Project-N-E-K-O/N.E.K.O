@@ -1196,7 +1196,7 @@
         "directLinkUrl": "Audio Direct Link URL (8 seconds recommended, max 20 seconds, wav/mp3 format)",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "Enter a publicly accessible audio file direct link. The system will skip the upload step and use this link directly to register the voice.",
-        "pleaseEnterDirectLink": "Please enter audio direct link URL and prefix",
+        "pleaseEnterDirectLink": "Please enter audio direct link URL",
         "invalidDirectLink": "Please enter a valid HTTP/HTTPS link",
         "silenceModal": {
             "title": "Smart Silence Detection Results",
@@ -1275,7 +1275,7 @@
         "apiKeySettings": "API Key",
         "masterProfile": "Master Profile (Unique): Profile name is required, others are optional and can be deleted.",
         "profileName": "Profile Name",
-        "profileNameMaxHint": "Max 20 characters",
+        "profileNameMaxHint": "Max 60 characters",
         "profileNameTooLong": "Profile name is too long",
         "profileNameContainsSlash": "Profile name cannot contain path separators (/ or \\)",
         "profileNameContainsDot": "Profile name cannot contain dots (.)",
@@ -2030,7 +2030,7 @@
             },
             "step2": {
                 "title": "📝 Set Profile Name",
-                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 20 characters."
+                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 60 characters."
             },
             "step3": {
                 "title": "👥 Gender Setting",
