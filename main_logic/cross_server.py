@@ -589,8 +589,29 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                 except Exception:
                     pass
 
+    async def _shutdown_watcher():
+        """轮询 shutdown_event，一旦触发就取消所有正在运行的 asyncio 任务（如 HTTP 请求）"""
+        while not shutdown_event.is_set():
+            await asyncio.sleep(0.2)
+        for task in asyncio.all_tasks(loop):
+            if task is not asyncio.current_task():
+                task.cancel()
+
+    async def _run_with_shutdown():
+        watcher = asyncio.ensure_future(_shutdown_watcher())
+        try:
+            await maintain_connection(chat_history, lanlan_name)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
+
     try:
-        loop.run_until_complete(maintain_connection(chat_history, lanlan_name))
+        loop.run_until_complete(_run_with_shutdown())
     except Exception as e:
         logger.error(f"[{lanlan_name}] Sync进程错误: {e}", exc_info=True)
     finally:
