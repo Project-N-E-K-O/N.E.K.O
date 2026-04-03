@@ -1123,7 +1123,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         )
         self._is_logged_in = True
         # 重建过滤器为登录态，确保立刻生效
-        self._filter = DanmakuFilter(logged_in=True)
+        self._init_filter()
         self.logger.info(f"✅ B站凭据已加密保存 (UID={dedeuserid})")
 
         # 如果当前在监听，重启以使新凭据生效
@@ -1156,7 +1156,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self._bilibili_credential = None
         self._is_logged_in = False
         # 重建过滤器为游客模式
-        self._filter = DanmakuFilter(logged_in=False)
+        self._init_filter()
         self.logger.info("🗑️ 已清除插件本地 B站凭据，切换为游客模式")
 
         # 如果当前在监听，重连以断开旧的登录态连接
