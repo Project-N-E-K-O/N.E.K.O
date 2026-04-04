@@ -219,6 +219,10 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
         isDragging = true;
         dragStartX = clientX;
         dragStartY = clientY;
+        // 同步初始化 pending 坐标，防止 click-without-move 时
+        // commitDragPosition() 使用过期值产生错误位移
+        pendingClientX = clientX;
+        pendingClientY = clientY;
 
         // 设置全局拖拽标志，供 preload 等跳过昂贵操作
         if (window.DragHelpers) window.DragHelpers.isDragging = true;

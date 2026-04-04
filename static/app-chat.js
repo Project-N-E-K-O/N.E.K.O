@@ -371,10 +371,12 @@
 
                 const s = window._realisticGeminiQueue.shift();
                 if (s && (window._realisticGeminiVersion || 0) === queueVersion) {
-                    createGeminiBubble(s);
-                    // 仅在用户已处于底部附近时自动滚动
+                    // 在修改 DOM 之前记录用户是否在底部附近
                     var _wrap = chatContainer.parentElement;
-                    if (_wrap && _wrap.scrollHeight - _wrap.scrollTop - _wrap.clientHeight < 60) {
+                    var wasNearBottom = _wrap && (_wrap.scrollHeight - _wrap.scrollTop - _wrap.clientHeight) < 60;
+                    createGeminiBubble(s);
+                    // 仅在用户之前已处于底部附近时自动滚动
+                    if (wasNearBottom && _wrap) {
                         _wrap.scrollTop = _wrap.scrollHeight;
                     }
                     window._lastBubbleTime = Date.now();
@@ -823,9 +825,11 @@
                 window._structuredGeminiStreaming = true;
                 window._realisticGeminiBuffer = combined;
                 window._realisticGeminiQueue = [];
-                renderStructuredGeminiMessage(fullTurnText || combined);
+                // 在修改 DOM 之前记录用户是否在底部附近
                 var _wrapStructured = chatContainer.parentElement;
-                if (_wrapStructured && _wrapStructured.scrollHeight - _wrapStructured.scrollTop - _wrapStructured.clientHeight < 60) {
+                var wasNearBottomStructured = _wrapStructured && (_wrapStructured.scrollHeight - _wrapStructured.scrollTop - _wrapStructured.clientHeight) < 60;
+                renderStructuredGeminiMessage(fullTurnText || combined);
+                if (wasNearBottomStructured && _wrapStructured) {
                     _wrapStructured.scrollTop = _wrapStructured.scrollHeight;
                 }
                 return;

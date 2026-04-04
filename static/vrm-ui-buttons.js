@@ -632,6 +632,15 @@ VRMManager.prototype._startUIUpdateLoop = function() {
 // 为VRM的"请她回来"按钮设置拖动功能
 // 性能优化：使用 RAF 批处理 + transform 走 GPU 合成，避免每帧 layout 抖动
 VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
+    // 清理之前的 document 级别事件监听器，防止重复调用时泄漏
+    if (this._returnButtonDragHandlers) {
+        document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
+        document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
+        document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
+        document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+        this._returnButtonDragHandlers = null;
+    }
+
     let isDragging = false;
     let dragStartX = 0;
     let dragStartY = 0;

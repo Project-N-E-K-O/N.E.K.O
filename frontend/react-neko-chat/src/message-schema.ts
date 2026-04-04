@@ -93,6 +93,7 @@ export const chatWindowPropsSchema = z.object({
   removeAttachmentButtonAriaLabel: z.string().optional(),
   streamingStatusLabel: z.string().optional(),
   failedStatusLabel: z.string().optional(),
+  inputHint: z.string().optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())

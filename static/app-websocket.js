@@ -265,7 +265,8 @@
                     window._pendingMusicCommand = '';
                     window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
 
-                    if (window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0) {
+                    var hadTrackedBubbles = window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0;
+                    if (hadTrackedBubbles) {
                         var _discardHost = window.reactChatWindowHost;
                         window.currentTurnGeminiBubbles.forEach(function (bubble) {
                             // Remove paired React mirror message
@@ -293,7 +294,7 @@
 
                     // Fallback: clear trailing gemini bubbles not tracked
                     var cc = chatContainer();
-                    if ((!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) &&
+                    if (!hadTrackedBubbles &&
                         cc && cc.children && cc.children.length > 0) {
                         var _fallbackHost = window.reactChatWindowHost;
                         var toRemove = [];

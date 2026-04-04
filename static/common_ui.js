@@ -792,6 +792,10 @@ if (toggleBtn) {
         // 记录开始时的鼠标位置
         startMouseX = clientX;
         startMouseY = clientY;
+        // 同步初始化 pending 坐标，防止 click-without-move 时
+        // commitDragPosition() 使用过期值产生错误位移
+        pendingDragClientX = clientX;
+        pendingDragClientY = clientY;
 
         // 获取当前容器的实际位置（从计算样式中读取，确保准确）
         const computedStyle = window.getComputedStyle(chatContainer);

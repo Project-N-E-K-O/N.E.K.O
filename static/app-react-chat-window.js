@@ -142,6 +142,7 @@
             || '对话';
         var inputPlaceholder = getI18nText('chat.textInputPlaceholderCompact', '')
             || getI18nText('chat.textInputPlaceholderShort', '')
+            || getI18nText('chat.textInputPlaceholder', '')
             || '输入消息...';
         var sendButtonLabel = getTextContent(sendButtonLabelNode)
             || getI18nText('chat.send', '发送')
@@ -195,6 +196,7 @@
                     return {
                         type: 'buttons',
                         buttons: block.buttons.map(function (button) {
+                            if (!button || typeof button !== 'object') return null;
                             return {
                                 id: button.id,
                                 label: button.label,
@@ -209,6 +211,7 @@
                 return Object.assign({}, block);
             }).filter(Boolean) : [],
             actions: Array.isArray(message.actions) ? message.actions.map(function (action) {
+                if (!action || typeof action !== 'object') return null;
                 return {
                     id: action.id,
                     label: action.label,
@@ -217,7 +220,7 @@
                     disabled: !!action.disabled,
                     payload: action.payload || undefined
                 };
-            }) : undefined,
+            }).filter(Boolean) : undefined,
             status: message.status,
             sortKey: message.sortKey
         };
@@ -290,17 +293,28 @@
         loadedPromise = new Promise(function (resolve, reject) {
             var existing = document.querySelector('script[data-react-chat-window-bundle="true"]');
             if (existing) {
-                existing.addEventListener('load', function () {
+                // Script already finished loading but API is missing — re-create it
+                if (existing.readyState === 'loaded' || existing.readyState === 'complete' || existing.dataset.loaded === 'true') {
                     if (window.NekoChatWindow && (typeof window.NekoChatWindow.mount === 'function' || typeof window.NekoChatWindow.mountChatWindow === 'function')) {
                         resolve(window.NekoChatWindow);
                     } else {
-                        reject(new Error('React chat bundle loaded but API is missing'));
+                        existing.parentNode.removeChild(existing);
+                        // Fall through to create a fresh script element below
                     }
-                }, { once: true });
-                existing.addEventListener('error', function () {
-                    reject(new Error('React chat bundle failed to load'));
-                }, { once: true });
-                return;
+                } else {
+                    existing.addEventListener('load', function () {
+                        existing.dataset.loaded = 'true';
+                        if (window.NekoChatWindow && (typeof window.NekoChatWindow.mount === 'function' || typeof window.NekoChatWindow.mountChatWindow === 'function')) {
+                            resolve(window.NekoChatWindow);
+                        } else {
+                            reject(new Error('React chat bundle loaded but API is missing'));
+                        }
+                    }, { once: true });
+                    existing.addEventListener('error', function () {
+                        reject(new Error('React chat bundle failed to load'));
+                    }, { once: true });
+                    return;
+                }
             }
 
             var script = document.createElement('script');
@@ -699,6 +713,8 @@
         header.addEventListener('mousedown', function (event) {
             var closeButton = $('reactChatWindowCloseButton');
             if (closeButton && closeButton.contains(event.target)) return;
+            var minimizeButton = $('reactChatWindowMinimizeButton');
+            if (minimizeButton && minimizeButton.contains(event.target)) return;
             startDrag(event.clientX, event.clientY);
             event.preventDefault();
         });
@@ -706,6 +722,8 @@
         header.addEventListener('touchstart', function (event) {
             var closeButton = $('reactChatWindowCloseButton');
             if (closeButton && closeButton.contains(event.target)) return;
+            var minimizeButton = $('reactChatWindowMinimizeButton');
+            if (minimizeButton && minimizeButton.contains(event.target)) return;
             if (!event.touches || event.touches.length === 0) return;
             startDrag(event.touches[0].clientX, event.touches[0].clientY);
         }, { passive: true });

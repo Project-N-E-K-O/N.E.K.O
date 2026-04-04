@@ -47,7 +47,7 @@ export default function App({
 
   function submitDraft() {
     const text = draft.trim();
-    if (!text) return;
+    if (!text && composerAttachments.length === 0) return;
     onComposerSubmit?.({ text });
     setDraft('');
   }
@@ -137,10 +137,12 @@ export default function App({
                 <textarea
                   className="composer-input"
                   placeholder={inputPlaceholder}
+                  aria-label={inputPlaceholder}
                   rows={1}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing || event.isComposing) return;
                     if (event.key === 'Enter' && !event.shiftKey) {
                       event.preventDefault();
                       submitDraft();

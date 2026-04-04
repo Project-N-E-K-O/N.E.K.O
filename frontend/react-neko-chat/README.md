@@ -53,7 +53,7 @@ The React layer should avoid directly depending on scattered `window.*` globals 
 - `src/components/`: chat UI pieces
 - `src/store/`: message and session state
 - `src/bridge/`: host integration layer
-- `src/mount.ts`: mount and unmount entry for native pages
+- `src/mount.tsx`: mount and unmount entry for native pages
 
 ## Migration strategy
 

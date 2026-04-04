@@ -956,15 +956,18 @@
                     window.live2dManager = new window.Live2DManager();
                 }
 
+                if (!window.live2dManager) {
+                    console.error('[猫娘切换] Live2DManager 不可用，无法加载模型');
+                    throw new Error('Live2DManager unavailable');
+                }
+
                 // 初始化或重用 PIXI
-                if (window.live2dManager) {
-                    if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.renderer) {
-                        await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
-                    }
+                if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.renderer) {
+                    await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
                 }
 
                 // 加载新模型
-                if (modelData.success && modelData.model_info && window.live2dManager) {
+                if (modelData.success && modelData.model_info) {
                     const modelConfigRes = await fetch(modelData.model_info.path);
                     if (modelConfigRes.ok) {
                         const modelConfig = await modelConfigRes.json();

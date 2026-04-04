@@ -720,12 +720,11 @@ textarea {
 .composer-input {
   display: block;
   width: 100%;
-  height: 66px;
   min-height: 66px;
   max-height: 160px;
   margin: 0;
   resize: none !important;
-  overflow: hidden !important;
+  overflow-y: auto;
   scrollbar-width: none;
   border: 0;
   outline: none;
