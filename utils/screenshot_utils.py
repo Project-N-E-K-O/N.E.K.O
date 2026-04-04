@@ -24,11 +24,19 @@ COMPRESS_JPEG_QUALITY = 75
 _LANCZOS = getattr(Image, 'LANCZOS', getattr(Image, 'ANTIALIAS', 1))
 
 def _validate_image_data(image_bytes: bytes) -> Optional[Image.Image]:
-    """验证图片数据有效性"""
+    """验证图片数据有效性
+
+    先用 verify() 做格式校验，再重新打开并调用 load() 强制解码全部像素，
+    确保图片数据完整且可用于后续处理（verify 之后的 Image 对象不可再使用）。
+    """
     try:
+        # 第一遍：轻量格式校验
+        probe = Image.open(BytesIO(image_bytes))
+        probe.verify()  # verify 后此对象不可再用
+
+        # 第二遍：完整解码像素，保证数据可用
         image = Image.open(BytesIO(image_bytes))
-        image.verify()
-        image = Image.open(BytesIO(image_bytes))
+        image.load()  # 强制解码，提前暴露截断/损坏问题
         return image
     except Exception as e:
         logger.warning(f"图片验证失败: {e}")
