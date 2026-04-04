@@ -630,6 +630,10 @@
 
         var chatContainer = S.dom.chatContainer;
 
+        // 在任何 DOM 变更之前快照滚动位置，供尾部通用自动滚动使用
+        var _wrapForScroll = chatContainer && chatContainer.parentElement;
+        var _wasNearBottom = _wrapForScroll && (_wrapForScroll.scrollHeight - _wrapForScroll.scrollTop - _wrapForScroll.clientHeight) < 60;
+
         function isMergeMessagesEnabled() {
             if (typeof window.mergeMessagesEnabled !== 'undefined') return window.mergeMessagesEnabled;
             return S.mergeMessagesEnabled;
@@ -987,10 +991,9 @@
                 }
             }
         }
-        // 仅在用户已处于底部附近时自动滚动
-        var _wrap = chatContainer.parentElement;
-        if (_wrap && _wrap.scrollHeight - _wrap.scrollTop - _wrap.clientHeight < 60) {
-            _wrap.scrollTop = _wrap.scrollHeight;
+        // 仅在用户已处于底部附近时自动滚动（使用函数开头缓存的快照）
+        if (_wasNearBottom && _wrapForScroll) {
+            _wrapForScroll.scrollTop = _wrapForScroll.scrollHeight;
         }
     }
 

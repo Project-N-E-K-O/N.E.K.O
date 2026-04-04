@@ -351,8 +351,11 @@
 
     function getStoredPosition() {
         try {
-            var left = Number(localStorage.getItem(STORAGE_LEFT_KEY));
-            var top = Number(localStorage.getItem(STORAGE_TOP_KEY));
+            var rawLeft = localStorage.getItem(STORAGE_LEFT_KEY);
+            var rawTop = localStorage.getItem(STORAGE_TOP_KEY);
+            if (rawLeft === null || rawTop === null) return null;
+            var left = Number(rawLeft);
+            var top = Number(rawTop);
             if (Number.isFinite(left) && Number.isFinite(top)) {
                 return { left: left, top: top };
             }
@@ -456,7 +459,7 @@
 
         if (typeof state.onMessageAction === 'function') {
             try {
-                state.onMessageAction(detail);
+                state.onMessageAction(message, action);
             } catch (error) {
                 console.error('[ReactChatWindow] onMessageAction failed:', error);
             }
@@ -470,7 +473,8 @@
             text: payload && typeof payload.text === 'string' ? payload.text : ''
         };
 
-        if (!detail.text.trim()) return;
+        var hasAttachments = state.composerAttachments && state.composerAttachments.length > 0;
+        if (!detail.text.trim() && !hasAttachments) return;
 
         if (typeof state.onComposerSubmit === 'function') {
             try {
