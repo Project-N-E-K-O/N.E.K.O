@@ -58,7 +58,8 @@
         consecutiveSkipsToTrigger: 2,        // 连续秒关 2 次触发冷却
         cooldownDurationMs: 20 * 60 * 1000   // 冷却 20 分钟
     };
-    let musicPlayStartTime = null;
+    let accumulatedPlaySeconds = 0;   // actual playback seconds (from player.currentTime)
+    let lastPlayPosition = 0;         // player.currentTime snapshot at last play/resume
     let consecutiveSkipCount = 0;
     let musicCooldownUntil = 0;
 
@@ -487,10 +488,14 @@
                     if (autoDestroyTimer) { clearTimeout(autoDestroyTimer); autoDestroyTimer = null; }
                     updatePlayBtnState(true);
                     autoplayBlocked = false;
-                    musicPlayStartTime = Date.now();
+                    lastPlayPosition = (boundPlayer.audio && boundPlayer.audio.currentTime) || 0;
                 });
                 boundPlayer.on('pause', () => {
                     updatePlayBtnState(false);
+                    // Accumulate actual playback on pause
+                    const cur = (boundPlayer.audio && boundPlayer.audio.currentTime) || 0;
+                    accumulatedPlaySeconds += (cur - lastPlayPosition);
+                    lastPlayPosition = cur;
                     // 用户点击暂停后，启动 71 秒销毁计时
                     const tokenAtEvent = boundPlayer._latestToken;
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
@@ -501,7 +506,8 @@
                 boundPlayer.on('ended', () => {
                     updatePlayBtnState(false);
                     resetSkipCounter();
-                    musicPlayStartTime = null;
+                    accumulatedPlaySeconds = 0;
+                    lastPlayPosition = 0;
                     // 歌曲自然播放结束后，启动 21 秒销毁计时
                     const tokenAtEvent = boundPlayer._latestToken;
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
@@ -512,7 +518,8 @@
                 boundPlayer.on('error', (err) => {
                     if (boundPlayer._destroying) return;
                     console.error('[Music UI] APlayer error:', err);
-                    musicPlayStartTime = null;  // 加载失败不计为秒关
+                    accumulatedPlaySeconds = 0;  // load failure is not a skip
+                    lastPlayPosition = 0;
 
                     const tokenAtEvent = boundPlayer._latestToken;
                     boundPlayer._loadError = true;
@@ -540,16 +547,19 @@
                 // 进度条与播放按钮点击 (使用直接赋值防止重复挂载)
                 musicBar.querySelector('.music-bar-close').onclick = (e) => {
                     e.preventDefault();
-                    // 秒关检测：根据播放时长判断是否为快速跳过
-                    if (musicPlayStartTime !== null) {
-                        const playDuration = Date.now() - musicPlayStartTime;
-                        if (playDuration < SKIP_CONFIG.skipThresholdMs) {
-                            recordMusicSkip();
-                        } else {
-                            resetSkipCounter();
-                        }
-                        musicPlayStartTime = null;
+                    // Accumulate any in-progress playback before checking
+                    if (boundPlayer && boundPlayer.audio) {
+                        const cur = boundPlayer.audio.currentTime || 0;
+                        accumulatedPlaySeconds += (cur - lastPlayPosition);
                     }
+                    const playedMs = accumulatedPlaySeconds * 1000;
+                    if (playedMs > 0 && playedMs < SKIP_CONFIG.skipThresholdMs) {
+                        recordMusicSkip();
+                    } else if (playedMs >= SKIP_CONFIG.skipThresholdMs) {
+                        resetSkipCounter();
+                    }
+                    accumulatedPlaySeconds = 0;
+                    lastPlayPosition = 0;
                     destroyMusicPlayer(true, true, true);
                 };
                 apBtn.onclick = (e) => {

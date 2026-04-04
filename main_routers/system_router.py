@@ -2827,17 +2827,18 @@ async def proactive_chat(request: Request):
         selected_meme_link = None
         selected_meme_topic_key = None
 
-        # 【加固】如果正在放歌或处于冷却期，强制在此环节清空 music_content，彻底跳过 Phase 1 的所有搜歌逻辑
+        # 【加固】如果正在放歌或处于冷却期，强制清空 music 通道，彻底跳过搜歌逻辑
         if is_playing_music or music_cooldown:
             if music_content:
                 reason = "音乐正在播放" if is_playing_music else "用户连续秒关，音乐冷却中"
                 logger.info(f"[{lanlan_name}]-{reason}，强制屏蔽 Phase 1 搜歌逻辑")
             music_content = None
+            sources.pop('music', None)
 
         # ============================================================
-        # 来源动态权重过滤（vision 不参与权重计算）
+        # 来源动态权重过滤（vision / 已屏蔽的 music 不参与权重计算）
         # ============================================================
-        non_vision_modes = [m for m in enabled_modes if m != 'vision']
+        non_vision_modes = [m for m in enabled_modes if m != 'vision' and m in sources]
         if non_vision_modes:
             source_weights = _compute_source_weights(lanlan_name, non_vision_modes)
             suppressed = _filter_sources_by_weight(source_weights)

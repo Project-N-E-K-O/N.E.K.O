@@ -112,9 +112,10 @@ class CacheProviderConfig:
 
 
 CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
-    # ⚠️ qwen_intl 必须在 qwen 之前：resolve_cache_provider 用 substring match，
-    # "dashscope.aliyuncs.com" 是 "dashscope-intl.aliyuncs.com" 的子串，
-    # intl 条目放前面才能优先匹配。
+    # qwen_intl before qwen: resolve_cache_provider iterates in dict order
+    # and matches on base_url_pattern substring. The qwen pattern
+    # "dashscope.aliyuncs.com" also matches "dashscope-intl.aliyuncs.com",
+    # so qwen_intl must come first to win the match.
     "qwen_intl": CacheProviderConfig(
         provider_id="qwen_intl",
         name="阿里云 DashScope (Intl)",
