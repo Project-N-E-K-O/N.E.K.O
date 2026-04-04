@@ -64,6 +64,7 @@
             return;
         }
         S.assistantSpeechActiveTurnId = normalizedTurnId;
+        clearAssistantTurnCompletionFallback();
         logAudioLifecycle('dispatchAssistantSpeechStart', {
             turnId: normalizedTurnId
         });
