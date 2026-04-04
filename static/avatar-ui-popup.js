@@ -430,7 +430,8 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
     container.style.gap = '2px';
-    container.style.minWidth = '160px';
+    container.style.width = '200px';
+    container.style.minWidth = '0';
     container.style.padding = '4px 4px';
 
     const chatToggles = [
@@ -444,7 +445,184 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         container.appendChild(toggleItem);
     });
 
+    // 字数限制滑动条
+    const textGuardContainer = manager._createTextGuardSlider();
+    container.appendChild(textGuardContainer);
+
     document.body.appendChild(container);
+    return container;
+}
+
+/**
+ * 创建字数限制滑动条
+ */
+function createTextGuardSlider(manager, prefix) {
+    const container = document.createElement('div');
+    Object.assign(container.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '4px',
+        padding: '4px 0'
+    });
+
+    // 标签和数值行
+    const labelRow = document.createElement('div');
+    Object.assign(labelRow.style, {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: '8px'
+    });
+
+    const label = document.createElement('span');
+    label.textContent = window.t ? window.t('settings.toggles.textGuardMaxLength') : '回复字数限制';
+    label.setAttribute('data-i18n', 'settings.toggles.textGuardMaxLength');
+    Object.assign(label.style, {
+        fontSize: '12px',
+        color: 'var(--neko-popup-text, #333)',
+        flexShrink: '0'
+    });
+
+    const valueDisplay = document.createElement('span');
+    Object.assign(valueDisplay.style, {
+        fontSize: '12px',
+        color: 'var(--neko-popup-active, #2a7bc4)',
+        fontWeight: '500',
+        minWidth: '60px',
+        textAlign: 'right'
+    });
+
+    labelRow.appendChild(label);
+    labelRow.appendChild(valueDisplay);
+
+    // 滑动条行
+    const sliderRow = document.createElement('div');
+    Object.assign(sliderRow.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        width: '100%'
+    });
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    // 滑动条位置：0-10 对应 50-1500（每档150字），11 对应无限制
+    // 默认值 350字 = (350-50)/150 = 2
+    slider.min = '0';
+    slider.max = '11';
+    slider.step = '1';
+
+    // 当前值转换：数值 -> 滑动条位置
+    const currentValue = typeof window.textGuardMaxLength !== 'undefined' ? window.textGuardMaxLength : 350;
+    let currentPosition;
+    if (currentValue === 0 || currentValue === null || currentValue === undefined) {
+        currentPosition = 11; // 无限制
+    } else {
+        // 找到最接近的档位：50 + position * 150
+        currentPosition = Math.min(10, Math.max(0, Math.round((currentValue - 50) / 150)));
+    }
+    slider.value = currentPosition;
+
+    Object.assign(slider.style, {
+        flex: '1',
+        height: '4px',
+        cursor: 'pointer',
+        accentColor: 'var(--neko-popup-accent, #44b7fe)'
+    });
+
+    // 更新显示文本
+    const updateDisplay = (position) => {
+        if (parseInt(position) === 11) {
+            const unlimitedText = (typeof window.t === 'function') ? window.t('settings.toggles.unlimited') : '无限制';
+            valueDisplay.textContent = unlimitedText;
+            valueDisplay.setAttribute('data-i18n', 'settings.toggles.unlimited');
+        } else {
+            const value = 50 + parseInt(position) * 150;
+            const unit = (typeof window.t === 'function') ? window.t('settings.toggles.characters') : '字';
+            valueDisplay.textContent = `${value}${unit}`;
+            valueDisplay.removeAttribute('data-i18n');
+        }
+    };
+
+    updateDisplay(currentPosition);
+
+    // 警告提示
+    const warningRow = document.createElement('div');
+    Object.assign(warningRow.style, {
+        fontSize: '11px',
+        color: '#ff6b6b',
+        lineHeight: '1.4',
+        minHeight: '16px',
+        opacity: '0',
+        transition: 'opacity 0.2s ease'
+    });
+
+    const updateWarning = (position) => {
+        const pos = parseInt(position);
+        const value = 50 + pos * 150;
+        if (pos === 11) {
+            // 无限制
+            const warningText = (typeof window.t === 'function')
+                ? window.t('settings.toggles.textGuardUnlimitedWarning')
+                : '无限制可能导致模型生成过长回复，消耗较多Token';
+            warningRow.textContent = warningText;
+            warningRow.style.opacity = '1';
+        } else if (value > 500) {
+            // 超过500字显示提示
+            const warningText = (typeof window.t === 'function')
+                ? window.t('settings.toggles.textGuardHighWarning')
+                : '设置过大可能导致回复过长，建议保持在500字以内';
+            warningRow.textContent = warningText;
+            warningRow.style.opacity = '1';
+        } else {
+            warningRow.style.opacity = '0';
+        }
+    };
+
+    updateWarning(currentPosition);
+
+    slider.addEventListener('input', () => {
+        const position = parseInt(slider.value);
+        updateDisplay(position);
+        updateWarning(position);
+    });
+
+    slider.addEventListener('change', () => {
+        const position = parseInt(slider.value);
+        let value;
+        if (position === 11) {
+            value = 0; // 0 表示无限制
+        } else {
+            value = 50 + position * 150;
+        }
+        window.textGuardMaxLength = value;
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        console.log(`[TextGuard] 回复字数限制已设置为 ${value === 0 ? '无限制' : value + '字'}`);
+    });
+
+    slider.addEventListener('click', (e) => e.stopPropagation());
+    slider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    sliderRow.appendChild(slider);
+
+    // 底部提示（仅对文本回复有效）
+    const noteRow = document.createElement('div');
+    Object.assign(noteRow.style, {
+        fontSize: '10px',
+        color: '#888',
+        lineHeight: '1.4',
+        marginTop: '4px'
+    });
+    const noteText = (typeof window.t === 'function')
+        ? window.t('settings.toggles.textGuardNote')
+        : '仅对文本回复有效，不影响语音对话';
+    noteRow.textContent = noteText;
+
+    container.appendChild(labelRow);
+    container.appendChild(sliderRow);
+    container.appendChild(warningRow);
+    container.appendChild(noteRow);
+
     return container;
 }
 
@@ -456,7 +634,8 @@ function createCharacterSettingsSidePanel(manager, prefix) {
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
     container.style.gap = '2px';
-    container.style.minWidth = '140px';
+    container.style.width = '160px';
+    container.style.minWidth = '0';
     container.style.padding = '4px 8px';
 
     const items = manager._characterMenuItems || [];
@@ -1739,6 +1918,10 @@ const AvatarPopupMixin = {
 
         ManagerProto._createAnimationSettingsSidePanel = function () {
             return createAnimationSettingsSidePanel(this, prefix);
+        };
+
+        ManagerProto._createTextGuardSlider = function () {
+            return createTextGuardSlider(this, prefix);
         };
 
         ManagerProto._createSidePanelContainer = function (panelOptions = {}) {
