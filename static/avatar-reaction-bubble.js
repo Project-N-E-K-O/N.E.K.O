@@ -43,15 +43,7 @@
         headAnchorCorrectionMaxPx: 72
     });
 
-    const PRESETS = Object.freeze({
-        thinking: ['。。。'],
-        happy: [''],
-        sad: [''],
-        angry: [''],
-        neutral: [''],
-        surprised: [''],
-        default: ['']
-    });
+    const THINKING_CONTENT = '。。。';
 
     const state = {
         enabled: false,
@@ -150,6 +142,22 @@
         }
     }
 
+    function resetPositionTracking() {
+        state.lastRenderX = null;
+        state.lastRenderY = null;
+        state.lastRenderWidth = null;
+        state.lastRenderHeight = null;
+        state.lastAnchorBounds = null;
+        state.lastHeadAnchor = null;
+        state.lastBoundsCenterX = null;
+        state.lastBoundsCenterY = null;
+
+        if (bubbleEl) {
+            bubbleEl.style.left = '-9999px';
+            bubbleEl.style.top = '-9999px';
+        }
+    }
+
     function ensureDom() {
         if (bubbleEl) {
             return;
@@ -200,7 +208,7 @@
     function applyVisualState() {
         ensureDom();
 
-        bubbleEl.dataset.theme = state.theme || 'default';
+        bubbleEl.dataset.theme = state.theme || 'thinking';
         bubbleEl.dataset.phase = state.phase || 'idle';
         bubbleEl.dataset.side = state.side || 'right';
         contentEl.textContent = state.content || '';
@@ -217,23 +225,8 @@
         }
     }
 
-    function hashString(input) {
-        var hash = 0;
-        var str = String(input || '');
-        for (var i = 0; i < str.length; i++) {
-            hash = ((hash << 5) - hash) + str.charCodeAt(i);
-            hash |= 0;
-        }
-        return Math.abs(hash);
-    }
-
-    function pickContent(theme, turnId) {
-        var preset = PRESETS[theme] || PRESETS.default;
-        if (!preset || preset.length === 0) {
-            return '';
-        }
-        var index = hashString(String(turnId || '') + ':' + String(theme || 'default')) % preset.length;
-        return preset[index];
+    function getThemeContent(theme) {
+        return theme === 'thinking' ? THINKING_CONTENT : '';
     }
 
     function normalizeTheme(emotion) {
@@ -255,7 +248,7 @@
             case 'calm':
                 return 'neutral';
             default:
-                return 'default';
+                return 'neutral';
         }
     }
 
@@ -635,6 +628,8 @@
         });
         clearTurnTimers();
         stopFollowLoop();
+        ensureDom();
+        resetPositionTracking();
 
         state.turnId = turnId;
         state.visible = true;
@@ -642,7 +637,7 @@
         state.theme = 'thinking';
         state.emotion = null;
         state.showEmotionArt = false;
-        state.content = pickContent('thinking', turnId);
+        state.content = getThemeContent('thinking');
         state.side = 'right';
         state.shownAt = now();
         state.turnEndedAt = 0;
@@ -693,9 +688,9 @@
 
             state.emotion = detail && detail.emotion ? String(detail.emotion) : null;
             state.theme = normalizeTheme(state.emotion);
-            state.showEmotionArt = state.theme !== 'thinking' && state.theme !== 'default';
+            state.showEmotionArt = state.theme !== 'thinking';
             state.phase = 'emotion-ready';
-            state.content = pickContent(state.theme, turnId);
+            state.content = getThemeContent(state.theme);
             applyVisualState();
             updatePosition();
             logBubbleLifecycle('handleEmotionReady:applied', {

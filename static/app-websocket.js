@@ -140,6 +140,25 @@
         }
     }
 
+    function clearAssistantLifecycleOnDisconnect(source) {
+        emitAssistantSpeechCancel(source || 'socket_close');
+        S.assistantSpeechActiveTurnId = null;
+        S.assistantTurnId = null;
+        S.assistantTurnCompletedId = null;
+        S.assistantTurnCompletionSource = null;
+        clearPendingAssistantTurnStart();
+        S.currentPlayingSpeechId = null;
+        S.interruptedSpeechId = null;
+        S.pendingDecoderReset = false;
+        S.skipNextAudioBlob = false;
+        S.incomingAudioEpoch += 1;
+        S.incomingAudioBlobQueue = [];
+        S.pendingAudioChunkMetaQueue = [];
+        logAssistantLifecycle('clearAssistantLifecycleOnDisconnect', {
+            source: source || 'socket_close'
+        });
+    }
+
     // ========================  Convenience helpers  ========================
 
     /** Check whether the WebSocket is open */
@@ -355,15 +374,12 @@
                         S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
                         S.assistantTurnAwaitingBubble = true;
                     }
-                    var hasVisibleGeminiChunk = false;
-                    if (typeof window.hasVisibleGeminiTextChunk === 'function') {
-                        hasVisibleGeminiChunk = window.hasVisibleGeminiTextChunk(response.text);
-                    }
+                    var createdVisibleBubble = false;
                     if (typeof window.appendMessage === 'function') {
-                        window.appendMessage(response.text, 'gemini', isNewMessage);
+                        createdVisibleBubble = window.appendMessage(response.text, 'gemini', isNewMessage) === true;
                     }
-                    if (!S.assistantTurnId && S.assistantTurnAwaitingBubble && hasVisibleGeminiChunk) {
-                        ensureAssistantTurnStarted('gemini_response_visible_chunk', response.turn_id);
+                    if (!S.assistantTurnId && S.assistantTurnAwaitingBubble && createdVisibleBubble) {
+                        ensureAssistantTurnStarted('gemini_response_visible_bubble', response.turn_id);
                     }
                     if (response.turn_id) {
                         window.realisticGeminiCurrentTurnId = response.turn_id;
@@ -959,8 +975,8 @@
                         });
                     } else {
                         logAssistantLifecycle('ws:turn_end_agent_callback:clear_pending');
-                        clearPendingAssistantTurnStart();
                     }
+                    clearPendingAssistantTurnStart();
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
@@ -996,8 +1012,8 @@
                         });
                     } else {
                         logAssistantLifecycle('ws:turn_end:clear_pending');
-                        clearPendingAssistantTurnStart();
                     }
+                    clearPendingAssistantTurnStart();
 
                     // Emotion analysis & translation on turn completion
                     (function () {
@@ -1156,9 +1172,7 @@
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
                     S.isTextSessionActive = false;
-                    emitAssistantSpeechCancel('session_ended_by_server');
-                    S.assistantTurnId = null;
-                    clearPendingAssistantTurnStart();
+                    clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 
                     if (S.sessionStartedRejecter) {
                         try { S.sessionStartedRejecter(new Error('Session ended by server')); } catch (_e2) { }
@@ -1321,6 +1335,7 @@
         // ---- onclose ----
         S.socket.onclose = function () {
             console.log(window.t('console.websocketClosed'));
+            clearAssistantLifecycleOnDisconnect('socket_close');
 
             // Clear heartbeat
             if (S.heartbeatInterval) {

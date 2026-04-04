@@ -35,6 +35,7 @@
             assistantTurnId: S.assistantTurnId,
             pendingTurnServerId: S.assistantPendingTurnServerId,
             assistantTurnCompletedId: S.assistantTurnCompletedId,
+            assistantTurnCompletionSource: S.assistantTurnCompletionSource,
             assistantSpeechActiveTurnId: S.assistantSpeechActiveTurnId,
             currentPlayingSpeechId: S.currentPlayingSpeechId,
             scheduledSources: S.scheduledSources.length,
@@ -86,8 +87,55 @@
         });
     }
 
-    function dispatchAssistantSpeechCancel(source) {
+    function resolveAssistantSpeechCancelTurnId() {
         var normalizedTurnId = normalizeAssistantTurnId(S.assistantSpeechActiveTurnId);
+        if (normalizedTurnId) {
+            return normalizedTurnId;
+        }
+
+        var scheduledTurnId = null;
+        S.scheduledSources.some(function (source) {
+            scheduledTurnId = normalizeAssistantTurnId(source && source._nekoAssistantTurnId);
+            return !!scheduledTurnId;
+        });
+        if (scheduledTurnId) {
+            return scheduledTurnId;
+        }
+
+        var queuedTurnId = null;
+        S.audioBufferQueue.some(function (item) {
+            queuedTurnId = resolveAssistantAudioTurnId(item && item.turnId, item && item.speechId);
+            return !!queuedTurnId;
+        });
+        if (queuedTurnId) {
+            return queuedTurnId;
+        }
+
+        var pendingMetaTurnId = null;
+        S.pendingAudioChunkMetaQueue.some(function (item) {
+            if (!item || item.shouldSkip) {
+                return false;
+            }
+            pendingMetaTurnId = resolveAssistantAudioTurnId(item.turnId, item.speechId);
+            return !!pendingMetaTurnId;
+        });
+        if (pendingMetaTurnId) {
+            return pendingMetaTurnId;
+        }
+
+        var incomingBlobTurnId = null;
+        S.incomingAudioBlobQueue.some(function (item) {
+            if (!item || item.shouldSkip) {
+                return false;
+            }
+            incomingBlobTurnId = resolveAssistantAudioTurnId(item.turnId, item.speechId);
+            return !!incomingBlobTurnId;
+        });
+        return incomingBlobTurnId;
+    }
+
+    function dispatchAssistantSpeechCancel(source) {
+        var normalizedTurnId = resolveAssistantSpeechCancelTurnId();
         if (!normalizedTurnId) {
             logAudioLifecycle('dispatchAssistantSpeechCancel:skip', {
                 source: source || 'audio_playback'
@@ -107,6 +155,7 @@
 
     function clearAssistantTurnCompletion() {
         S.assistantTurnCompletedId = null;
+        S.assistantTurnCompletionSource = null;
     }
 
     function resolveAssistantAudioTurnId(turnId, speechId) {
@@ -213,12 +262,15 @@
         stopActiveLipSync();
         S.isPlaying = false;
         dispatchAssistantSpeechEnd(normalizedTurnId);
+        var completionSource = S.assistantTurnCompletionSource;
         S.assistantTurnCompletedId = null;
+        S.assistantTurnCompletionSource = null;
         logAudioLifecycle('maybeFinalizeAssistantSpeech:completed', {
-            requestedTurnId: normalizedTurnId
+            requestedTurnId: normalizedTurnId,
+            completionSource: completionSource
         });
 
-        if (S.isRecording && S.proactiveChatEnabled) {
+        if (completionSource !== 'turn_end_agent_callback' && S.isRecording && S.proactiveChatEnabled) {
             if (typeof window.scheduleProactiveChat === 'function') {
                 console.log('[ProactiveChat] AI 音频播放完成，重新调度计时器');
                 window.scheduleProactiveChat();
@@ -242,18 +294,21 @@
 
         window.addEventListener('neko-assistant-turn-end', function (event) {
             var turnId = normalizeAssistantTurnId(event.detail && event.detail.turnId);
+            var source = event.detail && event.detail.source;
             logAudioLifecycle('event:turn-end', {
                 turnId: turnId,
-                source: event.detail && event.detail.source
+                source: source
             });
             if (!turnId) {
                 return;
             }
             // Some flows only emit the agent callback turn-end before audio drains.
             S.assistantTurnCompletedId = turnId;
+            S.assistantTurnCompletionSource = source || null;
             if (!hasAssistantSpeechActivity(turnId)) {
                 logAudioLifecycle('event:turn-end:defer_finalize_until_speech', {
-                    turnId: turnId
+                    turnId: turnId,
+                    source: source
                 });
                 return;
             }

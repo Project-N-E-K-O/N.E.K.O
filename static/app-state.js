@@ -79,6 +79,7 @@
         assistantTurnAwaitingBubble: false,
         assistantTurnSeq: 0,
         assistantTurnCompletedId: null,
+        assistantTurnCompletionSource: null,
         assistantSpeechActiveTurnId: null,
 
         // --- 屏幕共享 ---

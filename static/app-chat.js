@@ -114,10 +114,6 @@
         return sanitizeGeminiChunk(rawText, { consumePending: true });
     }
 
-    function hasVisibleGeminiTextChunk(rawText) {
-        return !!sanitizeGeminiChunk(rawText, { consumePending: false }).trim();
-    }
-
     // ======================== 拟真输出队列 ========================
 
     async function processRealisticQueue(queueVersion) {
@@ -530,9 +526,6 @@
                 // ========== 追踪本轮气泡 ==========
                 window.currentTurnGeminiBubbles.push(messageDiv);
                 createdVisibleBubble = true;
-                if (typeof window.ensureAssistantTurnStarted === 'function') {
-                    window.ensureAssistantTurnStarted('append_message_merged_new');
-                }
             } else {
                 window.currentGeminiMessage = null;
             }
@@ -562,9 +555,6 @@
                     window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
                     window.currentTurnGeminiBubbles.push(msgDiv);
                     createdVisibleBubble = true;
-                    if (typeof window.ensureAssistantTurnStarted === 'function') {
-                        window.ensureAssistantTurnStarted('append_message_merged_followup');
-                    }
 
                     checkAndShowSubtitlePrompt(cleanText);
                 } else {
@@ -639,9 +629,6 @@
                 // ========== 追踪本轮气泡 ==========
                 window.currentTurnGeminiBubbles.push(newDiv);
                 createdVisibleBubble = true;
-                if (typeof window.ensureAssistantTurnStarted === 'function') {
-                    window.ensureAssistantTurnStarted('append_message_default_gemini');
-                }
 
                 // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
                 checkAndShowSubtitlePrompt(cleanedText);
@@ -664,7 +651,6 @@
     mod.createGeminiBubble = createGeminiBubble;
     mod.processRealisticQueue = processRealisticQueue;
     mod.appendMessage = appendMessage;
-    mod.hasVisibleGeminiTextChunk = hasVisibleGeminiTextChunk;
     mod.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
 
     /**
@@ -686,7 +672,6 @@
     window.appendMessage = appendMessage;
     window.createGeminiBubble = createGeminiBubble;
     window.processRealisticQueue = processRealisticQueue;
-    window.hasVisibleGeminiTextChunk = hasVisibleGeminiTextChunk;
     window.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
     window.getCurrentTimeString = getCurrentTimeString;
 

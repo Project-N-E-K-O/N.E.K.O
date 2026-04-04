@@ -204,11 +204,78 @@ _EMOTION_FUZZY_ALIAS_KEYS = tuple(_EMOTION_NORMALIZED_ALIAS_LOOKUP.keys())
 _EMOTION_FUZZY_COMPACT_KEYS = tuple(_EMOTION_COMPACT_ALIAS_LOOKUP.keys())
 
 _ASCII_EMOTION_ALIAS_RE = re.compile(r"^[a-z0-9]+(?:\s+[a-z0-9]+)*$")
-_EMOTION_NEGATION_WORDS = frozenset(("not", "no", "never", "without"))
+_EMOTION_NEGATION_WORDS = frozenset((
+    "not", "no", "never", "without",
+    "안", "아니", "못", "않", "아니다", "아닌", "아님",
+    "не", "нет", "никогда",
+))
 _EMOTION_NEGATION_PREFIXES = (
     "不是", "并不", "并非", "不太", "没那么", "没有", "并没有",
     "不", "没", "無", "无", "非", "别", "別",
+    "안", "아니", "못",
+    "не", "нет", "никогда",
 )
+_EMOTION_NEGATION_SUFFIXES = (
+    "지 않", "지않", "지 않아", "지않아", "지 않다", "지않다", "지 않음", "지않음",
+    "지 못", "지못", "지 못해", "지못해", "지 못하다", "지못하다",
+    "않", "않아", "않다", "않음", "아냐", "아니야", "아니다", "아닌", "아님",
+)
+_EMOTION_TOKEN_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
+_EMOTION_NEGATION_COMPACT_PREFIXES = tuple(sorted({
+    re.sub(r"[\W_]+", "", str(negation).strip().lower(), flags=re.UNICODE)
+    for negation in (*_EMOTION_NEGATION_PREFIXES, *_EMOTION_NEGATION_WORDS)
+    if str(negation).strip()
+}, key=len, reverse=True))
+_EMOTION_NEGATION_COMPACT_SUFFIXES = tuple(sorted({
+    re.sub(r"[\W_]+", "", str(negation).strip().lower(), flags=re.UNICODE)
+    for negation in _EMOTION_NEGATION_SUFFIXES
+    if str(negation).strip()
+}, key=len, reverse=True))
+_EMOTION_NEGATION_CONTEXT_WINDOW = max(
+    (len(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES),
+    default=6,
+)
+
+
+def _looks_like_emotion_compact_candidate(candidate, cutoff):
+    if not candidate:
+        return False
+    if candidate in _EMOTION_COMPACT_ALIAS_LOOKUP:
+        return True
+    return bool(difflib.get_close_matches(
+        candidate,
+        _EMOTION_FUZZY_COMPACT_KEYS,
+        n=1,
+        cutoff=cutoff,
+    ))
+
+
+def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cutoff):
+    tokens = [token for token in _EMOTION_TOKEN_RE.findall(normalized_text) if token]
+    if tokens and any(token in _EMOTION_NEGATION_WORDS for token in tokens):
+        remaining_compact = re.sub(
+            r"[\W_]+",
+            "",
+            "".join(token for token in tokens if token not in _EMOTION_NEGATION_WORDS),
+            flags=re.UNICODE,
+        )
+        if _looks_like_emotion_compact_candidate(remaining_compact, fuzzy_compact_cutoff):
+            return True
+
+    for negation in _EMOTION_NEGATION_COMPACT_PREFIXES:
+        if not compact_text.startswith(negation):
+            continue
+        if _looks_like_emotion_compact_candidate(compact_text[len(negation):], fuzzy_compact_cutoff):
+            return True
+
+    for negation in _EMOTION_NEGATION_COMPACT_SUFFIXES:
+        marker_index = compact_text.find(negation)
+        if marker_index <= 0:
+            continue
+        if _looks_like_emotion_compact_candidate(compact_text[:marker_index], fuzzy_compact_cutoff):
+            return True
+
+    return False
 
 _EMOTION_KEYWORDS = {
     "happy": ("哈哈", "嘿嘿", "嘻嘻", "开心", "高兴", "喜欢", "太棒", "可爱", "好耶", "真好", "好开心", "爱你",
@@ -260,13 +327,20 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
     if compact_text in _EMOTION_COMPACT_ALIAS_LOOKUP:
         return _EMOTION_COMPACT_ALIAS_LOOKUP[compact_text]
 
+    high_confidence = raw_confidence is not None and _coerce_emotion_confidence(raw_confidence, 0.0) >= 0.72
+    fuzzy_alias_cutoff = 0.74 if high_confidence else 0.9
+    fuzzy_compact_cutoff = 0.72 if high_confidence else 0.88
+
+    if _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cutoff):
+        return "neutral"
+
     def _is_negated_ascii_match(match_start):
-        prefix_tokens = re.findall(r"[a-z0-9]+", normalized_text[:match_start])
+        prefix_tokens = _EMOTION_TOKEN_RE.findall(normalized_text[:match_start])
         return any(token in _EMOTION_NEGATION_WORDS for token in prefix_tokens[-3:])
 
     def _is_negated_compact_match(match_start):
-        prefix = compact_text[max(0, match_start - 6):match_start]
-        return any(prefix.endswith(negation) for negation in _EMOTION_NEGATION_PREFIXES)
+        prefix = compact_text[max(0, match_start - _EMOTION_NEGATION_CONTEXT_WINDOW):match_start]
+        return any(prefix.endswith(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES)
 
     alias_items = sorted(
         _EMOTION_NORMALIZED_ALIAS_LOOKUP.items(),
@@ -294,10 +368,6 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
             if not _is_negated_compact_match(match_start):
                 return canonical
             search_start = match_start + len(compact_alias)
-
-    high_confidence = raw_confidence is not None and _coerce_emotion_confidence(raw_confidence, 0.0) >= 0.72
-    fuzzy_alias_cutoff = 0.74 if high_confidence else 0.9
-    fuzzy_compact_cutoff = 0.72 if high_confidence else 0.88
 
     fuzzy_alias_match = difflib.get_close_matches(
         normalized_text,
@@ -1275,6 +1345,13 @@ async def emotion_analysis(request: Request):
             return {"error": "请求体中必须包含text字段"}
         
         text = data['text']
+        lanlan_name = data.get('lanlan_name')
+        if text is None or str(text).strip() == "":
+            emotion = "neutral"
+            confidence = 0.5
+            _push_emotion_update(lanlan_name, emotion, confidence)
+            return _emotion_response(emotion, confidence)
+
         api_key = data.get('api_key')
         model = data.get('model')
         
@@ -1397,7 +1474,6 @@ async def emotion_analysis(request: Request):
         except json.JSONDecodeError:
             emotion, confidence = _apply_degraded_emotion_fallback()
 
-        lanlan_name = data.get('lanlan_name')
         _push_emotion_update(lanlan_name, emotion, confidence)
         return _emotion_response(emotion, confidence)
             

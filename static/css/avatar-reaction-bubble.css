@@ -1,8 +1,5 @@
 #avatar-reaction-bubble.avatar-reaction-bubble {
-    --bubble-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(232, 242, 255, 0.92));
-    --bubble-border: rgba(93, 136, 197, 0.28);
     --bubble-text: #28415e;
-    --bubble-tail: rgba(243, 248, 255, 0.96);
     --bubble-shell-image: url('/static/icons/chat_bubble.png');
     --bubble-emotion-image: none;
     --bubble-width: 340px;
@@ -198,10 +195,6 @@
 #avatar-reaction-bubble[data-theme="surprised"] {
     --bubble-text: #185b45;
     --bubble-emotion-image: url('/static/icons/surprise_cat.png');
-}
-
-#avatar-reaction-bubble[data-theme="default"] {
-    --bubble-text: #354a67;
 }
 
 @keyframes neko-bubble-thinking {
