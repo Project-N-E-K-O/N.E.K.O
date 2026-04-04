@@ -296,6 +296,7 @@ class OmniRealtimeClient:
         self._client_vad_threshold = 500  # RMS 能量阈值（int16 范围，fallback用）
         self._speech_detect_start = 0.0  # RNNoise 连续检测到语音的起始时间
         self._speech_sustain_threshold = 0.5  # 需持续 500ms 才算真正说话（防噪音误触）
+        self._rnnoise_vad_active = False  # RNNoise VAD 是否正在运行（48kHz + denoiser ok）
         
         # 防止log刷屏机制（当websocket关闭后）
         self._last_ws_none_warning_time = 0.0  # 上次websocket为None警告的时间戳
@@ -460,6 +461,7 @@ class OmniRealtimeClient:
         self._client_vad_active = False
         self._client_vad_last_speech_time = 0.0
         self._speech_detect_start = 0.0
+        self._rnnoise_vad_active = False
         if self._audio_processor is not None:
             self._audio_processor.reset()
 
@@ -747,8 +749,12 @@ class OmniRealtimeClient:
             self._client_vad_active = False
         
         # Client-side speech detection (only when no server VAD — server events handle it in handle_messages)
+        # use_rnnoise_path is true only for 48kHz input when AudioProcessor exists;
+        # for 16kHz/mobile input RNNoise doesn't run, so fall back to RMS.
+        _rnnoise_vad_live = use_rnnoise_path and self._audio_processor.noise_reduce_enabled and self._audio_processor._denoiser is not None
+        self._rnnoise_vad_active = _rnnoise_vad_live
         if not self._has_server_vad:
-            if self._audio_processor is not None and self._audio_processor.noise_reduce_enabled and self._audio_processor._denoiser is not None:
+            if _rnnoise_vad_live:
                 # Priority 2: RNNoise speech probability with sustained threshold
                 if self._audio_processor.speech_probability > 0.4:
                     if self._speech_detect_start == 0.0:
@@ -1039,13 +1045,11 @@ class OmniRealtimeClient:
         if self._is_responding:
             logger.debug("stream_proactive: skipped — already responding")
             return False
-        # Client VAD guard: only when RNNoise is actually running (reliable).
-        # When RNNoise is unavailable (import failed / disabled), RMS fallback
-        # is too noisy — skip client VAD to avoid permanently blocking proactive.
-        _has_rnnoise = (self._audio_processor is not None
-                        and self._audio_processor.noise_reduce_enabled
-                        and self._audio_processor._denoiser is not None)
-        if _has_rnnoise:
+        # Client VAD guard: only when RNNoise VAD is actively processing audio
+        # (48kHz input + denoiser running). For 16kHz/mobile or when RNNoise is
+        # unavailable, VAD falls back to RMS which is too noisy — skip to avoid
+        # permanently blocking proactive.
+        if self._rnnoise_vad_active:
             if self._client_vad_active:
                 logger.debug("stream_proactive: skipped — user speaking (VAD active)")
                 return False
@@ -1110,8 +1114,8 @@ class OmniRealtimeClient:
         image_injected = False
 
         for chunk_idx, i in enumerate(range(0, len(pcm_data), chunk_size)):
-            # Abort if AI starts responding, or user speaking (only when RNNoise VAD available)
-            if self._is_responding or (_has_rnnoise and self._client_vad_active):
+            # Abort if AI starts responding, or user speaking (only when RNNoise VAD active)
+            if self._is_responding or (self._rnnoise_vad_active and self._client_vad_active):
                 logger.info("stream_proactive: aborted — user spoke or response started")
                 await self.clear_audio_buffer()
                 return False
@@ -1438,6 +1442,7 @@ class OmniRealtimeClient:
         self._client_vad_active = False
         self._client_vad_last_speech_time = 0.0
         self._speech_detect_start = 0.0
+        self._rnnoise_vad_active = False
 
         # 保存 debug 音频（RNNoise 处理前后的对比音频）
         if self._audio_processor is not None:
@@ -1488,6 +1493,7 @@ class OmniRealtimeClient:
                 self._client_vad_active = False
                 self._client_vad_last_speech_time = 0.0
                 self._speech_detect_start = 0.0
+                self._rnnoise_vad_active = False
 
                 # 重置音频处理器状态
                 if self._audio_processor is not None:
