@@ -39,6 +39,7 @@ class MMDManager {
         this._isModelReadyForInteraction = false;
         this._isInReturnState = false;
         this._activeLoadToken = 0;
+        this._headScreenAnchorProjection = null;
 
         // 事件处理器
         this._coreWindowHandlers = [];
@@ -393,6 +394,47 @@ class MMDManager {
     }
 
     /**
+     * 获取 MMD 头部在屏幕上的锚点
+     * @returns {Object|null} 锚点对象 { x, y } 或 null
+     */
+    getHeadScreenAnchor() {
+        if (!this.currentModel || !this.camera || !this.renderer || !window.THREE) {
+            return null;
+        }
+        if (!this.cursorFollow || typeof this.cursorFollow.getHeadWorldPosition !== 'function') {
+            return null;
+        }
+
+        const headWorldPos = this.cursorFollow.getHeadWorldPosition();
+        if (!headWorldPos) {
+            return null;
+        }
+
+        const canvas = this.renderer.domElement;
+        if (!canvas) return null;
+
+        const canvasRect = canvas.getBoundingClientRect();
+        if (!canvasRect.width || !canvasRect.height) return null;
+
+        if (!this._headScreenAnchorProjection) {
+            this._headScreenAnchorProjection = new window.THREE.Vector3();
+        }
+
+        this.camera.updateMatrixWorld(true);
+        this._headScreenAnchorProjection.copy(headWorldPos).project(this.camera);
+
+        if (!Number.isFinite(this._headScreenAnchorProjection.x) ||
+            !Number.isFinite(this._headScreenAnchorProjection.y)) {
+            return null;
+        }
+
+        return {
+            x: canvasRect.left + (this._headScreenAnchorProjection.x * 0.5 + 0.5) * canvasRect.width,
+            y: canvasRect.top + (-this._headScreenAnchorProjection.y * 0.5 + 0.5) * canvasRect.height
+        };
+    }
+
+    /**
      * 获取 MMD 模型在屏幕上的边界（用于局部跟踪）
      * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
      */
@@ -479,6 +521,7 @@ class MMDManager {
             this.cursorFollow.dispose();
             this.cursorFollow = null;
         }
+        this._headScreenAnchorProjection = null;
         if (this.core) {
             this.core.dispose();
             this.core = null;

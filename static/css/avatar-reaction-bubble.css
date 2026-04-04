@@ -1,0 +1,363 @@
+#avatar-reaction-bubble.avatar-reaction-bubble {
+    --bubble-text: #28415e;
+    --bubble-shell-image: url('/static/icons/chat_bubble.png');
+    --bubble-emotion-image: none;
+    --bubble-width: 340px;
+    --bubble-height: 260px;
+    --bubble-stage-left: 15%;
+    --bubble-stage-top: 11%;
+    --bubble-stage-width: 72%;
+    --bubble-stage-height: 72%;
+    --bubble-art-width: 138%;
+    --bubble-art-height: 138%;
+    position: fixed;
+    left: -9999px;
+    top: -9999px;
+    z-index: 99990;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateY(8px) scale(0.96);
+    transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+    filter: drop-shadow(0 10px 20px rgba(22, 46, 84, 0.12));
+}
+
+#avatar-reaction-bubble.avatar-reaction-bubble.is-visible {
+    opacity: 0.92;
+    visibility: visible;
+    transform: translateY(0) scale(1);
+}
+
+#avatar-reaction-bubble.avatar-reaction-bubble.is-fading {
+    opacity: 0;
+    visibility: visible;
+    transform: translateY(-4px) scale(0.98);
+}
+
+#avatar-reaction-bubble .avatar-reaction-bubble-frame {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--bubble-width);
+    height: var(--bubble-height);
+    opacity: 1;
+    transform: scale(1);
+    transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+#avatar-reaction-bubble .avatar-reaction-bubble-shell {
+    position: absolute;
+    inset: 0;
+    opacity: 0.9;
+    background-image: var(--bubble-shell-image);
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
+    filter: drop-shadow(0 10px 18px rgba(64, 122, 170, 0.18));
+}
+
+#avatar-reaction-bubble .avatar-reaction-bubble-stage {
+    position: absolute;
+    left: var(--bubble-stage-left);
+    top: var(--bubble-stage-top);
+    width: var(--bubble-stage-width);
+    height: var(--bubble-stage-height);
+    display: grid;
+    place-items: center;
+}
+
+#avatar-reaction-bubble[data-side="right"] {
+    --bubble-stage-left: 20%;
+}
+
+#avatar-reaction-bubble .avatar-reaction-bubble-mascot {
+    position: absolute;
+    width: var(--bubble-art-width);
+    height: var(--bubble-art-height);
+    left: 50%;
+    top: 50%;
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.92);
+    transform-origin: center center;
+    background-image: var(--bubble-emotion-image);
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    will-change: transform, opacity;
+}
+
+#avatar-reaction-bubble.has-emotion-art .avatar-reaction-bubble-mascot {
+    opacity: 0.86;
+    transform: translate(-50%, -50%) scale(1);
+}
+
+#avatar-reaction-bubble.avatar-reaction-bubble.is-fading .avatar-reaction-bubble-frame,
+#avatar-reaction-bubble.avatar-reaction-bubble.is-hidden .avatar-reaction-bubble-frame {
+    opacity: 0;
+    transform: scale(0.98);
+}
+
+#avatar-reaction-bubble.avatar-reaction-bubble.is-fading .avatar-reaction-bubble-mascot,
+#avatar-reaction-bubble.avatar-reaction-bubble.is-hidden .avatar-reaction-bubble-mascot {
+    animation: none !important;
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.92);
+}
+
+#avatar-reaction-bubble.has-emotion-art[data-theme="happy"] .avatar-reaction-bubble-mascot {
+    transform-origin: bottom center;
+    animation: neko-bubble-happy-bounce 0.95s ease-in-out infinite;
+}
+
+#avatar-reaction-bubble.has-emotion-art[data-theme="neutral"] .avatar-reaction-bubble-mascot {
+    animation: neko-bubble-neutral-breathe 2.4s ease-in-out infinite;
+}
+
+#avatar-reaction-bubble.has-emotion-art[data-theme="sad"] .avatar-reaction-bubble-mascot {
+    animation: neko-bubble-sad-shiver 1.15s ease-in-out infinite;
+}
+
+#avatar-reaction-bubble.has-emotion-art[data-theme="angry"] .avatar-reaction-bubble-mascot {
+    animation: neko-bubble-angry-shake 0.3s ease-in-out infinite;
+}
+
+#avatar-reaction-bubble.has-emotion-art[data-theme="surprised"] .avatar-reaction-bubble-mascot {
+    animation: neko-bubble-surprised-pop 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) 1 both;
+}
+
+#avatar-reaction-bubble[data-side="right"] .avatar-reaction-bubble-mascot {
+    left: 52%;
+}
+
+#avatar-reaction-bubble .avatar-reaction-bubble-content {
+    position: relative;
+    z-index: 1;
+    display: inline-block;
+    max-width: 82%;
+    white-space: nowrap;
+    text-align: center;
+    color: var(--bubble-text);
+    font-family: "Trebuchet MS", "Verdana", sans-serif;
+    font-size: calc(var(--bubble-height) * 0.2);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    opacity: 0.8;
+    transform: none;
+}
+
+#avatar-reaction-bubble[data-phase="emotion-ready"] .avatar-reaction-bubble-content,
+#avatar-reaction-bubble.has-emotion-art .avatar-reaction-bubble-content {
+    opacity: 0;
+}
+
+#avatar-reaction-bubble[data-phase="thinking"] .avatar-reaction-bubble-content {
+    color: #6f85a0;
+    opacity: 0.68;
+    letter-spacing: 0.08em;
+    animation: neko-bubble-thinking 1.6s ease-in-out infinite;
+}
+
+#avatar-reaction-bubble[data-side="left"][data-phase="thinking"] .avatar-reaction-bubble-content {
+    transform: translateX(-5%);
+}
+
+#avatar-reaction-bubble[data-side="right"] .avatar-reaction-bubble-shell {
+    transform: scaleX(-1);
+}
+
+#avatar-reaction-bubble[data-theme="thinking"] {
+    --bubble-text: #5c7693;
+}
+
+#avatar-reaction-bubble[data-theme="happy"] {
+    --bubble-text: #7a4f10;
+    --bubble-emotion-image: url('/static/icons/happy_cat.png');
+}
+
+#avatar-reaction-bubble[data-theme="sad"] {
+    --bubble-text: #30517b;
+    --bubble-emotion-image: url('/static/icons/sad_cat.png');
+}
+
+#avatar-reaction-bubble[data-theme="angry"] {
+    --bubble-text: #8c2f1f;
+    --bubble-emotion-image: url('/static/icons/angry_cat.png');
+}
+
+#avatar-reaction-bubble[data-theme="neutral"] {
+    --bubble-text: #445469;
+    --bubble-emotion-image: url('/static/icons/calm_cat.png');
+}
+
+#avatar-reaction-bubble[data-theme="surprised"] {
+    --bubble-text: #185b45;
+    --bubble-emotion-image: url('/static/icons/surprise_cat.png');
+}
+
+@keyframes neko-bubble-thinking {
+    0%,
+    100% {
+        transform: translateY(0);
+        opacity: 0.88;
+    }
+
+    50% {
+        transform: translateY(-2px);
+        opacity: 1;
+    }
+}
+
+@keyframes neko-bubble-angry-shake {
+    0%,
+    100% {
+        transform: translate(-50%, -50%) rotate(0deg);
+    }
+
+    15% {
+        transform: translate(calc(-50% - 3px), calc(-50% + 2px)) rotate(-2deg);
+    }
+
+    30% {
+        transform: translate(calc(-50% + 3px), calc(-50% - 3px)) rotate(1.6deg);
+    }
+
+    45% {
+        transform: translate(calc(-50% - 4px), calc(-50% - 1px)) rotate(-1.4deg);
+    }
+
+    60% {
+        transform: translate(calc(-50% + 4px), calc(-50% + 2px)) rotate(1.8deg);
+    }
+
+    75% {
+        transform: translate(calc(-50% - 3px), calc(-50% + 3px)) rotate(-2deg);
+    }
+
+    90% {
+        transform: translate(calc(-50% + 2px), calc(-50% - 2px)) rotate(1deg);
+    }
+}
+
+@keyframes neko-bubble-happy-bounce {
+    0%,
+    100% {
+        transform: translate(-50%, -50%) scale(1, 1);
+    }
+
+    20% {
+        transform: translate(-50%, calc(-50% + 4px)) scale(1.05, 0.92);
+    }
+
+    42% {
+        transform: translate(-50%, calc(-50% - 2px)) scale(0.98, 1.08);
+    }
+
+    60% {
+        transform: translate(-50%, calc(-50% + 1px)) scale(1.02, 0.98);
+    }
+
+    80% {
+        transform: translate(-50%, calc(-50% + 3px)) scale(1.04, 0.94);
+    }
+}
+
+@keyframes neko-bubble-neutral-breathe {
+    0%,
+    100% {
+        transform: translate(-50%, -50%) scale(1) rotate(0deg);
+        opacity: 0.84;
+    }
+
+    25% {
+        transform: translate(calc(-50% - 1px), calc(-50% - 2px)) scale(1.015) rotate(-0.5deg);
+        opacity: 0.88;
+    }
+
+    50% {
+        transform: translate(-50%, calc(-50% + 1px)) scale(0.992) rotate(0deg);
+        opacity: 0.82;
+    }
+
+    75% {
+        transform: translate(calc(-50% + 1px), calc(-50% - 1px)) scale(1.012) rotate(0.5deg);
+        opacity: 0.88;
+    }
+}
+
+@keyframes neko-bubble-sad-shiver {
+    0%,
+    100% {
+        transform: translate(-50%, -50%) scale(0.975);
+        opacity: 0.76;
+    }
+
+    22% {
+        transform: translate(calc(-50% - 1px), calc(-50% + 1px)) scale(0.978);
+        opacity: 0.8;
+    }
+
+    48% {
+        transform: translate(calc(-50% + 1px), calc(-50% - 1px)) scale(0.97);
+        opacity: 0.82;
+    }
+
+    74% {
+        transform: translate(calc(-50% - 1px), -50%) scale(0.978);
+        opacity: 0.79;
+    }
+}
+
+@keyframes neko-bubble-surprised-pop {
+    0% {
+        transform: translate(-50%, -50%) scale(0.42);
+        opacity: 0;
+    }
+
+    50% {
+        transform: translate(-50%, calc(-50% - 3px)) scale(1.3);
+        opacity: 0.96;
+    }
+
+    72% {
+        transform: translate(-50%, calc(-50% + 2px)) scale(0.94);
+        opacity: 0.9;
+    }
+
+    100% {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 0.86;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #avatar-reaction-bubble.has-emotion-art .avatar-reaction-bubble-mascot,
+    #avatar-reaction-bubble[data-phase="thinking"] .avatar-reaction-bubble-content {
+        animation-duration: 0.01ms;
+        animation-iteration-count: 1;
+    }
+}
+
+@media (max-width: 768px) {
+    #avatar-reaction-bubble.avatar-reaction-bubble {
+        --bubble-width: 250px;
+        --bubble-height: 192px;
+        --bubble-stage-left: 8%;
+        --bubble-stage-top: 10%;
+        --bubble-stage-width: 70%;
+        --bubble-stage-height: 70%;
+        --bubble-art-width: 130%;
+        --bubble-art-height: 130%;
+    }
+
+    #avatar-reaction-bubble[data-side="right"] {
+        --bubble-stage-left: 21%;
+    }
+
+    #avatar-reaction-bubble .avatar-reaction-bubble-content {
+        max-width: 78%;
+        font-size: calc(var(--bubble-height) * 0.18);
+    }
+}

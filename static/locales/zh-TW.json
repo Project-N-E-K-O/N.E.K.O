@@ -1508,6 +1508,7 @@
         "toggles": {
             "allowInterrupt": "允許打斷",
             "mergeMessages": "閤並消息",
+            "avatarReactionBubble": "表情氣泡",
             "proactiveChat": "主動搭話",
             "proactiveVision": "自主視覺",
             "proactiveVisionChat": "螢幕分享",

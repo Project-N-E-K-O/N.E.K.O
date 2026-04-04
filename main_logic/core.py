@@ -205,6 +205,7 @@ class LLMSessionManager:
         self.pending_session_warmed_up_event = None
         self.pending_session_final_prime_complete_event = None
         self.session_start_time = None
+        self._session_turn_count = 0  # 当前 session 的用户输入轮次计数
         self.pending_connector = None
         self.pending_session = None
         self.is_hot_swap_imminent = False
@@ -417,10 +418,15 @@ class LLMSessionManager:
         # 正在切换过程中则跳过所有热切换判断
         if not self.is_hot_swap_imminent:
             try:
-                # 1. 时间驱动（40s）：session 运行超时 → 开始准备新 session + 触发记忆归档
+                # 1. 时间/轮次/上下文驱动：任一条件满足 → 开始准备新 session + 触发记忆归档
                 if hasattr(self, 'is_preparing_new_session') and not self.is_preparing_new_session:
-                    if self.session_start_time and \
-                            (datetime.now() - self.session_start_time).total_seconds() >= 40:
+                    _elapsed = (datetime.now() - self.session_start_time).total_seconds() if self.session_start_time else 0
+                    _turn_threshold_met = self._session_turn_count >= 10
+                    _ctx_threshold_met = (
+                        isinstance(self.session, OmniOfflineClient)
+                        and sum(len(str(m.content)) for m in self.session._conversation_history[1:]) >= 10000
+                    )
+                    if _elapsed >= 40 or _turn_threshold_met or _ctx_threshold_met:
                         logger.info(f"[{self.lanlan_name}] Main Listener: Uptime threshold met. Marking for new session preparation.")
                         self.is_preparing_new_session = True
                         self.summary_triggered_time = datetime.now()
@@ -512,7 +518,10 @@ class LLMSessionManager:
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示"""
         # 更新用户活动时间戳（用于主动搭话检测）
         self.last_user_activity_time = time.time()
-        
+        # 递增轮次计数器（仅计非空转录，避免噪声/静默误触发记忆整理）
+        if transcript.strip():
+            self._session_turn_count += 1
+
         # 推送到同步消息队列
         self.sync_message_queue.put({"type": "user", "data": {"input_type": "transcript", "data": transcript.strip()}})
         
@@ -1415,7 +1424,8 @@ class LLMSessionManager:
                     self.is_active = True
                     
                 self.session_start_time = datetime.now()
-                
+                self._session_turn_count = 0
+
                 # 启动消息处理任务
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
                 
@@ -2344,6 +2354,7 @@ class LLMSessionManager:
             self.session = self.pending_session
             self.current_speech_id = str(uuid4())
             self.session_start_time = datetime.now()
+            self._session_turn_count = 0
             
             # !!CRITICAL!! 立即清除pending_session引用，防止异常处理器误关闭新session
             # 此时self.session和self.pending_session指向同一对象（新session）
