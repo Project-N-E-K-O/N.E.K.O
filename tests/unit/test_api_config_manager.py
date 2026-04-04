@@ -44,6 +44,7 @@ class TestKeybookSaveLoad:
 
     ALL_KEY_FIELDS = {
         'assistApiKeyQwen': 'ASSIST_API_KEY_QWEN',
+        'assistApiKeyQwenIntl': 'ASSIST_API_KEY_QWEN_INTL',
         'assistApiKeyOpenai': 'ASSIST_API_KEY_OPENAI',
         'assistApiKeyGlm': 'ASSIST_API_KEY_GLM',
         'assistApiKeyStep': 'ASSIST_API_KEY_STEP',
