@@ -459,6 +459,9 @@
                 returnSessionButton.disabled = false;
 
                 window.stopProactiveChatSchedule();
+                if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+                    window.stopProactiveVisionDuringSpeech();
+                }
 
                 window.showStatusToast('', 0);
             }
@@ -480,6 +483,9 @@
                 }
                 if (window.vrmManager) {
                     window.vrmManager._goodbyeClicked = false;
+                }
+                if (window.mmdManager) {
+                    window.mmdManager._goodbyeClicked = false;
                 }
 
                 micButton.classList.remove('recording');
@@ -848,25 +854,49 @@
                     if (U.isMobile()) {
                         captureStream = await window.getMobileCameraStream();
                     } else {
-                        // Desktop: try getDisplayMedia
-                        try {
-                            if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-                                captureStream = await navigator.mediaDevices.getDisplayMedia({
-                                    video: { cursor: 'always' },
-                                    audio: false,
-                                });
-                            } else {
-                                throw new Error('UNSUPPORTED_API');
-                            }
-                        } catch (displayErr) {
-                            if (displayErr.name === 'NotAllowedError') throw displayErr;
+                        // Desktop: try Electron selected source first, then getDisplayMedia
+                        var selectedSourceId = S.selectedScreenSourceId;
+                        var electronCaptured = false;
 
-                            console.warn('[\u622A\u56FE] getDisplayMedia \u5931\u8D25\uFF0C\u5C1D\u8BD5\u540E\u7AEF\u622A\u56FE:', displayErr);
-                            var result = await window.fetchBackendScreenshot();
-                            if (result && result.dataUrl) {
-                                dataUrl = result.dataUrl;
-                            } else {
-                                throw displayErr;
+                        if (selectedSourceId && window.electronDesktopCapturer) {
+                            try {
+                                captureStream = await navigator.mediaDevices.getUserMedia({
+                                    audio: false,
+                                    video: {
+                                        mandatory: {
+                                            chromeMediaSource: 'desktop',
+                                            chromeMediaSourceId: selectedSourceId,
+                                            maxFrameRate: 1
+                                        }
+                                    }
+                                });
+                                electronCaptured = true;
+                            } catch (electronErr) {
+                                console.warn('[截图] Electron 源截取失败，回退到 getDisplayMedia:', electronErr);
+                                captureStream = null;
+                            }
+                        }
+
+                        if (!electronCaptured) {
+                            try {
+                                if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+                                    captureStream = await navigator.mediaDevices.getDisplayMedia({
+                                        video: { cursor: 'always' },
+                                        audio: false,
+                                    });
+                                } else {
+                                    throw new Error('UNSUPPORTED_API');
+                                }
+                            } catch (displayErr) {
+                                if (displayErr.name === 'NotAllowedError') throw displayErr;
+
+                                console.warn('[截图] getDisplayMedia 失败，尝试后端截图:', displayErr);
+                                var result = await window.fetchBackendScreenshot();
+                                if (result && result.dataUrl) {
+                                    dataUrl = result.dataUrl;
+                                } else {
+                                    throw displayErr;
+                                }
                             }
                         }
                     }

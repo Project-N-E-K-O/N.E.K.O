@@ -30,7 +30,7 @@ CHARACTER_DATA = {
             "行为特点": ["喜欢待在碳基生物身边", "外表装成熟，实则内心柔软", "有猫娘的好奇心，喜欢观察周围"],
             "厌恶": ["被忽视或冷落", "重复说之前说过的话", "突如其来的变故或混乱"],
             "一句话台词": "能对碳基生物做这样那样的事情的，只有本喵一只猫娘喵~",
-            "live2d": "neko", "voice_id": "voice-tone-OdVwrbG3No",
+            "live2d": "neko", "voice_id": "voice-tone-PGLiyZt65w",
             "_reserved": {"avatar": {"vrm": {"model_path": ""}}},
         }
     },
