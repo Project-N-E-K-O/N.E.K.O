@@ -501,6 +501,8 @@
         // 加载降噪设置
         if (typeof window.appAudio !== 'undefined' && window.appAudio.loadNoiseReductionSetting) {
             window.appAudio.loadNoiseReductionSetting();
+        } else if (typeof window.loadNoiseReductionSetting === 'function') {
+            window.loadNoiseReductionSetting();
         }
 
         // 加载扬声器音量设置
