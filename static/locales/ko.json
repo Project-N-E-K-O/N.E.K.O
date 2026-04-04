@@ -566,7 +566,9 @@
         "volumeHintDetecting": "마이크 입력 감지 중...",
         "volumeHintNoSound": "소리가 감지되지 않습니다. 마이크를 확인하세요.",
         "volumeHintLow": "볼륨이 낮습니다. 게인을 높여보세요.",
-        "volumeHintOk": "마이크가 제대로 작동함"
+        "volumeHintOk": "마이크가 제대로 작동함",
+        "noiseReduction": "노이즈 리덕션",
+        "noiseReductionHint": "RNNoise AI 노이즈 리덕션으로 더 선명한 음성"
     },
     "speaker": {
         "volumeLabel": "스피커 볼륨",

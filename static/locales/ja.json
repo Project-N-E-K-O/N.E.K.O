@@ -566,7 +566,9 @@
         "volumeHintDetecting": "マイク入力を検出中...",
         "volumeHintNoSound": "音声が検出されません。マイクを確認してください",
         "volumeHintLow": "音量が低いです。ゲインを上げてみてください",
-        "volumeHintOk": "マイクは正常に動作しています"
+        "volumeHintOk": "マイクは正常に動作しています",
+        "noiseReduction": "ノイズリダクション",
+        "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに"
     },
     "speaker": {
         "volumeLabel": "スピーカー音量",

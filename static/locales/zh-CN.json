@@ -566,7 +566,9 @@
         "volumeHintDetecting": "正在检测麦克风输入...",
         "volumeHintNoSound": "检测不到声音，请检查麦克风",
         "volumeHintLow": "音量较低，建议调高增益",
-        "volumeHintOk": "麦克风工作正常"
+        "volumeHintOk": "麦克风工作正常",
+        "noiseReduction": "降噪",
+        "noiseReductionHint": "RNNoise AI 降噪，让语音更清晰"
     },
     "speaker": {
         "volumeLabel": "扬声器音量",
