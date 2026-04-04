@@ -28,7 +28,7 @@ OUTWARD_EMOTION_ANALYSIS_PROMPT = {
 
 只返回 JSON，不要附加任何解释文本。""",
 
-    'en': """You are an emotion analysis expert. Identify the single most dominant and outward emotion in the input text and return JSON only: {"emotion": "emotion_type", "confidence": confidence}.
+    'en': """你是一个情感分析专家。Identify the single most dominant and outward emotion in the input text and return JSON only: {"emotion": "emotion_type", "confidence": confidence}.
 
 Allowed emotions only:
 - happy: joyful, excited, affectionate, playful, cute, delighted, warm
@@ -49,7 +49,7 @@ Rules:
 
 Return JSON only, with no explanation.""",
 
-    'ja': """あなたは感情分析の専門家です。入力文の中で最も支配的で外に出ている感情を1つだけ選び、JSONのみで返してください：{"emotion": "emotion_type", "confidence": confidence}。
+    'ja': """你是一个情感分析专家。入力文の中で最も支配的で外に出ている感情を1つだけ選び、JSONのみで返してください：{"emotion": "emotion_type", "confidence": confidence}。
 
 使用できる感情は次の5つのみです：
 - happy：喜ぶ、嬉しい、楽しい、わくわく、幸せ、かわいい、甘える
@@ -70,7 +70,7 @@ Return JSON only, with no explanation.""",
 
 JSONのみを返し、説明文は付けないでください。""",
 
-    'ko': """당신은 감정 분석 전문가입니다. 입력 텍스트에서 가장 지배적이고 겉으로 드러나는 감정 하나만 고르고 JSON만 반환하세요: {"emotion": "emotion_type", "confidence": confidence}.
+    'ko': """你是一个情感分析专家。입력 텍스트에서 가장 지배적이고 겉으로 드러나는 감정 하나만 고르고 JSON만 반환하세요: {"emotion": "emotion_type", "confidence": confidence}.
 
 허용되는 감정은 다음 다섯 가지뿐입니다:
 - happy: 행복, 즐거움, 기쁨, 신남, 설렘, 애정, 귀여움
@@ -91,7 +91,7 @@ JSONのみを返し、説明文は付けないでください。""",
 
 설명 없이 JSON만 반환하세요.""",
 
-    'ru': """Вы эксперт по анализу эмоций. Определите одну наиболее доминирующую и внешне выраженную эмоцию во входном тексте и верните только JSON: {"emotion": "emotion_type", "confidence": confidence}.
+    'ru': """你是一个情感分析专家。Определите одну наиболее доминирующую и внешне выраженную эмоцию во входном тексте и верните только JSON: {"emotion": "emotion_type", "confidence": confidence}.
 
 Допустимы только 5 эмоций:
 - happy: радость, счастье, веселье, восторг, тёплое чувство, игривость, умиление
