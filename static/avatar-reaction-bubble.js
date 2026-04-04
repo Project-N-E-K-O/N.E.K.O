@@ -40,7 +40,10 @@
         accessoryDropMaxPx: 56,
         headAnchorCorrectionDeadzonePx: 16,
         headAnchorCorrectionRatio: 0.82,
-        headAnchorCorrectionMaxPx: 72
+        headAnchorCorrectionMaxPx: 72,
+        showFollowWindowMs: 360,
+        moveFollowWindowMs: 120,
+        moveSettleWindowMs: 420
     });
 
     const THINKING_CONTENT = '。。。';
@@ -61,10 +64,12 @@
         turnEndedAt: 0,
         speechStartedAt: 0,
         followRafId: 0,
+        followUntilAt: 0,
         hideTimerId: 0,
         timeoutTimerId: 0,
         textFallbackTimerId: 0,
         emotionSwapTimerId: 0,
+        isAvatarPointerActive: false,
         lastRenderX: null,
         lastRenderY: null,
         lastRenderWidth: null,
@@ -91,6 +96,13 @@
 
     function now() {
         return Date.now();
+    }
+
+    function perfNow() {
+        if (window.performance && typeof window.performance.now === 'function') {
+            return window.performance.now();
+        }
+        return now();
     }
 
     function bubbleTraceEnabled() {
@@ -140,6 +152,8 @@
             cancelAnimationFrame(state.followRafId);
             state.followRafId = 0;
         }
+        state.followUntilAt = 0;
+        state.isAvatarPointerActive = false;
     }
 
     function resetPositionTracking() {
@@ -334,6 +348,25 @@
         return null;
     }
 
+    function getActiveAvatarContainer() {
+        if (isContainerVisible('mmd-container')) {
+            return document.getElementById('mmd-container');
+        }
+        if (isContainerVisible('vrm-container')) {
+            return document.getElementById('vrm-container');
+        }
+        if (isContainerVisible('live2d-container')) {
+            return document.getElementById('live2d-container');
+        }
+        return null;
+    }
+
+    function isEventInsideActiveAvatar(event) {
+        var container = getActiveAvatarContainer();
+        var target = event && event.target;
+        return !!(container && target && typeof container.contains === 'function' && container.contains(target));
+    }
+
     function updatePosition() {
         if (!state.visible) {
             return;
@@ -491,7 +524,17 @@
         state.lastBoundsCenterY = boundsCenterY;
     }
 
-    function startFollowLoop() {
+    function extendFollowLoop(durationMs) {
+        if (!state.visible) {
+            return;
+        }
+
+        var duration = Math.max(0, Number(durationMs) || 0);
+        if (duration <= 0) {
+            return;
+        }
+
+        state.followUntilAt = Math.max(state.followUntilAt, perfNow() + duration);
         if (state.followRafId) {
             return;
         }
@@ -499,14 +542,68 @@
         var tick = function () {
             state.followRafId = 0;
             if (!state.visible) {
+                state.followUntilAt = 0;
                 return;
             }
+
             updatePosition();
-            state.followRafId = requestAnimationFrame(tick);
+            if (state.followUntilAt > perfNow()) {
+                state.followRafId = requestAnimationFrame(tick);
+            } else {
+                state.followUntilAt = 0;
+            }
         };
 
-        updatePosition();
         state.followRafId = requestAnimationFrame(tick);
+    }
+
+    function syncPositionOnce() {
+        if (!state.visible) {
+            return;
+        }
+        updatePosition();
+    }
+
+    function handleAvatarPointerDown(event) {
+        if (!state.visible || !isEventInsideActiveAvatar(event)) {
+            return;
+        }
+        state.isAvatarPointerActive = true;
+        syncPositionOnce();
+        extendFollowLoop(TIMING.moveFollowWindowMs);
+    }
+
+    function handleAvatarPointerMove() {
+        if (!state.visible || !state.isAvatarPointerActive) {
+            return;
+        }
+        extendFollowLoop(TIMING.moveFollowWindowMs);
+    }
+
+    function handleAvatarPointerEnd() {
+        if (!state.isAvatarPointerActive) {
+            return;
+        }
+        state.isAvatarPointerActive = false;
+        if (state.visible) {
+            extendFollowLoop(TIMING.moveSettleWindowMs);
+        }
+    }
+
+    function handleAvatarWheel(event) {
+        if (!state.visible || !isEventInsideActiveAvatar(event)) {
+            return;
+        }
+        syncPositionOnce();
+        extendFollowLoop(TIMING.moveSettleWindowMs);
+    }
+
+    function handleModelLoaded() {
+        if (!state.visible) {
+            return;
+        }
+        syncPositionOnce();
+        extendFollowLoop(TIMING.showFollowWindowMs);
     }
 
     function forceHide(resetTurn) {
@@ -644,7 +741,8 @@
         state.speechStartedAt = 0;
 
         applyVisualState();
-        startFollowLoop();
+        syncPositionOnce();
+        extendFollowLoop(TIMING.showFollowWindowMs);
         scheduleThinkingTimeout(turnId);
         logBubbleLifecycle('showThinking:applied', {
             requestedTurnId: turnId
@@ -692,7 +790,7 @@
             state.phase = 'emotion-ready';
             state.content = getThemeContent(state.theme);
             applyVisualState();
-            updatePosition();
+            syncPositionOnce();
             logBubbleLifecycle('handleEmotionReady:applied', {
                 detailTurnId: turnId
             });
@@ -738,7 +836,8 @@
 
         state.speechStartedAt = now();
         applyVisualState();
-        startFollowLoop();
+        syncPositionOnce();
+        extendFollowLoop(TIMING.showFollowWindowMs);
         logBubbleLifecycle('handleSpeechStart:applied', {
             detailTurnId: turnId
         });
@@ -802,7 +901,8 @@
 
     function handleResize() {
         if (state.visible) {
-            updatePosition();
+            syncPositionOnce();
+            extendFollowLoop(TIMING.showFollowWindowMs);
         }
     }
 
@@ -833,6 +933,18 @@
             handleSettingChanged(event.detail || {});
         });
         window.addEventListener('resize', handleResize);
+        window.addEventListener('vrm-model-loaded', handleModelLoaded);
+        window.addEventListener('mmd-model-loaded', handleModelLoaded);
+        window.addEventListener('live2d-model-loaded', handleModelLoaded);
+        document.addEventListener('pointerdown', handleAvatarPointerDown, true);
+        document.addEventListener('mousedown', handleAvatarPointerDown, true);
+        document.addEventListener('pointermove', handleAvatarPointerMove, true);
+        document.addEventListener('mousemove', handleAvatarPointerMove, true);
+        document.addEventListener('pointerup', handleAvatarPointerEnd, true);
+        document.addEventListener('mouseup', handleAvatarPointerEnd, true);
+        document.addEventListener('pointercancel', handleAvatarPointerEnd, true);
+        window.addEventListener('blur', handleAvatarPointerEnd);
+        document.addEventListener('wheel', handleAvatarWheel, { capture: true, passive: true });
         document.addEventListener('visibilitychange', function () {
             if (document.hidden) {
                 forceHide(false);

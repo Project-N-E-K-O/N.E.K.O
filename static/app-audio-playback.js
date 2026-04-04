@@ -23,6 +23,10 @@
         return String(turnId);
     }
 
+    const ASSISTANT_TURN_COMPLETION_FALLBACK_MS = 700;
+    let _assistantTurnCompletionFallbackTimer = 0;
+    let _assistantTurnCompletionFallbackTurnId = null;
+
     function audioTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
     }
@@ -153,9 +157,56 @@
         });
     }
 
+    function clearAssistantTurnCompletionFallback() {
+        if (_assistantTurnCompletionFallbackTimer) {
+            clearTimeout(_assistantTurnCompletionFallbackTimer);
+            _assistantTurnCompletionFallbackTimer = 0;
+        }
+        _assistantTurnCompletionFallbackTurnId = null;
+    }
+
     function clearAssistantTurnCompletion() {
+        clearAssistantTurnCompletionFallback();
         S.assistantTurnCompletedId = null;
         S.assistantTurnCompletionSource = null;
+    }
+
+    function scheduleAssistantTurnCompletionFallback(turnId, source) {
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        clearAssistantTurnCompletionFallback();
+        if (!normalizedTurnId) {
+            return;
+        }
+
+        _assistantTurnCompletionFallbackTurnId = normalizedTurnId;
+        logAudioLifecycle('scheduleAssistantTurnCompletionFallback:scheduled', {
+            turnId: normalizedTurnId,
+            source: source || null,
+            delayMs: ASSISTANT_TURN_COMPLETION_FALLBACK_MS
+        });
+        _assistantTurnCompletionFallbackTimer = window.setTimeout(function () {
+            var fallbackTurnId = _assistantTurnCompletionFallbackTurnId;
+            _assistantTurnCompletionFallbackTimer = 0;
+            _assistantTurnCompletionFallbackTurnId = null;
+
+            if (!fallbackTurnId || S.assistantTurnCompletedId !== fallbackTurnId) {
+                logAudioLifecycle('scheduleAssistantTurnCompletionFallback:skip_completion_mismatch', {
+                    turnId: fallbackTurnId || normalizedTurnId
+                });
+                return;
+            }
+            if (hasAssistantSpeechActivity(fallbackTurnId)) {
+                logAudioLifecycle('scheduleAssistantTurnCompletionFallback:skip_activity_resumed', {
+                    turnId: fallbackTurnId
+                });
+                return;
+            }
+
+            logAudioLifecycle('scheduleAssistantTurnCompletionFallback:fire', {
+                turnId: fallbackTurnId
+            });
+            maybeFinalizeAssistantSpeech(fallbackTurnId);
+        }, ASSISTANT_TURN_COMPLETION_FALLBACK_MS);
     }
 
     function resolveAssistantAudioTurnId(turnId, speechId) {
@@ -263,8 +314,7 @@
         S.isPlaying = false;
         dispatchAssistantSpeechEnd(normalizedTurnId);
         var completionSource = S.assistantTurnCompletionSource;
-        S.assistantTurnCompletedId = null;
-        S.assistantTurnCompletionSource = null;
+        clearAssistantTurnCompletion();
         logAudioLifecycle('maybeFinalizeAssistantSpeech:completed', {
             requestedTurnId: normalizedTurnId,
             completionSource: completionSource
@@ -310,6 +360,7 @@
                     turnId: turnId,
                     source: source
                 });
+                scheduleAssistantTurnCompletionFallback(turnId, source);
                 return;
             }
             maybeFinalizeAssistantSpeech(turnId);

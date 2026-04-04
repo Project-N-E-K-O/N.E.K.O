@@ -1098,8 +1098,13 @@
 
                     // Reset proactive chat backoff after AI turn completes
                     var hasChatMode = (typeof window.hasAnyChatModeEnabled === 'function') ? window.hasAnyChatModeEnabled() : false;
-                    if (S.proactiveChatEnabled && hasChatMode && !S.isRecording) {
-                        if (typeof window.resetProactiveChatBackoff === 'function') window.resetProactiveChatBackoff();
+                    if (S.proactiveChatEnabled && hasChatMode) {
+                        if (!S.isRecording) {
+                            if (typeof window.resetProactiveChatBackoff === 'function') window.resetProactiveChatBackoff();
+                        } else if (typeof window.scheduleProactiveChat === 'function') {
+                            // Voice mode also needs a turn-end fallback rearm in case TTS/playback completion never fires.
+                            window.scheduleProactiveChat();
+                        }
                     }
 
                 // -------- session_preparing --------
