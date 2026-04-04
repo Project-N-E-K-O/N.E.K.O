@@ -895,7 +895,7 @@ class LLMSessionManager:
         if thread_ref and thread_ref.is_alive():
             try:
                 req_queue_ref.put((None, None))
-                thread_ref.join(timeout=2.0)
+                await asyncio.to_thread(thread_ref.join, 2.0)
             except Exception as e:
                 logger.error(f"💥 关闭TTS线程时出错: {e}")
 
@@ -918,9 +918,12 @@ class LLMSessionManager:
                 except Exception:
                     pass
 
-        async with self.tts_cache_lock:
-            self.tts_ready = False
-            self.tts_pending_chunks.clear()
+        # 只在被拆除的 runtime 仍是当前 runtime 时才清全局 TTS 状态，
+        # 避免新 session 已创建新队列/worker 后被旧 teardown 误重置
+        if resp_queue_ref is self.tts_response_queue:
+            async with self.tts_cache_lock:
+                self.tts_ready = False
+                self.tts_pending_chunks.clear()
 
     def _respawn_tts_worker(self):
         """检测 TTS Worker 线程已死亡时重新拉起，不阻塞等待就绪。
