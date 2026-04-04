@@ -1119,9 +1119,11 @@
     },
     "voice": {
         "title": "Voice Registration",
-        "alibabaApiRequired": "⚠️ This feature requires the CosyVoice model. Please save the Alibaba Bailian API Key in API Keys settings (enabling Assist API is not required), or configure a local voice server.",
-        "minimaxApiRequired": "⚠️ This feature requires the MiniMax model (China). Please save the MiniMax API Key in API Keys settings (enabling Assist API is not required).",
-        "minimaxIntlApiRequired": "⚠️ This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
+        "apiKeySettings": "API Settings",
+        "goToApiSettings": "Open API Key Settings",
+        "alibabaApiRequired": "This feature requires the CosyVoice model. Please save the Alibaba Bailian API Key in API Keys settings (enabling Assist API is not required), or configure a local voice server.",
+        "minimaxApiRequired": "This feature requires the MiniMax model (China). Please save the MiniMax API Key in API Keys settings (enabling Assist API is not required).",
+        "minimaxIntlApiRequired": "This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
         "providerLabel": "Voice Clone Provider",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
@@ -1178,6 +1180,10 @@
         "deleteError": "Delete failed: {{error}}",
         "freePresetLabel": "Free Preset Voices",
         "freePresetBadge": "Preset",
+        "noApiConfiguredTitle": "Clone API Not Configured",
+        "noApiConfiguredMessage": "No voice clone API has been configured yet. To use voice cloning, you need to configure the API Key for Alibaba Bailian, MiniMax (China), or MiniMax (International).",
+        "goToApiSettingsBtn": "Go to API Settings",
+        "later": "Later",
         "freeVoice": {
             "playfulGirl": "Playful Girl",
             "cuteGirl": "Cute Girl",

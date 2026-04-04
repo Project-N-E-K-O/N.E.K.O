@@ -1119,9 +1119,11 @@
     },
     "voice": {
         "title": "ボイス登録",
-        "alibabaApiRequired": "⚠️ この機能にはCosyVoiceモデルが必要です。APIキー設定でAlibaba Bailian APIキーを保存してください（Assist APIの有効化は不要）。またはローカル音声サーバーを設定してください",
-        "minimaxApiRequired": "⚠️ この機能にはMiniMaxモデル（China）が必要です。APIキー設定でMiniMax APIキーを保存してください（Assist APIの有効化は不要）",
-        "minimaxIntlApiRequired": "⚠️ この機能にはMiniMaxモデル（国際版）が必要です。APIキー設定でMiniMax国際版APIキーを保存してください（Assist APIの有効化は不要）",
+        "apiKeySettings": "API設定へ",
+        "goToApiSettings": "APIキー設定ページを開く",
+        "alibabaApiRequired": "この機能にはCosyVoiceモデルが必要です。APIキー設定でAlibaba Bailian APIキーを保存してください（Assist APIの有効化は不要）。またはローカル音声サーバーを設定してください",
+        "minimaxApiRequired": "この機能にはMiniMaxモデル（China）が必要です。APIキー設定でMiniMax APIキーを保存してください（Assist APIの有効化は不要）",
+        "minimaxIntlApiRequired": "この機能にはMiniMaxモデル（国際版）が必要です。APIキー設定でMiniMax国際版APIキーを保存してください（Assist APIの有効化は不要）",
         "providerLabel": "音声クローンプロバイダー",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
@@ -1178,6 +1180,10 @@
         "deleteError": "削除失敗：{{error}}",
         "freePresetLabel": "無料プリセット",
         "freePresetBadge": "プリセット",
+        "noApiConfiguredTitle": "クローンAPIが未設定",
+        "noApiConfiguredMessage": "ボイスクローン機能で使用できるAPIが設定されていません。ボイスクローンを使用するには、Alibaba Bailian、MiniMax（中国版）、またはMiniMax（国際版）のAPIキーを設定してください。",
+        "goToApiSettingsBtn": "API設定へ",
+        "later": "後で",
         "freeVoice": {
             "playfulGirl": "陽気な少女",
             "cuteGirl": "かわいい女の子",

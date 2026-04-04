@@ -35,15 +35,60 @@ body .container-header {
 }
 
 /* 标题栏内的可交互元素需要禁用拖动 */
-.container-header .close-page-btn {
+.container-header .close-page-btn,
+.container-header .api-key-btn {
     -webkit-app-region: no-drag;
 }
 
-.close-page-btn {
+/* 头部操作按钮容器 */
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
     position: absolute;
     right: 24px;
     top: 50%;
     transform: translateY(-50%);
+    z-index: 100;
+}
+
+/* API Key 按钮样式 */
+.api-key-btn {
+    background: rgba(255, 255, 255, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    color: #fff;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s ease;
+    backdrop-filter: blur(4px);
+}
+
+.api-key-btn:hover {
+    background: rgba(255, 255, 255, 0.35);
+    transform: scale(1.02);
+}
+
+.api-key-btn:active {
+    transform: scale(0.98);
+}
+
+.api-key-btn img {
+    width: 18px;
+    height: 18px;
+    filter: brightness(0) invert(1);
+}
+
+.close-page-btn {
+    position: relative;
+    right: auto;
+    top: auto;
+    transform: none;
     background: transparent;
     border: none;
     cursor: pointer;
@@ -57,11 +102,11 @@ body .container-header {
 
 .close-page-btn:hover {
     opacity: 0.8;
-    transform: translateY(-50%) scale(1.1);
+    transform: scale(1.1);
 }
 
 .close-page-btn:active {
-    transform: translateY(-50%) scale(0.95);
+    transform: scale(0.95);
 }
 
 .close-page-btn img {
@@ -610,6 +655,30 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     border: 1px solid #ccc;
 }
 
+/* 音色列表自定义滚动条 - 无背景轨道 + 蓝色滑块 */
+.voice-list-bg::-webkit-scrollbar {
+    width: 8px;
+}
+
+.voice-list-bg::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.voice-list-bg::-webkit-scrollbar-thumb {
+    background: #40C5F1;
+    border-radius: 4px;
+}
+
+.voice-list-bg::-webkit-scrollbar-thumb:hover {
+    background: #2db5e1;
+}
+
+/* Firefox 滚动条样式 */
+.voice-list-bg {
+    scrollbar-width: thin;
+    scrollbar-color: #40C5F1 transparent;
+}
+
 .voice-list-item {
     display: flex;
     align-items: center;
@@ -631,6 +700,18 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
 
 .voice-list-item:last-child {
     margin-bottom: 0;
+}
+
+/* 音色列表分割线 */
+.voice-list-divider {
+    border-top: 2px dashed #40C5F1;
+    margin: 20px 0 16px 0;
+    padding-top: 12px;
+    color: #40C5F1;
+    font-size: 13px;
+    text-align: center;
+    font-weight: 500;
+    opacity: 0.8;
 }
 
 .voice-info {

@@ -1119,9 +1119,11 @@
     },
     "voice": {
         "title": "Регистрация голоса",
-        "alibabaApiRequired": "⚠️ Для этой функции нужна модель CosyVoice. Сохраните API-ключ Alibaba Bailian в настройках API (включение Assist API не требуется) или настройте локальный голосовой сервер.",
-        "minimaxApiRequired": "⚠️ Для этой функции необходима модель MiniMax (Китай). Сохраните ключ API MiniMax в настройках API (включение Assist API не требуется).",
-        "minimaxIntlApiRequired": "⚠️ Для этой функции необходима модель MiniMax (Международная). Сохраните ключ API MiniMax (Международная) в настройках API (включение Assist API не требуется).",
+        "apiKeySettings": "Настройки API",
+        "goToApiSettings": "Открыть настройки API-ключа",
+        "alibabaApiRequired": "Для этой функции нужна модель CosyVoice. Сохраните API-ключ Alibaba Bailian в настройках API (включение Assist API не требуется) или настройте локальный голосовой сервер.",
+        "minimaxApiRequired": "Для этой функции необходима модель MiniMax (Китай). Сохраните ключ API MiniMax в настройках API (включение Assist API не требуется).",
+        "minimaxIntlApiRequired": "Для этой функции необходима модель MiniMax (Международная). Сохраните ключ API MiniMax (Международная) в настройках API (включение Assist API не требуется).",
         "providerLabel": "Провайдер клонирования голоса",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
@@ -1178,6 +1180,10 @@
         "deleteError": "Ошибка удаления: {{error}}",
         "freePresetLabel": "Бесплатные предустановленные голоса",
         "freePresetBadge": "Предустановленный",
+        "noApiConfiguredTitle": "API клонирования не настроен",
+        "noApiConfiguredMessage": "API для функции клонирования голоса еще не настроен. Чтобы использовать клонирование голоса, вам необходимо настроить ключ API для Alibaba Bailian, MiniMax (Китай) или MiniMax (Международный).",
+        "goToApiSettingsBtn": "Перейти к настройкам API",
+        "later": "Позже",
         "freeVoice": {
             "playfulGirl": "Игривая девушка",
             "cuteGirl": "Милая девочка",

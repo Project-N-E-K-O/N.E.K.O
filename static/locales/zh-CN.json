@@ -1119,9 +1119,11 @@
     },
     "voice": {
         "title": "音色注册",
-        "alibabaApiRequired": "⚠️ 此功能需要阿里CosyVoice模型，请在API密钥设置页中保存阿里百炼API Key（不要求启用辅助API）或配置本地语音服务器",
-        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（国服），请在API密钥设置页中保存MiniMax API Key（不要求启用辅助API）",
-        "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（国际服），请在API密钥设置页中保存MiniMax国际服API Key（不要求启用辅助API）",
+        "apiKeySettings": "前往API设置",
+        "goToApiSettings": "打开API密钥设置页面",
+        "alibabaApiRequired": "此功能需要阿里CosyVoice模型，请在API密钥设置页中保存阿里百炼API Key（不要求启用辅助API）或配置本地语音服务器",
+        "minimaxApiRequired": "此功能需要MiniMax模型（国服），请在API密钥设置页中保存MiniMax API Key（不要求启用辅助API）",
+        "minimaxIntlApiRequired": "此功能需要MiniMax模型（国际服），请在API密钥设置页中保存MiniMax国际服API Key（不要求启用辅助API）",
         "providerLabel": "语音克隆服务商",
         "provider": {
             "cosyvoice": "阿里云 CosyVoice",
@@ -1178,6 +1180,10 @@
         "deleteError": "删除失败：{{error}}",
         "freePresetLabel": "免费预设音色",
         "freePresetBadge": "预设",
+        "noApiConfiguredTitle": "尚未配置克隆API",
+        "noApiConfiguredMessage": "还没有设置任何可使用克隆功能的API。使用语音克隆需要配置阿里云百炼、MiniMax（国服）或MiniMax（国际服）的API Key。",
+        "goToApiSettingsBtn": "前往API设置",
+        "later": "稍后再说",
         "freeVoice": {
             "playfulGirl": "俏皮女孩",
             "cuteGirl": "可爱女孩",

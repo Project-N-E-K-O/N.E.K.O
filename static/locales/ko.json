@@ -1119,9 +1119,11 @@
     },
     "voice": {
         "title": "음성 등록",
-        "alibabaApiRequired": "⚠️ 이 기능에는 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Bailian API 키를 저장하세요 (Assist API 활성화 불필요). 또는 로컬 음성 서버를 구성하세요.",
-        "minimaxApiRequired": "⚠️ 이 기능에는 MiniMax 모델 (China)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
-        "minimaxIntlApiRequired": "⚠️ 이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
+        "apiKeySettings": "API 설정으로",
+        "goToApiSettings": "API 키 설정 페이지 열기",
+        "alibabaApiRequired": "이 기능에는 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Bailian API 키를 저장하세요 (Assist API 활성화 불필요). 또는 로컬 음성 서버를 구성하세요.",
+        "minimaxApiRequired": "이 기능에는 MiniMax 모델 (China)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
+        "minimaxIntlApiRequired": "이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
@@ -1176,8 +1178,12 @@
         "deleteSuccess": "음성 \"{{name}}\"이(가) 성공적으로 삭제되었습니다.",
         "deleteFailed": "삭제 실패",
         "deleteError": "삭제 실패: {{error}}",
-        "freePresetLabel": "무료 사전 설정",
+        "freePresetLabel": "묣료 사전 설정",
         "freePresetBadge": "사전 설정",
+        "noApiConfiguredTitle": "클론 API 미설정",
+        "noApiConfiguredMessage": "음성 복제 기능에 사용할 수 있는 API가 설정되지 않았습니다. 음성 복제를 사용하려면 Alibaba Bailian, MiniMax (China) 또는 MiniMax (국제판)의 API 키를 구성해야 합니다.",
+        "goToApiSettingsBtn": "API 설정으로",
+        "later": "나중에",
         "freeVoice": {
             "playfulGirl": "장난기 많은 소녀",
             "cuteGirl": "귀여운 소녀",

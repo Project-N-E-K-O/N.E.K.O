@@ -54,6 +54,43 @@ function closeVoiceClonePage() {
     }
 }
 
+// API设置窗口引用
+let apiKeySettingsWindow = null;
+
+// 处理API设置页面发送的消息
+function handleApiKeySettingsMessage(e) {
+    if (!ALLOWED_ORIGINS.includes(e.origin)) return;
+    // API密钥已更改，刷新页面以获取最新配置
+    if (e.data && (e.data.type === 'api_key_changed' || e.data.type === 'api_key_saved')) {
+        window.location.reload();
+    }
+}
+
+// 打开API密钥设置页面（独立窗口）
+function openApiKeySettings() {
+    // 如果窗口已存在且未关闭，则聚焦到该窗口
+    if (apiKeySettingsWindow && !apiKeySettingsWindow.closed) {
+        apiKeySettingsWindow.focus();
+        return;
+    }
+
+    // 计算窗口位置，使其居中显示
+    const width = 900;
+    const height = 750;
+    const left = Math.max(0, Math.floor((screen.width - width) / 2));
+    const top = Math.max(0, Math.floor((screen.height - height) / 2));
+
+    // 打开独立窗口
+    apiKeySettingsWindow = window.open(
+        '/api_key',
+        'neko_api_key_settings',
+        `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+    );
+}
+
+// 监听API设置页面的消息
+window.addEventListener('message', handleApiKeySettingsMessage);
+
 // 更新文件选择显示
 function updateFileDisplay() {
     const fileInput = document.getElementById('audioFile');
@@ -232,6 +269,83 @@ if (window.i18n && window.i18n.isInitialized) {
     }
 })();
 
+// 检查是否设置了可用的克隆API
+async function checkCloneApiConfig() {
+    try {
+        const response = await fetch('/api/config/api_providers');
+        if (!response.ok) return; // 如果请求失败，不显示弹窗
+        const data = await response.json();
+        if (!data.success) return;
+
+        // 检查是否有可用的克隆API配置
+        // 支持的克隆API: alibaba_bailian (阿里百炼), minimax, minimax_intl
+        const apiKeyRegistry = data.api_key_registry || {};
+        const hasAlibaba = apiKeyRegistry['alibaba_bailian'] && apiKeyRegistry['alibaba_bailian'].api_key;
+        const hasMinimax = apiKeyRegistry['minimax'] && apiKeyRegistry['minimax'].api_key;
+        const hasMinimaxIntl = apiKeyRegistry['minimax_intl'] && apiKeyRegistry['minimax_intl'].api_key;
+
+        // 如果至少设置了一个，不显示弹窗
+        if (hasAlibaba || hasMinimax || hasMinimaxIntl) {
+            return;
+        }
+
+        // 没有设置任何可用的克隆API，显示提示弹窗
+        showApiConfigModal();
+    } catch (error) {
+        console.error('检查API配置失败:', error);
+    }
+}
+
+// 显示API配置提示弹窗
+function showApiConfigModal() {
+    // 如果已经存在弹窗，不再创建
+    if (document.getElementById('api-config-modal')) return;
+
+    const modal = document.createElement('div');
+    modal.id = 'api-config-modal';
+    modal.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center;';
+
+    const content = document.createElement('div');
+    content.style.cssText = 'background:#fff;border-radius:12px;padding:32px;max-width:420px;width:90%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.2);';
+
+    const title = document.createElement('h3');
+    title.style.cssText = 'margin:0 0 16px 0;color:#333;font-size:1.3rem;';
+    title.textContent = window.t ? window.t('voice.noApiConfiguredTitle') : '尚未配置克隆API';
+
+    const message = document.createElement('p');
+    message.style.cssText = 'margin:0 0 24px 0;color:#666;line-height:1.6;';
+    message.textContent = window.t ? window.t('voice.noApiConfiguredMessage') : '还没有设置任何可使用克隆功能的API。使用语音克隆需要配置阿里云百炼、MiniMax（国服）或MiniMax（国际服）的API Key。';
+
+    const btnContainer = document.createElement('div');
+    btnContainer.style.cssText = 'display:flex;gap:12px;justify-content:center;';
+
+    const goToSettingsBtn = document.createElement('button');
+    goToSettingsBtn.style.cssText = 'background:#40C5F1;color:#fff;border:none;padding:12px 24px;border-radius:8px;cursor:pointer;font-size:1rem;font-weight:500;transition:all 0.2s;';
+    goToSettingsBtn.textContent = window.t ? window.t('voice.goToApiSettingsBtn') : '前往API设置';
+    goToSettingsBtn.onmouseover = () => goToSettingsBtn.style.background = '#2db5e1';
+    goToSettingsBtn.onmouseout = () => goToSettingsBtn.style.background = '#40C5F1';
+    goToSettingsBtn.onclick = () => {
+        document.body.removeChild(modal);
+        openApiKeySettings();
+    };
+
+    const closeBtn = document.createElement('button');
+    closeBtn.style.cssText = 'background:#f0f0f0;color:#666;border:none;padding:12px 24px;border-radius:8px;cursor:pointer;font-size:1rem;font-weight:500;transition:all 0.2s;';
+    closeBtn.textContent = window.t ? window.t('voice.later') : '稍后再说';
+    closeBtn.onmouseover = () => closeBtn.style.background = '#e0e0e0';
+    closeBtn.onmouseout = () => closeBtn.style.background = '#f0f0f0';
+    closeBtn.onclick = () => document.body.removeChild(modal);
+
+    btnContainer.appendChild(goToSettingsBtn);
+    btnContainer.appendChild(closeBtn);
+
+    content.appendChild(title);
+    content.appendChild(message);
+    content.appendChild(btnContainer);
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+}
+
 // 服务商切换时更新提示横幅
 document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     const providerSelect = document.getElementById('voiceProvider');
@@ -257,6 +371,9 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
 
     providerSelect.addEventListener('change', updateNotice);
     updateNotice();
+
+    // 页面加载时检查API配置
+    checkCloneApiConfig();
 });
 
 // 当前克隆方式
@@ -736,7 +853,7 @@ async function loadVoices() {
         if (data.free_voices && Object.keys(data.free_voices).length > 0) {
             // 添加分隔线
             const divider = document.createElement('div');
-            divider.style.cssText = 'border-top: 1px dashed rgba(255,255,255,0.2); margin: 12px 0; padding-top: 8px; color: rgba(255,255,255,0.5); font-size: 12px; text-align: center;';
+            divider.className = 'voice-list-divider';
             const freeLabel = window.t ? window.t('voice.freePresetLabel') : '免费预设音色';
             divider.textContent = '── ' + freeLabel + ' ──';
             container.appendChild(divider);

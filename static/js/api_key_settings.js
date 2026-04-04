@@ -1481,25 +1481,31 @@ async function saveApiKey(params) {
                 await clearVoiceIds();
                 // 通知其他页面API Key已更改
                 const targetOrigin = getTargetOrigin();
+                const message = {
+                    type: 'api_key_changed',
+                    timestamp: Date.now()
+                };
+                // 通知父窗口
                 if (window.parent !== window) {
-                    window.parent.postMessage({
-                        type: 'api_key_changed',
-                        timestamp: Date.now()
-                    }, targetOrigin);
-                } else {
-                    // 如果是直接打开的页面，广播给所有子窗口
-                    const iframes = document.querySelectorAll('iframe');
-                    iframes.forEach(iframe => {
-                        try {
-                            iframe.contentWindow.postMessage({
-                                type: 'api_key_changed',
-                                timestamp: Date.now()
-                            }, targetOrigin);
-                        } catch (e) {
-                            // 跨域iframe会抛出异常，忽略
-                        }
-                    });
+                    window.parent.postMessage(message, targetOrigin);
                 }
+                // 通知打开本窗口的窗口
+                if (window.opener && !window.opener.closed) {
+                    try {
+                        window.opener.postMessage(message, targetOrigin);
+                    } catch (e) {
+                        // 跨域会抛出异常，忽略
+                    }
+                }
+                // 广播给所有子窗口
+                const iframes = document.querySelectorAll('iframe');
+                iframes.forEach(iframe => {
+                    try {
+                        iframe.contentWindow.postMessage(message, targetOrigin);
+                    } catch (e) {
+                        // 跨域iframe会抛出异常，忽略
+                    }
+                });
             } else {
                 const errorMsg = result.error || (window.t ? window.t('common.unknownError') : '未知错误');
                 showStatus(window.t ? window.t('api.saveFailed', { error: errorMsg }) : '保存失败: ' + errorMsg, 'error');
