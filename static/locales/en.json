@@ -1505,6 +1505,7 @@
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
             "mergeMessages": "Merge Messages",
+            "avatarReactionBubble": "Expression Bubble",
             "proactiveChat": "Proactive Chat",
             "proactiveVision": "Proactive Vision",
             "proactiveVisionChat": "Screen Share",

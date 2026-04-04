@@ -74,6 +74,13 @@
         isSwitchingMode: false,
         sessionStartedResolver: null,
         sessionStartedRejecter: null,
+        assistantTurnId: null,
+        assistantPendingTurnServerId: null,
+        assistantTurnAwaitingBubble: false,
+        assistantTurnSeq: 0,
+        assistantTurnCompletedId: null,
+        assistantTurnCompletionSource: null,
+        assistantSpeechActiveTurnId: null,
 
         // --- 屏幕共享 ---
         screenCaptureStream: null,
@@ -111,6 +118,7 @@
 
         // --- UI / 杂项 ---
         focusModeEnabled: false,
+        avatarReactionBubbleEnabled: true,
         renderQuality: 'medium',
         targetFrameRate: 60,
         screenshotCounter: 0,
@@ -153,7 +161,7 @@
         'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
         'proactiveMusicEnabled', 'proactiveMemeEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
-        'proactiveChatInterval', 'proactiveVisionInterval',
+        'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',
         'renderQuality', 'targetFrameRate', 'isRecording',
     ];
 
