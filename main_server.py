@@ -1371,7 +1371,7 @@ if __name__ == "__main__":
     def _custom_handle_exit(sig, frame):
         _shutdown_state["signal_count"] += 1
         if _shutdown_state["signal_count"] > 1:
-            logger.warning("收到第二次关闭信号，立即强制退出。")
+            logger.warning("收到第二次关闭信号, 立即强制退出.")
             cleanup()
             os._exit(130)
         logger.info("正在关闭服务器...")
