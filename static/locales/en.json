@@ -1585,7 +1585,13 @@
             "frameRateUnlimited": "Unlimited(VSync)",
             "mouseTracking": "Mouse Tracking",
             "fullscreenTracking": "Fullscreen Tracking",
-            "localTracking": "Local Tracking"
+            "localTracking": "Local Tracking",
+            "textGuardMaxLength": "Response Length Limit",
+            "unlimited": "Unlimited",
+            "characters": " chars",
+            "textGuardUnlimitedWarning": "May cause serious issues with the cat girl, not recommended unless necessary",
+            "textGuardHighWarning": "Setting too high may cause memory and language confusion, recommended within 500 chars",
+            "textGuardNote": "Applies to text replies only; does not affect voice sessions"
         }
     },
     "subtitle": {

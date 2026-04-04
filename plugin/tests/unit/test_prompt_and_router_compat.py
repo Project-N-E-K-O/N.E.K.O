@@ -30,6 +30,29 @@ def test_is_default_prompt_keeps_custom_skills_line_non_default() -> None:
     )
     assert is_default_prompt(customized_prompt) is False
 
+def test_is_default_prompt_accepts_legacy_prompt_without_memory_integrity() -> None:
+    """Old stored default (before Memory Integrity was added) should still be recognised."""
+    legacy_prompt = "\n".join(
+        line for line in get_lanlan_prompt("zh").splitlines()
+        if not line.strip().startswith("- Memory Integrity:")
+    )
+    assert is_default_prompt(legacy_prompt) is True
+
+
+def test_is_default_prompt_rejects_custom_memory_integrity_line() -> None:
+    """User who edited the Memory Integrity line should NOT be treated as default."""
+    base_prompt = get_lanlan_prompt("zh")
+    memory_line = next(
+        line for line in base_prompt.splitlines()
+        if line.strip().startswith("- Memory Integrity:")
+    )
+    customized_prompt = base_prompt.replace(
+        memory_line,
+        "- Memory Integrity: 我改过这行，加了自己的规则。",
+    )
+    assert is_default_prompt(customized_prompt) is False
+
+
 def test_agent_router_exports_openclaw_availability_proxy() -> None:
     paths = {
         path

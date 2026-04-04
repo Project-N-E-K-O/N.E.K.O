@@ -18,6 +18,7 @@ from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker
+from utils.preferences import load_global_conversation_settings
 from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from config.prompts_sys import (
     _loc,
@@ -285,12 +286,20 @@ class LLMSessionManager:
 
     def _get_text_guard_max_length(self) -> int:
         try:
-            value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 300))
-            if value <= 0:
+            # 优先从对话设置中读取，如果不存在则从核心配置读取
+            conversation_settings = load_global_conversation_settings()
+            if 'textGuardMaxLength' in conversation_settings:
+                value = int(conversation_settings['textGuardMaxLength'])
+            else:
+                value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 350))
+            # 0 表示无限制，返回一个很大的数
+            if value == 0:
+                return 999999
+            if value < 0:
                 raise ValueError
             return value
         except Exception:
-            return 300
+            return 350
 
     async def _clear_tts_pipeline(self):
         """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""
@@ -2185,6 +2194,9 @@ class LLMSessionManager:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
                     logger.debug("[%s] trigger_agent_callbacks: text session ready, calling stream_proactive", self.lanlan_name)
+                    # 更新字数限制（可能用户在对话期间修改了设置）
+                    if hasattr(self.session, 'update_max_response_length'):
+                        self.session.update_max_response_length(self._get_text_guard_max_length())
                     self.pending_agent_callbacks.clear()
                     delivered = await self.session.stream_proactive(instruction)
                     logger.debug("[%s] trigger_agent_callbacks: text session stream_proactive delivered=%s", self.lanlan_name, delivered)
@@ -2204,6 +2216,9 @@ class LLMSessionManager:
                     async with self._proactive_write_lock:
                         async with self.lock:
                             self.current_speech_id = str(uuid4())
+                        # 更新字数限制（可能用户在对话期间修改了设置）
+                        if hasattr(self.session, 'update_max_response_length'):
+                            self.session.update_max_response_length(self._get_text_guard_max_length())
                         self.pending_agent_callbacks.clear()
                         delivered = await self.session.stream_proactive(instruction)
                         if delivered:
@@ -2625,6 +2640,10 @@ class LLMSessionManager:
                 
                 # 文本模式：直接发送文本
                 if isinstance(data, str):
+                    # 更新字数限制（可能用户在对话期间修改了设置）
+                    if hasattr(self.session, 'update_max_response_length'):
+                        self.session.update_max_response_length(self._get_text_guard_max_length())
+
                     # 先打断当前正在播放的语音（旧speech_id），避免误打断新回复
                     async with self.lock:
                         interrupted_speech_id = self.current_speech_id

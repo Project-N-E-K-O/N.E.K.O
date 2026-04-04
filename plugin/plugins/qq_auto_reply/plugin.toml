@@ -18,7 +18,7 @@ enabled = true
 
 [plugin_runtime]
 enabled = true
-auto_start = true
+auto_start = false
 
 [qq_auto_reply]
 onebot_url = "ws://127.0.0.1:3001"
