@@ -138,9 +138,10 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
     }
     # Lines added in newer defaults that old stored prompts won't have.
     # We strip them during comparison so both old and new match.
-    added_context_prefixes = (
-        "- Memory Integrity:",
-    )
+    # Must be exact strings (not prefixes) to avoid stripping user-customised variants.
+    added_context_lines = {
+        "- Memory Integrity: Respect your memories about {MASTER_NAME}. NEVER fabricate facts about {MASTER_NAME} (e.g. hobbies, occupation, experiences, preferences). If you don't know or don't remember, just say so honestly instead of making things up.",
+    }
     normalized_lines = []
     in_characteristics = False
     in_context_awareness = False
@@ -172,11 +173,8 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
             and stripped in legacy_removed_lines
         ):
             continue
-        # Drop newly added lines in Context Awareness
-        if (
-            in_context_awareness
-            and stripped.startswith(added_context_prefixes)
-        ):
+        # Drop newly added lines in Context Awareness (exact match only)
+        if in_context_awareness and stripped in added_context_lines:
             continue
         normalized_lines.append(line)
     return "\n".join(normalized_lines).strip()
