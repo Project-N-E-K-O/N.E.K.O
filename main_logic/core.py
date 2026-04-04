@@ -1353,6 +1353,10 @@ class LLMSessionManager:
                     on_repetition_detected=self.handle_repetition_detected,
                     api_type=self.core_api_type
                 )
+                # Apply user's noise reduction preference to the AudioProcessor
+                nr_enabled = load_global_conversation_settings().get('noiseReductionEnabled', True)
+                if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
+                    new_session._audio_processor.set_enabled(nr_enabled)
 
             # Bind guarded callbacks BEFORE connect — connect() can invoke
             # on_connection_error during the handshake, and without the guard
@@ -1741,6 +1745,10 @@ class LLMSessionManager:
                     on_repetition_detected=self.handle_repetition_detected,
                     api_type=self.core_api_type
                 )
+                # Apply user's noise reduction preference to the AudioProcessor
+                nr_enabled = load_global_conversation_settings().get('noiseReductionEnabled', True)
+                if hasattr(self.pending_session, '_audio_processor') and self.pending_session._audio_processor:
+                    self.pending_session._audio_processor.set_enabled(nr_enabled)
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
             initial_prompt = await self._build_initial_prompt()

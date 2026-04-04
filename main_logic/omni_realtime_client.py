@@ -254,7 +254,7 @@ class OmniRealtimeClient:
         self._audio_processor = AudioProcessor(
             input_sample_rate=48000,
             output_sample_rate=16000,
-            noise_reduce_enabled=False,  # RNNoise with auto-reset enabled
+            noise_reduce_enabled=True,  # RNNoise noise reduction + VAD
             on_silence_reset=self._on_silence_reset  # 静音重置时发送 input_audio_buffer.clear
         )
         
@@ -294,6 +294,8 @@ class OmniRealtimeClient:
         self._client_vad_last_speech_time = 0.0  # 上次检测到语音的时间戳
         self._client_vad_grace_period = 2.0  # 语音结束后保持活跃的宽限期（秒）
         self._client_vad_threshold = 500  # RMS 能量阈值（int16 范围，fallback用）
+        self._speech_detect_start = 0.0  # RNNoise 连续检测到语音的起始时间
+        self._speech_sustain_threshold = 0.5  # 需持续 500ms 才算真正说话（防噪音误触）
         
         # 防止log刷屏机制（当websocket关闭后）
         self._last_ws_none_warning_time = 0.0  # 上次websocket为None警告的时间戳
@@ -457,6 +459,7 @@ class OmniRealtimeClient:
         self._last_local_loud_time = 0.0
         self._client_vad_active = False
         self._client_vad_last_speech_time = 0.0
+        self._speech_detect_start = 0.0
         if self._audio_processor is not None:
             self._audio_processor.reset()
 
@@ -745,11 +748,16 @@ class OmniRealtimeClient:
         
         # Client-side speech detection (only when no server VAD — server events handle it in handle_messages)
         if not self._has_server_vad:
-            if self._audio_processor is not None and self._audio_processor.noise_reduce_enabled:
-                # Priority 2: RNNoise speech probability
+            if self._audio_processor is not None and self._audio_processor.noise_reduce_enabled and self._audio_processor._denoiser is not None:
+                # Priority 2: RNNoise speech probability with sustained threshold
                 if self._audio_processor.speech_probability > 0.4:
-                    self._client_vad_last_speech_time = current_time
-                    self._client_vad_active = True
+                    if self._speech_detect_start == 0.0:
+                        self._speech_detect_start = current_time
+                    elif current_time - self._speech_detect_start >= self._speech_sustain_threshold:
+                        self._client_vad_last_speech_time = current_time
+                        self._client_vad_active = True
+                else:
+                    self._speech_detect_start = 0.0
             else:
                 # Priority 3: RMS energy fallback
                 samples = np.frombuffer(audio_chunk, dtype=np.int16)
@@ -1031,12 +1039,19 @@ class OmniRealtimeClient:
         if self._is_responding:
             logger.debug("stream_proactive: skipped — already responding")
             return False
-        if self._client_vad_active:
-            logger.debug("stream_proactive: skipped — user speaking (VAD active)")
-            return False
-        if time.time() - self._client_vad_last_speech_time < self._client_vad_grace_period:
-            logger.debug("stream_proactive: skipped — VAD grace period")
-            return False
+        # Client VAD guard: only when RNNoise is actually running (reliable).
+        # When RNNoise is unavailable (import failed / disabled), RMS fallback
+        # is too noisy — skip client VAD to avoid permanently blocking proactive.
+        _has_rnnoise = (self._audio_processor is not None
+                        and self._audio_processor.noise_reduce_enabled
+                        and self._audio_processor._denoiser is not None)
+        if _has_rnnoise:
+            if self._client_vad_active:
+                logger.debug("stream_proactive: skipped — user speaking (VAD active)")
+                return False
+            if time.time() - self._client_vad_last_speech_time < self._client_vad_grace_period:
+                logger.debug("stream_proactive: skipped — VAD grace period")
+                return False
 
         # ── Choose audio file ─────────────────────────────────────────
         # Vision context exists if an image was analyzed this turn (via
@@ -1095,8 +1110,8 @@ class OmniRealtimeClient:
         image_injected = False
 
         for chunk_idx, i in enumerate(range(0, len(pcm_data), chunk_size)):
-            # Abort if user starts speaking or AI starts responding
-            if self._client_vad_active or self._is_responding:
+            # Abort if AI starts responding, or user speaking (only when RNNoise VAD available)
+            if self._is_responding or (_has_rnnoise and self._client_vad_active):
                 logger.info("stream_proactive: aborted — user spoke or response started")
                 await self.clear_audio_buffer()
                 return False
@@ -1422,6 +1437,7 @@ class OmniRealtimeClient:
         self._last_local_loud_time = 0.0
         self._client_vad_active = False
         self._client_vad_last_speech_time = 0.0
+        self._speech_detect_start = 0.0
 
         # 保存 debug 音频（RNNoise 处理前后的对比音频）
         if self._audio_processor is not None:
@@ -1471,6 +1487,7 @@ class OmniRealtimeClient:
                 self._last_local_loud_time = 0.0
                 self._client_vad_active = False
                 self._client_vad_last_speech_time = 0.0
+                self._speech_detect_start = 0.0
 
                 # 重置音频处理器状态
                 if self._audio_processor is not None:

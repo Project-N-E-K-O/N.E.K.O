@@ -276,7 +276,7 @@ _ALLOWED_CONVERSATION_SETTINGS = {
     'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
     'proactiveMusicEnabled', 'proactiveMemeEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
     'proactiveChatInterval', 'proactiveVisionInterval', 'subtitleEnabled', 'userLanguage',
-    'textGuardMaxLength'
+    'textGuardMaxLength', 'noiseReductionEnabled'
 }
 
 

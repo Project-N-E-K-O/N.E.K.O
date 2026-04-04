@@ -566,7 +566,9 @@
         "volumeHintDetecting": "Detecting microphone input...",
         "volumeHintNoSound": "No sound detected, check microphone",
         "volumeHintLow": "Volume is low, try increasing gain",
-        "volumeHintOk": "Microphone working properly"
+        "volumeHintOk": "Microphone working properly",
+        "noiseReduction": "Noise Reduction",
+        "noiseReductionHint": "RNNoise AI noise reduction for clearer voice"
     },
     "speaker": {
         "volumeLabel": "Speaker Volume",

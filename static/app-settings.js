@@ -498,6 +498,11 @@
             window.loadMicGainSetting();
         }
 
+        // 加载降噪设置
+        if (typeof window.appAudio !== 'undefined' && window.appAudio.loadNoiseReductionSetting) {
+            window.appAudio.loadNoiseReductionSetting();
+        }
+
         // 加载扬声器音量设置
         if (typeof window.appAudio !== 'undefined' && window.appAudio.loadSpeakerVolumeSetting) {
             window.appAudio.loadSpeakerVolumeSetting();

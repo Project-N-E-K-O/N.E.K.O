@@ -60,6 +60,7 @@
         inputAnalyser: null,
         selectedMicrophoneId: null,
         microphoneGainDb: 0,
+        noiseReductionEnabled: true,
         micVolumeAnimationId: null,
         silenceDetectionTimer: null,
         hasSoundDetected: false,
