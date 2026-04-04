@@ -424,7 +424,7 @@ class LLMSessionManager:
                     _turn_threshold_met = self._session_turn_count >= 10
                     _ctx_threshold_met = (
                         isinstance(self.session, OmniOfflineClient)
-                        and sum(len(str(m.content)) for m in self.session._conversation_history) >= 10000
+                        and sum(len(str(m.content)) for m in self.session._conversation_history[1:]) >= 10000
                     )
                     if _elapsed >= 40 or _turn_threshold_met or _ctx_threshold_met:
                         logger.info(f"[{self.lanlan_name}] Main Listener: Uptime threshold met. Marking for new session preparation.")
@@ -518,9 +518,10 @@ class LLMSessionManager:
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示"""
         # 更新用户活动时间戳（用于主动搭话检测）
         self.last_user_activity_time = time.time()
-        # 递增轮次计数器（用于记忆整理触发判断）
-        self._session_turn_count += 1
-        
+        # 递增轮次计数器（仅计非空转录，避免噪声/静默误触发记忆整理）
+        if transcript.strip():
+            self._session_turn_count += 1
+
         # 推送到同步消息队列
         self.sync_message_queue.put({"type": "user", "data": {"input_type": "transcript", "data": transcript.strip()}})
         
