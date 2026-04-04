@@ -2819,6 +2819,11 @@ class LLMSessionManager:
         _inactive_early = False
         async with self.lock:
             if not self.is_active:
+                # Stale-session guard: 即使未激活，也要确认不是过期回调，
+                # 否则会误清理新 session 正在创建的 TTS 资源
+                if expected_session is not None and expected_session is not self.session:
+                    logger.info("⏭️ end_session: expected_session stale (inactive-early), skipping")
+                    return
                 # 即使会话未完全激活（如 start_session 失败），也要清理
                 # 可能残留的 TTS 重试状态，防止污染下一次会话
                 self._reset_tts_retry_state()
