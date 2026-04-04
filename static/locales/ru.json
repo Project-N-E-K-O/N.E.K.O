@@ -1507,6 +1507,7 @@
         "toggles": {
             "allowInterrupt": "Разрешить прерывание",
             "mergeMessages": "Объединение сообщений",
+            "avatarReactionBubble": "Пузырек эмоций",
             "proactiveChat": "Проактивный чат",
             "proactiveVision": "Проактивное зрение",
             "proactiveVisionChat": "Визуальный чат",

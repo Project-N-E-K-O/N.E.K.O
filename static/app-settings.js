@@ -33,6 +33,7 @@
             proactiveMusicEnabled: S.proactiveMusicEnabled,
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
+            avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
             proactiveVisionInterval: S.proactiveVisionInterval,
             subtitleEnabled: S.subtitleEnabled,
@@ -171,6 +172,9 @@
         const currentMemeChat = typeof window.proactiveMemeEnabled !== 'undefined'
             ? window.proactiveMemeEnabled
             : S.proactiveMemeEnabled;
+        const currentAvatarReactionBubble = typeof window.avatarReactionBubbleEnabled !== 'undefined'
+            ? window.avatarReactionBubbleEnabled
+            : S.avatarReactionBubbleEnabled;
         const currentTextGuardMaxLength = typeof window.textGuardMaxLength !== 'undefined'
             ? window.textGuardMaxLength
             : S.textGuardMaxLength;
@@ -205,6 +209,7 @@
             proactiveMemeEnabled: currentMemeChat,
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
+            avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             proactiveChatInterval: currentProactiveChatInterval,
             proactiveVisionInterval: currentProactiveVisionInterval,
             textGuardMaxLength: currentTextGuardMaxLength,
@@ -236,6 +241,7 @@
         S.proactiveMemeEnabled = currentMemeChat;
         S.mergeMessagesEnabled = currentMerge;
         S.focusModeEnabled = currentFocus;
+        S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.proactiveChatInterval = currentProactiveChatInterval;
         S.proactiveVisionInterval = currentProactiveVisionInterval;
         S.textGuardMaxLength = currentTextGuardMaxLength;
@@ -313,6 +319,7 @@
                 S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? true;
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
+                S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
                 S.proactiveVisionInterval = settings.proactiveVisionInterval ?? C.DEFAULT_PROACTIVE_VISION_INTERVAL;
                 // 字数限制设置（默认350字）
@@ -443,6 +450,7 @@
                         window.proactiveMusicEnabled = S.proactiveMusicEnabled;
                         window.mergeMessagesEnabled = S.mergeMessagesEnabled;
                         window.focusModeEnabled = S.focusModeEnabled;
+                        window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
                         window.proactiveChatInterval = S.proactiveChatInterval;
                         window.proactiveVisionInterval = S.proactiveVisionInterval;
                         window.textGuardMaxLength = S.textGuardMaxLength;

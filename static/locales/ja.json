@@ -1507,6 +1507,7 @@
         "toggles": {
             "allowInterrupt": "割り込み許可",
             "mergeMessages": "メッセージ結合",
+            "avatarReactionBubble": "表情バブル",
             "proactiveChat": "自発的会話",
             "proactiveVision": "自発的視覚",
             "proactiveVisionChat": "画面共有",
