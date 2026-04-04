@@ -1505,6 +1505,7 @@
         "toggles": {
             "allowInterrupt": "인터럽트 허용",
             "mergeMessages": "메시지 병합",
+            "avatarReactionBubble": "표정 말풍선",
             "proactiveChat": "사전 예방적 채팅",
             "proactiveVision": "사전 예방적 비전",
             "proactiveVisionChat": "화면 공유",
