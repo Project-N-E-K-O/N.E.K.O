@@ -117,7 +117,13 @@ def _build_lanlan_prompt(lang: str) -> str:
 
 
 def _normalize_default_prompt_text(prompt_text: str) -> str:
-    """Normalize legacy default prompts so removed characteristic lines don't break matching."""
+    """Normalize legacy default prompts so added/removed lines don't break matching.
+
+    Strategy: strip away lines that differ between old and new defaults so both
+    versions reduce to the same canonical form.
+    - Removed lines (e.g. old ``- Skills:``): dropped from ``<Characteristics>``.
+    - Added lines (e.g. new ``- Memory Integrity:``): dropped from ``<Context Awareness>``.
+    """
     allowed_characteristic_prefixes = (
         "- Identity:",
         "- Relationship:",
@@ -130,10 +136,17 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
         "- Skills: versatile, proactive and capable of using external tools when available.",
         "- Skills: versatile, proactive, and capable of using external tools when available.",
     }
+    # Lines added in newer defaults that old stored prompts won't have.
+    # We strip them during comparison so both old and new match.
+    added_context_prefixes = (
+        "- Memory Integrity:",
+    )
     normalized_lines = []
     in_characteristics = False
+    in_context_awareness = False
     for line in prompt_text.splitlines():
         stripped = line.strip()
+        # Track <Characteristics> section
         if stripped == "<Characteristics of {LANLAN_NAME}>":
             in_characteristics = True
             normalized_lines.append(line)
@@ -142,11 +155,27 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
             in_characteristics = False
             normalized_lines.append(line)
             continue
+        # Track <Context Awareness> section
+        if stripped == "<Context Awareness>":
+            in_context_awareness = True
+            normalized_lines.append(line)
+            continue
+        if stripped == "</Context Awareness>":
+            in_context_awareness = False
+            normalized_lines.append(line)
+            continue
+        # Drop legacy removed lines in Characteristics
         if (
             in_characteristics
             and stripped.startswith("- ")
             and not stripped.startswith(allowed_characteristic_prefixes)
             and stripped in legacy_removed_lines
+        ):
+            continue
+        # Drop newly added lines in Context Awareness
+        if (
+            in_context_awareness
+            and stripped.startswith(added_context_prefixes)
         ):
             continue
         normalized_lines.append(line)
