@@ -133,53 +133,52 @@ async def analyze_image_with_vision_model(
         else:
             logger.info(f"🖼️ Using VISION_MODEL ({vision_model}) to analyze image")
 
-        client = AsyncOpenAI(
-            api_key=vision_api_key,
-            base_url=vision_base_url or None,
-            max_retries=0,
-        )
-        
         if window_title:
             system_content = "你是一个图像描述助手。请根据用户的屏幕截图和当前窗口标题，简洁描述用户正在做什么、屏幕上的主要内容和关键细节和你觉得有趣的地方。不超过250字。"
             user_text = f"当前活跃窗口标题：{window_title}\n请描述截图内容。"
         else:
             system_content = "你是一个图像描述助手, 请简洁地描述图片中的主要内容、关键细节和你觉得有趣的地方。你的回答不能超过250字。"
             user_text = "请描述这张图片的内容。"
-        
+
         set_call_type("vision")
-        response = await client.chat.completions.create(
-            model=vision_model,
-            messages = [
-                {
-                    "role": "system",
-                    "content": system_content
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_b64}"
+        async with AsyncOpenAI(
+            api_key=vision_api_key,
+            base_url=vision_base_url or None,
+            max_retries=0,
+        ) as client:
+            response = await client.chat.completions.create(
+                model=vision_model,
+                messages = [
+                    {
+                        "role": "system",
+                        "content": system_content
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{image_b64}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": user_text
                             }
-                        },
-                        {
-                            "type": "text",
-                            "text": user_text
-                        }
-                    ]
-                }
-            ],
-            max_completion_tokens=max_tokens,
-            extra_body=get_extra_body(vision_model) or None
-        )
-        
+                        ]
+                    }
+                ],
+                max_completion_tokens=max_tokens,
+                extra_body=get_extra_body(vision_model) or None
+            )
+
         if response and response.choices and len(response.choices) > 0:
             description = response.choices[0].message.content
             if description and description.strip():
                 logger.info("✅ Image analysis complete")
                 return description.strip()
-        
+
         logger.warning("Vision model returned empty result")
         return None
         

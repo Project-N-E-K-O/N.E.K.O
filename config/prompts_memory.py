@@ -693,6 +693,7 @@ FACT_EXTRACTION_PROMPT = {
 要求：
 - 只提取重要且明确的事实（偏好、习惯、身份、关系动态等）
 - 忽略闲聊、寒暄、模糊的内容
+- 忽略AI幻觉、胡言乱语(gibberish)、无意义的编造内容，只提取对话中有真实依据的事实
 - 每条事实必须是一个独立的原子陈述
 - importance 评分 1-10，只返回 >= 5 的事实
 - entity 标注为 "master"(关于{MASTER_NAME})、"neko"(关于{LANLAN_NAME})或 "relationship"(关于两人关系)
@@ -711,6 +712,7 @@ FACT_EXTRACTION_PROMPT = {
 Requirements:
 - Only extract important and clear facts (preferences, habits, identity, relationship dynamics, etc.)
 - Ignore small talk, greetings, and vague content
+- Ignore AI hallucinations, gibberish, and meaningless fabricated content — only extract facts that are grounded in the actual conversation
 - Each fact must be an independent atomic statement
 - Rate importance 1-10, only return facts with importance >= 5
 - Mark entity as "master" (about {MASTER_NAME}), "neko" (about {LANLAN_NAME}), or "relationship" (about the relationship)
@@ -729,6 +731,7 @@ Return as a JSON array in the following format (if no facts are worth extracting
 要件：
 - 重要かつ明確な事実のみを抽出（好み、習慣、アイデンティティ、関係の動態など）
 - 雑談、挨拶、曖昧な内容は無視
+- AIの幻覚（ハルシネーション）、意味不明な発言（gibberish）、根拠のない作り話は無視し、実際の会話に基づいた事実のみを抽出
 - 各事実は独立した原子的な文でなければならない
 - importance は 1-10 で評価し、5 以上の事実のみ返す
 - entity は "master"({MASTER_NAME}について)、"neko"({LANLAN_NAME}について)、または "relationship"(二人の関係について) と記載
@@ -747,6 +750,7 @@ Return as a JSON array in the following format (if no facts are worth extracting
 요구사항:
 - 중요하고 명확한 사실만 추출 (선호, 습관, 정체성, 관계 동태 등)
 - 잡담, 인사, 모호한 내용은 무시
+- AI 환각(hallucination), 의미 없는 말(gibberish), 근거 없는 조작된 내용은 무시하고, 실제 대화에 근거한 사실만 추출
 - 각 사실은 독립적인 원자적 진술이어야 함
 - importance는 1-10으로 평가하고 5 이상인 사실만 반환
 - entity는 "master"({MASTER_NAME}에 대해), "neko"({LANLAN_NAME}에 대해), 또는 "relationship"(두 사람의 관계에 대해)로 표기
@@ -765,6 +769,7 @@ Return as a JSON array in the following format (if no facts are worth extracting
 Требования:
 - Извлекайте только важные и чёткие факты (предпочтения, привычки, личность, динамика отношений и т.д.)
 - Игнорируйте болтовню, приветствия и расплывчатое содержание
+- Игнорируйте галлюцинации ИИ, бессмыслицу (gibberish) и бессодержательный вымысел — извлекайте только факты, подтверждённые реальным диалогом
 - Каждый факт должен быть независимым атомарным утверждением
 - Оценка importance от 1 до 10, возвращайте только факты с importance >= 5
 - Отмечайте entity как "master" (о {MASTER_NAME}), "neko" (о {LANLAN_NAME}) или "relationship" (об отношениях)

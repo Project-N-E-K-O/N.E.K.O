@@ -1585,7 +1585,13 @@
             "frameRateUnlimited": "无限制(VSync)",
             "mouseTracking": "跟踪鼠标",
             "fullscreenTracking": "全屏跟踪",
-            "localTracking": "局部跟踪"
+            "localTracking": "局部跟踪",
+            "textGuardMaxLength": "回复字数限制",
+            "unlimited": "无限制",
+            "characters": "字",
+            "textGuardUnlimitedWarning": "可能导致猫娘出现严重问题，非必要不建议无限制",
+            "textGuardHighWarning": "设置过大可能导致猫娘记忆和语言混乱，建议500字以内",
+            "textGuardNote": "仅对文本回复有效，不影响语音对话"
         }
     },
     "subtitle": {
