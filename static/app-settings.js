@@ -493,29 +493,27 @@
         }
         
         // 加载麦克风设备选择
-        if (typeof window.appAudio !== 'undefined' && window.appAudio.loadSelectedMicrophone) {
-            window.appAudio.loadSelectedMicrophone();
+        if (typeof window.appAudioCapture !== 'undefined' && window.appAudioCapture.loadSelectedMicrophone) {
+            window.appAudioCapture.loadSelectedMicrophone();
         } else if (typeof window.loadSelectedMicrophone === 'function') {
             window.loadSelectedMicrophone();
         }
 
         // 加载麦克风增益设置
-        if (typeof window.appAudio !== 'undefined' && window.appAudio.loadMicGainSetting) {
-            window.appAudio.loadMicGainSetting();
+        if (typeof window.appAudioCapture !== 'undefined' && window.appAudioCapture.loadMicGainSetting) {
+            window.appAudioCapture.loadMicGainSetting();
         } else if (typeof window.loadMicGainSetting === 'function') {
             window.loadMicGainSetting();
         }
 
         // 加载降噪设置
-        if (typeof window.appAudio !== 'undefined' && window.appAudio.loadNoiseReductionSetting) {
-            window.appAudio.loadNoiseReductionSetting();
-        } else if (typeof window.loadNoiseReductionSetting === 'function') {
-            window.loadNoiseReductionSetting();
+        if (typeof window.appAudioCapture !== 'undefined' && window.appAudioCapture.loadNoiseReductionSetting) {
+            window.appAudioCapture.loadNoiseReductionSetting();
         }
 
         // 加载扬声器音量设置
-        if (typeof window.appAudio !== 'undefined' && window.appAudio.loadSpeakerVolumeSetting) {
-            window.appAudio.loadSpeakerVolumeSetting();
+        if (typeof window.appAudioPlayback !== 'undefined' && window.appAudioPlayback.loadSpeakerVolumeSetting) {
+            window.appAudioPlayback.loadSpeakerVolumeSetting();
         } else if (typeof window.loadSpeakerVolumeSetting === 'function') {
             window.loadSpeakerVolumeSetting();
         }
