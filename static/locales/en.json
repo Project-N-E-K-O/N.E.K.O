@@ -663,7 +663,8 @@
         },
         "coreProviderNames": {
             "free": "Free Version (N.E.K.O. Exclusive Benefit, Supports Web Search)",
-            "qwen": "Qwen-Omni (Alibaba, Fastest Speed, Recommended)",
+            "qwen": "Qwen-Omni (Alibaba Bailian, Fastest Speed, Recommended)",
+            "qwen_intl": "Qwen-Omni (Alibaba Intl)",
             "openai": "GPT-Realtime (OpenAI)",
             "glm": "GLM-realtime (GLM)",
             "step": "Step-2-Audio (StepFun)",
@@ -671,7 +672,8 @@
         },
         "assistProviderNames": {
             "free": "Free Version (N.E.K.O. Exclusive Benefit)",
-            "qwen": "Alibaba (Qwen, Most Complete Features, Recommended)",
+            "qwen": "Alibaba Bailian (Qwen, Most Complete Features, Recommended)",
+            "qwen_intl": "Alibaba Intl (Qwen)",
             "openai": "OpenAI (ChatGPT)",
             "glm": "GLM",
             "step": "StepFun",
@@ -700,7 +702,8 @@
         "customModelProviderFollowAssist": "Follow Assist API",
         "customModelProviderCustom": "Custom",
         "keyBook": {
-            "qwen": "Alibaba (Qwen)",
+            "qwen": "Alibaba Bailian (Qwen)",
+            "qwen_intl": "Alibaba Intl (Qwen)",
             "openai": "OpenAI",
             "deepseek": "DeepSeek",
             "glm": "Zhipu (GLM)",

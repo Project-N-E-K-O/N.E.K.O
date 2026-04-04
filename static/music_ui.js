@@ -52,6 +52,62 @@
     let lastPlayedMusicUrl = null;
     let lastMusicPlayTime = 0;
 
+    // --- 音乐秒关检测 & 自动冷却 ---
+    const SKIP_CONFIG = {
+        skipThresholdMs: 10000,              // < 10 秒关闭 = 视为"秒关"
+        consecutiveSkipsToTrigger: 2,        // 连续秒关 2 次触发冷却
+        cooldownDurationMs: 20 * 60 * 1000   // 冷却 20 分钟
+    };
+    let musicPlayStartTime = null;
+    let consecutiveSkipCount = 0;
+    let musicCooldownUntil = 0;
+
+    // 从 localStorage 恢复冷却状态
+    try {
+        const stored = localStorage.getItem('music_cooldown_until');
+        if (stored) {
+            const val = parseInt(stored, 10);
+            if (val > Date.now()) {
+                musicCooldownUntil = val;
+                console.log('[Music UI] 恢复冷却状态，截止', new Date(val).toLocaleTimeString());
+            } else {
+                localStorage.removeItem('music_cooldown_until');
+            }
+        }
+    } catch (e) { /* localStorage 不可用 */ }
+
+    function enterMusicCooldown() {
+        musicCooldownUntil = Date.now() + SKIP_CONFIG.cooldownDurationMs;
+        consecutiveSkipCount = 0;
+        try { localStorage.setItem('music_cooldown_until', String(musicCooldownUntil)); } catch (e) {}
+        console.log('[Music UI] 连续秒关触发冷却，音乐推荐暂停至', new Date(musicCooldownUntil).toLocaleTimeString());
+    }
+
+    function isInMusicCooldown() {
+        if (musicCooldownUntil <= 0) return false;
+        if (Date.now() >= musicCooldownUntil) {
+            musicCooldownUntil = 0;
+            try { localStorage.removeItem('music_cooldown_until'); } catch (e) {}
+            return false;
+        }
+        return true;
+    }
+
+    function recordMusicSkip() {
+        consecutiveSkipCount++;
+        console.log('[Music UI] 秒关 #' + consecutiveSkipCount);
+        if (consecutiveSkipCount >= SKIP_CONFIG.consecutiveSkipsToTrigger) {
+            enterMusicCooldown();
+        }
+    }
+
+    function resetSkipCounter() {
+        if (consecutiveSkipCount > 0) {
+            console.log('[Music UI] 用户正常收听，重置秒关计数');
+        }
+        consecutiveSkipCount = 0;
+    }
+
     // 全局监听管理
     let managedWindowListeners = [];
     const addManagedListener = (type, listener, options) => {
@@ -431,6 +487,7 @@
                     if (autoDestroyTimer) { clearTimeout(autoDestroyTimer); autoDestroyTimer = null; }
                     updatePlayBtnState(true);
                     autoplayBlocked = false;
+                    musicPlayStartTime = Date.now();
                 });
                 boundPlayer.on('pause', () => {
                     updatePlayBtnState(false);
@@ -443,6 +500,8 @@
                 });
                 boundPlayer.on('ended', () => {
                     updatePlayBtnState(false);
+                    resetSkipCounter();
+                    musicPlayStartTime = null;
                     // 歌曲自然播放结束后，启动 21 秒销毁计时
                     const tokenAtEvent = boundPlayer._latestToken;
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
@@ -453,6 +512,7 @@
                 boundPlayer.on('error', (err) => {
                     if (boundPlayer._destroying) return;
                     console.error('[Music UI] APlayer error:', err);
+                    musicPlayStartTime = null;  // 加载失败不计为秒关
 
                     const tokenAtEvent = boundPlayer._latestToken;
                     boundPlayer._loadError = true;
@@ -480,6 +540,16 @@
                 // 进度条与播放按钮点击 (使用直接赋值防止重复挂载)
                 musicBar.querySelector('.music-bar-close').onclick = (e) => {
                     e.preventDefault();
+                    // 秒关检测：根据播放时长判断是否为快速跳过
+                    if (musicPlayStartTime !== null) {
+                        const playDuration = Date.now() - musicPlayStartTime;
+                        if (playDuration < SKIP_CONFIG.skipThresholdMs) {
+                            recordMusicSkip();
+                        } else {
+                            resetSkipCounter();
+                        }
+                        musicPlayStartTime = null;
+                    }
                     destroyMusicPlayer(true, true, true);
                 };
                 apBtn.onclick = (e) => {
@@ -936,6 +1006,7 @@
     window.destroyMusicPlayer = destroyMusicPlayer;
     window.getMusicPlayerInstance = getMusicPlayerInstance;
     window.isMusicPlaying = isMusicPlaying;
+    window.isMusicCooldown = isInMusicCooldown;
     window.getMusicCurrentTrack = getMusicCurrentTrack;
     window.MusicPluginAPI = MusicPluginAPI;
 

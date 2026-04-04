@@ -112,6 +112,24 @@ class CacheProviderConfig:
 
 
 CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
+    # ⚠️ qwen_intl 必须在 qwen 之前：resolve_cache_provider 用 substring match，
+    # "dashscope.aliyuncs.com" 是 "dashscope-intl.aliyuncs.com" 的子串，
+    # intl 条目放前面才能优先匹配。
+    "qwen_intl": CacheProviderConfig(
+        provider_id="qwen_intl",
+        name="阿里云 DashScope (Intl)",
+        base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        base_url_pattern="dashscope-intl.aliyuncs.com",
+        cache_mode="session",
+        requires_header=True,
+        header_name="x-dashscope-session-cache",
+        header_value="enable",
+        min_cache_tokens=1024,
+        auto_cache=True,
+        cache_price=0.10,
+        creation_price=0.125,
+        cached_token_field="prompt_tokens_details.cached_tokens",
+    ),
     "qwen": CacheProviderConfig(
         provider_id="qwen",
         name="阿里云 DashScope",

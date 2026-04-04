@@ -663,7 +663,8 @@
         },
         "coreProviderNames": {
             "free": "Бесплатная версия (Эксклюзив N.E.K.O., веб-поиск)",
-            "qwen": "Qwen-Omni (Alibaba, Рекомендуется)",
+            "qwen": "Qwen-Omni (Alibaba Bailian, Рекомендуется)",
+            "qwen_intl": "Qwen-Omni (Alibaba Intl)",
             "openai": "GPT-Realtime (OpenAI)",
             "glm": "GLM-realtime (GLM)",
             "step": "Step-2-Audio (StepFun)",
@@ -671,7 +672,8 @@
         },
         "assistProviderNames": {
             "free": "Бесплатная версия (Эксклюзив N.E.K.O.)",
-            "qwen": "Alibaba (Qwen, Рекомендуется)",
+            "qwen": "Alibaba Bailian (Qwen, Рекомендуется)",
+            "qwen_intl": "Alibaba Intl (Qwen)",
             "openai": "OpenAI (ChatGPT)",
             "glm": "GLM",
             "step": "StepFun",
@@ -700,7 +702,8 @@
         "customModelProviderFollowAssist": "Следовать за вспомогательным API",
         "customModelProviderCustom": "Пользовательский",
         "keyBook": {
-            "qwen": "Alibaba (Qwen)",
+            "qwen": "Alibaba Bailian (Qwen)",
+            "qwen_intl": "Alibaba Intl (Qwen)",
             "openai": "OpenAI",
             "deepseek": "DeepSeek",
             "glm": "Zhipu (GLM)",

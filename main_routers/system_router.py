@@ -1950,6 +1950,7 @@ async def proactive_chat(request: Request):
         lanlan_name = data.get('lanlan_name') or her_name_current
         is_playing_music = data.get('is_playing_music', False)
         current_track = data.get('current_track', None)
+        music_cooldown = data.get('music_cooldown', False)
         
         # 获取session manager
         mgr = session_manager.get(lanlan_name)
@@ -2390,10 +2391,11 @@ async def proactive_chat(request: Request):
         selected_meme_link = None
         selected_meme_topic_key = None
 
-        # 【加固】如果正在放歌，强制在此环节清空 music_content，彻底跳过 Phase 1 的所有搜歌逻辑
-        if is_playing_music:
+        # 【加固】如果正在放歌或处于冷却期，强制在此环节清空 music_content，彻底跳过 Phase 1 的所有搜歌逻辑
+        if is_playing_music or music_cooldown:
             if music_content:
-                logger.info(f"[{lanlan_name}]-音乐正在播放，强制屏蔽 Phase 1 搜歌逻辑")
+                reason = "音乐正在播放" if is_playing_music else "用户连续秒关，音乐冷却中"
+                logger.info(f"[{lanlan_name}]-{reason}，强制屏蔽 Phase 1 搜歌逻辑")
             music_content = None
 
         # ============================================================
@@ -2757,12 +2759,13 @@ async def proactive_chat(request: Request):
             external_section = f"{el}\n{web_topic}\n{ef}"
         
         music_section = ""
-        # 如果正在放歌，强行屏蔽音乐素材推荐，避免 AI 误触
-        if music_topic and not is_playing_music:
+        # 如果正在放歌或处于冷却期，强行屏蔽音乐素材推荐，避免 AI 误触
+        if music_topic and not is_playing_music and not music_cooldown:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
             music_section = f"======音乐推荐素材======\n{music_topic}\n======音乐素材结束======"
-        elif is_playing_music:
-            print(f"[{lanlan_name}] 正在播放音乐，已屏蔽音乐推荐素材（仅保留 playing_hint）")
+        elif is_playing_music or music_cooldown:
+            reason = "正在播放音乐" if is_playing_music else "音乐冷却期"
+            print(f"[{lanlan_name}] {reason}，已屏蔽音乐推荐素材（仅保留 playing_hint）")
             music_section = ""
         
         # 构建表情包段（meme 通道）
@@ -2817,7 +2820,7 @@ async def proactive_chat(request: Request):
             if raw_data.get('best_match', {}).get('status') == 'fuzzy':
                 dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(proactive_lang)
 
-        if is_playing_music:
+        if is_playing_music or music_cooldown:
             dynamic_context_for_phase2 += get_proactive_music_strict_constraint(proactive_lang)
         print(f"[{lanlan_name}] Phase 2 prompt 长度: {len(generate_prompt)}, 动态上下文: {len(dynamic_context_for_phase2)} 字符")
 
@@ -2957,8 +2960,8 @@ async def proactive_chat(request: Request):
         is_music_used = has_music_topic and source_tag == 'MUSIC'
         ai_wants_music = source_tag == 'MUSIC'
 
-        if is_playing_music and ai_wants_music:
-            print(f"[{lanlan_name}] 数据级锁触发：AI 在播放中尝试推荐新歌，已强制拦截并清空曲目列表")
+        if (is_playing_music or music_cooldown) and ai_wants_music:
+            print(f"[{lanlan_name}] 数据级锁触发：{'播放中' if is_playing_music else '冷却期'}尝试推荐新歌，已强制拦截并清空曲目列表")
             is_music_used = False
             music_content = None
             source_tag = 'PASS'
@@ -2985,7 +2988,7 @@ async def proactive_chat(request: Request):
 
         # 兜底：当最终主通道已经落到 music，或当前实际上只剩音乐通道时，
         # 【逻辑加固】如果 active_channels 里包含 meme 且 primary_channel 是 meme，不触发 fallback
-        should_try_music_fallback = not is_playing_music and (
+        should_try_music_fallback = not is_playing_music and not music_cooldown and (
             primary_channel == 'music'
             or (has_music_topic and not any(ch in ('vision', 'web', 'meme') for ch in active_channels))
         )
