@@ -712,6 +712,9 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     const commitDragPosition = () => {
         const deltaX = pendingClientX - dragStartX;
         const deltaY = pendingClientY - dragStartY;
+        if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
+            returnButtonContainer.setAttribute('data-dragging', 'true');
+        }
         const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
         const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
         returnButtonContainer.style.transform = '';

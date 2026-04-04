@@ -142,7 +142,7 @@ export default function App({
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.nativeEvent.isComposing || event.isComposing) return;
+                    if (event.nativeEvent.isComposing) return;
                     if (event.key === 'Enter' && !event.shiftKey) {
                       event.preventDefault();
                       submitDraft();

@@ -613,7 +613,7 @@ textarea {
   margin: 0;
   flex: 0 0 auto;
   border-radius: 8px;
-  overflow: hidden;
+  overflow: visible;
   border: 2px solid #d7dde6;
   box-shadow: 0 4px 10px rgba(89, 108, 140, 0.08);
   background: #fff;

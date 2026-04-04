@@ -753,7 +753,7 @@
                 return;
             }
 
-            var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /);
+            var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /u);
             if (!timePrefix) {
                 timePrefix = "[" + getCurrentTimeString() + "] \u{1F380} ";
             } else {
@@ -907,7 +907,7 @@
 
                 // var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /) || [""];
                 // window.currentGeminiMessage.textContent = timePrefix[0] + fullText;
-                var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /);
+                var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /u);
                 if (!timePrefix) {
                     timePrefix = "[" + getCurrentTimeString() + "] \u{1F380} ";
                 } else {
@@ -930,7 +930,7 @@
                         return;
                     }
 
-                    var currentFullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /, '');
+                    var currentFullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /u, '');
                     if (currentFullText && currentFullText.trim()) {
                         if (typeof userLanguage !== 'undefined' && userLanguage === null) {
                             getUserLanguage().then(function () {

@@ -301,6 +301,10 @@
                         existing.parentNode.removeChild(existing);
                         // Fall through to create a fresh script element below
                     }
+                } else if (existing.dataset.error === 'true') {
+                    // Script previously failed to load — remove stale element and recreate
+                    existing.parentNode.removeChild(existing);
+                    // Fall through to create a fresh script element below
                 } else {
                     existing.addEventListener('load', function () {
                         existing.dataset.loaded = 'true';
@@ -311,6 +315,7 @@
                         }
                     }, { once: true });
                     existing.addEventListener('error', function () {
+                        existing.dataset.error = 'true';
                         reject(new Error('React chat bundle failed to load'));
                     }, { once: true });
                     return;
@@ -331,6 +336,7 @@
             };
 
             script.onerror = function () {
+                script.dataset.error = 'true';
                 reject(new Error('React chat bundle failed to load'));
             };
 
