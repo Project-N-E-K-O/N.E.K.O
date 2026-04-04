@@ -566,7 +566,9 @@
         "volumeHintDetecting": "Определение входного сигнала микрофона...",
         "volumeHintNoSound": "Звук не обнаружен, проверьте микрофон",
         "volumeHintLow": "Громкость низкая, попробуйте увеличить усиление",
-        "volumeHintOk": "Микрофон работает нормально"
+        "volumeHintOk": "Микрофон работает нормально",
+        "noiseReduction": "Шумоподавление",
+        "noiseReductionHint": "Шумоподавление RNNoise AI для более чистого голоса"
     },
     "speaker": {
         "volumeLabel": "Громкость динамика",
@@ -1511,6 +1513,7 @@
         "toggles": {
             "allowInterrupt": "Разрешить прерывание",
             "mergeMessages": "Объединение сообщений",
+            "avatarReactionBubble": "Пузырек эмоций",
             "proactiveChat": "Проактивный чат",
             "proactiveVision": "Проактивное зрение",
             "proactiveVisionChat": "Визуальный чат",

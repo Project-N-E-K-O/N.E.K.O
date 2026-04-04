@@ -566,7 +566,9 @@
         "volumeHintDetecting": "マイク入力を検出中...",
         "volumeHintNoSound": "音声が検出されません。マイクを確認してください",
         "volumeHintLow": "音量が低いです。ゲインを上げてみてください",
-        "volumeHintOk": "マイクは正常に動作しています"
+        "volumeHintOk": "マイクは正常に動作しています",
+        "noiseReduction": "ノイズリダクション",
+        "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに"
     },
     "speaker": {
         "volumeLabel": "スピーカー音量",
@@ -1511,6 +1513,7 @@
         "toggles": {
             "allowInterrupt": "割り込み許可",
             "mergeMessages": "メッセージ結合",
+            "avatarReactionBubble": "表情バブル",
             "proactiveChat": "自発的会話",
             "proactiveVision": "自発的視覚",
             "proactiveVisionChat": "画面共有",
