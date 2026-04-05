@@ -42,7 +42,7 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 <tr>
 <td align="center" width="25%">🎙️<br><b>全模态对话</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持视觉理解</td>
 <td align="center" width="25%">🧠<br><b>三层记忆系统</b><br>事实记忆 / 反思记忆 / 人格记忆，她真的会"记住"你</td>
-<td align="center" width="25%">🤖<br><b>Agent 智能体</b><br>浏览器操控 (CUA)、电脑操控、MCP工具调用，她能帮你干活</td>
+<td align="center" width="25%">🤖<br><b>Agent 智能体</b><br>浏览器操控 (CUA)、电脑操控、OpenClaw A2A调用，她能帮你干活</td>
 <td align="center" width="25%">🎭<br><b>多形态 Avatar</b><br>Live2D / VRM / MMD 三种形态，支持动作捕捉与全屏追踪</td>
 </tr>
 <tr>

@@ -43,7 +43,7 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 <tr>
 <td align="center" width="25%">🎙️<br><b>オムニモーダル対話</b><br>リアルタイム音声 (Realtime API) + テキストチャット (ChatCompletion)、視覚理解対応</td>
 <td align="center" width="25%">🧠<br><b>三層記憶システム</b><br>事実記憶 / 反省記憶 / 人格記憶——彼女は本当にあなたを「覚えて」います</td>
-<td align="center" width="25%">🤖<br><b>エージェント能力</b><br>ブラウザ操作 (CUA)、PC操作、MCPツール呼び出し——彼女があなたの仕事を手伝います</td>
+<td align="center" width="25%">🤖<br><b>エージェント能力</b><br>ブラウザ操作 (CUA)、PC操作、OpenClaw A2A呼び出し——彼女があなたの仕事を手伝います</td>
 <td align="center" width="25%">🎭<br><b>マルチフォームAvatar</b><br>Live2D / VRM / MMD の3形態、モーションキャプチャとフルスクリーン追跡対応</td>
 </tr>
 <tr>

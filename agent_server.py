@@ -3137,6 +3137,12 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 logger.warning("[Agent] Cannot enable OpenFang: adapter not initialized")
         else:
             Modules.agent_flags["openfang_enabled"] = False
+            # Cancel any in-flight openfang tasks
+            if Modules.openfang:
+                try:
+                    await Modules.openfang.cancel_running(None)
+                except Exception as e:
+                    logger.warning("[Agent] OpenFang cancel on disable failed: %s", e)
 
     changed = Modules.agent_flags != old_flags or bool(Modules.analyzer_enabled) != old_analyzer_enabled
     if changed:
@@ -3411,6 +3417,12 @@ async def admin_control(payload: Dict[str, Any]):
         except Exception as e:
             logger.warning(f"[Agent] Error cleaning browser-use agents during end_all: {e}")
         Modules.active_browser_use_task_id = None
+        # Cancel any in-flight openfang tasks
+        try:
+            if Modules.openfang:
+                await Modules.openfang.cancel_running(None)
+        except Exception as e:
+            logger.warning(f"[Agent] Error cancelling openfang tasks during end_all: {e}")
         # Reset computer-use step history so stale context is cleared
         try:
             if Modules.computer_use:
