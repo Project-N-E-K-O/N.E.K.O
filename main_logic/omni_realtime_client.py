@@ -420,15 +420,16 @@ class OmniRealtimeClient:
         即：每帧用原始输入算 RMS，超过阈值则更新 _last_local_loud_time；只有
         (current_time - _last_local_loud_time) >= _local_quiet_seconds 才认为连续静音。
         
-        返回 True 时，若来自 RNNoise 则调用方需置 _silence_reset_pending=False；
-        若来自 VAD+静音则本函数已更新 _last_silence_clear_speech_time。
+        返回 True 时，调用方统一置 _silence_reset_pending=False。
         """
         if use_rnnoise_path:
-            # RNNoise 路径：仅以 RNNoise 的 4 秒静音回调为准；
-            # 若尚未收到回调（_silence_reset_pending=False），直接返回 False，
-            # 不得降级到 VAD 时间戳逻辑，否则会误触提前清空。
             return self._silence_reset_pending
-        # 无 RNNoise 路径：VAD 静音 ≥ _silence_buffer_clear_seconds 且 连续本地静音 ≥ _local_quiet_seconds
+        # core.py 预处理路径：RNNoise 在 process_audio_chunk_async 中运行，
+        # 16kHz 结果送入 stream_audio → use_rnnoise_path=False，
+        # 但 _silence_reset_pending 仍可能已被 AudioProcessor 回调置位。
+        if self._silence_reset_pending:
+            return True
+        # 纯非 RNNoise 路径：VAD 静音 ≥ _silence_buffer_clear_seconds 且 连续本地静音 ≥ _local_quiet_seconds
         if self._has_server_vad:
             last_speech = self._last_speech_time
         else:
@@ -688,9 +689,26 @@ class OmniRealtimeClient:
             try:
                 if not self.ws:
                     return
-                await self.ws.send(json.dumps(event))
+                payload = json.dumps(event)
+                # Guard: Qwen/GLM/Step servers enforce 256KB max frame; drop
+                # oversized payloads (typically large image frames) instead of
+                # letting the server close the connection with 1009.
+                if len(payload) > 250000:
+                    logger.warning(
+                        "⚠️ 丢弃超大帧 type=%s size=%d bytes (> 250KB 安全上限)",
+                        event.get("type", "?"), len(payload),
+                    )
+                    return
+                await self.ws.send(payload)
             except Exception as e:
                 error_msg = str(e)
+                # 连接已关闭（1009 message too big / 1000 正常关闭等）→ 标记致命
+                if '1009' in error_msg or '1006' in error_msg:
+                    if not self._fatal_error_occurred:
+                        self._fatal_error_occurred = True
+                        self.ws = None
+                        logger.error("💥 WebSocket 帧错误 (1009/1006)，停止发送")
+                    return
                 if '1000' not in error_msg:
                     logger.warning(f"⚠️ 发送 {event.get('type', '未知')} 事件失败: {error_msg}")
                 
@@ -701,9 +719,8 @@ class OmniRealtimeClient:
                         logger.error("💥 检测到致命错误 (Response timeout / 1011)，立即中断语音对话")
                         if self.on_connection_error:
                             self._fire_task(self.on_connection_error(json.dumps({"code": "RESPONSE_TIMEOUT"})))
-                        # 尝试关闭连接
                         self._fire_task(self.close())
-                    return  # 不再抛出异常，直接返回
+                    return
                 
                 raise
 
@@ -783,8 +800,7 @@ class OmniRealtimeClient:
         
         # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音（见 _should_clear_audio_buffer_on_silence）
         if self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path):
-            if use_rnnoise_path:
-                self._silence_reset_pending = False
+            self._silence_reset_pending = False
             await self.clear_audio_buffer()
         
         # Gemini uses different API
@@ -1413,9 +1429,13 @@ class OmniRealtimeClient:
 
         except websockets.exceptions.ConnectionClosedOK:
             logger.info("Connection closed as expected")
+            self._fatal_error_occurred = True
+            self.ws = None
         except websockets.exceptions.ConnectionClosedError as e:
             error_msg = str(e)
             logger.error(f"Connection closed with error: {error_msg}")
+            self._fatal_error_occurred = True
+            self.ws = None
             if self.on_connection_error:
                 await self.on_connection_error(error_msg)
         except asyncio.TimeoutError:
