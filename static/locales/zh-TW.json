@@ -566,7 +566,9 @@
         "volumeHintDetecting": "正在檢測麥剋風輸入...",
         "volumeHintNoSound": "檢測不到聲音，請檢查麥剋風",
         "volumeHintLow": "音量較低，建議調高增益",
-        "volumeHintOk": "麥剋風工作正常"
+        "volumeHintOk": "麥剋風工作正常",
+        "noiseReduction": "降噪",
+        "noiseReductionHint": "RNNoise AI 降噪，讓語音更清晰"
     },
     "speaker": {
         "volumeLabel": "揚聲器音量",
@@ -1505,6 +1507,7 @@
         "toggles": {
             "allowInterrupt": "允許打斷",
             "mergeMessages": "閤並消息",
+            "avatarReactionBubble": "表情氣泡",
             "proactiveChat": "主動搭話",
             "proactiveVision": "自主視覺",
             "proactiveVisionChat": "螢幕分享",

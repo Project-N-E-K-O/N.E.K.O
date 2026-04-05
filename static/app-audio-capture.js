@@ -286,6 +286,31 @@
         }
     }
 
+    // ======================== 降噪开关 ========================
+
+    function saveNoiseReductionSetting() {
+        try {
+            localStorage.setItem('neko_noise_reduction', S.noiseReductionEnabled ? '1' : '0');
+        } catch (e) { }
+        // 同步到后端 conversation-settings
+        try {
+            fetch('/api/config/conversation-settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ noiseReductionEnabled: S.noiseReductionEnabled })
+            });
+        } catch (e) { }
+    }
+
+    function loadNoiseReductionSetting() {
+        try {
+            var saved = localStorage.getItem('neko_noise_reduction');
+            if (saved !== null) {
+                S.noiseReductionEnabled = saved === '1';
+            }
+        } catch (e) { }
+    }
+
     // 格式化增益显示（带正负号）
     function formatGainDisplay(db) {
         if (db > 0) {
@@ -961,6 +986,8 @@
     mod.loadSelectedMicrophone = loadSelectedMicrophone;
     mod.saveMicGainSetting = saveMicGainSetting;
     mod.loadMicGainSetting = loadMicGainSetting;
+    mod.loadNoiseReductionSetting = loadNoiseReductionSetting;
+    mod.saveNoiseReductionSetting = saveNoiseReductionSetting;
     mod.formatGainDisplay = formatGainDisplay;
     mod.startSilenceDetection = startSilenceDetection;
     mod.stopSilenceDetection = stopSilenceDetection;
@@ -1102,6 +1129,54 @@
             var sep1 = document.createElement('div');
             Object.assign(sep1.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
             leftColumn.appendChild(sep1);
+
+            // ===== 左栏 1.5. 降噪开关 =====
+            var nrContainer = document.createElement('div');
+            nrContainer.style.padding = '8px 12px';
+
+            var nrRow = document.createElement('div');
+            Object.assign(nrRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
+
+            var nrLabel = document.createElement('span');
+            nrLabel.textContent = window.t ? window.t('microphone.noiseReduction') : '降噪';
+            nrLabel.setAttribute('data-i18n', 'microphone.noiseReduction');
+            Object.assign(nrLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
+
+            var nrToggle = document.createElement('label');
+            Object.assign(nrToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0' });
+            var nrInput = document.createElement('input');
+            nrInput.type = 'checkbox';
+            nrInput.checked = S.noiseReductionEnabled;
+            Object.assign(nrInput.style, { opacity: '0', width: '0', height: '0' });
+            var nrSlider = document.createElement('span');
+            Object.assign(nrSlider.style, { position: 'absolute', cursor: 'pointer', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: S.noiseReductionEnabled ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
+            var nrKnob = document.createElement('span');
+            Object.assign(nrKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: S.noiseReductionEnabled ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
+            nrSlider.appendChild(nrKnob);
+            nrToggle.appendChild(nrInput);
+            nrToggle.appendChild(nrSlider);
+
+            nrInput.addEventListener('change', function () {
+                S.noiseReductionEnabled = nrInput.checked;
+                nrSlider.style.backgroundColor = nrInput.checked ? '#4f8cff' : '#ccc';
+                nrKnob.style.left = nrInput.checked ? '18px' : '2px';
+                saveNoiseReductionSetting();
+            });
+
+            nrRow.appendChild(nrLabel);
+            nrRow.appendChild(nrToggle);
+            nrContainer.appendChild(nrRow);
+
+            var nrHint = document.createElement('div');
+            nrHint.textContent = window.t ? window.t('microphone.noiseReductionHint') : 'RNNoise AI 降噪';
+            nrHint.setAttribute('data-i18n', 'microphone.noiseReductionHint');
+            Object.assign(nrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
+            nrContainer.appendChild(nrHint);
+            leftColumn.appendChild(nrContainer);
+
+            var sep1b = document.createElement('div');
+            Object.assign(sep1b.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
+            leftColumn.appendChild(sep1b);
 
             // ===== 左栏 2. 麦克风增益 =====
             var gainContainer = document.createElement('div');
