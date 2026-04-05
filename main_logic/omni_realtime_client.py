@@ -656,6 +656,89 @@ class OmniRealtimeClient:
                 await self.on_connection_error(error_msg)
             raise
 
+    # ── Frame-size helpers ──────────────────────────────────────────
+    _WS_FRAME_LIMIT = 250_000  # safe threshold below 256KB server cap
+
+    @staticmethod
+    def _try_shrink_image_payload(event: dict, payload: str) -> Optional[str]:
+        """Re-compress an oversized image payload at lower JPEG quality.
+
+        Looks for a base64 image blob in the event (``image``,
+        ``video_frame``, or ``image_url`` fields), decodes it, re-encodes
+        at progressively lower quality, and returns a new JSON payload that
+        fits under ``_WS_FRAME_LIMIT``.  Returns *None* if the frame
+        cannot be shrunk (non-image event, or still too big at minimum
+        quality).
+        """
+        from io import BytesIO
+        from PIL import Image as PILImage
+
+        limit = OmniRealtimeClient._WS_FRAME_LIMIT
+
+        # Locate the base64 blob and a setter to write it back
+        b64_data: Optional[str] = None
+        prefix = ""
+
+        etype = event.get("type", "")
+        if "image" in etype and "image" in event:
+            # input_image_buffer.append  →  event["image"]
+            b64_data = event.get("image")
+        elif "video_frame" in etype and "video_frame" in event:
+            # input_audio_buffer.append_video_frame  →  event["video_frame"]
+            b64_data = event.get("video_frame")
+        elif etype == "conversation.item.create":
+            # GPT path: content[0].image_url = "data:image/jpeg;base64,<b64>"
+            try:
+                url = event["item"]["content"][0]["image_url"]
+                if isinstance(url, str) and url.startswith("data:image/"):
+                    prefix, b64_data = url.split(",", 1)
+                    prefix += ","
+            except (KeyError, IndexError, TypeError, ValueError):
+                pass
+
+        if not b64_data:
+            logger.warning(
+                "⚠️ 丢弃超大帧 type=%s size=%d bytes (非图片，无法压缩)",
+                etype, len(payload),
+            )
+            return None
+
+        try:
+            raw = base64.b64decode(b64_data)
+            img = PILImage.open(BytesIO(raw))
+            if img.mode in ("RGBA", "LA", "P"):
+                img = img.convert("RGB")
+
+            for quality in (50, 35, 20):
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=quality, optimize=True)
+                new_b64 = base64.b64encode(buf.getvalue()).decode()
+
+                # Write back into the event dict (mutates in place)
+                if "image" in etype and "image" in event:
+                    event["image"] = new_b64
+                elif "video_frame" in etype and "video_frame" in event:
+                    event["video_frame"] = new_b64
+                elif prefix:
+                    event["item"]["content"][0]["image_url"] = prefix + new_b64
+
+                new_payload = json.dumps(event)
+                if len(new_payload) <= limit:
+                    logger.info(
+                        "🗜️ 图片帧重压缩成功 q=%d: %d → %d bytes",
+                        quality, len(payload), len(new_payload),
+                    )
+                    return new_payload
+
+            logger.warning(
+                "⚠️ 丢弃超大图片帧 type=%s (q=20 仍 %d bytes > %d 上限)",
+                etype, len(new_payload), limit,
+            )
+            return None
+        except Exception as e:
+            logger.warning("⚠️ 图片重压缩失败 type=%s: %s — 丢弃帧", etype, e)
+            return None
+
     async def send_event(self, event) -> None:
         # 检查是否已发生致命错误，直接跳过发送
         if self._fatal_error_occurred:
@@ -690,15 +773,13 @@ class OmniRealtimeClient:
                 if not self.ws:
                     return
                 payload = json.dumps(event)
-                # Guard: Qwen/GLM/Step servers enforce 256KB max frame; drop
-                # oversized payloads (typically large image frames) instead of
-                # letting the server close the connection with 1009.
+                # Guard: Qwen/GLM/Step servers enforce 256KB max frame; for
+                # oversized image payloads, try to re-compress the JPEG at
+                # lower quality before dropping.
                 if len(payload) > 250000:
-                    logger.warning(
-                        "⚠️ 丢弃超大帧 type=%s size=%d bytes (> 250KB 安全上限)",
-                        event.get("type", "?"), len(payload),
-                    )
-                    return
+                    payload = self._try_shrink_image_payload(event, payload)
+                    if payload is None:
+                        return
                 await self.ws.send(payload)
             except Exception as e:
                 error_msg = str(e)
