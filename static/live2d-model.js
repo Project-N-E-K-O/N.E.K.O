@@ -20,6 +20,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     const loadToken = ++this._activeLoadToken;
     this._modelLoadState = 'preparing';
     this._isModelReadyForInteraction = false;
+    this._displayInfo = null;
+    this._autoNamedHitAreaIds = new Set();
 
     // 清除上一次加载遗留的画布揭示定时器
     if (this._canvasRevealTimer) {
@@ -385,6 +387,33 @@ Live2DManager.prototype._preTickPhysics = async function(model, simulatedMs, ste
 // 不再需要预解析嘴巴参数ID，保留占位以兼容旧代码调用
 Live2DManager.prototype.resolveMouthParameterId = function() { return null; };
 
+Live2DManager.prototype._loadDisplayInfo = async function(settings) {
+    this._displayInfo = null;
+
+    const displayInfoPath = settings?.FileReferences?.DisplayInfo;
+    if (!displayInfoPath) {
+        return null;
+    }
+
+    let resolvedPath = displayInfoPath;
+    if (!/^(?:[a-z]+:)?\/\//i.test(displayInfoPath) && !displayInfoPath.startsWith('/')) {
+        resolvedPath = `${this.modelRootPath}/${displayInfoPath}`;
+    }
+
+    try {
+        const response = await fetch(resolvedPath);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        this._displayInfo = await response.json();
+        return this._displayInfo;
+    } catch (error) {
+        console.warn('[Live2D] 加载 DisplayInfo 失败:', displayInfoPath, error);
+        this._displayInfo = null;
+        return null;
+    }
+};
+
 // 配置已加载的模型（私有方法，用于消除主路径和回退路径的重复代码）
 Live2DManager.prototype._configureLoadedModel = async function(model, modelPath, options, loadToken) {
     if (!this._isLoadTokenActive(loadToken)) return;
@@ -477,6 +506,9 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         hitAreas_disk.forEach(hitArea => {
             if (!hitArea.Name || hitArea.Name === '') {
                 hitArea.Name = hitArea.Id;
+                if (this._autoNamedHitAreaIds instanceof Set) {
+                    this._autoNamedHitAreaIds.add(hitArea.Id);
+                }
                 fixedCount++;
             }
         });
@@ -526,9 +558,17 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 设置原来的锁按钮
     this.setupHTMLLockIcon(model);
 
+    const settings = model.internalModel && model.internalModel.settings && model.internalModel.settings.json;
+    if (settings) {
+        try {
+            await this._loadDisplayInfo(settings);
+        } catch (_) {}
+    } else {
+        this._displayInfo = null;
+    }
+
     // 加载 FileReferences 与 EmotionMapping
     if (options.loadEmotionMapping !== false) {
-        const settings = model.internalModel && model.internalModel.settings && model.internalModel.settings.json;
         if (settings) {
             // 保存原始 FileReferences
             this.fileReferences = settings.FileReferences || null;
