@@ -47,9 +47,9 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 <td align="center" width="25%">🎭<br><b>マルチフォームAvatar</b><br>Live2D / VRM / MMD の3形態、モーションキャプチャとフルスクリーン追跡対応</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>プラグインエコシステム</b><br>完全なプラグインSDKでカスタム拡張が可能</td>
+<td align="center">🔌<br><b>プラグインエコシステム</b><br>完全なプラグインSDKとマーケットプレイスでカスタム拡張が可能</td>
 <td align="center">🌐<br><b>14以上のAIプロバイダー</b><br>OpenAI / Gemini / Qwen / DeepSeek等、無料モデルも即座に利用可能</td>
-<td align="center">💬<br><b>プロアクティブチャット</b><br>24/7環境認識：画面理解、SNSトレンド、個人フィード、ニュース——彼女から話しかけてきます</td>
+<td align="center">💬<br><b>プロアクティブチャット</b><br>24/7環境認識：画面理解、SNSトレンド、個人フィード、音楽やミーム——彼女から話しかけてきます</td>
 <td align="center">🏪<br><b>UGCワークショップ</b><br>Steam Workshop経由でカスタムキャラクター、モデル、ボイスパックをアップロード・共有</td>
 </tr>
 </table>
@@ -374,8 +374,6 @@ docker-compose up -d
 ---
 
 </details>
-
-**注：** 現在のDockerデプロイソリューションは [**HINS**](https://home.hinswu.top) により提供されています
 
 ### ソースコード開発
 

@@ -46,9 +46,9 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 <td align="center" width="25%">🎭<br><b>多形态 Avatar</b><br>Live2D / VRM / MMD 三种形态，支持动作捕捉与全屏追踪</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>插件生态</b><br>完整的插件 SDK，支持自定义扩展功能</td>
+<td align="center">🔌<br><b>插件生态</b><br>完整的插件 SDK 与商城，支持自定义扩展功能</td>
 <td align="center">🌐<br><b>14+ AI 服务商</b><br>OpenAI / Gemini / Qwen / DeepSeek 等，含免费模型开箱即用</td>
-<td align="center">💬<br><b>主动对话</b><br>24/7环境感知：屏幕理解、社交媒体热搜、个人动态、新闻推送，她会主动找你聊天</td>
+<td align="center">💬<br><b>主动对话</b><br>24/7环境感知：屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天</td>
 <td align="center">🏪<br><b>UGC 创意工坊</b><br>Steam 创意工坊上传分享自定义角色、模型、语音包</td>
 </tr>
 </table>
@@ -89,7 +89,6 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 <details>
 <summary>点击展开 Docker 部署指南</summary>
 
-#### 部署教程也可以查看 [***HINS's*** ***Blog***](https://blog.hinswu.top/archives/project-n.e.k.o.-dockerbu-shu-zhi-dao)
 #### 部署方式一：Docker Compose（推荐）
 
 <details>
@@ -440,8 +439,6 @@ curl -k https://localhost:48912
 ---
 
 </details>
-
-**注**：当前 Docker 部署方案由 [**HINS**](https://home.hinswu.top) 提供
 
 ### 源码开发
 
