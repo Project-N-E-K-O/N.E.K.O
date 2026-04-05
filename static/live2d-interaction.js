@@ -881,8 +881,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
             const isNearModel = distance < HoverFadethreshold;
 
-            // 静止时启动定时器，移出范围时清除
-            if (this.isLocked && isNearModel) {
+            // 静止时启动定时器，移出范围时清除（移动端无鼠标悬停，跳过）
+            const isMobileDevice = (window.appUtils && typeof window.appUtils.isMobile === 'function' && window.appUtils.isMobile()) || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            if (!isMobileDevice && this.isLocked && isNearModel) {
                 // 首次进入范围：设置标志并启动定时器
                 if (!this._hasEnteredHoverRange) {
                     this._hasEnteredHoverRange = true;
@@ -904,8 +905,8 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 this._hasEnteredHoverRange = false;
             }
 
-            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化）
-            ctrlFadeActive = this.isLocked && ctrlKeyPressed && isNearModel;
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化，移动端跳过）
+            ctrlFadeActive = !isMobileDevice && this.isLocked && ctrlKeyPressed && isNearModel;
             applyFade();
 
             const canvasEl = document.getElementById('live2d-canvas');
