@@ -102,6 +102,39 @@ _NAGER_API = "https://date.nager.at/api/v3"
 _TIMOR_API = "http://timor.tech/api/holiday/year"
 _FETCH_TIMEOUT = 10.0
 
+# ── 全局补充节日（所有国家共享，固定日期，API 可能不含） ──────────
+# 格式: (month, day, localName_dict)
+_GLOBAL_EXTRA_HOLIDAYS: list[tuple[int, int, dict[str, str]]] = [
+    (2, 14, {
+        'zh': '情人节', 'en': "Valentine's Day", 'ja': 'バレンタインデー',
+        'ko': '발렌타인데이', 'ru': 'День святого Валентина',
+    }),
+    (12, 25, {
+        'zh': '圣诞节', 'en': 'Christmas', 'ja': 'クリスマス',
+        'ko': '크리스마스', 'ru': 'Рождество',
+    }),
+]
+
+
+def _inject_global_extras(entries: list[HolidayEntry], year: int,
+                          lang: str) -> list[HolidayEntry]:
+    """Append global extra holidays if not already present in *entries*."""
+    existing_dates = {e["date"] for e in entries}
+    result = list(entries)
+    for month, day, names in _GLOBAL_EXTRA_HOLIDAYS:
+        iso = f"{year}-{month:02d}-{day:02d}"
+        if iso in existing_dates:
+            continue
+        local = names.get(lang, names['en'])
+        result.append({
+            "date": iso,
+            "localName": local,
+            "name": names['en'],
+            "_nominal": True,
+        })
+    return result
+
+
 # 已知的中国法定节日名（用于从 timor API 的每日条目中归并 period 的展示名）
 _CN_KNOWN_HOLIDAYS = {'元旦', '春节', '清明节', '劳动节', '端午节', '中秋节', '国庆节'}
 # 春节 period 里初一~初七等条目需要映射回 "春节"；名义日期用初一
@@ -241,13 +274,14 @@ async def _warm_all_once() -> None:
     _warmed = True
     year = datetime.now().year
 
-    async def _fetch_one(country: str) -> None:
+    async def _fetch_one(lang: str, country: str) -> None:
         key = (country, year)
         async with _cache_lock:
             if key in _period_cache:
                 return
         try:
             data = await _fetch_cn(year) if country == 'CN' else await _fetch_nager(country, year)
+            data = _inject_global_extras(data, year, lang)
             async with _cache_lock:
                 _holiday_cache[key] = data
                 _period_cache[key] = _build_periods(data)
@@ -256,7 +290,7 @@ async def _warm_all_once() -> None:
         except Exception as e:
             logger.info("Holiday cache fetch skipped for %s/%d: %s", country, year, e)
 
-    await asyncio.gather(*[_fetch_one(c) for c in _LANG_TO_COUNTRY.values()])
+    await asyncio.gather(*[_fetch_one(l, c) for l, c in _LANG_TO_COUNTRY.items()])
 
 
 async def _ensure_periods(country: str, year: int) -> list[HolidayPeriod]:
@@ -268,7 +302,10 @@ async def _ensure_periods(country: str, year: int) -> list[HolidayPeriod]:
             return _period_cache[key]
     # Fallback single-country fetch
     try:
+        # Reverse-lookup lang for global extras
+        lang = next((l for l, c in _LANG_TO_COUNTRY.items() if c == country), 'en')
         data = await _fetch_cn(year) if country == 'CN' else await _fetch_nager(country, year)
+        data = _inject_global_extras(data, year, lang)
         periods = _build_periods(data)
         async with _cache_lock:
             _holiday_cache[key] = data
