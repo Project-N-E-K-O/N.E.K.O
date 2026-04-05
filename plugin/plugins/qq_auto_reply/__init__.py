@@ -1020,6 +1020,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
                 self.logger.warning(f"NapCat launcher not found: {launcher_script}")
                 return
 
+            mode = "前台" if show_window else "后台"
             self.logger.info(f"Starting NapCat ({mode}模式) from {napcat_dir}")
 
             if self._napcat_process and self._napcat_process.returncode is None:
