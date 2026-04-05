@@ -20,8 +20,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     const loadToken = ++this._activeLoadToken;
     this._modelLoadState = 'preparing';
     this._isModelReadyForInteraction = false;
-    this._displayInfo = null;
-    this._autoNamedHitAreaIds = new Set();
+    this._resetDerivedModelMetadata();
 
     // 清除上一次加载遗留的画布揭示定时器
     if (this._canvasRevealTimer) {
@@ -160,7 +159,11 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             console.warn('模型加载失败，尝试回退到默认模型: mao_pro');
             try {
                 const defaultModelPath = '/static/mao_pro/mao_pro.model3.json';
+                // 主模型可能已在 _configureLoadedModel 中途写入派生状态；
+                // 回退加载前先清空，避免默认模型继承失败模型的元数据。
+                this._resetDerivedModelMetadata();
                 const model = await Live2DModel.from(defaultModelPath, { autoFocus: false });
+                this._resetDerivedModelMetadata();
                 this.currentModel = model;
 
                 // 使用统一的模型配置方法
@@ -195,6 +198,23 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 
 Live2DManager.prototype._isLoadTokenActive = function(loadToken) {
     return this._activeLoadToken === loadToken;
+};
+
+Live2DManager.prototype._resetDerivedModelMetadata = function() {
+    this._displayInfo = null;
+    this._autoNamedHitAreaIds = new Set();
+    this.fileReferences = null;
+    this.emotionMapping = null;
+    this.savedModelParameters = null;
+    this._shouldApplySavedParams = false;
+    this.modelName = null;
+    this.modelRootPath = null;
+
+    if (this._missingExpressionFiles instanceof Set) {
+        this._missingExpressionFiles.clear();
+    } else {
+        this._missingExpressionFiles = new Set();
+    }
 };
 
 Live2DManager.prototype._waitForModelVisualStability = function(model, loadToken, options = {}) {
