@@ -807,6 +807,9 @@
                 }
             } else {
                 // --- 复用模式下的切歌逻辑 ---
+                // Reset skip-tracking counters so the previous track's time doesn't carry over
+                accumulatedPlaySeconds = 0;
+                lastPlayPosition = 0;
                 if (localPlayer.list) {
                     localPlayer.list.clear();
                     localPlayer.list.add([{ name: trackInfo.name, artist: trackInfo.artist, url: trackInfo.url, cover: hasCover ? trackInfo.cover : '' }]);
