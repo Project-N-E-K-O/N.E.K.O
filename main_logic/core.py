@@ -1568,6 +1568,7 @@ class LLMSessionManager:
             # prompt += plugin_prompt
             active_tasks_prompt = await self._fetch_active_agent_tasks_prompt()
             prompt += active_tasks_prompt
+
         return prompt
 
     def _is_agent_enabled(self):
@@ -2187,14 +2188,28 @@ class LLMSessionManager:
             return
 
         _lang = normalize_language_code(self.user_language, format='short')
-        from config.prompts_proactive import get_greeting_prompt
+        from config.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
         from utils.time_format import format_elapsed as _format_elapsed
+        from utils.holiday_cache import get_holiday_or_weekend_hint
         template = get_greeting_prompt(gap_seconds, _lang)
         if not template:
             return
 
         elapsed = _format_elapsed(_lang, gap_seconds)
-        instruction = template.format(elapsed=elapsed, name=self.lanlan_name, master=self.master_name)
+        time_hint = get_time_of_day_hint(_lang).format(master=self.master_name)
+
+        # Holiday / weekend hint (budget-aware)
+        try:
+            holiday_hint_text = await get_holiday_or_weekend_hint(_lang, self.lanlan_name)
+        except Exception as e:
+            logger.debug("[%s] trigger_greeting: holiday hint failed: %s", self.lanlan_name, e)
+            holiday_hint_text = None
+        holiday_hint = (holiday_hint_text + '\n') if holiday_hint_text else ''
+
+        instruction = template.format(
+            elapsed=elapsed, name=self.lanlan_name, master=self.master_name,
+            time_hint=time_hint, holiday_hint=holiday_hint,
+        )
         logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", self.lanlan_name, gap_seconds, elapsed)
 
         # 如果已有 text session 且空闲，直接投递
