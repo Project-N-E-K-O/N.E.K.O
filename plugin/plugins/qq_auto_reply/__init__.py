@@ -837,6 +837,13 @@ class QQAutoReplyPlugin(NekoPluginBase):
             "required": ["qq_number"],
         },
     )
+    async def _invalidate_private_session(self, qq_number: str) -> None:
+        session_key = self._build_session_key(sender_id=qq_number, is_group=False)
+        user_data = self._user_sessions.pop(session_key, None)
+        session = user_data.get("session") if user_data else None
+        if session:
+            await session.close()
+
     async def add_trusted_user(self, qq_number: str, level: str = "trusted", nickname: str = "", **_):
         """添加信任用户并持久化到 store"""
         if not self.permission_mgr:
@@ -846,6 +853,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
         user_nickname = "" if level == "admin" else nickname
         self.permission_mgr.add_user(qq_number, level, user_nickname)
         self._refresh_admin_qq()
+        await self._invalidate_private_session(qq_number)
         self.logger.info(f"Added trusted user: {qq_number} with level {level}" +
                         (f" and nickname {user_nickname}" if user_nickname else ""))
 
@@ -885,6 +893,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
 
         self.permission_mgr.remove_user(qq_number)
         self._refresh_admin_qq()
+        await self._invalidate_private_session(qq_number)
         self.logger.info(f"Removed trusted user: {qq_number}")
 
         success = await self._save_trusted_users_to_config()
@@ -1004,7 +1013,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
             result["warning"] = "已从内存移除，但持久化失败"
         return Ok(result)
 
-    async def _start_napcat(self, show_window: bool = True):
+    async def _start_napcat(self, show_window: bool = True) -> bool:
         """启动 NapCat
 
         Args:
@@ -1018,14 +1027,16 @@ class QQAutoReplyPlugin(NekoPluginBase):
 
             if not launcher_script.exists():
                 self.logger.warning(f"NapCat launcher not found: {launcher_script}")
-                return
+                return False
 
             mode = "前台" if show_window else "后台"
             self.logger.info(f"Starting NapCat ({mode}模式) from {napcat_dir}")
 
             if self._napcat_process and self._napcat_process.returncode is None:
                 self.logger.info("NapCat process already running")
-                return
+                onebot_url = str((self._cfg.get("qq_auto_reply", {}) or {}).get("onebot_url", "ws://127.0.0.1:3001"))
+                await self._wait_onebot_ready(onebot_url)
+                return True
 
             # 根据参数决定是否显示窗口
             if show_window:
@@ -1053,9 +1064,11 @@ class QQAutoReplyPlugin(NekoPluginBase):
 
             onebot_url = str((self._cfg.get("qq_auto_reply", {}) or {}).get("onebot_url", "ws://127.0.0.1:3001"))
             await self._wait_onebot_ready(onebot_url)
+            return True
 
         except Exception as e:
             self.logger.error(f"Failed to start NapCat: {e}")
+            return False
 
     async def _wait_onebot_ready(self, onebot_url: str, timeout: float = 30.0) -> None:
         host, port = self._parse_onebot_host_port(onebot_url)
@@ -1102,7 +1115,9 @@ class QQAutoReplyPlugin(NekoPluginBase):
     )
     async def start_qq_server(self, show_window: bool = True, **_):
         """开启 QQ 服务器"""
-        await self._start_napcat(show_window=show_window)
+        ready = await self._start_napcat(show_window=show_window)
+        if not ready:
+            return Err(SdkError("START_ERROR: QQ 服务器未就绪"))
         return Ok({"status": "started", "show_window": bool(show_window), "ready": True})
 
     @plugin_entry(
