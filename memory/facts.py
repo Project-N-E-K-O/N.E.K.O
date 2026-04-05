@@ -126,9 +126,9 @@ class FactStore:
         return changed
 
     def save_facts(self, name: str) -> None:
-        facts = self._facts.get(name, [])
-        path = self._facts_path(name)
         with self._get_lock(name):
+            facts = self._facts.get(name, [])
+            path = self._facts_path(name)
             # Read-merge-write: 保护其他进程写入的 absorbed 标记
             if os.path.exists(path):
                 try:
@@ -146,25 +146,25 @@ class FactStore:
                 except (json.JSONDecodeError, OSError):
                     pass
             atomic_write_json(path, facts, indent=2, ensure_ascii=False)
-        # 基于文件修改时间节流归档：距上次归档超过 _ARCHIVE_COOLDOWN_HOURS 才尝试
-        try:
-            archive_path = self._facts_archive_path(name)
-            if os.path.exists(archive_path):
-                mtime = datetime.fromtimestamp(os.path.getmtime(archive_path))
-                if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
-                    return
-            # 用 marker 文件记录上次归档尝试时间（即使归档文件尚不存在）
-            marker_path = archive_path + '.last_attempt'
-            if os.path.exists(marker_path):
-                mtime = datetime.fromtimestamp(os.path.getmtime(marker_path))
-                if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
-                    return
-            self._archive_absorbed(name)
-            # 更新 marker（无论归档是否有实际条目都 touch 一次）
-            with open(marker_path, 'w') as f:
-                f.write(datetime.now().isoformat())
-        except Exception:
-            pass
+            # 基于文件修改时间节流归档：距上次归档超过 _ARCHIVE_COOLDOWN_HOURS 才尝试
+            try:
+                archive_path = self._facts_archive_path(name)
+                if os.path.exists(archive_path):
+                    mtime = datetime.fromtimestamp(os.path.getmtime(archive_path))
+                    if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
+                        return
+                # 用 marker 文件记录上次归档尝试时间（即使归档文件尚不存在）
+                marker_path = archive_path + '.last_attempt'
+                if os.path.exists(marker_path):
+                    mtime = datetime.fromtimestamp(os.path.getmtime(marker_path))
+                    if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
+                        return
+                self._archive_absorbed(name)
+                # 更新 marker（无论归档是否有实际条目都 touch 一次）
+                with open(marker_path, 'w') as f:
+                    f.write(datetime.now().isoformat())
+            except Exception:
+                pass
 
     def _facts_archive_path(self, name: str) -> str:
         from memory import ensure_character_dir
