@@ -171,7 +171,7 @@
         lastScheduledCacheKey = '';
         setPreviewImage('');
         setPreviewStatus(translateLabel('chat.avatarPreviewWaiting', '等待当前模型头像缓存生成'));
-        setPreviewNote(translateLabel('chat.avatarPreviewHint', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
+        setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
         window.dispatchEvent(new CustomEvent('chat-avatar-preview-cleared'));
     }
 
@@ -235,7 +235,7 @@
         setPreviewStatus(forceRefresh
             ? translateLabel('chat.avatarPreviewRefreshing', '正在刷新当前头像...')
             : translateLabel('chat.avatarPreviewGenerating', '正在生成当前头像...'));
-        setPreviewNote(translateLabel('chat.avatarPreviewHint', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
+        setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
 
         try {
             const result = await captureAvatarPreview();
