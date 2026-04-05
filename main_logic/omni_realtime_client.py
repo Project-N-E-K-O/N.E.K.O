@@ -480,7 +480,11 @@ class OmniRealtimeClient:
             "Authorization": f"Bearer {self.api_key}"
         }
         self.ws = await websockets.connect(url, additional_headers=headers)
-        
+        # Clear fatal flag so send_event/update_session work on this new
+        # connection (flag may be leftover from a previous failed session
+        # when the same OmniRealtimeClient instance is reused).
+        self._fatal_error_occurred = False
+
         # 启动静默检测任务（只在启用时）
         self._last_speech_time = time.time()
         self._silence_timeout_triggered = False
@@ -643,7 +647,8 @@ class OmniRealtimeClient:
             
             # 设置 ws 为 session，用于兼容性检查
             self.ws = self._gemini_session
-            
+            self._fatal_error_occurred = False
+
             self._last_speech_time = time.time()
             self.instructions = instructions
             logger.info("✅ Gemini Live API connected successfully")
@@ -783,26 +788,27 @@ class OmniRealtimeClient:
                 await self.ws.send(payload)
             except Exception as e:
                 error_msg = str(e)
-                # 连接已关闭（1009 message too big / 1000 正常关闭等）→ 标记致命
-                if '1009' in error_msg or '1006' in error_msg:
+                # ── Fatal WebSocket errors ────────────────────────────
+                # 1009 (message too big) / 1006 (abnormal close) /
+                # 1011 (internal error) / Response timeout
+                # → mark fatal, fire error callback, schedule close,
+                #   and *re-raise* so callers (connect, update_session)
+                #   see the failure instead of assuming success.
+                is_frame_error = '1009' in error_msg or '1006' in error_msg
+                is_server_error = 'Response timeout' in error_msg or '1011' in error_msg
+                if is_frame_error or is_server_error:
                     if not self._fatal_error_occurred:
                         self._fatal_error_occurred = True
                         self.ws = None
-                        logger.error("💥 WebSocket 帧错误 (1009/1006)，停止发送")
-                    return
+                        code = "WS_FRAME_ERROR" if is_frame_error else "RESPONSE_TIMEOUT"
+                        logger.error("💥 WebSocket 致命错误 (%s)，停止发送: %s", code, error_msg)
+                        if self.on_connection_error:
+                            self._fire_task(self.on_connection_error(json.dumps({"code": code})))
+                        self._fire_task(self.close())
+                    raise
                 if '1000' not in error_msg:
                     logger.warning(f"⚠️ 发送 {event.get('type', '未知')} 事件失败: {error_msg}")
-                
-                # 检测致命错误：Response timeout 或 1011 错误码
-                if 'Response timeout' in error_msg or '1011' in error_msg:
-                    if not self._fatal_error_occurred:
-                        self._fatal_error_occurred = True
-                        logger.error("💥 检测到致命错误 (Response timeout / 1011)，立即中断语音对话")
-                        if self.on_connection_error:
-                            self._fire_task(self.on_connection_error(json.dumps({"code": "RESPONSE_TIMEOUT"})))
-                        self._fire_task(self.close())
-                    return
-                
+
                 raise
 
     async def update_session(self, config: Dict[str, Any]) -> None:
