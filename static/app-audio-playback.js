@@ -539,6 +539,13 @@
             // If init still failed, fall back to connecting sources directly to destination
             var hasAnalyser = !!S.globalAnalyser;
 
+            // Clamp nextChunkTime to now so stale values never cause past-scheduled
+            // (and therefore simultaneously playing) audio chunks.
+            var now = S.audioPlayerContext.currentTime;
+            if (S.nextChunkTime < now) {
+                S.nextChunkTime = now;
+            }
+
             // Pre-schedule all chunks within the lookahead window
             while (S.nextChunkTime < S.audioPlayerContext.currentTime + scheduleAheadTime) {
                 if (S.audioBufferQueue.length > 0) {
