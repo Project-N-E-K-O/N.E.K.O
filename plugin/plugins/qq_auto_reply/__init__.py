@@ -12,7 +12,6 @@ import asyncio
 import json
 import os
 import random
-import socket
 import subprocess
 import time
 from pathlib import Path
@@ -1076,10 +1075,14 @@ class QQAutoReplyPlugin(NekoPluginBase):
         last_error: Optional[Exception] = None
         while time.monotonic() < deadline:
             try:
-                with socket.create_connection((host, port), timeout=1.0):
-                    self.logger.info(f"OneBot endpoint is ready: {host}:{port}")
-                    return
-            except OSError as e:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port), timeout=1.0
+                )
+                writer.close()
+                await writer.wait_closed()
+                self.logger.info(f"OneBot endpoint is ready: {host}:{port}")
+                return
+            except (OSError, asyncio.TimeoutError) as e:
                 last_error = e
                 await asyncio.sleep(1)
         raise RuntimeError(f"OneBot endpoint not ready at {host}:{port}: {last_error}")
