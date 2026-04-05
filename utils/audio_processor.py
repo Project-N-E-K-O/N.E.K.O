@@ -88,6 +88,8 @@ def _load_rnnoise_native():
     lib.rnnoise_create.argtypes = [ctypes.c_void_p]
     lib.rnnoise_create.restype = ctypes.c_void_p
     lib.rnnoise_destroy.argtypes = [ctypes.c_void_p]
+    lib.rnnoise_destroy.restype = None
+    lib.rnnoise_get_frame_size.argtypes = []
     lib.rnnoise_get_frame_size.restype = ctypes.c_int
     lib.rnnoise_process_frame.argtypes = [
         ctypes.c_void_p,
@@ -121,7 +123,7 @@ def _load_rnnoise_native():
                 frame = np.pad(frame, (0, frame_size - n))
             ptr = frame.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
             prob = lib.rnnoise_process_frame(state, ptr, ptr)
-            return frame.astype(np.int16)[:n], float(prob)
+            return np.clip(np.round(frame), -32768, 32767).astype(np.int16)[:n], float(prob)
 
     return _Lib()
 
