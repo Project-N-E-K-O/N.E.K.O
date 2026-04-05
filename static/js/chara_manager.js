@@ -3205,16 +3205,27 @@ function setupPageEventListeners() {
  * 如果未找到则返回 null。
  */
 function _extractNekoChunk(uint8Array) {
-    // PNG 签名 8 字节
+    // PNG 签名: 137 80 78 71 13 10 26 10
     if (uint8Array.length < 8) return null;
+    if (uint8Array[0] !== 0x89 || uint8Array[1] !== 0x50 || uint8Array[2] !== 0x4E ||
+        uint8Array[3] !== 0x47 || uint8Array[4] !== 0x0D || uint8Array[5] !== 0x0A ||
+        uint8Array[6] !== 0x1A || uint8Array[7] !== 0x0A) {
+        return null;
+    }
+
+    const view = new DataView(uint8Array.buffer, uint8Array.byteOffset, uint8Array.byteLength);
     let offset = 8; // 跳过 PNG 签名
 
     while (offset + 12 <= uint8Array.length) {
-        // 读取块长度（4 字节 big-endian）
-        const chunkLen = (uint8Array[offset] << 24)
-            | (uint8Array[offset + 1] << 16)
-            | (uint8Array[offset + 2] << 8)
-            | uint8Array[offset + 3];
+        // 读取块长度（4 字节 big-endian，无符号）
+        const chunkLen = view.getUint32(offset, false);
+
+        // PNG 规范：chunk data 最大 2^31-1 字节
+        if (chunkLen > 0x7FFFFFFF) return null;
+
+        // 确保完整的 chunk (length + type + data + CRC) 在缓冲区内
+        const chunkEnd = offset + 12 + chunkLen; // 4(len) + 4(type) + data + 4(CRC)
+        if (chunkEnd > uint8Array.length) return null;
 
         // 读取块类型（4 字节 ASCII）
         const t0 = uint8Array[offset + 4];
@@ -3225,11 +3236,7 @@ function _extractNekoChunk(uint8Array) {
         // 检查是否为 neKo 块 (0x6E 0x65 0x4B 0x6F)
         if (t0 === 0x6E && t1 === 0x65 && t2 === 0x4B && t3 === 0x6F) {
             const dataStart = offset + 8;
-            const dataEnd = dataStart + chunkLen;
-            if (dataEnd + 4 <= uint8Array.length) {
-                return uint8Array.slice(dataStart, dataEnd);
-            }
-            return null; // 数据不完整
+            return uint8Array.slice(dataStart, dataStart + chunkLen);
         }
 
         // 遇到 IEND 就停止
@@ -3237,8 +3244,8 @@ function _extractNekoChunk(uint8Array) {
             break;
         }
 
-        // 跳到下一个块: 4(length) + 4(type) + chunkLen(data) + 4(CRC)
-        offset += 12 + chunkLen;
+        // 跳到下一个块
+        offset = chunkEnd;
     }
 
     return null;
