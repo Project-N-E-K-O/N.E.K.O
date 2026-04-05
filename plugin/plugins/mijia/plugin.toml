@@ -1,0 +1,13 @@
+[plugin]
+id = "mijia"
+name = "米家智能家居"
+description = "控制米家设备，让AI伙伴帮你开关灯、调节空调等"
+version = "1.0.0"
+entry = "plugins.mijia:MijiaPlugin"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+# 运行时依赖（由 N.E.K.O 主环境提供，无需额外安装）：
+# httpx, pydantic, qrcode, tenacity, cachetools

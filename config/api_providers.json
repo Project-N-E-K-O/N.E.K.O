@@ -11,9 +11,16 @@
     },
     "qwen": {
       "key": "qwen",
-      "name": "Qwen-Omni（阿里）",
-      "description": "有免费额度，功能最全面",
+      "name": "Qwen-Omni（阿里百炼）",
+      "description": "有免费额度，功能最全面，国内版",
       "core_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+      "core_model": "qwen3-omni-flash-realtime"
+    },
+    "qwen_intl": {
+      "key": "qwen_intl",
+      "name": "Qwen-Omni（阿里国际版）",
+      "description": "阿里云国际版，适合海外用户",
+      "core_url": "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime",
       "core_model": "qwen3-omni-flash-realtime"
     },
     "openai": {
@@ -55,15 +62,27 @@
     },
     "qwen": {
       "key": "qwen",
-      "name": "阿里（推荐）",
-      "description": "推荐选择，支持自定义语音和Agent模式，价格适中",
+      "name": "阿里百炼（推荐）",
+      "description": "推荐选择，支持自定义语音和Agent模式，价格适中，国内版",
       "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "conversation_model": "qwen3.5-plus",
-      "summary_model": "qwen-plus",
-      "correction_model": "qwen3.5-plus",
+      "conversation_model": "qwen3.6-plus",
+      "summary_model": "qwen3.6-plus",
+      "correction_model": "qwen3.6-plus",
       "emotion_model": "qwen-flash",
-      "vision_model": "qwen3.5-plus",
-      "agent_model": "qwen3.5-plus"
+      "vision_model": "qwen3.6-plus",
+      "agent_model": "qwen3.6-plus"
+    },
+    "qwen_intl": {
+      "key": "qwen_intl",
+      "name": "阿里国际版",
+      "description": "阿里云国际版，适合海外用户，支持自定义语音和Agent模式",
+      "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "conversation_model": "qwen3.6-plus",
+      "summary_model": "qwen3.6-plus",
+      "correction_model": "qwen3.6-plus",
+      "emotion_model": "qwen-flash",
+      "vision_model": "qwen3.6-plus",
+      "agent_model": "qwen3.6-plus"
     },
     "openai": {
       "key": "openai",
@@ -227,6 +246,7 @@
   },
   "assist_api_key_fields": {
     "qwen": "ASSIST_API_KEY_QWEN",
+    "qwen_intl": "ASSIST_API_KEY_QWEN_INTL",
     "openai": "ASSIST_API_KEY_OPENAI",
     "glm": "ASSIST_API_KEY_GLM",
     "step": "ASSIST_API_KEY_STEP",
@@ -244,6 +264,10 @@
     "qwen": {
       "config_field": "assistApiKeyQwen",
       "restricted": false
+    },
+    "qwen_intl": {
+      "config_field": "assistApiKeyQwenIntl",
+      "restricted": true
     },
     "openai": {
       "config_field": "assistApiKeyOpenai",

@@ -428,10 +428,22 @@ async def broadcast_binary(data):
         print(f"✅ [BINARY BROADCAST] 成功广播音频到 {success_count} 个客户端" + (f", 失败并移除 {fail_count} 个" if fail_count > 0 else ""))
 
 
+# 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
+_bg_tasks: set = set()
+
+
+def _fire_task(coro):
+    """Create a background task with GC protection."""
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
+
+
 # 定期清理断开的连接
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(cleanup_disconnected_clients())
+    _fire_task(cleanup_disconnected_clients())
 
 
 async def cleanup_disconnected_clients():

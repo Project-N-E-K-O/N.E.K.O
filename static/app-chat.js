@@ -67,6 +67,9 @@
         // ========== 追踪本轮气泡 ==========
         window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
         window.currentTurnGeminiBubbles.push(messageDiv);
+        if (typeof window.ensureAssistantTurnStarted === 'function') {
+            window.ensureAssistantTurnStarted('create_gemini_bubble');
+        }
 
         // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
         checkAndShowSubtitlePrompt(cleanSentence);
@@ -77,6 +80,38 @@
             console.log(window.t('console.aiFirstReplyDetected'));
             checkAndUnlockFirstDialogueAchievement();
         }
+    }
+
+    function normalizeGeminiText(s) {
+        return (s || '').replace(/\r\n/g, '\n');
+    }
+
+    function sanitizeGeminiChunk(rawText, options) {
+        options = options || {};
+        var consumePending = options.consumePending !== false;
+        var s = normalizeGeminiText(rawText);
+        if (window._pendingMusicCommand) {
+            s = window._pendingMusicCommand + s;
+            if (consumePending) {
+                window._pendingMusicCommand = '';
+            }
+        }
+        var m = s.match(/\[[^\]]*$/);
+        if (m) {
+            var partial = m[0].toLowerCase();
+            var target = "[play_music:";
+            if (partial.startsWith(target) || target.startsWith(partial)) {
+                if (consumePending) {
+                    window._pendingMusicCommand = m[0];
+                }
+                s = s.slice(0, m.index);
+            }
+        }
+        return s.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+    }
+
+    function cleanMusicFromChunk(rawText) {
+        return sanitizeGeminiChunk(rawText, { consumePending: true });
     }
 
     // ======================== 拟真输出队列 ========================
@@ -357,32 +392,12 @@
         if (typeof isNewMessage === 'undefined') isNewMessage = true;
 
         var chatContainer = S.dom.chatContainer;
+        var bubbleCountBefore = window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0;
+        var createdVisibleBubble = false;
 
         function isMergeMessagesEnabled() {
             if (typeof window.mergeMessagesEnabled !== 'undefined') return window.mergeMessagesEnabled;
             return S.mergeMessagesEnabled;
-        }
-
-        function normalizeGeminiText(s) {
-            return (s || '').replace(/\r\n/g, '\n');
-        }
-
-        function cleanMusicFromChunk(rawText) {
-            var s = normalizeGeminiText(rawText);
-            if (window._pendingMusicCommand) {
-                s = window._pendingMusicCommand + s;
-                window._pendingMusicCommand = '';
-            }
-            var m = s.match(/\[[^\]]*$/);
-            if (m) {
-                var partial = m[0].toLowerCase();
-                var target = "[play_music:";
-                if (partial.startsWith(target) || target.startsWith(partial)) {
-                    window._pendingMusicCommand = m[0];
-                    s = s.slice(0, m.index);
-                }
-            }
-            return s.replace(/\[play_music:[^\]]*(\]|$)/g, '');
         }
 
         function splitIntoSentences(buffer) {
@@ -488,6 +503,7 @@
                 window._realisticGeminiQueue = window._realisticGeminiQueue || [];
                 window._realisticGeminiQueue.push.apply(window._realisticGeminiQueue, splitResult.sentences);
                 processRealisticQueue(window._realisticGeminiVersion || 0);
+                createdVisibleBubble = (window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0) > bubbleCountBefore;
             }
         } else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
             // 合并消息开启：新一轮开始时，清空拟真缓冲，防止残留
@@ -509,6 +525,7 @@
 
                 // ========== 追踪本轮气泡 ==========
                 window.currentTurnGeminiBubbles.push(messageDiv);
+                createdVisibleBubble = true;
             } else {
                 window.currentGeminiMessage = null;
             }
@@ -537,6 +554,7 @@
                     window.currentGeminiMessage = msgDiv;
                     window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
                     window.currentTurnGeminiBubbles.push(msgDiv);
+                    createdVisibleBubble = true;
 
                     checkAndShowSubtitlePrompt(cleanText);
                 } else {
@@ -610,6 +628,7 @@
                 window.currentGeminiMessage = newDiv;
                 // ========== 追踪本轮气泡 ==========
                 window.currentTurnGeminiBubbles.push(newDiv);
+                createdVisibleBubble = true;
 
                 // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
                 checkAndShowSubtitlePrompt(cleanedText);
@@ -623,6 +642,7 @@
             }
         }
         chatContainer.scrollTop = chatContainer.scrollHeight;
+        return createdVisibleBubble;
     }
 
     // ======================== 导出 ========================

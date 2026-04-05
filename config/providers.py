@@ -35,6 +35,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3-vl-plus": EXTRA_BODY_OPENAI,
     "qwen3-vl-flash": EXTRA_BODY_OPENAI,
     "qwen3.5-plus": EXTRA_BODY_OPENAI,
+    "qwen3.6-plus": EXTRA_BODY_OPENAI,
     "qwen-plus": EXTRA_BODY_OPENAI,
     "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
     # GLM 系列
@@ -111,6 +112,25 @@ class CacheProviderConfig:
 
 
 CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
+    # qwen_intl before qwen: resolve_cache_provider iterates in dict order
+    # and matches on base_url_pattern substring. The qwen pattern
+    # "dashscope.aliyuncs.com" also matches "dashscope-intl.aliyuncs.com",
+    # so qwen_intl must come first to win the match.
+    "qwen_intl": CacheProviderConfig(
+        provider_id="qwen_intl",
+        name="阿里云 DashScope (Intl)",
+        base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        base_url_pattern="dashscope-intl.aliyuncs.com",
+        cache_mode="session",
+        requires_header=True,
+        header_name="x-dashscope-session-cache",
+        header_value="enable",
+        min_cache_tokens=1024,
+        auto_cache=True,
+        cache_price=0.10,
+        creation_price=0.125,
+        cached_token_field="prompt_tokens_details.cached_tokens",
+    ),
     "qwen": CacheProviderConfig(
         provider_id="qwen",
         name="阿里云 DashScope",

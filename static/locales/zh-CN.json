@@ -566,7 +566,9 @@
         "volumeHintDetecting": "正在检测麦克风输入...",
         "volumeHintNoSound": "检测不到声音，请检查麦克风",
         "volumeHintLow": "音量较低，建议调高增益",
-        "volumeHintOk": "麦克风工作正常"
+        "volumeHintOk": "麦克风工作正常",
+        "noiseReduction": "降噪",
+        "noiseReductionHint": "RNNoise AI 降噪，让语音更清晰"
     },
     "speaker": {
         "volumeLabel": "扬声器音量",
@@ -663,7 +665,8 @@
         },
         "coreProviderNames": {
             "free": "免费版（猫娘专属福利，支持联网搜索）",
-            "qwen": "Qwen-Omni（阿里，速度最快，推荐⭐）",
+            "qwen": "Qwen-Omni（阿里百炼，速度最快，推荐⭐）",
+            "qwen_intl": "Qwen-Omni（阿里国际版）",
             "openai": "GPT-Realtime（OpenAI）",
             "glm": "GLM-realtime（智谱）",
             "step": "Step-2-Audio（阶跃星辰）",
@@ -671,7 +674,8 @@
         },
         "assistProviderNames": {
             "free": "免费版（猫娘专属福利）",
-            "qwen": "阿里（Qwen，功能最全，推荐⭐）",
+            "qwen": "阿里百炼（Qwen，功能最全，推荐⭐）",
+            "qwen_intl": "阿里国际版（Qwen）",
             "openai": "OpenAI (ChatGPT)",
             "glm": "智谱 (GLM)",
             "step": "阶跃星辰 (StepFun)",
@@ -700,7 +704,8 @@
         "customModelProviderFollowAssist": "跟随辅助API",
         "customModelProviderCustom": "自定义",
         "keyBook": {
-            "qwen": "阿里（Qwen）",
+            "qwen": "阿里百炼（Qwen）",
+            "qwen_intl": "阿里国际版（Qwen）",
             "openai": "OpenAI",
             "deepseek": "DeepSeek",
             "glm": "智谱（GLM）",
@@ -1505,6 +1510,7 @@
         "toggles": {
             "allowInterrupt": "允许打断",
             "mergeMessages": "合并消息",
+            "avatarReactionBubble": "表情气泡",
             "proactiveChat": "主动搭话",
             "proactiveVision": "自主视觉",
             "proactiveVisionChat": "屏幕分享",
@@ -1535,7 +1541,7 @@
             "enabled": "{{name}}已开启",
             "disabled": "{{name}}已关闭",
             "enableFailed": "{{name}}开启失败",
-            "openfang": "虚拟机",
+            "openfang": "专属桌面",
             "userPluginAdapting": "用户插件（开发中）",
             "openclawConnect": "OpenClaw",
             "chatSettings": "对话设置",
@@ -1551,7 +1557,13 @@
             "frameRateUnlimited": "无限制(VSync)",
             "mouseTracking": "跟踪鼠标",
             "fullscreenTracking": "全屏跟踪",
-            "localTracking": "局部跟踪"
+            "localTracking": "局部跟踪",
+            "textGuardMaxLength": "回复字数限制",
+            "unlimited": "无限制",
+            "characters": "字",
+            "textGuardUnlimitedWarning": "可能导致猫娘出现严重问题，非必要不建议无限制",
+            "textGuardHighWarning": "设置过大可能导致猫娘记忆和语言混乱，建议500字以内",
+            "textGuardNote": "仅对文本回复有效，不影响语音对话"
         }
     },
     "subtitle": {
@@ -1609,7 +1621,8 @@
             "typeUserPlugin": "用户插件",
             "typeComputerUse": "键鼠控制",
             "typeBrowserUse": "浏览器控制",
-            "typeMCP": "MCP工具"
+            "typeMCP": "MCP工具",
+            "typeOpenFang": "专属桌面"
         }
     },
     "vrm": {

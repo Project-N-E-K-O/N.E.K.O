@@ -566,7 +566,9 @@
         "volumeHintDetecting": "Определение входного сигнала микрофона...",
         "volumeHintNoSound": "Звук не обнаружен, проверьте микрофон",
         "volumeHintLow": "Громкость низкая, попробуйте увеличить усиление",
-        "volumeHintOk": "Микрофон работает нормально"
+        "volumeHintOk": "Микрофон работает нормально",
+        "noiseReduction": "Шумоподавление",
+        "noiseReductionHint": "Шумоподавление RNNoise AI для более чистого голоса"
     },
     "speaker": {
         "volumeLabel": "Громкость динамика",
@@ -663,7 +665,8 @@
         },
         "coreProviderNames": {
             "free": "Бесплатная версия (Эксклюзив N.E.K.O., веб-поиск)",
-            "qwen": "Qwen-Omni (Alibaba, Рекомендуется)",
+            "qwen": "Qwen-Omni (Alibaba Bailian, Рекомендуется)",
+            "qwen_intl": "Qwen-Omni (Alibaba Intl)",
             "openai": "GPT-Realtime (OpenAI)",
             "glm": "GLM-realtime (GLM)",
             "step": "Step-2-Audio (StepFun)",
@@ -671,7 +674,8 @@
         },
         "assistProviderNames": {
             "free": "Бесплатная версия (Эксклюзив N.E.K.O.)",
-            "qwen": "Alibaba (Qwen, Рекомендуется)",
+            "qwen": "Alibaba Bailian (Qwen, Рекомендуется)",
+            "qwen_intl": "Alibaba Intl (Qwen)",
             "openai": "OpenAI (ChatGPT)",
             "glm": "GLM",
             "step": "StepFun",
@@ -700,7 +704,8 @@
         "customModelProviderFollowAssist": "Следовать за вспомогательным API",
         "customModelProviderCustom": "Пользовательский",
         "keyBook": {
-            "qwen": "Alibaba (Qwen)",
+            "qwen": "Alibaba Bailian (Qwen)",
+            "qwen_intl": "Alibaba Intl (Qwen)",
             "openai": "OpenAI",
             "deepseek": "DeepSeek",
             "glm": "Zhipu (GLM)",
@@ -1505,6 +1510,7 @@
         "toggles": {
             "allowInterrupt": "Разрешить прерывание",
             "mergeMessages": "Объединение сообщений",
+            "avatarReactionBubble": "Пузырек эмоций",
             "proactiveChat": "Проактивный чат",
             "proactiveVision": "Проактивное зрение",
             "proactiveVisionChat": "Визуальный чат",
@@ -1535,7 +1541,7 @@
             "enabled": "{{name}} Включен",
             "disabled": "{{name}} Отключен",
             "enableFailed": "{{name}} Ошибка включения",
-            "openfang": "Виртуальная машина",
+            "openfang": "Её рабочий стол",
             "userPluginAdapting": "Пользовательский плагин (В разработке)",
             "openclawConnect": "OpenClaw",
             "animationSettings": "Настройки анимации",
@@ -1551,7 +1557,13 @@
             "renderQualityMedium": "Среднее",
             "mouseTracking": "Отслеживание мыши",
             "fullscreenTracking": "Полноэкранное отслеживание",
-            "localTracking": "Локальное отслеживание"
+            "localTracking": "Локальное отслеживание",
+            "textGuardMaxLength": "Ограничение длины ответа",
+            "unlimited": "Без ограничений",
+            "characters": " символов",
+            "textGuardUnlimitedWarning": "Может вызвать серьезные проблемы у кошечки, не рекомендуется без необходимости",
+            "textGuardHighWarning": "Слишком большое значение может вызвать путаницу в памяти и речи кошечки, рекомендуется в пределах 500 символов",
+            "textGuardNote": "Применяется только к текстовым ответам; не влияет на голосовые сессии"
         }
     },
     "subtitle": {
@@ -1607,7 +1619,8 @@
             "typeUserPlugin": "Пользовательский плагин",
             "typeComputerUse": "Управление клавиатурой/мышью",
             "typeBrowserUse": "Управление браузером",
-            "typeMCP": "Инструмент MCP"
+            "typeMCP": "Инструмент MCP",
+            "typeOpenFang": "Её рабочий стол"
         },
         "quotaExceeded": "Бесплатная квота Лапки Неко на сегодня исчерпана ({{limit}} раз), попробуйте завтра.",
         "contentFilterError": "Содержимое веб-страницы, просмотренной Лапкой Неко, было отклонено фильтром безопасности модели ИИ, задача прервана. Обычно это происходит, когда страница содержит чувствительные темы. Попробуйте другие ключевые слова или сайты."
