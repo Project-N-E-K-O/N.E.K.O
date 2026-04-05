@@ -3911,10 +3911,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 startIdleRotation('mmd', mmdIdleUrls.length > 0 ? mmdIdleUrls : ['/static/mmd/animation/wait03.vmd']);
             } else {
                 stopIdleRotation('mmd');
-                window.mmdManager.playAnimation();
-                isMmdAnimationPlaying = true;
-                updateMMDAnimationPlayButtonIcon();
-                showStatus(t('live2d.mmdAnimation.playing', 'VMD动画开始播放'), 2000);
+                // 加载用户选中的动画 (idle rotation 可能已替换为 idle clip)
+                try {
+                    await window.mmdManager.loadAnimation(mmdAnimationSelect.value);
+                    window.mmdManager.playAnimation();
+                    isMmdAnimationPlaying = true;
+                    updateMMDAnimationPlayButtonIcon();
+                    showStatus(t('live2d.mmdAnimation.playing', 'VMD动画开始播放'), 2000);
+                } catch (e) {
+                    console.warn('[MMD] 加载手动动画失败:', e);
+                    showStatus(t('live2d.mmdAnimation.playFailed', '播放动画失败'), 2000);
+                }
             }
         });
     }
@@ -4438,19 +4445,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         const urls = getSelectedIdleAnimations(containerId);
         if (urls.length === 0) {
             stopIdleRotation(type);
-            // 取消全选时回退到内置待机动画
-            if (type === 'vrm') {
+            // 取消全选时回退到内置待机动画 (手动预览中不覆盖)
+            if (type === 'vrm' && !isVrmAnimationPlaying) {
                 const builtinVrm = '/static/vrm/animation/wait03.vrma';
                 if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
                     if (vrmManager.vrmaAction) vrmManager.stopVRMAAnimation();
                     vrmManager.playVRMAAnimation(builtinVrm, { loop: true, immediate: true, isIdle: true }).catch(e => {
                         console.warn('[VRM IdleAnimation] 回退内置待机失败:', e);
                     });
-                    isVrmAnimationPlaying = false;
-                    updateVRMAnimationPlayButtonIcon();
                 }
                 showStatus(t('vrm.idleAnimation.changed', '待机动作已切换', { name: 'wait03' }), 2000);
-            } else {
+            } else if (type === 'mmd' && !isMmdAnimationPlaying) {
                 const builtinMmd = '/static/mmd/animation/wait03.vmd';
                 if (window.mmdManager && window.mmdManager.currentModel) {
                     if (isMmdIdlePlaying) window.mmdManager.stopAnimation();
@@ -4658,13 +4663,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (typeof mmdIdleAnimation === 'string') mmdIdleAnimation = mmdIdleAnimation ? [mmdIdleAnimation] : [];
             if (!Array.isArray(mmdIdleAnimation)) return;
 
+            // 只恢复 UI 勾选状态; startIdleRotation 由模型加载完成后
+            // 的 loadCharacterLighting 路径触发, 避免在模型未加载时启动 timer
             console.log('[MMD] restoreMmdIdleAnimation - mmdIdleAnimation:', mmdIdleAnimation);
             setSelectedIdleAnimations('mmd-idle-animation-multiselect', mmdIdleAnimation);
-            if (mmdIdleAnimation.length > 0) {
-                startIdleRotation('mmd', mmdIdleAnimation);
-            } else {
-                stopIdleRotation('mmd');
-            }
         } catch (error) {
             console.error('[MMD] 恢复待机动作失败:', error);
         }
