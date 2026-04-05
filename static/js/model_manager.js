@@ -4430,21 +4430,33 @@ document.addEventListener('DOMContentLoaded', async () => {
         const urls = getSelectedIdleAnimations(containerId);
         if (urls.length === 0) {
             stopIdleRotation(type);
-            // 停止当前待机动画
+            // 取消全选时回退到内置待机动画
             if (type === 'vrm') {
-                if (vrmManager && vrmManager.vrmaAction) {
-                    vrmManager.stopVRMAAnimation();
+                const builtinVrm = '/static/vrm/animation/wait03.vrma';
+                if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
+                    if (vrmManager.vrmaAction) vrmManager.stopVRMAAnimation();
+                    vrmManager.playVRMAAnimation(builtinVrm, { loop: true, immediate: true, isIdle: true }).catch(e => {
+                        console.warn('[VRM IdleAnimation] 回退内置待机失败:', e);
+                    });
                     isVrmAnimationPlaying = false;
                     updateVRMAnimationPlayButtonIcon();
                 }
-                showStatus(t('vrm.idleAnimation.changed', '待机动作已切换', { name: '' }), 2000);
+                showStatus(t('vrm.idleAnimation.changed', '待机动作已切换', { name: 'wait03' }), 2000);
             } else {
-                if (isMmdIdlePlaying && window.mmdManager) {
-                    window.mmdManager.stopAnimation();
-                    isMmdIdlePlaying = false;
-                    updateMMDAnimationPlayButtonIcon();
+                const builtinMmd = '/static/mmd/animation/wait03.vmd';
+                if (window.mmdManager && window.mmdManager.currentModel) {
+                    if (isMmdIdlePlaying) window.mmdManager.stopAnimation();
+                    window.mmdManager.loadAnimation(builtinMmd).then(() => {
+                        window.mmdManager.playAnimation();
+                        isMmdIdlePlaying = true;
+                        updateMMDAnimationPlayButtonIcon();
+                    }).catch(e => {
+                        console.warn('[MMD IdleAnimation] 回退内置待机失败:', e);
+                        isMmdIdlePlaying = false;
+                        updateMMDAnimationPlayButtonIcon();
+                    });
                 }
-                showStatus(t('mmd.idleAnimation.changed', '待机动作已切换', { name: '' }), 2000);
+                showStatus(t('mmd.idleAnimation.changed', '待机动作已切换', { name: 'wait03' }), 2000);
             }
         } else {
             startIdleRotation(type, urls);
@@ -4631,16 +4643,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const data = await RequestHelper.fetchJson('/api/characters/');
             const charData = data['猫娘']?.[lanlanName];
-            let mmdIdleAnimation = charData?.mmd_idle_animations || charData?.mmd_idle_animation;
+            let mmdIdleAnimation = charData?.mmd_idle_animations ?? charData?.mmd_idle_animation;
 
-            if (!mmdIdleAnimation) return;
-            // 向前兼容：string → array
-            if (typeof mmdIdleAnimation === 'string') mmdIdleAnimation = [mmdIdleAnimation];
-            if (!Array.isArray(mmdIdleAnimation) || mmdIdleAnimation.length === 0) return;
+            if (mmdIdleAnimation == null) return;
+            // 向前兼容: string -> array
+            if (typeof mmdIdleAnimation === 'string') mmdIdleAnimation = mmdIdleAnimation ? [mmdIdleAnimation] : [];
+            if (!Array.isArray(mmdIdleAnimation)) return;
 
             console.log('[MMD] restoreMmdIdleAnimation - mmdIdleAnimation:', mmdIdleAnimation);
             setSelectedIdleAnimations('mmd-idle-animation-multiselect', mmdIdleAnimation);
-            startIdleRotation('mmd', mmdIdleAnimation);
+            if (mmdIdleAnimation.length > 0) {
+                startIdleRotation('mmd', mmdIdleAnimation);
+            } else {
+                stopIdleRotation('mmd');
+            }
         } catch (error) {
             console.error('[MMD] 恢复待机动作失败:', error);
         }
@@ -4987,13 +5003,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 加载待机动作选项并恢复保存的选择（多选）
             await loadIdleAnimationOptions();
-            let vrmIdleAnims = charData?.idleAnimations || charData?.idleAnimation;
-            if (vrmIdleAnims) {
-                // 向前兼容：string → array
-                if (typeof vrmIdleAnims === 'string') vrmIdleAnims = [vrmIdleAnims];
-                if (Array.isArray(vrmIdleAnims) && vrmIdleAnims.length > 0) {
+            let vrmIdleAnims = charData?.idleAnimations ?? charData?.idleAnimation;
+            if (vrmIdleAnims != null) {
+                // 向前兼容: string -> array
+                if (typeof vrmIdleAnims === 'string') vrmIdleAnims = vrmIdleAnims ? [vrmIdleAnims] : [];
+                if (Array.isArray(vrmIdleAnims)) {
                     setSelectedIdleAnimations('vrm-idle-animation-multiselect', vrmIdleAnims);
-                    startIdleRotation('vrm', vrmIdleAnims);
+                    if (vrmIdleAnims.length > 0) {
+                        startIdleRotation('vrm', vrmIdleAnims);
+                    } else {
+                        stopIdleRotation('vrm');
+                    }
                     console.log('[VRM] 已恢复待机动作:', vrmIdleAnims);
                 }
             }
@@ -5002,13 +5022,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             const isMmdCharacter = charData?.live3d_sub_type === 'mmd' || !!charData?.mmd;
             if (isMmdCharacter) {
                 await loadMmdIdleAnimationOptions();
-                let mmdIdleAnims = charData?.mmd_idle_animations || charData?.mmd_idle_animation;
-                if (mmdIdleAnims) {
-                    // 向前兼容：string → array
-                    if (typeof mmdIdleAnims === 'string') mmdIdleAnims = [mmdIdleAnims];
-                    if (Array.isArray(mmdIdleAnims) && mmdIdleAnims.length > 0) {
+                let mmdIdleAnims = charData?.mmd_idle_animations ?? charData?.mmd_idle_animation;
+                if (mmdIdleAnims != null) {
+                    // 向前兼容: string -> array
+                    if (typeof mmdIdleAnims === 'string') mmdIdleAnims = mmdIdleAnims ? [mmdIdleAnims] : [];
+                    if (Array.isArray(mmdIdleAnims)) {
                         setSelectedIdleAnimations('mmd-idle-animation-multiselect', mmdIdleAnims);
-                        startIdleRotation('mmd', mmdIdleAnims);
+                        if (mmdIdleAnims.length > 0) {
+                            startIdleRotation('mmd', mmdIdleAnims);
+                        } else {
+                            stopIdleRotation('mmd');
+                        }
                         console.log('[MMD] 已恢复待机动作:', mmdIdleAnims);
                     }
                 }

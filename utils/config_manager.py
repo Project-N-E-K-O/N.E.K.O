@@ -243,13 +243,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "avatar",
         "vrm",
         "idle_animation",
-        default="",
+        default=None,
         legacy_keys=("idleAnimation",),
     )
-    if idle_animation:
-        # 向前兼容：旧版存的是 string，迁移为 list
+    if idle_animation is not None:
+        # 向前兼容: 旧版存的是 string, 迁移为 list; 空值保留 []
         if isinstance(idle_animation, str):
-            changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", [idle_animation])
+            changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", [idle_animation] if idle_animation else [])
         elif isinstance(idle_animation, list):
             changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", idle_animation)
 
@@ -292,13 +292,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "avatar",
         "mmd",
         "idle_animation",
-        default="",
+        default=None,
         legacy_keys=("mmd_idle_animation",),
     )
-    if mmd_idle_animation:
-        # 向前兼容：旧版存的是 string，迁移为 list
+    if mmd_idle_animation is not None:
+        # 向前兼容: 旧版存的是 string, 迁移为 list; 空值保留 []
         if isinstance(mmd_idle_animation, str):
-            changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", [mmd_idle_animation])
+            changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", [mmd_idle_animation] if mmd_idle_animation else [])
         elif isinstance(mmd_idle_animation, list):
             changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", mmd_idle_animation)
 
@@ -360,17 +360,19 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     if vrm_animation is not None:
         result["vrm_animation"] = vrm_animation
 
-    idle_animation = get_reserved(result, "avatar", "vrm", "idle_animation", default=[])
-    if idle_animation:
-        # 向前兼容：string → 保持 string；list → 取首元素
+    idle_animation = get_reserved(result, "avatar", "vrm", "idle_animation", default=None)
+    if idle_animation is not None:
         # idleAnimation (string): 供 vrm-init / vrm-manager 等运行时消费
         # idleAnimations (list): 供 model_manager 多选 UI 消费
         if isinstance(idle_animation, str):
             result["idleAnimation"] = idle_animation
-            result["idleAnimations"] = [idle_animation]
-        else:
+            result["idleAnimations"] = [idle_animation] if idle_animation else []
+        elif isinstance(idle_animation, list):
             result["idleAnimation"] = idle_animation[0] if idle_animation else ""
             result["idleAnimations"] = idle_animation
+        else:
+            result["idleAnimation"] = ""
+            result["idleAnimations"] = []
 
     lighting = get_reserved(result, "avatar", "vrm", "lighting", default=None)
     if isinstance(lighting, dict):
@@ -384,16 +386,19 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     if mmd_animation is not None:
         result["mmd_animation"] = mmd_animation
 
-    mmd_idle_animation = get_reserved(result, "avatar", "mmd", "idle_animation", default=[])
-    if mmd_idle_animation:
+    mmd_idle_animation = get_reserved(result, "avatar", "mmd", "idle_animation", default=None)
+    if mmd_idle_animation is not None:
         # mmd_idle_animation (string): 供 mmd-init / app-interpage 等运行时消费
         # mmd_idle_animations (list): 供 model_manager 多选 UI 消费
         if isinstance(mmd_idle_animation, str):
             result["mmd_idle_animation"] = mmd_idle_animation
-            result["mmd_idle_animations"] = [mmd_idle_animation]
-        else:
+            result["mmd_idle_animations"] = [mmd_idle_animation] if mmd_idle_animation else []
+        elif isinstance(mmd_idle_animation, list):
             result["mmd_idle_animation"] = mmd_idle_animation[0] if mmd_idle_animation else ""
             result["mmd_idle_animations"] = mmd_idle_animation
+        else:
+            result["mmd_idle_animation"] = ""
+            result["mmd_idle_animations"] = []
 
     touch_set = get_reserved(result, 'touch_set', default=None)
     if touch_set:

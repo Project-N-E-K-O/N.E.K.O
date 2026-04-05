@@ -517,9 +517,13 @@ async def update_catgirl_l2d(name: str, request: Request):
                 if 'idle_animation' in data:
                     if idle_animation is None or idle_animation == '' or idle_animation == []:
                         set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [])
+                    elif isinstance(idle_animation, str):
+                        idle_list = [idle_animation]
+                    elif isinstance(idle_animation, list):
+                        idle_list = idle_animation
                     else:
-                        # 向前兼容：接受 string（旧客户端）或 list（新客户端）
-                        idle_list = [idle_animation] if isinstance(idle_animation, str) else list(idle_animation)
+                        return JSONResponse(content={'success': False, 'error': 'idle_animation must be a string or list of strings'}, status_code=400)
+                    if isinstance(idle_animation, (str, list)) and idle_animation:
                         allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
                         for item in idle_list:
                             item_str = str(item).strip()
@@ -558,9 +562,13 @@ async def update_catgirl_l2d(name: str, request: Request):
                 if 'mmd_idle_animation' in data:
                     if mmd_idle_animation is None or mmd_idle_animation == '' or mmd_idle_animation == []:
                         set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [])
+                    elif isinstance(mmd_idle_animation, str):
+                        mmd_idle_list = [mmd_idle_animation]
+                    elif isinstance(mmd_idle_animation, list):
+                        mmd_idle_list = mmd_idle_animation
                     else:
-                        # 向前兼容：接受 string（旧客户端）或 list（新客户端）
-                        mmd_idle_list = [mmd_idle_animation] if isinstance(mmd_idle_animation, str) else list(mmd_idle_animation)
+                        return JSONResponse(content={'success': False, 'error': 'mmd_idle_animation must be a string or list of strings'}, status_code=400)
+                    if isinstance(mmd_idle_animation, (str, list)) and mmd_idle_animation:
                         allowed_mmd_anim_prefixes = ['/user_mmd/animation/', '/static/mmd/animation/']
                         for item in mmd_idle_list:
                             mmd_idle_str = str(item).strip()
@@ -576,6 +584,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         else:
             set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', '')
             set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
+            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [])
             set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)  # 清理 VRM 打光配置
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', '')
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
