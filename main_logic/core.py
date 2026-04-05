@@ -2766,11 +2766,6 @@ class LLMSessionManager:
                                     # RNNoise可能返回空字节（缓冲中），跳过
                                     if len(processed_audio) == 0:
                                         return
-                                    
-                                    # 检查是否有待发送的静音重置事件（4秒静音触发）
-                                    if hasattr(self.session, '_silence_reset_pending') and self.session._silence_reset_pending:
-                                        self.session._silence_reset_pending = False
-                                        await self.session.clear_audio_buffer()
                                 except Exception as e:
                                     logger.error(f"💥 音频预处理失败: {e}")
                                     return

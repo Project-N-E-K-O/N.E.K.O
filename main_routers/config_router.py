@@ -32,6 +32,24 @@ from config import (
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
+
+def _apply_noise_reduction_to_active_sessions(enabled: bool):
+    """Apply noise reduction toggle to all active voice sessions immediately."""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+    try:
+        session_manager = get_session_manager()
+        for _name, mgr in session_manager.items():
+            if not mgr.is_active or mgr.session is None:
+                continue
+            if not isinstance(mgr.session, OmniRealtimeClient):
+                continue
+            ap = getattr(mgr.session, '_audio_processor', None)
+            if ap is not None:
+                ap.set_enabled(enabled)
+    except Exception as e:
+        logger.warning(f"Failed to apply noise reduction to active sessions: {e}")
+
+
 # --- proxy mode helpers ---
 _PROXY_LOCK = threading.Lock()
 _proxy_snapshot: dict[str, str] = {}
@@ -352,10 +370,13 @@ async def save_conversation_settings(request: Request):
         if not isinstance(data, dict):
             return {"success": False, "error": "请求体必须为对象"}
 
-        if save_global_conversation_settings(data):
-            return {"success": True, "message": "对话设置已保存"}
-        else:
+        if not save_global_conversation_settings(data):
             return {"success": False, "error": "保存失败"}
+
+        if 'noiseReductionEnabled' in data:
+            _apply_noise_reduction_to_active_sessions(data['noiseReductionEnabled'])
+
+        return {"success": True, "message": "对话设置已保存"}
     except Exception as e:
         logger.exception(f"保存对话设置失败: {e}")
         return {"success": False, "error": "Internal server error"}
