@@ -3828,7 +3828,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     await window.mmdManager.loadAnimation('/static/mmd/animation/wait03.vmd');
                     window.mmdManager.playAnimation();
                     isMmdIdlePlaying = true;
-                    updateMMDAnimationPlayButtonIcon();
                     if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
                 } catch (e) {
                     console.warn('[MMD] 播放 wait03 待机动作失败:', e);
@@ -3878,12 +3877,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // 更新MMD动画播放按钮图标（检查手动预览和待机两种状态）
+    // 更新MMD动画播放按钮图标（仅反映手动预览状态，idle 不影响按钮）
     function updateMMDAnimationPlayButtonIcon() {
         if (!playMmdAnimationBtn) return;
         const icon = playMmdAnimationBtn.querySelector('.mmd-animation-play-icon');
         if (icon) {
-            if (isMmdAnimationPlaying || isMmdIdlePlaying) {
+            if (isMmdAnimationPlaying) {
                 icon.src = '/static/icons/vrm_pause_icon.png?v=1';
                 icon.alt = t('common.pause', '暂停');
             } else {
@@ -4421,12 +4420,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (isMmdIdlePlaying) {
                         window.mmdManager.stopAnimation();
                         isMmdIdlePlaying = false;
-                        updateMMDAnimationPlayButtonIcon();
                     }
                     await window.mmdManager.loadAnimation(url);
                     window.mmdManager.playAnimation();
                     isMmdIdlePlaying = true;
-                    updateMMDAnimationPlayButtonIcon();
                     console.log('[MMD IdleAnimation] 待机动作已切换:', url.split('/').pop());
                 }
             }
@@ -4462,11 +4459,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     window.mmdManager.loadAnimation(builtinMmd).then(() => {
                         window.mmdManager.playAnimation();
                         isMmdIdlePlaying = true;
-                        updateMMDAnimationPlayButtonIcon();
                     }).catch(e => {
                         console.warn('[MMD IdleAnimation] 回退内置待机失败:', e);
                         isMmdIdlePlaying = false;
-                        updateMMDAnimationPlayButtonIcon();
                     });
                 }
                 showStatus(t('mmd.idleAnimation.changed', '待机动作已切换', { name: 'wait03' }), 2000);
