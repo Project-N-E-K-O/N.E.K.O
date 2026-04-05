@@ -186,6 +186,9 @@ class DirectTaskExecutor:
         self.plugin_list = []
         self.user_plugin_enabled_default = False
         self._external_plugin_provider: Optional[Callable[[bool], Awaitable[List[Dict[str, Any]]]]] = None
+        # AsyncOpenAI client 缓存：配置不变时复用同一实例，避免反复创建连接池
+        self._cached_client: Optional[AsyncOpenAI] = None
+        self._cached_client_key: tuple = ()
     
     
     def set_plugin_list_provider(self, provider: Callable[[bool], Awaitable[List[Dict[str, Any]]]]):
@@ -232,14 +235,27 @@ class DirectTaskExecutor:
 
 
     def _get_client(self):
-        """动态获取 OpenAI 客户端"""
+        """动态获取 OpenAI 客户端（配置不变时复用同一实例，避免连接池泄漏）"""
         set_call_type("agent")
         api_config = self._config_manager.get_model_api_config('summary')
-        return AsyncOpenAI(
-            api_key=api_config['api_key'],
-            base_url=api_config['base_url'],
-            max_retries=0
-        )
+        key = (api_config['api_key'], api_config['base_url'])
+
+        if self._cached_client_key != key:
+            # 配置变更，关闭旧 client 并创建新实例
+            if self._cached_client is not None:
+                try:
+                    asyncio.ensure_future(self._cached_client.close())
+                except Exception:
+                    pass  # best-effort cleanup
+            self._cached_client = AsyncOpenAI(
+                api_key=api_config['api_key'],
+                base_url=api_config['base_url'],
+                max_retries=0,
+            )
+            self._cached_client_key = key
+            logger.debug(f"[Agent] Created new AsyncOpenAI client for {api_config['base_url']}")
+
+        return self._cached_client
     
     def _get_model(self):
         """获取模型名称"""
