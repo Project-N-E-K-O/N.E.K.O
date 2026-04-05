@@ -82,6 +82,7 @@
         assistantTurnCompletedId: null,
         assistantTurnCompletionSource: null,
         assistantSpeechActiveTurnId: null,
+        assistantSpeechStartedTurnId: null,
 
         // --- 屏幕共享 ---
         screenCaptureStream: null,
