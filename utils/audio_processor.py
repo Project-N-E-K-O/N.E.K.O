@@ -32,62 +32,150 @@ DEBUG_SAVE_AUDIO = False
 DEBUG_AUDIO_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "debug_audio")
 # ===============================================
 
-# Lazy import pyrnnoise.rnnoise (low-level ctypes wrapper only).
-# We deliberately skip the high-level pyrnnoise.RNNoise class because it
-# pulls in audiolab → av (pyav C-extension), which Nuitka fails to bundle.
-# AudioProcessor already handles framing (480 samples) and resampling (soxr),
-# so the audiolab Graph layer is redundant for our use-case.
-_rnnoise_mod = None
+# Direct ctypes loading of rnnoise native library.
+# We bypass ALL pyrnnoise Python code because pyrnnoise/__init__.py
+# unconditionally imports pyrnnoise.pyrnnoise which imports audiolab,
+# and audiolab is excluded from Nuitka via --nofollow-import-to.
+# Python's import system executes __init__.py even for submodule imports,
+# so there is no way to import pyrnnoise.rnnoise without triggering audiolab.
+import sys
+import ctypes
+import platform
+import importlib.util
+
+_rnnoise_lib = None
 _rnnoise_available = None
 
 
+def _find_rnnoise_dll() -> str:
+    """Locate rnnoise native library inside pyrnnoise package-data."""
+    names = {
+        "Windows": "rnnoise.dll",
+        "Darwin": "librnnoise.dylib",
+        "Linux": "librnnoise.so",
+    }
+    lib_name = names.get(platform.system())
+    if lib_name is None:
+        raise OSError(f"Unsupported platform: {platform.system()}")
+
+    tried: list[str] = []
+
+    # 1. find_spec — normal Python / venv / uv (does NOT execute __init__.py)
+    spec = importlib.util.find_spec("pyrnnoise")
+    if spec is not None and spec.submodule_search_locations:
+        for search_dir in spec.submodule_search_locations:
+            candidate = os.path.join(search_dir, lib_name)
+            tried.append(candidate)
+            if os.path.isfile(candidate):
+                return candidate
+
+    # 2. Nuitka standalone — --include-data-files places it at <exe_dir>/pyrnnoise/
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    for sub in ("pyrnnoise", "."):
+        candidate = os.path.join(exe_dir, sub, lib_name)
+        tried.append(candidate)
+        if os.path.isfile(candidate):
+            return candidate
+
+    raise OSError(f"{lib_name} not found. Searched: {tried}")
+
+
+def _load_rnnoise_native():
+    """Load rnnoise native library and return a lightweight API object."""
+    lib_path = _find_rnnoise_dll()
+    lib = ctypes.CDLL(lib_path)
+
+    lib.rnnoise_create.argtypes = [ctypes.c_void_p]
+    lib.rnnoise_create.restype = ctypes.c_void_p
+    lib.rnnoise_destroy.argtypes = [ctypes.c_void_p]
+    lib.rnnoise_destroy.restype = None
+    lib.rnnoise_get_frame_size.argtypes = []
+    lib.rnnoise_get_frame_size.restype = ctypes.c_int
+    lib.rnnoise_process_frame.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.POINTER(ctypes.c_float),
+    ]
+    lib.rnnoise_process_frame.restype = ctypes.c_float
+
+    frame_size = lib.rnnoise_get_frame_size()
+
+    class _Lib:
+        FRAME_SIZE = frame_size
+        SAMPLE_RATE = 48000
+
+        @staticmethod
+        def create():
+            return lib.rnnoise_create(None)
+
+        @staticmethod
+        def destroy(state):
+            lib.rnnoise_destroy(state)
+
+        @staticmethod
+        def process_mono_frame(state, frame):
+            if frame.dtype == np.int16:
+                frame = frame.astype(np.float32)
+            else:
+                frame = (frame * 32767).astype(np.float32)
+            n = len(frame)
+            if n < frame_size:
+                frame = np.pad(frame, (0, frame_size - n))
+            ptr = frame.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            prob = lib.rnnoise_process_frame(state, ptr, ptr)
+            return np.clip(np.round(frame), -32768, 32767).astype(np.int16)[:n], float(prob)
+
+    return _Lib()
+
+
 def _get_rnnoise():
-    """Lazy load the low-level pyrnnoise.rnnoise module."""
-    global _rnnoise_mod, _rnnoise_available
+    """Lazy load rnnoise native library."""
+    global _rnnoise_lib, _rnnoise_available
     if _rnnoise_available is None:
         try:
-            from pyrnnoise import rnnoise as mod
-            _rnnoise_mod = mod
+            _rnnoise_lib = _load_rnnoise_native()
             _rnnoise_available = True
-            logger.info("✅ pyrnnoise rnnoise library loaded successfully")
-        except ImportError as e:
-            logger.warning(f"⚠️ pyrnnoise not available: {e}")
-            _rnnoise_available = False
+            logger.info(f"✅ rnnoise loaded (frame_size={_rnnoise_lib.FRAME_SIZE})")
         except Exception as e:
-            logger.warning(f"⚠️ pyrnnoise import failed: {e}")
+            logger.warning(f"⚠️ rnnoise not available: {e}")
             _rnnoise_available = False
-    return _rnnoise_mod if _rnnoise_available else None
+    return _rnnoise_lib if _rnnoise_available else None
 
 
 class _LiteDenoiser:
-    """Lightweight RNNoise wrapper using only pyrnnoise.rnnoise (ctypes).
+    """Lightweight RNNoise wrapper using direct ctypes calls.
     
-    No audiolab / av dependency — framing and resampling are handled by the
-    caller (AudioProcessor) via numpy + soxr.
+    No pyrnnoise / audiolab / av Python imports — only the native DLL.
     """
 
-    def __init__(self, rnnoise_mod):
-        self._mod = rnnoise_mod
-        self._state = rnnoise_mod.create()
+    def __init__(self, rnnoise_lib):
+        self._lib = rnnoise_lib
+        self._state = rnnoise_lib.create()
+        if not self._state:
+            raise RuntimeError("rnnoise_create() returned NULL — native library failed to initialise")
 
     def process_frame(self, frame_int16: np.ndarray):
         """Process one mono 480-sample int16 frame.
         
         Returns (denoised_int16, speech_prob_float).
         """
-        denoised, prob = self._mod.process_mono_frame(self._state, frame_int16)
-        return denoised, float(prob)
+        return self._lib.process_mono_frame(self._state, frame_int16)
 
     def reset(self):
-        self._mod.destroy(self._state)
-        self._state = self._mod.create()
+        new_state = self._lib.create()
+        if not new_state:
+            raise RuntimeError("rnnoise_create() returned NULL during reset")
+        old_state = self._state
+        self._state = new_state
+        if old_state:
+            self._lib.destroy(old_state)
 
     def __del__(self):
-        mod = getattr(self, "_mod", None)
+        lib = getattr(self, "_lib", None)
         state = getattr(self, "_state", None)
-        if mod is not None and state is not None:
+        if lib is not None and state:
             try:
-                mod.destroy(state)
+                lib.destroy(state)
             except Exception:
                 pass
             self._state = None
