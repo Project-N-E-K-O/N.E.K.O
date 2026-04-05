@@ -301,6 +301,8 @@ async def get_nearest_holiday(lang: str) -> HolidayProximity | None:
 
     - "Today" matches if today falls *anywhere* inside a period.
     - Advance reminders (≤3 / 7 days) are based on the period's *start*.
+    - In late December, also checks next year's periods so that early-
+      January holidays (e.g. 元旦) are not missed near year boundaries.
     """
     country = _LANG_TO_COUNTRY.get(lang)
     if not country:
@@ -308,6 +310,12 @@ async def get_nearest_holiday(lang: str) -> HolidayProximity | None:
 
     today = date.today()
     periods = await _ensure_periods(country, today.year)
+
+    # Near year end, also load next year so 7-day look-ahead can see Jan 1
+    if today.month == 12 and today.day >= 24:
+        next_year = await _ensure_periods(country, today.year + 1)
+        periods = periods + next_year
+
     if not periods:
         return None
 
@@ -559,6 +567,15 @@ def get_holiday_context_line(lang: str) -> str | None:
     """Return the holiday name if today is inside a holiday period.
 
     Independent of consumption — always returns the name if applicable.
+
+    Note: this is a synchronous read of ``_period_cache`` and does NOT
+    trigger the lazy warm.  In practice the cache is always populated
+    before this is called, because ``trigger_greeting`` (which invokes
+    ``get_nearest_holiday`` → ``_warm_all_once``) runs on every client
+    connect, ahead of the ``new_dialog`` memory-context fetch.  If the
+    cache happens to be cold (e.g. greeting was skipped), the function
+    gracefully returns ``None`` — holiday context is omitted but nothing
+    breaks.
     """
     country = _LANG_TO_COUNTRY.get(lang)
     if not country:
