@@ -17,6 +17,7 @@ from config.prompts_sys import _loc
 from config.prompts_memory import (
     INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
     CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, CHAT_GAP_CURRENT_TIME,
+    CHAT_HOLIDAY_CONTEXT,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
 )
@@ -859,6 +860,15 @@ async def new_dialog(lanlan_name: str):
                         result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed) + "\n"
         except Exception as e:
             logger.warning(f"计算聊天间隔失败: {e}")
+
+        # ── 节日/假期上下文（无关消费，始终注入） ──
+        try:
+            from utils.holiday_cache import get_holiday_context_line
+            holiday_name = get_holiday_context_line(_lang)
+            if holiday_name:
+                result += _loc(CHAT_HOLIDAY_CONTEXT, _lang).format(holiday=holiday_name)
+        except Exception as e:
+            logger.debug(f"Holiday context injection skipped: {e}")
 
         return PlainTextResponse(result)
 
