@@ -14,26 +14,17 @@ except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
 from .models import PackResult, PayloadBuildResult, PluginSource
+from .pack_rules import PackRuleSet, load_pack_rules, should_skip_path
 
 _SCHEMA_VERSION = "1.0"
 _TOOL_NAME = "neko-plugin-cli"
 _TOOL_VERSION = "0.1.0"
-_EXCLUDE_DIR_NAMES = {
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".venv",
-    "dist",
-    "build",
-    ".git",
-}
-_EXCLUDE_FILE_NAMES = {
-    ".DS_Store",
-}
 
 
 @dataclass(slots=True)
 class PackPaths:
+    """Resolved staging layout for a single pack operation."""
+
     staging_root: Path
     payload_dir: Path
     plugins_dir: Path
@@ -44,6 +35,9 @@ class PackPaths:
 
     @classmethod
     def create(cls, *, plugin_id: str) -> PackPaths:
+        # All packaging currently flows through a temporary staging tree first.
+        # This keeps manifest generation, hashing, and archive export working on
+        # a single normalized layout.
         staging_root = Path(tempfile.mkdtemp(prefix=f"neko_pack_{plugin_id}_")).resolve()
         payload_dir = staging_root / "payload"
         plugins_dir = payload_dir / "plugins"
@@ -67,12 +61,15 @@ class PackPaths:
 
 
 class PluginPacker:
+    """Service object that owns the single-plugin packaging pipeline."""
+
     def pack_plugin(self, plugin_dir: str | Path, out_file: str | Path | None = None) -> PackResult:
         source = self.load_plugin_source(plugin_dir)
         paths = PackPaths.create(plugin_id=source.plugin_id)
-        payload = self.build_payload(source, paths)
+        pack_rules = load_pack_rules(source.pyproject_toml)
+        payload = self.build_payload(source, paths, rules=pack_rules)
         self.write_manifest(source, paths)
-        self.write_metadata(source, payload, paths)
+        self.write_metadata(source, payload, paths, rules=pack_rules)
 
         package_path = (
             Path(out_file).expanduser().resolve()
@@ -110,8 +107,20 @@ class PluginPacker:
             pyproject_toml=pyproject_toml,
         )
 
-    def build_payload(self, source: PluginSource, paths: PackPaths) -> PayloadBuildResult:
-        packaged_files = self.copy_plugin_runtime_files(source.plugin_dir, paths.plugin_payload_dir)
+    def build_payload(
+        self,
+        source: PluginSource,
+        paths: PackPaths,
+        *,
+        rules: PackRuleSet,
+    ) -> PayloadBuildResult:
+        # Payload assembly is separated from archive export so future bundle
+        # packing and inspect/dry-run flows can reuse the same staging logic.
+        packaged_files = self.copy_plugin_runtime_files(
+            source.plugin_dir,
+            paths.plugin_payload_dir,
+            rules=rules,
+        )
         profile_files = self.write_default_profile(source, paths.profiles_dir)
         payload_hash = self.compute_payload_hash(paths.payload_dir)
 
@@ -125,11 +134,17 @@ class PluginPacker:
             payload_hash=payload_hash,
         )
 
-    def copy_plugin_runtime_files(self, source_dir: Path, destination_dir: Path) -> list[Path]:
+    def copy_plugin_runtime_files(
+        self,
+        source_dir: Path,
+        destination_dir: Path,
+        *,
+        rules: PackRuleSet,
+    ) -> list[Path]:
         copied: list[Path] = []
         for path in sorted(source_dir.rglob("*")):
             relative = path.relative_to(source_dir)
-            if self.should_skip(relative):
+            if self.should_skip(relative, is_dir=path.is_dir(), rules=rules):
                 continue
             destination_path = destination_dir / relative
             if path.is_dir():
@@ -140,17 +155,12 @@ class PluginPacker:
             copied.append(destination_path.resolve())
         return copied
 
-    def should_skip(self, relative_path: Path) -> bool:
-        parts = relative_path.parts
-        if any(part in _EXCLUDE_DIR_NAMES for part in parts):
-            return True
-        if relative_path.name in _EXCLUDE_FILE_NAMES:
-            return True
-        if relative_path.suffix in {".pyc", ".pyo"}:
-            return True
-        return False
+    def should_skip(self, relative_path: Path, *, is_dir: bool, rules: PackRuleSet) -> bool:
+        return should_skip_path(relative_path, is_dir=is_dir, rules=rules)
 
     def write_default_profile(self, source: PluginSource, profiles_dir: Path) -> list[Path]:
+        # First pass profile extraction is intentionally conservative: derive a
+        # single portable default profile from plugin.toml, then refine later.
         profile_path = profiles_dir / "default.toml"
         lines: list[str] = [
             'name = "default"',
@@ -180,6 +190,8 @@ class PluginPacker:
         return [profile_path.resolve()]
 
     def extract_runtime_config(self, plugin_toml: dict[str, object]) -> dict[str, object]:
+        # `plugin` and `plugin_runtime` stay as package metadata; everything else
+        # is currently treated as portable runtime config for the default profile.
         reserved = {"plugin", "plugin_runtime"}
         return {
             key: value
@@ -189,26 +201,68 @@ class PluginPacker:
 
     def write_manifest(self, source: PluginSource, paths: PackPaths) -> None:
         created_at = _utc_now_iso()
-        content = "\n".join(
+        lines = [
+            f'schema_version = "{_SCHEMA_VERSION}"',
+            'package_type = "plugin"',
+            "",
+            f'id = "{_escape_string(source.plugin_id)}"',
+            f'name = "{_escape_string(source.name)}"',
+            f'version = "{_escape_string(source.version)}"',
+            f'primary_plugin_id = "{_escape_string(source.plugin_id)}"',
+            f'created_at = "{created_at}"',
+        ]
+
+        if source.description:
+            lines.append(f'description = "{_escape_string(source.description)}"')
+
+        lines.extend(
             [
-                f'schema_version = "{_SCHEMA_VERSION}"',
-                'package_type = "plugin"',
-                "",
-                f'id = "{_escape_string(source.plugin_id)}"',
-                f'name = "{_escape_string(source.name)}"',
-                f'version = "{_escape_string(source.version)}"',
-                f'primary_plugin_id = "{_escape_string(source.plugin_id)}"',
-                f'created_at = "{created_at}"',
                 "",
                 "[payload]",
                 'plugins_dir = "payload/plugins"',
                 'profiles_dir = "payload/profiles"',
                 "",
+                "[plugin]",
+                f'id = "{_escape_string(source.plugin_id)}"',
+                f'name = "{_escape_string(source.name)}"',
+                f'version = "{_escape_string(source.version)}"',
+                f'type = "{_escape_string(source.package_type)}"',
             ]
         )
+
+        if source.entry_point:
+            lines.append(f'entry = "{_escape_string(source.entry_point)}"')
+        if source.description:
+            lines.append(f'description = "{_escape_string(source.description)}"')
+
+        if source.author_name or source.author_email:
+            lines.extend(["", "[plugin.author]"])
+            if source.author_name:
+                lines.append(f'name = "{_escape_string(source.author_name)}"')
+            if source.author_email:
+                lines.append(f'email = "{_escape_string(source.author_email)}"')
+
+        if source.sdk_supported or source.sdk_recommended or source.sdk_untested:
+            lines.extend(["", "[plugin.sdk]"])
+            if source.sdk_recommended:
+                lines.append(f'recommended = "{_escape_string(source.sdk_recommended)}"')
+            if source.sdk_supported:
+                lines.append(f'supported = "{_escape_string(source.sdk_supported)}"')
+            if source.sdk_untested:
+                lines.append(f'untested = "{_escape_string(source.sdk_untested)}"')
+
+        lines.append("")
+        content = "\n".join(lines)
         paths.manifest_path.write_text(content, encoding="utf-8")
 
-    def write_metadata(self, source: PluginSource, payload: PayloadBuildResult, paths: PackPaths) -> None:
+    def write_metadata(
+        self,
+        source: PluginSource,
+        payload: PayloadBuildResult,
+        paths: PackPaths,
+        *,
+        rules: PackRuleSet,
+    ) -> None:
         content = "\n".join(
             [
                 "[payload]",
@@ -227,11 +281,19 @@ class PluginPacker:
                 'kind = "local"',
                 f'path = "{_escape_string(str(source.plugin_dir))}"',
                 "",
+                "[pack]",
+                f"include_rule_count = {len(rules.include)}",
+                f"exclude_rule_count = {len(rules.exclude)}",
+                f"exclude_dir_rule_count = {len(rules.exclude_dirs)}",
+                f"exclude_file_rule_count = {len(rules.exclude_files)}",
+                "",
             ]
         )
         paths.metadata_path.write_text(content, encoding="utf-8")
 
     def export_package(self, staging_root: Path, package_path: Path) -> None:
+        # Archive export only sees the staging tree. That keeps the resulting zip
+        # layout deterministic regardless of source plugin directory structure.
         package_path.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(staging_root.rglob("*")):
@@ -240,6 +302,8 @@ class PluginPacker:
                 archive.write(path, arcname=path.relative_to(staging_root).as_posix())
 
     def compute_payload_hash(self, payload_dir: Path) -> str:
+        # Hash the normalized payload content instead of the final zip bytes so
+        # compression-level or zip metadata changes do not invalidate payload identity.
         digest = hashlib.sha256()
         for path in sorted(payload_dir.rglob("*")):
             if path.is_dir():
@@ -269,6 +333,8 @@ class PluginPacker:
 
 
 def pack_plugin(plugin_dir: str | Path, out_file: str | Path | None = None) -> PackResult:
+    """Public convenience wrapper for one-shot single-plugin packaging."""
+
     return PluginPacker().pack_plugin(plugin_dir=plugin_dir, out_file=out_file)
 
 

@@ -16,6 +16,8 @@ from public import pack_plugin
 
 
 def main() -> int:
+    # This script intentionally stays thin: it is a developer convenience entry
+    # on top of the public packing API, not a second business-logic layer.
     parser = _build_parser()
     args = parser.parse_args()
 

@@ -5,6 +5,8 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
+# Keep low-level validation helpers module-local so the public models stay small
+# and consistent across CLI/API/service usage.
 _PLUGIN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PACKAGE_TYPES = {"plugin", "bundle", "extension", "adapter"}
@@ -30,6 +32,8 @@ def _ensure_within(path: Path, root: Path, *, field_name: str) -> Path:
 
 
 class _BaseModel(BaseModel):
+    # These models act as boundary DTOs for the packaging pipeline, so we keep
+    # them strict and reject unknown fields early.
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
         validate_assignment=True,
@@ -38,6 +42,8 @@ class _BaseModel(BaseModel):
 
 
 class PluginSource(_BaseModel):
+    """Normalized plugin source metadata loaded from a plugin directory."""
+
     plugin_dir: Path
     plugin_toml_path: Path
     pyproject_toml_path: Path | None = None
@@ -102,6 +108,8 @@ class PluginSource(_BaseModel):
 
     @model_validator(mode="after")
     def _validate_layout(self) -> PluginSource:
+        # The source model guarantees that later pipeline steps can treat these
+        # paths as trusted inputs and avoid repeating the same filesystem checks.
         if not self.plugin_dir.is_dir():
             raise FileNotFoundError(f"plugin_dir does not exist or is not a directory: {self.plugin_dir}")
         if not self.plugin_toml_path.is_file():
@@ -121,11 +129,75 @@ class PluginSource(_BaseModel):
 
     @computed_field
     @property
+    def plugin_table(self) -> dict[str, object]:
+        value = self.plugin_toml.get("plugin")
+        return value if isinstance(value, dict) else {}
+
+    @computed_field
+    @property
+    def description(self) -> str:
+        value = self.plugin_table.get("description")
+        return value.strip() if isinstance(value, str) else ""
+
+    @computed_field
+    @property
+    def entry_point(self) -> str:
+        value = self.plugin_table.get("entry")
+        return value.strip() if isinstance(value, str) else ""
+
+    @computed_field
+    @property
+    def author_name(self) -> str:
+        author = self.plugin_table.get("author")
+        if isinstance(author, dict):
+            value = author.get("name")
+            if isinstance(value, str):
+                return value.strip()
+        return ""
+
+    @computed_field
+    @property
+    def author_email(self) -> str:
+        author = self.plugin_table.get("author")
+        if isinstance(author, dict):
+            value = author.get("email")
+            if isinstance(value, str):
+                return value.strip()
+        return ""
+
+    @computed_field
+    @property
+    def sdk_table(self) -> dict[str, object]:
+        value = self.plugin_table.get("sdk")
+        return value if isinstance(value, dict) else {}
+
+    @computed_field
+    @property
+    def sdk_supported(self) -> str:
+        value = self.sdk_table.get("supported")
+        return value.strip() if isinstance(value, str) else ""
+
+    @computed_field
+    @property
+    def sdk_recommended(self) -> str:
+        value = self.sdk_table.get("recommended")
+        return value.strip() if isinstance(value, str) else ""
+
+    @computed_field
+    @property
+    def sdk_untested(self) -> str:
+        value = self.sdk_table.get("untested")
+        return value.strip() if isinstance(value, str) else ""
+
+    @computed_field
+    @property
     def default_package_name(self) -> str:
         return f"{self.plugin_id}-{self.version}.neko-plugin"
 
 
 class PayloadBuildResult(_BaseModel):
+    """Result of building the staging payload before archive export."""
+
     staging_dir: Path
     payload_dir: Path
     plugin_payload_dir: Path
@@ -156,6 +228,8 @@ class PayloadBuildResult(_BaseModel):
 
     @model_validator(mode="after")
     def _validate_layout(self) -> PayloadBuildResult:
+        # These checks intentionally verify path relationships, not only
+        # existence, so later steps cannot accidentally point outside staging.
         for field_name in ("staging_dir", "payload_dir", "plugin_payload_dir", "profiles_dir"):
             path = getattr(self, field_name)
             if not path.exists():
@@ -188,6 +262,8 @@ class PayloadBuildResult(_BaseModel):
 
 
 class PackResult(_BaseModel):
+    """Final result returned by the public `pack_plugin(...)` entrypoint."""
+
     plugin_id: str
     package_path: Path
     staging_dir: Path
@@ -256,3 +332,42 @@ class PackResult(_BaseModel):
     @property
     def profile_file_count(self) -> int:
         return len(self.profile_files)
+
+
+class SharedDependency(_BaseModel):
+    """Dependency referenced by multiple plugins in a bundle candidate."""
+
+    name: str
+    plugin_ids: list[str] = Field(default_factory=list)
+    requirement_texts: dict[str, str] = Field(default_factory=dict)
+
+    @computed_field
+    @property
+    def plugin_count(self) -> int:
+        return len(self.plugin_ids)
+
+
+class BundleSdkAnalysis(_BaseModel):
+    """Lightweight SDK compatibility summary across multiple plugins."""
+
+    kind: str
+    plugin_specifiers: dict[str, str] = Field(default_factory=dict)
+    has_overlap: bool
+    matching_versions: list[str] = Field(default_factory=list)
+    current_sdk_version: str = ""
+    current_sdk_supported_by_all: bool | None = None
+
+
+class BundleAnalysisResult(_BaseModel):
+    """Pre-pack analysis result for bundle candidates."""
+
+    plugin_ids: list[str] = Field(default_factory=list)
+    shared_dependencies: list[SharedDependency] = Field(default_factory=list)
+    common_dependencies: list[SharedDependency] = Field(default_factory=list)
+    sdk_supported_analysis: BundleSdkAnalysis | None = None
+    sdk_recommended_analysis: BundleSdkAnalysis | None = None
+
+    @computed_field
+    @property
+    def plugin_count(self) -> int:
+        return len(self.plugin_ids)
