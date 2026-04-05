@@ -58,23 +58,26 @@ def _find_rnnoise_dll() -> str:
     if lib_name is None:
         raise OSError(f"Unsupported platform: {platform.system()}")
 
-    # Method 1: find_spec — works in normal Python / uv environments.
-    # find_spec does NOT execute __init__.py, only queries metadata.
+    tried: list[str] = []
+
+    # 1. find_spec — normal Python / venv / uv (does NOT execute __init__.py)
     spec = importlib.util.find_spec("pyrnnoise")
     if spec is not None and spec.submodule_search_locations:
         for search_dir in spec.submodule_search_locations:
             candidate = os.path.join(search_dir, lib_name)
+            tried.append(candidate)
             if os.path.isfile(candidate):
                 return candidate
 
-    # Method 2: Nuitka standalone — --include-package-data=pyrnnoise places
-    # the DLL at <exe_dir>/pyrnnoise/<lib_name>.
-    exe_dir = os.path.dirname(sys.executable)
-    candidate = os.path.join(exe_dir, "pyrnnoise", lib_name)
-    if os.path.isfile(candidate):
-        return candidate
+    # 2. Nuitka standalone — --include-data-files places it at <exe_dir>/pyrnnoise/
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    for sub in ("pyrnnoise", "."):
+        candidate = os.path.join(exe_dir, sub, lib_name)
+        tried.append(candidate)
+        if os.path.isfile(candidate):
+            return candidate
 
-    raise OSError(f"{lib_name} not found via find_spec or Nuitka dist")
+    raise OSError(f"{lib_name} not found. Searched: {tried}")
 
 
 def _load_rnnoise_native():
@@ -157,13 +160,13 @@ class _LiteDenoiser:
         return self._lib.process_mono_frame(self._state, frame_int16)
 
     def reset(self):
-        if self._state:
-            self._lib.destroy(self._state)
-            self._state = None
         new_state = self._lib.create()
         if not new_state:
             raise RuntimeError("rnnoise_create() returned NULL during reset")
+        old_state = self._state
         self._state = new_state
+        if old_state:
+            self._lib.destroy(old_state)
 
     def __del__(self):
         lib = getattr(self, "_lib", None)
