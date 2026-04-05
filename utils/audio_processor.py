@@ -83,9 +83,11 @@ class _LiteDenoiser:
         self._state = self._mod.create()
 
     def __del__(self):
-        if getattr(self, "_state", None) is not None:
+        mod = getattr(self, "_mod", None)
+        state = getattr(self, "_state", None)
+        if mod is not None and state is not None:
             try:
-                self._mod.destroy(self._state)
+                mod.destroy(state)
             except Exception:
                 pass
             self._state = None
