@@ -1943,6 +1943,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 vrmContainer.style.display = 'none';
             }
             // 隐藏 MMD 容器和控件组，并停止播放中的动画
+            stopIdleRotation('mmd');
             if (window.mmdManager) {
                 window.mmdManager.stopAnimation();
             }
@@ -2013,6 +2014,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 隐藏 VRM 动作预览组
             if (vrmAnimationGroup) vrmAnimationGroup.style.display = 'none';
             // 切换到Live2D时，重置VRM动作和表情播放状态
+            stopIdleRotation('vrm');
             if (isVrmAnimationPlaying && vrmManager) {
                 vrmManager.stopVRMAAnimation();
                 isVrmAnimationPlaying = false;
@@ -2638,6 +2640,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const mmdFilename = selectedOpt.getAttribute('data-filename') || modelPath.split(/[/\\]/).pop();
 
                 // 更新 sub_type 并刷新控件可见性
+                stopIdleRotation('vrm');
                 currentLive3dSubType = 'mmd';
                 localStorage.setItem('live3dSubType', 'mmd');
                 await switchModelDisplay('live3d', 'mmd');
@@ -2686,6 +2689,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 确保切换到Live3D模式（VRM子类型）
             // 注意：必须在判断之前检查旧值，否则条件永远为 false
             const needsSwitch = currentModelType !== 'live3d' || currentLive3dSubType !== 'vrm';
+            stopIdleRotation('mmd');
             currentLive3dSubType = 'vrm';
             localStorage.setItem('live3dSubType', 'vrm');
             if (needsSwitch) {
@@ -2878,6 +2882,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     vrmContainer.style.display = 'block';
                 }
                 // 在加载新模型前，显式停止之前的动作并清理
+                stopIdleRotation('vrm');
                 if (vrmManager.vrmaAction) {
                     vrmManager.stopVRMAAnimation();
                     isVrmAnimationPlaying = false;
@@ -3145,22 +3150,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             if (isVrmAnimationPlaying) {
-                // 当前正在播放，点击后停止
+                // 当前正在播放，点击后停止，恢复 idle 轮换
                 if (vrmManager) {
                     vrmManager.stopVRMAAnimation();
                     isVrmAnimationPlaying = false;
                     updateVRMAnimationPlayButtonIcon();
                     showStatus(t('live2d.vrmAnimation.animationStopped', '动作已停止'), 2000);
+                    // 恢复 idle 轮换
+                    const vrmIdleUrls = getSelectedIdleAnimations('vrm-idle-animation-multiselect');
+                    if (vrmIdleUrls.length > 0) startIdleRotation('vrm', vrmIdleUrls);
                 }
             } else {
-                // 当前未播放，点击后播放
+                // 当前未播放，暂停 idle 轮换并播放手动动作
+                stopIdleRotation('vrm');
                 const selectedOption = vrmAnimationSelect.options[vrmAnimationSelect.selectedIndex];
                 const originalPath = selectedOption ? selectedOption.getAttribute('data-path') : vrmAnimationSelect.value;
-                // 获取动作名称用于显示
                 const animDisplayName = selectedOption ? selectedOption.getAttribute('data-filename') : '未知动作';
 
                 const finalAnimationUrl = ModelPathHelper.vrmToUrl(originalPath, 'animation');
-                // 默认循环播放，速度为1.0
                 const loop = true;
                 const speed = 1.0;
 
@@ -3169,7 +3176,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     await vrmManager.playVRMAAnimation(finalAnimationUrl, {
                         loop: loop,
                         timeScale: speed,
-                        isIdle: false  // 手动播放的动作不是待机动画
+                        isIdle: false
                     });
                     isVrmAnimationPlaying = true;
                     updateVRMAnimationPlayButtonIcon();
@@ -3798,6 +3805,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (mmdContainer) mmdContainer.classList.remove('hidden');
 
                 // 在加载新模型前，重置动画播放状态
+                stopIdleRotation('mmd');
                 if (window.mmdManager) {
                     window.mmdManager.stopAnimation();
                     isMmdAnimationPlaying = false;
@@ -3923,7 +3931,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 isMmdAnimationPlaying = false;
                 updateMMDAnimationPlayButtonIcon();
                 showStatus(t('live2d.mmdAnimation.stopped', 'VMD动画已停止'), 2000);
+                // 恢复 idle 轮换
+                const mmdIdleUrls = getSelectedIdleAnimations('mmd-idle-animation-multiselect');
+                if (mmdIdleUrls.length > 0) startIdleRotation('mmd', mmdIdleUrls);
             } else {
+                stopIdleRotation('mmd');
                 window.mmdManager.playAnimation();
                 isMmdAnimationPlaying = true;
                 updateMMDAnimationPlayButtonIcon();
@@ -4368,6 +4380,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function _scheduleNextIdle(type, urls) {
         _idleRotationTimers[type] = setTimeout(() => {
+            // 模式不匹配时停止轮换
+            if (!_isIdleTypeActive(type)) {
+                _idleRotationTimers[type] = null;
+                return;
+            }
             // 重新获取当前已选列表（用户可能在期间改了勾选）
             const containerId = type === 'vrm' ? 'vrm-idle-animation-multiselect' : 'mmd-idle-animation-multiselect';
             const currentUrls = getSelectedIdleAnimations(containerId);
@@ -4388,16 +4405,32 @@ document.addEventListener('DOMContentLoaded', async () => {
         return candidates[Math.floor(Math.random() * candidates.length)];
     }
 
+    /** 检查当前模式是否匹配指定的 idle 类型 */
+    function _isIdleTypeActive(type) {
+        if (currentModelType !== 'live3d') return false;
+        if (type === 'vrm') return !currentLive3dSubType || currentLive3dSubType === 'vrm';
+        if (type === 'mmd') return currentLive3dSubType === 'mmd';
+        return false;
+    }
+
     async function _playIdleAnimation(type, url) {
         if (!url) return;
+        // Guard: 当前模式不匹配时不播放
+        if (!_isIdleTypeActive(type)) {
+            console.debug(`[${type.toUpperCase()} IdleAnimation] 模式不匹配, 跳过播放`);
+            stopIdleRotation(type);
+            return;
+        }
+        // Guard: 用户正在手动播放非 idle 动画时不覆盖
+        if (type === 'vrm' && isVrmAnimationPlaying) return;
+        if (type === 'mmd' && isMmdAnimationPlaying) return;
+
         try {
             if (type === 'vrm') {
                 if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
                     if (vrmManager.vrmaAction) {
                         vrmManager.stopVRMAAnimation();
                     }
-                    isVrmAnimationPlaying = false;
-                    updateVRMAnimationPlayButtonIcon();
                     await vrmManager.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
                     console.log('[VRM IdleAnimation] 待机动作已切换:', url.split('/').pop());
                 }
