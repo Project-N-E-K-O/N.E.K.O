@@ -30,6 +30,15 @@
         "user": "用户",
         "project": "项目"
     },
+    "tutorialPrompt": {
+        "title": "要不要先看一下新手引导？",
+        "message": "看起来你刚刚打开 N.E.K.O，还没有开始操作。要不要先带你快速认识一下主页里的核心功能？",
+        "note": "引导会从主页开始，介绍常用按钮和交互入口。",
+        "startNow": "开始引导",
+        "later": "稍后再说",
+        "never": "不再提示",
+        "startFailed": "新手引导暂时无法启动，请稍后再试"
+    },
     "characterProfile": {
         "gender": "性别",
         "age": "年龄",

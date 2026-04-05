@@ -65,6 +65,14 @@ from utils.web_scraper import (
 from utils.music_crawlers import fetch_music_content
 from utils.meme_fetcher import fetch_meme_content, MEME_ALLOWED_HOSTS
 from utils.logger_config import get_module_logger
+from utils.tutorial_prompt_state import (
+    get_tutorial_prompt_state_response,
+    process_tutorial_prompt_heartbeat,
+    record_tutorial_prompt_shown,
+    record_tutorial_prompt_decision,
+    record_tutorial_started,
+    record_tutorial_completed,
+)
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
@@ -509,6 +517,78 @@ async def ack_pending_notices(request: Request):
         cursor = 0
     drain_prominent_notices(cursor)
     return {"ok": True}
+
+
+@router.get("/tutorial-prompt/state")
+async def get_tutorial_prompt_state():
+    """返回新手引导提示状态快照。"""
+    return get_tutorial_prompt_state_response(config_manager=get_config_manager())
+
+
+@router.post("/tutorial-prompt/heartbeat")
+async def post_tutorial_prompt_heartbeat(request: Request):
+    """记录主页空闲与互动状态，并判断是否需要提示新手引导。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    return process_tutorial_prompt_heartbeat(payload, config_manager=get_config_manager())
+
+
+@router.post("/tutorial-prompt/shown")
+async def post_tutorial_prompt_shown(request: Request):
+    """记录新手引导提示已实际展示给用户。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_tutorial_prompt_shown(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/tutorial-prompt/decision")
+async def post_tutorial_prompt_decision(request: Request):
+    """记录用户对新手引导提示的选择。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_tutorial_prompt_decision(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/tutorial-prompt/tutorial-started")
+async def post_tutorial_started(request: Request):
+    """记录主页新手引导已实际开始。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_tutorial_started(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/tutorial-prompt/tutorial-completed")
+async def post_tutorial_completed(request: Request):
+    """记录主页新手引导已完成。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_tutorial_completed(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
 
 
 # --- 版本更新日志 ---

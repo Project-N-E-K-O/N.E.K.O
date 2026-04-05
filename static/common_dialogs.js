@@ -7,6 +7,58 @@
 (function() {
     'use strict';
 
+    const _decisionPromptQueue = [];
+    let _decisionPromptActive = false;
+
+    function safeT(key, fallback) {
+        if (typeof window.safeT === 'function') {
+            return window.safeT(key, fallback);
+        }
+        if (window.t && typeof window.t === 'function') {
+            const translated = window.t(key, fallback);
+            if (typeof translated === 'string') {
+                return translated;
+            }
+        }
+        return typeof fallback === 'string' ? fallback : key;
+    }
+
+    function renderMiniMarkdown(text) {
+        let content = String(text || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+        content = content.replace(/^#{1,6}\s+(.+)$/gm, '<strong>$1</strong>');
+        content = content.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        content = content.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
+        content = content.replace(
+            /^[-•]\s+(.+)$/gm,
+            '<li style="margin-left:18px;list-style:disc;text-align:left;">$1</li>'
+        );
+        content = content.replace(/\n/g, '<br>');
+        content = content.replace(/<\/li><br><li/g, '</li><li');
+        return content;
+    }
+
+    if (typeof window.renderMiniMarkdown !== 'function') {
+        window.renderMiniMarkdown = renderMiniMarkdown;
+    }
+
+    function applyModalTextContent(node, text, format) {
+        if (!node) {
+            return;
+        }
+
+        if (format === 'markdown') {
+            node.classList.add('modal-body-markdown');
+            node.innerHTML = renderMiniMarkdown(text);
+            return;
+        }
+
+        node.textContent = String(text || '');
+    }
+
     // 创建对话框样式
     const style = document.createElement('style');
     style.textContent = `
@@ -70,6 +122,10 @@
             overflow-y: auto;
             white-space: pre-wrap;
             pointer-events: auto !important;
+        }
+
+        .modal-body-markdown {
+            white-space: normal;
         }
 
         .modal-input {
@@ -161,6 +217,12 @@
      */
     function createModal(config) {
         return new Promise((resolve) => {
+            const modalConfig = config || {};
+            let settled = false;
+            const dismissValue = Object.prototype.hasOwnProperty.call(modalConfig, 'dismissValue')
+                ? modalConfig.dismissValue
+                : (modalConfig.type === 'prompt' || modalConfig.type === 'decision' ? null : false);
+
             // 创建遮罩层
             const overlay = document.createElement('div');
             overlay.className = 'modal-overlay';
@@ -168,14 +230,20 @@
             // 创建对话框
             const dialog = document.createElement('div');
             dialog.className = 'modal-dialog';
+            dialog.setAttribute('role', 'dialog');
+            dialog.setAttribute('aria-modal', 'true');
+            dialog.setAttribute('aria-label', modalConfig.title || 'Dialog');
+            if (modalConfig.maxWidth) {
+                dialog.style.maxWidth = String(modalConfig.maxWidth);
+            }
 
             // 创建标题
-            if (config.title) {
+            if (modalConfig.title) {
                 const header = document.createElement('div');
                 header.className = 'modal-header';
                 const title = document.createElement('h3');
                 title.className = 'modal-title';
-                title.textContent = config.title;
+                title.textContent = modalConfig.title;
                 header.appendChild(title);
                 dialog.appendChild(header);
             }
@@ -183,21 +251,21 @@
             // 创建内容
             const body = document.createElement('div');
             body.className = 'modal-body';
-            body.textContent = config.message;
+            applyModalTextContent(body, modalConfig.message || '', modalConfig.messageFormat);
 
             // 如果是 prompt 类型，添加输入框
             let input = null;
-            if (config.type === 'prompt') {
+            if (modalConfig.type === 'prompt') {
                 input = document.createElement('input');
                 input.type = 'text';
                 input.className = 'modal-input';
-                input.value = config.defaultValue || '';
-                input.placeholder = config.placeholder || '';
+                input.value = modalConfig.defaultValue || '';
+                input.placeholder = modalConfig.placeholder || '';
 
                 // 可选的输入属性（如 maxlength 等）
-                if (config.inputAttributes && typeof config.inputAttributes === 'object') {
-                    Object.keys(config.inputAttributes).forEach((k) => {
-                        const v = config.inputAttributes[k];
+                if (modalConfig.inputAttributes && typeof modalConfig.inputAttributes === 'object') {
+                    Object.keys(modalConfig.inputAttributes).forEach((k) => {
+                        const v = modalConfig.inputAttributes[k];
                         if (v === undefined || v === null) return;
                         // 兼容部分 DOM 属性（如 maxLength）
                         if (k in input) {
@@ -208,9 +276,9 @@
                 }
 
                 const normalizeValue = () => {
-                    if (typeof config.normalize === 'function') {
+                    if (typeof modalConfig.normalize === 'function') {
                         try {
-                            const next = config.normalize(input.value);
+                            const next = modalConfig.normalize(input.value);
                             if (typeof next === 'string' && next !== input.value) {
                                 input.value = next;
                             }
@@ -221,9 +289,9 @@
                 };
 
                 const validateValue = () => {
-                    if (typeof config.validator === 'function') {
+                    if (typeof modalConfig.validator === 'function') {
                         try {
-                            const err = config.validator(input.value);
+                            const err = modalConfig.validator(input.value);
                             if (err) {
                                 input.setCustomValidity(String(err));
                                 return false;
@@ -240,8 +308,8 @@
                 const onInput = () => {
                     normalizeValue();
                     validateValue();
-                    if (typeof config.onInput === 'function') {
-                        try { config.onInput(input); } catch (e) { /* ignore */ }
+                    if (typeof modalConfig.onInput === 'function') {
+                        try { modalConfig.onInput(input); } catch (e) { /* ignore */ }
                     }
                 };
                 input.addEventListener('input', onInput);
@@ -253,83 +321,87 @@
 
             dialog.appendChild(body);
 
+            if (modalConfig.note) {
+                const note = document.createElement('div');
+                note.style.cssText = 'padding:0 24px 20px;color:#64748b;font-size:13px;line-height:1.6;';
+                applyModalTextContent(note, modalConfig.note, modalConfig.noteFormat);
+                dialog.appendChild(note);
+            }
+
             // 创建按钮区域
             const footer = document.createElement('div');
             footer.className = 'modal-footer';
 
+            function finish(value) {
+                if (settled) return;
+                settled = true;
+                document.removeEventListener('keydown', escHandler);
+                overlay.style.animation = 'fadeOut 0.2s ease-out';
+                setTimeout(() => {
+                    if (overlay.parentNode) {
+                        overlay.parentNode.removeChild(overlay);
+                    }
+                    resolve(value);
+                }, 200);
+            }
+
             // 根据类型创建按钮
-            if (config.type === 'alert') {
+            if (modalConfig.type === 'alert') {
                 const okBtn = document.createElement('button');
                 okBtn.className = 'modal-btn modal-btn-primary';
-                let okText = config.okText;
+                let okText = modalConfig.okText;
                 if (!okText) {
-                    try {
-                        okText = (window.t && typeof window.t === 'function') ? window.t('common.ok') : '确定';
-                    } catch (e) {
-                        okText = '确定';
-                    }
+                    okText = safeT('common.ok', '确定');
                 }
                 okBtn.textContent = okText;
                 okBtn.onclick = () => {
-                    closeModal();
-                    resolve(true);
+                    finish(true);
                 };
                 footer.appendChild(okBtn);
-            } else if (config.type === 'confirm') {
+            } else if (modalConfig.type === 'confirm') {
                 const cancelBtn = document.createElement('button');
                 cancelBtn.className = 'modal-btn modal-btn-secondary';
-                let cancelText = config.cancelText;
+                let cancelText = modalConfig.cancelText;
                 if (!cancelText) {
-                    try {
-                        cancelText = (window.t && typeof window.t === 'function') ? window.t('common.cancel') : '取消';
-                    } catch (e) {
-                        cancelText = '取消';
-                    }
+                    cancelText = safeT('common.cancel', '取消');
                 }
                 cancelBtn.textContent = cancelText;
                 cancelBtn.onclick = () => {
-                    closeModal();
-                    resolve(false);
+                    finish(false);
                 };
                 footer.appendChild(cancelBtn);
 
                 const okBtn = document.createElement('button');
-                okBtn.className = config.danger ? 'modal-btn modal-btn-danger' : 'modal-btn modal-btn-primary';
-                let okText = config.okText;
+                okBtn.className = modalConfig.danger ? 'modal-btn modal-btn-danger' : 'modal-btn modal-btn-primary';
+                let okText = modalConfig.okText;
                 if (!okText) {
-                    try {
-                        okText = (window.t && typeof window.t === 'function') ? window.t('common.ok') : '确定';
-                    } catch (e) {
-                        okText = '确定';
-                    }
+                    okText = safeT('common.ok', '确定');
                 }
                 okBtn.textContent = okText;
                 okBtn.onclick = () => {
-                    closeModal();
-                    resolve(true);
+                    finish(true);
                 };
                 footer.appendChild(okBtn);
-            } else if (config.type === 'prompt') {
+            } else if (modalConfig.type === 'prompt') {
                 const cancelBtn = document.createElement('button');
                 cancelBtn.className = 'modal-btn modal-btn-secondary';
-                cancelBtn.textContent = config.cancelText || (window.t ? window.t('common.cancel') : '取消');
+                cancelBtn.textContent = modalConfig.cancelText || safeT('common.cancel', '取消');
                 cancelBtn.onclick = () => {
-                    closeModal();
-                    resolve(null);
+                    finish(null);
                 };
                 footer.appendChild(cancelBtn);
 
                 const okBtn = document.createElement('button');
                 okBtn.className = 'modal-btn modal-btn-primary';
-                okBtn.textContent = config.okText || (window.t ? window.t('common.ok') : '确定');
+                okBtn.textContent = modalConfig.okText || safeT('common.ok', '确定');
                 okBtn.onclick = () => {
                     // 确认前先归一化和校验
-                    if (typeof config.normalize === 'function') {
-                        try { input.value = config.normalize(input.value); } catch (e) { /* ignore */ }
+                    if (typeof modalConfig.normalize === 'function') {
+                        try { input.value = modalConfig.normalize(input.value); } catch (e) { /* ignore */ }
                     }
-                    if (typeof config.validator === 'function') {
+                    if (typeof modalConfig.validator === 'function') {
                         let err = '';
-                        try { err = config.validator(input.value) || ''; } catch (e) { err = ''; }
+                        try { err = modalConfig.validator(input.value) || ''; } catch (e) { err = ''; }
                         if (err) {
                             input.setCustomValidity(String(err));
                             if (typeof input.reportValidity === 'function') input.reportValidity();
@@ -337,8 +409,7 @@
                         }
                     }
                     input.setCustomValidity('');
-                    closeModal();
-                    resolve(input.value);
+                    finish(input.value);
                 };
                 footer.appendChild(okBtn);
 
@@ -346,12 +417,12 @@
                 input.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter') {
                         // Enter 行为与确定按钮一致
-                        if (typeof config.normalize === 'function') {
-                            try { input.value = config.normalize(input.value); } catch (e) { /* ignore */ }
+                        if (typeof modalConfig.normalize === 'function') {
+                            try { input.value = modalConfig.normalize(input.value); } catch (e) { /* ignore */ }
                         }
-                        if (typeof config.validator === 'function') {
+                        if (typeof modalConfig.validator === 'function') {
                             let err = '';
-                            try { err = config.validator(input.value) || ''; } catch (e) { err = ''; }
+                            try { err = modalConfig.validator(input.value) || ''; } catch (e) { err = ''; }
                             if (err) {
                                 input.setCustomValidity(String(err));
                                 if (typeof input.reportValidity === 'function') input.reportValidity();
@@ -359,12 +430,31 @@
                             }
                         }
                         input.setCustomValidity('');
-                        closeModal();
-                        resolve(input.value);
-                    } else if (e.key === 'Escape') {
-                        closeModal();
-                        resolve(null);
+                        finish(input.value);
+                    } else if (e.key === 'Escape' && modalConfig.closeOnEscape !== false) {
+                        finish(dismissValue);
                     }
+                });
+            } else if (modalConfig.type === 'decision') {
+                const buttons = Array.isArray(modalConfig.buttons) && modalConfig.buttons.length > 0
+                    ? modalConfig.buttons
+                    : [{
+                        value: 'confirm',
+                        text: safeT('common.confirm', '确认'),
+                        variant: 'primary'
+                    }];
+
+                buttons.forEach((buttonConfig, index) => {
+                    const button = document.createElement('button');
+                    const variant = buttonConfig.variant === 'danger'
+                        ? 'modal-btn-danger'
+                        : (buttonConfig.variant === 'primary' ? 'modal-btn-primary' : 'modal-btn-secondary');
+                    button.className = 'modal-btn ' + variant;
+                    button.textContent = String(buttonConfig.text || ('Button ' + (index + 1)));
+                    button.onclick = () => {
+                        finish(buttonConfig.value);
+                    };
+                    footer.appendChild(button);
                 });
             }
 
@@ -372,34 +462,43 @@
             overlay.appendChild(dialog);
 
             // 点击遮罩层关闭（可选）
-            if (config.closeOnClickOutside !== false) {
+            if (modalConfig.closeOnClickOutside !== false) {
                 overlay.addEventListener('click', (e) => {
                     if (e.target === overlay) {
-                        closeModal();
-                        resolve(config.type === 'prompt' ? null : false);
+                        finish(dismissValue);
                     }
                 });
             }
 
             // ESC 键关闭
             const escHandler = (e) => {
+                if (modalConfig.closeOnEscape === false) {
+                    return;
+                }
                 if (e.key === 'Escape') {
-                    closeModal();
-                    resolve(config.type === 'prompt' ? null : false);
+                    finish(dismissValue);
                 }
             };
             document.addEventListener('keydown', escHandler);
 
-            function closeModal() {
-                document.removeEventListener('keydown', escHandler);
-                overlay.style.animation = 'fadeOut 0.2s ease-out';
-                setTimeout(() => {
-                    document.body.removeChild(overlay);
-                }, 200);
-            }
-
             // 添加到页面
             document.body.appendChild(overlay);
+
+            if (typeof modalConfig.onShown === 'function') {
+                const notifyShown = function () {
+                    Promise.resolve(modalConfig.onShown({
+                        overlay: overlay,
+                        dialog: dialog,
+                    })).catch(function (error) {
+                        console.warn('[Dialog] onShown failed:', error);
+                    });
+                };
+                if (typeof requestAnimationFrame === 'function') {
+                    requestAnimationFrame(notifyShown);
+                } else {
+                    setTimeout(notifyShown, 0);
+                }
+            }
 
             // 自动聚焦
             setTimeout(() => {
@@ -407,8 +506,13 @@
                     input.focus();
                     input.select();
                 } else {
+                    const primaryBtn = footer.querySelector('.modal-btn-primary');
                     const firstBtn = footer.querySelector('.modal-btn');
-                    if (firstBtn) firstBtn.focus();
+                    if (primaryBtn) {
+                        primaryBtn.focus();
+                    } else if (firstBtn) {
+                        firstBtn.focus();
+                    }
                 }
             }, 100);
         });
@@ -422,7 +526,7 @@
      */
     window.showAlert = function(message, title = null) {
         if (title === null) {
-            title = window.t ? window.t('common.alert') : '提示';
+            title = safeT('common.alert', '提示');
         }
         return createModal({
             type: 'alert',
@@ -441,12 +545,7 @@
     window.showConfirm = function(message, title = null, options = {}) {
         console.log('[showConfirm] 被调用，参数:', { message, title, options });
         if (title === null) {
-            try {
-                title = (window.t && typeof window.t === 'function') ? window.t('common.confirm') : '确认';
-            } catch (e) {
-                console.error('翻译函数调用失败:', e);
-                title = '确认';
-            }
+            title = safeT('common.confirm', '确认');
         }
         console.log('[showConfirm] 创建对话框，title:', title, 'message:', message);
         const promise = createModal({
@@ -470,7 +569,7 @@
      */
     window.showPrompt = function(message, defaultValue = '', title = null, options = {}) {
         if (title === null) {
-            title = window.t ? window.t('common.input') : '输入';
+            title = safeT('common.input', '输入');
         }
         return createModal({
             type: 'prompt',
@@ -484,6 +583,28 @@
             normalize: options.normalize,
             validator: options.validator,
             onInput: options.onInput,
+        });
+    };
+
+    window.showDecisionPrompt = function(config = {}) {
+        return new Promise((resolve) => {
+            _decisionPromptQueue.push({ config, resolve });
+
+            const drainDecisionPromptQueue = () => {
+                if (_decisionPromptActive || _decisionPromptQueue.length === 0) {
+                    return;
+                }
+
+                const nextPrompt = _decisionPromptQueue.shift();
+                _decisionPromptActive = true;
+                createModal(Object.assign({}, nextPrompt.config, { type: 'decision' })).then((value) => {
+                    nextPrompt.resolve(value);
+                    _decisionPromptActive = false;
+                    drainDecisionPromptQueue();
+                });
+            };
+
+            drainDecisionPromptQueue();
         });
     };
 
@@ -647,4 +768,3 @@
     
     console.log('窗口管理工具已加载');
 })();
-

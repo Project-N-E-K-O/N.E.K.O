@@ -309,6 +309,8 @@
                     window.monitorInputVolume();
                 }, 1000);
 
+                window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
+
                 window.isMicStarting = false;
                 S.isSwitchingMode = false;
 
@@ -628,6 +630,7 @@
         textSendButton.addEventListener('click', async function () {
             var text = textInputBox.value.trim();
             var hasScreenshots = screenshotsList.children.length > 0;
+            var sentUserContent = false;
 
             if (!text && !hasScreenshots) return;
 
@@ -733,6 +736,7 @@
 
                     var screenshotItemCount = screenshotItems.length;
                     window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true);
+                    sentUserContent = true;
 
                     // Achievement: send image
                     if (window.unlockAchievement) {
@@ -757,6 +761,7 @@
 
                     textInputBox.value = '';
                     window.appendMessage(text, 'user', true);
+                    sentUserContent = true;
 
                     // Achievement: meow detection
                     if (window.incrementAchievementCounter) {
@@ -776,6 +781,10 @@
                         console.log(window.t('console.userFirstInputDetected'));
                         window.checkAndUnlockFirstDialogueAchievement();
                     }
+                }
+
+                if (sentUserContent) {
+                    window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
                 }
 
                 // Reset proactive chat timer
