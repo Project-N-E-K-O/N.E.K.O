@@ -2894,23 +2894,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 //增加 addShadow: false
                 // 【注意】朝向会自动从preferences中加载（在vrm-core.js的loadModel中处理）
                 await vrmManager.loadModel(modelUrl, { autoPlay: false, addShadow: false });
-                // 加载后立即播待机动画，避免 T-pose 显得生硬
-                const defaultIdleUrl = '/static/vrm/animation/wait03.vrma';
-                const vrmIdleUrls = getSelectedIdleAnimations('vrm-idle-animation-multiselect');
-                if (vrmIdleUrls.length > 0 && vrmManager.animation) {
+                // 加载后立即播内置 wait03 防 T-pose; 用户保存的 idle 选择
+                // 由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖
+                if (vrmManager.animation) {
                     try {
-                        startIdleRotation('vrm', vrmIdleUrls);
-                    } catch (e) {
-                        console.warn('[VRM] 播放待机动画失败，使用内置默认:', e);
-                        try {
-                            await vrmManager.playVRMAAnimation(defaultIdleUrl, { loop: true, immediate: true, isIdle: true });
-                        } catch (e2) {
-                            console.warn('[VRM] 播放 wait03 待机动画失败:', e2);
-                        }
-                    }
-                } else if (vrmManager.animation) {
-                    try {
-                        await vrmManager.playVRMAAnimation(defaultIdleUrl, { loop: true, immediate: true, isIdle: true });
+                        await vrmManager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', { loop: true, immediate: true, isIdle: true });
                     } catch (e) {
                         console.warn('[VRM] 播放 wait03 待机动画失败:', e);
                     }
@@ -3834,29 +3822,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 await window.mmdManager.loadModel(modelPath);
                 showStatus('MMD模型加载成功', 2000);
 
-                // 加载后播放保存的MMD待机动作（多选轮换）
-                const mmdIdleUrls = getSelectedIdleAnimations('mmd-idle-animation-multiselect');
-                const defaultMmdIdleUrl = '/static/mmd/animation/wait03.vmd';
-                if (mmdIdleUrls.length > 0) {
-                    try {
-                        startIdleRotation('mmd', mmdIdleUrls);
-                        if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
-                        console.log('[MMD] 已播放待机动作:', mmdIdleUrls);
-                    } catch (e) {
-                        console.warn('[MMD] 播放待机动作失败:', e);
-                    }
-                } else {
-                    // 无勾选时使用默认
-                    try {
-                        await window.mmdManager.loadAnimation(defaultMmdIdleUrl);
-                        window.mmdManager.playAnimation();
-                        isMmdIdlePlaying = true;
-                        updateMMDAnimationPlayButtonIcon();
-                        if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
-                        console.log('[MMD] 已播放默认待机动作:', defaultMmdIdleUrl);
-                    } catch (e) {
-                        console.warn('[MMD] 播放默认待机动作失败:', e);
-                    }
+                // 加载后立即播内置 wait03 防 T-pose; 用户保存的 idle 选择
+                // 由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖
+                try {
+                    await window.mmdManager.loadAnimation('/static/mmd/animation/wait03.vmd');
+                    window.mmdManager.playAnimation();
+                    isMmdIdlePlaying = true;
+                    updateMMDAnimationPlayButtonIcon();
+                    if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
+                } catch (e) {
+                    console.warn('[MMD] 播放 wait03 待机动作失败:', e);
                 }
             } catch (error) {
                 console.error('加载MMD模型失败:', error);
