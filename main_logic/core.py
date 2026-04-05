@@ -155,6 +155,7 @@ class LLMSessionManager:
         self.audio_resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         self.lock = asyncio.Lock()  # 使用异步锁替代同步锁
         self.websocket_lock = None  # websocket操作的共享锁，由main_server设置
+        self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
         self._screenshot_future: asyncio.Future | None = None
         self.current_speech_id = None
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
@@ -208,6 +209,7 @@ class LLMSessionManager:
         self.pending_session_warmed_up_event = None
         self.pending_session_final_prime_complete_event = None
         self.session_start_time = None
+        self._session_turn_count = 0  # 当前 session 的用户输入轮次计数
         self.pending_connector = None
         self.pending_session = None
         self.is_hot_swap_imminent = False
@@ -283,6 +285,13 @@ class LLMSessionManager:
         self.session_closed_by_server = False  # Session被服务器关闭的标志
         self.last_audio_send_error_time = 0.0  # 上次音频发送错误的时间戳
         self.audio_error_log_interval = 2.0  # 音频错误log间隔（秒）
+
+    def _fire_task(self, coro):
+        """Create a background task with GC protection (prevent Python 3.11+ from collecting it)."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     def _get_text_guard_max_length(self) -> int:
         try:
@@ -422,10 +431,15 @@ class LLMSessionManager:
         # 正在切换过程中则跳过所有热切换判断
         if not self.is_hot_swap_imminent:
             try:
-                # 1. 时间驱动（40s）：session 运行超时 → 开始准备新 session + 触发记忆归档
+                # 1. 时间/轮次/上下文驱动：任一条件满足 → 开始准备新 session + 触发记忆归档
                 if hasattr(self, 'is_preparing_new_session') and not self.is_preparing_new_session:
-                    if self.session_start_time and \
-                            (datetime.now() - self.session_start_time).total_seconds() >= 40:
+                    _elapsed = (datetime.now() - self.session_start_time).total_seconds() if self.session_start_time else 0
+                    _turn_threshold_met = self._session_turn_count >= 10
+                    _ctx_threshold_met = (
+                        isinstance(self.session, OmniOfflineClient)
+                        and sum(len(str(m.content)) for m in self.session._conversation_history[1:]) >= 10000
+                    )
+                    if _elapsed >= 40 or _turn_threshold_met or _ctx_threshold_met:
                         logger.info(f"[{self.lanlan_name}] Main Listener: Uptime threshold met. Marking for new session preparation.")
                         self.is_preparing_new_session = True
                         self.summary_triggered_time = datetime.now()
@@ -466,7 +480,7 @@ class LLMSessionManager:
 
         # After each turn: deliver any queued agent task callbacks via LLM rephrase
         if self.pending_agent_callbacks:
-            asyncio.create_task(self.trigger_agent_callbacks())
+            self._fire_task(self.trigger_agent_callbacks())
 
     async def handle_response_discarded(self, reason: str, attempt: int, max_attempts: int, will_retry: bool, message: Optional[str] = None):
         """
@@ -517,7 +531,10 @@ class LLMSessionManager:
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示"""
         # 更新用户活动时间戳（用于主动搭话检测）
         self.last_user_activity_time = time.time()
-        
+        # 递增轮次计数器（仅计非空转录，避免噪声/静默误触发记忆整理）
+        if transcript.strip():
+            self._session_turn_count += 1
+
         # 推送到同步消息队列
         self.sync_message_queue.put({"type": "user", "data": {"input_type": "transcript", "data": transcript.strip()}})
         
@@ -1432,6 +1449,10 @@ class LLMSessionManager:
                     on_repetition_detected=self.handle_repetition_detected,
                     api_type=self.core_api_type
                 )
+                # Apply user's noise reduction preference to the AudioProcessor
+                nr_enabled = load_global_conversation_settings().get('noiseReductionEnabled', True)
+                if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
+                    new_session._audio_processor.set_enabled(nr_enabled)
 
             # Bind guarded callbacks BEFORE connect — connect() can invoke
             # on_connection_error during the handshake, and without the guard
@@ -1494,7 +1515,8 @@ class LLMSessionManager:
                     self.is_active = True
                     
                 self.session_start_time = datetime.now()
-                
+                self._session_turn_count = 0
+
                 # 启动消息处理任务
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
                 
@@ -1516,7 +1538,7 @@ class LLMSessionManager:
 
                 # WebSocket 重连后，投递因断线积压的 agent 任务回调
                 if self.pending_agent_callbacks:
-                    asyncio.create_task(self.trigger_agent_callbacks())
+                    self._fire_task(self.trigger_agent_callbacks())
 
             else:
                 raise Exception("Session not initialized")
@@ -1820,6 +1842,10 @@ class LLMSessionManager:
                     on_repetition_detected=self.handle_repetition_detected,
                     api_type=self.core_api_type
                 )
+                # Apply user's noise reduction preference to the AudioProcessor
+                nr_enabled = load_global_conversation_settings().get('noiseReductionEnabled', True)
+                if hasattr(self.pending_session, '_audio_processor') and self.pending_session._audio_processor:
+                    self.pending_session._audio_processor.set_enabled(nr_enabled)
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
             initial_prompt = await self._build_initial_prompt()
@@ -2423,6 +2449,7 @@ class LLMSessionManager:
             self.session = self.pending_session
             self.current_speech_id = str(uuid4())
             self.session_start_time = datetime.now()
+            self._session_turn_count = 0
             
             # !!CRITICAL!! 立即清除pending_session引用，防止异常处理器误关闭新session
             # 此时self.session和self.pending_session指向同一对象（新session）
@@ -2525,13 +2552,13 @@ class LLMSessionManager:
                 # Memory Server 专属冷却检查
                 if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
                     time_left = int(self._memory_error_retry_after - time.time())
-                    asyncio.create_task(self.send_status(json.dumps({
+                    self._fire_task(self.send_status(json.dumps({
                         "code": "MEMORY_SERVER_COOLDOWN",
                         "details": {"wait_time": time_left}
                     })))
                     self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
                     if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                        asyncio.create_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
+                        self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
                     return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
@@ -2567,13 +2594,13 @@ class LLMSessionManager:
             # Memory Server 专属冷却检查
             if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
                 time_left = int(self._memory_error_retry_after - time.time())
-                asyncio.create_task(self.send_status(json.dumps({
+                self._fire_task(self.send_status(json.dumps({
                     "code": "MEMORY_SERVER_COOLDOWN",
                     "details": {"wait_time": time_left}
                 })))
                 self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
                 if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                    asyncio.create_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
+                    self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
                 return
             # 检查失败计数器和冷却时间
             if self.session_start_failure_count >= self.session_start_max_failures:
@@ -3141,7 +3168,7 @@ class LLMSessionManager:
                     elif data[0] == "__reconnecting__":
                         logger.info("🌊 TTS 正在自动重连，发送呼吸感状态到前端")
                         user_msg = json.dumps({"code": "TTS_RECONNECTING", "level": "info"})
-                        asyncio.create_task(self.send_status(user_msg))
+                        self._fire_task(self.send_status(user_msg))
                         continue
                     elif data[0] == "__error__":
                         error_msg = data[1]
@@ -3191,7 +3218,7 @@ class LLMSessionManager:
                             else:
                                 user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
-                        asyncio.create_task(self.send_status(user_msg))
+                        self._fire_task(self.send_status(user_msg))
                         continue
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
                     _, speech_id, audio_payload = data

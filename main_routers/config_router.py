@@ -510,6 +510,7 @@ async def get_core_config_api():
             "coreApi": core_cfg.get('coreApi', 'qwen'),
             "assistApi": core_cfg.get('assistApi', 'qwen'),
             "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', ''),
+            "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', ''),
             "assistApiKeyOpenai": core_cfg.get('assistApiKeyOpenai', ''),
             "assistApiKeyGlm": core_cfg.get('assistApiKeyGlm', ''),
             "assistApiKeyStep": core_cfg.get('assistApiKeyStep', ''),
@@ -605,7 +606,7 @@ async def update_core_config(request: Request):
         if 'assistApi' in data:
             core_cfg['assistApi'] = data['assistApi']
         _api_key_fields = [
-            'assistApiKeyQwen', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
+            'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
             'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyGrok',

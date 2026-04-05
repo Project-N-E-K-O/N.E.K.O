@@ -598,7 +598,9 @@
         "volumeHintDetecting": "正在檢測麥剋風輸入...",
         "volumeHintNoSound": "檢測不到聲音，請檢查麥剋風",
         "volumeHintLow": "音量較低，建議調高增益",
-        "volumeHintOk": "麥剋風工作正常"
+        "volumeHintOk": "麥剋風工作正常",
+        "noiseReduction": "降噪",
+        "noiseReductionHint": "RNNoise AI 降噪，讓語音更清晰"
     },
     "speaker": {
         "volumeLabel": "揚聲器音量",
@@ -695,7 +697,8 @@
         },
         "coreProviderNames": {
             "free": "免費版（貓娘專屬福利，支持聯網搜索）",
-            "qwen": "Qwen-Omni（阿裏，速度最快，推薦⭐）",
+            "qwen": "Qwen-Omni（阿裏百煉，速度最快，推薦⭐）",
+            "qwen_intl": "Qwen-Omni（阿裏國際版）",
             "openai": "GPT-Realtime（OpenAI）",
             "glm": "GLM-realtime（智譜）",
             "step": "Step-2-Audio（階躍星辰）",
@@ -703,7 +706,8 @@
         },
         "assistProviderNames": {
             "free": "免費版（貓娘專屬福利）",
-            "qwen": "阿裏（Qwen，功能最全，推薦⭐）",
+            "qwen": "阿裏百煉（Qwen，功能最全，推薦⭐）",
+            "qwen_intl": "阿裏國際版（Qwen）",
             "openai": "OpenAI (ChatGPT)",
             "glm": "智譜 (GLM)",
             "step": "階躍星辰 (StepFun)",
@@ -732,7 +736,8 @@
         "customModelProviderFollowAssist": "跟隨輔助API",
         "customModelProviderCustom": "自訂",
         "keyBook": {
-            "qwen": "阿里（Qwen）",
+            "qwen": "阿裏百煉（Qwen）",
+            "qwen_intl": "阿裏國際版（Qwen）",
             "openai": "OpenAI",
             "deepseek": "DeepSeek",
             "glm": "智譜（GLM）",
@@ -1539,6 +1544,7 @@
         "toggles": {
             "allowInterrupt": "允許打斷",
             "mergeMessages": "閤並消息",
+            "avatarReactionBubble": "表情氣泡",
             "proactiveChat": "主動搭話",
             "proactiveVision": "自主視覺",
             "proactiveVisionChat": "螢幕分享",

@@ -19,6 +19,7 @@ class VRMManager {
         this._mouseRaycaster = null;
         this._mouseNDC = null;
         this._lookAtHeadWorldPos = null;
+        this._headScreenAnchorProjection = null;
         this._lookAtRayClosestPoint = null;
         this._lookAtDirection = null;
         this._lookAtBaseForward = null;
@@ -1243,6 +1244,7 @@ class VRMManager {
         this._mouseRaycaster = null;
         this._mouseNDC = null;
         this._lookAtHeadWorldPos = null;
+        this._headScreenAnchorProjection = null;
         this._lookAtRayClosestPoint = null;
         this._lookAtDirection = null;
         this._lookAtBaseForward = null;
@@ -1381,6 +1383,46 @@ class VRMManager {
      */
     isMouseTrackingEnabled() {
         return this._mouseTrackingEnabled !== false;
+    }
+
+    _projectWorldPositionToScreen(worldPosition) {
+        if (!worldPosition || !this.camera || !this.renderer || typeof window.THREE === 'undefined') {
+            return null;
+        }
+
+        const canvas = this.renderer.domElement;
+        if (!canvas) return null;
+
+        const canvasRect = canvas.getBoundingClientRect();
+        if (!canvasRect.width || !canvasRect.height) return null;
+
+        if (!this._headScreenAnchorProjection) {
+            this._headScreenAnchorProjection = new window.THREE.Vector3();
+        }
+
+        this.camera.updateMatrixWorld(true);
+        this._headScreenAnchorProjection.copy(worldPosition).project(this.camera);
+
+        if (!Number.isFinite(this._headScreenAnchorProjection.x) ||
+            !Number.isFinite(this._headScreenAnchorProjection.y)) {
+            return null;
+        }
+
+        return {
+            x: canvasRect.left + (this._headScreenAnchorProjection.x * 0.5 + 0.5) * canvasRect.width,
+            y: canvasRect.top + (-this._headScreenAnchorProjection.y * 0.5 + 0.5) * canvasRect.height
+        };
+    }
+
+    getHeadScreenAnchor() {
+        if (!this.currentModel || !this.camera || !this.renderer || typeof window.THREE === 'undefined') {
+            return null;
+        }
+        if (!this._ensureMouseLookAtResources()) {
+            return null;
+        }
+
+        return this._projectWorldPositionToScreen(this._getLookAtHeadWorldPosition());
     }
 
     /**

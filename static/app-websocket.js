@@ -30,6 +30,135 @@
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
 
+    function normalizeAssistantTurnId(turnId) {
+        if (turnId === undefined || turnId === null || turnId === '') {
+            return null;
+        }
+        return String(turnId);
+    }
+
+    function allocateAssistantTurnId(serverTurnId) {
+        var normalized = normalizeAssistantTurnId(serverTurnId);
+        if (normalized) {
+            return normalized;
+        }
+        S.assistantTurnSeq = (S.assistantTurnSeq || 0) + 1;
+        return 'local-' + S.assistantTurnSeq;
+    }
+
+    function emitAssistantLifecycleEvent(eventName, detail) {
+        window.dispatchEvent(new CustomEvent(eventName, {
+            detail: Object.assign({
+                timestamp: Date.now()
+            }, detail || {})
+        }));
+    }
+
+    function websocketTraceEnabled() {
+        return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
+    }
+
+    function logAssistantLifecycle(label, extra) {
+        if (!websocketTraceEnabled()) {
+            return;
+        }
+        console.log('[WSTrace]', label, Object.assign({
+            assistantTurnId: S.assistantTurnId,
+            pendingTurnServerId: S.assistantPendingTurnServerId,
+            assistantTurnAwaitingBubble: S.assistantTurnAwaitingBubble,
+            assistantTurnCompletedId: S.assistantTurnCompletedId,
+            assistantSpeechActiveTurnId: S.assistantSpeechActiveTurnId,
+            currentPlayingSpeechId: S.currentPlayingSpeechId,
+            pendingAudioMetaQueue: S.pendingAudioChunkMetaQueue.length,
+            incomingAudioBlobQueue: S.incomingAudioBlobQueue.length
+        }, extra || {}));
+    }
+
+    function clearPendingAssistantTurnStart() {
+        S.assistantPendingTurnServerId = null;
+        S.assistantTurnAwaitingBubble = false;
+    }
+
+    function resolveAssistantLifecycleTurnId(turnId) {
+        return normalizeAssistantTurnId(
+            turnId ||
+            S.assistantTurnId ||
+            S.assistantPendingTurnServerId ||
+            S.assistantTurnCompletedId ||
+            S.assistantSpeechActiveTurnId
+        );
+    }
+
+    function ensureAssistantTurnStarted(source, serverTurnId) {
+        if (S.assistantTurnId) {
+            clearPendingAssistantTurnStart();
+            logAssistantLifecycle('ensureAssistantTurnStarted:reuse_existing', {
+                source: source || 'visible_gemini_bubble',
+                serverTurnId: normalizeAssistantTurnId(serverTurnId)
+            });
+            return S.assistantTurnId;
+        }
+        if (!S.assistantTurnAwaitingBubble && serverTurnId === undefined) {
+            logAssistantLifecycle('ensureAssistantTurnStarted:skip', {
+                source: source || 'visible_gemini_bubble'
+            });
+            return null;
+        }
+
+        S.assistantTurnId = allocateAssistantTurnId(
+            serverTurnId === undefined ? S.assistantPendingTurnServerId : serverTurnId
+        );
+        clearPendingAssistantTurnStart();
+        emitAssistantLifecycleEvent('neko-assistant-turn-start', {
+            turnId: S.assistantTurnId,
+            source: source || 'visible_gemini_bubble'
+        });
+        logAssistantLifecycle('ensureAssistantTurnStarted:emitted', {
+            source: source || 'visible_gemini_bubble',
+            serverTurnId: normalizeAssistantTurnId(serverTurnId),
+            turnId: S.assistantTurnId
+        });
+        return S.assistantTurnId;
+    }
+
+    function emitAssistantSpeechCancel(source) {
+        var currentTurnId = resolveAssistantLifecycleTurnId();
+        S.assistantSpeechActiveTurnId = null;
+        logAssistantLifecycle('emitAssistantSpeechCancel', {
+            source: source,
+            turnId: currentTurnId
+        });
+        if (currentTurnId) {
+            emitAssistantLifecycleEvent('neko-assistant-speech-cancel', {
+                turnId: currentTurnId,
+                source: source
+            });
+        } else {
+            emitAssistantLifecycleEvent('neko-assistant-speech-cancel', {
+                source: source
+            });
+        }
+    }
+
+    function clearAssistantLifecycleOnDisconnect(source) {
+        emitAssistantSpeechCancel(source || 'socket_close');
+        S.assistantSpeechActiveTurnId = null;
+        S.assistantTurnId = null;
+        S.assistantTurnCompletedId = null;
+        S.assistantTurnCompletionSource = null;
+        clearPendingAssistantTurnStart();
+        S.currentPlayingSpeechId = null;
+        S.interruptedSpeechId = null;
+        S.pendingDecoderReset = false;
+        S.skipNextAudioBlob = false;
+        S.incomingAudioEpoch += 1;
+        S.incomingAudioBlobQueue = [];
+        S.pendingAudioChunkMetaQueue = [];
+        logAssistantLifecycle('clearAssistantLifecycleOnDisconnect', {
+            source: source || 'socket_close'
+        });
+    }
+
     // ========================  Convenience helpers  ========================
 
     /** Check whether the WebSocket is open */
@@ -241,9 +370,16 @@
                         }
                         S.lastVoiceUserMessage = null;
                         S.lastVoiceUserMessageTime = 0;
+                        S.assistantTurnId = null;
+                        S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
+                        S.assistantTurnAwaitingBubble = true;
                     }
+                    var createdVisibleBubble = false;
                     if (typeof window.appendMessage === 'function') {
-                        window.appendMessage(response.text, 'gemini', isNewMessage);
+                        createdVisibleBubble = window.appendMessage(response.text, 'gemini', isNewMessage) === true;
+                    }
+                    if (!S.assistantTurnId && S.assistantTurnAwaitingBubble && createdVisibleBubble) {
+                        ensureAssistantTurnStarted('gemini_response_visible_bubble', response.turn_id);
                     }
                     if (response.turn_id) {
                         window.realisticGeminiCurrentTurnId = response.turn_id;
@@ -256,6 +392,9 @@
                 // -------- response_discarded --------
                 } else if (response.type === 'response_discarded') {
                     window.invalidatePendingMusicSearch();
+                    emitAssistantSpeechCancel('response_discarded');
+                    S.assistantTurnId = null;
+                    clearPendingAssistantTurnStart();
                     var attempt = response.attempt || 0;
                     var maxAttempts = response.max_attempts || 0;
                     console.log('[Discard] AI回复被丢弃 reason=' + response.reason + ' attempt=' + attempt + '/' + maxAttempts + ' retry=' + response.will_retry);
@@ -384,6 +523,9 @@
 
                 // -------- user_activity --------
                 } else if (response.type === 'user_activity') {
+                    emitAssistantSpeechCancel('user_activity');
+                    S.assistantTurnId = null;
+                    clearPendingAssistantTurnStart();
                     S.interruptedSpeechId = response.interrupted_speech_id || null;
                     S.pendingDecoderReset = true;
                     S.skipNextAudioBlob = false;
@@ -426,6 +568,13 @@
 
                     S.pendingAudioChunkMetaQueue.push({
                         speechId: speechId || S.currentPlayingSpeechId || null,
+                        turnId: resolveAssistantLifecycleTurnId(),
+                        shouldSkip: shouldSkip,
+                        epoch: S.incomingAudioEpoch
+                    });
+                    logAssistantLifecycle('ws:audio_chunk_header', {
+                        speechId: speechId || S.currentPlayingSpeechId || null,
+                        turnId: resolveAssistantLifecycleTurnId(),
                         shouldSkip: shouldSkip,
                         epoch: S.incomingAudioEpoch
                     });
@@ -811,6 +960,7 @@
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
                     console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
+                    logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
                         if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
                             window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
@@ -837,10 +987,24 @@
                     } catch (e3) {
                         console.warn('[WS] turn end agent_callback flush failed:', e3);
                     }
+                    var agentCallbackTurnId = resolveAssistantLifecycleTurnId();
+                    if (agentCallbackTurnId) {
+                        logAssistantLifecycle('ws:turn_end_agent_callback:emit', {
+                            turnId: agentCallbackTurnId
+                        });
+                        emitAssistantLifecycleEvent('neko-assistant-turn-end', {
+                            turnId: agentCallbackTurnId,
+                            source: 'turn_end_agent_callback'
+                        });
+                    } else {
+                        logAssistantLifecycle('ws:turn_end_agent_callback:clear_pending');
+                    }
+                    clearPendingAssistantTurnStart();
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log(window.t('console.turnEndReceived'));
+                    logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer
                     try {
                         if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
@@ -868,6 +1032,19 @@
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
                     }
+                    var assistantTurnId = resolveAssistantLifecycleTurnId();
+                    if (assistantTurnId) {
+                        logAssistantLifecycle('ws:turn_end:emit', {
+                            turnId: assistantTurnId
+                        });
+                        emitAssistantLifecycleEvent('neko-assistant-turn-end', {
+                            turnId: assistantTurnId,
+                            source: 'turn_end'
+                        });
+                    } else {
+                        logAssistantLifecycle('ws:turn_end:clear_pending');
+                    }
+                    clearPendingAssistantTurnStart();
 
                     // Emotion analysis & translation on turn completion
                     (function () {
@@ -908,6 +1085,13 @@
                                 if (emotionResult && emotionResult.emotion) {
                                     console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
                                     if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
+                                    if (assistantTurnId) {
+                                        emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
+                                            turnId: assistantTurnId,
+                                            emotion: emotionResult.emotion,
+                                            source: 'emotion_analysis'
+                                        });
+                                    }
                                 }
                             } catch (emotionError) {
                                 if (emotionError.message === '情感分析超时') {
@@ -945,12 +1129,13 @@
 
                     // Reset proactive chat backoff after AI turn completes
                     var hasChatMode = (typeof window.hasAnyChatModeEnabled === 'function') ? window.hasAnyChatModeEnabled() : false;
-                    if (S.proactiveChatEnabled && hasChatMode && !S.isRecording) {
-                        if (typeof window.resetProactiveChatBackoff === 'function') window.resetProactiveChatBackoff();
-                    }
-                    // 语音模式：AI 说完话后才调度下一次 proactive nudge
-                    if (S.isRecording && S.proactiveChatEnabled) {
-                        if (typeof window.scheduleProactiveChat === 'function') window.scheduleProactiveChat();
+                    if (S.proactiveChatEnabled && hasChatMode) {
+                        if (!S.isRecording) {
+                            if (typeof window.resetProactiveChatBackoff === 'function') window.resetProactiveChatBackoff();
+                        } else if (typeof window.scheduleProactiveChat === 'function') {
+                            // Voice mode also needs a turn-end fallback rearm in case TTS/playback completion never fires.
+                            window.scheduleProactiveChat();
+                        }
                     }
 
                 // -------- session_preparing --------
@@ -1023,6 +1208,7 @@
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
                     S.isTextSessionActive = false;
+                    clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 
                     if (S.sessionStartedRejecter) {
                         try { S.sessionStartedRejecter(new Error('Session ended by server')); } catch (_e2) { }
@@ -1185,6 +1371,7 @@
         // ---- onclose ----
         S.socket.onclose = function () {
             console.log(window.t('console.websocketClosed'));
+            clearAssistantLifecycleOnDisconnect('socket_close');
 
             // Clear heartbeat
             if (S.heartbeatInterval) {
@@ -1284,6 +1471,8 @@
         };
     }
     mod.connectWebSocket = connectWebSocket;
+    mod.ensureAssistantTurnStarted = ensureAssistantTurnStarted;
+    mod.clearPendingAssistantTurnStart = clearPendingAssistantTurnStart;
 
     // ========================  Exported methods  ========================
 
@@ -1313,6 +1502,8 @@
     // ========================  Backward-compat globals  ========================
     window.connectWebSocket = connectWebSocket;
     window.ensureWebSocketOpen = ensureWebSocketOpen;
+    window.ensureAssistantTurnStarted = ensureAssistantTurnStarted;
+    window.clearPendingAssistantTurnStart = clearPendingAssistantTurnStart;
 
     // ========================  Greeting check (after model loaded)  ========================
     // 等模型加载完成后再发送 greeting_check，避免与 TTS/lipsync/模型载入竞态

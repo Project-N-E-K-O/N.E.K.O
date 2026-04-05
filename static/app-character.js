@@ -73,6 +73,21 @@
         }
     }
 
+    function emitAssistantSpeechCancel(source) {
+        var turnId = S.assistantTurnId || S.assistantSpeechActiveTurnId || null;
+        S.assistantTurnId = null;
+        S.assistantPendingTurnServerId = null;
+        S.assistantTurnAwaitingBubble = false;
+        S.assistantSpeechActiveTurnId = null;
+        window.dispatchEvent(new CustomEvent('neko-assistant-speech-cancel', {
+            detail: {
+                turnId: turnId ? String(turnId) : null,
+                source: source || 'character_switch',
+                timestamp: Date.now()
+            }
+        }));
+    }
+
     // ======================================================================
     // handleCatgirlSwitch — main character switching logic
     // ======================================================================
@@ -107,6 +122,7 @@
         console.log('[猫娘切换] 设置 isSwitchingCatgirl = true');
 
         try {
+            emitAssistantSpeechCancel('character_switch');
             // 0. 紧急制动：立即停止所有渲染循环
             // 停止 Live2D Ticker
             if (window.live2dManager && window.live2dManager.pixi_app && window.live2dManager.pixi_app.ticker) {
@@ -355,6 +371,8 @@
             // 重置聊天相关的全局状态
             window.currentGeminiMessage = null;
             window._geminiTurnFullText = '';
+            window.currentTurnGeminiBubbles = [];
+            window.currentTurnGeminiAttachments = [];
             // 清空realistic synthesis队列和缓冲区，防止旧角色的语音继续播放
             window._realisticGeminiQueue = [];
             window._realisticGeminiBuffer = '';
