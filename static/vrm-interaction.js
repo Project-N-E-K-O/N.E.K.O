@@ -1207,8 +1207,9 @@ class VRMInteraction {
             const ctrlKeyPressed = isCtrlPressed;
             const isNearModel = distance < hoverFadeThreshold;
 
-            // 静止时启动定时器，移出范围时清除
-            if (this.checkLocked() && isNearModel) {
+            // 静止时启动定时器，移出范围时清除（移动端无鼠标悬停，跳过）
+            const isMobileDevice = window.appUtils && window.appUtils.isMobile && window.appUtils.isMobile();
+            if (!isMobileDevice && this.checkLocked() && isNearModel) {
                 // 首次进入范围：设置标志并启动定时器
                 if (!this._vrmHasEnteredHoverRange) {
                     this._vrmHasEnteredHoverRange = true;
@@ -1230,8 +1231,8 @@ class VRMInteraction {
                 this._vrmHasEnteredHoverRange = false;
             }
 
-            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化）
-            ctrlFadeActive = this.checkLocked() && ctrlKeyPressed && isNearModel;
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化，移动端跳过）
+            ctrlFadeActive = !isMobileDevice && this.checkLocked() && ctrlKeyPressed && isNearModel;
             applyFade();
 
             // 锁定状态下不处理按钮显示/隐藏
