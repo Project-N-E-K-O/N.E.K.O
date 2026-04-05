@@ -248,7 +248,7 @@
             author: author,
             time: getCurrentTimeString(),
             createdAt: Date.now(),
-            avatarLabel: author ? String(author).trim().slice(0, 1).toUpperCase() : undefined,
+            avatarLabel: String(author).trim().slice(0, 1).toUpperCase(),
             blocks: blocks,
             status: 'sent'
         });

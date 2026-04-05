@@ -154,7 +154,6 @@ textarea {
   gap: 8px;
 }
 
-.message-row-assistant,
 .message-row-user {
   justify-content: flex-end;
 }

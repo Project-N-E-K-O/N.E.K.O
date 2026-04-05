@@ -793,12 +793,13 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
  */
 VRMManager.prototype._addReturnButtonBreathingAnimation = function () {
     // 检查是否已经添加过样式
-    if (document.getElementById('vrm-return-button-breathing-styles')) {
+    const opts = this._avatarButtonOptions;
+    if (document.getElementById(opts.returnBreathingStyleId)) {
         return;
     }
 
     const style = document.createElement('style');
-    style.id = 'vrm-return-button-breathing-styles';
+    style.id = opts.returnBreathingStyleId;
     style.textContent = `
         /* 请她回来按钮呼吸特效 */
         @keyframes vrmReturnButtonBreathing {
