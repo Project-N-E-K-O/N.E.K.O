@@ -1664,6 +1664,8 @@
         "emotionConfig": "VRM情感配置",
         "idleAnimation": {
             "title": "待机动作",
+            "selectHint": "选择待机动作",
+            "selectedCount": "已选 {{count}} 个",
             "changed": "待机动作已切换: {{name}}",
             "changeFailed": "切换待机动作失败"
         },
@@ -1710,6 +1712,8 @@
         },
         "idleAnimation": {
             "title": "待机动作",
+            "selectHint": "选择待机动作",
+            "selectedCount": "已选 {{count}} 个",
             "changed": "待机动作已切换",
             "changeFailed": "切换待机动作失败"
         }

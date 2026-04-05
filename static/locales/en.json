@@ -1664,6 +1664,8 @@
         "emotionConfig": "VRM Emotion Config",
         "idleAnimation": {
             "title": "Idle Animation",
+            "selectHint": "Select Idle Animations",
+            "selectedCount": "{{count}} selected",
             "changed": "Idle animation changed: {{name}}",
             "changeFailed": "Failed to change idle animation"
         },
@@ -1710,6 +1712,8 @@
         },
         "idleAnimation": {
             "title": "Idle Animation",
+            "selectHint": "Select Idle Animations",
+            "selectedCount": "{{count}} selected",
             "changed": "Idle animation changed",
             "changeFailed": "Failed to change idle animation"
         }

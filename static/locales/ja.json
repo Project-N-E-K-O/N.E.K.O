@@ -1664,6 +1664,8 @@
         "emotionConfig": "VRM感情設定",
         "idleAnimation": {
             "title": "待機アニメーション",
+            "selectHint": "待機モーションを選択",
+            "selectedCount": "{{count}} 件選択中",
             "changed": "待機アニメーションを切り替えました: {{name}}",
             "changeFailed": "待機アニメーションの切り替えに失敗しました"
         },
@@ -1710,6 +1712,8 @@
         },
         "idleAnimation": {
             "title": "待機アニメーション",
+            "selectHint": "待機モーションを選択",
+            "selectedCount": "{{count}} 件選択中",
             "changed": "待機アニメーションが変更されました: {{name}}",
             "changeFailed": "待機アニメーションの変更に失敗しました"
         }

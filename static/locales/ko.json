@@ -1664,6 +1664,8 @@
         "emotionConfig": "VRM 감정 설정",
         "idleAnimation": {
             "title": "대기 애니메이션",
+            "selectHint": "대기 동작 선택",
+            "selectedCount": "{{count}}개 선택됨",
             "changed": "대기 애니메이션이 변경되었습니다: {{name}}",
             "changeFailed": "대기 애니메이션 변경 실패"
         },
@@ -1710,6 +1712,8 @@
         },
         "idleAnimation": {
             "title": "대기 애니메이션",
+            "selectHint": "대기 동작 선택",
+            "selectedCount": "{{count}}개 선택됨",
             "changed": "대기 애니메이션이 변경되었습니다",
             "changeFailed": "대기 애니메이션 변경에 실패했습니다"
         }

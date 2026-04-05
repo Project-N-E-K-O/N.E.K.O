@@ -497,8 +497,8 @@ async def update_catgirl_l2d(name: str, request: Request):
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', vrm_model)
                 set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', '')
                 set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
-                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', '')
-                
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [])
+
                 # 处理 VRM 动画（复用同样的验证逻辑）
                 if 'vrm_animation' in data:
                     if vrm_animation is None or vrm_animation == '':
@@ -515,18 +515,21 @@ async def update_catgirl_l2d(name: str, request: Request):
                         set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', vrm_animation_str)
                 
                 if 'idle_animation' in data:
-                    if idle_animation is None or idle_animation == '':
-                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', None)
+                    if idle_animation is None or idle_animation == '' or idle_animation == []:
+                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [])
                     else:
-                        idle_animation_str = str(idle_animation).strip()
-                        if '://' in idle_animation_str or idle_animation_str.startswith('data:'):
-                            return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含URL方案'}, status_code=400)
-                        if '..' in idle_animation_str:
-                            return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                        # 向前兼容：接受 string（旧客户端）或 list（新客户端）
+                        idle_list = [idle_animation] if isinstance(idle_animation, str) else list(idle_animation)
                         allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
-                        if not any(idle_animation_str.startswith(prefix) for prefix in allowed_animation_prefixes):
-                            return JSONResponse(content={'success': False, 'error': '待机动作路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
-                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', idle_animation_str)
+                        for item in idle_list:
+                            item_str = str(item).strip()
+                            if '://' in item_str or item_str.startswith('data:'):
+                                return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含URL方案'}, status_code=400)
+                            if '..' in item_str:
+                                return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                            if not any(item_str.startswith(prefix) for prefix in allowed_animation_prefixes):
+                                return JSONResponse(content={'success': False, 'error': '待机动作路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [str(x).strip() for x in idle_list])
                 
                 logger.debug(f"已保存角色 {name} 的Live3D(VRM)模型 {vrm_model}")
             elif mmd_model:
@@ -534,9 +537,9 @@ async def update_catgirl_l2d(name: str, request: Request):
                 set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', mmd_model)
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', '')
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', None)
+                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [])
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)
-                
+
                 # 处理 MMD 动画
                 if 'mmd_animation' in data:
                     if mmd_animation is None or mmd_animation == '':
@@ -553,18 +556,21 @@ async def update_catgirl_l2d(name: str, request: Request):
                         set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', mmd_animation_str)
                 
                 if 'mmd_idle_animation' in data:
-                    if mmd_idle_animation is None or mmd_idle_animation == '':
-                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', '')
+                    if mmd_idle_animation is None or mmd_idle_animation == '' or mmd_idle_animation == []:
+                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [])
                     else:
-                        mmd_idle_str = str(mmd_idle_animation).strip()
-                        if '://' in mmd_idle_str or mmd_idle_str.startswith('data:'):
-                            return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含URL方案'}, status_code=400)
-                        if '..' in mmd_idle_str:
-                            return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                        # 向前兼容：接受 string（旧客户端）或 list（新客户端）
+                        mmd_idle_list = [mmd_idle_animation] if isinstance(mmd_idle_animation, str) else list(mmd_idle_animation)
                         allowed_mmd_anim_prefixes = ['/user_mmd/animation/', '/static/mmd/animation/']
-                        if not any(mmd_idle_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
-                            return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
-                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', mmd_idle_str)
+                        for item in mmd_idle_list:
+                            mmd_idle_str = str(item).strip()
+                            if '://' in mmd_idle_str or mmd_idle_str.startswith('data:'):
+                                return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含URL方案'}, status_code=400)
+                            if '..' in mmd_idle_str:
+                                return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                            if not any(mmd_idle_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
+                                return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [str(x).strip() for x in mmd_idle_list])
                 
                 logger.debug(f"已保存角色 {name} 的Live3D(MMD)模型 {mmd_model}")
         else:
@@ -573,7 +579,7 @@ async def update_catgirl_l2d(name: str, request: Request):
             set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)  # 清理 VRM 打光配置
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', '')
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', '')
+            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [])
             
             # 更新Live2D模型设置，同时保存item_id（如果有）
             normalized_live2d = str(live2d_model).strip().replace('\\', '/')

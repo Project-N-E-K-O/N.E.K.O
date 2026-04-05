@@ -247,7 +247,11 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         legacy_keys=("idleAnimation",),
     )
     if idle_animation:
-        changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", str(idle_animation))
+        # 向前兼容：旧版存的是 string，迁移为 list
+        if isinstance(idle_animation, str):
+            changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", [idle_animation])
+        elif isinstance(idle_animation, list):
+            changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", idle_animation)
 
     lighting = get_reserved(
         catgirl_data,
@@ -292,7 +296,11 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         legacy_keys=("mmd_idle_animation",),
     )
     if mmd_idle_animation:
-        changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", str(mmd_idle_animation))
+        # 向前兼容：旧版存的是 string，迁移为 list
+        if isinstance(mmd_idle_animation, str):
+            changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", [mmd_idle_animation])
+        elif isinstance(mmd_idle_animation, list):
+            changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", mmd_idle_animation)
 
     # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
     for legacy_key in (
@@ -352,9 +360,13 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     if vrm_animation is not None:
         result["vrm_animation"] = vrm_animation
 
-    idle_animation = get_reserved(result, "avatar", "vrm", "idle_animation", default="")
+    idle_animation = get_reserved(result, "avatar", "vrm", "idle_animation", default=[])
     if idle_animation:
-        result["idleAnimation"] = idle_animation
+        # 向前兼容：确保输出为 list
+        if isinstance(idle_animation, str):
+            result["idleAnimation"] = [idle_animation]
+        else:
+            result["idleAnimation"] = idle_animation
 
     lighting = get_reserved(result, "avatar", "vrm", "lighting", default=None)
     if isinstance(lighting, dict):
@@ -368,9 +380,13 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     if mmd_animation is not None:
         result["mmd_animation"] = mmd_animation
 
-    mmd_idle_animation = get_reserved(result, "avatar", "mmd", "idle_animation", default="")
+    mmd_idle_animation = get_reserved(result, "avatar", "mmd", "idle_animation", default=[])
     if mmd_idle_animation:
-        result["mmd_idle_animation"] = mmd_idle_animation
+        # 向前兼容：确保输出为 list
+        if isinstance(mmd_idle_animation, str):
+            result["mmd_idle_animation"] = [mmd_idle_animation]
+        else:
+            result["mmd_idle_animation"] = mmd_idle_animation
 
     touch_set = get_reserved(result, 'touch_set', default=None)
     if touch_set:
