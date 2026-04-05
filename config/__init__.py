@@ -253,6 +253,7 @@ DEFAULT_TTS_MODEL = "qwen3-omni-flash-realtime"   # 与Realtime对应的TTS模�
 CONFIG_FILES = [
     'characters.json',
     'core_config.json',
+    'tutorial_prompt_config.json',
     'user_preferences.json',
     'voice_storage.json',
     'workshop_config.json',
@@ -664,9 +665,17 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'claude': 'ASSIST_API_KEY_CLAUDE',
 }
 
+DEFAULT_TUTORIAL_PROMPT_CONFIG = {
+    'min_prompt_foreground_ms': 90 * 1000,
+    'later_cooldown_ms': 24 * 60 * 60 * 1000,
+    'failure_cooldown_ms': 2 * 60 * 60 * 1000,
+    'max_prompt_shows': 2,
+}
+
 DEFAULT_CONFIG_DATA = {
     'characters.json': DEFAULT_CHARACTERS_CONFIG,
     'core_config.json': DEFAULT_CORE_CONFIG,
+    'tutorial_prompt_config.json': DEFAULT_TUTORIAL_PROMPT_CONFIG,
     'user_preferences.json': DEFAULT_USER_PREFERENCES,
     'voice_storage.json': DEFAULT_VOICE_STORAGE,
 }
@@ -718,6 +727,7 @@ __all__ = [
     'get_lanlan_prompt',
     'is_default_prompt',
     'DEFAULT_CORE_CONFIG',
+    'DEFAULT_TUTORIAL_PROMPT_CONFIG',
     'DEFAULT_USER_PREFERENCES',
     'DEFAULT_VOICE_STORAGE',
     'DEFAULT_CONFIG_DATA',

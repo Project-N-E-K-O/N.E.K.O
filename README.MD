@@ -523,7 +523,7 @@ N.E.K.O/
 │   ├── openfang_adapter.py      # OpenFang 无头执行后端
 │   ├── task_executor.py         # 任务执行引擎
 │   └── 📁 cua/                  # Computer Use Agent 子系统
-├── 📁 config/                   # ⚙️ 配置管理模块
+├── 📁 config/                   # ⚙️ 配置管理模块 
 │   ├── api_providers.json       # API服务商配置
 │   ├── prompts_chara.py         # 角色提示词
 │   └── prompts_sys.py           # 系统提示词
@@ -555,6 +555,8 @@ N.E.K.O/
 ![Framework](assets/framework.drawio.svg)
 
 > 完整的开发者文档请访问 [project-neko.online](https://project-neko.online)
+
+> 主页新手引导提示的维护说明见 [docs/design/tutorial_prompt_maintenance.zh-CN.md](docs/design/tutorial_prompt_maintenance.zh-CN.md)
 
 ### 开发计划
 
