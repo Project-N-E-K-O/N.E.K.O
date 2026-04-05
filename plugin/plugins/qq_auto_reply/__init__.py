@@ -812,6 +812,13 @@ class QQAutoReplyPlugin(NekoPluginBase):
             return False
 
 
+    async def _invalidate_private_session(self, qq_number: str) -> None:
+        session_key = self._build_session_key(sender_id=qq_number, is_group=False)
+        user_data = self._user_sessions.pop(session_key, None)
+        session = user_data.get("session") if user_data else None
+        if session:
+            await session.close()
+
     @plugin_entry(
         id="add_trusted_user",
         name="添加信任用户",
@@ -837,13 +844,6 @@ class QQAutoReplyPlugin(NekoPluginBase):
             "required": ["qq_number"],
         },
     )
-    async def _invalidate_private_session(self, qq_number: str) -> None:
-        session_key = self._build_session_key(sender_id=qq_number, is_group=False)
-        user_data = self._user_sessions.pop(session_key, None)
-        session = user_data.get("session") if user_data else None
-        if session:
-            await session.close()
-
     async def add_trusted_user(self, qq_number: str, level: str = "trusted", nickname: str = "", **_):
         """添加信任用户并持久化到 store"""
         if not self.permission_mgr:
