@@ -3144,9 +3144,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     isVrmAnimationPlaying = false;
                     updateVRMAnimationPlayButtonIcon();
                     showStatus(t('live2d.vrmAnimation.animationStopped', '动作已停止'), 2000);
-                    // 恢复 idle 轮换
+                    // 恢复 idle 轮换 (空选择时回退内置 wait03)
                     const vrmIdleUrls = getSelectedIdleAnimations('vrm-idle-animation-multiselect');
-                    if (vrmIdleUrls.length > 0) startIdleRotation('vrm', vrmIdleUrls);
+                    startIdleRotation('vrm', vrmIdleUrls.length > 0 ? vrmIdleUrls : ['/static/vrm/animation/wait03.vrma']);
                 }
             } else {
                 // 当前未播放，暂停 idle 轮换并播放手动动作
@@ -3906,9 +3906,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 isMmdAnimationPlaying = false;
                 updateMMDAnimationPlayButtonIcon();
                 showStatus(t('live2d.mmdAnimation.stopped', 'VMD动画已停止'), 2000);
-                // 恢复 idle 轮换
+                // 恢复 idle 轮换 (空选择时回退内置 wait03)
                 const mmdIdleUrls = getSelectedIdleAnimations('mmd-idle-animation-multiselect');
-                if (mmdIdleUrls.length > 0) startIdleRotation('mmd', mmdIdleUrls);
+                startIdleRotation('mmd', mmdIdleUrls.length > 0 ? mmdIdleUrls : ['/static/mmd/animation/wait03.vmd']);
             } else {
                 stopIdleRotation('mmd');
                 window.mmdManager.playAnimation();
