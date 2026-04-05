@@ -362,11 +362,15 @@ def flatten_reserved(catgirl_data: dict) -> dict:
 
     idle_animation = get_reserved(result, "avatar", "vrm", "idle_animation", default=[])
     if idle_animation:
-        # 向前兼容：确保输出为 list
+        # 向前兼容：string → 保持 string；list → 取首元素
+        # idleAnimation (string): 供 vrm-init / vrm-manager 等运行时消费
+        # idleAnimations (list): 供 model_manager 多选 UI 消费
         if isinstance(idle_animation, str):
-            result["idleAnimation"] = [idle_animation]
-        else:
             result["idleAnimation"] = idle_animation
+            result["idleAnimations"] = [idle_animation]
+        else:
+            result["idleAnimation"] = idle_animation[0] if idle_animation else ""
+            result["idleAnimations"] = idle_animation
 
     lighting = get_reserved(result, "avatar", "vrm", "lighting", default=None)
     if isinstance(lighting, dict):
@@ -382,11 +386,14 @@ def flatten_reserved(catgirl_data: dict) -> dict:
 
     mmd_idle_animation = get_reserved(result, "avatar", "mmd", "idle_animation", default=[])
     if mmd_idle_animation:
-        # 向前兼容：确保输出为 list
+        # mmd_idle_animation (string): 供 mmd-init / app-interpage 等运行时消费
+        # mmd_idle_animations (list): 供 model_manager 多选 UI 消费
         if isinstance(mmd_idle_animation, str):
-            result["mmd_idle_animation"] = [mmd_idle_animation]
-        else:
             result["mmd_idle_animation"] = mmd_idle_animation
+            result["mmd_idle_animations"] = [mmd_idle_animation]
+        else:
+            result["mmd_idle_animation"] = mmd_idle_animation[0] if mmd_idle_animation else ""
+            result["mmd_idle_animations"] = mmd_idle_animation
 
     touch_set = get_reserved(result, 'touch_set', default=None)
     if touch_set:

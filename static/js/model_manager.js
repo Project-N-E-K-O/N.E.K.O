@@ -4631,7 +4631,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const data = await RequestHelper.fetchJson('/api/characters/');
             const charData = data['猫娘']?.[lanlanName];
-            let mmdIdleAnimation = charData?.mmd_idle_animation;
+            let mmdIdleAnimation = charData?.mmd_idle_animations || charData?.mmd_idle_animation;
 
             if (!mmdIdleAnimation) return;
             // 向前兼容：string → array
@@ -4987,7 +4987,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 加载待机动作选项并恢复保存的选择（多选）
             await loadIdleAnimationOptions();
-            let vrmIdleAnims = charData?.idleAnimation;
+            let vrmIdleAnims = charData?.idleAnimations || charData?.idleAnimation;
             if (vrmIdleAnims) {
                 // 向前兼容：string → array
                 if (typeof vrmIdleAnims === 'string') vrmIdleAnims = [vrmIdleAnims];
@@ -5002,7 +5002,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const isMmdCharacter = charData?.live3d_sub_type === 'mmd' || !!charData?.mmd;
             if (isMmdCharacter) {
                 await loadMmdIdleAnimationOptions();
-                let mmdIdleAnims = charData?.mmd_idle_animation;
+                let mmdIdleAnims = charData?.mmd_idle_animations || charData?.mmd_idle_animation;
                 if (mmdIdleAnims) {
                     // 向前兼容：string → array
                     if (typeof mmdIdleAnims === 'string') mmdIdleAnims = [mmdIdleAnims];
