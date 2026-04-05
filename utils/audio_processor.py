@@ -109,9 +109,10 @@ def _load_rnnoise_native():
 
         @staticmethod
         def process_mono_frame(state, frame):
-            if frame.dtype != np.int16:
-                frame = (frame * 32767).astype(np.int16)
-            frame = frame.astype(np.float32)
+            if frame.dtype == np.int16:
+                frame = frame.astype(np.float32)
+            else:
+                frame = (frame * 32767).astype(np.float32)
             n = len(frame)
             if n < frame_size:
                 frame = np.pad(frame, (0, frame_size - n))
@@ -145,6 +146,8 @@ class _LiteDenoiser:
     def __init__(self, rnnoise_lib):
         self._lib = rnnoise_lib
         self._state = rnnoise_lib.create()
+        if not self._state:
+            raise RuntimeError("rnnoise_create() returned NULL — native library failed to initialise")
 
     def process_frame(self, frame_int16: np.ndarray):
         """Process one mono 480-sample int16 frame.
@@ -154,13 +157,18 @@ class _LiteDenoiser:
         return self._lib.process_mono_frame(self._state, frame_int16)
 
     def reset(self):
-        self._lib.destroy(self._state)
-        self._state = self._lib.create()
+        if self._state:
+            self._lib.destroy(self._state)
+            self._state = None
+        new_state = self._lib.create()
+        if not new_state:
+            raise RuntimeError("rnnoise_create() returned NULL during reset")
+        self._state = new_state
 
     def __del__(self):
         lib = getattr(self, "_lib", None)
         state = getattr(self, "_state", None)
-        if lib is not None and state is not None:
+        if lib is not None and state:
             try:
                 lib.destroy(state)
             except Exception:

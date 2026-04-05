@@ -882,7 +882,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             const isNearModel = distance < HoverFadethreshold;
 
             // 静止时启动定时器，移出范围时清除（移动端无鼠标悬停，跳过）
-            const isMobileDevice = window.appUtils && window.appUtils.isMobile && window.appUtils.isMobile();
+            const isMobileDevice = (window.appUtils && typeof window.appUtils.isMobile === 'function' && window.appUtils.isMobile()) || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
             if (!isMobileDevice && this.isLocked && isNearModel) {
                 // 首次进入范围：设置标志并启动定时器
                 if (!this._hasEnteredHoverRange) {
