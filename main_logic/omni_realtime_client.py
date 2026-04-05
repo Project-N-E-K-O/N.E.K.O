@@ -830,10 +830,7 @@ class OmniRealtimeClient:
         # 检查是否已发生致命错误，如果是则直接返回
         if self._fatal_error_occurred:
             return
-        # Suppress mic input while proactive nudge is injecting audio
-        if self._proactive_injecting:
-            return
-        
+
         current_time = time.time()
         # 本地音量判定：用原始输入做 RMS，避免 VAD 延迟时误清 buffer
         raw_samples = np.frombuffer(audio_chunk, dtype=np.int16)
@@ -889,11 +886,15 @@ class OmniRealtimeClient:
                         self._client_vad_last_speech_time = current_time
                         self._client_vad_active = True
         
+        # Suppress mic → server during proactive nudge injection (VAD above still updates)
+        if self._proactive_injecting:
+            return
+
         # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音（见 _should_clear_audio_buffer_on_silence）
         if self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path):
             self._silence_reset_pending = False
             await self.clear_audio_buffer()
-        
+
         # Gemini uses different API
         if self._is_gemini:
             await self._stream_audio_gemini(audio_chunk)
