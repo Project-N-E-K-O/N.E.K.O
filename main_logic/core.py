@@ -2247,6 +2247,7 @@ class LLMSessionManager:
             elapsed=elapsed, name=self.lanlan_name, master=self.master_name,
             time_hint=time_hint, holiday_hint=holiday_hint,
         )
+        print(f"[trigger_greeting] instruction:\n{instruction}")
         logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", self.lanlan_name, gap_seconds, elapsed)
 
         async with self._proactive_write_lock:

@@ -258,6 +258,9 @@
             return;
         }
 
+        // 新连接重置模型就绪标志，等待模型重新加载
+        S._modelReady = false;
+
         var protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
         var wsUrl = protocol + '://' + window.location.host + '/ws/' + currentLanlanName;
         console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
@@ -334,10 +337,11 @@
             }, C.HEARTBEAT_INTERVAL);
             console.log(window.t('console.heartbeatStarted'));
 
-            // ── 首次连接 / 切换角色：暂存 greeting 意图，等模型加载完成后发送 ──
+            // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
             S._greetingCheckPending = true;
             S._greetingCheckIsSwitch = !!S._pendingGreetingSwitch;
             S._pendingGreetingSwitch = false;
+            _sendGreetingCheckIfReady();
         };
 
         // ---- onmessage ----
@@ -1475,9 +1479,10 @@
     window.clearPendingAssistantTurnStart = clearPendingAssistantTurnStart;
 
     // ========================  Greeting check (after model loaded)  ========================
-    // 等模型加载完成后再发送 greeting_check，避免与 TTS/lipsync/模型载入竞态
-    function _sendGreetingCheckIfPending() {
-        if (!S._greetingCheckPending) return;
+    // 需要 WS 已连接 AND 模型已加载 两个条件同时满足才发送，
+    // 无论哪个先就绪都由后到的那个触发。
+    function _sendGreetingCheckIfReady() {
+        if (!S._greetingCheckPending || !S._modelReady) return;
         S._greetingCheckPending = false;
         try {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -1486,11 +1491,15 @@
                     is_switch: !!S._greetingCheckIsSwitch,
                     language: (window.i18next && window.i18next.language) || ''
                 }));
-                console.log('[greeting_check] sent after model loaded, is_switch=' + !!S._greetingCheckIsSwitch);
+                console.log('[greeting_check] sent, is_switch=' + !!S._greetingCheckIsSwitch);
             }
         } catch (e) {
             console.warn('[greeting_check] send failed:', e);
         }
+    }
+    function _onModelReady() {
+        S._modelReady = true;
+        _sendGreetingCheckIfReady();
     }
     // Live2D
     var _origOnModelLoaded = null;
@@ -1502,7 +1511,7 @@
         var prevCb = _origOnModelLoaded;
         var hookedFn = function () {
             if (prevCb) prevCb.apply(this, arguments);
-            _sendGreetingCheckIfPending();
+            _onModelReady();
         };
         hookedFn._greetingHooked = true;
         if (window.live2dManager) window.live2dManager.onModelLoaded = hookedFn;
@@ -1511,8 +1520,8 @@
     if (window.live2dManager) _hookLive2dModelLoaded();
     else window.addEventListener('DOMContentLoaded', function () { setTimeout(_hookLive2dModelLoaded, 500); });
     // VRM / MMD
-    window.addEventListener('vrm-model-loaded', _sendGreetingCheckIfPending);
-    window.addEventListener('mmd-model-loaded', _sendGreetingCheckIfPending);
+    window.addEventListener('vrm-model-loaded', _onModelReady);
+    window.addEventListener('mmd-model-loaded', _onModelReady);
 
     // ========================  Export module  ========================
     window.appWebSocket = mod;
