@@ -2195,26 +2195,10 @@ class LLMSessionManager:
         if not template:
             return
 
-        elapsed = _format_elapsed(_lang, gap_seconds)
-        time_hint = get_time_of_day_hint(_lang).format(master=self.master_name)
-
-        # Holiday / weekend hint (budget-aware)
-        try:
-            holiday_hint_text = await get_holiday_or_weekend_hint(_lang, self.lanlan_name)
-        except Exception as e:
-            logger.debug("[%s] trigger_greeting: holiday hint failed: %s", self.lanlan_name, e)
-            holiday_hint_text = None
-        holiday_hint = (holiday_hint_text + '\n') if holiday_hint_text else ''
-
-        instruction = template.format(
-            elapsed=elapsed, name=self.lanlan_name, master=self.master_name,
-            time_hint=time_hint, holiday_hint=holiday_hint,
-        )
-        logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", self.lanlan_name, gap_seconds, elapsed)
-
-        # 如果已有 text session 且空闲，直接投递
+        # 先确认投递通道可用，再消费节日预算（避免 session 拉起失败白扣次数）
+        # 如果已有 text session 且空闲，直接走投递逻辑
         if isinstance(self.session, OmniOfflineClient) and not getattr(self.session, "_is_responding", False):
-            pass  # 直接走下面的投递逻辑
+            pass
         else:
             # 没有 session 或不是 text session → 主动拉起
             ws = self.websocket
@@ -2231,6 +2215,23 @@ class LLMSessionManager:
         if not isinstance(self.session, OmniOfflineClient):
             logger.warning("[%s] trigger_greeting: session is not text mode after start, aborting", self.lanlan_name)
             return
+
+        # 投递通道已就绪，构建 instruction（此时才消费节日预算）
+        elapsed = _format_elapsed(_lang, gap_seconds)
+        time_hint = get_time_of_day_hint(_lang).format(master=self.master_name)
+
+        try:
+            holiday_hint_text = await get_holiday_or_weekend_hint(_lang, self.lanlan_name)
+        except Exception as e:
+            logger.debug("[%s] trigger_greeting: holiday hint failed: %s", self.lanlan_name, e)
+            holiday_hint_text = None
+        holiday_hint = (holiday_hint_text + '\n') if holiday_hint_text else ''
+
+        instruction = template.format(
+            elapsed=elapsed, name=self.lanlan_name, master=self.master_name,
+            time_hint=time_hint, holiday_hint=holiday_hint,
+        )
+        logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", self.lanlan_name, gap_seconds, elapsed)
 
         async with self._proactive_write_lock:
             async with self.lock:
