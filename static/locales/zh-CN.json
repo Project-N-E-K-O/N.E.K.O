@@ -566,7 +566,9 @@
         "volumeHintDetecting": "正在检测麦克风输入...",
         "volumeHintNoSound": "检测不到声音，请检查麦克风",
         "volumeHintLow": "音量较低，建议调高增益",
-        "volumeHintOk": "麦克风工作正常"
+        "volumeHintOk": "麦克风工作正常",
+        "noiseReduction": "降噪",
+        "noiseReductionHint": "RNNoise AI 降噪，让语音更清晰"
     },
     "speaker": {
         "volumeLabel": "扬声器音量",
@@ -663,7 +665,8 @@
         },
         "coreProviderNames": {
             "free": "免费版（猫娘专属福利，支持联网搜索）",
-            "qwen": "Qwen-Omni（阿里，速度最快，推荐⭐）",
+            "qwen": "Qwen-Omni（阿里百炼，速度最快，推荐⭐）",
+            "qwen_intl": "Qwen-Omni（阿里国际版）",
             "openai": "GPT-Realtime（OpenAI）",
             "glm": "GLM-realtime（智谱）",
             "step": "Step-2-Audio（阶跃星辰）",
@@ -671,7 +674,8 @@
         },
         "assistProviderNames": {
             "free": "免费版（猫娘专属福利）",
-            "qwen": "阿里（Qwen，功能最全，推荐⭐）",
+            "qwen": "阿里百炼（Qwen，功能最全，推荐⭐）",
+            "qwen_intl": "阿里国际版（Qwen）",
             "openai": "OpenAI (ChatGPT)",
             "glm": "智谱 (GLM)",
             "step": "阶跃星辰 (StepFun)",
@@ -700,7 +704,8 @@
         "customModelProviderFollowAssist": "跟随辅助API",
         "customModelProviderCustom": "自定义",
         "keyBook": {
-            "qwen": "阿里（Qwen）",
+            "qwen": "阿里百炼（Qwen）",
+            "qwen_intl": "阿里国际版（Qwen）",
             "openai": "OpenAI",
             "deepseek": "DeepSeek",
             "glm": "智谱（GLM）",

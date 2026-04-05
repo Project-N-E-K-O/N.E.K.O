@@ -31,6 +31,8 @@ critical_packages = [
     'langchain_core',
     'langchain_openai',
     'browser_use',       # browser-use agent 需要 .md 模板文件
+    'pyrnnoise',         # 音频降噪，含 rnnoise.dll native 库
+    'bilibili_api',      # B站弹幕/视频，含 data/*.json 资源文件
 ]
 
 for pkg in critical_packages:

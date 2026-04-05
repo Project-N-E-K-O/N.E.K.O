@@ -566,7 +566,9 @@
         "volumeHintDetecting": "マイク入力を検出中...",
         "volumeHintNoSound": "音声が検出されません。マイクを確認してください",
         "volumeHintLow": "音量が低いです。ゲインを上げてみてください",
-        "volumeHintOk": "マイクは正常に動作しています"
+        "volumeHintOk": "マイクは正常に動作しています",
+        "noiseReduction": "ノイズリダクション",
+        "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに"
     },
     "speaker": {
         "volumeLabel": "スピーカー音量",
@@ -663,7 +665,8 @@
         },
         "coreProviderNames": {
             "free": "無料版（猫娘特典、Web検索対応）",
-            "qwen": "Qwen-Omni（Alibaba、最速、推奨）",
+            "qwen": "Qwen-Omni（Alibaba百炼、最速、推奨）",
+            "qwen_intl": "Qwen-Omni（Alibaba国際版）",
             "openai": "GPT-Realtime（OpenAI）",
             "glm": "GLM-realtime（GLM）",
             "step": "Step-2-Audio（StepFun）",
@@ -671,7 +674,8 @@
         },
         "assistProviderNames": {
             "free": "無料版（猫娘特典）",
-            "qwen": "Alibaba（Qwen、全機能対応、推奨）",
+            "qwen": "Alibaba百炼（Qwen、全機能対応、推奨）",
+            "qwen_intl": "Alibaba国際版（Qwen）",
             "openai": "OpenAI（ChatGPT）",
             "glm": "GLM",
             "step": "StepFun",
@@ -700,7 +704,8 @@
         "customModelProviderFollowAssist": "アシストAPIに従う",
         "customModelProviderCustom": "カスタム",
         "keyBook": {
-            "qwen": "Alibaba（Qwen）",
+            "qwen": "Alibaba百炼（Qwen）",
+            "qwen_intl": "Alibaba国際版（Qwen）",
             "openai": "OpenAI",
             "deepseek": "DeepSeek",
             "glm": "Zhipu（GLM）",
