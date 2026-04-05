@@ -600,7 +600,11 @@
                 token: shortPromptToken(data && data.prompt_token),
             });
             if (data && data.should_prompt) {
-                await maybeShowPrompt(data.prompt_token);
+                try {
+                    await maybeShowPrompt(data.prompt_token);
+                } catch (error) {
+                    console.warn('[TutorialPrompt] prompt display failed:', error);
+                }
             }
         } catch (error) {
             state.pendingForegroundMs += foregroundDelta;

@@ -591,8 +591,8 @@
     };
 
     window.showDecisionPrompt = function(config = {}) {
-        return new Promise((resolve) => {
-            _decisionPromptQueue.push({ config, resolve });
+        return new Promise((resolve, reject) => {
+            _decisionPromptQueue.push({ config, resolve, reject });
 
             const drainDecisionPromptQueue = () => {
                 if (_decisionPromptActive || _decisionPromptQueue.length === 0) {
@@ -601,11 +601,17 @@
 
                 const nextPrompt = _decisionPromptQueue.shift();
                 _decisionPromptActive = true;
-                createModal(Object.assign({}, nextPrompt.config, { type: 'decision' })).then((value) => {
-                    nextPrompt.resolve(value);
-                    _decisionPromptActive = false;
-                    drainDecisionPromptQueue();
-                });
+                createModal(Object.assign({}, nextPrompt.config, { type: 'decision' }))
+                    .then((value) => {
+                        nextPrompt.resolve(value);
+                    })
+                    .catch((error) => {
+                        nextPrompt.reject(error);
+                    })
+                    .finally(() => {
+                        _decisionPromptActive = false;
+                        drainDecisionPromptQueue();
+                    });
             };
 
             drainDecisionPromptQueue();

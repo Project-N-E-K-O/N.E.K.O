@@ -14,6 +14,7 @@ from utils.tutorial_prompt_state import (
     record_tutorial_prompt_decision,
     record_tutorial_started,
     record_tutorial_completed,
+    save_tutorial_prompt_state,
 )
 
 
@@ -163,6 +164,28 @@ def test_manual_home_tutorial_view_blocks_prompt(tmp_path):
     assert response["prompt_reason"] == "tutorial_started"
     assert response["state"]["manual_home_tutorial_viewed"] is True
     assert response["state"]["manual_home_tutorial_viewed_at"] == 2_000
+
+
+@pytest.mark.unit
+def test_manual_home_tutorial_view_heartbeat_clears_stale_prompt_start_flag(tmp_path):
+    config = DummyConfig(tmp_path)
+    stale_state = load_tutorial_prompt_state(config)
+    stale_state["started_via_prompt"] = True
+    stale_state["accepted_at"] = 1_000
+    stale_state["started_at"] = 1_000
+    stale_state["status"] = "started"
+    save_tutorial_prompt_state(stale_state, config)
+
+    response = process_tutorial_prompt_heartbeat(
+        {
+            "manual_home_tutorial_viewed": True,
+        },
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    assert response["state"]["started_via_prompt"] is False
+    assert response["state"]["manual_home_tutorial_viewed"] is True
 
 
 @pytest.mark.unit
@@ -332,6 +355,38 @@ def test_prompt_started_event_backfills_accept_and_started_once(tmp_path):
 
 
 @pytest.mark.unit
+def test_manual_started_event_clears_stale_prompt_start_flag(tmp_path):
+    config = DummyConfig(tmp_path)
+    heartbeat = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    record_tutorial_started(
+        {
+            "page": "home",
+            "source": "idle_prompt",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    started = record_tutorial_started(
+        {"page": "home", "source": "manual"},
+        config_manager=config,
+        now_ms=3_000,
+    )
+
+    state = load_tutorial_prompt_state(config)
+    assert state["started_via_prompt"] is False
+    assert state["manual_home_tutorial_viewed"] is True
+    assert state["active_tutorial_run_token"] == started["tutorial_run_token"]
+    assert state["active_tutorial_run_source"] == "manual"
+
+
+@pytest.mark.unit
 def test_completed_event_persists_completion_with_valid_run_token(tmp_path):
     config = DummyConfig(tmp_path)
     started = record_tutorial_started(
@@ -359,6 +414,36 @@ def test_completed_event_persists_completion_with_valid_run_token(tmp_path):
     assert state["completed_at"] == 4_000
     assert state["home_tutorial_completed"] is True
     assert state["active_tutorial_run_token"] == ""
+
+
+@pytest.mark.unit
+def test_manual_completed_event_clears_stale_prompt_start_flag(tmp_path):
+    config = DummyConfig(tmp_path)
+    started = record_tutorial_started(
+        {"page": "home", "source": "manual"},
+        config_manager=config,
+        now_ms=3_000,
+    )
+
+    stale_state = load_tutorial_prompt_state(config)
+    stale_state["started_via_prompt"] = True
+    stale_state["accepted_at"] = 2_000
+    save_tutorial_prompt_state(stale_state, config)
+
+    record_tutorial_completed(
+        {
+            "page": "home",
+            "source": "manual",
+            "tutorial_run_token": started["tutorial_run_token"],
+        },
+        config_manager=config,
+        now_ms=4_000,
+    )
+
+    state = load_tutorial_prompt_state(config)
+    assert state["started_via_prompt"] is False
+    assert state["home_tutorial_completed"] is True
+    assert state["funnel_counts"]["completed"] == 0
 
 
 @pytest.mark.unit
@@ -429,6 +514,32 @@ def test_completed_home_tutorial_suppresses_future_prompts(tmp_path):
     state = load_tutorial_prompt_state(config)
     assert state["status"] == "completed"
     assert state["completed_at"] == 8_000
+
+
+@pytest.mark.unit
+def test_manual_completion_heartbeat_clears_stale_prompt_start_flag(tmp_path):
+    config = DummyConfig(tmp_path)
+    stale_state = load_tutorial_prompt_state(config)
+    stale_state["started_via_prompt"] = True
+    stale_state["accepted_at"] = 1_000
+    stale_state["started_at"] = 1_000
+    stale_state["status"] = "started"
+    stale_state["manual_home_tutorial_viewed"] = True
+    stale_state["manual_home_tutorial_viewed_at"] = 1_000
+    save_tutorial_prompt_state(stale_state, config)
+
+    response = process_tutorial_prompt_heartbeat(
+        {
+            "home_tutorial_completed": True,
+            "manual_home_tutorial_viewed": True,
+        },
+        config_manager=config,
+        now_ms=8_000,
+    )
+
+    assert response["state"]["started_via_prompt"] is False
+    assert response["state"]["funnel_counts"]["completed"] == 0
+    assert response["state"]["home_tutorial_completed"] is True
 
 
 @pytest.mark.unit
@@ -785,6 +896,27 @@ def test_app_start_only_token_usage_does_not_mark_existing_user(tmp_path):
             }
         ],
         "last_saved": "",
+    }), encoding="utf-8")
+
+    response = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    assert response["should_prompt"] is True
+    assert response["state"]["user_cohort"] == "new"
+    assert response["state"]["cohort_reason"] == "no_prior_usage"
+
+
+@pytest.mark.unit
+def test_malformed_token_usage_collections_do_not_crash_or_mark_existing_user(tmp_path):
+    config = DummyConfig(tmp_path)
+    token_usage_path = config.config_dir / "token_usage.json"
+    token_usage_path.write_text(json.dumps({
+        "version": 1,
+        "daily_stats": "bad",
+        "recent_records": {"unexpected": True},
     }), encoding="utf-8")
 
     response = process_tutorial_prompt_heartbeat(

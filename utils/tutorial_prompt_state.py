@@ -476,6 +476,17 @@ def _clear_tutorial_run_token(state: dict[str, Any]) -> bool:
     return changed
 
 
+def _clear_started_via_prompt_state(state: dict[str, Any]) -> bool:
+    changed = False
+    if state.get("started_via_prompt"):
+        state["started_via_prompt"] = False
+        changed = True
+    if "started_via_prompt_at" in state and _clamp_int(state.get("started_via_prompt_at")) != 0:
+        state["started_via_prompt_at"] = 0
+        changed = True
+    return changed
+
+
 def _ensure_tutorial_run_token(
     state: dict[str, Any],
     *,
@@ -621,7 +632,11 @@ def _token_usage_indicates_existing_user(config_manager=None) -> bool:
     if not isinstance(data, dict):
         return False
 
-    for day_stats in (data.get("daily_stats") or {}).values():
+    daily_stats = data.get("daily_stats")
+    if not isinstance(daily_stats, dict):
+        daily_stats = {}
+
+    for day_stats in daily_stats.values():
         if not isinstance(day_stats, dict):
             continue
         if any(_clamp_int(day_stats.get(key)) > 0 for key in (
@@ -649,7 +664,11 @@ def _token_usage_indicates_existing_user(config_manager=None) -> bool:
             )):
                 return True
 
-    for record in data.get("recent_records") or []:
+    recent_records = data.get("recent_records")
+    if not isinstance(recent_records, list):
+        recent_records = []
+
+    for record in recent_records:
         if not isinstance(record, dict):
             continue
         if _clean_str(record.get("type"), limit=64) != "app_start":
@@ -788,12 +807,15 @@ def process_tutorial_prompt_heartbeat(
             state["voice_sessions"] += voice_sessions_delta
             changed = True
         if manual_home_tutorial_viewed and not state["manual_home_tutorial_viewed"]:
+            changed |= _clear_started_via_prompt_state(state)
             state["manual_home_tutorial_viewed"] = True
             if state["manual_home_tutorial_viewed_at"] <= 0:
                 state["manual_home_tutorial_viewed_at"] = now_ms
             changed = True
             changed |= _apply_started_state(state, now_ms)
         if home_tutorial_completed and not state["home_tutorial_completed"]:
+            if manual_home_tutorial_viewed or state["manual_home_tutorial_viewed"]:
+                changed |= _clear_started_via_prompt_state(state)
             state["home_tutorial_completed"] = True
             changed = True
             changed |= _apply_completed_state(state, now_ms)
@@ -987,6 +1009,7 @@ def record_tutorial_started(
                 state["started_via_prompt"] = True
                 changed = True
         else:
+            changed |= _clear_started_via_prompt_state(state)
             if not state["manual_home_tutorial_viewed"]:
                 state["manual_home_tutorial_viewed"] = True
                 changed = True
@@ -1062,6 +1085,7 @@ def record_tutorial_completed(
                 state["started_via_prompt"] = True
                 changed = True
         else:
+            changed |= _clear_started_via_prompt_state(state)
             if not state["manual_home_tutorial_viewed"]:
                 state["manual_home_tutorial_viewed"] = True
                 changed = True
