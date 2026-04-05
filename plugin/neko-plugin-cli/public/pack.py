@@ -200,56 +200,17 @@ class PluginPacker:
         }
 
     def write_manifest(self, source: PluginSource, paths: PackPaths) -> None:
-        created_at = _utc_now_iso()
         lines = [
             f'schema_version = "{_SCHEMA_VERSION}"',
             'package_type = "plugin"',
             "",
             f'id = "{_escape_string(source.plugin_id)}"',
-            f'name = "{_escape_string(source.name)}"',
+            f'package_name = "{_escape_string(source.name)}"',
             f'version = "{_escape_string(source.version)}"',
-            f'primary_plugin_id = "{_escape_string(source.plugin_id)}"',
-            f'created_at = "{created_at}"',
         ]
 
         if source.description:
-            lines.append(f'description = "{_escape_string(source.description)}"')
-
-        lines.extend(
-            [
-                "",
-                "[payload]",
-                'plugins_dir = "payload/plugins"',
-                'profiles_dir = "payload/profiles"',
-                "",
-                "[plugin]",
-                f'id = "{_escape_string(source.plugin_id)}"',
-                f'name = "{_escape_string(source.name)}"',
-                f'version = "{_escape_string(source.version)}"',
-                f'type = "{_escape_string(source.package_type)}"',
-            ]
-        )
-
-        if source.entry_point:
-            lines.append(f'entry = "{_escape_string(source.entry_point)}"')
-        if source.description:
-            lines.append(f'description = "{_escape_string(source.description)}"')
-
-        if source.author_name or source.author_email:
-            lines.extend(["", "[plugin.author]"])
-            if source.author_name:
-                lines.append(f'name = "{_escape_string(source.author_name)}"')
-            if source.author_email:
-                lines.append(f'email = "{_escape_string(source.author_email)}"')
-
-        if source.sdk_supported or source.sdk_recommended or source.sdk_untested:
-            lines.extend(["", "[plugin.sdk]"])
-            if source.sdk_recommended:
-                lines.append(f'recommended = "{_escape_string(source.sdk_recommended)}"')
-            if source.sdk_supported:
-                lines.append(f'supported = "{_escape_string(source.sdk_supported)}"')
-            if source.sdk_untested:
-                lines.append(f'untested = "{_escape_string(source.sdk_untested)}"')
+            lines.append(f'package_description = "{_escape_string(source.description)}"')
 
         lines.append("")
         content = "\n".join(lines)
@@ -268,24 +229,10 @@ class PluginPacker:
                 "[payload]",
                 'hash_algorithm = "sha256"',
                 f'hash = "{payload.payload_hash}"',
-                "plugin_count = 1",
-                f"profile_count = {payload.profile_file_count}",
-                f"file_count = {payload.packaged_file_count}",
-                "",
-                "[build]",
-                f'tool = "{_TOOL_NAME}"',
-                f'tool_version = "{_TOOL_VERSION}"',
-                f'built_at = "{_utc_now_iso()}"',
                 "",
                 "[source]",
                 'kind = "local"',
                 f'path = "{_escape_string(str(source.plugin_dir))}"',
-                "",
-                "[pack]",
-                f"include_rule_count = {len(rules.include)}",
-                f"exclude_rule_count = {len(rules.exclude)}",
-                f"exclude_dir_rule_count = {len(rules.exclude_dirs)}",
-                f"exclude_file_rule_count = {len(rules.exclude_files)}",
                 "",
             ]
         )

@@ -51,8 +51,8 @@ Responsibilities:
 
 - identify package type
 - describe package identity and version
-- define payload locations
-- declare included plugins for bundle packages
+- provide lightweight package-level display metadata
+- declare included plugins for bundle packages when needed
 
 This file should stay small and stable.
 
@@ -63,10 +63,7 @@ Supplementary package metadata. This file is recommended.
 Responsibilities:
 
 - payload hash
-- build information
 - source information
-- package statistics
-- optional tags or hints
 
 This file must not carry core loading rules that are required for basic extraction.
 
@@ -132,7 +129,6 @@ Rules:
 - file extension should be `.neko-plugin`
 - `manifest.toml` must declare `package_type = "plugin"`
 - `payload/plugins/` must contain exactly one plugin directory
-- `primary_plugin_id` must be present in `manifest.toml`
 
 ### `.neko-bundle`
 
@@ -152,13 +148,9 @@ schema_version = "1.0"
 package_type = "plugin" # or "bundle"
 
 id = "qq_auto_reply"
-name = "QQ 自动回复"
+package_name = "QQ 自动回复"
 version = "0.2.0"
-created_at = "2026-04-05T12:00:00Z"
-
-[payload]
-plugins_dir = "payload/plugins"
-profiles_dir = "payload/profiles"
+package_description = "读取 QQ 消息并根据权限自动回复。"
 ```
 
 ### Single Plugin Package Example
@@ -168,14 +160,9 @@ schema_version = "1.0"
 package_type = "plugin"
 
 id = "qq_auto_reply"
-name = "QQ 自动回复"
+package_name = "QQ 自动回复"
 version = "0.2.0"
-primary_plugin_id = "qq_auto_reply"
-created_at = "2026-04-05T12:00:00Z"
-
-[payload]
-plugins_dir = "payload/plugins"
-profiles_dir = "payload/profiles"
+package_description = "读取 QQ 消息并根据权限自动回复。"
 ```
 
 ### Bundle Package Example
@@ -185,14 +172,9 @@ schema_version = "1.0"
 package_type = "bundle"
 
 id = "streaming_suite"
-name = "Streaming Suite"
+package_name = "Streaming Suite"
 version = "1.0.0"
-default_profile = "default"
-created_at = "2026-04-05T12:00:00Z"
-
-[payload]
-plugins_dir = "payload/plugins"
-profiles_dir = "payload/profiles"
+package_description = "适合直播场景的插件整合包。"
 
 [[plugins]]
 id = "qq_auto_reply"
@@ -211,12 +193,6 @@ Suggested fields:
 [payload]
 hash_algorithm = "sha256"
 hash = "..."
-plugin_count = 1
-profile_count = 1
-
-[build]
-tool = "neko-plugin-cli"
-tool_version = "0.1.0"
 
 [source]
 kind = "local"
@@ -227,6 +203,7 @@ Notes:
 
 - `payload.hash` should be computed over normalized `payload/` contents, not over the entire zip file
 - metadata is allowed to evolve more freely than manifest
+- `package_name` and `package_description` are package summary fields, not a replacement for the plugin's own `plugin.toml`
 
 ## `sign.toml` Schema
 
@@ -258,10 +235,8 @@ Minimal validation:
 Recommended validation:
 
 1. `metadata.toml` exists
-2. `payload.profiles_dir` exists when profiles are declared
-3. `primary_plugin_id` matches the packaged plugin directory name
-4. bundle `[[plugins]]` entries match packaged plugin directory names
-5. `metadata.payload.hash` matches computed payload hash
+2. bundle `[[plugins]]` entries match packaged plugin directory names
+3. `metadata.payload.hash` matches computed payload hash
 
 Optional trust validation:
 
