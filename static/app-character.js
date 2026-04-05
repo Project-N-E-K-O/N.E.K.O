@@ -689,6 +689,11 @@
                                 window.vrmManager.bottomLight.intensity = lighting.bottom ?? defaultLighting.bottom;
                             }
 
+                            // 应用描边粗细设置
+                            if (lighting.outlineWidthScale !== undefined && typeof applyVRMOutlineWidth === 'function') {
+                                applyVRMOutlineWidth(lighting.outlineWidthScale, window.vrmManager);
+                            }
+
                             // 强制渲染一次，确保光照立即生效
                             if (window.vrmManager.renderer && window.vrmManager.scene && window.vrmManager.camera) {
                                 window.vrmManager.renderer.render(window.vrmManager.scene, window.vrmManager.camera);

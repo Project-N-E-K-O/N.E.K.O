@@ -283,19 +283,12 @@ class OmniRealtimeClient:
         # Fatal error detection - 检测到致命错误后立即中断
         self._fatal_error_occurred = False  # 致命错误标志
 
-    def _fire_task(self, coro):
-        """Create a background task with GC protection."""
-        task = asyncio.create_task(coro)
-        self._bg_tasks.add(task)
-        task.add_done_callback(self._bg_tasks.discard)
-        return task
-        
         # Interruption state - suppress output after user interruption until next response
         self._interrupted = False  # 打断状态标志，防止重复消息块
-        
+
         # Native image input rate limiting
         self._last_native_image_time = 0.0  # 上次原生图片输入时间戳
-        
+
         # Unified VAD for image throttling (priority: server VAD > RNNoise > RMS)
         # All native-image paths use _client_vad_active to adjust send rate
         self._client_vad_active = False  # 语音活动检测（统一标志）
@@ -305,20 +298,20 @@ class OmniRealtimeClient:
         self._speech_detect_start = 0.0  # RNNoise 连续检测到语音的起始时间
         self._speech_sustain_threshold = 0.5  # 需持续 500ms 才算真正说话（防噪音误触）
         self._rnnoise_vad_active = False  # RNNoise VAD 是否正在运行（48kHz + denoiser ok）
-        
+
         # 防止log刷屏机制（当websocket关闭后）
         self._last_ws_none_warning_time = 0.0  # 上次websocket为None警告的时间戳
         self._ws_none_warning_interval = 5.0  # websocket为None警告的最小间隔（秒）
-        
+
         # Image processing lock
         self._image_lock = asyncio.Lock()
-        
+
         # Audio processing lock to ensure sequential processing in thread pool
         self._audio_processing_lock = asyncio.Lock()
-        
+
         # Gemini Live API specific attributes
         self._is_gemini = self._api_type.lower() == 'gemini'
-        
+
         # Whether this API returns server-side VAD events (speech_started/speech_stopped)
         # Gemini (direct) and lanlan.app+free (Gemini proxy) do NOT have server VAD
         self._has_server_vad = not self._is_gemini and not (
@@ -337,6 +330,13 @@ class OmniRealtimeClient:
         self._gemini_context_manager = None  # For proper cleanup
         self._gemini_current_transcript = ""  # Current response transcript for Gemini
         self._gemini_user_transcript = ""  # Accumulated user input transcript
+
+    def _fire_task(self, coro):
+        """Create a background task with GC protection."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """
