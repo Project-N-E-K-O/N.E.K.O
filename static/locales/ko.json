@@ -566,7 +566,9 @@
         "volumeHintDetecting": "마이크 입력 감지 중...",
         "volumeHintNoSound": "소리가 감지되지 않습니다. 마이크를 확인하세요.",
         "volumeHintLow": "볼륨이 낮습니다. 게인을 높여보세요.",
-        "volumeHintOk": "마이크가 제대로 작동함"
+        "volumeHintOk": "마이크가 제대로 작동함",
+        "noiseReduction": "노이즈 리덕션",
+        "noiseReductionHint": "RNNoise AI 노이즈 리덕션으로 더 선명한 음성"
     },
     "speaker": {
         "volumeLabel": "스피커 볼륨",
@@ -663,7 +665,8 @@
         },
         "coreProviderNames": {
             "free": "무료 버전(N.E.K.O. 독점 혜택, 웹 검색 지원)",
-            "qwen": "Qwen-Omni(Alibaba, 가장 빠른 속도, 권장)",
+            "qwen": "Qwen-Omni(Alibaba 백련, 가장 빠른 속도, 권장)",
+            "qwen_intl": "Qwen-Omni(Alibaba 국제판)",
             "openai": "GPT-실시간(OpenAI)",
             "glm": "GLM-실시간(GLM)",
             "step": "2단계 오디오(StepFun)",
@@ -671,7 +674,8 @@
         },
         "assistProviderNames": {
             "free": "무료 버전(N.E.K.O. 독점 혜택)",
-            "qwen": "Alibaba(Qwen, 가장 완벽한 기능, 권장)",
+            "qwen": "Alibaba 백련(Qwen, 가장 완벽한 기능, 권장)",
+            "qwen_intl": "Alibaba 국제판(Qwen)",
             "openai": "OpenAI(ChatGPT)",
             "glm": "GLM",
             "step": "스텝펀",
@@ -700,7 +704,8 @@
         "customModelProviderFollowAssist": "보조 API 따르기",
         "customModelProviderCustom": "사용자 정의",
         "keyBook": {
-            "qwen": "Alibaba(Qwen)",
+            "qwen": "Alibaba 백련(Qwen)",
+            "qwen_intl": "Alibaba 국제판(Qwen)",
             "openai": "OpenAI",
             "deepseek": "DeepSeek",
             "glm": "Zhipu(GLM)",
