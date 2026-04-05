@@ -16,6 +16,8 @@ import asyncio
 import copy
 import base64
 import hashlib
+import struct
+import zlib
 from datetime import datetime
 from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse, Response
@@ -53,6 +55,27 @@ logger = get_module_logger(__name__, "Main")
 
 
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
+
+
+def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
+    """将 ZIP 数据嵌入 PNG 的 ancillary private chunk（neKo 块），插在 IEND 之前。
+
+    生成的文件仍是合法 PNG，任何图片查看器 / Electron 都可以正常预览。
+    """
+    # PNG IEND 块固定 12 字节: 00 00 00 00  49 45 4E 44  AE 42 60 82
+    if len(png_data) < 12 or png_data[-12:-4] != b'\x00\x00\x00\x00IEND':
+        raise ValueError("Invalid PNG: IEND chunk not found at end of file")
+
+    iend = png_data[-12:]
+    before_iend = png_data[:-12]
+
+    # 构建 neKo 块: length(4B, big-endian) + type(4B) + data + CRC32(4B)
+    chunk_type = b'neKo'
+    chunk_length = struct.pack('>I', len(zip_data))
+    chunk_crc = struct.pack('>I', zlib.crc32(chunk_type + zip_data) & 0xFFFFFFFF)
+
+    neko_chunk = chunk_length + chunk_type + zip_data + chunk_crc
+    return before_iend + neko_chunk + iend
 
 
 def _profile_name_units(name: str) -> int:
@@ -3165,20 +3188,14 @@ async def export_catgirl_card(name: str):
             png_path = temp_path / 'character_card.png'
             img.save(png_path, 'PNG')
 
-            # 5. 将压缩包数据拼接到PNG图片
-            # 使用PNG的尾部追加数据的方式（类似某些图片隐写技术）
+            # 5. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
             with open(png_path, 'rb') as f:
                 png_data = f.read()
 
             with open(zip_path, 'rb') as f:
                 zip_data = f.read()
 
-            # 组合数据：PNG数据 + ZIP数据 + 8字节ZIP大小（用于解析时定位）
-            combined_data = png_data + zip_data + len(zip_data).to_bytes(8, 'little')
-
-            # 添加标记，方便识别这是一个角色卡图片
-            marker = b'NEKOCHARA\x00'
-            combined_data = combined_data + marker
+            combined_data = _embed_zip_in_png_chunk(png_data, zip_data)
 
             # 6. 返回图片文件
             # 使用档案名作为文件名，并进行安全编码
@@ -3917,16 +3934,14 @@ async def export_catgirl_with_portrait(
         png_path = temp_path / 'character_card.png'
         final_img.save(png_path, 'PNG')
 
-        # 6. 将压缩包数据拼接到PNG图片
+        # 6. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
         with open(png_path, 'rb') as f:
             png_data = f.read()
 
         with open(zip_path, 'rb') as f:
             zip_data = f.read()
 
-        combined_data = png_data + zip_data + len(zip_data).to_bytes(8, 'little')
-        marker = b'NEKOCHARA\x00'
-        combined_data = combined_data + marker
+        combined_data = _embed_zip_in_png_chunk(png_data, zip_data)
 
         # 7. 返回图片文件
         safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '·', '•') or '\u4e00' <= c <= '\u9fff').strip()
