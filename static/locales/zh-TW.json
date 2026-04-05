@@ -665,7 +665,8 @@
         },
         "coreProviderNames": {
             "free": "免費版（貓娘專屬福利，支持聯網搜索）",
-            "qwen": "Qwen-Omni（阿裏，速度最快，推薦⭐）",
+            "qwen": "Qwen-Omni（阿裏百煉，速度最快，推薦⭐）",
+            "qwen_intl": "Qwen-Omni（阿裏國際版）",
             "openai": "GPT-Realtime（OpenAI）",
             "glm": "GLM-realtime（智譜）",
             "step": "Step-2-Audio（階躍星辰）",
@@ -673,7 +674,8 @@
         },
         "assistProviderNames": {
             "free": "免費版（貓娘專屬福利）",
-            "qwen": "阿裏（Qwen，功能最全，推薦⭐）",
+            "qwen": "阿裏百煉（Qwen，功能最全，推薦⭐）",
+            "qwen_intl": "阿裏國際版（Qwen）",
             "openai": "OpenAI (ChatGPT)",
             "glm": "智譜 (GLM)",
             "step": "階躍星辰 (StepFun)",
@@ -702,7 +704,8 @@
         "customModelProviderFollowAssist": "跟隨輔助API",
         "customModelProviderCustom": "自訂",
         "keyBook": {
-            "qwen": "阿里（Qwen）",
+            "qwen": "阿裏百煉（Qwen）",
+            "qwen_intl": "阿裏國際版（Qwen）",
             "openai": "OpenAI",
             "deepseek": "DeepSeek",
             "glm": "智譜（GLM）",
