@@ -215,6 +215,7 @@ class OmniRealtimeClient:
         self.on_status_message = on_status_message
         self.on_repetition_detected = on_repetition_detected
         self.extra_event_handlers = extra_event_handlers or {}
+        self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
 
         # Track current response state
         self._current_response_id = None
@@ -281,6 +282,13 @@ class OmniRealtimeClient:
         
         # Fatal error detection - 检测到致命错误后立即中断
         self._fatal_error_occurred = False  # 致命错误标志
+
+    def _fire_task(self, coro):
+        """Create a background task with GC protection."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
         
         # Interruption state - suppress output after user interruption until next response
         self._interrupted = False  # 打断状态标志，防止重复消息块
@@ -692,9 +700,9 @@ class OmniRealtimeClient:
                         self._fatal_error_occurred = True
                         logger.error("💥 检测到致命错误 (Response timeout / 1011)，立即中断语音对话")
                         if self.on_connection_error:
-                            asyncio.create_task(self.on_connection_error(json.dumps({"code": "RESPONSE_TIMEOUT"})))
+                            self._fire_task(self.on_connection_error(json.dumps({"code": "RESPONSE_TIMEOUT"})))
                         # 尝试关闭连接
-                        asyncio.create_task(self.close())
+                        self._fire_task(self.close())
                     return  # 不再抛出异常，直接返回
                 
                 raise
