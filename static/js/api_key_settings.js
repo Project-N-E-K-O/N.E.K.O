@@ -950,9 +950,9 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
             if (hiddenInput) hiddenInput.value = voiceIdToLoad;
         }
 
-        // 自动获取语音列表（如果有 URL）
+        // 自动获取语音列表（如果有 URL 且非禁用状态）
         const autoUrl = urlToLoad || document.getElementById('gptsovitsApiUrl')?.value.trim();
-        if (autoUrl) {
+        if (autoUrl && !isDisabledWithConfig) {
             fetchGptSovitsVoices(true);
         }
     }

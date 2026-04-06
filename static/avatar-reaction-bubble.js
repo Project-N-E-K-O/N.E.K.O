@@ -7,6 +7,7 @@
         minVisibleMs: 360,
         minThinkingVisibleMs: 220,
         fadeDurationMs: 220,
+        maxVisibleMs: 10000,
         maxThinkingMs: 10000,
         textOnlyHoldMs: 600,
         textOnlyFallbackMs: 1400,
@@ -41,6 +42,24 @@
         headAnchorCorrectionDeadzonePx: 16,
         headAnchorCorrectionRatio: 0.82,
         headAnchorCorrectionMaxPx: 72,
+        live2dDisplayInfoFaceAnchorRatio: 0.36,
+        live2dDisplayInfoHeadAnchorRatio: 0.44,
+        live2dDisplayInfoTopOffsetRatio: 0.24,
+        live2dDisplayInfoHeadTopOffsetRatio: 0.22,
+        live2dDisplayInfoGapHeadRatio: 0.1,
+        live2dDisplayInfoGapBubbleRatio: 0.04,
+        live2dDisplayInfoGapBodyRatio: 0.03,
+        live2dBodyProxyBubbleLiftRatio: 0.72,
+        live2dBodyProxyBodyLiftRatio: 0.42,
+        live2dBodyProxyHeadLiftRatio: 0.45,
+        live2dHeadTopOffsetRatio: 0.24,
+        live2dFaceTopOffsetRatio: 0.26,
+        live2dHeadMaxBoundsWidthRatio: 0.82,
+        live2dHeadMaxBoundsHeightRatio: 0.58,
+        live2dHeadMaxBoundsCenterYRatio: 0.62,
+        live2dHeadMaxBodyWidthRatio: 1.52,
+        live2dHeadMaxBodyHeightRatio: 0.94,
+        live2dHeadMaxBodyCenterYRatio: 0.42,
         showFollowWindowMs: 360,
         moveFollowWindowMs: 120,
         moveSettleWindowMs: 420
@@ -67,15 +86,22 @@
         followUntilAt: 0,
         hideTimerId: 0,
         timeoutTimerId: 0,
+        maxVisibleTimerId: 0,
         textFallbackTimerId: 0,
         emotionSwapTimerId: 0,
         isAvatarPointerActive: false,
+        lastPositionDebugSignature: null,
         lastRenderX: null,
         lastRenderY: null,
         lastRenderWidth: null,
         lastRenderHeight: null,
+        lastAnchorType: null,
         lastAnchorBounds: null,
         lastHeadAnchor: null,
+        lastHeadRect: null,
+        lastHeadMode: null,
+        lastHeadSource: null,
+        lastBodyRect: null,
         lastBoundsCenterX: null,
         lastBoundsCenterY: null
     };
@@ -125,6 +151,56 @@
         }, extra || {}));
     }
 
+    function bubblePositionDebugEnabled() {
+        return window.NEKO_DEBUG_BUBBLE_POSITION === true || bubbleTraceEnabled();
+    }
+
+    function roundDebugNumber(value) {
+        return Number.isFinite(value)
+            ? Math.round(value * 10) / 10
+            : null;
+    }
+
+    function createDebugRect(rect) {
+        if (!rect) {
+            return null;
+        }
+
+        return {
+            left: roundDebugNumber(rect.left),
+            top: roundDebugNumber(rect.top),
+            width: roundDebugNumber(rect.width),
+            height: roundDebugNumber(rect.height),
+            centerX: roundDebugNumber(rect.centerX),
+            centerY: roundDebugNumber(rect.centerY)
+        };
+    }
+
+    function createDebugPoint(point) {
+        if (!point) {
+            return null;
+        }
+
+        return {
+            x: roundDebugNumber(point.x),
+            y: roundDebugNumber(point.y)
+        };
+    }
+
+    function logBubblePosition(snapshot) {
+        if (!bubblePositionDebugEnabled()) {
+            return;
+        }
+
+        var signature = JSON.stringify(snapshot);
+        if (signature === state.lastPositionDebugSignature) {
+            return;
+        }
+
+        state.lastPositionDebugSignature = signature;
+        console.log('[BubblePosition]', snapshot);
+    }
+
     function clamp(value, min, max) {
         return Math.max(min, Math.min(max, value));
     }
@@ -143,6 +219,7 @@
     function clearTurnTimers() {
         clearTimer('hideTimerId');
         clearTimer('timeoutTimerId');
+        clearTimer('maxVisibleTimerId');
         clearTimer('textFallbackTimerId');
         clearTimer('emotionSwapTimerId');
     }
@@ -157,12 +234,18 @@
     }
 
     function resetPositionTracking() {
+        state.lastPositionDebugSignature = null;
         state.lastRenderX = null;
         state.lastRenderY = null;
         state.lastRenderWidth = null;
         state.lastRenderHeight = null;
+        state.lastAnchorType = null;
         state.lastAnchorBounds = null;
         state.lastHeadAnchor = null;
+        state.lastHeadRect = null;
+        state.lastHeadMode = null;
+        state.lastHeadSource = null;
+        state.lastBodyRect = null;
         state.lastBoundsCenterX = null;
         state.lastBoundsCenterY = null;
 
@@ -311,6 +394,149 @@
         };
     }
 
+    function getHeadRectInfoFromManager(manager) {
+        var info = getBoundsFromManager(manager, 'getHeadScreenRectInfo');
+        if (!info || !info.rect) {
+            return null;
+        }
+
+        var rect = info.rect;
+        var left = Number(rect.left);
+        var top = Number(rect.top);
+        var width = Number(rect.width);
+        var height = Number(rect.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0) {
+            return null;
+        }
+
+        return {
+            rect: {
+                left: left,
+                right: Number.isFinite(rect.right) ? Number(rect.right) : left + width,
+                top: top,
+                bottom: Number.isFinite(rect.bottom) ? Number(rect.bottom) : top + height,
+                width: width,
+                height: height,
+                centerX: Number.isFinite(rect.centerX) ? Number(rect.centerX) : left + width * 0.5,
+                centerY: Number.isFinite(rect.centerY) ? Number(rect.centerY) : top + height * 0.5
+            },
+            mode: info.mode === 'head' ? 'head' : 'face',
+            source: info.source === 'displayInfo' ? 'displayInfo' : 'hitArea'
+        };
+    }
+
+    function getBodyRectInfoFromManager(manager) {
+        var info = getBoundsFromManager(manager, 'getBodyScreenRectInfo');
+        if (!info || !info.rect) {
+            return null;
+        }
+
+        var rect = info.rect;
+        var left = Number(rect.left);
+        var top = Number(rect.top);
+        var width = Number(rect.width);
+        var height = Number(rect.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0) {
+            return null;
+        }
+
+        return {
+            rect: {
+                left: left,
+                right: Number.isFinite(rect.right) ? Number(rect.right) : left + width,
+                top: top,
+                bottom: Number.isFinite(rect.bottom) ? Number(rect.bottom) : top + height,
+                width: width,
+                height: height,
+                centerX: Number.isFinite(rect.centerX) ? Number(rect.centerX) : left + width * 0.5,
+                centerY: Number.isFinite(rect.centerY) ? Number(rect.centerY) : top + height * 0.5
+            },
+            mode: 'body'
+        };
+    }
+
+    function getLive2dBubbleDebugInfoFromManager(manager) {
+        var info = getBoundsFromManager(manager, 'getBubbleAnchorDebugInfo');
+        return info || null;
+    }
+
+    function hasValidRect(rect) {
+        return !!(rect &&
+            Number.isFinite(rect.left) &&
+            Number.isFinite(rect.top) &&
+            Number.isFinite(rect.width) &&
+            Number.isFinite(rect.height) &&
+            rect.width > 0 &&
+            rect.height > 0);
+    }
+
+    function getLive2dHeadAnchorFromRect(headRect, headMode, headSource) {
+        if (!hasValidRect(headRect)) {
+            return null;
+        }
+
+        var faceAnchorRatio = headSource === 'displayInfo'
+            ? TIMING.live2dDisplayInfoFaceAnchorRatio
+            : 0.42;
+        var headAnchorRatio = headSource === 'displayInfo'
+            ? TIMING.live2dDisplayInfoHeadAnchorRatio
+            : 0.5;
+
+        return {
+            x: Number.isFinite(headRect.centerX) ? headRect.centerX : headRect.left + headRect.width * 0.5,
+            y: headRect.top + headRect.height * (headMode === 'face' ? faceAnchorRatio : headAnchorRatio)
+        };
+    }
+
+    function isReliableLive2dHeadRect(headRect, bounds, bodyRect, headSource) {
+        if (!hasValidRect(headRect) || !bounds) {
+            return false;
+        }
+
+        var boundsCenterY = Number.isFinite(headRect.centerY) ? headRect.centerY : headRect.top + headRect.height * 0.5;
+        var boundsRight = Number.isFinite(bounds.right) ? bounds.right : bounds.left + bounds.width;
+        var boundsBottom = Number.isFinite(bounds.bottom) ? bounds.bottom : bounds.top + bounds.height;
+        if (headSource === 'displayInfo') {
+            var toleranceX = Math.max(18, bounds.width * 0.08);
+            var toleranceY = Math.max(18, bounds.height * 0.08);
+            if (headRect.left < bounds.left - toleranceX ||
+                headRect.right > boundsRight + toleranceX ||
+                headRect.top < bounds.top - toleranceY ||
+                headRect.bottom > boundsBottom + toleranceY ||
+                headRect.width > bounds.width * 0.98 ||
+                headRect.height > bounds.height * 0.88) {
+                return false;
+            }
+
+            if (!hasValidRect(bodyRect)) {
+                return true;
+            }
+
+            var bodyCenterY = Number.isFinite(bodyRect.centerY) ? bodyRect.centerY : bodyRect.top + bodyRect.height * 0.5;
+            return boundsCenterY <= bodyRect.bottom &&
+                headRect.top <= bodyCenterY &&
+                headRect.height <= bodyRect.height * 1.12;
+        }
+
+        if (headRect.width > bounds.width * TIMING.live2dHeadMaxBoundsWidthRatio ||
+            headRect.height > bounds.height * TIMING.live2dHeadMaxBoundsHeightRatio ||
+            boundsCenterY > bounds.top + bounds.height * TIMING.live2dHeadMaxBoundsCenterYRatio) {
+            return false;
+        }
+
+        if (!hasValidRect(bodyRect)) {
+            return true;
+        }
+
+        return headRect.width <= bodyRect.width * TIMING.live2dHeadMaxBodyWidthRatio &&
+            headRect.height <= bodyRect.height * TIMING.live2dHeadMaxBodyHeightRatio &&
+            boundsCenterY <= bodyRect.top + bodyRect.height * TIMING.live2dHeadMaxBodyCenterYRatio;
+    }
+
     function getActiveAvatarBubbleAnchor() {
         var mmdBounds = isContainerVisible('mmd-container')
             ? getBoundsFromManager(window.mmdManager, 'getModelScreenBounds')
@@ -338,10 +564,16 @@
             ? getBoundsFromManager(window.live2dManager, 'getModelScreenBounds')
             : null;
         if (live2dBounds) {
+            var live2dHeadRectInfo = getHeadRectInfoFromManager(window.live2dManager);
+            var live2dBodyRectInfo = getBodyRectInfoFromManager(window.live2dManager);
             return {
                 type: 'live2d',
                 bounds: live2dBounds,
-                head: getHeadAnchorFromManager(window.live2dManager)
+                head: getHeadAnchorFromManager(window.live2dManager),
+                headRect: live2dHeadRectInfo ? live2dHeadRectInfo.rect : null,
+                headMode: live2dHeadRectInfo ? live2dHeadRectInfo.mode : null,
+                headSource: live2dHeadRectInfo ? live2dHeadRectInfo.source : null,
+                bodyRect: live2dBodyRectInfo ? live2dBodyRectInfo.rect : null
             };
         }
 
@@ -374,16 +606,32 @@
 
         var anchorInfo = getActiveAvatarBubbleAnchor();
         if (anchorInfo && anchorInfo.bounds) {
+            state.lastAnchorType = anchorInfo.type || null;
             state.lastAnchorBounds = cloneBounds(anchorInfo.bounds);
             state.lastHeadAnchor = clonePoint(anchorInfo.head);
+            state.lastHeadRect = cloneBounds(anchorInfo.headRect);
+            state.lastHeadMode = anchorInfo.headMode || null;
+            state.lastHeadSource = anchorInfo.headSource || null;
+            state.lastBodyRect = cloneBounds(anchorInfo.bodyRect);
         } else if (!state.lastAnchorBounds) {
             return;
         }
 
         ensureDom();
 
+        var avatarType = anchorInfo && anchorInfo.bounds ? anchorInfo.type : state.lastAnchorType;
         var bounds = anchorInfo && anchorInfo.bounds ? anchorInfo.bounds : state.lastAnchorBounds;
         var headAnchor = anchorInfo && anchorInfo.bounds ? anchorInfo.head : state.lastHeadAnchor;
+        var headRect = anchorInfo && anchorInfo.bounds ? anchorInfo.headRect : state.lastHeadRect;
+        var headMode = anchorInfo && anchorInfo.bounds ? anchorInfo.headMode : state.lastHeadMode;
+        var headSource = anchorInfo && anchorInfo.bounds ? anchorInfo.headSource : state.lastHeadSource;
+        var bodyRect = anchorInfo && anchorInfo.bounds ? anchorInfo.bodyRect : state.lastBodyRect;
+        var reliableLive2dHeadRect = avatarType === 'live2d' &&
+            isReliableLive2dHeadRect(headRect, bounds, bodyRect, headSource);
+        var preciseLive2dDisplayInfoRect = reliableLive2dHeadRect && headSource === 'displayInfo';
+        var live2dHeadAnchor = avatarType === 'live2d' && reliableLive2dHeadRect
+            ? (getLive2dHeadAnchorFromRect(headRect, headMode, headSource) || headAnchor)
+            : null;
         var boundsCenterX = Number.isFinite(bounds.centerX) ? bounds.centerX : (bounds.left + bounds.right) * 0.5;
         var boundsCenterY = Number.isFinite(bounds.centerY) ? bounds.centerY : (bounds.top + bounds.bottom) * 0.5;
         var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
@@ -405,9 +653,12 @@
         var headSize = Math.max(84, Math.min(viewportCap, Math.round(headSpan * 1.38)));
         var width = Math.max(96, Math.round(headSize * 1.34) - TIMING.baseWidthShrinkPx);
         var height = Math.max(74, Math.round(headSize * 1.02) - TIMING.baseHeightShrinkPx);
-        var headCenterX = bounds.left + bounds.width * 0.5;
-        var rightAnchorX = headCenterX + bounds.width * 0.13;
-        var leftAnchorX = headCenterX - bounds.width * 0.13;
+        var headCenterX = preciseLive2dDisplayInfoRect && Number.isFinite(headRect.centerX)
+            ? headRect.centerX
+            : bounds.left + bounds.width * 0.5;
+        var sideOffsetPx = bounds.width * 0.13;
+        var rightAnchorX = headCenterX + sideOffsetPx;
+        var leftAnchorX = headCenterX - sideOffsetPx;
         var modelAspectRatio = effectiveHeight / Math.max(bounds.width, 1);
         var modelShapeProgress = clamp(
             (modelAspectRatio - TIMING.compactModelAspectRatio) / (TIMING.tallModelAspectRatio - TIMING.compactModelAspectRatio),
@@ -426,14 +677,31 @@
         );
         var fallbackAnchorY = effectiveTop + headHeight * headAnchorRatio;
         var headAnchorCorrectionPx = 0;
-        if (headAnchor) {
-            headAnchorCorrectionPx = clamp(
-                Math.max(0, headAnchor.y - fallbackAnchorY) - TIMING.headAnchorCorrectionDeadzonePx,
-                0,
-                TIMING.headAnchorCorrectionMaxPx
-            ) * TIMING.headAnchorCorrectionRatio;
+        var headAnchorForCorrection = live2dHeadAnchor || headAnchor;
+        if (headAnchorForCorrection) {
+            var anchorDelta = headAnchorForCorrection.y - fallbackAnchorY;
+            if (preciseLive2dDisplayInfoRect) {
+                if (Math.abs(anchorDelta) > TIMING.headAnchorCorrectionDeadzonePx) {
+                    headAnchorCorrectionPx = clamp(
+                        anchorDelta,
+                        -TIMING.headAnchorCorrectionMaxPx,
+                        TIMING.headAnchorCorrectionMaxPx
+                    ) * TIMING.headAnchorCorrectionRatio;
+                }
+            } else {
+                headAnchorCorrectionPx = clamp(
+                    Math.max(0, anchorDelta) - TIMING.headAnchorCorrectionDeadzonePx,
+                    0,
+                    TIMING.headAnchorCorrectionMaxPx
+                ) * TIMING.headAnchorCorrectionRatio;
+            }
         }
         var anchorY = fallbackAnchorY + headAnchorCorrectionPx;
+        if (preciseLive2dDisplayInfoRect && live2dHeadAnchor && Number.isFinite(live2dHeadAnchor.y)) {
+            anchorY = live2dHeadAnchor.y;
+        } else if (live2dHeadAnchor && Number.isFinite(live2dHeadAnchor.y)) {
+            anchorY = Math.max(anchorY, live2dHeadAnchor.y);
+        }
 
         if (state.lastRenderWidth === null || Math.abs(state.lastRenderWidth - width) >= TIMING.sizeSnapPx) {
             bubbleEl.style.setProperty('--bubble-width', width + 'px');
@@ -455,6 +723,39 @@
             TIMING.accessoryDropBasePx + accessoryOvershootPx * TIMING.accessoryDropRatio
         );
         var topY = anchorY - height * 0.5 + headSize * modelOffsetRatio + accessoryDropPx + TIMING.verticalOffsetPx;
+        var live2dTopTargetY = null;
+        var live2dTopTargetActsAsCeiling = false;
+        if (avatarType === 'live2d') {
+            if (reliableLive2dHeadRect) {
+                if (preciseLive2dDisplayInfoRect) {
+                    var live2dDisplayInfoGapPx = Math.max(
+                        headRect.height * TIMING.live2dDisplayInfoGapHeadRatio,
+                        height * TIMING.live2dDisplayInfoGapBubbleRatio,
+                        hasValidRect(bodyRect) ? bodyRect.height * TIMING.live2dDisplayInfoGapBodyRatio : 0
+                    );
+                    live2dTopTargetY = headRect.top - height * (headMode === 'face'
+                        ? TIMING.live2dDisplayInfoTopOffsetRatio
+                        : TIMING.live2dDisplayInfoHeadTopOffsetRatio) - live2dDisplayInfoGapPx;
+                    live2dTopTargetActsAsCeiling = true;
+                } else {
+                    live2dTopTargetY = headRect.top - height * (headMode === 'face'
+                        ? TIMING.live2dFaceTopOffsetRatio
+                        : TIMING.live2dHeadTopOffsetRatio);
+                }
+            } else if (hasValidRect(bodyRect)) {
+                live2dTopTargetY = bodyRect.top - Math.max(
+                    height * TIMING.live2dBodyProxyBubbleLiftRatio,
+                    bodyRect.height * TIMING.live2dBodyProxyBodyLiftRatio,
+                    headSize * TIMING.live2dBodyProxyHeadLiftRatio
+                );
+                live2dTopTargetActsAsCeiling = true;
+            }
+            if (Number.isFinite(live2dTopTargetY)) {
+                topY = live2dTopTargetActsAsCeiling
+                    ? Math.min(topY, live2dTopTargetY)
+                    : Math.max(topY, live2dTopTargetY);
+            }
+        }
         var y = Math.max(margin, Math.min(topY, viewportHeight - height - margin));
         var side = 'right';
         var x = preferredRightX;
@@ -509,6 +810,56 @@
         }
         if (shouldLockVerticalDrift) {
             roundedY = state.lastRenderY;
+        }
+
+        if (avatarType === 'live2d' && bubblePositionDebugEnabled()) {
+            var live2dDebugInfo = getLive2dBubbleDebugInfoFromManager(window.live2dManager);
+            logBubblePosition({
+                model: live2dDebugInfo ? (live2dDebugInfo.modelName || live2dDebugInfo.modelRootPath || 'live2d') : 'live2d',
+                headSource: headSource || null,
+                headMode: headMode || null,
+                reliableLive2dHeadRect: reliableLive2dHeadRect,
+                preciseLive2dDisplayInfoRect: preciseLive2dDisplayInfoRect,
+                bounds: createDebugRect(bounds),
+                headRect: createDebugRect(headRect),
+                bodyRect: createDebugRect(bodyRect),
+                headAnchor: createDebugPoint(headAnchor),
+                live2dHeadAnchor: createDebugPoint(live2dHeadAnchor),
+                anchorY: roundDebugNumber(anchorY),
+                live2dTopTargetY: roundDebugNumber(live2dTopTargetY),
+                bubbleSize: {
+                    width: roundDebugNumber(width),
+                    height: roundDebugNumber(height)
+                },
+                preferred: {
+                    left: roundDebugNumber(preferredLeftX),
+                    right: roundDebugNumber(preferredRightX)
+                },
+                fits: {
+                    left: !!leftFits,
+                    right: !!rightFits
+                },
+                final: {
+                    side: side,
+                    x: roundDebugNumber(roundedX),
+                    y: roundDebugNumber(roundedY)
+                },
+                manager: live2dDebugInfo ? {
+                    displayInfoLoaded: !!live2dDebugInfo.displayInfoLoaded,
+                    displayInfoPath: live2dDebugInfo.displayInfoPath || null,
+                    headInfo: live2dDebugInfo.headInfo ? {
+                        source: live2dDebugInfo.headInfo.source || null,
+                        mode: live2dDebugInfo.headInfo.mode || null,
+                        rect: createDebugRect(live2dDebugInfo.headInfo.rect)
+                    } : null,
+                    bodyInfo: live2dDebugInfo.bodyInfo ? {
+                        source: live2dDebugInfo.bodyInfo.source || null,
+                        mode: live2dDebugInfo.bodyInfo.mode || null,
+                        rect: createDebugRect(live2dDebugInfo.bodyInfo.rect)
+                    } : null,
+                    hitAreas: Array.isArray(live2dDebugInfo.hitAreas) ? live2dDebugInfo.hitAreas : []
+                } : null
+            });
         }
 
         bubbleEl.dataset.side = side;
@@ -622,8 +973,12 @@
         state.lastRenderY = null;
         state.lastRenderWidth = null;
         state.lastRenderHeight = null;
+        state.lastAnchorType = null;
         state.lastAnchorBounds = null;
         state.lastHeadAnchor = null;
+        state.lastHeadRect = null;
+        state.lastHeadMode = null;
+        state.lastBodyRect = null;
         state.lastBoundsCenterX = null;
         state.lastBoundsCenterY = null;
         if (resetTurn !== false) {
@@ -642,6 +997,34 @@
         }, TIMING.maxThinkingMs);
     }
 
+    function scheduleMaxVisibleFallback(turnId) {
+        clearTimer('maxVisibleTimerId');
+        if (!turnId || !state.visible) {
+            return;
+        }
+
+        var remainingMs = Math.max(0, TIMING.maxVisibleMs - Math.max(0, now() - state.shownAt));
+        if (remainingMs <= 0) {
+            logBubbleLifecycle('scheduleMaxVisibleFallback:force_hide_immediate', {
+                requestedTurnId: turnId,
+                elapsedMs: now() - state.shownAt
+            });
+            forceHide(true);
+            return;
+        }
+
+        state.maxVisibleTimerId = window.setTimeout(function () {
+            if (state.turnId !== turnId || !state.visible) {
+                return;
+            }
+            logBubbleLifecycle('scheduleMaxVisibleFallback:force_hide', {
+                requestedTurnId: turnId,
+                elapsedMs: now() - state.shownAt
+            });
+            forceHide(true);
+        }, remainingMs);
+    }
+
     function beginHide(turnId, extraHoldMs) {
         var normalizedTurnId = normalizeTurnId(turnId);
         logBubbleLifecycle('beginHide:enter', {
@@ -658,6 +1041,7 @@
         clearTimer('hideTimerId');
         clearTimer('textFallbackTimerId');
         clearTimer('timeoutTimerId');
+        clearTimer('maxVisibleTimerId');
 
         if (!state.visible) {
             forceHide(true);
@@ -743,6 +1127,7 @@
         applyVisualState();
         syncPositionOnce();
         extendFollowLoop(TIMING.showFollowWindowMs);
+        scheduleMaxVisibleFallback(turnId);
         scheduleThinkingTimeout(turnId);
         logBubbleLifecycle('showThinking:applied', {
             requestedTurnId: turnId
@@ -838,6 +1223,7 @@
         applyVisualState();
         syncPositionOnce();
         extendFollowLoop(TIMING.showFollowWindowMs);
+        scheduleMaxVisibleFallback(turnId);
         logBubbleLifecycle('handleSpeechStart:applied', {
             detailTurnId: turnId
         });

@@ -119,6 +119,27 @@ async def cookies_login_page(request: Request):
 
 
 
+@router.get("/chat", response_class=HTMLResponse)
+async def get_chat_page(request: Request):
+    """Chat 独立窗口页面"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/chat.html", {"request": request})
+
+
+@router.get("/subtitle", response_class=HTMLResponse)
+async def get_subtitle_page(request: Request):
+    """Subtitle 独立窗口页面"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/subtitle.html", {"request": request})
+
+
+@router.get("/agenthud", response_class=HTMLResponse)
+async def get_agenthud_page(request: Request):
+    """AgentHUD 独立窗口页面"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/agenthud.html", {"request": request})
+
+
 @router.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
     # lanlan_name 将从 URL 中提取，前端会通过 API 获取配置

@@ -338,7 +338,11 @@
     <script>
         // 页面配置 - 从 URL 或 API 获取
         let lanlan_config = {
-            lanlan_name: ""
+            lanlan_name: "",
+            master_name: "",
+            master_profile_name: "",
+            master_nickname: "",
+            master_display_name: ""
         };
         window.lanlan_config = lanlan_config;
         let cubism4Model = "";
@@ -372,7 +376,15 @@
                 if (data.success) {
                     // 使用 URL 中的 lanlan_name（如果有），否则使用 API 返回的
                     lanlan_config.lanlan_name = lanlanNameFromUrl || data.lanlan_name || "";
+                    lanlan_config.master_name = data.master_name || "";
+                    lanlan_config.master_profile_name = data.master_profile_name || "";
+                    lanlan_config.master_nickname = data.master_nickname || "";
+                    lanlan_config.master_display_name = data.master_display_name || data.master_nickname || data.master_name || "";
                     window.lanlan_config = lanlan_config;
+                    window.master_name = lanlan_config.master_name;
+                    window.master_profile_name = lanlan_config.master_profile_name;
+                    window.master_nickname = lanlan_config.master_nickname;
+                    window.master_display_name = lanlan_config.master_display_name;
                     cubism4Model = data.model_path || "";
                     window.cubism4Model = cubism4Model;  // 设置全局变量供 live2d-init.js 使用
 
@@ -385,14 +397,32 @@
                     console.error('获取页面配置失败:', data.error);
                     // 使用默认值
                     lanlan_config.lanlan_name = "";
+                    lanlan_config.master_name = "";
+                    lanlan_config.master_profile_name = "";
+                    lanlan_config.master_nickname = "";
+                    lanlan_config.master_display_name = "";
                     cubism4Model = "";
+                    window.master_name = "";
+                    window.master_profile_name = "";
+                    window.master_nickname = "";
+                    window.master_display_name = "";
+                    window.cubism4Model = "";
                     return false;
                 }
             } catch (error) {
                 console.error('加载页面配置时出错:', error);
                 // 使用默认值
                 lanlan_config.lanlan_name = "";
+                lanlan_config.master_name = "";
+                lanlan_config.master_profile_name = "";
+                lanlan_config.master_nickname = "";
+                lanlan_config.master_display_name = "";
                 cubism4Model = "";
+                window.master_name = "";
+                window.master_profile_name = "";
+                window.master_nickname = "";
+                window.master_display_name = "";
+                window.cubism4Model = "";
                 return false;
             }
         }
