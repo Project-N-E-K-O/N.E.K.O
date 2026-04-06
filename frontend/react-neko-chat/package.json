@@ -1,0 +1,36 @@
+{
+  "name": "react-neko-chat",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build && npm run sync-css",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "sync-css": "sh -c 'f=$(find ../../static/react/neko-chat/assets -maxdepth 1 -name \"style-*.css\" | head -n 1); if [ -n \"$f\" ]; then cp \"$f\" ../../static/react/neko-chat/neko-chat-window.css; fi'"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "katex": "^0.16.22",
+    "react": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "react-dom": "^18.3.1",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^27.0.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^3.2.4"
+  }
+}
