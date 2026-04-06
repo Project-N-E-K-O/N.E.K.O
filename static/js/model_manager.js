@@ -314,7 +314,15 @@ class DropdownManager {
             // 尝试翻译文本（如果是 i18n 键）
             text = translateText(text);
 
-            // 添加 VRM/MMD 子类型徽章（放在文本前面）
+            // Steam 徽章放在最前面
+            if (option.dataset.itemId) {
+                const steamBadge = document.createElement('span');
+                steamBadge.className = 'steam-badge';
+                steamBadge.textContent = 'Steam';
+                item.appendChild(steamBadge);
+            }
+
+            // 添加 VRM/MMD 子类型徽章
             const subType = option.getAttribute('data-sub-type');
             if (subType === 'vrm') {
                 const badge = document.createElement('span');
@@ -333,13 +341,6 @@ class DropdownManager {
             textSpan.textContent = text;
             textSpan.setAttribute('data-text', text);
             item.appendChild(textSpan);
-
-            if (option.dataset.itemId) {
-                const steamBadge = document.createElement('span');
-                steamBadge.className = 'steam-badge';
-                steamBadge.textContent = 'Steam';
-                item.appendChild(steamBadge);
-            }
 
             item.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -2522,6 +2523,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (filename) {
                         option.setAttribute('data-filename', filename);
                     }
+                    if (model.item_id) {
+                        option.dataset.itemId = model.item_id;
+                    }
                     option.textContent = model.name || filename || validPath;
                     vrmModelSelect.appendChild(option);
                 });
@@ -2560,7 +2564,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             item.className = 'dropdown-item';
             item.dataset.value = option.value;
 
-            // 添加 VRM/MMD 子类型徽章（放在文本前面）
+            // Steam 徽章放在最前面
+            if (option.dataset.itemId) {
+                const steamBadge = document.createElement('span');
+                steamBadge.className = 'steam-badge';
+                steamBadge.textContent = 'Steam';
+                item.appendChild(steamBadge);
+            }
+
+            // 添加 VRM/MMD 子类型徽章
             const subType = option.getAttribute('data-sub-type');
             if (subType === 'vrm') {
                 const badge = document.createElement('span');
@@ -2580,6 +2592,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             textSpan.textContent = text;
             textSpan.setAttribute('data-text', text);
             item.appendChild(textSpan);
+
             item.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const value = item.dataset.value;
@@ -3189,6 +3202,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     option.value = modelPath;
                     option.setAttribute('data-path', modelPath);
                     if (model.filename) option.setAttribute('data-filename', model.filename);
+                    if (model.item_id) {
+                        option.dataset.itemId = model.item_id;
+                    }
                     option.textContent = model.name || model.filename || modelPath.split('/').pop();
                     mmdModelSelect.appendChild(option);
                 });
@@ -3217,12 +3233,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             const item = document.createElement('div');
             item.className = 'dropdown-item';
             item.dataset.value = option.value;
+
+            // Steam 徽章放在最前面
+            if (option.dataset.itemId) {
+                const steamBadge = document.createElement('span');
+                steamBadge.className = 'steam-badge';
+                steamBadge.textContent = 'Steam';
+                item.appendChild(steamBadge);
+            }
+
             const textSpan = document.createElement('span');
             textSpan.className = 'dropdown-item-text';
             const text = option.textContent || option.value || '';
             textSpan.textContent = text;
             textSpan.setAttribute('data-text', text);
             item.appendChild(textSpan);
+
             item.addEventListener('click', (e) => {
                 e.stopPropagation();
                 mmdModelSelect.value = item.dataset.value;
@@ -3670,6 +3696,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 option.setAttribute('data-path', validPath);
                 option.setAttribute('data-sub-type', 'vrm');
                 if (filename) option.setAttribute('data-filename', filename);
+                if (model.item_id) option.dataset.itemId = model.item_id;
                 const baseName = model.name || filename || validPath;
                 option.textContent = baseName;
                 vrmModelSelect.appendChild(option);
@@ -3684,6 +3711,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 option.setAttribute('data-path', modelPath);
                 option.setAttribute('data-sub-type', 'mmd');
                 if (model.filename) option.setAttribute('data-filename', model.filename);
+                if (model.item_id) option.dataset.itemId = model.item_id;
                 const baseName = model.name || model.filename || modelPath.split('/').pop();
                 option.textContent = baseName;
                 vrmModelSelect.appendChild(option);
@@ -3710,6 +3738,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     option.value = modelPath;
                     option.setAttribute('data-path', modelPath);
                     if (model.filename) option.setAttribute('data-filename', model.filename);
+                    if (model.item_id) option.dataset.itemId = model.item_id;
                     option.textContent = model.name || model.filename || modelPath.split('/').pop();
                     mmdModelSelect.appendChild(option);
                 });
