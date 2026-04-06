@@ -2173,6 +2173,9 @@ function unsubscribeItem(itemId, itemName) {
 
 // 全局变量：存储所有可用模型信息
 let availableModels = [];
+// VRM/MMD 模型列表
+let availableVrmModels = [];
+let availableMmdModels = [];
 
 // 全局Set：用于跟踪已处理的音频文件，防止重复注册
 // 使用localStorage持久化存储，避免页面刷新后重复扫描
@@ -2696,8 +2699,26 @@ function expandCharacterCardSection(card) {
     const description = rawData['描述'] || rawData['description'] || card.description || '';
     const systemPrompt = rawData['设定'] || rawData['system_prompt'] || rawData['prompt_setting'] || '';
 
-    // 处理模型默认值
+    // 处理模型默认值 - 兼容 Live2D / VRM / MMD 三种模型类型
     let live2d = rawData['live2d'] || (rawData['model'] && rawData['model']['name']) || '';
+    const modelType = rawData['model_type'] || 'live2d';
+    const vrmPath = rawData['vrm'] || '';
+    const mmdPath = rawData['mmd'] || '';
+
+    // 判断实际模型类型：如果 model_type 是 live3d 或 vrm，根据路径区分 VRM/MMD
+    let effectiveModelType = 'live2d';
+    let effectiveModelPath = '';
+    if (modelType === 'live3d' || modelType === 'vrm') {
+        if (mmdPath) {
+            effectiveModelType = 'mmd';
+            effectiveModelPath = mmdPath;
+        } else if (vrmPath) {
+            effectiveModelType = 'vrm';
+            effectiveModelPath = vrmPath;
+        }
+    } else {
+        effectiveModelType = 'live2d';
+    }
 
     // 处理音色默认值
     let voiceId = rawData['voice_id'] || (rawData['voice'] && rawData['voice']['voice_id']);
@@ -2705,17 +2726,40 @@ function expandCharacterCardSection(card) {
     // 填充可编辑字段（Description 使用 textarea.value）
     document.getElementById('character-card-description').value = description || '';
 
-    // 存储当前角色卡的模型名称供后续使用
+    // 存储当前角色卡的模型名称和类型供后续使用
     window.currentCharacterCardModel = live2d;
+    window.currentCharacterCardModelType = effectiveModelType;
+    window.currentCharacterCardModelPath = effectiveModelPath;
 
     // 检查模型是否可上传（检查是否来自static目录）
     const uploadButton = document.getElementById('upload-to-workshop-btn');
     const copyrightWarning = document.getElementById('copyright-warning');
     const noModelsWarning = document.getElementById('no-uploadable-models-warning');
 
-    // 检查模型是否在可上传列表中
-    const modelInfo = availableModels.find(m => m.name === live2d);
-    const isModelUploadable = modelInfo !== undefined; // 如果在过滤后的列表中找到，说明可上传
+    // 根据模型类型检查是否可上传
+    let isModelUploadable = false;
+    let hasModel = false;
+    if (effectiveModelType === 'vrm' && effectiveModelPath) {
+        hasModel = true;
+        // VRM：检查路径是否为用户目录（非 /static/vrm/）
+        isModelUploadable = availableVrmModels.some(m => m.url === effectiveModelPath || m.path === effectiveModelPath);
+        // 也可能路径匹配不上列表（例如路径格式差异），退而检查是否不在 static 目录
+        if (!isModelUploadable && !effectiveModelPath.startsWith('/static/')) {
+            isModelUploadable = true;
+        }
+    } else if (effectiveModelType === 'mmd' && effectiveModelPath) {
+        hasModel = true;
+        // MMD：检查路径是否为用户目录（非 /static/mmd/）
+        isModelUploadable = availableMmdModels.some(m => m.url === effectiveModelPath);
+        if (!isModelUploadable && !effectiveModelPath.startsWith('/static/')) {
+            isModelUploadable = true;
+        }
+    } else if (live2d) {
+        hasModel = true;
+        // Live2D：原有逻辑
+        const modelInfo = availableModels.find(m => m.name === live2d);
+        isModelUploadable = modelInfo !== undefined;
+    }
 
     // 同时检查系统提示词
     const hasSystemPrompt = systemPrompt && systemPrompt.trim() !== '';
@@ -2724,7 +2768,7 @@ function expandCharacterCardSection(card) {
     let canUpload = true;
     let disableReason = '';
 
-    if (!live2d) {
+    if (!hasModel) {
         // 没有模型
         canUpload = false;
         disableReason = window.t ? window.t('steam.noModelSelected') : '未选择模型';
@@ -2750,13 +2794,31 @@ function expandCharacterCardSection(card) {
         uploadButton.title = canUpload ? '' : disableReason;
     }
 
-    // 刷新Live2D预览
-    if (live2d && live2d !== '') {
+    // 刷新预览
+    if (effectiveModelType === 'vrm' && effectiveModelPath) {
+        // 加载 VRM 3D 模型预览
+        loadVrmPreview(effectiveModelPath, rawData);
+    } else if (effectiveModelType === 'mmd' && effectiveModelPath) {
+        // 加载 MMD 3D 模型预览
+        loadMmdPreview(effectiveModelPath, rawData);
+    } else if (live2d && live2d !== '') {
+        // 清理可能残留的 3D 预览
+        disposeWorkshopVrm();
+        disposeWorkshopMmd();
+        hideAll3DPreviews();
+        // 恢复 Live2D 标题和控件
+        const title = document.getElementById('model-preview-title');
+        if (title) {
+            title.textContent = 'Live2D';
+            title.setAttribute('data-i18n', 'steam.live2dPreview');
+        }
+        const live2dControls = document.getElementById('live2d-preview-controls');
+        if (live2dControls) live2dControls.style.display = '';
         const modelInfoForPreview = availableModels.find(model => model.name === live2d);
         loadLive2DModelByName(live2d, modelInfoForPreview);
     } else {
         // 角色未设置模型，清除现有预览并显示提示
-        clearLive2DPreview(true); // true 表示使用"未设置模型"的提示而非"请选择模型"
+        clearAllModelPreviews(true); // true 表示使用"未设置模型"的提示而非"请选择模型"
     }
 
     // 更新标签
@@ -3003,7 +3065,13 @@ async function handleUploadToWorkshop() {
         const name = currentCard.name;
         // description 可以从界面获取或从 rawData 中获取
         const description = document.getElementById('character-card-description').value.trim() || rawData['描述'] || rawData['description'] || '';
+        const currentModelType = window.currentCharacterCardModelType || 'live2d';
+        const currentModelPath = window.currentCharacterCardModelPath || '';
         let selectedModelName = window.currentCharacterCardModel || rawData['live2d'] || (rawData['model'] && rawData['model']['name']) || '';
+        // VRM/MMD 模型使用路径而非 Live2D 模型名称
+        if ((currentModelType === 'vrm' || currentModelType === 'mmd') && currentModelPath) {
+            selectedModelName = currentModelPath;
+        }
         const voiceId = rawData['voice_id'] || (rawData['voice'] && rawData['voice']['voice_id']) || '';
 
         // 验证必填字段 - 只验证 description
@@ -3061,15 +3129,20 @@ async function handleUploadToWorkshop() {
             fullCharaData['tags'] = characterCardTags;
         }
 
-        fullCharaData.live2d = selectedModelName;
+        // 根据模型类型设置正确的字段
+        if (currentModelType === 'vrm' || currentModelType === 'mmd') {
+            // VRM/MMD 模型保留原始字段，不设置 live2d
+        } else {
+            fullCharaData.live2d = selectedModelName;
+        }
 
         // 使用从角色卡数据中提取的voice_id（如果有）
         if (voiceId) {
             fullCharaData['voice_id'] = voiceId;
         }
 
-        // 设置默认模型（排除mao_pro）
-        if (!selectedModelName || selectedModelName === 'mao_pro') {
+        // 设置默认模型（排除mao_pro）- 仅限 Live2D 模型类型
+        if (currentModelType === 'live2d' && (!selectedModelName || selectedModelName === 'mao_pro')) {
             const validModels = availableModels.filter(model => model.name !== 'mao_pro');
             if (validModels.length > 0) {
                 selectedModelName = validModels[0].name;
@@ -3079,6 +3152,9 @@ async function handleUploadToWorkshop() {
                 showMessage(window.t ? window.t('steam.noAvailableModelsError') : '没有可用的模型', 'error');
                 return;
             }
+        } else if ((currentModelType === 'vrm' || currentModelType === 'mmd') && !selectedModelName) {
+            showMessage(window.t ? window.t('steam.noAvailableModelsError') : '没有可用的模型', 'error');
+            return;
         }
 
         // 构建猫娘数据对象（用于上传，使用已保存的完整数据）
@@ -3093,6 +3169,7 @@ async function handleUploadToWorkshop() {
             catgirlData: catgirlData,
             name: name,
             selectedModelName: selectedModelName,
+            modelType: currentModelType,
             charaFileName: charaFileName,
             characterCardTags: characterCardTags
         };
@@ -3122,6 +3199,7 @@ async function performUpload(data) {
             body: JSON.stringify({
                 charaData: data.catgirlData,
                 modelName: data.selectedModelName,
+                modelType: data.modelType || 'live2d',
                 fileName: data.charaFileName,
                 character_card_name: data.name  // 传递角色卡名称，用于读取 .workshop_meta.json
             })
@@ -3257,12 +3335,18 @@ async function scanModels() {
     showMessage(window.t ? window.t('steam.scanningModels') : '正在扫描模型...', 'info');
 
     try {
-        // 调用API获取模型列表
-        const response = await fetch('/api/live2d/models');
-        if (!response.ok) {
-            throw new Error(`HTTP错误，状态码: ${response.status}`);
+        // 并行获取 Live2D、VRM、MMD 模型列表
+        const [live2dResponse, vrmResponse, mmdResponse] = await Promise.all([
+            fetch('/api/live2d/models'),
+            fetch('/api/model/vrm/models').catch(() => null),
+            fetch('/api/model/mmd/models').catch(() => null)
+        ]);
+
+        // 处理 Live2D 模型
+        if (!live2dResponse.ok) {
+            throw new Error(`HTTP错误，状态码: ${live2dResponse.status}`);
         }
-        const models = await response.json();
+        const models = await live2dResponse.json();
 
         // 存储所有模型到全局变量（用于角色卡加载，包括static目录的模型）
         window.allModels = models;
@@ -3272,6 +3356,32 @@ async function scanModels() {
         const uploadableModels = models.filter(model => model.source !== 'static');
         // 存储可上传模型列表到全局变量（用于上传检查）
         availableModels = uploadableModels;
+
+        // 处理 VRM 模型
+        try {
+            if (vrmResponse && vrmResponse.ok) {
+                const vrmData = await vrmResponse.json();
+                if (vrmData.success && vrmData.models) {
+                    window.allVrmModels = vrmData.models;
+                    availableVrmModels = vrmData.models.filter(m => m.location !== 'project');
+                }
+            }
+        } catch (e) {
+            console.warn('处理VRM模型列表失败:', e);
+        }
+
+        // 处理 MMD 模型
+        try {
+            if (mmdResponse && mmdResponse.ok) {
+                const mmdData = await mmdResponse.json();
+                if (mmdData.success && mmdData.models) {
+                    window.allMmdModels = mmdData.models;
+                    availableMmdModels = mmdData.models.filter(m => m.location !== 'project');
+                }
+            }
+        } catch (e) {
+            console.warn('处理MMD模型列表失败:', e);
+        }
 
         // 触发模型扫描完成事件，通知其他组件刷新 UI（具有容错能力）
         try {
@@ -3524,6 +3634,383 @@ window.addEventListener('load', () => {
         setTimeout(updateFileDisplay, 500);
     }
 });
+
+// ====================== VRM/MMD 3D 模型预览 ======================
+
+// 工坊预览专用的 VRM/MMD 管理器实例
+let workshopVrmManager = null;
+let workshopMmdManager = null;
+let _workshopVrmModulesLoaded = false;
+let _workshopMmdModulesLoaded = false;
+let _workshopVrmModulesLoading = false;
+let _workshopMmdModulesLoading = false;
+
+// 按需加载 VRM 模块
+async function ensureVrmModulesLoaded() {
+    if (_workshopVrmModulesLoaded) return true;
+    if (_workshopVrmModulesLoading) {
+        // 等待加载完成
+        return new Promise(resolve => {
+            const check = () => {
+                if (_workshopVrmModulesLoaded) resolve(true);
+                else setTimeout(check, 100);
+            };
+            check();
+        });
+    }
+    _workshopVrmModulesLoading = true;
+
+    // 等待 THREE 就绪
+    if (typeof window.THREE === 'undefined') {
+        await new Promise(resolve => {
+            window.addEventListener('three-ready', resolve, { once: true });
+        });
+    }
+
+    const vrmModules = [
+        '/static/vrm-orientation.js',
+        '/static/vrm-core.js',
+        '/static/vrm-expression.js',
+        '/static/vrm-animation.js',
+        '/static/vrm-interaction.js',
+        '/static/vrm-cursor-follow.js',
+        '/static/vrm-manager.js'
+    ];
+
+    for (const moduleSrc of vrmModules) {
+        // 检查是否已通过其他途径加载
+        if (moduleSrc.includes('vrm-manager') && typeof window.VRMManager !== 'undefined') continue;
+        if (moduleSrc.includes('vrm-core') && typeof window.VRMCore !== 'undefined') continue;
+
+        const script = document.createElement('script');
+        script.src = `${moduleSrc}?v=${Date.now()}`;
+        await new Promise((resolve) => {
+            script.onload = resolve;
+            script.onerror = () => {
+                console.error(`[Workshop VRM] 模块加载失败: ${moduleSrc}`);
+                resolve();
+            };
+            document.body.appendChild(script);
+        });
+    }
+
+    _workshopVrmModulesLoaded = typeof window.VRMManager !== 'undefined';
+    _workshopVrmModulesLoading = false;
+    return _workshopVrmModulesLoaded;
+}
+
+// 按需加载 MMD 模块
+async function ensureMmdModulesLoaded() {
+    if (_workshopMmdModulesLoaded) return true;
+    if (_workshopMmdModulesLoading) {
+        return new Promise(resolve => {
+            const check = () => {
+                if (_workshopMmdModulesLoaded) resolve(true);
+                else setTimeout(check, 100);
+            };
+            check();
+        });
+    }
+    _workshopMmdModulesLoading = true;
+
+    if (typeof window.THREE === 'undefined') {
+        await new Promise(resolve => {
+            window.addEventListener('three-ready', resolve, { once: true });
+        });
+    }
+
+    const mmdModules = [
+        '/static/mmd-core.js',
+        '/static/mmd-animation.js',
+        '/static/mmd-expression.js',
+        '/static/mmd-interaction.js',
+        '/static/mmd-cursor-follow.js',
+        '/static/mmd-manager.js'
+    ];
+
+    for (const moduleSrc of mmdModules) {
+        if (moduleSrc.includes('mmd-manager') && typeof window.MMDManager !== 'undefined') continue;
+        if (moduleSrc.includes('mmd-core') && typeof window.MMDCore !== 'undefined') continue;
+
+        const script = document.createElement('script');
+        script.src = `${moduleSrc}?v=${Date.now()}`;
+        await new Promise((resolve) => {
+            script.onload = resolve;
+            script.onerror = () => {
+                console.error(`[Workshop MMD] 模块加载失败: ${moduleSrc}`);
+                resolve();
+            };
+            document.body.appendChild(script);
+        });
+    }
+
+    _workshopMmdModulesLoaded = typeof window.MMDManager !== 'undefined';
+    _workshopMmdModulesLoading = false;
+    return _workshopMmdModulesLoaded;
+}
+
+// 隐藏所有 3D 预览容器
+function hideAll3DPreviews() {
+    const vrmContainer = document.getElementById('vrm-preview-container');
+    const mmdContainer = document.getElementById('mmd-preview-container');
+    if (vrmContainer) vrmContainer.style.display = 'none';
+    if (mmdContainer) mmdContainer.style.display = 'none';
+}
+
+// 清理工坊 VRM 预览实例
+async function disposeWorkshopVrm() {
+    if (workshopVrmManager) {
+        try {
+            if (typeof workshopVrmManager.dispose === 'function') {
+                await workshopVrmManager.dispose();
+            }
+        } catch (e) {
+            console.warn('[Workshop VRM] dispose 失败:', e);
+        }
+        workshopVrmManager = null;
+    }
+    hideAll3DPreviews();
+}
+
+// 清理工坊 MMD 预览实例
+async function disposeWorkshopMmd() {
+    if (workshopMmdManager) {
+        try {
+            if (typeof workshopMmdManager.stopAnimation === 'function') {
+                workshopMmdManager.stopAnimation();
+            }
+            if (typeof workshopMmdManager.dispose === 'function') {
+                await workshopMmdManager.dispose();
+            }
+        } catch (e) {
+            console.warn('[Workshop MMD] dispose 失败:', e);
+        }
+        workshopMmdManager = null;
+    }
+    hideAll3DPreviews();
+}
+
+// 加载 VRM 模型预览
+async function loadVrmPreview(modelPath, rawData) {
+    try {
+        // 先清理之前的 3D 预览
+        await disposeWorkshopVrm();
+        await disposeWorkshopMmd();
+
+        // 清理 Live2D 预览（如果有）
+        if (live2dPreviewManager && live2dPreviewManager.currentModel) {
+            await live2dPreviewManager.removeModel(true);
+            currentPreviewModel = null;
+        }
+
+        // 隐藏 Live2D canvas 和占位符
+        const live2dCanvas = document.getElementById('live2d-preview-canvas');
+        const placeholder = document.querySelector('#live2d-preview-content .preview-placeholder');
+        if (live2dCanvas) live2dCanvas.style.display = 'none';
+        if (placeholder) placeholder.style.display = 'none';
+
+        // 更新标题
+        const title = document.getElementById('model-preview-title');
+        if (title) title.textContent = 'VRM';
+
+        // 隐藏 Live2D 控件
+        const live2dControls = document.getElementById('live2d-preview-controls');
+        if (live2dControls) live2dControls.style.display = 'none';
+
+        // 确保 VRM 模块已加载
+        const loaded = await ensureVrmModulesLoaded();
+        if (!loaded) {
+            console.error('[Workshop VRM] 模块加载失败');
+            showMessage(window.t ? window.t('steam.vrmModuleLoadFailed') || 'VRM 模块加载失败' : 'VRM 模块加载失败', 'error');
+            return;
+        }
+
+        // 显示 VRM 容器
+        const vrmContainer = document.getElementById('vrm-preview-container');
+        if (vrmContainer) vrmContainer.style.display = 'block';
+
+        // 创建 VRM 管理器实例
+        workshopVrmManager = new window.VRMManager();
+
+        // 获取光照配置
+        const lighting = rawData?.['lighting'] || null;
+
+        // 初始化 Three.js 场景
+        await workshopVrmManager.initThreeJS('vrm-preview-canvas', 'vrm-preview-container', lighting);
+
+        // 修正容器样式：VRMCore.init 会设置 position:fixed 覆盖全屏，
+        // 这里覆盖为 absolute 使其嵌入预览区域内
+        const vrmContainerEl = document.getElementById('vrm-preview-container');
+        if (vrmContainerEl) {
+            vrmContainerEl.style.position = 'absolute';
+            vrmContainerEl.style.top = '0';
+            vrmContainerEl.style.left = '0';
+            vrmContainerEl.style.width = '100%';
+            vrmContainerEl.style.height = '100%';
+            vrmContainerEl.style.zIndex = '10';
+        }
+
+        // 按预览区域实际尺寸重设渲染器大小
+        const previewContent = document.getElementById('live2d-preview-content');
+        if (previewContent && workshopVrmManager.renderer) {
+            const w = previewContent.clientWidth;
+            const h = previewContent.clientHeight;
+            if (w > 0 && h > 0) {
+                workshopVrmManager.renderer.setSize(w, h);
+                if (workshopVrmManager.camera) {
+                    workshopVrmManager.camera.aspect = w / h;
+                    workshopVrmManager.camera.updateProjectionMatrix();
+                }
+            }
+        }
+
+        // 允许 3D 交互：临时启用预览区域的 pointer-events
+        if (previewContent) previewContent.style.pointerEvents = 'auto';
+        const overlay = document.getElementById('live2d-preview-overlay');
+        if (overlay) overlay.style.display = 'none';
+
+        // 获取 idle 动画路径
+        const idleAnimation = rawData?.['idleAnimation'] || '/static/vrm/animation/wait03.vrma';
+
+        // 加载模型
+        const result = await workshopVrmManager.loadModel(modelPath, {
+            canvasId: 'vrm-preview-canvas',
+            containerId: 'vrm-preview-container',
+            addShadow: true,
+            idleAnimation: idleAnimation
+        });
+
+        if (result) {
+            console.log('[Workshop VRM] 模型预览加载成功');
+            showMessage(window.t ? window.t('steam.vrmPreviewLoaded') || 'VRM 模型预览已加载' : 'VRM 模型预览已加载', 'success');
+        }
+    } catch (error) {
+        console.error('[Workshop VRM] 加载预览失败:', error);
+        showMessage(window.t ? window.t('steam.vrmPreviewFailed') || 'VRM 模型预览加载失败' : 'VRM 模型预览加载失败', 'error');
+    }
+}
+
+// 加载 MMD 模型预览
+async function loadMmdPreview(modelPath, rawData) {
+    try {
+        // 先清理之前的 3D 预览
+        await disposeWorkshopVrm();
+        await disposeWorkshopMmd();
+
+        // 清理 Live2D 预览（如果有）
+        if (live2dPreviewManager && live2dPreviewManager.currentModel) {
+            await live2dPreviewManager.removeModel(true);
+            currentPreviewModel = null;
+        }
+
+        // 隐藏 Live2D canvas 和占位符
+        const live2dCanvas = document.getElementById('live2d-preview-canvas');
+        const placeholder = document.querySelector('#live2d-preview-content .preview-placeholder');
+        if (live2dCanvas) live2dCanvas.style.display = 'none';
+        if (placeholder) placeholder.style.display = 'none';
+
+        // 更新标题
+        const title = document.getElementById('model-preview-title');
+        if (title) title.textContent = 'MMD';
+
+        // 隐藏 Live2D 控件
+        const live2dControls = document.getElementById('live2d-preview-controls');
+        if (live2dControls) live2dControls.style.display = 'none';
+
+        // 确保 MMD 模块已加载
+        const loaded = await ensureMmdModulesLoaded();
+        if (!loaded) {
+            console.error('[Workshop MMD] 模块加载失败');
+            showMessage(window.t ? window.t('steam.mmdModuleLoadFailed') || 'MMD 模块加载失败' : 'MMD 模块加载失败', 'error');
+            return;
+        }
+
+        // 显示 MMD 容器
+        const mmdContainer = document.getElementById('mmd-preview-container');
+        if (mmdContainer) mmdContainer.style.display = 'block';
+
+        // 创建 MMD 管理器实例
+        workshopMmdManager = new window.MMDManager();
+
+        // 初始化
+        await workshopMmdManager.init('mmd-preview-canvas', 'mmd-preview-container');
+
+        // 修正容器样式：MMDCore.init 会设置 position:fixed 覆盖全屏，
+        // 这里覆盖为 absolute 使其嵌入预览区域内
+        const mmdContainerEl = document.getElementById('mmd-preview-container');
+        if (mmdContainerEl) {
+            mmdContainerEl.style.position = 'absolute';
+            mmdContainerEl.style.top = '0';
+            mmdContainerEl.style.left = '0';
+            mmdContainerEl.style.width = '100%';
+            mmdContainerEl.style.height = '100%';
+            mmdContainerEl.style.zIndex = '10';
+        }
+
+        // 按预览区域实际尺寸重设渲染器大小
+        const previewContent = document.getElementById('live2d-preview-content');
+        if (previewContent && workshopMmdManager.renderer) {
+            const w = previewContent.clientWidth;
+            const h = previewContent.clientHeight;
+            if (w > 0 && h > 0) {
+                workshopMmdManager.renderer.setSize(w, h);
+                if (workshopMmdManager.camera) {
+                    workshopMmdManager.camera.aspect = w / h;
+                    workshopMmdManager.camera.updateProjectionMatrix();
+                }
+            }
+        }
+
+        // 允许 3D 交互：临时启用预览区域的 pointer-events
+        if (previewContent) previewContent.style.pointerEvents = 'auto';
+        const overlay = document.getElementById('live2d-preview-overlay');
+        if (overlay) overlay.style.display = 'none';
+
+        // 加载模型
+        const modelInfo = await workshopMmdManager.loadModel(modelPath);
+
+        if (modelInfo) {
+            // 如果有 idle 动画，尝试加载
+            const idleAnimation = rawData?.['mmd_idle_animation'] || '';
+            if (idleAnimation && typeof workshopMmdManager.loadAnimation === 'function') {
+                try {
+                    await workshopMmdManager.loadAnimation(idleAnimation);
+                } catch (e) {
+                    console.warn('[Workshop MMD] idle 动画加载失败:', e);
+                }
+            }
+            console.log('[Workshop MMD] 模型预览加载成功');
+            showMessage(window.t ? window.t('steam.mmdPreviewLoaded') || 'MMD 模型预览已加载' : 'MMD 模型预览已加载', 'success');
+        }
+    } catch (error) {
+        console.error('[Workshop MMD] 加载预览失败:', error);
+        showMessage(window.t ? window.t('steam.mmdPreviewFailed') || 'MMD 模型预览加载失败' : 'MMD 模型预览加载失败', 'error');
+    }
+}
+
+// 清除所有模型预览（Live2D + VRM + MMD）
+async function clearAllModelPreviews(showModelNotSetMessage = false) {
+    await disposeWorkshopVrm();
+    await disposeWorkshopMmd();
+    hideAll3DPreviews();
+
+    // 恢复 Live2D 预览区域的 pointer-events 和 overlay
+    const previewContent = document.getElementById('live2d-preview-content');
+    if (previewContent) previewContent.style.pointerEvents = 'none';
+    const overlay = document.getElementById('live2d-preview-overlay');
+    if (overlay) overlay.style.display = '';
+
+    // 恢复 Live2D 标题和控件
+    const title = document.getElementById('model-preview-title');
+    if (title) {
+        title.textContent = 'Live2D';
+        title.setAttribute('data-i18n', 'steam.live2dPreview');
+    }
+    const live2dControls = document.getElementById('live2d-preview-controls');
+    if (live2dControls) live2dControls.style.display = '';
+
+    await clearLive2DPreview(showModelNotSetMessage);
+}
 
 // 清除Live2D预览并显示占位符
 async function clearLive2DPreview(showModelNotSetMessage = false) {
