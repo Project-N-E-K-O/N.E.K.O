@@ -3131,7 +3131,8 @@ async function handleUploadToWorkshop() {
 
         // 根据模型类型设置正确的字段
         if (currentModelType === 'vrm' || currentModelType === 'mmd') {
-            // VRM/MMD 模型保留原始字段，不设置 live2d
+            // VRM/MMD 模型：清除可能残留的旧 live2d 字段，防止元数据冲突
+            delete fullCharaData.live2d;
         } else {
             fullCharaData.live2d = selectedModelName;
         }
