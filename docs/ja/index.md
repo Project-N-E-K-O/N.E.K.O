@@ -10,44 +10,57 @@ hero:
     alt: N.E.K.O. ロゴ
   actions:
     - theme: brand
+      text: Steamで入手
+      link: https://store.steampowered.com/app/3117010/NEKO/
+    - theme: brand
       text: はじめる
       link: /ja/guide/
     - theme: alt
       text: APIリファレンス
-      link: /api/
+      link: /ja/api/
     - theme: alt
       text: GitHubで見る
       link: https://github.com/Project-N-E-K-O/N.E.K.O
 
 features:
-  - icon: 🏗️
-    title: マイクロサービスアーキテクチャ
-    details: 3サーバー構成（Main、Memory、Agent）で、WebSocketリアルタイム通信、ZeroMQイベントバス、ホットスワップ可能なLLMセッションを備えています。
+  - icon: 🎮
+    title: Steamワークショップ & コミュニティ
+    details: Steamで配信中。ワークショップUGCに完全対応 — キャラクター、Live2Dモデル、プラグインを共有・発見できます。Steam実績、クラウドセーブ、ワンクリック更新対応。
+    link: https://store.steampowered.com/app/3117010/NEKO/
+    linkText: Steamで見る
+  - icon: 🎙️
+    title: オムニモーダル対話
+    details: 音声・テキスト・ビジョンを統合した対話ループ。RNNoiseニューラルノイズ除去、AGC、VADによるリアルタイム音声 — 13msレイテンシ。14以上のLLMプロバイダーにすぐ対応。
     link: /ja/architecture/
     linkText: 詳しく見る
-  - icon: 🔌
-    title: プラグインSDK
-    details: Pythonプラグインで N.E.K.O. を拡張できます。デコレーターベースのAPI、非同期サポート、ライフサイクルフック、永続的な状態管理に対応しています。
-    link: /plugins/
-    linkText: プラグインを作る
-  - icon: 🌐
-    title: REST & WebSocket API
-    details: 包括的なAPIサーフェス — キャラクター、モデル、メモリ、エージェントをカバーする10のRESTルーターと、リアルタイム音声/テキストチャット用のストリーミングWebSocketプロトコル。
-    link: /api/
-    linkText: APIリファレンス
+  - icon: 💬
+    title: プロアクティブチャット
+    details: 24時間環境認識 — 画面の内容、トレンド、時間帯、祝日、個人の興味に基づいて自発的に会話を始めます。プロンプト不要。
+    link: /ja/guide/
+    linkText: 詳しく見る
   - icon: 🧠
-    title: メモリシステム
-    details: EmbeddingベクトルとBM25のハイブリッドインデックスによるセマンティック検索、時間インデックス付き履歴、スライディングウィンドウによる圧縮された最近のメモリ、永続的なユーザー設定。
+    title: 三層メモリシステム
+    details: EmbeddingベクトルとBM25のハイブリッドインデックスによるセマンティック検索。事実・振り返り・ペルソナの三層構成。スライディングウィンドウ圧縮と永続的ユーザー設定に対応。
     link: /ja/architecture/memory-system
     linkText: 仕組みを見る
   - icon: 🤖
     title: エージェントフレームワーク
-    details: MCP、Computer Use、Browser Use、仮想マシンアダプターによるバックグラウンドタスク実行。自動タスク計画、重複排除、並列機能評価に対応。
+    details: MCPツール、Computer Use、Browser Use、OpenFang A2Aアダプターによるバックグラウンドタスク実行。自動タスク計画、重複排除、並列実行に対応。
     link: /ja/architecture/agent-system
     linkText: エージェントを探る
-  - icon: 🎨
-    title: Live2D & VRM
-    details: Live2DとVRMモデルレンダリング、感情マッピング、音声クローン、5言語の国際化対応を備えたリッチなフロントエンド。
-    link: /frontend/
+  - icon: 🔌
+    title: プラグインエコシステム
+    details: Python Plugin SDK v2。マーケットプレイス配布、デコレーターAPI、非同期ライフサイクルフック、プラグイン間通信に対応。MCP、リマインダー、ビリビリ弾幕、スマートホームなどの組み込みプラグイン付き。
+    link: /ja/plugins/
+    linkText: プラグインを作る
+  - icon: 🎭
+    title: Live2D・VRM & ボイスクローン
+    details: 感情連動の表情、リップシンク、アイドルアニメーション搭載の具現化アバター。5秒の音声サンプルからMiniMaxまたはCosyVoiceでどんな声でもクローン可能。
+    link: /ja/frontend/
     linkText: フロントエンドガイド
+  - icon: 🌐
+    title: 国際化 & マルチプロバイダー
+    details: UI・プロンプト全体を7言語にローカライズ（簡体字・繁体字中国語、英語、日本語、韓国語、ロシア語）。OpenAI、Anthropic、Google、通義千問、DeepSeek、Groq、Ollamaなどに対応。
+    link: /ja/config/api-providers
+    linkText: プロバイダー一覧
 ---

@@ -34,14 +34,14 @@ function _getReservedConfigOrFallback() {
 
 function getWorkshopReservedFields() {
     const cfg = _getReservedConfigOrFallback();
-    const extraSystemFields = ['live2d_item_id', '_reserved', 'item_id', 'idleAnimation']
+    const extraSystemFields = ['live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations', 'mmd_idle_animation', 'mmd_idle_animations']
         .filter(f => cfg.all_reserved_fields.includes(f));
     return _uniqueFields([...cfg.workshop_reserved_fields, ...extraSystemFields]);
 }
 
 function getWorkshopHiddenFields() {
     const cfg = _getReservedConfigOrFallback();
-    const keySystemFields = ['live2d', 'system_prompt', 'voice_id', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation'];
+    const keySystemFields = ['live2d', 'system_prompt', 'voice_id', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations', 'mmd_idle_animation', 'mmd_idle_animations'];
     const presentSystemFields = cfg.all_reserved_fields.length > 0
         ? keySystemFields.filter(field => cfg.all_reserved_fields.includes(field))
         : keySystemFields;

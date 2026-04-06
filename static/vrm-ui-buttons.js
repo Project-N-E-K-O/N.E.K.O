@@ -629,6 +629,200 @@ VRMManager.prototype._startUIUpdateLoop = function() {
     this._uiUpdateLoopId = requestAnimationFrame(update);
 };
 
+// 为VRM的"请她回来"按钮设置拖动功能
+// 性能优化：使用 RAF 批处理 + transform 走 GPU 合成，避免每帧 layout 抖动
+VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
+    // 清理之前的 document 级别事件监听器，防止重复调用时泄漏
+    if (this._returnButtonDragHandlers) {
+        document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
+        document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
+        document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
+        document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+        this._returnButtonDragHandlers = null;
+    }
+
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let containerStartX = 0;
+    let containerStartY = 0;
+    let cachedContainerWidth = 64;
+    let cachedContainerHeight = 64;
+    let dragRAFId = null;
+    let pendingClientX = 0;
+    let pendingClientY = 0;
+
+    const handleStart = (clientX, clientY) => {
+        isDragging = true;
+        dragStartX = clientX;
+        dragStartY = clientY;
+        // 同步初始化 pending 坐标，防止 click-without-move 时
+        // commitDragPosition() 使用过期值产生错误位移
+        pendingClientX = clientX;
+        pendingClientY = clientY;
+
+        // 设置全局拖拽标志，供 preload 等跳过昂贵操作
+        if (window.DragHelpers) window.DragHelpers.isDragging = true;
+
+        // 获取当前容器的实际位置（考虑居中定位）
+        const rect = returnButtonContainer.getBoundingClientRect();
+        containerStartX = rect.left;
+        containerStartY = rect.top;
+
+        // 在拖拽开始时缓存尺寸，避免每帧读取触发 layout
+        cachedContainerWidth = rect.width || 64;
+        cachedContainerHeight = rect.height || 64;
+
+        // 清除 transform，改用像素定位
+        returnButtonContainer.style.transform = '';
+        returnButtonContainer.style.left = `${containerStartX}px`;
+        returnButtonContainer.style.top = `${containerStartY}px`;
+
+        returnButtonContainer.setAttribute('data-dragging', 'false');
+        returnButtonContainer.style.cursor = 'grabbing';
+
+        // 禁用昂贵的视觉效果：backdrop-filter（每帧重算高斯模糊）、transition（与 RAF 打架）、animation（呼吸灯重绘）
+        const returnBtn = returnButtonContainer.querySelector('#vrm-btn-return');
+        if (returnBtn) {
+            returnBtn.style.transition = 'none';
+            returnBtn.style.backdropFilter = 'none';
+            returnBtn.style.webkitBackdropFilter = 'none';
+            returnBtn.style.animation = 'none';
+        }
+    };
+
+    // 计算并应用拖拽位置（在 RAF 回调中执行，使用 transform 走 GPU 合成）
+    const applyDragPosition = () => {
+        dragRAFId = null;
+        const deltaX = pendingClientX - dragStartX;
+        const deltaY = pendingClientY - dragStartY;
+        if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
+            returnButtonContainer.setAttribute('data-dragging', 'true');
+        }
+        const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
+        const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
+
+        // 使用 transform 移动，仅走 GPU 合成，跳过 layout + paint
+        const tx = newX - containerStartX;
+        const ty = newY - containerStartY;
+        returnButtonContainer.style.transform = `translate(${tx}px, ${ty}px)`;
+    };
+
+    // 将 transform 位移落实到 left/top，并清除 transform
+    const commitDragPosition = () => {
+        const deltaX = pendingClientX - dragStartX;
+        const deltaY = pendingClientY - dragStartY;
+        if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
+            returnButtonContainer.setAttribute('data-dragging', 'true');
+        }
+        const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
+        const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
+        returnButtonContainer.style.transform = '';
+        returnButtonContainer.style.left = `${newX}px`;
+        returnButtonContainer.style.top = `${newY}px`;
+    };
+
+    // 仅记录坐标，通过 RAF 合并更新
+    const handleMove = (clientX, clientY) => {
+        if (!isDragging) return;
+        pendingClientX = clientX;
+        pendingClientY = clientY;
+        if (!dragRAFId) {
+            dragRAFId = requestAnimationFrame(applyDragPosition);
+        }
+    };
+
+    const handleEnd = () => {
+        if (isDragging) {
+            // 取消待执行的 RAF，将 transform 落实到 left/top
+            if (dragRAFId) {
+                cancelAnimationFrame(dragRAFId);
+                dragRAFId = null;
+            }
+            commitDragPosition();
+
+            setTimeout(() => returnButtonContainer.setAttribute('data-dragging', 'false'), 10);
+            isDragging = false;
+            returnButtonContainer.style.cursor = 'grab';
+
+            // 清除全局拖拽标志
+            if (window.DragHelpers) window.DragHelpers.isDragging = false;
+
+            // 恢复拖拽期间禁用的视觉效果
+            const returnBtn = returnButtonContainer.querySelector('#vrm-btn-return');
+            if (returnBtn) {
+                returnBtn.style.transition = '';
+                returnBtn.style.backdropFilter = '';
+                returnBtn.style.webkitBackdropFilter = '';
+                returnBtn.style.animation = '';
+            }
+        }
+    };
+
+    returnButtonContainer.addEventListener('mousedown', (e) => {
+        if (returnButtonContainer.contains(e.target)) {
+            e.preventDefault(); handleStart(e.clientX, e.clientY);
+        }
+    });
+
+    // 保存 document 级别的事件监听器引用，以便后续清理
+    this._returnButtonDragHandlers = {
+        mouseMove: (e) => handleMove(e.clientX, e.clientY),
+        mouseUp: handleEnd,
+        touchMove: (e) => {
+            if (isDragging) { e.preventDefault(); const touch = e.touches[0]; handleMove(touch.clientX, touch.clientY); }
+        },
+        touchEnd: handleEnd
+    };
+
+    document.addEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
+    document.addEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
+
+    returnButtonContainer.addEventListener('touchstart', (e) => {
+        if (returnButtonContainer.contains(e.target)) {
+            e.preventDefault(); const touch = e.touches[0]; handleStart(touch.clientX, touch.clientY);
+        }
+    });
+    document.addEventListener('touchmove', this._returnButtonDragHandlers.touchMove, { passive: false });
+    document.addEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+    returnButtonContainer.style.cursor = 'grab';
+};
+
+/**
+ * 添加"请她回来"按钮的呼吸灯动画效果（与 Live2D 保持一致）
+ */
+VRMManager.prototype._addReturnButtonBreathingAnimation = function () {
+    // 检查是否已经添加过样式
+    const opts = this._avatarButtonOptions;
+    if (document.getElementById(opts.returnBreathingStyleId)) {
+        return;
+    }
+
+    const style = document.createElement('style');
+    style.id = opts.returnBreathingStyleId;
+    style.textContent = `
+        /* 请她回来按钮呼吸特效 */
+        @keyframes vrmReturnButtonBreathing {
+            0%, 100% {
+                box-shadow: 0 0 8px rgba(68, 183, 254, 0.6), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08);
+            }
+            50% {
+                box-shadow: 0 0 18px rgba(68, 183, 254, 1), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08);
+            }
+        }
+        
+        #vrm-btn-return {
+            animation: vrmReturnButtonBreathing 2s ease-in-out infinite;
+            will-change: box-shadow;
+        }
+        
+        #vrm-btn-return:hover {
+            animation: none;
+        }
+    `;
+    document.head.appendChild(style);
+};
+
 /**
  * 将屏幕像素偏移量应用到 VRM 模型的世界坐标
  * 用于"请她回来"按钮被拖拽后，模型跟随出现在新位置
