@@ -61,6 +61,17 @@ body .container-header {
     background: rgba(255, 255, 255, 0.35);
 }
 
+@media (max-width: 480px) {
+    .goto-api-settings-btn {
+        position: static;
+        transform: none;
+        font-size: 12px;
+        padding: 3px 8px;
+        margin-left: auto;
+        margin-right: 8px;
+    }
+}
+
 /* API未设置弹窗 */
 .no-api-modal-overlay {
     position: fixed;
@@ -118,6 +129,33 @@ body .container-header {
 
 .no-api-modal-dismiss:hover {
     color: #666;
+}
+
+/* API未设置弹窗 - 暗色模式适配 */
+[data-theme="dark"] .no-api-modal-overlay {
+    background: rgba(0, 0, 0, 0.7);
+}
+
+[data-theme="dark"] .no-api-modal {
+    background: #1e2a3a;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .no-api-modal p {
+    color: #e0e0e0;
+}
+
+[data-theme="dark"] .no-api-modal-btn {
+    background: linear-gradient(135deg, #2a8ab5, #1565a0);
+    box-shadow: none;
+}
+
+[data-theme="dark"] .no-api-modal-dismiss {
+    color: #8899aa;
+}
+
+[data-theme="dark"] .no-api-modal-dismiss:hover {
+    color: #b0c4d8;
 }
 
 .close-page-btn {

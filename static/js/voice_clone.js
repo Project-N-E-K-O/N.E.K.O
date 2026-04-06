@@ -1,6 +1,17 @@
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
 
+// 打开API设置页（带弹窗拦截回退）
+function openApiSettings() {
+    const win = window.open('/api_key', 'apiSettings', 'width=820,height=700,scrollbars=yes,resizable=yes');
+    if (win) {
+        const modal = document.getElementById('noApiModal');
+        if (modal) modal.style.display = 'none';
+    } else {
+        location.href = '/api_key';
+    }
+}
+
 function parseVoiceRegisterError(errorObj) {
     const errorCode = errorObj?.code;
     const errorMsg = errorObj?.message || errorObj?.error || errorObj || '';
@@ -236,13 +247,17 @@ if (window.i18n && window.i18n.isInitialized) {
         const resp = await fetch('/api/config/core_api');
         if (resp.ok) {
             const cfg = await resp.json();
-            // 本地TTS服务器(ws/wss协议)不需要云端API Key
-            const ttsUrl = cfg.ttsModelUrl || '';
-            const isLocalTts = cfg.enableCustomApi && (ttsUrl.startsWith('ws://') || ttsUrl.startsWith('wss://'));
-            const hasCloneApi = isLocalTts || !!(cfg.assistApiKeyQwen || cfg.assistApiKeyMinimax || cfg.assistApiKeyMinimaxIntl);
-            if (!hasCloneApi) {
-                const modal = document.getElementById('noApiModal');
-                if (modal) modal.style.display = 'flex';
+            if (!cfg || cfg.success === false) {
+                console.warn('获取核心配置失败:', cfg?.error);
+            } else {
+                // 本地TTS服务器(ws/wss协议)不需要云端API Key
+                const ttsUrl = cfg.ttsModelUrl || '';
+                const isLocalTts = cfg.enableCustomApi && (ttsUrl.startsWith('ws://') || ttsUrl.startsWith('wss://'));
+                const hasCloneApi = isLocalTts || !!(cfg.assistApiKeyQwen || cfg.assistApiKeyMinimax || cfg.assistApiKeyMinimaxIntl);
+                if (!hasCloneApi) {
+                    const modal = document.getElementById('noApiModal');
+                    if (modal) modal.style.display = 'flex';
+                }
             }
         }
     } catch (e) {
