@@ -1976,6 +1976,13 @@ async def prepare_workshop_upload(request: Request):
                 "error": "缺少必要参数"
             }, status_code=400)
         
+        # 验证 modelType 白名单
+        if model_type not in ('live2d', 'vrm', 'mmd'):
+            return JSONResponse({
+                "success": False,
+                "error": f"不支持的模型类型: {model_type}"
+            }, status_code=400)
+        
         # 防路径穿越:只允许文件名,不允许携带路径或上级目录喵
         safe_chara_name = os.path.basename(chara_file_name)
         if safe_chara_name != chara_file_name or ".." in safe_chara_name or safe_chara_name.startswith(("/", "\\")):
@@ -2052,6 +2059,21 @@ async def prepare_workshop_upload(request: Request):
                     source_file = vrm_dir / vrm_filename
                 elif model_name.startswith('/static/vrm/'):
                     source_file = config_mgr.project_root / "static" / "vrm" / vrm_filename
+                elif model_name.startswith('/workshop/'):
+                    # Workshop VRM 模型：通过 item_id 查找安装目录
+                    source_file = None
+                    ws_parts = model_name.lstrip('/').split('/')
+                    if len(ws_parts) >= 3:
+                        ws_item_id = ws_parts[1]
+                        ws_rel_path = '/'.join(ws_parts[2:])
+                        workshop_items_result = await get_subscribed_workshop_items()
+                        if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):
+                            for item in workshop_items_result.get('items', []):
+                                if str(item.get('publishedFileId')) == ws_item_id:
+                                    installed_folder = item.get('installedFolder')
+                                    if installed_folder:
+                                        source_file = PathLib(installed_folder) / ws_rel_path
+                                    break
                 else:
                     source_file = None
                 
@@ -2100,6 +2122,28 @@ async def prepare_workshop_upload(request: Request):
                         shutil.copytree(str(source_dir), model_dest_dir, dirs_exist_ok=True)
                         logger.info(f"MMD模型目录已复制到临时目录: {model_dest_dir}")
                         model_copied = True
+                elif model_name.startswith('/workshop/'):
+                    # Workshop MMD 模型：通过 item_id 查找安装目录，复制模型所在目录
+                    ws_parts = model_name.lstrip('/').split('/')
+                    if len(ws_parts) >= 3:
+                        ws_item_id = ws_parts[1]
+                        ws_rel_path = '/'.join(ws_parts[2:])
+                        workshop_items_result = await get_subscribed_workshop_items()
+                        if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):
+                            for item in workshop_items_result.get('items', []):
+                                if str(item.get('publishedFileId')) == ws_item_id:
+                                    installed_folder = item.get('installedFolder')
+                                    if installed_folder:
+                                        source_file = PathLib(installed_folder) / ws_rel_path
+                                        if source_file.exists():
+                                            # MMD 需要复制整个模型目录（包含纹理等资源）
+                                            source_dir = source_file.parent
+                                            dest_name = source_dir.name
+                                            model_dest_dir = os.path.join(temp_item_dir, dest_name)
+                                            shutil.copytree(str(source_dir), model_dest_dir, dirs_exist_ok=True)
+                                            logger.info(f"Workshop MMD模型目录已复制到临时目录: {model_dest_dir}")
+                                            model_copied = True
+                                    break
             
             if not model_copied:
                 shutil.rmtree(temp_item_dir, ignore_errors=True)

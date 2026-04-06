@@ -2727,7 +2727,7 @@ function expandCharacterCardSection(card) {
     document.getElementById('character-card-description').value = description || '';
 
     // 存储当前角色卡的模型名称和类型供后续使用
-    window.currentCharacterCardModel = live2d;
+    window.currentCharacterCardModel = (effectiveModelType !== 'live2d' && effectiveModelPath) ? effectiveModelPath : live2d;
     window.currentCharacterCardModelType = effectiveModelType;
     window.currentCharacterCardModelPath = effectiveModelPath;
 
@@ -3649,11 +3649,13 @@ let _workshopMmdModulesLoading = false;
 async function ensureVrmModulesLoaded() {
     if (_workshopVrmModulesLoaded) return true;
     if (_workshopVrmModulesLoading) {
-        // 等待加载完成
-        return new Promise(resolve => {
+        // 等待加载完成，带超时和失败检测
+        return new Promise((resolve) => {
+            let elapsed = 0;
             const check = () => {
                 if (_workshopVrmModulesLoaded) resolve(true);
-                else setTimeout(check, 100);
+                else if (!_workshopVrmModulesLoading || elapsed >= 30000) resolve(false);
+                else { elapsed += 100; setTimeout(check, 100); }
             };
             check();
         });
@@ -3703,10 +3705,12 @@ async function ensureVrmModulesLoaded() {
 async function ensureMmdModulesLoaded() {
     if (_workshopMmdModulesLoaded) return true;
     if (_workshopMmdModulesLoading) {
-        return new Promise(resolve => {
+        return new Promise((resolve) => {
+            let elapsed = 0;
             const check = () => {
                 if (_workshopMmdModulesLoaded) resolve(true);
-                else setTimeout(check, 100);
+                else if (!_workshopMmdModulesLoading || elapsed >= 30000) resolve(false);
+                else { elapsed += 100; setTimeout(check, 100); }
             };
             check();
         });

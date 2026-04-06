@@ -2453,7 +2453,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (_mmdPathSwitch) {
                                 const mmdPath = _mmdPathSwitch;
                                 const mmdFilename = mmdPath.split(/[/\\]/).pop();
+                                // 优先完整路径匹配，其次文件名匹配
                                 const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
+                                    if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
+                                    return opt.value === mmdPath;
+                                }) || Array.from(vrmModelSelect.options).find(opt => {
                                     if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
                                     return opt.value.endsWith(mmdFilename);
                                 });
@@ -2466,7 +2470,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (!matched && catgirlConfig && catgirlConfig.vrm) {
                                 const vrmPath = catgirlConfig.vrm;
                                 const vrmFilename = vrmPath.split(/[/\\]/).pop();
+                                // 优先完整路径匹配，其次文件名匹配
                                 const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
+                                    if (!opt.value) return false;
+                                    return opt.value === vrmPath;
+                                }) || Array.from(vrmModelSelect.options).find(opt => {
                                     if (!opt.value) return false;
                                     const optFilename = opt.getAttribute('data-filename') || '';
                                     return optFilename === vrmFilename || opt.value.endsWith(vrmFilename);
