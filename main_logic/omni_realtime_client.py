@@ -237,7 +237,8 @@ class OmniRealtimeClient:
         self._image_description = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
         self._latest_image_b64 = None  # Cached latest screenshot for proactive injection
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
-        
+        self._proactive_injecting = False  # True while stream_proactive is injecting audio — suppresses mic input
+
         # Silence detection for auto-closing inactive sessions
         # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
         self._last_speech_time = None
@@ -821,7 +822,7 @@ class OmniRealtimeClient:
 
     async def stream_audio(self, audio_chunk: bytes) -> None:
         """Stream raw audio data to the API.
-        
+
         Supports two input modes:
         - 48kHz from PC: Apply RNNoise then downsample to 16kHz
         - 16kHz from mobile: Pass through directly (no RNNoise)
@@ -829,7 +830,7 @@ class OmniRealtimeClient:
         # 检查是否已发生致命错误，如果是则直接返回
         if self._fatal_error_occurred:
             return
-        
+
         current_time = time.time()
         # 本地音量判定：用原始输入做 RMS，避免 VAD 延迟时误清 buffer
         raw_samples = np.frombuffer(audio_chunk, dtype=np.int16)
@@ -885,11 +886,15 @@ class OmniRealtimeClient:
                         self._client_vad_last_speech_time = current_time
                         self._client_vad_active = True
         
+        # Suppress mic → server during proactive nudge injection (VAD above still updates)
+        if self._proactive_injecting:
+            return
+
         # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音（见 _should_clear_audio_buffer_on_silence）
         if self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path):
             self._silence_reset_pending = False
             await self.clear_audio_buffer()
-        
+
         # Gemini uses different API
         if self._is_gemini:
             await self._stream_audio_gemini(audio_chunk)
@@ -1210,6 +1215,9 @@ class OmniRealtimeClient:
             })
             logger.info("stream_proactive: injected vision text description for non-native backend")
 
+        # ── Suppress mic input during injection ────────────────────────
+        self._proactive_injecting = True
+
         # ── Send audio chunks (same pacing as hot-swap flush) ─────────
         # 320 bytes = 10 ms @16 kHz 16-bit mono, ×5 multiplier → 1600 bytes
         chunk_size = 320 * 5  # 1600 bytes = 50 ms of audio
@@ -1224,69 +1232,72 @@ class OmniRealtimeClient:
         mid_chunk = total_chunks // 2  # Insert image at the midpoint
         image_injected = False
 
-        for chunk_idx, i in enumerate(range(0, len(pcm_data), chunk_size)):
-            # Abort if AI starts responding, or user speaking (only when RNNoise VAD active)
-            if self._is_responding or (self._rnnoise_vad_active and self._client_vad_active):
-                logger.info("stream_proactive: aborted — user spoke or response started")
-                await self.clear_audio_buffer()
-                return False
+        try:
+            for chunk_idx, i in enumerate(range(0, len(pcm_data), chunk_size)):
+                # Abort if AI starts responding, or user speaking (only when RNNoise VAD active)
+                if self._is_responding or (self._rnnoise_vad_active and self._client_vad_active):
+                    logger.info("stream_proactive: aborted — user spoke or response started")
+                    await self.clear_audio_buffer()
+                    return False
 
-            chunk = pcm_data[i : i + chunk_size]
-            if self._is_gemini:
-                if self._gemini_session:
-                    await self._gemini_session.send_realtime_input(
-                        audio={"data": chunk, "mime_type": "audio/pcm"}
-                    )
-            else:
-                audio_b64 = base64.b64encode(chunk).decode()
-                await self.send_event({
-                    "type": "input_audio_buffer.append",
-                    "audio": audio_b64,
-                })
-
-            # Inject cached screenshot at midpoint (only for native-image backends)
-            if can_inject_image and not image_injected and chunk_idx >= mid_chunk and snapshot_image_b64:
+                chunk = pcm_data[i : i + chunk_size]
                 if self._is_gemini:
                     if self._gemini_session:
-                        image_bytes = base64.b64decode(snapshot_image_b64)
                         await self._gemini_session.send_realtime_input(
-                            media={"data": image_bytes, "mime_type": "image/jpeg"}
+                            audio={"data": chunk, "mime_type": "audio/pcm"}
                         )
-                elif "gpt" in self._model_lower:
+                else:
+                    audio_b64 = base64.b64encode(chunk).decode()
                     await self.send_event({
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "message",
-                            "role": "user",
-                            "content": [{
-                                "type": "input_image",
-                                "image_url": "data:image/jpeg;base64," + snapshot_image_b64,
-                            }],
-                        },
+                        "type": "input_audio_buffer.append",
+                        "audio": audio_b64,
                     })
-                elif "qwen" in self._model_lower or ("lanlan.app" in self.base_url and "free" in self._model_lower):
-                    await self.send_event({
-                        "type": "input_image_buffer.append",
-                        "image": snapshot_image_b64,
-                    })
-                elif "glm" in self._model_lower:
-                    await self.send_event({
-                        "type": "input_audio_buffer.append_video_frame",
-                        "video_frame": snapshot_image_b64,
-                    })
-                image_injected = True
-                logger.info("stream_proactive: injected screenshot at chunk %d/%d", chunk_idx, total_chunks)
 
-            await asyncio.sleep(sleep_interval)
+                # Inject cached screenshot at midpoint (only for native-image backends)
+                if can_inject_image and not image_injected and chunk_idx >= mid_chunk and snapshot_image_b64:
+                    if self._is_gemini:
+                        if self._gemini_session:
+                            image_bytes = base64.b64decode(snapshot_image_b64)
+                            await self._gemini_session.send_realtime_input(
+                                media={"data": image_bytes, "mime_type": "image/jpeg"}
+                            )
+                    elif "gpt" in self._model_lower:
+                        await self.send_event({
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{
+                                    "type": "input_image",
+                                    "image_url": "data:image/jpeg;base64," + snapshot_image_b64,
+                                }],
+                            },
+                        })
+                    elif "qwen" in self._model_lower or ("lanlan.app" in self.base_url and "free" in self._model_lower):
+                        await self.send_event({
+                            "type": "input_image_buffer.append",
+                            "image": snapshot_image_b64,
+                        })
+                    elif "glm" in self._model_lower:
+                        await self.send_event({
+                            "type": "input_audio_buffer.append_video_frame",
+                            "video_frame": snapshot_image_b64,
+                        })
+                    image_injected = True
+                    logger.info("stream_proactive: injected screenshot at chunk %d/%d", chunk_idx, total_chunks)
 
-        # Mark vision context consumed only if the shared image hasn't been
-        # replaced by a newer frame from stream_image() during our async loop.
-        if has_vision and self._latest_image_b64 == snapshot_image_b64:
-            self._proactive_image_consumed = True
-        logger.info("stream_proactive: audio injection complete (%s%s), waiting for VAD → response",
-                     "vision" if has_vision else "general",
-                     "+image" if image_injected else "")
-        return True
+                await asyncio.sleep(sleep_interval)
+
+            # Mark vision context consumed only if the shared image hasn't been
+            # replaced by a newer frame from stream_image() during our async loop.
+            if has_vision and self._latest_image_b64 == snapshot_image_b64:
+                self._proactive_image_consumed = True
+            logger.info("stream_proactive: audio injection complete (%s%s), waiting for VAD → response",
+                         "vision" if has_vision else "general",
+                         "+image" if image_injected else "")
+            return True
+        finally:
+            self._proactive_injecting = False
 
     async def cancel_response(self) -> None:
         """Cancel the current response."""
