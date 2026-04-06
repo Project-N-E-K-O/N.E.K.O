@@ -1282,6 +1282,8 @@ class VRMInteraction {
             }
         };
         const onBlur = () => {
+            // 锁定状态下 blur 通常由鼠标穿透点击引起，保留淡化状态避免闪烁
+            if (this.checkLocked()) return;
             clearStationaryFadeTimer();
             // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
             if (stationaryFadeActive) {
@@ -1308,8 +1310,10 @@ class VRMInteraction {
         window.addEventListener('blur', onBlur);
 
         canvas.addEventListener('mouseenter', onMouseEnter);
-        canvas.addEventListener('pointermove', onPointerMove);
-        canvas.addEventListener('mousemove', onPointerMove);
+        // 监听 window 而非 canvas，使得鼠标穿透模式下 preload 轮询派发的
+        // 合成 pointermove 事件也能到达此处，保持淡化机制正常工作
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('mousemove', onPointerMove);
 
         this._vrmCtrlKeyDownListener = onKeyDown;
         this._vrmCtrlKeyUpListener = onKeyUp;
@@ -1344,8 +1348,8 @@ class VRMInteraction {
             this._floatingButtonsMouseLeave = null;
         }
         if (this._floatingButtonsPointerMove) {
-            canvas.removeEventListener('pointermove', this._floatingButtonsPointerMove);
-            canvas.removeEventListener('mousemove', this._floatingButtonsPointerMove);
+            window.removeEventListener('pointermove', this._floatingButtonsPointerMove);
+            window.removeEventListener('mousemove', this._floatingButtonsPointerMove);
             this._floatingButtonsPointerMove = null;
         }
         // 清理 Ctrl 键 / blur 监听器
