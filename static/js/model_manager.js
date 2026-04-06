@@ -7199,7 +7199,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // MMD 模型：在合并列表中查找 [MMD] 选项
                     const mmdPath = typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path;
                     const mmdFilename = mmdPath.split(/[/\\]/).pop();
+                    // 优先完整路径匹配，其次文件名匹配
                     const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
+                        if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
+                        return opt.value === mmdPath;
+                    }) || Array.from(vrmModelSelect.options).find(opt => {
                         if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
                         return opt.value.endsWith(mmdFilename);
                     });
