@@ -2434,6 +2434,7 @@
         "weibo": "🌏 微博",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 网易云音乐",
         "saveConfig": "保存配置",
         "encryptStorage": "安全加密存储至本地文件",
         "localMonitoring": "本地状态监控",
@@ -2459,7 +2460,8 @@
             "kuaishou": "📌 <b>目标：</b> 请前往 <b>kuaishou.com</b> 获取这些 Cookies。",
             "weibo": "📌 <b>目标：</b> 请前往 <b>weibo.com</b> 获取这些 Cookies。",
             "twitter": "📌 <b>目标：</b> 请前往 <b>x.com</b> 获取这些 Cookies。",
-            "reddit": "📌 <b>目标：</b> 请前往 <b>reddit.com</b> 获取这些 Cookies。"
+            "reddit": "📌 <b>目标：</b> 请前往 <b>reddit.com</b> 获取这些 Cookies。",
+            "netease": "📌 <b>目标：</b> 请前往 <b>music.163.com</b> 获取这些 Cookies。"
         },
         "guide": {
             "title": "新手通用获取教程",
@@ -2541,6 +2543,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF 令牌"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "核心身份凭证 (必填)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "设备标识 (选填)"
             }
         },
         "status": {

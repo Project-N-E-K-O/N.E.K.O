@@ -2434,6 +2434,7 @@
         "weibo": "🌏 위보 (Weibo)",
         "twitter": "🐦 트위터/X (Twitter/X)",
         "reddit": "👽 레딧 (Reddit)",
+        "netease": "🎶网易云음악",
         "saveConfig": "설정 저장",
         "encryptStorage": "로컬 파일에 안전하게 암호화 저장",
         "localMonitoring": "로컬 상태 모니터링",
@@ -2459,7 +2460,8 @@
             "kuaishou": "📌 <b>대상:</b> <b>kuaishou.com</b>에 접속하여 해당 쿠키를 가져오세요.",
             "weibo": "📌 <b>대상:</b> <b>weibo.com</b>에 접속하여 해당 쿠키를 가져오세요.",
             "twitter": "📌 <b>대상:</b> <b>x.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "reddit": "📌 <b>대상:</b> <b>reddit.com</b>에 접속하여 해당 쿠키를 가져오세요."
+            "reddit": "📌 <b>대상:</b> <b>reddit.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "netease": "📌 <b>대상:</b> <b>music.163.com</b>에 접속하여 해당 쿠키를 가져오세요."
         },
         "guide": {
             "title": "초보자를 위한 공통 가이드",
@@ -2541,6 +2543,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF 토큰"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "핵심 신원 증명 (필수)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "장치 식별자 (선택)"
             }
         },
         "status": {

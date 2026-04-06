@@ -2434,6 +2434,7 @@
         "weibo": "🌏 微博",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 網易雲音樂",
         "saveConfig": "儲存設定",
         "encryptStorage": "安全加密儲存至本地檔案",
         "localMonitoring": "本地狀態監控",
@@ -2459,7 +2460,8 @@
             "kuaishou": "📌 <b>目標：</b> 請前往 <b>kuaishou.com</b> 獲取這些 Cookies。",
             "weibo": "📌 <b>目標：</b> 請前往 <b>weibo.com</b> 獲取這些 Cookies。",
             "twitter": "📌 <b>目標：</b> 請前往 <b>x.com</b> 獲取這些 Cookies。",
-            "reddit": "📌 <b>目標：</b> 請前往 <b>reddit.com</b> 獲取這些 Cookies。"
+            "reddit": "📌 <b>目標：</b> 請前往 <b>reddit.com</b> 獲取這些 Cookies。",
+            "netease": "📌 <b>目標：</b> 請前往 <b>music.163.com</b> 獲取這些 Cookies。"
         },
         "guide": {
             "title": "新手通用獲取教學",
@@ -2541,6 +2543,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF 令牌"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "核心身份憑證 (必填)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "設備識別碼 (選填)"
             }
         },
         "status": {

@@ -272,6 +272,24 @@ class NeteaseCrawler(BaseMusicCrawler):
             'Referer': 'https://music.163.com/',
             'Content-Type': 'application/x-www-form-urlencoded'
         })
+        self._load_cookies()
+
+    def _load_cookies(self):
+        """动态加载本地配置的 Netease Cookie"""
+        try:
+            from utils.cookies_login import load_cookies_from_file
+            cookies = load_cookies_from_file('netease')
+            if cookies:
+                cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+                # Update httpx client headers with the stored cookie string
+                self.client.headers.update({'Cookie': cookie_str})
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f"[{self.platform_name}] 成功自适应加载媒体凭证 (MUSIC_U)")
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"[{self.platform_name}] 加载 Cookie 失败 (此异常不影响服务启动): {e}")
 
     async def search(self, keyword: str, limit: int = 1) -> List[Dict[str, Any]]:
         self._refresh_user_agent()

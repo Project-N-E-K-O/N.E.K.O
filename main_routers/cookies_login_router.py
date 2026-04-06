@@ -77,6 +77,7 @@ class CookieSubmit(BaseModel):
 def validate_platform_fields(platform: str, cookies: Dict[str, str]):
     """统一的各平台核心字段防呆校验"""
     platform_validations = {
+        "netease": ["MUSIC_U"],
         "bilibili": ["SESSDATA"],
         "douyin": ["sessionid", "ttwid"],
         "kuaishou": ["kuaishou.server.web_st", "userId"], 
@@ -259,7 +260,9 @@ async def get_CanQRLoginLists():
 
 
 
-def get_nested_value(data: dict, path: str ,default=None):
+def get_nested_value(data: dict, path: str, default=None):
+    if not path:
+        return data
     value = data
     for key in path.split("."):
         if isinstance(value, dict) and key in value:
@@ -280,8 +283,18 @@ async def api_get_qr_code(
     response_config = config.get("response", {})
     
     try:
+        import time
+        ts = str(int(time.time() * 1000))
         async with httpx.AsyncClient() as client:
-            response = await client.get(url=config["get"], headers=config["headers"], timeout=10)
+            req_method = config.get("method", "GET").upper()
+            raw_get_params = config.get("get_params", {})
+            # 处理动态参数插入
+            req_data = {k: (v.replace("{{timestamp}}", ts) if isinstance(v, str) else v) for k, v in raw_get_params.items()}
+
+            if req_method == "POST":
+                response = await client.post(url=config["get"], headers=config["headers"], data=req_data, timeout=10)
+            else:
+                response = await client.get(url=config["get"], headers=config["headers"], params=req_data, timeout=10)
             response.raise_for_status()
             resp_data = response.json()
         
@@ -297,6 +310,11 @@ async def api_get_qr_code(
         
         qrcode_key = get_nested_value(data, qrcode_key_path) if "." in qrcode_key_path else data.get(qrcode_key_path)
         qrcode_url = get_nested_value(data, qrcode_url_path) if "." in qrcode_url_path else data.get(qrcode_url_path)
+        
+        # 兼容自定义拼接，例如网易云的二维码 URL 需要直接用 key 去拼
+        url_template = response_config.get("qrcode_url_template")
+        if url_template and qrcode_key:
+            qrcode_url = url_template.replace("{{qrcode_key}}", str(qrcode_key))
         
         if not qrcode_key or not qrcode_url:
             raise HTTPException(status_code=500, detail="二维码数据解析失败")
@@ -349,13 +367,28 @@ async def api_qr_login_poll(
     cookie_fields = config.get("cookie_fields", [])
     
     try:
+        import time
+        ts = str(int(time.time() * 1000))
+        req_method = config.get("method", "GET").upper()
+        # 处理动态参数插入
+        raw_poll_params = config.get("poll_params", {"qrcode_key": "{{qrcode_key}}"})
+        processed_params = {k: (v.replace("{{qrcode_key}}", qrcode_key).replace("{{timestamp}}", ts) if isinstance(v, str) else v) for k, v in raw_poll_params.items()}
+
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                url=config["login"], 
-                params={"qrcode_key": qrcode_key}, 
-                headers=config["headers"],
-                timeout=10
-            )
+            if req_method == "POST":
+                response = await client.post(
+                    url=config["login"], 
+                    data=processed_params, 
+                    headers=config["headers"],
+                    timeout=10
+                )
+            else:
+                response = await client.get(
+                    url=config["login"], 
+                    params=processed_params, 
+                    headers=config["headers"],
+                    timeout=10
+                )
             resp_data = response.json()
         
         poll_code_path = response_config.get("poll_code_path", "data.code")
@@ -408,7 +441,7 @@ async def api_qr_login_poll(
 
 #存在用于直接复制后替换内容的方便示例,不需要检查NetworkQRLoginInfo["示例"]内部的东西
 NetworkQRLoginInfo = {
-    "Bilibili": {
+    "bilibili": {
         "get": "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
         "login": "https://passport.bilibili.com/x/passport-login/web/qrcode/poll",
         "timeout": 180,
@@ -437,6 +470,34 @@ NetworkQRLoginInfo = {
             86101: {"status": "waiting", "message": "未扫码"},
             86090: {"status": "scanned", "message": "已扫码,等待确认"},
             86038: {"status": "expired", "message": "二维码已失效"}
+        }
+    },
+    "netease": {
+        "method": "POST",
+        "get": "https://music.163.com/api/login/qrcode/unikey",
+        "login": "https://music.163.com/api/login/qrcode/client/login",
+        "get_params": {"type": "1", "timerstamp": "{{timestamp}}"},
+        "poll_params": {"type": "1", "key": "{{qrcode_key}}", "timerstamp": "{{timestamp}}"},
+        "timeout": 180,
+        "cookie_fields": ["MUSIC_U"],
+        "headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://music.163.com/",
+            "Accept": "application/json, text/plain, */*"
+        },
+        "response": {
+            "success_code": 200,
+            "data_path": "",
+            "qrcode_key_path": "unikey",
+            "qrcode_url_template": "https://music.163.com/login?codekey={{qrcode_key}}",
+            "poll_code_path": "code",
+            "poll_message_path": "message"
+        },
+        "status_codes": {
+            803: {"status": "success", "message": "登录成功"},
+            801: {"status": "waiting", "message": "未扫码"},
+            802: {"status": "scanned", "message": "已扫码,等待确认"},
+            800: {"status": "expired", "message": "二维码已失效"}
         }
     },
     "示例": {

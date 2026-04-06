@@ -2434,6 +2434,7 @@
         "weibo": "🌏 微博 (Weibo)",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 网易雲音楽",
         "saveConfig": "設定を保存",
         "encryptStorage": "ローカルファイルに安全に暗号化保存",
         "localMonitoring": "ローカルステータス監視",
@@ -2459,7 +2460,8 @@
             "kuaishou": "📌 <b>対象：</b> <b>kuaishou.com</b> にアクセスして Cookie を取得してください。",
             "weibo": "📌 <b>対象：</b> <b>weibo.com</b> にアクセスして Cookie を取得してください。",
             "twitter": "📌 <b>対象：</b> <b>x.com</b> にアクセスして Cookie を取得してください。",
-            "reddit": "📌 <b>対象：</b> <b>reddit.com</b> にアクセスして Cookie を取得してください。"
+            "reddit": "📌 <b>対象：</b> <b>reddit.com</b> にアクセスして Cookie を取得してください。",
+            "netease": "📌 <b>対象：</b> <b>music.163.com</b> にアクセスして Cookie を取得してください。"
         },
         "guide": {
             "title": "初心者向け共通ガイド",
@@ -2541,6 +2543,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRFトークン"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "コア身份凭证 (必須)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "デバイス識別子 (任意)"
             }
         },
         "status": {

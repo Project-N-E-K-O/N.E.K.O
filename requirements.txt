@@ -117,7 +117,7 @@ cython==3.2.4 ; platform_system != 'darwin' and sys_platform == 'darwin'
 dashscope==1.25.4
     # via n-e-k-o
 diskcache==5.6.3
-    # via neteasecloudmusic
+
 distro==1.9.0
     # via
     #   anthropic
@@ -252,7 +252,7 @@ multidict==6.6.4
     # via
     #   aiohttp
     #   yarl
-neteasecloudmusic==0.1.10
+pyncm-async>=1.8.0
     # via n-e-k-o
 numpy==1.26.4
     # via
@@ -312,7 +312,7 @@ psutil==7.2.2
     #   browser-use
     #   n-e-k-o
 py-mini-racer==0.6.0
-    # via neteasecloudmusic
+
 pyasn1==0.6.1
     # via
     #   pyasn1-modules
@@ -1146,7 +1146,6 @@ requests==2.32.5
     #   google-auth
     #   google-genai
     #   n-e-k-o
-    #   neteasecloudmusic
     #   posthog
     #   requests-oauthlib
     #   translatepy

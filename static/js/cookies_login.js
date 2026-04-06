@@ -7,6 +7,16 @@
  * 4. 自动检测并刷新状态
  */
 const PLATFORM_CONFIG_DATA = {
+    'netease': {
+        name: '网易云音乐',
+        nameKey: 'cookiesLogin.netease',
+        icon: '🎶', theme: '#c20c0c',
+        instructionKey: 'cookiesLogin.instructions.netease',
+        fields: [
+            { key: 'MUSIC_U', labelKey: 'cookiesLogin.fields.MUSIC_U.label', descKey: 'cookiesLogin.fields.MUSIC_U.desc', required: true },
+            { key: 'NMTID', labelKey: 'cookiesLogin.fields.NMTID.label', descKey: 'cookiesLogin.fields.NMTID.desc', required: false }
+        ]
+    },
     'bilibili': {
         name: 'Bilibili', 
         nameKey: 'cookiesLogin.bilibili',
@@ -84,7 +94,7 @@ const safeT = (key, fallback = '') => {
 };
 
 let PLATFORM_CONFIG = {};
-let currentPlatform = 'bilibili';
+let currentPlatform = 'netease';
 
 // 当语言切换时，重新初始化平台配置
 function initPlatformConfig() {
@@ -166,7 +176,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('localechange', handleLocaleChange);
     
     const firstTab = document.querySelector('.tab-btn');
-    if (firstTab) switchTab('bilibili', firstTab);
+    if (firstTab) switchTab('netease', firstTab);
     refreshStatusList();
 });
 
@@ -223,7 +233,10 @@ async function showQRLogin(config, platformKey) {
     qrSupportedPlatforms = await resp.json();
     if (currentPlatform !== platformKey) return;
 
-    if (qrSupportedPlatforms.includes(config["name"])){
+    // 采用多重匹配：优先转换后台返回的列表为全小写比对 platformKey，同时兼容已有的原始比对以防止破坏遗留代码
+    const isSupported = qrSupportedPlatforms.map(k => k.toLowerCase()).includes(platformKey.toLowerCase()) || qrSupportedPlatforms.includes(config["name"]);
+
+    if (isSupported){
         const QRinfo =  document.createElement("div");
         const butt = document.createElement("button");
         QRinfo.innerHTML = safeT('cookiesLogin.qrLogin.tryQR', '或者...试试扫码登陆?');
@@ -262,7 +275,7 @@ async function requestQR(config, platformKey) {
         const response = await fetch('/api/auth/get_QR', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ platform: config["name"] })
+            body: JSON.stringify({ platform: platformKey })
         });
         
 
@@ -348,7 +361,7 @@ function startQrPoll(config, platformKey) {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
-                    platform: config["name"], 
+                    platform: platformKey, 
                     qrcode_key: expectedQrKey 
                 })
             });
@@ -470,7 +483,15 @@ function stopQrPoll() {
 
 // 切换选项卡时，更新当前平台配置
 function switchTab(platformKey, btnElement, isReRender = false) {
-    if (!PLATFORM_CONFIG[platformKey]) return;
+    if (!PLATFORM_CONFIG[platformKey]) {
+        console.error(`PLATFORM_CONFIG is missing for ${platformKey}`);
+        return;
+    }
+
+    if (!isReRender && currentPlatform === platformKey && btnElement && btnElement.classList.contains('active')) {
+        return;
+    }
+
     stopQrPoll();
     currentQrKey = null;
     if (qrRefreshTimeout) {
