@@ -5,6 +5,8 @@
  */
 // 全局变量：是否为中国大陆用户
 let isMainlandChinaUser = false;
+// 全局变量：是否正在加载已保存的配置（防止 setKeyEditable 清空已设置的 API Key）
+let _isLoadingSavedConfig = false;
 
 // API Key 管理簿注册表（从后端加载）
 let _apiKeyRegistry = {};
@@ -444,6 +446,7 @@ function onCustomModelProviderChange(modelType) {
     const setKeyEditable = (input) => {
         if (!input) return;
         input.removeAttribute('readonly');
+        if (_isLoadingSavedConfig) return;
         // 清除残留的遮蔽状态和遮蔽值，让用户从空白开始输入
         input.dataset.realKey = '';
         input.value = '';
@@ -859,6 +862,7 @@ async function loadCurrentApiKey() {
             setInputValue('mcpTokenInput', data.mcpToken);
 
             // Load *ModelProvider for each model type and apply
+            _isLoadingSavedConfig = true;
             MODEL_TYPES.forEach(mt => {
                 const providerField = `${mt}ModelProvider`;
                 const sel = document.getElementById(providerField);
@@ -885,6 +889,7 @@ async function loadCurrentApiKey() {
                 }
                 onCustomModelProviderChange(mt);
             });
+            _isLoadingSavedConfig = false;
 
             // 加载自定义API启用状态
             if (typeof data.enableCustomApi === 'boolean' && document.getElementById('enableCustomApi')) {
@@ -900,6 +905,8 @@ async function loadCurrentApiKey() {
     } catch (error) {
         console.error('loadCurrentApiKey error:', error);
         showCurrentApiKey(window.t ? window.t('api.errorGettingCurrentApiKey') : '获取当前API Key时出错', '', false);
+    } finally {
+        _isLoadingSavedConfig = false;
     }
 }
 
