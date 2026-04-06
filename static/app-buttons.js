@@ -760,7 +760,7 @@
 
                     // Achievement: meow detection
                     if (window.incrementAchievementCounter) {
-                        var meowPattern = /\u55B5|miao|meow|nya|\u306B\u3083/i;
+                        var meowPattern = /\u55B5|miao|meow|nya[no]?|\u306B\u3083|\uB0E5|\u043C\u044F\u0443/i;
                         if (meowPattern.test(text)) {
                             try {
                                 window.incrementAchievementCounter('meowCount');

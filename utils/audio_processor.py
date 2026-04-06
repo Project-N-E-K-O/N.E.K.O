@@ -32,28 +32,153 @@ DEBUG_SAVE_AUDIO = False
 DEBUG_AUDIO_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "debug_audio")
 # ===============================================
 
-# Lazy import pyrnnoise
-_RNNoise = None
+# Direct ctypes loading of rnnoise native library.
+# We bypass ALL pyrnnoise Python code because pyrnnoise/__init__.py
+# unconditionally imports pyrnnoise.pyrnnoise which imports audiolab,
+# and audiolab is excluded from Nuitka via --nofollow-import-to.
+# Python's import system executes __init__.py even for submodule imports,
+# so there is no way to import pyrnnoise.rnnoise without triggering audiolab.
+import sys
+import ctypes
+import platform
+import importlib.util
+
+_rnnoise_lib = None
 _rnnoise_available = None
 
+
+def _find_rnnoise_dll() -> str:
+    """Locate rnnoise native library inside pyrnnoise package-data."""
+    names = {
+        "Windows": "rnnoise.dll",
+        "Darwin": "librnnoise.dylib",
+        "Linux": "librnnoise.so",
+    }
+    lib_name = names.get(platform.system())
+    if lib_name is None:
+        raise OSError(f"Unsupported platform: {platform.system()}")
+
+    tried: list[str] = []
+
+    # 1. find_spec — normal Python / venv / uv (does NOT execute __init__.py)
+    spec = importlib.util.find_spec("pyrnnoise")
+    if spec is not None and spec.submodule_search_locations:
+        for search_dir in spec.submodule_search_locations:
+            candidate = os.path.join(search_dir, lib_name)
+            tried.append(candidate)
+            if os.path.isfile(candidate):
+                return candidate
+
+    # 2. Nuitka standalone — --include-data-files places it at <exe_dir>/pyrnnoise/
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    for sub in ("pyrnnoise", "."):
+        candidate = os.path.join(exe_dir, sub, lib_name)
+        tried.append(candidate)
+        if os.path.isfile(candidate):
+            return candidate
+
+    raise OSError(f"{lib_name} not found. Searched: {tried}")
+
+
+def _load_rnnoise_native():
+    """Load rnnoise native library and return a lightweight API object."""
+    lib_path = _find_rnnoise_dll()
+    lib = ctypes.CDLL(lib_path)
+
+    lib.rnnoise_create.argtypes = [ctypes.c_void_p]
+    lib.rnnoise_create.restype = ctypes.c_void_p
+    lib.rnnoise_destroy.argtypes = [ctypes.c_void_p]
+    lib.rnnoise_destroy.restype = None
+    lib.rnnoise_get_frame_size.argtypes = []
+    lib.rnnoise_get_frame_size.restype = ctypes.c_int
+    lib.rnnoise_process_frame.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.POINTER(ctypes.c_float),
+    ]
+    lib.rnnoise_process_frame.restype = ctypes.c_float
+
+    frame_size = lib.rnnoise_get_frame_size()
+
+    class _Lib:
+        FRAME_SIZE = frame_size
+        SAMPLE_RATE = 48000
+
+        @staticmethod
+        def create():
+            return lib.rnnoise_create(None)
+
+        @staticmethod
+        def destroy(state):
+            lib.rnnoise_destroy(state)
+
+        @staticmethod
+        def process_mono_frame(state, frame):
+            if frame.dtype == np.int16:
+                frame = frame.astype(np.float32)
+            else:
+                frame = (frame * 32767).astype(np.float32)
+            n = len(frame)
+            if n < frame_size:
+                frame = np.pad(frame, (0, frame_size - n))
+            ptr = frame.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            prob = lib.rnnoise_process_frame(state, ptr, ptr)
+            return np.clip(np.round(frame), -32768, 32767).astype(np.int16)[:n], float(prob)
+
+    return _Lib()
+
+
 def _get_rnnoise():
-    """Lazy load RNNoise module."""
-    global _RNNoise, _rnnoise_available
+    """Lazy load rnnoise native library."""
+    global _rnnoise_lib, _rnnoise_available
     if _rnnoise_available is None:
         try:
-            from pyrnnoise import RNNoise
-            _RNNoise = RNNoise
+            _rnnoise_lib = _load_rnnoise_native()
             _rnnoise_available = True
-            logger.info("✅ pyrnnoise library loaded successfully")
-        except ImportError:
-            logger.warning("⚠️ pyrnnoise library not installed. Run: pip install pyrnnoise")
-            _rnnoise_available = False
+            logger.info(f"✅ rnnoise loaded (frame_size={_rnnoise_lib.FRAME_SIZE})")
         except Exception as e:
-            # Nuitka 打包后可能出现 TypeError: iter() returned non-iterator
-            # 这是 Jinja2 PackageLoader 与 Nuitka 资源系统不兼容导致的
-            logger.warning(f"⚠️ pyrnnoise import failed (Nuitka compatibility issue): {e}")
+            logger.warning(f"⚠️ rnnoise not available: {e}")
             _rnnoise_available = False
-    return _RNNoise if _rnnoise_available else None
+    return _rnnoise_lib if _rnnoise_available else None
+
+
+class _LiteDenoiser:
+    """Lightweight RNNoise wrapper using direct ctypes calls.
+    
+    No pyrnnoise / audiolab / av Python imports — only the native DLL.
+    """
+
+    def __init__(self, rnnoise_lib):
+        self._lib = rnnoise_lib
+        self._state = rnnoise_lib.create()
+        if not self._state:
+            raise RuntimeError("rnnoise_create() returned NULL — native library failed to initialise")
+
+    def process_frame(self, frame_int16: np.ndarray):
+        """Process one mono 480-sample int16 frame.
+        
+        Returns (denoised_int16, speech_prob_float).
+        """
+        return self._lib.process_mono_frame(self._state, frame_int16)
+
+    def reset(self):
+        new_state = self._lib.create()
+        if not new_state:
+            raise RuntimeError("rnnoise_create() returned NULL during reset")
+        old_state = self._state
+        self._state = new_state
+        if old_state:
+            self._lib.destroy(old_state)
+
+    def __del__(self):
+        lib = getattr(self, "_lib", None)
+        state = getattr(self, "_state", None)
+        if lib is not None and state:
+            try:
+                lib.destroy(state)
+            except Exception:
+                pass
+            self._state = None
 
 
 class AudioProcessor:
@@ -149,7 +274,6 @@ class AudioProcessor:
         if not self.noise_reduce_enabled:
             return
         
-        # RNNoise requires input at exactly 48kHz
         if self.input_sample_rate != self.RNNOISE_SAMPLE_RATE:
             logger.warning(
                 f"⚠️ Skipping RNNoise initialization: input sample rate "
@@ -157,10 +281,10 @@ class AudioProcessor:
             )
             return
             
-        RNNoise = _get_rnnoise()
-        if RNNoise:
+        rnnoise_mod = _get_rnnoise()
+        if rnnoise_mod:
             try:
-                self._denoiser = RNNoise(sample_rate=self.RNNOISE_SAMPLE_RATE)
+                self._denoiser = _LiteDenoiser(rnnoise_mod)
                 logger.info("🔊 RNNoise denoiser initialized")
             except Exception:  # noqa: BLE001 - RNNoise can fail for various reasons (missing libs, bad state); must catch all to ensure graceful fallback
                 logger.exception("❌ Failed to initialize RNNoise")
@@ -249,26 +373,17 @@ class AudioProcessor:
         if len(self._frame_buffer) > max_buffer_samples:
             self._frame_buffer = self._frame_buffer[-max_buffer_samples:]
         
-        # Process complete frames
         output_frames = []
         while len(self._frame_buffer) >= self.RNNOISE_FRAME_SIZE:
             frame = self._frame_buffer[:self.RNNOISE_FRAME_SIZE]
             self._frame_buffer = self._frame_buffer[self.RNNOISE_FRAME_SIZE:]
             
-            # RNNoise expects [channels, samples] format with int16
-            frame_2d = frame.reshape(1, -1)
-            
             try:
-                # Process frame - pyrnnoise takes int16 and returns int16
-                for speech_prob, denoised_frame in self._denoiser.denoise_chunk(frame_2d):
-                    prob = float(speech_prob[0])
-                    self._last_speech_prob = prob
-                    
-                    # Track last time speech was detected
-                    if prob > 0.2:
-                        self._last_speech_time = time.time()
-                    
-                    output_frames.append(denoised_frame.flatten())
+                denoised, prob = self._denoiser.process_frame(frame)
+                self._last_speech_prob = prob
+                if prob > 0.2:
+                    self._last_speech_time = time.time()
+                output_frames.append(denoised)
             except Exception as e:
                 logger.error(f"❌ RNNoise processing error: {e}")
                 output_frames.append(frame)
@@ -352,9 +467,13 @@ class AudioProcessor:
     
     def set_enabled(self, enabled: bool) -> None:
         """Enable or disable noise reduction."""
+        prev = self.noise_reduce_enabled
         self.noise_reduce_enabled = enabled
         if enabled and self._denoiser is None:
             self._init_denoiser()
+        if prev != enabled:
+            self._frame_buffer = np.array([], dtype=np.int16)
+            self._agc_gain = 1.0
         logger.info(f"🎤 Noise reduction {'enabled' if enabled else 'disabled'}")
     
     def set_agc_enabled(self, enabled: bool) -> None:

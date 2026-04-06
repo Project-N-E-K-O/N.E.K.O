@@ -119,6 +119,12 @@ class OmniOfflineClient:
 
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡
 
+    def update_max_response_length(self, max_length: int) -> None:
+        """更新回复字数限制(用户可能在对话期间修改设置)"""
+        if isinstance(max_length, int) and max_length >= 0:
+            self.max_response_length = max_length if max_length > 0 else 999999
+            logger.debug(f"OmniOfflineClient: 字数限制已更新为 {max_length}")
+
     def _match_name_prefix(self, text: str, name: str) -> int:
         """Check if text starts with a name prefix like 'Name | ' or 'Name |'.
         Returns the length of the matched prefix, or 0 if no match.

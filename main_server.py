@@ -825,7 +825,7 @@ def _sync_preload_modules():
     - aiohttp: 通过 tts_client.py
     
     真正需要预加载的延迟导入模块：
-    - pyrnnoise/audiolab: audio_processor.py 中通过 _get_rnnoise() 延迟加载
+    - pyrnnoise.rnnoise: audio_processor.py 中通过 _get_rnnoise() 延迟加载
     - dashscope: tts_client.py 中仅在 cosyvoice_vc_tts_worker 函数内部导入
     - googletrans/translatepy: language_utils.py 中延迟导入的翻译库
     - translation_service: language_utils.py 中的翻译服务（TranslationService）
@@ -857,14 +857,13 @@ def _sync_preload_modules():
     except Exception as e:
         logger.debug(f"⚠️ 翻译服务预加载失败（不影响使用）: {e}")
     
-    # 3. pyrnnoise/audiolab (音频降噪 - 延迟加载，可能较慢)
+    # 3. pyrnnoise (音频降噪 - 延迟加载，可能较慢)
     try:
-        from utils.audio_processor import _get_rnnoise
-        RNNoise = _get_rnnoise()
-        if RNNoise:
-            # 创建临时实例以预热神经网络权重加载
-            _warmup_instance = RNNoise(sample_rate=48000)
-            del _warmup_instance
+        from utils.audio_processor import _get_rnnoise, _LiteDenoiser
+        rnnoise_mod = _get_rnnoise()
+        if rnnoise_mod:
+            _warmup = _LiteDenoiser(rnnoise_mod)
+            del _warmup
             logger.debug("  ✓ pyrnnoise loaded and warmed up")
         else:
             logger.debug("  ✗ pyrnnoise not available")

@@ -275,7 +275,9 @@ _ALLOWED_CONVERSATION_SETTINGS = {
     'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
     'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
     'proactiveMusicEnabled', 'proactiveMemeEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
-    'proactiveChatInterval', 'proactiveVisionInterval', 'subtitleEnabled', 'userLanguage'
+    'avatarReactionBubbleEnabled',
+    'proactiveChatInterval', 'proactiveVisionInterval', 'subtitleEnabled', 'userLanguage',
+    'textGuardMaxLength', 'noiseReductionEnabled'
 }
 
 
@@ -347,10 +349,12 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
         _BOOL_FIELDS = {
             'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
             'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-            'proactiveMusicEnabled', 'mergeMessagesEnabled', 'focusModeEnabled', 'subtitleEnabled'
+            'proactiveMusicEnabled', 'proactiveMemeEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
+            'avatarReactionBubbleEnabled', 'subtitleEnabled', 'noiseReductionEnabled'
         }
         _INT_INTERVAL_FIELDS = {'proactiveChatInterval', 'proactiveVisionInterval'}
         _STRING_FIELDS = {'userLanguage'}
+        _INT_LIMIT_FIELDS = {'textGuardMaxLength'}
 
         validated = {}
         for k, v in filtered_settings.items():
@@ -363,10 +367,17 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
             elif k in _STRING_FIELDS:
                 if isinstance(v, str) and v:
                     validated[k] = v
+            elif k in _INT_LIMIT_FIELDS:
+                if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 2000:
+                    validated[k] = v
         filtered_settings = validated
 
-        # 创建全局对话设置条目（model_path 固定，不可被用户输入篡改）
-        global_pref = {'model_path': GLOBAL_CONVERSATION_KEY}
+        # 合并到现有全局对话设置条目（保留未传入的字段，model_path 固定不可篡改）
+        if global_index >= 0:
+            global_pref = data[global_index].copy()
+        else:
+            global_pref = {}
+        global_pref['model_path'] = GLOBAL_CONVERSATION_KEY
         global_pref.update(filtered_settings)
 
         if global_index >= 0:

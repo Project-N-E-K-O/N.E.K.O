@@ -604,7 +604,9 @@
         "volumeHintDetecting": "Detecting microphone input...",
         "volumeHintNoSound": "No sound detected, check microphone",
         "volumeHintLow": "Volume is low, try increasing gain",
-        "volumeHintOk": "Microphone working properly"
+        "volumeHintOk": "Microphone working properly",
+        "noiseReduction": "Noise Reduction",
+        "noiseReductionHint": "RNNoise AI noise reduction for clearer voice"
     },
     "speaker": {
         "volumeLabel": "Speaker Volume",
@@ -701,7 +703,8 @@
         },
         "coreProviderNames": {
             "free": "Free Version (N.E.K.O. Exclusive Benefit, Supports Web Search)",
-            "qwen": "Qwen-Omni (Alibaba, Fastest Speed, Recommended)",
+            "qwen": "Qwen-Omni (Alibaba Bailian, Fastest Speed, Recommended)",
+            "qwen_intl": "Qwen-Omni (Alibaba Intl)",
             "openai": "GPT-Realtime (OpenAI)",
             "glm": "GLM-realtime (GLM)",
             "step": "Step-2-Audio (StepFun)",
@@ -709,7 +712,8 @@
         },
         "assistProviderNames": {
             "free": "Free Version (N.E.K.O. Exclusive Benefit)",
-            "qwen": "Alibaba (Qwen, Most Complete Features, Recommended)",
+            "qwen": "Alibaba Bailian (Qwen, Most Complete Features, Recommended)",
+            "qwen_intl": "Alibaba Intl (Qwen)",
             "openai": "OpenAI (ChatGPT)",
             "glm": "GLM",
             "step": "StepFun",
@@ -738,7 +742,8 @@
         "customModelProviderFollowAssist": "Follow Assist API",
         "customModelProviderCustom": "Custom",
         "keyBook": {
-            "qwen": "Alibaba (Qwen)",
+            "qwen": "Alibaba Bailian (Qwen)",
+            "qwen_intl": "Alibaba Intl (Qwen)",
             "openai": "OpenAI",
             "deepseek": "DeepSeek",
             "glm": "Zhipu (GLM)",
@@ -1585,6 +1590,7 @@
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
             "mergeMessages": "Merge Messages",
+            "avatarReactionBubble": "Expression Bubble",
             "proactiveChat": "Proactive Chat",
             "proactiveVision": "Proactive Vision",
             "proactiveVisionChat": "Screen Share",
@@ -1631,7 +1637,13 @@
             "frameRateUnlimited": "Unlimited(VSync)",
             "mouseTracking": "Mouse Tracking",
             "fullscreenTracking": "Fullscreen Tracking",
-            "localTracking": "Local Tracking"
+            "localTracking": "Local Tracking",
+            "textGuardMaxLength": "Response Length Limit",
+            "unlimited": "Unlimited",
+            "characters": " chars",
+            "textGuardUnlimitedWarning": "May cause serious issues with the cat girl, not recommended unless necessary",
+            "textGuardHighWarning": "Setting too high may cause memory and language confusion, recommended within 500 chars",
+            "textGuardNote": "Applies to text replies only; does not affect voice sessions"
         }
     },
     "subtitle": {

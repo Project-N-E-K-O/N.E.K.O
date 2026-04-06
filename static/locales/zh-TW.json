@@ -604,7 +604,9 @@
         "volumeHintDetecting": "正在檢測麥剋風輸入...",
         "volumeHintNoSound": "檢測不到聲音，請檢查麥剋風",
         "volumeHintLow": "音量較低，建議調高增益",
-        "volumeHintOk": "麥剋風工作正常"
+        "volumeHintOk": "麥剋風工作正常",
+        "noiseReduction": "降噪",
+        "noiseReductionHint": "RNNoise AI 降噪，讓語音更清晰"
     },
     "speaker": {
         "volumeLabel": "揚聲器音量",
@@ -701,7 +703,8 @@
         },
         "coreProviderNames": {
             "free": "免費版（貓娘專屬福利，支持聯網搜索）",
-            "qwen": "Qwen-Omni（阿裏，速度最快，推薦⭐）",
+            "qwen": "Qwen-Omni（阿裏百煉，速度最快，推薦⭐）",
+            "qwen_intl": "Qwen-Omni（阿裏國際版）",
             "openai": "GPT-Realtime（OpenAI）",
             "glm": "GLM-realtime（智譜）",
             "step": "Step-2-Audio（階躍星辰）",
@@ -709,7 +712,8 @@
         },
         "assistProviderNames": {
             "free": "免費版（貓娘專屬福利）",
-            "qwen": "阿裏（Qwen，功能最全，推薦⭐）",
+            "qwen": "阿裏百煉（Qwen，功能最全，推薦⭐）",
+            "qwen_intl": "阿裏國際版（Qwen）",
             "openai": "OpenAI (ChatGPT)",
             "glm": "智譜 (GLM)",
             "step": "階躍星辰 (StepFun)",
@@ -738,7 +742,8 @@
         "customModelProviderFollowAssist": "跟隨輔助API",
         "customModelProviderCustom": "自訂",
         "keyBook": {
-            "qwen": "阿里（Qwen）",
+            "qwen": "阿裏百煉（Qwen）",
+            "qwen_intl": "阿裏國際版（Qwen）",
             "openai": "OpenAI",
             "deepseek": "DeepSeek",
             "glm": "智譜（GLM）",
@@ -1585,6 +1590,7 @@
         "toggles": {
             "allowInterrupt": "允許打斷",
             "mergeMessages": "閤並消息",
+            "avatarReactionBubble": "表情氣泡",
             "proactiveChat": "主動搭話",
             "proactiveVision": "自主視覺",
             "proactiveVisionChat": "螢幕分享",
@@ -1631,7 +1637,13 @@
             "frameRateUnlimited": "無限制(VSync)",
             "mouseTracking": "跟蹤滑鼠",
             "fullscreenTracking": "全屏跟蹤",
-            "localTracking": "局部跟蹤"
+            "localTracking": "局部跟蹤",
+            "textGuardMaxLength": "回覆字數限制",
+            "unlimited": "無限制",
+            "characters": "字",
+            "textGuardUnlimitedWarning": "可能導致貓娘出現嚴重問題，非必要不建議無限制",
+            "textGuardHighWarning": "設定過大可能導致貓娘記憶和語言混亂，建議500字以內",
+            "textGuardNote": "僅對文字回覆有效，不影響語音對話"
         }
     },
     "subtitle": {

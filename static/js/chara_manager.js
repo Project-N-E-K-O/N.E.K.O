@@ -3202,6 +3202,58 @@ function setupPageEventListeners() {
     }
 }
 
+/**
+ * 从 PNG 文件的 neKo ancillary chunk 中提取 ZIP 数据。
+ * 按照 PNG 规范逐块扫描，找到 type='neKo' 的块并返回其 data 部分。
+ * 如果未找到则返回 null。
+ */
+function _extractNekoChunk(uint8Array) {
+    // PNG 签名: 137 80 78 71 13 10 26 10
+    if (uint8Array.length < 8) return null;
+    if (uint8Array[0] !== 0x89 || uint8Array[1] !== 0x50 || uint8Array[2] !== 0x4E ||
+        uint8Array[3] !== 0x47 || uint8Array[4] !== 0x0D || uint8Array[5] !== 0x0A ||
+        uint8Array[6] !== 0x1A || uint8Array[7] !== 0x0A) {
+        return null;
+    }
+
+    const view = new DataView(uint8Array.buffer, uint8Array.byteOffset, uint8Array.byteLength);
+    let offset = 8; // 跳过 PNG 签名
+
+    while (offset + 12 <= uint8Array.length) {
+        // 读取块长度（4 字节 big-endian，无符号）
+        const chunkLen = view.getUint32(offset, false);
+
+        // PNG 规范：chunk data 最大 2^31-1 字节
+        if (chunkLen > 0x7FFFFFFF) return null;
+
+        // 确保完整的 chunk (length + type + data + CRC) 在缓冲区内
+        const chunkEnd = offset + 12 + chunkLen; // 4(len) + 4(type) + data + 4(CRC)
+        if (chunkEnd > uint8Array.length) return null;
+
+        // 读取块类型（4 字节 ASCII）
+        const t0 = uint8Array[offset + 4];
+        const t1 = uint8Array[offset + 5];
+        const t2 = uint8Array[offset + 6];
+        const t3 = uint8Array[offset + 7];
+
+        // 检查是否为 neKo 块 (0x6E 0x65 0x4B 0x6F)
+        if (t0 === 0x6E && t1 === 0x65 && t2 === 0x4B && t3 === 0x6F) {
+            const dataStart = offset + 8;
+            return uint8Array.slice(dataStart, dataStart + chunkLen);
+        }
+
+        // 遇到 IEND 就停止
+        if (t0 === 0x49 && t1 === 0x45 && t2 === 0x4E && t3 === 0x44) {
+            break;
+        }
+
+        // 跳到下一个块
+        offset = chunkEnd;
+    }
+
+    return null;
+}
+
 // 处理导入角色卡
 async function handleImportCharacterCard(event) {
     const file = event.target.files[0];
@@ -3239,46 +3291,51 @@ async function handleImportCharacterCard(event) {
             // PNG 文件需要提取 ZIP 数据
             const uint8Array = new Uint8Array(arrayBuffer);
 
-            // 查找 NEKOCHARA 标记
-            const marker = new TextEncoder().encode('NEKOCHARA\x00');
-            let markerIndex = -1;
-            for (let i = uint8Array.length - marker.length; i >= 0; i--) {
-                let found = true;
-                for (let j = 0; j < marker.length; j++) {
-                    if (uint8Array[i + j] !== marker[j]) {
-                        found = false;
+            // 优先尝试从 PNG neKo 块中提取（新格式，合法 PNG chunk）
+            fileData = _extractNekoChunk(uint8Array);
+
+            if (!fileData) {
+                // 回退：查找旧版 NEKOCHARA 标记（兼容旧版角色卡）
+                const marker = new TextEncoder().encode('NEKOCHARA\x00');
+                let markerIndex = -1;
+                for (let i = uint8Array.length - marker.length; i >= 0; i--) {
+                    let found = true;
+                    for (let j = 0; j < marker.length; j++) {
+                        if (uint8Array[i + j] !== marker[j]) {
+                            found = false;
+                            break;
+                        }
+                    }
+                    if (found) {
+                        markerIndex = i;
                         break;
                     }
                 }
-                if (found) {
-                    markerIndex = i;
-                    break;
+
+                if (markerIndex === -1) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
                 }
+
+                if (markerIndex < 8) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+
+                // 读取 ZIP 大小（标记前的 8 字节）
+                const zipSizeBytes = uint8Array.slice(markerIndex - 8, markerIndex);
+                const zipSize = new DataView(zipSizeBytes.buffer).getUint32(0, true);
+
+                if (zipSize <= 0 || zipSize > uint8Array.length) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+
+                // 提取 ZIP 数据
+                const zipStart = markerIndex - 8 - zipSize;
+                if (zipStart < 0 || zipStart + zipSize > markerIndex - 8) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+
+                fileData = uint8Array.slice(zipStart, markerIndex - 8);
             }
-
-            if (markerIndex === -1) {
-                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-            }
-
-            if (markerIndex < 8) {
-                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-            }
-
-            // 读取 ZIP 大小（标记前的 8 字节）
-            const zipSizeBytes = uint8Array.slice(markerIndex - 8, markerIndex);
-            const zipSize = new DataView(zipSizeBytes.buffer).getUint32(0, true);
-
-            if (zipSize <= 0 || zipSize > uint8Array.length) {
-                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-            }
-
-            // 提取 ZIP 数据
-            const zipStart = markerIndex - 8 - zipSize;
-            if (zipStart < 0 || zipStart + zipSize > markerIndex - 8) {
-                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-            }
-
-            fileData = uint8Array.slice(zipStart, markerIndex - 8);
         }
 
         // 创建 FormData 发送到后端

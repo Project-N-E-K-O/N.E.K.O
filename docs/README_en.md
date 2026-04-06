@@ -43,13 +43,13 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 <tr>
 <td align="center" width="25%">🎙️<br><b>Omni-Modal Dialogue</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with visual understanding</td>
 <td align="center" width="25%">🧠<br><b>Three-Tier Memory</b><br>Facts / Reflection / Persona — she truly "remembers" you</td>
-<td align="center" width="25%">🤖<br><b>Agent Capabilities</b><br>Browser control (CUA), computer use, MCP tool calling — she can get work done for you</td>
+<td align="center" width="25%">🤖<br><b>Agent Capabilities</b><br>Browser control (CUA), computer use, OpenClaw A2A calling — she can get work done for you</td>
 <td align="center" width="25%">🎭<br><b>Multi-Form Avatar</b><br>Live2D / VRM / MMD with motion capture and full-screen tracking support</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>Plugin Ecosystem</b><br>Full plugin SDK for custom extensions</td>
+<td align="center">🔌<br><b>Plugin Ecosystem</b><br>Full plugin SDK & marketplace for custom extensions</td>
 <td align="center">🌐<br><b>14+ AI Providers</b><br>OpenAI / Gemini / Qwen / DeepSeek and more, with free models out of the box</td>
-<td align="center">💬<br><b>Proactive Chat</b><br>24/7 ambient awareness: screen understanding, social media trends, personal feeds, news — she initiates conversations with you</td>
+<td align="center">💬<br><b>Proactive Chat</b><br>24/7 ambient awareness: screen understanding, social media trends, personal feeds, music & memes — she initiates conversations with you</td>
 <td align="center">🏪<br><b>UGC Workshop</b><br>Upload and share custom characters, models, and voice packs via Steam Workshop</td>
 </tr>
 </table>
@@ -382,8 +382,6 @@ After container startup:
 ---
 
 </details>
-
-**Note**: The current Docker deployment solution is provided by [**HINS**](https://home.hinswu.top)
 
 ### Source Code Development
 

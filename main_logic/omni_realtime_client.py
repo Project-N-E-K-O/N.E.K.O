@@ -215,6 +215,7 @@ class OmniRealtimeClient:
         self.on_status_message = on_status_message
         self.on_repetition_detected = on_repetition_detected
         self.extra_event_handlers = extra_event_handlers or {}
+        self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
 
         # Track current response state
         self._current_response_id = None
@@ -236,7 +237,8 @@ class OmniRealtimeClient:
         self._image_description = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
         self._latest_image_b64 = None  # Cached latest screenshot for proactive injection
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
-        
+        self._proactive_injecting = False  # True while stream_proactive is injecting audio — suppresses mic input
+
         # Silence detection for auto-closing inactive sessions
         # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
         self._last_speech_time = None
@@ -254,7 +256,7 @@ class OmniRealtimeClient:
         self._audio_processor = AudioProcessor(
             input_sample_rate=48000,
             output_sample_rate=16000,
-            noise_reduce_enabled=False,  # RNNoise with auto-reset enabled
+            noise_reduce_enabled=True,  # RNNoise noise reduction + VAD
             on_silence_reset=self._on_silence_reset  # 静音重置时发送 input_audio_buffer.clear
         )
         
@@ -281,33 +283,36 @@ class OmniRealtimeClient:
         
         # Fatal error detection - 检测到致命错误后立即中断
         self._fatal_error_occurred = False  # 致命错误标志
-        
+
         # Interruption state - suppress output after user interruption until next response
         self._interrupted = False  # 打断状态标志，防止重复消息块
-        
+
         # Native image input rate limiting
         self._last_native_image_time = 0.0  # 上次原生图片输入时间戳
-        
+
         # Unified VAD for image throttling (priority: server VAD > RNNoise > RMS)
         # All native-image paths use _client_vad_active to adjust send rate
         self._client_vad_active = False  # 语音活动检测（统一标志）
         self._client_vad_last_speech_time = 0.0  # 上次检测到语音的时间戳
         self._client_vad_grace_period = 2.0  # 语音结束后保持活跃的宽限期（秒）
         self._client_vad_threshold = 500  # RMS 能量阈值（int16 范围，fallback用）
-        
+        self._speech_detect_start = 0.0  # RNNoise 连续检测到语音的起始时间
+        self._speech_sustain_threshold = 0.5  # 需持续 500ms 才算真正说话（防噪音误触）
+        self._rnnoise_vad_active = False  # RNNoise VAD 是否正在运行（48kHz + denoiser ok）
+
         # 防止log刷屏机制（当websocket关闭后）
         self._last_ws_none_warning_time = 0.0  # 上次websocket为None警告的时间戳
         self._ws_none_warning_interval = 5.0  # websocket为None警告的最小间隔（秒）
-        
+
         # Image processing lock
         self._image_lock = asyncio.Lock()
-        
+
         # Audio processing lock to ensure sequential processing in thread pool
         self._audio_processing_lock = asyncio.Lock()
-        
+
         # Gemini Live API specific attributes
         self._is_gemini = self._api_type.lower() == 'gemini'
-        
+
         # Whether this API returns server-side VAD events (speech_started/speech_stopped)
         # Gemini (direct) and lanlan.app+free (Gemini proxy) do NOT have server VAD
         self._has_server_vad = not self._is_gemini and not (
@@ -326,6 +331,13 @@ class OmniRealtimeClient:
         self._gemini_context_manager = None  # For proper cleanup
         self._gemini_current_transcript = ""  # Current response transcript for Gemini
         self._gemini_user_transcript = ""  # Accumulated user input transcript
+
+    def _fire_task(self, coro):
+        """Create a background task with GC protection."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """
@@ -409,15 +421,16 @@ class OmniRealtimeClient:
         即：每帧用原始输入算 RMS，超过阈值则更新 _last_local_loud_time；只有
         (current_time - _last_local_loud_time) >= _local_quiet_seconds 才认为连续静音。
         
-        返回 True 时，若来自 RNNoise 则调用方需置 _silence_reset_pending=False；
-        若来自 VAD+静音则本函数已更新 _last_silence_clear_speech_time。
+        返回 True 时，调用方统一置 _silence_reset_pending=False。
         """
         if use_rnnoise_path:
-            # RNNoise 路径：仅以 RNNoise 的 4 秒静音回调为准；
-            # 若尚未收到回调（_silence_reset_pending=False），直接返回 False，
-            # 不得降级到 VAD 时间戳逻辑，否则会误触提前清空。
             return self._silence_reset_pending
-        # 无 RNNoise 路径：VAD 静音 ≥ _silence_buffer_clear_seconds 且 连续本地静音 ≥ _local_quiet_seconds
+        # core.py 预处理路径：RNNoise 在 process_audio_chunk_async 中运行，
+        # 16kHz 结果送入 stream_audio → use_rnnoise_path=False，
+        # 但 _silence_reset_pending 仍可能已被 AudioProcessor 回调置位。
+        if self._silence_reset_pending:
+            return True
+        # 纯非 RNNoise 路径：VAD 静音 ≥ _silence_buffer_clear_seconds 且 连续本地静音 ≥ _local_quiet_seconds
         if self._has_server_vad:
             last_speech = self._last_speech_time
         else:
@@ -457,6 +470,8 @@ class OmniRealtimeClient:
         self._last_local_loud_time = 0.0
         self._client_vad_active = False
         self._client_vad_last_speech_time = 0.0
+        self._speech_detect_start = 0.0
+        self._rnnoise_vad_active = False
         if self._audio_processor is not None:
             self._audio_processor.reset()
 
@@ -466,7 +481,11 @@ class OmniRealtimeClient:
             "Authorization": f"Bearer {self.api_key}"
         }
         self.ws = await websockets.connect(url, additional_headers=headers)
-        
+        # Clear fatal flag so send_event/update_session work on this new
+        # connection (flag may be leftover from a previous failed session
+        # when the same OmniRealtimeClient instance is reused).
+        self._fatal_error_occurred = False
+
         # 启动静默检测任务（只在启用时）
         self._last_speech_time = time.time()
         self._silence_timeout_triggered = False
@@ -629,7 +648,8 @@ class OmniRealtimeClient:
             
             # 设置 ws 为 session，用于兼容性检查
             self.ws = self._gemini_session
-            
+            self._fatal_error_occurred = False
+
             self._last_speech_time = time.time()
             self.instructions = instructions
             logger.info("✅ Gemini Live API connected successfully")
@@ -641,6 +661,89 @@ class OmniRealtimeClient:
             if self.on_connection_error:
                 await self.on_connection_error(error_msg)
             raise
+
+    # ── Frame-size helpers ──────────────────────────────────────────
+    _WS_FRAME_LIMIT = 250_000  # safe threshold below 256KB server cap
+
+    @staticmethod
+    def _try_shrink_image_payload(event: dict, payload: str) -> Optional[str]:
+        """Re-compress an oversized image payload at lower JPEG quality.
+
+        Looks for a base64 image blob in the event (``image``,
+        ``video_frame``, or ``image_url`` fields), decodes it, re-encodes
+        at progressively lower quality, and returns a new JSON payload that
+        fits under ``_WS_FRAME_LIMIT``.  Returns *None* if the frame
+        cannot be shrunk (non-image event, or still too big at minimum
+        quality).
+        """
+        from io import BytesIO
+        from PIL import Image as PILImage
+
+        limit = OmniRealtimeClient._WS_FRAME_LIMIT
+
+        # Locate the base64 blob and a setter to write it back
+        b64_data: Optional[str] = None
+        prefix = ""
+
+        etype = event.get("type", "")
+        if "image" in etype and "image" in event:
+            # input_image_buffer.append  →  event["image"]
+            b64_data = event.get("image")
+        elif "video_frame" in etype and "video_frame" in event:
+            # input_audio_buffer.append_video_frame  →  event["video_frame"]
+            b64_data = event.get("video_frame")
+        elif etype == "conversation.item.create":
+            # GPT path: content[0].image_url = "data:image/jpeg;base64,<b64>"
+            try:
+                url = event["item"]["content"][0]["image_url"]
+                if isinstance(url, str) and url.startswith("data:image/"):
+                    prefix, b64_data = url.split(",", 1)
+                    prefix += ","
+            except (KeyError, IndexError, TypeError, ValueError):
+                pass
+
+        if not b64_data:
+            logger.warning(
+                "⚠️ 丢弃超大帧 type=%s size=%d bytes (非图片，无法压缩)",
+                etype, len(payload),
+            )
+            return None
+
+        try:
+            raw = base64.b64decode(b64_data)
+            img = PILImage.open(BytesIO(raw))
+            if img.mode in ("RGBA", "LA", "P"):
+                img = img.convert("RGB")
+
+            for quality in (50, 35, 20):
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=quality, optimize=True)
+                new_b64 = base64.b64encode(buf.getvalue()).decode()
+
+                # Write back into the event dict (mutates in place)
+                if "image" in etype and "image" in event:
+                    event["image"] = new_b64
+                elif "video_frame" in etype and "video_frame" in event:
+                    event["video_frame"] = new_b64
+                elif prefix:
+                    event["item"]["content"][0]["image_url"] = prefix + new_b64
+
+                new_payload = json.dumps(event)
+                if len(new_payload) <= limit:
+                    logger.info(
+                        "🗜️ 图片帧重压缩成功 q=%d: %d → %d bytes",
+                        quality, len(payload), len(new_payload),
+                    )
+                    return new_payload
+
+            logger.warning(
+                "⚠️ 丢弃超大图片帧 type=%s (q=20 仍 %d bytes > %d 上限)",
+                etype, len(new_payload), limit,
+            )
+            return None
+        except Exception as e:
+            logger.warning("⚠️ 图片重压缩失败 type=%s: %s — 丢弃帧", etype, e)
+            return None
 
     async def send_event(self, event) -> None:
         # 检查是否已发生致命错误，直接跳过发送
@@ -675,23 +778,38 @@ class OmniRealtimeClient:
             try:
                 if not self.ws:
                     return
-                await self.ws.send(json.dumps(event))
+                payload = json.dumps(event)
+                # Guard: Qwen/GLM/Step servers enforce 256KB max frame; for
+                # oversized image payloads, try to re-compress the JPEG at
+                # lower quality before dropping.
+                if len(payload) > 250000:
+                    payload = self._try_shrink_image_payload(event, payload)
+                    if payload is None:
+                        return
+                await self.ws.send(payload)
             except Exception as e:
                 error_msg = str(e)
-                if '1000' not in error_msg:
-                    logger.warning(f"⚠️ 发送 {event.get('type', '未知')} 事件失败: {error_msg}")
-                
-                # 检测致命错误：Response timeout 或 1011 错误码
-                if 'Response timeout' in error_msg or '1011' in error_msg:
+                # ── Fatal WebSocket errors ────────────────────────────
+                # 1009 (message too big) / 1006 (abnormal close) /
+                # 1011 (internal error) / Response timeout
+                # → mark fatal, fire error callback, schedule close,
+                #   and *re-raise* so callers (connect, update_session)
+                #   see the failure instead of assuming success.
+                is_frame_error = '1009' in error_msg or '1006' in error_msg
+                is_server_error = 'Response timeout' in error_msg or '1011' in error_msg
+                if is_frame_error or is_server_error:
                     if not self._fatal_error_occurred:
                         self._fatal_error_occurred = True
-                        logger.error("💥 检测到致命错误 (Response timeout / 1011)，立即中断语音对话")
+                        self.ws = None
+                        code = "WS_FRAME_ERROR" if is_frame_error else "RESPONSE_TIMEOUT"
+                        logger.error("💥 WebSocket 致命错误 (%s)，停止发送: %s", code, error_msg)
                         if self.on_connection_error:
-                            asyncio.create_task(self.on_connection_error(json.dumps({"code": "RESPONSE_TIMEOUT"})))
-                        # 尝试关闭连接
-                        asyncio.create_task(self.close())
-                    return  # 不再抛出异常，直接返回
-                
+                            self._fire_task(self.on_connection_error(json.dumps({"code": code})))
+                        self._fire_task(self.close())
+                    raise
+                if '1000' not in error_msg:
+                    logger.warning(f"⚠️ 发送 {event.get('type', '未知')} 事件失败: {error_msg}")
+
                 raise
 
     async def update_session(self, config: Dict[str, Any]) -> None:
@@ -704,7 +822,7 @@ class OmniRealtimeClient:
 
     async def stream_audio(self, audio_chunk: bytes) -> None:
         """Stream raw audio data to the API.
-        
+
         Supports two input modes:
         - 48kHz from PC: Apply RNNoise then downsample to 16kHz
         - 16kHz from mobile: Pass through directly (no RNNoise)
@@ -712,7 +830,7 @@ class OmniRealtimeClient:
         # 检查是否已发生致命错误，如果是则直接返回
         if self._fatal_error_occurred:
             return
-        
+
         current_time = time.time()
         # 本地音量判定：用原始输入做 RMS，避免 VAD 延迟时误清 buffer
         raw_samples = np.frombuffer(audio_chunk, dtype=np.int16)
@@ -744,12 +862,21 @@ class OmniRealtimeClient:
             self._client_vad_active = False
         
         # Client-side speech detection (only when no server VAD — server events handle it in handle_messages)
+        # use_rnnoise_path is true only for 48kHz input when AudioProcessor exists;
+        # for 16kHz/mobile input RNNoise doesn't run, so fall back to RMS.
+        _rnnoise_vad_live = use_rnnoise_path and self._audio_processor.noise_reduce_enabled and self._audio_processor._denoiser is not None
+        self._rnnoise_vad_active = _rnnoise_vad_live
         if not self._has_server_vad:
-            if self._audio_processor is not None and self._audio_processor.noise_reduce_enabled:
-                # Priority 2: RNNoise speech probability
+            if _rnnoise_vad_live:
+                # Priority 2: RNNoise speech probability with sustained threshold
                 if self._audio_processor.speech_probability > 0.4:
-                    self._client_vad_last_speech_time = current_time
-                    self._client_vad_active = True
+                    if self._speech_detect_start == 0.0:
+                        self._speech_detect_start = current_time
+                    elif current_time - self._speech_detect_start >= self._speech_sustain_threshold:
+                        self._client_vad_last_speech_time = current_time
+                        self._client_vad_active = True
+                else:
+                    self._speech_detect_start = 0.0
             else:
                 # Priority 3: RMS energy fallback
                 samples = np.frombuffer(audio_chunk, dtype=np.int16)
@@ -759,12 +886,15 @@ class OmniRealtimeClient:
                         self._client_vad_last_speech_time = current_time
                         self._client_vad_active = True
         
+        # Suppress mic → server during proactive nudge injection (VAD above still updates)
+        if self._proactive_injecting:
+            return
+
         # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音（见 _should_clear_audio_buffer_on_silence）
         if self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path):
-            if use_rnnoise_path:
-                self._silence_reset_pending = False
+            self._silence_reset_pending = False
             await self.clear_audio_buffer()
-        
+
         # Gemini uses different API
         if self._is_gemini:
             await self._stream_audio_gemini(audio_chunk)
@@ -1031,12 +1161,17 @@ class OmniRealtimeClient:
         if self._is_responding:
             logger.debug("stream_proactive: skipped — already responding")
             return False
-        if self._client_vad_active:
-            logger.debug("stream_proactive: skipped — user speaking (VAD active)")
-            return False
-        if time.time() - self._client_vad_last_speech_time < self._client_vad_grace_period:
-            logger.debug("stream_proactive: skipped — VAD grace period")
-            return False
+        # Client VAD guard: only when RNNoise VAD is actively processing audio
+        # (48kHz input + denoiser running). For 16kHz/mobile or when RNNoise is
+        # unavailable, VAD falls back to RMS which is too noisy — skip to avoid
+        # permanently blocking proactive.
+        if self._rnnoise_vad_active:
+            if self._client_vad_active:
+                logger.debug("stream_proactive: skipped — user speaking (VAD active)")
+                return False
+            if time.time() - self._client_vad_last_speech_time < self._client_vad_grace_period:
+                logger.debug("stream_proactive: skipped — VAD grace period")
+                return False
 
         # ── Choose audio file ─────────────────────────────────────────
         # Vision context exists if an image was analyzed this turn (via
@@ -1080,6 +1215,9 @@ class OmniRealtimeClient:
             })
             logger.info("stream_proactive: injected vision text description for non-native backend")
 
+        # ── Suppress mic input during injection ────────────────────────
+        self._proactive_injecting = True
+
         # ── Send audio chunks (same pacing as hot-swap flush) ─────────
         # 320 bytes = 10 ms @16 kHz 16-bit mono, ×5 multiplier → 1600 bytes
         chunk_size = 320 * 5  # 1600 bytes = 50 ms of audio
@@ -1094,69 +1232,72 @@ class OmniRealtimeClient:
         mid_chunk = total_chunks // 2  # Insert image at the midpoint
         image_injected = False
 
-        for chunk_idx, i in enumerate(range(0, len(pcm_data), chunk_size)):
-            # Abort if user starts speaking or AI starts responding
-            if self._client_vad_active or self._is_responding:
-                logger.info("stream_proactive: aborted — user spoke or response started")
-                await self.clear_audio_buffer()
-                return False
+        try:
+            for chunk_idx, i in enumerate(range(0, len(pcm_data), chunk_size)):
+                # Abort if AI starts responding, or user speaking (only when RNNoise VAD active)
+                if self._is_responding or (self._rnnoise_vad_active and self._client_vad_active):
+                    logger.info("stream_proactive: aborted — user spoke or response started")
+                    await self.clear_audio_buffer()
+                    return False
 
-            chunk = pcm_data[i : i + chunk_size]
-            if self._is_gemini:
-                if self._gemini_session:
-                    await self._gemini_session.send_realtime_input(
-                        audio={"data": chunk, "mime_type": "audio/pcm"}
-                    )
-            else:
-                audio_b64 = base64.b64encode(chunk).decode()
-                await self.send_event({
-                    "type": "input_audio_buffer.append",
-                    "audio": audio_b64,
-                })
-
-            # Inject cached screenshot at midpoint (only for native-image backends)
-            if can_inject_image and not image_injected and chunk_idx >= mid_chunk and snapshot_image_b64:
+                chunk = pcm_data[i : i + chunk_size]
                 if self._is_gemini:
                     if self._gemini_session:
-                        image_bytes = base64.b64decode(snapshot_image_b64)
                         await self._gemini_session.send_realtime_input(
-                            media={"data": image_bytes, "mime_type": "image/jpeg"}
+                            audio={"data": chunk, "mime_type": "audio/pcm"}
                         )
-                elif "gpt" in self._model_lower:
+                else:
+                    audio_b64 = base64.b64encode(chunk).decode()
                     await self.send_event({
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "message",
-                            "role": "user",
-                            "content": [{
-                                "type": "input_image",
-                                "image_url": "data:image/jpeg;base64," + snapshot_image_b64,
-                            }],
-                        },
+                        "type": "input_audio_buffer.append",
+                        "audio": audio_b64,
                     })
-                elif "qwen" in self._model_lower or ("lanlan.app" in self.base_url and "free" in self._model_lower):
-                    await self.send_event({
-                        "type": "input_image_buffer.append",
-                        "image": snapshot_image_b64,
-                    })
-                elif "glm" in self._model_lower:
-                    await self.send_event({
-                        "type": "input_audio_buffer.append_video_frame",
-                        "video_frame": snapshot_image_b64,
-                    })
-                image_injected = True
-                logger.info("stream_proactive: injected screenshot at chunk %d/%d", chunk_idx, total_chunks)
 
-            await asyncio.sleep(sleep_interval)
+                # Inject cached screenshot at midpoint (only for native-image backends)
+                if can_inject_image and not image_injected and chunk_idx >= mid_chunk and snapshot_image_b64:
+                    if self._is_gemini:
+                        if self._gemini_session:
+                            image_bytes = base64.b64decode(snapshot_image_b64)
+                            await self._gemini_session.send_realtime_input(
+                                media={"data": image_bytes, "mime_type": "image/jpeg"}
+                            )
+                    elif "gpt" in self._model_lower:
+                        await self.send_event({
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{
+                                    "type": "input_image",
+                                    "image_url": "data:image/jpeg;base64," + snapshot_image_b64,
+                                }],
+                            },
+                        })
+                    elif "qwen" in self._model_lower or ("lanlan.app" in self.base_url and "free" in self._model_lower):
+                        await self.send_event({
+                            "type": "input_image_buffer.append",
+                            "image": snapshot_image_b64,
+                        })
+                    elif "glm" in self._model_lower:
+                        await self.send_event({
+                            "type": "input_audio_buffer.append_video_frame",
+                            "video_frame": snapshot_image_b64,
+                        })
+                    image_injected = True
+                    logger.info("stream_proactive: injected screenshot at chunk %d/%d", chunk_idx, total_chunks)
 
-        # Mark vision context consumed only if the shared image hasn't been
-        # replaced by a newer frame from stream_image() during our async loop.
-        if has_vision and self._latest_image_b64 == snapshot_image_b64:
-            self._proactive_image_consumed = True
-        logger.info("stream_proactive: audio injection complete (%s%s), waiting for VAD → response",
-                     "vision" if has_vision else "general",
-                     "+image" if image_injected else "")
-        return True
+                await asyncio.sleep(sleep_interval)
+
+            # Mark vision context consumed only if the shared image hasn't been
+            # replaced by a newer frame from stream_image() during our async loop.
+            if has_vision and self._latest_image_b64 == snapshot_image_b64:
+                self._proactive_image_consumed = True
+            logger.info("stream_proactive: audio injection complete (%s%s), waiting for VAD → response",
+                         "vision" if has_vision else "general",
+                         "+image" if image_injected else "")
+            return True
+        finally:
+            self._proactive_injecting = False
 
     async def cancel_response(self) -> None:
         """Cancel the current response."""
@@ -1386,9 +1527,13 @@ class OmniRealtimeClient:
 
         except websockets.exceptions.ConnectionClosedOK:
             logger.info("Connection closed as expected")
+            self._fatal_error_occurred = True
+            self.ws = None
         except websockets.exceptions.ConnectionClosedError as e:
             error_msg = str(e)
             logger.error(f"Connection closed with error: {error_msg}")
+            self._fatal_error_occurred = True
+            self.ws = None
             if self.on_connection_error:
                 await self.on_connection_error(error_msg)
         except asyncio.TimeoutError:
@@ -1422,6 +1567,8 @@ class OmniRealtimeClient:
         self._last_local_loud_time = 0.0
         self._client_vad_active = False
         self._client_vad_last_speech_time = 0.0
+        self._speech_detect_start = 0.0
+        self._rnnoise_vad_active = False
 
         # 保存 debug 音频（RNNoise 处理前后的对比音频）
         if self._audio_processor is not None:
@@ -1471,6 +1618,8 @@ class OmniRealtimeClient:
                 self._last_local_loud_time = 0.0
                 self._client_vad_active = False
                 self._client_vad_last_speech_time = 0.0
+                self._speech_detect_start = 0.0
+                self._rnnoise_vad_active = False
 
                 # 重置音频处理器状态
                 if self._audio_processor is not None:
