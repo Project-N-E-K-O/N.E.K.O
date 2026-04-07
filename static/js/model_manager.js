@@ -314,7 +314,15 @@ class DropdownManager {
             // 尝试翻译文本（如果是 i18n 键）
             text = translateText(text);
 
-            // 添加 VRM/MMD 子类型徽章（放在文本前面）
+            // Steam 徽章放在最前面
+            if (option.dataset.itemId) {
+                const steamBadge = document.createElement('span');
+                steamBadge.className = 'steam-badge';
+                steamBadge.textContent = 'Steam';
+                item.appendChild(steamBadge);
+            }
+
+            // 添加 VRM/MMD 子类型徽章
             const subType = option.getAttribute('data-sub-type');
             if (subType === 'vrm') {
                 const badge = document.createElement('span');
@@ -333,13 +341,6 @@ class DropdownManager {
             textSpan.textContent = text;
             textSpan.setAttribute('data-text', text);
             item.appendChild(textSpan);
-
-            if (option.dataset.itemId) {
-                const steamBadge = document.createElement('span');
-                steamBadge.className = 'steam-badge';
-                steamBadge.textContent = 'Steam';
-                item.appendChild(steamBadge);
-            }
 
             item.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -2461,7 +2462,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (_mmdPathSwitch) {
                                 const mmdPath = _mmdPathSwitch;
                                 const mmdFilename = mmdPath.split(/[/\\]/).pop();
+                                // 优先完整路径匹配，其次文件名匹配
                                 const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
+                                    if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
+                                    return opt.value === mmdPath;
+                                }) || Array.from(vrmModelSelect.options).find(opt => {
                                     if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
                                     return opt.value.endsWith(mmdFilename);
                                 });
@@ -2474,7 +2479,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (!matched && catgirlConfig && catgirlConfig.vrm) {
                                 const vrmPath = catgirlConfig.vrm;
                                 const vrmFilename = vrmPath.split(/[/\\]/).pop();
+                                // 优先完整路径匹配，其次文件名匹配
                                 const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
+                                    if (!opt.value) return false;
+                                    return opt.value === vrmPath;
+                                }) || Array.from(vrmModelSelect.options).find(opt => {
                                     if (!opt.value) return false;
                                     const optFilename = opt.getAttribute('data-filename') || '';
                                     return optFilename === vrmFilename || opt.value.endsWith(vrmFilename);
@@ -2531,6 +2540,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (filename) {
                         option.setAttribute('data-filename', filename);
                     }
+                    if (model.item_id) {
+                        option.dataset.itemId = model.item_id;
+                    }
                     option.textContent = model.name || filename || validPath;
                     vrmModelSelect.appendChild(option);
                 });
@@ -2569,7 +2581,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             item.className = 'dropdown-item';
             item.dataset.value = option.value;
 
-            // 添加 VRM/MMD 子类型徽章（放在文本前面）
+            // Steam 徽章放在最前面
+            if (option.dataset.itemId) {
+                const steamBadge = document.createElement('span');
+                steamBadge.className = 'steam-badge';
+                steamBadge.textContent = 'Steam';
+                item.appendChild(steamBadge);
+            }
+
+            // 添加 VRM/MMD 子类型徽章
             const subType = option.getAttribute('data-sub-type');
             if (subType === 'vrm') {
                 const badge = document.createElement('span');
@@ -2589,6 +2609,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             textSpan.textContent = text;
             textSpan.setAttribute('data-text', text);
             item.appendChild(textSpan);
+
             item.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const value = item.dataset.value;
@@ -3194,6 +3215,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     option.value = modelPath;
                     option.setAttribute('data-path', modelPath);
                     if (model.filename) option.setAttribute('data-filename', model.filename);
+                    if (model.item_id) {
+                        option.dataset.itemId = model.item_id;
+                    }
                     option.textContent = model.name || model.filename || modelPath.split('/').pop();
                     mmdModelSelect.appendChild(option);
                 });
@@ -3222,12 +3246,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             const item = document.createElement('div');
             item.className = 'dropdown-item';
             item.dataset.value = option.value;
+
+            // Steam 徽章放在最前面
+            if (option.dataset.itemId) {
+                const steamBadge = document.createElement('span');
+                steamBadge.className = 'steam-badge';
+                steamBadge.textContent = 'Steam';
+                item.appendChild(steamBadge);
+            }
+
             const textSpan = document.createElement('span');
             textSpan.className = 'dropdown-item-text';
             const text = option.textContent || option.value || '';
             textSpan.textContent = text;
             textSpan.setAttribute('data-text', text);
             item.appendChild(textSpan);
+
             item.addEventListener('click', (e) => {
                 e.stopPropagation();
                 mmdModelSelect.value = item.dataset.value;
@@ -3675,6 +3709,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 option.setAttribute('data-path', validPath);
                 option.setAttribute('data-sub-type', 'vrm');
                 if (filename) option.setAttribute('data-filename', filename);
+                if (model.item_id) option.dataset.itemId = model.item_id;
                 const baseName = model.name || filename || validPath;
                 option.textContent = baseName;
                 vrmModelSelect.appendChild(option);
@@ -3689,6 +3724,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 option.setAttribute('data-path', modelPath);
                 option.setAttribute('data-sub-type', 'mmd');
                 if (model.filename) option.setAttribute('data-filename', model.filename);
+                if (model.item_id) option.dataset.itemId = model.item_id;
                 const baseName = model.name || model.filename || modelPath.split('/').pop();
                 option.textContent = baseName;
                 vrmModelSelect.appendChild(option);
@@ -3715,6 +3751,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     option.value = modelPath;
                     option.setAttribute('data-path', modelPath);
                     if (model.filename) option.setAttribute('data-filename', model.filename);
+                    if (model.item_id) option.dataset.itemId = model.item_id;
                     option.textContent = model.name || model.filename || modelPath.split('/').pop();
                     mmdModelSelect.appendChild(option);
                 });
@@ -7162,7 +7199,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // MMD 模型：在合并列表中查找 [MMD] 选项
                     const mmdPath = typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path;
                     const mmdFilename = mmdPath.split(/[/\\]/).pop();
+                    // 优先完整路径匹配，其次文件名匹配
                     const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
+                        if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
+                        return opt.value === mmdPath;
+                    }) || Array.from(vrmModelSelect.options).find(opt => {
                         if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
                         return opt.value.endsWith(mmdFilename);
                     });

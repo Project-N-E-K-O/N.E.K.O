@@ -1238,3 +1238,5 @@ class MMDCore {
         console.log('[MMD Core] 资源已完全清理');
     }
 }
+
+window.MMDCore = MMDCore;

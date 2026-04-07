@@ -35,8 +35,127 @@ body .container-header {
 }
 
 /* 标题栏内的可交互元素需要禁用拖动 */
-.container-header .close-page-btn {
+.container-header .close-page-btn,
+.container-header .goto-api-settings-btn {
     -webkit-app-region: no-drag;
+}
+
+.goto-api-settings-btn {
+    position: absolute;
+    right: 68px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.2s ease;
+    z-index: 100;
+}
+
+.goto-api-settings-btn:hover {
+    background: rgba(255, 255, 255, 0.35);
+}
+
+@media (max-width: 480px) {
+    .goto-api-settings-btn {
+        position: static;
+        transform: none;
+        font-size: 12px;
+        padding: 3px 8px;
+        margin-left: auto;
+        margin-right: 8px;
+    }
+}
+
+/* API未设置弹窗 */
+.no-api-modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.no-api-modal {
+    background: #fff;
+    border-radius: 12px;
+    padding: 32px 28px 24px;
+    max-width: 400px;
+    width: 90%;
+    text-align: center;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+}
+
+.no-api-modal p {
+    font-size: 15px;
+    color: #333;
+    margin: 0 0 24px;
+    line-height: 1.6;
+}
+
+.no-api-modal-btn {
+    display: inline-block;
+    background: linear-gradient(135deg, #4BD4FD, #17A7FF);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 28px;
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+
+.no-api-modal-btn:hover {
+    opacity: 0.85;
+}
+
+.no-api-modal-dismiss {
+    display: block;
+    margin: 12px auto 0;
+    background: none;
+    border: none;
+    color: #999;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.no-api-modal-dismiss:hover {
+    color: #666;
+}
+
+/* API未设置弹窗 - 暗色模式适配 */
+[data-theme="dark"] .no-api-modal-overlay {
+    background: rgba(0, 0, 0, 0.7);
+}
+
+[data-theme="dark"] .no-api-modal {
+    background: #1e2a3a;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .no-api-modal p {
+    color: #e0e0e0;
+}
+
+[data-theme="dark"] .no-api-modal-btn {
+    background: linear-gradient(135deg, #2a8ab5, #1565a0);
+    box-shadow: none;
+}
+
+[data-theme="dark"] .no-api-modal-dismiss {
+    color: #8899aa;
+}
+
+[data-theme="dark"] .no-api-modal-dismiss:hover {
+    color: #b0c4d8;
 }
 
 .close-page-btn {
@@ -377,6 +496,7 @@ body .container-header {
 .field-row input,
 .field-row select {
     width: 100%;
+    max-width: 600px;
     padding: 10px 16px;
     border-radius: 50px;
     border: 2px solid #b3e5fc;
@@ -574,6 +694,32 @@ body .container-header {
 .voice-list-section {
     border-top: 2px solid rgba(64, 197, 241, 0.3);
     padding-top: 20px;
+    margin-top: 40px;
+}
+
+.voice-list-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+}
+
+.voice-list-header-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+}
+
+.voice-list-header-title {
+    color: #40C5F1;
+    font-weight: bold;
+}
+
+.voice-list-loading {
+    text-align: center;
+    color: #999;
+    padding: 20px;
 }
 
 /* ==================== 中文模式下按钮居中对齐 ==================== */
@@ -608,6 +754,28 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
 .voice-list-bg {
     background: white;
     border: 1px solid #ccc;
+    border-radius: 8px;
+    padding: 16px;
+    min-height: 100px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.voice-list-bg::-webkit-scrollbar {
+    width: 6px;
+}
+
+.voice-list-bg::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.voice-list-bg::-webkit-scrollbar-thumb {
+    background: rgba(64, 197, 241, 0.5);
+    border-radius: 3px;
+}
+
+.voice-list-bg::-webkit-scrollbar-thumb:hover {
+    background: rgba(64, 197, 241, 0.8);
 }
 
 .voice-list-item {
@@ -1099,6 +1267,31 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
 /* 克隆区域通用样式 */
 .clone-section {
     width: 100%;
+}
+
+/* 提示横幅 */
+.alibaba-api-notice {
+    background: #fffde7;
+    color: #856404;
+    padding: 12px 16px;
+    border: 2px dashed #f9c846;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-weight: bold;
+    text-align: center;
+}
+
+/* 区域标签（图标+文字） */
+.section-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.section-icon {
+    width: 48px;
+    height: 48px;
+    flex-shrink: 0;
 }
 
 /* 暗色模式适配 */

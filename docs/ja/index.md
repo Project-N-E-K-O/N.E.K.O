@@ -10,11 +10,11 @@ hero:
     alt: N.E.K.O. ロゴ
   actions:
     - theme: brand
-      text: Steamで入手
-      link: https://store.steampowered.com/app/3117010/NEKO/
-    - theme: brand
       text: はじめる
       link: /ja/guide/
+    - theme: brand
+      text: Steamで入手
+      link: https://store.steampowered.com/app/3117010/NEKO/
     - theme: alt
       text: APIリファレンス
       link: /ja/api/
@@ -25,17 +25,17 @@ hero:
 features:
   - icon: 🎮
     title: Steamワークショップ & コミュニティ
-    details: Steamで配信中。ワークショップUGCに完全対応 — キャラクター、Live2Dモデル、プラグインを共有・発見できます。Steam実績、クラウドセーブ、ワンクリック更新対応。
+    details: Steamで配信中。ワークショップUGCに完全対応 — コミュニティが作成したキャラクター、モデル、ボイスパック、プラグインを共有・発見できます。
     link: https://store.steampowered.com/app/3117010/NEKO/
     linkText: Steamで見る
   - icon: 🎙️
     title: オムニモーダル対話
-    details: 音声・テキスト・ビジョンを統合した対話ループ。RNNoiseニューラルノイズ除去、AGC、VADによるリアルタイム音声 — 13msレイテンシ。14以上のLLMプロバイダーにすぐ対応。
+    details: 音声・テキスト・ビジョンを統合した対話ループ。RNNoiseニューラルノイズ除去、AGC、VADによる超低レイテンシのリアルタイム音声。
     link: /ja/architecture/
     linkText: 詳しく見る
   - icon: 💬
     title: プロアクティブチャット
-    details: 24時間環境認識 — 画面の内容、トレンド、時間帯、祝日、個人の興味に基づいて自発的に会話を始めます。プロンプト不要。
+    details: 24時間環境認識 — 画面理解、SNSトレンド、個人フィード、音楽やミーム。彼女から会話を始めてくれます。
     link: /ja/guide/
     linkText: 詳しく見る
   - icon: 🧠
@@ -50,17 +50,17 @@ features:
     linkText: エージェントを探る
   - icon: 🔌
     title: プラグインエコシステム
-    details: Python Plugin SDK v2。マーケットプレイス配布、デコレーターAPI、非同期ライフサイクルフック、プラグイン間通信に対応。MCP、リマインダー、ビリビリ弾幕、スマートホームなどの組み込みプラグイン付き。
+    details: プラグインSDKとマーケットプレイスによるカスタム拡張。デコレーターAPI、非同期ライフサイクルフック、プラグイン間通信に対応。MCP、リマインダー、ライブ配信、スマートホームなどの組み込みプラグイン付き。
     link: /ja/plugins/
     linkText: プラグインを作る
   - icon: 🎭
-    title: Live2D・VRM & ボイスクローン
+    title: Live2D・VRM・MMD & ボイスクローン
     details: 感情連動の表情、リップシンク、アイドルアニメーション搭載の具現化アバター。5秒の音声サンプルからMiniMaxまたはCosyVoiceでどんな声でもクローン可能。
     link: /ja/frontend/
     linkText: フロントエンドガイド
   - icon: 🌐
-    title: 国際化 & マルチプロバイダー
-    details: UI・プロンプト全体を7言語にローカライズ（簡体字・繁体字中国語、英語、日本語、韓国語、ロシア語）。OpenAI、Anthropic、Google、通義千問、DeepSeek、Groq、Ollamaなどに対応。
+    title: 14+ AIプロバイダー & 国際化
+    details: OpenAI、Anthropic、Google、通義千問、DeepSeek、Groq、Ollamaなど — 無料モデルもすぐ使えます。UI・プロンプト全体を6言語にローカライズ（簡体字・繁体字中国語、英語、日本語、韓国語、ロシア語）。
     link: /ja/config/api-providers
     linkText: プロバイダー一覧
 ---
