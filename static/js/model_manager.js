@@ -5405,6 +5405,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                         clearTimeout(window._expressionPreviewRestoreTimer);
                         window._expressionPreviewRestoreTimer = null;
                     }
+                    if (typeof window._resumeExpressionPreviewSuspend === 'function') {
+                        window._resumeExpressionPreviewSuspend(false);
+                        window._resumeExpressionPreviewSuspend = null;
+                    }
                     // 使在途的表情 await 回调失效，防止异步返回后设置恢复定时器打断动作
                     window._currentExpressionPreviewToken = null;
 
@@ -5552,6 +5556,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 clearTimeout(window._expressionPreviewRestoreTimer);
                 window._expressionPreviewRestoreTimer = null;
             }
+            if (typeof window._resumeExpressionPreviewSuspend === 'function') {
+                window._resumeExpressionPreviewSuspend(false);
+                window._resumeExpressionPreviewSuspend = null;
+            }
             // 使在途的动作预览 fetch 回调失效，防止异步返回后设置恢复定时器打断表情
             if (window._motionPreviewRestoreTimer) {
                 clearTimeout(window._motionPreviewRestoreTimer);
@@ -5563,7 +5571,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             window._currentExpressionPreviewToken = (window._currentExpressionPreviewToken || 0) + 1;
             const previewToken = window._currentExpressionPreviewToken;
             previewSuspendReason = `preview-expression-${previewToken}`;
+            let previewSuspendResumed = false;
             resumePreviewSuspend = (reapply = false) => {
+                if (previewSuspendResumed) return;
+                previewSuspendResumed = true;
+                if (window._resumeExpressionPreviewSuspend === resumePreviewSuspend) {
+                    window._resumeExpressionPreviewSuspend = null;
+                }
                 if (!live2dManager || typeof live2dManager.resumePersistentExpressions !== 'function') return;
                 live2dManager.resumePersistentExpressions(previewSuspendReason);
                 const canReapply =
@@ -5579,6 +5593,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (live2dManager && typeof live2dManager.suspendPersistentExpressions === 'function') {
                 live2dManager.suspendPersistentExpressions(previewSuspendReason, { clearCurrent: true });
             }
+            window._resumeExpressionPreviewSuspend = resumePreviewSuspend;
 
             // expression 方法是异步的，需要使用 await
             // 注意：Live2D SDK 的 expression 方法可能返回 null/undefined 但仍然成功播放
@@ -5599,6 +5614,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window._expressionPreviewRestoreTimer = null;
                 if (window._currentExpressionPreviewToken !== previewToken) return; // 已被新的预览覆盖
                 window._currentExpressionPreviewToken = null;
+                resumePreviewSuspend(false);
                 console.log('[ModelManager] 表情预览结束，自动恢复到初始状态');
                 if (window.live2dManager && typeof window.live2dManager.smoothResetToInitialState === 'function') {
                     window.live2dManager.smoothResetToInitialState().catch(e => {

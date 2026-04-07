@@ -352,11 +352,17 @@ async def update_emotion_mapping(model_name: str, request: Request):
     """
     try:
         data = await request.json()
-        
+
+        if data is None:
+            return JSONResponse(status_code=400, content={"success": False, "error": "无效的数据"})
+
+        if not isinstance(data, dict):
+            return JSONResponse(status_code=400, content={"success": False, "error": "请求数据必须是 JSON 对象"})
+
         if not data:
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的数据"})
 
-        data = _normalize_persistent_expression_group(data if isinstance(data, dict) else {})
+        data = _normalize_persistent_expression_group(data)
 
         # 查找模型目录（可能在static或用户文档目录）
         model_dir, url_prefix = find_model_directory(model_name)
@@ -1378,4 +1384,3 @@ def get_user_models():
     except Exception as e:
         logger.error(f"获取用户模型列表失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
-

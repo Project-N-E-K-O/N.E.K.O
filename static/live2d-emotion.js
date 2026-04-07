@@ -1039,6 +1039,7 @@ Live2DManager.prototype.collectPersistentExpressionFiles = function() {
     const all = [...filesFromMapping, ...filesFromRefs];
     // 去重
     const normalized = Array.from(new Set(all));
+    // 常驻表情现在是单选；如果旧配置里残留了多个来源，保留最后一个有效项作为最终常驻表情。
     return normalized.length > 0 ? [normalized[normalized.length - 1]] : [];
 };
 
