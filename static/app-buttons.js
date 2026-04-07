@@ -29,6 +29,7 @@
         const item = document.createElement('div');
         item.className = 'screenshot-item';
         item.dataset.index = S.screenshotCounter;
+        item.dataset.attachmentId = 'attachment-' + Date.now() + '-' + S.screenshotCounter;
 
         // Create thumbnail
         const img = document.createElement('img');
@@ -68,6 +69,7 @@
         // Update count and show container
         mod.updateScreenshotCount();
         screenshotThumbnailContainer.classList.add('show');
+        mod.syncPendingComposerAttachments();
 
         // Auto-scroll to latest screenshot
         setTimeout(function () {
@@ -89,6 +91,7 @@
         setTimeout(function () {
             item.remove();
             mod.updateScreenshotCount();
+            mod.syncPendingComposerAttachments();
 
             if (screenshotsList.children.length === 0) {
                 screenshotThumbnailContainer.classList.remove('show');
@@ -107,6 +110,124 @@
         screenshotCountEl.textContent = count;
     };
     window.updateScreenshotCount = mod.updateScreenshotCount;
+
+    mod.getPendingComposerAttachments = function getPendingComposerAttachments() {
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return [];
+
+        return Array.from(screenshotsList.children).map(function (item, index) {
+            var img = item.querySelector('.screenshot-thumbnail');
+            if (!img || !img.src) return null;
+            return {
+                id: String(item.dataset.attachmentId || item.dataset.index || ('attachment-' + index)),
+                url: img.src,
+                alt: img.alt || (window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '图片 ' + (index + 1))
+            };
+        }).filter(Boolean);
+    };
+
+    mod.syncPendingComposerAttachments = function syncPendingComposerAttachments() {
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerAttachments === 'function') {
+            window.reactChatWindowHost.setComposerAttachments(mod.getPendingComposerAttachments());
+        }
+    };
+
+    mod.ensureImportImageInput = function ensureImportImageInput() {
+        if (mod._importImageInput && mod._importImageInput.isConnected) {
+            return mod._importImageInput;
+        }
+
+        var input = document.getElementById('reactChatWindowImportImageInput');
+        if (!input) {
+            input = document.createElement('input');
+            input.id = 'reactChatWindowImportImageInput';
+            input.type = 'file';
+            input.accept = 'image/*';
+            input.multiple = true;
+            input.hidden = true;
+            document.body.appendChild(input);
+        }
+
+        input.addEventListener('change', function (event) {
+            var files = event && event.target && event.target.files ? Array.from(event.target.files) : [];
+            if (!files.length) return;
+
+            Promise.allSettled(files.map(mod.importImageFileToPendingList))
+                .then(function (results) {
+                    var succeeded = 0;
+                    for (var i = 0; i < results.length; i++) {
+                        if (results[i].status === 'fulfilled') {
+                            succeeded++;
+                        } else {
+                            console.error('[导入图片] 单张处理失败:', results[i].reason);
+                        }
+                    }
+                    if (succeeded > 0) {
+                        window.showStatusToast(
+                            window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
+                            3000
+                        );
+                    } else {
+                        window.showStatusToast(
+                            window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                            4000
+                        );
+                    }
+                })
+                .finally(function () {
+                    input.value = '';
+                });
+        });
+
+        mod._importImageInput = input;
+        return input;
+    };
+
+    mod.importImageFileToPendingList = function importImageFileToPendingList(file) {
+        return new Promise(function (resolve, reject) {
+            if (!(file instanceof File)) {
+                reject(new Error('INVALID_FILE'));
+                return;
+            }
+
+            if (!/^image\//i.test(file.type || '')) {
+                reject(new Error('INVALID_IMAGE_TYPE'));
+                return;
+            }
+
+            var reader = new FileReader();
+            reader.onload = function () {
+                try {
+                    mod.addScreenshotToList(String(reader.result || ''));
+                    resolve(reader.result);
+                } catch (error) {
+                    reject(error);
+                }
+            };
+            reader.onerror = function () {
+                reject(reader.error || new Error('READ_IMAGE_FAILED'));
+            };
+            reader.readAsDataURL(file);
+        });
+    };
+
+    mod.openImageImportPicker = function openImageImportPicker() {
+        var input = mod.ensureImportImageInput();
+        input.click();
+    };
+
+    mod.removePendingAttachmentById = function removePendingAttachmentById(attachmentId) {
+        if (!attachmentId) return;
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return;
+        var items = Array.from(screenshotsList.children);
+        var target = items.find(function (item) {
+            return item.dataset.attachmentId === String(attachmentId);
+        });
+        if (target) {
+            mod.removeScreenshotFromList(target);
+        }
+    };
 
     // ======================== Emotion analysis ========================
 
@@ -398,6 +519,7 @@
             });
 
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                S._suppressCharacterLeft = true;
                 S.socket.send(JSON.stringify({ action: 'end_session' }));
             }
             window.stopRecording();
@@ -415,6 +537,7 @@
             screenshotsList.innerHTML = '';
             screenshotThumbnailContainer.classList.remove('show');
             mod.updateScreenshotCount();
+            mod.syncPendingComposerAttachments();
             S.screenshotCounter = 0;
 
             console.log(window.t('console.executingBranchJudgment'), isGoodbyeMode);
@@ -622,11 +745,9 @@
             }
         });
 
-        // ----------------------------------------------------------------
-        // Text send button click
-        // ----------------------------------------------------------------
-        textSendButton.addEventListener('click', async function () {
-            var text = textInputBox.value.trim();
+        async function sendTextPayload(rawText, options) {
+            options = options || {};
+            var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
 
             if (!text && !hasScreenshots) return;
@@ -717,12 +838,15 @@
 
             // Send message
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                var sentImageUrls = [];
+
                 // Send screenshots first
                 if (hasScreenshots) {
                     var screenshotItems = Array.from(screenshotsList.children);
                     for (var i = 0; i < screenshotItems.length; i++) {
                         var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
                         if (img && img.src) {
+                            sentImageUrls.push(img.src);
                             S.socket.send(JSON.stringify({
                                 action: 'stream_data',
                                 data: img.src,
@@ -732,7 +856,9 @@
                     }
 
                     var screenshotItemCount = screenshotItems.length;
-                    window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true);
+                    window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true, {
+                        skipReactSync: true
+                    });
 
                     // Achievement: send image
                     if (window.unlockAchievement) {
@@ -745,18 +871,31 @@
                     screenshotsList.innerHTML = '';
                     screenshotThumbnailContainer.classList.remove('show');
                     mod.updateScreenshotCount();
+                    mod.syncPendingComposerAttachments();
                 }
 
                 // Then send text (if any)
                 if (text) {
+                    if (window.appChat && typeof window.appChat.ensureUserDisplayName === 'function') {
+                        try {
+                            await window.appChat.ensureUserDisplayName();
+                        } catch (nameError) {
+                            console.warn('[Chat] preload user display name failed:', nameError);
+                        }
+                    }
+
                     S.socket.send(JSON.stringify({
                         action: 'stream_data',
                         data: text,
                         input_type: 'text'
                     }));
 
-                    textInputBox.value = '';
-                    window.appendMessage(text, 'user', true);
+                    if (!options.preserveInputValue) {
+                        textInputBox.value = '';
+                    }
+                    window.appendMessage(text, 'user', true, {
+                        skipReactSync: sentImageUrls.length > 0
+                    });
 
                     // Achievement: meow detection
                     if (window.incrementAchievementCounter) {
@@ -778,6 +917,13 @@
                     }
                 }
 
+                if (window.appChat && typeof window.appChat.appendReactUserMessage === 'function' && sentImageUrls.length > 0) {
+                    window.appChat.appendReactUserMessage({
+                        text: text,
+                        imageUrls: sentImageUrls
+                    });
+                }
+
                 // Reset proactive chat timer
                 if (S.proactiveChatEnabled && window.hasAnyChatModeEnabled()) {
                     window.resetProactiveChatBackoff();
@@ -787,6 +933,16 @@
             } else {
                 window.showStatusToast(window.t ? window.t('app.websocketNotConnected') : 'WebSocket\u672A\u8FDE\u63A5\uFF01', 4000);
             }
+        }
+
+        mod.sendTextPayload = sendTextPayload;
+        window.sendTextPayload = sendTextPayload;
+
+        // ----------------------------------------------------------------
+        // Text send button click
+        // ----------------------------------------------------------------
+        textSendButton.addEventListener('click', async function () {
+            await sendTextPayload(textInputBox.value, { source: 'legacy-text-button' });
         });
 
         // 中文输入法候选确认时，Enter 也会参与组合输入流程；这里单独跟踪，避免误发消息。
@@ -816,10 +972,7 @@
             }
         });
 
-        // ----------------------------------------------------------------
-        // Screenshot button click
-        // ----------------------------------------------------------------
-        screenshotButton.addEventListener('click', async function () {
+        mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
             var captureStream = null;
 
             try {
@@ -947,7 +1100,12 @@
                 }
                 screenshotButton.disabled = false;
             }
-        });
+        };
+
+        // ----------------------------------------------------------------
+        // Screenshot button click
+        // ----------------------------------------------------------------
+        screenshotButton.addEventListener('click', mod.captureScreenshotToPendingList);
 
         // ----------------------------------------------------------------
         // Clear all screenshots button
@@ -963,8 +1121,33 @@
                 screenshotsList.innerHTML = '';
                 screenshotThumbnailContainer.classList.remove('show');
                 mod.updateScreenshotCount();
+                mod.syncPendingComposerAttachments();
             }
         });
+
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerSubmit === 'function') {
+            window.reactChatWindowHost.setOnComposerSubmit(function (detail) {
+                return mod.sendTextPayload(detail && detail.text, { source: 'react-chat-window' });
+            });
+        }
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerImportImage === 'function') {
+            window.reactChatWindowHost.setOnComposerImportImage(function () {
+                return mod.openImageImportPicker();
+            });
+        }
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerScreenshot === 'function') {
+            window.reactChatWindowHost.setOnComposerScreenshot(function () {
+                return mod.captureScreenshotToPendingList();
+            });
+        }
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerRemoveAttachment === 'function') {
+            window.reactChatWindowHost.setOnComposerRemoveAttachment(function (attachmentId) {
+                return mod.removePendingAttachmentById(attachmentId);
+            });
+        }
+
+        mod.ensureImportImageInput();
+        mod.syncPendingComposerAttachments();
     };
 
     window.appButtons = mod;

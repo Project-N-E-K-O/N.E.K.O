@@ -19,15 +19,15 @@ const ReservedFieldsUtils = (() => {
 
     const SYSTEM_RESERVED_FIELDS_FALLBACK = Object.freeze([
         'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation',
-        'lighting', 'vrm_rotation', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation',
-        'mmd', 'mmd_animation', 'mmd_idle_animation'
+        'lighting', 'vrm_rotation', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations',
+        'mmd', 'mmd_animation', 'mmd_idle_animation', 'mmd_idle_animations'
     ]);
 
     const WORKSHOP_RESERVED_FIELDS_FALLBACK = Object.freeze([
         '原始数据', '文件路径', '创意工坊物品ID',
         'description', 'tags', 'name',
         '描述', '标签', '关键词',
-        '_reserved', 'item_id', 'idleAnimation'
+        '_reserved', 'item_id', 'idleAnimation', 'idleAnimations'
     ]);
 
     const ALL_RESERVED_FIELDS_FALLBACK = Object.freeze(

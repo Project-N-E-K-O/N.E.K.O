@@ -1361,19 +1361,23 @@ if __name__ == "__main__":
     print(f"启动配置: {get_start_config()}")
 
     # 2) 信号处理：Ctrl+C 时快速关闭
+    #    uvicorn 的 install_signal_handlers() 会用 signal.signal(sig, self.handle_exit)
+    #    覆盖我们直接注册的信号处理器。所以这里 monkey-patch server.handle_exit，
+    #    这样无论 uvicorn 何时安装信号处理器，最终调用的都是我们的逻辑。
     _shutdown_state = {"signal_count": 0}
+    _original_handle_exit = server.handle_exit
 
-    def _signal_handler(signum, frame):
+    def _custom_handle_exit(sig, frame):
         _shutdown_state["signal_count"] += 1
         if _shutdown_state["signal_count"] > 1:
-            logger.warning("收到第二次关闭信号，立即强制退出。")
+            logger.warning("收到第二次关闭信号, 立即强制退出.")
+            cleanup()
             os._exit(130)
         logger.info("正在关闭服务器...")
         cleanup()
-        server.should_exit = True
-    
-    signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
+        _original_handle_exit(sig, frame)
+
+    server.handle_exit = _custom_handle_exit
 
     # 4) 启动服务器（阻塞，直到 server.should_exit=True）
     logger.info("--- Starting FastAPI Server ---")
