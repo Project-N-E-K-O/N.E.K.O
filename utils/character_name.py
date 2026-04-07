@@ -108,6 +108,10 @@ def validate_character_name(
         return CharacterNameValidationResult(normalized=normalized, code="contains_path_separator")
     if ".." in normalized:
         return CharacterNameValidationResult(normalized=normalized, code="path_traversal")
+    # "." 作为目录名等同于当前目录，会破坏角色数据隔离；
+    # Windows 会静默去掉尾部点号，导致路径歧义（如 "foo." → "foo"）。
+    if normalized == "." or normalized.endswith("."):
+        return CharacterNameValidationResult(normalized=normalized, code="unsafe_dot")
     if not allow_dots and "." in normalized:
         return CharacterNameValidationResult(normalized=normalized, code="contains_dot")
     if is_reserved_device_name(normalized):

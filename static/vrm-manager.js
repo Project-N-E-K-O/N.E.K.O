@@ -19,6 +19,7 @@ class VRMManager {
         this._mouseRaycaster = null;
         this._mouseNDC = null;
         this._lookAtHeadWorldPos = null;
+        this._headScreenAnchorProjection = null;
         this._lookAtRayClosestPoint = null;
         this._lookAtDirection = null;
         this._lookAtBaseForward = null;
@@ -1070,6 +1071,25 @@ class VRMManager {
 
         let width, height;
 
+        // 多窗口模式下（Pet 窗口可能被缩小），渲染缓冲区使用实际可见尺寸，
+        // 配合 setPixelRatio（vrm-core.js）保证 Retina 清晰度，
+        // 避免分配全屏分辨率的 GPU buffer 浪费显存。
+        if (window.__NEKO_MULTI_WINDOW__) {
+            const screenWidth = window.screen.width || 1920;
+            const screenHeight = window.screen.height || 1080;
+            const visibleWidth = (this.container && this.container.clientWidth > 0)
+                ? this.container.clientWidth : (window.innerWidth || screenWidth);
+            const visibleHeight = (this.container && this.container.clientHeight > 0)
+                ? this.container.clientHeight : (window.innerHeight || screenHeight);
+
+            this.camera.aspect = visibleWidth / visibleHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setSize(visibleWidth, visibleHeight, false);
+            this.renderer.domElement.style.width = visibleWidth + 'px';
+            this.renderer.domElement.style.height = visibleHeight + 'px';
+            return;
+        }
+
         if (this.container && this.container.clientWidth > 0 && this.container.clientHeight > 0) {
             width = this.container.clientWidth;
             height = this.container.clientHeight;
@@ -1224,6 +1244,7 @@ class VRMManager {
         this._mouseRaycaster = null;
         this._mouseNDC = null;
         this._lookAtHeadWorldPos = null;
+        this._headScreenAnchorProjection = null;
         this._lookAtRayClosestPoint = null;
         this._lookAtDirection = null;
         this._lookAtBaseForward = null;
@@ -1362,6 +1383,46 @@ class VRMManager {
      */
     isMouseTrackingEnabled() {
         return this._mouseTrackingEnabled !== false;
+    }
+
+    _projectWorldPositionToScreen(worldPosition) {
+        if (!worldPosition || !this.camera || !this.renderer || typeof window.THREE === 'undefined') {
+            return null;
+        }
+
+        const canvas = this.renderer.domElement;
+        if (!canvas) return null;
+
+        const canvasRect = canvas.getBoundingClientRect();
+        if (!canvasRect.width || !canvasRect.height) return null;
+
+        if (!this._headScreenAnchorProjection) {
+            this._headScreenAnchorProjection = new window.THREE.Vector3();
+        }
+
+        this.camera.updateMatrixWorld(true);
+        this._headScreenAnchorProjection.copy(worldPosition).project(this.camera);
+
+        if (!Number.isFinite(this._headScreenAnchorProjection.x) ||
+            !Number.isFinite(this._headScreenAnchorProjection.y)) {
+            return null;
+        }
+
+        return {
+            x: canvasRect.left + (this._headScreenAnchorProjection.x * 0.5 + 0.5) * canvasRect.width,
+            y: canvasRect.top + (-this._headScreenAnchorProjection.y * 0.5 + 0.5) * canvasRect.height
+        };
+    }
+
+    getHeadScreenAnchor() {
+        if (!this.currentModel || !this.camera || !this.renderer || typeof window.THREE === 'undefined') {
+            return null;
+        }
+        if (!this._ensureMouseLookAtResources()) {
+            return null;
+        }
+
+        return this._projectWorldPositionToScreen(this._getLookAtHeadWorldPosition());
     }
 
     /**

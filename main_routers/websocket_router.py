@@ -27,6 +27,18 @@ logger = get_module_logger(__name__, "Main")
 # Lock for session management
 _lock = asyncio.Lock()
 
+# 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
+_ws_bg_tasks: set = set()
+
+
+def _fire_task(coro):
+    """Create a background task with GC protection."""
+    task = asyncio.create_task(coro)
+    _ws_bg_tasks.add(task)
+    task.add_done_callback(_ws_bg_tasks.discard)
+    return task
+
+
 # 每个角色的 WS 断开时间戳（epoch），用于区分"首次连接"与"刷新/重连"
 _ws_disconnect_time: dict[str, float] = {}
 
@@ -76,7 +88,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
     if mgr.pending_agent_callbacks:
         logger.info(f"[{lanlan_name}] websocket reconnect: {len(mgr.pending_agent_callbacks)} pending callbacks, scheduling delivery")
-        asyncio.create_task(mgr.trigger_agent_callbacks())
+        _fire_task(mgr.trigger_agent_callbacks())
 
     try:
         while True:
@@ -108,20 +120,20 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type == 'text' else 'audio'
-                    asyncio.create_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode))
+                    _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode))
                 else:
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
             elif action == "stream_data":
-                asyncio.create_task(session_manager[lanlan_name].stream_data(message))
+                _fire_task(session_manager[lanlan_name].stream_data(message))
 
             elif action == "end_session":
                 session_manager[lanlan_name].active_session_is_idle = False
-                asyncio.create_task(session_manager[lanlan_name].end_session())
+                _fire_task(session_manager[lanlan_name].end_session())
 
             elif action == "pause_session":
                 session_manager[lanlan_name].active_session_is_idle = True
-                asyncio.create_task(session_manager[lanlan_name].end_session())
+                _fire_task(session_manager[lanlan_name].end_session())
 
             elif action == "screenshot_response":
                 raw = message.get("data", "")
@@ -137,7 +149,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 since_disconnect = _time.time() - last_disconnect if last_disconnect else float('inf')
                 if is_switch or since_disconnect > 15:
                     logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s → triggering")
-                    asyncio.create_task(session_manager[lanlan_name].trigger_greeting())
+                    _fire_task(session_manager[lanlan_name].trigger_greeting())
                 else:
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s → skip (refresh/reconnect)")
 

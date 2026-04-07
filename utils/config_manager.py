@@ -243,11 +243,15 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "avatar",
         "vrm",
         "idle_animation",
-        default="",
+        default=None,
         legacy_keys=("idleAnimation",),
     )
-    if idle_animation:
-        changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", str(idle_animation))
+    if idle_animation is not None:
+        # 向前兼容: 旧版存的是 string, 迁移为 list; 空值保留 []
+        if isinstance(idle_animation, str):
+            changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", [idle_animation] if idle_animation else [])
+        elif isinstance(idle_animation, list):
+            changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", idle_animation)
 
     lighting = get_reserved(
         catgirl_data,
@@ -288,11 +292,15 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "avatar",
         "mmd",
         "idle_animation",
-        default="",
+        default=None,
         legacy_keys=("mmd_idle_animation",),
     )
-    if mmd_idle_animation:
-        changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", str(mmd_idle_animation))
+    if mmd_idle_animation is not None:
+        # 向前兼容: 旧版存的是 string, 迁移为 list; 空值保留 []
+        if isinstance(mmd_idle_animation, str):
+            changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", [mmd_idle_animation] if mmd_idle_animation else [])
+        elif isinstance(mmd_idle_animation, list):
+            changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", mmd_idle_animation)
 
     # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
     for legacy_key in (
@@ -352,9 +360,19 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     if vrm_animation is not None:
         result["vrm_animation"] = vrm_animation
 
-    idle_animation = get_reserved(result, "avatar", "vrm", "idle_animation", default="")
-    if idle_animation:
-        result["idleAnimation"] = idle_animation
+    idle_animation = get_reserved(result, "avatar", "vrm", "idle_animation", default=None)
+    if idle_animation is not None:
+        # idleAnimation (string): 供 vrm-init / vrm-manager 等运行时消费
+        # idleAnimations (list): 供 model_manager 多选 UI 消费
+        if isinstance(idle_animation, str):
+            result["idleAnimation"] = idle_animation
+            result["idleAnimations"] = [idle_animation] if idle_animation else []
+        elif isinstance(idle_animation, list):
+            result["idleAnimation"] = idle_animation[0] if idle_animation else ""
+            result["idleAnimations"] = idle_animation
+        else:
+            result["idleAnimation"] = ""
+            result["idleAnimations"] = []
 
     lighting = get_reserved(result, "avatar", "vrm", "lighting", default=None)
     if isinstance(lighting, dict):
@@ -368,9 +386,19 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     if mmd_animation is not None:
         result["mmd_animation"] = mmd_animation
 
-    mmd_idle_animation = get_reserved(result, "avatar", "mmd", "idle_animation", default="")
-    if mmd_idle_animation:
-        result["mmd_idle_animation"] = mmd_idle_animation
+    mmd_idle_animation = get_reserved(result, "avatar", "mmd", "idle_animation", default=None)
+    if mmd_idle_animation is not None:
+        # mmd_idle_animation (string): 供 mmd-init / app-interpage 等运行时消费
+        # mmd_idle_animations (list): 供 model_manager 多选 UI 消费
+        if isinstance(mmd_idle_animation, str):
+            result["mmd_idle_animation"] = mmd_idle_animation
+            result["mmd_idle_animations"] = [mmd_idle_animation] if mmd_idle_animation else []
+        elif isinstance(mmd_idle_animation, list):
+            result["mmd_idle_animation"] = mmd_idle_animation[0] if mmd_idle_animation else ""
+            result["mmd_idle_animations"] = mmd_idle_animation
+        else:
+            result["mmd_idle_animation"] = ""
+            result["mmd_idle_animations"] = []
 
     touch_set = get_reserved(result, 'touch_set', default=None)
     if touch_set:
@@ -1539,6 +1567,7 @@ class ConfigManager:
             'ASSIST_API_KEY_KIMI': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_DEEPSEEK': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_DOUBAO': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_QWEN_INTL': '',
             'ASSIST_API_KEY_MINIMAX': '',
             'ASSIST_API_KEY_MINIMAX_INTL': '',
             'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
@@ -1591,6 +1620,7 @@ class ConfigManager:
             config['CORE_API_KEY'] = core_cfg['coreApiKey']
 
         config['ASSIST_API_KEY_QWEN'] = core_cfg.get('assistApiKeyQwen', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_QWEN_INTL'] = core_cfg.get('assistApiKeyQwenIntl', '')
         config['ASSIST_API_KEY_OPENAI'] = core_cfg.get('assistApiKeyOpenai', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_GLM'] = core_cfg.get('assistApiKeyGlm', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_STEP'] = core_cfg.get('assistApiKeyStep', '') or config['CORE_API_KEY']

@@ -216,13 +216,28 @@ class MMDCursorFollow {
     /**
      * 获取头骨（或颈骨）的世界坐标
      */
-    _getHeadWorldPos() {
+    getHeadWorldPosition() {
         const refBone = this._headBone || this._neckBone;
-        if (!refBone) {
+        if (!refBone || !THREE) return null;
+        if (!this._headWorldPos) {
+            this._headWorldPos = new THREE.Vector3();
+        }
+        refBone.getWorldPosition(this._headWorldPos);
+        return this._headWorldPos;
+    }
+
+    _getHeadWorldPos() {
+        const headWorldPos = this.getHeadWorldPosition();
+        if (headWorldPos) {
+            return headWorldPos;
+        }
+        if (!this._headWorldPos) {
+            this._headWorldPos = new THREE.Vector3();
+        }
+        if (!this._headBone && !this._neckBone) {
             this._headWorldPos.set(0, 10, 0);
             return this._headWorldPos;
         }
-        refBone.getWorldPosition(this._headWorldPos);
         return this._headWorldPos;
     }
 

@@ -43,13 +43,13 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 <tr>
 <td align="center" width="25%">🎙️<br><b>オムニモーダル対話</b><br>リアルタイム音声 (Realtime API) + テキストチャット (ChatCompletion)、視覚理解対応</td>
 <td align="center" width="25%">🧠<br><b>三層記憶システム</b><br>事実記憶 / 反省記憶 / 人格記憶——彼女は本当にあなたを「覚えて」います</td>
-<td align="center" width="25%">🤖<br><b>エージェント能力</b><br>ブラウザ操作 (CUA)、PC操作、MCPツール呼び出し——彼女があなたの仕事を手伝います</td>
+<td align="center" width="25%">🤖<br><b>エージェント能力</b><br>ブラウザ操作 (CUA)、PC操作、OpenClaw A2A呼び出し——彼女があなたの仕事を手伝います</td>
 <td align="center" width="25%">🎭<br><b>マルチフォームAvatar</b><br>Live2D / VRM / MMD の3形態、モーションキャプチャとフルスクリーン追跡対応</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>プラグインエコシステム</b><br>完全なプラグインSDKでカスタム拡張が可能</td>
+<td align="center">🔌<br><b>プラグインエコシステム</b><br>完全なプラグインSDKとマーケットプレイスでカスタム拡張が可能</td>
 <td align="center">🌐<br><b>14以上のAIプロバイダー</b><br>OpenAI / Gemini / Qwen / DeepSeek等、無料モデルも即座に利用可能</td>
-<td align="center">💬<br><b>プロアクティブチャット</b><br>24/7環境認識：画面理解、SNSトレンド、個人フィード、ニュース——彼女から話しかけてきます</td>
+<td align="center">💬<br><b>プロアクティブチャット</b><br>24/7環境認識：画面理解、SNSトレンド、個人フィード、音楽やミーム——彼女から話しかけてきます</td>
 <td align="center">🏪<br><b>UGCワークショップ</b><br>Steam Workshop経由でカスタムキャラクター、モデル、ボイスパックをアップロード・共有</td>
 </tr>
 </table>
@@ -374,8 +374,6 @@ docker-compose up -d
 ---
 
 </details>
-
-**注：** 現在のDockerデプロイソリューションは [**HINS**](https://home.hinswu.top) により提供されています
 
 ### ソースコード開発
 

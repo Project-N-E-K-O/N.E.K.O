@@ -246,8 +246,6 @@ mcp==1.26.0
     # via browser-use
 mdurl==0.1.2
     # via markdown-it-py
-mijiaapi==3.0.5
-    # via n-e-k-o
 mouseinfo==0.1.3
     # via pyautogui
 multidict==6.6.4
@@ -285,7 +283,6 @@ pillow==11.3.0
     #   bilibili-api-python
     #   browser-use
     #   matplotlib
-    #   mijiaapi
     #   n-e-k-o
     #   pyscreeze
     #   pytesseract
@@ -326,8 +323,6 @@ pyautogui==0.9.54
     # via n-e-k-o
 pycparser==2.22
     # via cffi
-pycryptodome==3.23.0
-    # via mijiaapi
 pycryptodomex==3.23.0
     # via bilibili-api-python
 pydantic==2.11.7
@@ -1129,7 +1124,6 @@ pyzmq==27.1.0
 qrcode==8.2
     # via
     #   bilibili-api-python
-    #   mijiaapi
     #   n-e-k-o
     #   qrcode-terminal
 qrcode-terminal==0.8
@@ -1151,7 +1145,6 @@ requests==2.32.5
     #   google-api-core
     #   google-auth
     #   google-genai
-    #   mijiaapi
     #   n-e-k-o
     #   neteasecloudmusic
     #   posthog
@@ -1249,9 +1242,7 @@ typing-inspection==0.4.1
 tzdata==2025.3 ; sys_platform == 'win32'
     # via tzlocal
 tzlocal==5.3.1
-    # via
-    #   apscheduler
-    #   mijiaapi
+    # via apscheduler
 uritemplate==4.2.0
     # via google-api-python-client
 urllib3==2.5.0

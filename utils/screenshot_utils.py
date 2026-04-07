@@ -23,12 +23,31 @@ COMPRESS_TARGET_HEIGHT = 1080
 COMPRESS_JPEG_QUALITY = 75
 _LANCZOS = getattr(Image, 'LANCZOS', getattr(Image, 'ANTIALIAS', 1))
 
+LOCAL_MAX_PIXELS = 100_000_000
+
 def _validate_image_data(image_bytes: bytes) -> Optional[Image.Image]:
-    """验证图片数据有效性"""
+    """验证图片数据有效性
+
+    先用 verify() 做格式校验, 再重新打开并调用 load() 强制解码全部像素,
+    确保图片数据完整且可用于后续处理 (verify 之后的 Image 对象不可再使用).
+    """
     try:
+        # 第一遍: 轻量格式校验
+        probe = Image.open(BytesIO(image_bytes))
+        probe.verify()  # verify 后此对象不可再用
+
+        # 第二遍: 完整解码像素, 保证数据可用
         image = Image.open(BytesIO(image_bytes))
-        image.verify()
-        image = Image.open(BytesIO(image_bytes))
+
+        # 像素数安全检查 (防止超大图片耗尽内存)
+        max_pixels = min(Image.MAX_IMAGE_PIXELS or LOCAL_MAX_PIXELS, LOCAL_MAX_PIXELS)
+        w, h = image.size
+        if w * h > max_pixels:
+            raise ValueError(
+                f"Image too large: {w}x{h} = {w * h} pixels, limit {max_pixels}"
+            )
+
+        image.load()  # 强制解码, 提前暴露截断/损坏问题
         return image
     except Exception as e:
         logger.warning(f"图片验证失败: {e}")
@@ -133,53 +152,52 @@ async def analyze_image_with_vision_model(
         else:
             logger.info(f"🖼️ Using VISION_MODEL ({vision_model}) to analyze image")
 
-        client = AsyncOpenAI(
-            api_key=vision_api_key,
-            base_url=vision_base_url or None,
-            max_retries=0,
-        )
-        
         if window_title:
             system_content = "你是一个图像描述助手。请根据用户的屏幕截图和当前窗口标题，简洁描述用户正在做什么、屏幕上的主要内容和关键细节和你觉得有趣的地方。不超过250字。"
             user_text = f"当前活跃窗口标题：{window_title}\n请描述截图内容。"
         else:
             system_content = "你是一个图像描述助手, 请简洁地描述图片中的主要内容、关键细节和你觉得有趣的地方。你的回答不能超过250字。"
             user_text = "请描述这张图片的内容。"
-        
+
         set_call_type("vision")
-        response = await client.chat.completions.create(
-            model=vision_model,
-            messages = [
-                {
-                    "role": "system",
-                    "content": system_content
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_b64}"
+        async with AsyncOpenAI(
+            api_key=vision_api_key,
+            base_url=vision_base_url or None,
+            max_retries=0,
+        ) as client:
+            response = await client.chat.completions.create(
+                model=vision_model,
+                messages = [
+                    {
+                        "role": "system",
+                        "content": system_content
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{image_b64}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": user_text
                             }
-                        },
-                        {
-                            "type": "text",
-                            "text": user_text
-                        }
-                    ]
-                }
-            ],
-            max_completion_tokens=max_tokens,
-            extra_body=get_extra_body(vision_model) or None
-        )
-        
+                        ]
+                    }
+                ],
+                max_completion_tokens=max_tokens,
+                extra_body=get_extra_body(vision_model) or None
+            )
+
         if response and response.choices and len(response.choices) > 0:
             description = response.choices[0].message.content
             if description and description.strip():
                 logger.info("✅ Image analysis complete")
                 return description.strip()
-        
+
         logger.warning("Vision model returned empty result")
         return None
         
