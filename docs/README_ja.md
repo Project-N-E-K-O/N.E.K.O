@@ -470,11 +470,13 @@ N.E.K.O/
 │   ├── facts/                   # 事実記憶
 │   ├── reflection/              # 反省記憶
 │   └── persona/                 # 人格記憶
+├── 📁 frontend/                 # 🖥️ モダンフロントエンドプロジェクト
+│   ├── react-neko-chat/         # React チャットウィンドウコンポーネント
+│   └── plugin-manager/          # Vue プラグイン管理ダッシュボード
 ├── 📁 plugin/                   # 🔌 プラグインシステム
 │   ├── sdk/                     # プラグインSDK
-│   ├── server/                  # プラグインサーバー
-│   └── frontend/                # プラグインフロントエンド
-├── 📁 static/                   # 🌐 フロントエンド静的リソース
+│   └── server/                  # プラグインサーバー
+├── 📁 static/                   # 🌐 フロントエンド静的リソース（ビルド成果物を含む）
 ├── 📁 templates/                # 📄 フロントエンドHTMLテンプレート（14ページ）
 ├── 📁 utils/                    # 🛠️ ユーティリティモジュール
 ├── main_server.py               # 🌐 メインサーバー

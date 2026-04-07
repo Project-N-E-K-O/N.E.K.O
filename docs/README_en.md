@@ -478,11 +478,13 @@ N.E.K.O/
 │   ├── facts/                   # Fact memory
 │   ├── reflection/              # Reflection memory
 │   └── persona/                 # Persona memory
+├── 📁 frontend/                 # 🖥️ Modern frontend projects
+│   ├── react-neko-chat/         # React chat window component
+│   └── plugin-manager/          # Vue plugin manager dashboard
 ├── 📁 plugin/                   # 🔌 Plugin system
 │   ├── sdk/                     # Plugin SDK
-│   ├── server/                  # Plugin server
-│   └── frontend/                # Plugin frontend
-├── 📁 static/                   # 🌐 Frontend static resources
+│   └── server/                  # Plugin server
+├── 📁 static/                   # 🌐 Frontend static resources (incl. build artifacts)
 ├── 📁 templates/                # 📄 Frontend HTML templates (14 pages)
 ├── 📁 utils/                    # 🛠️ Utility modules
 ├── main_server.py               # 🌐 Main server

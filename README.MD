@@ -535,11 +535,13 @@ N.E.K.O/
 │   ├── facts/                   # 事实记忆
 │   ├── reflection/              # 反思记忆
 │   └── persona/                 # 人格记忆
+├── 📁 frontend/                 # 🖥️ 现代前端项目
+│   ├── react-neko-chat/         # React 聊天窗口组件
+│   └── plugin-manager/          # Vue 插件管理面板
 ├── 📁 plugin/                   # 🔌 插件系统
 │   ├── sdk/                     # 插件 SDK
-│   ├── server/                  # 插件服务端
-│   └── frontend/                # 插件前端
-├── 📁 static/                   # 🌐 前端静态资源
+│   └── server/                  # 插件服务端
+├── 📁 static/                   # 🌐 前端静态资源（含构建产物）
 ├── 📁 templates/                # 📄 前端HTML模板（14个页面）
 ├── 📁 utils/                    # 🛠️ 工具模块
 ├── main_server.py               # 🌐 主服务器

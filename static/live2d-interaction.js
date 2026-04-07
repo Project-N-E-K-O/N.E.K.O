@@ -881,9 +881,30 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
             const isNearModel = distance < HoverFadethreshold;
 
+            // 鼠标在 UI 元素（锁图标 / 浮动按钮）上时，重置淡化状态，
+            // 防止离开 UI 后残留的 stationaryFadeActive 立即重新触发淡化
+            const live2dLockIcon = document.getElementById('live2d-lock-icon');
+            const live2dFloatingBtns = document.getElementById('live2d-floating-buttons');
+            let isOverUi = false;
+            if (live2dLockIcon && live2dLockIcon.style.display !== 'none') {
+                const lr = live2dLockIcon.getBoundingClientRect();
+                if (pointer.x >= lr.left && pointer.x <= lr.right && pointer.y >= lr.top && pointer.y <= lr.bottom) isOverUi = true;
+            }
+            if (!isOverUi && live2dFloatingBtns && live2dFloatingBtns.style.display !== 'none') {
+                const br = live2dFloatingBtns.getBoundingClientRect();
+                if (pointer.x >= br.left && pointer.x <= br.right && pointer.y >= br.top && pointer.y <= br.bottom) isOverUi = true;
+            }
+            if (isOverUi) {
+                clearStationaryFadeTimer();
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                this._hasEnteredHoverRange = false;
+                applyFade();
+            }
+
             // 静止时启动定时器，移出范围时清除（移动端无鼠标悬停，跳过）
             const isMobileDevice = (window.appUtils && typeof window.appUtils.isMobile === 'function' && window.appUtils.isMobile()) || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-            if (!isMobileDevice && this.isLocked && isNearModel) {
+            if (!isMobileDevice && this.isLocked && isNearModel && !isOverUi) {
                 // 首次进入范围：设置标志并启动定时器
                 if (!this._hasEnteredHoverRange) {
                     this._hasEnteredHoverRange = true;
@@ -905,8 +926,8 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 this._hasEnteredHoverRange = false;
             }
 
-            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化，移动端跳过）
-            ctrlFadeActive = !isMobileDevice && this.isLocked && ctrlKeyPressed && isNearModel;
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化，移动端跳过，UI 上时跳过）
+            ctrlFadeActive = !isMobileDevice && this.isLocked && ctrlKeyPressed && isNearModel && !isOverUi;
             applyFade();
 
             const canvasEl = document.getElementById('live2d-canvas');
@@ -961,12 +982,15 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     // 窗口失去焦点时，只重置淡化效果，不重置 Ctrl 键状态
     // 这样窗口重新获得焦点后，如果 Ctrl 仍被按住，淡化功能可以恢复
     const onBlur = () => {
+        // blur 时 Ctrl 键事件无法到达，必须主动清除 Ctrl 状态
+        isCtrlPressed = false;
+        ctrlFadeActive = false;
         clearStationaryFadeTimer();
         // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
         if (stationaryFadeActive) {
             stationaryFadeActive = false;
-            applyFade();
         }
+        applyFade();
         this._hasEnteredHoverRange = false;
     };
 
