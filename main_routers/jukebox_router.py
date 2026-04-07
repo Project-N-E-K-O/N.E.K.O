@@ -31,7 +31,8 @@ router = APIRouter(prefix="/api/jukebox", tags=["jukebox"])
 logger = get_module_logger(__name__, "Main")
 
 # 文件上传常量
-MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+MAX_FILE_SIZE = 1 * 1024 * 1024 * 1024  # 1GB (单个歌曲/动画文件)
+MAX_ZIP_SIZE = 10 * 1024 * 1024 * 1024  # 10GB (压缩包导入/导出)
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks
 
 # 允许的文件扩展名
@@ -230,11 +231,14 @@ class JukeboxConfig:
         
         # 过滤MD5索引：只保留用户资源的MD5
         for md5_key, md5_map in self.data.get("md5Index", {}).items():
-            user_data["md5Index"][md5_key] = {
-                k: v for k, v in md5_map.items() 
-                if v not in all_songs or not all_songs.get(v, {}).get("isBuiltin", False)
-                if v not in all_actions or not all_actions.get(v, {}).get("isBuiltin", False)
-            }
+            filtered_map = {}
+            for k, v in md5_map.items():
+                # 检查是否是用户资源（非内置）
+                is_builtin_song = v in all_songs and all_songs[v].get("isBuiltin", False)
+                is_builtin_action = v in all_actions and all_actions[v].get("isBuiltin", False)
+                if not is_builtin_song and not is_builtin_action:
+                    filtered_map[k] = v
+            user_data["md5Index"][md5_key] = filtered_map
         
         atomic_write_json(self.config_file, user_data)
     
@@ -606,10 +610,18 @@ async def delete_action(action_id: str):
     if file_path.exists():
         file_path.unlink()
 
-    # 从所有绑定中移除（使用ID）
-    for song_id, bindings in jukebox_config.data["bindings"].items():
+    # 从所有绑定中移除（使用ID），并清理默认动画
+    for song_id, bindings in list(jukebox_config.data["bindings"].items()):
         if action_id in bindings:
             del bindings[action_id]
+            # 如果删除的是默认动画，清除默认动画设置
+            song = jukebox_config.data["songs"].get(song_id)
+            if song and song.get("defaultAction") == action_id:
+                song["defaultAction"] = ""
+                logger.info(f"清除默认动画: {song_id} (删除了动画 {action_id})")
+        # 如果没有绑定了，删除空字典
+        if not bindings:
+            del jukebox_config.data["bindings"][song_id]
 
     # 从 MD5 索引中移除
     action_md5 = action.get("fileMd5", "")
@@ -892,7 +904,9 @@ async def get_file(file_path: str):
     jukebox_root = jukebox_config.jukebox_dir.resolve()
     
     # 防止目录遍历攻击
-    if not str(full_path).startswith(str(jukebox_root)):
+    try:
+        full_path.relative_to(jukebox_root)
+    except ValueError:
         raise HTTPException(403, "访问被拒绝")
     
     # 优先使用用户文档目录的文件
@@ -905,7 +919,9 @@ async def get_file(file_path: str):
         builtin_root = (Path(__file__).parent.parent / "static" / "jukebox").resolve()
         
         # 安全检查
-        if not str(builtin_path).startswith(str(builtin_root)):
+        try:
+            builtin_path.relative_to(builtin_root)
+        except ValueError:
             raise HTTPException(403, "访问被拒绝")
         
         if not builtin_path.exists() or not builtin_path.is_file():
@@ -945,9 +961,24 @@ async def import_config(file: UploadFile = File(...)):
         
         extract_dir = temp_path / "extracted"
         extract_dir.mkdir()
-        
+
+        # 安全解压 zip 文件（防止 Zip Slip 攻击）
         with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(extract_dir)
+            for member in zf.namelist():
+                # 检查路径是否安全
+                member_path = (extract_dir / member).resolve()
+                try:
+                    member_path.relative_to(extract_dir.resolve())
+                except ValueError:
+                    raise HTTPException(400, f"导入包包含非法路径: {member}")
+
+                # 安全解压
+                if member.endswith('/'):
+                    member_path.mkdir(parents=True, exist_ok=True)
+                else:
+                    member_path.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member) as src, open(member_path, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
         
         config_path = extract_dir / "config.json"
         if not config_path.exists():
@@ -1087,6 +1118,8 @@ async def import_config(file: UploadFile = File(...)):
         return {"success": True, "stats": stats}
 
 
+import io
+
 @router.post("/pack-folder")
 async def pack_folder(files: List[UploadFile] = File(...)):
     """将文件夹中的文件打包成 ZIP"""
@@ -1095,7 +1128,11 @@ async def pack_folder(files: List[UploadFile] = File(...)):
 
         # 保存所有文件到临时目录
         for file in files:
-            file_path = temp_path / file.filename
+            # 安全检查：防止路径遍历
+            safe_name = Path(file.filename).name
+            if safe_name != file.filename:
+                raise HTTPException(400, f"文件名包含非法路径: {file.filename}")
+            file_path = temp_path / safe_name
             file_path.parent.mkdir(parents=True, exist_ok=True)
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(file.file, f)
@@ -1108,4 +1145,12 @@ async def pack_folder(files: List[UploadFile] = File(...)):
                     arcname = file_path.relative_to(temp_path)
                     zf.write(file_path, arcname)
 
-        return FileResponse(zip_path, media_type='application/zip', filename='packed.zip')
+        # 读取 zip 文件到内存（避免临时目录被清理后文件丢失）
+        with open(zip_path, "rb") as f:
+            zip_content = f.read()
+
+        return StreamingResponse(
+            io.BytesIO(zip_content),
+            media_type="application/zip",
+            headers={"Content-Disposition": "attachment; filename=packed.zip"}
+        )
