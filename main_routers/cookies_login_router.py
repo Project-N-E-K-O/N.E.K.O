@@ -402,11 +402,33 @@ async def api_qr_login_poll(
         
         status_info = status_codes.get(code, {"status": "unknown", "message": raw_message})
         
-        if code == 0:
+        # 动态匹配各平台的成功码，不再硬编码 code == 0
+        # 例如：Bilibili 成功码为 0，网易云成功码为 803
+        if status_info.get("status") == "success":
+            # 兼容性设计：优先从响应头提取，若 JSON Body 中包含 cookie 字段则解析合并 (网易云常见行为)
             cookies = dict(response.cookies)
+            body_cookie_str = resp_data.get("cookie")
+            if body_cookie_str:
+                try:
+                    body_cookies = parse_cookie_string(body_cookie_str)
+                    cookies.update(body_cookies)
+                except Exception as parse_err:
+                    logger.warning(f"⚠️ 解析响应体中的 Cookie 字符串失败: {parse_err}")
+
             cookie_string = "; ".join([f"{k}={v}" for k, v in cookies.items()])
             
-            logger.info(f"✅ {platform} 二维码登录成功")
+            logger.info(f"✅ {platform} 二维码登录成功 (code={code})")
+            
+            # QR 扫码成功后，自动将 Cookies 持久化到本地文件
+            # 避免用户扫码后忘记点击"保存配置"导致 Cookie 丢失
+            if cookies and cookie_fields:
+                try:
+                    filtered_cookies = {k: v for k, v in cookies.items() if k in cookie_fields}
+                    if filtered_cookies:
+                        save_cookies_to_file(platform, filtered_cookies)
+                        logger.info(f"✅ {platform} QR 登录凭证已自动持久化")
+                except Exception as save_err:
+                    logger.warning(f"⚠️ {platform} QR 登录凭证自动保存失败 (不影响登录): {save_err}")
             
             ret = {
                 "success": True,
@@ -470,34 +492,6 @@ NetworkQRLoginInfo = {
             86101: {"status": "waiting", "message": "未扫码"},
             86090: {"status": "scanned", "message": "已扫码,等待确认"},
             86038: {"status": "expired", "message": "二维码已失效"}
-        }
-    },
-    "netease": {
-        "method": "POST",
-        "get": "https://music.163.com/api/login/qrcode/unikey",
-        "login": "https://music.163.com/api/login/qrcode/client/login",
-        "get_params": {"type": "1", "timerstamp": "{{timestamp}}"},
-        "poll_params": {"type": "1", "key": "{{qrcode_key}}", "timerstamp": "{{timestamp}}"},
-        "timeout": 180,
-        "cookie_fields": ["MUSIC_U"],
-        "headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://music.163.com/",
-            "Accept": "application/json, text/plain, */*"
-        },
-        "response": {
-            "success_code": 200,
-            "data_path": "",
-            "qrcode_key_path": "unikey",
-            "qrcode_url_template": "https://music.163.com/login?codekey={{qrcode_key}}",
-            "poll_code_path": "code",
-            "poll_message_path": "message"
-        },
-        "status_codes": {
-            803: {"status": "success", "message": "登录成功"},
-            801: {"status": "waiting", "message": "未扫码"},
-            802: {"status": "scanned", "message": "已扫码,等待确认"},
-            800: {"status": "expired", "message": "二维码已失效"}
         }
     },
     "示例": {
