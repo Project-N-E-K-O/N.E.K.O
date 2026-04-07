@@ -11,8 +11,8 @@ router = APIRouter()
 
 
 def _get_frontend_root_dir() -> Path:
-    plugin_root = Path(__file__).resolve().parents[2]
-    return plugin_root / "frontend" / "vue-project" / "dist"
+    project_root = Path(__file__).resolve().parents[3]
+    return project_root / "frontend" / "plugin-manager" / "dist"
 
 
 _FRONTEND_ROOT_DIR = _get_frontend_root_dir()
@@ -35,7 +35,7 @@ async def frontend_index():
             status_code=404,
             detail=(
                 f"Frontend index not found: {index_file}. "
-                "Build plugin/frontend/vue-project (npm run build-only) or run plugin/export_frontend."
+                "Build frontend/plugin-manager (npm run build-only) or run build_frontend."
             ),
         )
     return FileResponse(
@@ -78,7 +78,7 @@ async def frontend_file(full_path: str):
             status_code=404,
             detail=(
                 f"Frontend index not found: {index_file}. "
-                "Build plugin/frontend/vue-project (npm run build-only) or run plugin/export_frontend."
+                "Build frontend/plugin-manager (npm run build-only) or run build_frontend."
             ),
         )
     return FileResponse(
