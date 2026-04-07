@@ -1193,7 +1193,12 @@ class VRMInteraction {
             this._isMouseOverButtons = isOverButtons || isOverLock;
 
             // 如果鼠标在按钮或锁图标上，不变淡，直接显示
+            // 同时重置所有淡化状态，防止离开 UI 后残留状态导致立即重新淡化
             if (isOverButtons || isOverLock) {
+                clearStationaryFadeTimer();
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                this._vrmHasEnteredHoverRange = false;
                 applyFade(false);
                 showButtons();
                 return;
@@ -1282,12 +1287,20 @@ class VRMInteraction {
             }
         };
         const onBlur = () => {
+            // blur 时 Ctrl 键事件无法到达，必须主动清除 Ctrl 状态避免卡死
+            isCtrlPressed = false;
+            ctrlFadeActive = false;
+            // 锁定状态下 blur 通常由鼠标穿透点击引起，保留静止淡化状态避免闪烁
+            if (this.checkLocked()) {
+                applyFade();
+                return;
+            }
             clearStationaryFadeTimer();
             // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
             if (stationaryFadeActive) {
                 stationaryFadeActive = false;
-                applyFade();
             }
+            applyFade();
             this._vrmHasEnteredHoverRange = false;
         };
         this._vrmClearStationaryFadeTimer = clearStationaryFadeTimer;
@@ -1308,8 +1321,10 @@ class VRMInteraction {
         window.addEventListener('blur', onBlur);
 
         canvas.addEventListener('mouseenter', onMouseEnter);
-        canvas.addEventListener('pointermove', onPointerMove);
-        canvas.addEventListener('mousemove', onPointerMove);
+        // 监听 window 而非 canvas，使得鼠标穿透模式下 preload 轮询派发的
+        // 合成 pointermove 事件也能到达此处，保持淡化机制正常工作
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('mousemove', onPointerMove);
 
         this._vrmCtrlKeyDownListener = onKeyDown;
         this._vrmCtrlKeyUpListener = onKeyUp;
@@ -1344,8 +1359,8 @@ class VRMInteraction {
             this._floatingButtonsMouseLeave = null;
         }
         if (this._floatingButtonsPointerMove) {
-            canvas.removeEventListener('pointermove', this._floatingButtonsPointerMove);
-            canvas.removeEventListener('mousemove', this._floatingButtonsPointerMove);
+            window.removeEventListener('pointermove', this._floatingButtonsPointerMove);
+            window.removeEventListener('mousemove', this._floatingButtonsPointerMove);
             this._floatingButtonsPointerMove = null;
         }
         // 清理 Ctrl 键 / blur 监听器
