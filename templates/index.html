@@ -15,6 +15,7 @@
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/index.css">
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css">
     <link rel="stylesheet" href="/static/css/avatar-reaction-bubble.css">
     <!-- 暗色模式样式 -->
     <link rel="stylesheet" href="/static/css/dark-mode.css">
@@ -69,6 +70,16 @@
                     </svg>
                     <span class="chat-header-btn-label" data-i18n="chat.avatarPreviewLabel"></span>
                 </button>
+                <button id="reactChatWindowButton" class="chat-header-action-btn chat-header-action-btn-react-window" type="button"
+                    data-i18n-title="chat.reactWindowOpen"
+                    data-i18n-aria="chat.reactWindowOpen">
+                    <svg class="chat-header-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4.75 6.75h14.5a1.5 1.5 0 0 1 1.5 1.5v7.5a1.5 1.5 0 0 1-1.5 1.5H4.75a1.5 1.5 0 0 1-1.5-1.5v-7.5a1.5 1.5 0 0 1 1.5-1.5Z" />
+                        <path d="M8 17.25v1.5h8v-1.5" />
+                        <path d="M3.25 10.25h17.5" />
+                    </svg>
+                    <span class="chat-header-btn-label" data-i18n="chat.reactWindowLabel">新版聊天框</span>
+                </button>
                 <button id="jukeboxButton" class="chat-header-action-btn chat-header-action-btn-jukebox" type="button"
                     data-i18n-title="chat.jukebox"
                     data-i18n-aria="chat.jukebox">
@@ -94,19 +105,19 @@
             <div id="chat-avatar-preview-card" hidden>
                 <div class="chat-avatar-preview-card-header">
                     <div class="chat-avatar-preview-card-title-group">
-                        <div class="chat-avatar-preview-card-title">当前头像</div>
-                        <div id="chat-avatar-preview-status" class="chat-avatar-preview-card-status">点击上方按钮生成当前模型头像</div>
+                        <div class="chat-avatar-preview-card-title" data-i18n="chat.avatarPreviewCardTitle">当前头像</div>
+                        <div id="chat-avatar-preview-status" class="chat-avatar-preview-card-status" data-i18n="chat.avatarPreviewCardStatus">点击上方按钮生成当前模型头像</div>
                     </div>
-                    <button id="chatAvatarPreviewCloseButton" class="chat-avatar-preview-card-close" type="button" title="关闭头像预览" aria-label="关闭头像预览">×</button>
+                    <button id="chatAvatarPreviewCloseButton" class="chat-avatar-preview-card-close" type="button" data-i18n-title="chat.avatarPreviewClose" data-i18n-aria="chat.avatarPreviewClose">×</button>
                 </div>
                 <div class="chat-avatar-preview-card-body">
                     <div id="chat-avatar-preview-image-shell" class="chat-avatar-preview-image-shell is-empty">
-                        <img id="chat-avatar-preview-image" class="chat-avatar-preview-image" alt="当前头像预览" hidden>
-                        <div id="chat-avatar-preview-placeholder" class="chat-avatar-preview-placeholder">AVATAR</div>
+                        <img id="chat-avatar-preview-image" class="chat-avatar-preview-image" data-i18n-alt="chat.avatarPreviewImageAlt" alt="当前头像预览" hidden>
+                        <div id="chat-avatar-preview-placeholder" class="chat-avatar-preview-placeholder" data-i18n="chat.avatarPreviewPlaceholder">AVATAR</div>
                     </div>
                     <div class="chat-avatar-preview-card-meta">
-                        <div id="chat-avatar-preview-note" class="chat-avatar-preview-card-note">将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。</div>
-                        <button id="chatAvatarPreviewRefreshButton" class="chat-avatar-preview-refresh-btn" type="button">刷新头像</button>
+                        <div id="chat-avatar-preview-note" class="chat-avatar-preview-card-note" data-i18n="chat.avatarPreviewCardNote">将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。</div>
+                        <button id="chatAvatarPreviewRefreshButton" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chat.avatarPreviewRefresh">刷新头像</button>
                     </div>
                 </div>
             </div>
@@ -143,6 +154,19 @@
                     <circle cx="12" cy="12" r="1.2"/>
                 </svg>
             </div>
+        </div>
+    </div>
+    <div id="react-chat-window-overlay" hidden>
+        <div id="react-chat-window-backdrop"></div>
+        <div id="react-chat-window-shell" role="dialog" aria-modal="true" aria-labelledby="react-chat-window-title">
+            <div id="react-chat-window-drag-handle" aria-hidden="true"></div>
+            <div id="react-chat-window-header-actions">
+                <button id="reactChatWindowMinimizeButton" type="button" data-i18n-aria="chat.reactWindowMinimize" data-i18n-title="chat.reactWindowMinimize">
+                    <img id="reactChatWindowMinimizeIcon" src="/static/icons/expand_icon_off.png" data-i18n-alt="chat.reactWindowMinimize" alt="最小化新版聊天框" width="32" height="32">
+                </button>
+                <button id="reactChatWindowCloseButton" type="button" data-i18n-aria="chat.reactWindowClose" data-i18n-title="chat.reactWindowClose">×</button>
+            </div>
+            <div id="react-chat-window-root"></div>
         </div>
     </div>
     <div id="live2d-container">
@@ -230,8 +254,74 @@
     <script src="/static/app-websocket.js"></script>
     <script src="/static/app-buttons.js"></script>
     <script src="/static/app.js"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js"></script>
+    <script src="/static/app-react-chat-window.js"></script>
 
     <script src="/static/subtitle.js"></script>
+
+    <script>
+        window.pageConfigReady = (async function loadPageConfig() {
+            try {
+                const urlParams = new URLSearchParams(window.location.search);
+                const lanlanNameFromUrl = urlParams.get('lanlan_name') || '';
+                const apiUrl = lanlanNameFromUrl
+                    ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
+                    : '/api/config/page_config';
+                const response = await fetch(apiUrl);
+                const data = await response.json();
+
+                if (data && data.success) {
+                    if (!window.lanlan_config || typeof window.lanlan_config !== 'object') {
+                        window.lanlan_config = {};
+                    }
+                    window.lanlan_config.lanlan_name = data.lanlan_name || lanlanNameFromUrl || window.lanlan_config.lanlan_name || '';
+                    window.lanlan_config.master_name = data.master_name || '';
+                    window.lanlan_config.master_profile_name = data.master_profile_name || '';
+                    window.lanlan_config.master_nickname = data.master_nickname || '';
+                    window.lanlan_config.master_display_name = data.master_display_name || data.master_nickname || data.master_name || '';
+                    window.master_name = data.master_name || '';
+                    window.master_profile_name = data.master_profile_name || '';
+                    window.master_nickname = data.master_nickname || '';
+                    window.master_display_name = data.master_display_name || data.master_nickname || data.master_name || '';
+                    return data;
+                }
+            } catch (error) {
+                console.warn('[Init] load page_config failed:', error);
+            }
+
+            if (!window.lanlan_config || typeof window.lanlan_config !== 'object') {
+                window.lanlan_config = {};
+            }
+            if (typeof window.lanlan_config.lanlan_name !== 'string' || window.lanlan_config.lanlan_name === '') {
+                try { window.lanlan_config.lanlan_name = new URLSearchParams(window.location.search).get('lanlan_name') || ''; } catch(_) { window.lanlan_config.lanlan_name = ''; }
+            }
+            if (typeof window.lanlan_config.master_name !== 'string') {
+                window.lanlan_config.master_name = '';
+            }
+            if (typeof window.lanlan_config.master_profile_name !== 'string') {
+                window.lanlan_config.master_profile_name = '';
+            }
+            if (typeof window.lanlan_config.master_nickname !== 'string') {
+                window.lanlan_config.master_nickname = '';
+            }
+            if (typeof window.lanlan_config.master_display_name !== 'string') {
+                window.lanlan_config.master_display_name = window.lanlan_config.master_nickname || window.lanlan_config.master_name || '';
+            }
+            if (typeof window.master_name !== 'string') {
+                window.master_name = window.lanlan_config.master_name || '';
+            }
+            if (typeof window.master_profile_name !== 'string') {
+                window.master_profile_name = window.lanlan_config.master_profile_name || '';
+            }
+            if (typeof window.master_nickname !== 'string') {
+                window.master_nickname = window.lanlan_config.master_nickname || '';
+            }
+            if (typeof window.master_display_name !== 'string') {
+                window.master_display_name = window.lanlan_config.master_display_name || window.master_nickname || window.master_name || '';
+            }
+            return null;
+        })();
+    </script>
     
     <link rel="stylesheet" href="/static/css/touch-config.css">
     <script src="/static/touch-config.js"></script>

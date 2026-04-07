@@ -408,14 +408,22 @@
                     window._pendingMusicCommand = '';
                     window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
 
-                    if (window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0) {
+                    var hadTrackedBubbles = window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0;
+                    if (hadTrackedBubbles) {
+                        var _discardHost = window.reactChatWindowHost;
                         window.currentTurnGeminiBubbles.forEach(function (bubble) {
+                            // Remove paired React mirror message
+                            if (_discardHost && typeof _discardHost.removeMessage === 'function' &&
+                                bubble && bubble.dataset && bubble.dataset.reactChatMessageId) {
+                                _discardHost.removeMessage(bubble.dataset.reactChatMessageId);
+                            }
                             if (bubble && bubble.parentNode) {
                                 bubble.parentNode.removeChild(bubble);
                             }
                         });
                         window.currentTurnGeminiBubbles = [];
                     }
+                    window.currentGeminiMessage = null;
 
                     if (window.currentTurnGeminiAttachments && window.currentTurnGeminiAttachments.length > 0) {
                         window.currentTurnGeminiAttachments.forEach(function (attachment) {
@@ -429,8 +437,9 @@
 
                     // Fallback: clear trailing gemini bubbles not tracked
                     var cc = chatContainer();
-                    if ((!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) &&
+                    if (!hadTrackedBubbles &&
                         cc && cc.children && cc.children.length > 0) {
+                        var _fallbackHost = window.reactChatWindowHost;
                         var toRemove = [];
                         for (var i = cc.children.length - 1; i >= 0; i--) {
                             var el = cc.children[i];
@@ -441,6 +450,10 @@
                             }
                         }
                         toRemove.forEach(function (el) {
+                            if (_fallbackHost && typeof _fallbackHost.removeMessage === 'function' &&
+                                el && el.dataset && el.dataset.reactChatMessageId) {
+                                _fallbackHost.removeMessage(el.dataset.reactChatMessageId);
+                            }
                             if (el && el.parentNode) el.parentNode.removeChild(el);
                         });
                     }
@@ -626,7 +639,9 @@
                         if (parsed && parsed.code) statusCode = parsed.code;
                     } catch (_) { }
 
-                    if (S.isSwitchingMode && (statusCode === 'CHARACTER_LEFT' || response.message.includes('已离开'))) {
+                    var isGoodbyeActive = (window.live2dManager && window.live2dManager._goodbyeClicked) || (window.vrmManager && window.vrmManager._goodbyeClicked) || (window.mmdManager && window.mmdManager._goodbyeClicked);
+                    if ((S.isSwitchingMode || isGoodbyeActive || S._suppressCharacterLeft) && (statusCode === 'CHARACTER_LEFT' || response.message.includes('已离开'))) {
+                        S._suppressCharacterLeft = false;
                         console.log(window.t('console.modeSwitchingIgnoreLeft'));
                         return;
                     }
@@ -951,7 +966,15 @@
                     console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
+                        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
+                            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
+                        }
                         window._pendingMusicCommand = '';
+                        if (window._structuredGeminiStreaming) {
+                            window._realisticGeminiBuffer = '';
+                            window._structuredGeminiStreaming = false;
+                            return;
+                        }
                         var rest = typeof window._realisticGeminiBuffer === 'string'
                             ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
                             : '';
@@ -988,19 +1011,27 @@
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer
                     try {
+                        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
+                            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
+                        }
                         window._pendingMusicCommand = '';
+                        if (window._structuredGeminiStreaming) {
+                            window._realisticGeminiBuffer = '';
+                            window._structuredGeminiStreaming = false;
+                        } else {
                         var rest = typeof window._realisticGeminiBuffer === 'string'
                             ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
                             : '';
                         rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+                        window._realisticGeminiBuffer = '';
                         var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
                         if (trimmed) {
                             window._realisticGeminiQueue = window._realisticGeminiQueue || [];
                             window._realisticGeminiQueue.push(trimmed);
-                            window._realisticGeminiBuffer = '';
                             if (typeof window.processRealisticQueue === 'function') {
                                 window.processRealisticQueue(window._realisticGeminiVersion || 0);
                             }
+                        }
                         }
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);

@@ -54,6 +54,9 @@ import httpx
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
 
+# TTS 错误码中不应自动重试的类型（欠费 / 配额耗尽）
+NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_QUOTA_TIME'}
+
 # ---------------------------------------------------------------------------
 # 重要通知缓冲池
 # 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息；
@@ -256,6 +259,8 @@ class LLMSessionManager:
         self.tts_pending_chunks = []  # 待处理的TTS文本chunk: [(speech_id, text), ...]
         self.tts_cache_lock = asyncio.Lock()  # 保护缓存的锁
         self._last_tts_respawn_time: float = 0.0  # 上次 respawn 时间戳，用于 12 秒冷却
+        self._tts_respawn_task: Optional[asyncio.Task] = None  # 延迟重试 Task，end_session 时取消
+        self._last_tts_error_code: str = ''  # 上次 TTS 错误码
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -882,6 +887,70 @@ class LLMSessionManager:
         )
         self.tts_thread.start()
 
+    def _reset_tts_retry_state(self):
+        """Cancel pending TTS respawn task and clear error/cooldown state.
+
+        Safe to call whether or not a session is active.  When called from
+        within an ``async with self.lock`` block the cancellation of
+        ``_tts_respawn_task`` is race-free; outside the lock the worst case
+        is a harmless double-cancel.
+        """
+        if self._tts_respawn_task and not self._tts_respawn_task.done():
+            self._tts_respawn_task.cancel()
+            self._tts_respawn_task = None
+        self._last_tts_error_code = ''
+        self._last_tts_respawn_time = 0.0
+
+    async def _teardown_tts_runtime(self, handler_task_ref, thread_ref,
+                                     req_queue_ref, resp_queue_ref):
+        """Tear down TTS handler task, worker thread, and drain queues.
+
+        Operates only on the snapshot references passed in to prevent
+        accidentally killing resources that have been recreated by a
+        concurrent start_session.
+        """
+        if handler_task_ref and not handler_task_ref.done():
+            handler_task_ref.cancel()
+            try:
+                await asyncio.wait_for(handler_task_ref, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            if self.tts_handler_task is handler_task_ref:
+                self.tts_handler_task = None
+
+        if thread_ref and thread_ref.is_alive():
+            try:
+                req_queue_ref.put((None, None))
+                await asyncio.to_thread(thread_ref.join, 2.0)
+            except Exception as e:
+                logger.error(f"💥 关闭TTS线程时出错: {e}")
+
+            if thread_ref.is_alive():
+                logger.warning("⚠️ TTS worker 未在超时内退出，清除引用以允许重建")
+                if self.tts_thread is thread_ref:
+                    self.tts_thread = None
+            else:
+                if self.tts_thread is thread_ref:
+                    self.tts_thread = None
+                # 仅在线程确实已停止后才安全地清空队列
+                try:
+                    while not req_queue_ref.empty():
+                        req_queue_ref.get_nowait()
+                except Exception:
+                    pass
+                try:
+                    while not resp_queue_ref.empty():
+                        resp_queue_ref.get_nowait()
+                except Exception:
+                    pass
+
+        # 只在被拆除的 runtime 仍是当前 runtime 时才清全局 TTS 状态，
+        # 避免新 session 已创建新队列/worker 后被旧 teardown 误重置
+        if resp_queue_ref is self.tts_response_queue:
+            async with self.tts_cache_lock:
+                self.tts_ready = False
+                self.tts_pending_chunks.clear()
+
     def _respawn_tts_worker(self):
         """检测 TTS Worker 线程已死亡时重新拉起，不阻塞等待就绪。
 
@@ -893,10 +962,20 @@ class LLMSessionManager:
         if self.tts_thread and self.tts_thread.is_alive():
             return
 
+        # 如果上次错误属于不应自动重试的类型，直接跳过 respawn
+        if self._last_tts_error_code in NO_RETRY_TTS_CODES:
+            logger.warning(f"⚠️ _respawn_tts_worker: 上次错误为 {self._last_tts_error_code}，跳过自动重试")
+            return
+
         import time
         now = time.monotonic()
         if now - self._last_tts_respawn_time < 12.0:
-            return
+            return  # 冷却中，保留待执行的延迟任务和错误码状态
+
+        # 通过冷却检查后，取消可能仍在等待的延迟重试任务，既然已经在直接 respawn 了
+        if self._tts_respawn_task and not self._tts_respawn_task.done():
+            self._tts_respawn_task.cancel()
+            self._tts_respawn_task = None
         self._last_tts_respawn_time = now
 
         logger.info("🔄 TTS Worker 已死亡，尝试重新拉起...")
@@ -2798,12 +2877,39 @@ class LLMSessionManager:
     async def end_session(self, by_server=False, *, expected_session=None):  # 与Core API断开连接
         # Pre-check: no-side-effect guard before _init_renew_status which mutates
         # pending/prewarm state.  A stale callback must not nuke preparation state.
+        _inactive_early = False
         async with self.lock:
             if not self.is_active:
-                return
-            if expected_session is not None and expected_session is not self.session:
+                # Stale-session guard: 即使未激活，也要确认不是过期回调，
+                # 否则会误清理新 session 正在创建的 TTS 资源
+                if expected_session is not None and expected_session is not self.session:
+                    logger.info("⏭️ end_session: expected_session stale (inactive-early), skipping")
+                    return
+                # 即使会话未完全激活（如 start_session 失败），也要清理
+                # 可能残留的 TTS 重试状态，防止污染下一次会话
+                self._reset_tts_retry_state()
+                _inactive_early = True
+                # start_tts_if_needed 可能已启动 TTS 线程/handler，
+                # 但 is_active 尚未置 True 就失败了——快照引用以便释放锁后清理
+                _orphan_tts_handler = self.tts_handler_task
+                _orphan_tts_thread = self.tts_thread
+                _orphan_tts_rq = self.tts_request_queue
+                _orphan_tts_rsq = self.tts_response_queue
+            elif expected_session is not None and expected_session is not self.session:
                 logger.info("⏭️ end_session: expected_session stale (pre-check), skipping")
                 return
+            else:
+                # 尽早取消 TTS 延迟重试任务并清理错误码（持锁状态下），
+                # 防止 _init_renew_status 期间 respawn task 触发无效重试
+                self._reset_tts_retry_state()
+
+        if _inactive_early:
+            # start_tts_if_needed 可能已启动 TTS 但 is_active 未置 True（如 LLM 启动失败），
+            # 必须清理这些孤儿资源，否则线程/task 会泄漏
+            await self._teardown_tts_runtime(
+                _orphan_tts_handler, _orphan_tts_thread,
+                _orphan_tts_rq, _orphan_tts_rsq)
+            return
 
         await self._init_renew_status()
 
@@ -2857,41 +2963,18 @@ class LLMSessionManager:
                 if self.session is main_session_ref:
                     self.session = None
 
-        if tts_handler_task_ref and not tts_handler_task_ref.done():
-            tts_handler_task_ref.cancel()
-            try:
-                await asyncio.wait_for(tts_handler_task_ref, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-            if self.tts_handler_task is tts_handler_task_ref:
-                self.tts_handler_task = None
-            
-        if tts_thread_ref and tts_thread_ref.is_alive():
-            try:
-                tts_request_queue_ref.put((None, None))
-                tts_thread_ref.join(timeout=2.0)
-            except Exception as e:
-                logger.error(f"💥 关闭TTS线程时出错: {e}")
-            finally:
-                if self.tts_thread is tts_thread_ref:
-                    self.tts_thread = None
-                
-        # 清理TTS队列和缓存状态（使用快照的队列引用）
-        try:
-            while not tts_request_queue_ref.empty():
-                tts_request_queue_ref.get_nowait()
-        except: # noqa
-            pass
-        try:
-            while not tts_response_queue_ref.empty():
-                tts_response_queue_ref.get_nowait()
-        except: # noqa
-            pass
-        
-        # 重置TTS缓存状态
-        async with self.tts_cache_lock:
-            self.tts_ready = False
-            self.tts_pending_chunks.clear()
+        await self._teardown_tts_runtime(
+            tts_handler_task_ref, tts_thread_ref,
+            tts_request_queue_ref, tts_response_queue_ref)
+        # handler 可能在锁释放到 task 取消之间重新引入了过期错误码——
+        # 在活跃会话拆除路径（is_active 已置 False）补充一次清理。
+        # 但仅当 TTS 资源尚未被新会话替换时才重置，避免擦除新会话的状态。
+        tts_replaced_by_new_session = (
+            (self.tts_handler_task is not None and self.tts_handler_task is not tts_handler_task_ref) or
+            (self.tts_thread is not None and self.tts_thread is not tts_thread_ref)
+        )
+        if not tts_replaced_by_new_session:
+            self._reset_tts_retry_state()
         
         # 重置输入缓存状态
         async with self.input_cache_lock:
@@ -3058,10 +3141,41 @@ class LLMSessionManager:
                         async with self.tts_cache_lock:
                             self.tts_ready = ready_flag
                         if ready_flag:
+                            self._last_tts_error_code = ''
                             logger.info("✅ 收到TTS运行时就绪信号，开始刷新缓存文本")
                             await self._flush_tts_pending_chunks()
                         else:
-                            logger.warning("⚠️ 收到TTS未就绪信号，继续缓存文本等待恢复")
+                            # 复用 __error__ 分支记录的 code 判断是否重试
+                            _last_code = self._last_tts_error_code
+                            if _last_code in NO_RETRY_TTS_CODES:
+                                logger.warning(f"⚠️ TTS 未就绪且上次错误为 {_last_code}，跳过自动重试")
+                                # 取消可能仍在等待的延迟重试任务，避免绕过 no-retry 策略
+                                if self._tts_respawn_task and not self._tts_respawn_task.done():
+                                    self._tts_respawn_task.cancel()
+                                    self._tts_respawn_task = None
+                                # TTS 不会恢复，清空无用的缓存文本，避免白白占用内存
+                                async with self.tts_cache_lock:
+                                    self.tts_pending_chunks.clear()
+                            else:
+                                logger.warning("⚠️ 收到TTS未就绪信号，13秒后尝试重新拉起Worker")
+                                # 取消之前的延迟重试任务（如有）
+                                if self._tts_respawn_task and not self._tts_respawn_task.done():
+                                    self._tts_respawn_task.cancel()
+                                    self._tts_respawn_task = None
+                                # 捕获当前会话身份与 TTS 标志，防止跨会话的错误 respawn
+                                _expected_session = self.session
+                                _expected_use_tts = self.use_tts
+                                async def _delayed_respawn(_expected_session=_expected_session,
+                                                           _expected_use_tts=_expected_use_tts):
+                                    await asyncio.sleep(13)
+                                    if not self.is_active or self.tts_ready:
+                                        return
+                                    if self.session is not _expected_session or self.use_tts != _expected_use_tts:
+                                        logger.info("🔄 TTS 延迟重试：会话已变更，跳过 respawn")
+                                        return
+                                    logger.info("🔄 TTS 延迟重试：尝试重新拉起 Worker...")
+                                    self._respawn_tts_worker()
+                                self._tts_respawn_task = asyncio.ensure_future(_delayed_respawn())
                         continue
                     elif data[0] == "__reconnecting__":
                         logger.info("🌊 TTS 正在自动重连，发送呼吸感状态到前端")
@@ -3072,20 +3186,50 @@ class LLMSessionManager:
                         error_msg = data[1]
                         error_msg_text = str(error_msg)
                         logger.error(f"TTS Worker Error: {error_msg}")
-                        error_msg_lower = error_msg_text.lower()
-                        # 识别配额限制
-                        if '欠费' in error_msg_lower or 'standing' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_ARREARS"})
-                        elif 'quota' in error_msg_lower or 'time limit' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_QUOTA_TIME"})
-                        elif '429' in error_msg_lower or 'too many' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_RATE_LIMIT"})
-                        elif 'policy violation' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": error_msg_text}})
-                        elif '1008' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
+
+                        # 优先尝试从结构化 JSON 中提取明确的 code 字段
+                        _known_codes = {
+                            'API_ARREARS', 'API_QUOTA_TIME', 'API_RATE_LIMIT',
+                            'API_POLICY_VIOLATION', 'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
+                        }
+                        _parsed_code = None
+                        try:
+                            _parsed = json.loads(error_msg_text)
+                            if isinstance(_parsed, dict):
+                                _candidate = _parsed.get('code', '')
+                                if isinstance(_candidate, str) and _candidate in _known_codes:
+                                    _parsed_code = _candidate
+                        except (json.JSONDecodeError, TypeError):
+                            # JSON parsing may fail for free-form error strings from
+                            # tts.response.error events; this is expected and harmless —
+                            # the keyword-based fallback below will handle classification.
+                            # self._last_tts_error_code is only set when a valid code is parsed.
+                            pass
+
+                        if _parsed_code:
+                            user_msg = json.dumps({"code": _parsed_code, "details": {"msg": error_msg_text}})
+                            self._last_tts_error_code = _parsed_code
                         else:
-                            user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
+                            # 回退到关键词匹配
+                            error_msg_lower = error_msg_text.lower()
+                            if '欠费' in error_msg_lower or 'standing' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_ARREARS"})
+                                self._last_tts_error_code = 'API_ARREARS'
+                            elif 'quota' in error_msg_lower or 'time limit' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_QUOTA_TIME"})
+                                self._last_tts_error_code = 'API_QUOTA_TIME'
+                            elif '429' in error_msg_lower or 'too many' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_RATE_LIMIT"})
+                                self._last_tts_error_code = 'API_RATE_LIMIT'
+                            elif 'policy violation' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": error_msg_text}})
+                                self._last_tts_error_code = 'API_POLICY_VIOLATION'
+                            elif '1008' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
+                                self._last_tts_error_code = 'API_1008_FALLBACK'
+                            else:
+                                user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
+                                self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
                         self._fire_task(self.send_status(user_msg))
                         continue
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":

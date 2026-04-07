@@ -6,7 +6,7 @@ body {
     margin: 0;
     padding: 0;
     /* background: #fff; */
-    background: transparent;
+    background: transparent !important;
     color: #222;
     font-family: 'Segoe UI', Arial, sans-serif;
     pointer-events: none;
@@ -343,6 +343,30 @@ button * {
     will-change: transform;
 }
 
+/* 展开动画：从最小化尺寸过渡到完整尺寸 */
+#chat-container.expanding {
+    transform: scale(var(--chat-expand-scale-x, 1), var(--chat-expand-scale-y, 1));
+    transition: transform 0.32s cubic-bezier(0.2, 0, 0, 1);
+    will-change: transform;
+}
+
+#chat-container.expanding::before {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    transition: none !important;
+}
+
+/* 调整大小期间的性能优化 */
+#chat-container.is-resizing::before {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    transition: none !important;
+}
+
+#chat-container.is-resizing * {
+    transition: none !important;
+}
+
 /* Fluent Design Acrylic 材质层：将 backdrop-filter 隔离到伪元素上，
    避免它与滚动子元素同层合成导致 Chromium 透明区域泄漏 */
 #chat-container::before {
@@ -369,6 +393,7 @@ button * {
     overflow-x: hidden;
     overflow-y: auto;
     scroll-behavior: smooth;
+    overflow-anchor: auto;
     transition: opacity 0.2s ease, visibility 0.2s ease;
     opacity: 1;
     visibility: visible;
@@ -559,6 +584,18 @@ button * {
     color: #127dbc;
 }
 
+.chat-header-action-btn-react-window {
+    color: #3b6bdc;
+    border-color: rgba(59, 107, 220, 0.28);
+    background: rgba(59, 107, 220, 0.08);
+}
+
+.chat-header-action-btn-react-window:hover:not(:disabled) {
+    background: rgba(59, 107, 220, 0.14);
+    border-color: rgba(59, 107, 220, 0.45);
+    color: #2454c8;
+}
+
 .chat-header-action-icon {
     width: 16px;
     height: 16px;
@@ -578,6 +615,119 @@ button * {
     font-size: 0.78rem;
     font-weight: 600;
     line-height: 1;
+}
+
+#react-chat-window-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    pointer-events: none;
+}
+
+#react-chat-window-overlay[hidden] {
+    display: none !important;
+}
+
+#react-chat-window-backdrop {
+    display: none;
+}
+
+#react-chat-window-shell {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: min(430px, calc(100vw - 22px));
+    height: min(860px, calc(100vh - 22px));
+    transform: translate(-50%, -50%);
+    display: block;
+    border-radius: 22px;
+    overflow: hidden;
+    background: rgba(248, 250, 255, 0.96);
+    box-shadow: 0 30px 100px rgba(12, 20, 34, 0.3);
+    pointer-events: auto;
+}
+
+#react-chat-window-shell.is-minimized {
+    width: 220px;
+    height: 56px;
+    border-radius: 16px;
+}
+
+#react-chat-window-shell.is-minimized #react-chat-window-root {
+    display: none;
+}
+
+#react-chat-window-shell.is-dragging {
+    box-shadow: 0 36px 110px rgba(12, 20, 34, 0.36);
+}
+
+#react-chat-window-drag-handle {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 52px;
+    cursor: grab;
+    pointer-events: auto;
+    z-index: 3;
+}
+
+#react-chat-window-header-actions {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    z-index: 4;
+    pointer-events: auto;
+}
+
+#reactChatWindowMinimizeButton,
+#reactChatWindowCloseButton {
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: #5f6c82;
+    font-size: 1.3rem;
+    line-height: 32px;
+    cursor: pointer;
+    pointer-events: auto;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#reactChatWindowMinimizeButton:hover,
+#reactChatWindowCloseButton:hover {
+    background: rgba(88, 108, 145, 0.12);
+    color: #2b3851;
+}
+
+#reactChatWindowMinimizeButton img {
+    width: 32px;
+    height: 32px;
+    object-fit: cover;
+    pointer-events: none;
+}
+
+#react-chat-window-root {
+    width: 100%;
+    height: 100%;
+    background: #eef3fb;
+    pointer-events: auto;
+}
+
+body.react-chat-window-open {
+    overflow: hidden;
+}
+
+body.react-chat-window-dragging {
+    user-select: none;
+    cursor: grabbing;
 }
 /* 对话区提示框 */
 #chat-tooltip {
@@ -1421,6 +1571,7 @@ button * {
     border-radius: 50%;
     transition: none;
     animation: breathingGlow 2s ease-in-out infinite;
+    will-change: box-shadow;
 }
 
 #chat-container.minimized #chat-header {
@@ -1462,6 +1613,28 @@ button * {
 
 #chat-container.minimized #toggle-chat-btn:hover {
     transform: none;
+}
+
+/* 拖动中：禁用昂贵的视觉效果，使用 transform 走 GPU 合成 */
+#chat-container.dragging {
+    transition: none !important;
+    animation: none !important;
+    will-change: transform;
+    transform-origin: 0 0;
+}
+
+#chat-container.dragging::before {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    transition: none !important;
+}
+
+#chat-container.dragging #toggle-chat-btn {
+    transition: none !important;
+}
+
+#chat-container.dragging * {
+    animation: none !important;
 }
 
 #chat-container.minimized #toggle-chat-btn img {
@@ -1713,6 +1886,16 @@ button * {
         animation: none;
         /* 移动端不需要呼吸效果 */
         background: transparent;
+    }
+
+    #react-chat-window-shell {
+        width: calc(100vw - 12px);
+        height: calc(100vh - 12px);
+        border-radius: 14px;
+    }
+
+    #react-chat-window-drag-handle {
+        cursor: default;
     }
 
     #chat-container.minimized::before {
