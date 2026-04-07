@@ -64,6 +64,18 @@ MMD_STATIC_PATH = "/static/mmd"  # 项目目录下的 MMD 模型路径
 MMD_USER_PATH = "/user_mmd"  # 用户文档目录下的 MMD 模型路径
 
 
+def _resolve_master_display_name(master_basic_config: dict, fallback_name: str = "") -> str:
+    nickname = str(master_basic_config.get('昵称', '') or '').strip()
+    if nickname:
+        first_nickname = nickname.split(',')[0].split('，')[0].strip()
+        if first_nickname:
+            return first_nickname
+    profile_name = str(master_basic_config.get('档案名', '') or '').strip()
+    if profile_name:
+        return profile_name
+    return str(fallback_name or '').strip()
+
+
 @router.get("/character_reserved_fields")
 async def get_character_reserved_fields():
     """返回角色档案保留字段配置（供前端与路由统一使用）。"""
@@ -179,7 +191,8 @@ async def get_page_config(lanlan_name: str = ""):
     try:
         # 获取角色数据
         _config_manager = get_config_manager()
-        _, her_name, _, lanlan_basic_config, _, _, _, _, _ = _config_manager.get_character_data()
+        master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = _config_manager.get_character_data()
+        master_display_name = _resolve_master_display_name(master_basic_config, master_name)
         
         # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
         target_name = lanlan_name if lanlan_name else her_name
@@ -239,6 +252,10 @@ async def get_page_config(lanlan_name: str = ""):
         result = {
             "success": True,
             "lanlan_name": target_name,
+            "master_name": master_name or "",
+            "master_profile_name": str(master_basic_config.get('档案名', '') or ''),
+            "master_nickname": str(master_basic_config.get('昵称', '') or ''),
+            "master_display_name": master_display_name or "",
             "model_path": model_path,
             "model_type": model_type
         }
@@ -251,6 +268,10 @@ async def get_page_config(lanlan_name: str = ""):
             "success": False,
             "error": str(e),
             "lanlan_name": "",
+            "master_name": "",
+            "master_profile_name": "",
+            "master_nickname": "",
+            "master_display_name": "",
             "model_path": "",
             "model_type": ""
         }

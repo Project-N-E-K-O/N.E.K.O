@@ -78,14 +78,14 @@ RESERVED_FIELD_SCHEMA = {
         "vrm": {
             "model_path": str,
             "animation": (str, dict, list, type(None)),
-            "idle_animation": str,
+            "idle_animation": (str, list, type(None)),
             "lighting": (dict, type(None)),
             "cursor_follow": (dict, type(None)),
         },
         "mmd": {
             "model_path": str,
             "animation": (str, dict, list, type(None)),
-            "idle_animation": str,
+            "idle_animation": (str, list, type(None)),
             "lighting": (dict, type(None)),
             "rendering": (dict, type(None)),
             "physics": (dict, type(None)),
@@ -283,13 +283,13 @@ DEFAULT_LANLAN_TEMPLATE = {
                 "vrm": {
                     "model_path": "",
                     "animation": None,
-                    "idle_animation": "",
+                    "idle_animation": [],
                     "lighting": None,
                 },
                 "mmd": {
                     "model_path": "",
                     "animation": None,
-                    "idle_animation": "",
+                    "idle_animation": [],
                 },
             },
         },
