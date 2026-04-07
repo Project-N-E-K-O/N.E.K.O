@@ -805,13 +805,20 @@
             });
         }
         if (backdrop) {
-            backdrop.addEventListener('click', closeWindow);
+            // When chat adapter is active (primary mode), backdrop should not
+            // block interaction with the model behind it.
+            if (!window._chatAdapterActive) {
+                backdrop.addEventListener('click', closeWindow);
+            } else {
+                backdrop.style.pointerEvents = 'none';
+            }
         }
 
         bindDragging();
         bindBridgeEvents();
 
         window.addEventListener('keydown', function (event) {
+            if (window._chatAdapterActive) return;
             var overlay = getOverlay();
             if (event.key === 'Escape' && overlay && !overlay.hidden) {
                 closeWindow();

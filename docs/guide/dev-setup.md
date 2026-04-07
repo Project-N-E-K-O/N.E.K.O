@@ -64,6 +64,42 @@ You should see the character interface with a Live2D model. Try sending a text m
 | Agent/Tool server | 48915 | Agent task execution |
 | Plugin server | 48916 | User plugins |
 
+## Build the frontend projects
+
+The project has two modern frontend projects under `frontend/`. Both must be built before running the full application.
+
+### Quick build (all at once)
+
+```bash
+# Windows
+build_frontend.bat
+
+# Linux / macOS
+./build_frontend.sh
+```
+
+### Chat Window (React)
+
+```bash
+cd frontend/react-neko-chat
+npm install
+npm run dev          # Dev server on port 5174
+npm run build        # Production build → static/react/neko-chat/
+```
+
+The chat window is built as an IIFE library (`NekoChatWindow`) and embedded in `templates/index.html`.
+
+### Plugin Manager (Vue)
+
+```bash
+cd frontend/plugin-manager
+npm install
+npm run dev          # Dev server on port 5173 (proxies API to localhost:48916)
+npm run build-only   # Production build → frontend/plugin-manager/dist/
+```
+
+The plugin manager dashboard is served at `/ui/` by the plugin server (port 48916).
+
 ## Running tests
 
 ```bash
