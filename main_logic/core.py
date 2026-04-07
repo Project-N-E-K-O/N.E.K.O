@@ -56,6 +56,7 @@ logger = get_module_logger(__name__, "Main")
 
 # TTS 错误码中不应自动重试的类型（欠费 / 配额耗尽）
 NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_QUOTA_TIME'}
+NEGATIVE_SIGNAL_FAILURE_BACKOFF_SECONDS = 3.0
 
 # ---------------------------------------------------------------------------
 # 重要通知缓冲池
@@ -208,6 +209,7 @@ class LLMSessionManager:
         self.initial_cache_snapshot_len = 0
         self.pending_session_warmed_up_event = None
         self.pending_session_final_prime_complete_event = None
+        self._last_negative_signal_failure = 0.0
         self.session_start_time = None
         self._session_turn_count = 0  # 当前 session 的用户输入轮次计数
         self.pending_connector = None
@@ -609,6 +611,8 @@ class LLMSessionManager:
     async def _fetch_negative_signal_instruction(self, transcript: str) -> str:
         if not transcript:
             return ""
+        if (time.monotonic() - self._last_negative_signal_failure) < NEGATIVE_SIGNAL_FAILURE_BACKOFF_SECONDS:
+            return ""
         try:
             async with httpx.AsyncClient(timeout=1.2, proxy=None, trust_env=False) as client:
                 resp = await client.post(
@@ -619,12 +623,15 @@ class LLMSessionManager:
                     },
                 )
                 if not resp.is_success:
+                    self._last_negative_signal_failure = time.monotonic()
                     return ""
                 data = resp.json()
                 if not isinstance(data, dict):
+                    self._last_negative_signal_failure = time.monotonic()
                     return ""
                 return str(data.get("response_instruction", "")).strip()
         except Exception:
+            self._last_negative_signal_failure = time.monotonic()
             return ""
 
     async def _apply_transient_response_instruction(self, instruction: str) -> None:
@@ -652,6 +659,9 @@ class LLMSessionManager:
         self.session.instructions = transient_instructions
         self._transient_response_instruction_base = base_instructions
         self._transient_response_instruction_active = instruction
+        if self.pending_session or self.background_preparation_task or self.pending_session_warmed_up_event:
+            await self._cleanup_pending_session_resources()
+            await self._reset_preparation_state(clear_main_cache=False)
 
     async def _restore_transient_response_instruction(self, session_override=None) -> None:
         if not self._transient_response_instruction_active:

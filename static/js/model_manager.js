@@ -488,6 +488,10 @@ function sendMessageToMainPage(action, payload = {}) {
         }
 
         // 方式2: 使用localStorage事件机制发送消息给主页面（备用方案）
+        const live2dManager = window.live2dManager;
+        let previewSuspendReason = null;
+        let resumePreviewSuspend = () => {};
+
         try {
             localStorage.setItem('nekopage_message', JSON.stringify(message));
             localStorage.removeItem('nekopage_message'); // 立即移除以允许重复发送相同消息
@@ -5538,6 +5542,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 从完整路径中提取表情名称（去掉路径和扩展名）
         const expressionName = expressionSelect.value.split('/').pop().replace('.exp3.json', '');
+        const live2dManager = window.live2dManager;
+        let previewSuspendReason = null;
+        let resumePreviewSuspend = () => {};
 
         try {
             // 清除之前的表情预览恢复定时器
@@ -5555,9 +5562,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 创建预览标记，防止快速连续点击时并发 await 导致多个定时器共存
             window._currentExpressionPreviewToken = (window._currentExpressionPreviewToken || 0) + 1;
             const previewToken = window._currentExpressionPreviewToken;
+            previewSuspendReason = `preview-expression-${previewToken}`;
+            resumePreviewSuspend = (reapply = false) => {
+                if (!live2dManager || typeof live2dManager.resumePersistentExpressions !== 'function') return;
+                live2dManager.resumePersistentExpressions(previewSuspendReason);
+                const canReapply =
+                    reapply &&
+                    typeof live2dManager.applyPersistentExpressionsNative === 'function' &&
+                    (typeof live2dManager.arePersistentExpressionsSuspended !== 'function' ||
+                        !live2dManager.arePersistentExpressionsSuspended());
+                if (canReapply) {
+                    live2dManager.applyPersistentExpressionsNative(false).catch(() => {});
+                }
+            };
 
-            if (window.live2dManager && typeof window.live2dManager.suspendPersistentExpressions === 'function') {
-                window.live2dManager.suspendPersistentExpressions('preview-expression', { clearCurrent: true });
+            if (live2dManager && typeof live2dManager.suspendPersistentExpressions === 'function') {
+                live2dManager.suspendPersistentExpressions(previewSuspendReason, { clearCurrent: true });
             }
 
             // expression 方法是异步的，需要使用 await
@@ -5565,7 +5585,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             const result = await currentModel.expression(expressionName);
 
             // await 返回后检查标记是否仍然匹配（可能已被新的预览覆盖）
-            if (window._currentExpressionPreviewToken !== previewToken) return;
+            if (window._currentExpressionPreviewToken !== previewToken) {
+                resumePreviewSuspend(false);
+                return;
+            }
 
             // Live2D SDK 的 expression 方法成功时可能返回 falsy 值，这里改为检查是否抛出异常
             // 如果没有抛出异常，就认为播放成功
@@ -5589,11 +5612,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }, 5000);
         } catch (error) {
-            if (window.live2dManager && typeof window.live2dManager.resumePersistentExpressions === 'function') {
-                window.live2dManager.resumePersistentExpressions('preview-expression');
-                if (typeof window.live2dManager.applyPersistentExpressionsNative === 'function') {
-                    window.live2dManager.applyPersistentExpressionsNative(false).catch(() => {});
-                }
+            if (previewSuspendReason) {
+                resumePreviewSuspend(true);
             }
             console.error('播放表情失败:', error);
             showStatus(t('live2d.playExpressionFailed', `播放表情失败: ${expressionName}`, { expression: expressionName }), 2000);

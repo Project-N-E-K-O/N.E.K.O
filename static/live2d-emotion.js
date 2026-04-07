@@ -146,6 +146,11 @@ Live2DManager.prototype.arePersistentExpressionsSuspended = function() {
     return !!(this._persistentExpressionSuspendReasons && this._persistentExpressionSuspendReasons.size > 0);
 };
 
+// 常驻表情的预期调用顺序是：
+// arePersistentExpressionsSuspended() 读取 _persistentExpressionSuspendReasons，
+// suspendPersistentExpressions() 可选地 teardownPersistentExpressions()，
+// resumePersistentExpressions() 只清理由 suspend 添加的 reason，不会自动重放；
+// 调用方若需要恢复显示，必须显式调用 applyPersistentExpressionsNative()。
 Live2DManager.prototype.suspendPersistentExpressions = function(reason = 'temporary', options = {}) {
     const { clearCurrent = true } = options || {};
     if (!this._persistentExpressionSuspendReasons) {
