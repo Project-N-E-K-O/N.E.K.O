@@ -50,17 +50,18 @@ def tutorial_prompt_client(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
-def test_heartbeat_route_returns_prompt_token(tutorial_prompt_client):
+def test_heartbeat_route_prompts_immediately_on_first_open(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
 
     response = client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+        "foreground_ms_delta": 0,
     })
 
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
     assert body["should_prompt"] is True
+    assert body["prompt_reason"] == "first_open"
     assert body["prompt_token"]
 
 
@@ -301,6 +302,11 @@ def test_state_route_hides_internal_prompt_tokens(tutorial_prompt_client):
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
+    assert body["state"]["home_tutorial_completed"] is False
+    assert body["state"]["manual_home_tutorial_viewed"] is False
+    assert body["state"]["user_cohort"] == "new"
+    assert body["state"]["chat_turns"] == 0
+    assert body["state"]["voice_sessions"] == 0
     assert "active_prompt_token" not in body["state"]
     assert "active_prompt_issued_at" not in body["state"]
     assert "last_acknowledged_prompt_token" not in body["state"]

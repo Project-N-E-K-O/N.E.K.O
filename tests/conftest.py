@@ -5,6 +5,7 @@ import nest_asyncio
 
 nest_asyncio.apply()
 
+_orig_asyncio_run = asyncio.run
 _orig_runner_run = asyncio.runners.Runner.run
 
 def _nested_runner_run(self, coro, *, context=None):
@@ -22,7 +23,18 @@ def _nested_runner_run(self, coro, *, context=None):
             with __import__("contextlib").suppress(asyncio.CancelledError):
                 self._loop.run_until_complete(task)
 
+
+def _compat_asyncio_run(main, *, debug=None, loop_factory=None):
+    """Preserve Python 3.12's loop_factory support after nest_asyncio patches asyncio.run."""
+    if loop_factory is None:
+        return _orig_asyncio_run(main, debug=debug)
+
+    with asyncio.runners.Runner(debug=debug, loop_factory=loop_factory) as runner:
+        return runner.run(main)
+
+
 asyncio.runners.Runner.run = _nested_runner_run
+asyncio.run = _compat_asyncio_run
 
 import pytest
 import os
@@ -31,7 +43,9 @@ import time
 import uvicorn
 import json
 import logging
+import socket
 from unittest.mock import patch
+from pathlib import Path
 
 # Add project root to sys.path if needed, or rely on pytest pythonpath
 import sys
@@ -40,6 +54,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from tests.utils.llm_judger import LLMJudger
 
 logger = logging.getLogger(__name__)
+
+SYSTEM_CHROME_PATH = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
 # Map camelCase keys in api_keys.json to UPPER_SNAKE_CASE env vars expected by ConfigManager
 KEY_MAPPING = {
@@ -72,7 +88,24 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "manual" in item.keywords:
                 item.add_marker(skip_manual)
-                
+
+
+def _find_free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _set_runtime_test_port(port_name: str, port_value: int) -> None:
+    os.environ[f"NEKO_{port_name}"] = str(port_value)
+
+    try:
+        import config as config_module
+    except Exception:
+        return
+
+    setattr(config_module, port_name, port_value)
 
 
 @pytest.fixture(scope="session")
@@ -88,13 +121,16 @@ def browser_context_args(browser_context_args):
 
 @pytest.fixture(scope="session")
 def browser_type_launch_args(browser_type_launch_args):
-    return {
+    launch_args = {
         **browser_type_launch_args,
         "args": [
             "--use-fake-ui-for-media-stream",
             "--use-fake-device-for-media-stream",
         ]
     }
+    if SYSTEM_CHROME_PATH.exists():
+        launch_args["executable_path"] = str(SYSTEM_CHROME_PATH)
+    return launch_args
 
 @pytest.fixture(scope="session", autouse=True)
 def loaded_api_keys():
@@ -224,41 +260,43 @@ def mock_page(page):
 @pytest.fixture(scope="session", autouse=True)
 def mock_memory_server():
     """
-    Runs a minimal mock memory server on port 48912 to satisfy core.py's
+    Runs a minimal mock memory server on a free local port to satisfy core.py's
     requirement to fetch contextual memory before starting a session.
     """
     from fastapi import FastAPI
     from fastapi.responses import PlainTextResponse
-    
+
+    memory_port = _find_free_local_port()
+    _set_runtime_test_port("MEMORY_SERVER_PORT", memory_port)
+
     app = FastAPI()
-    
+
     @app.get("/new_dialog/{character}")
     def get_memory(character: str):
         return PlainTextResponse(f"Mock memory context for {character}.")
-        
-    config = uvicorn.Config(app, host="127.0.0.1", port=48912, log_level="error")
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=memory_port, log_level="error")
     server = uvicorn.Server(config)
-    
+
     def run_server():
         server.run()
-        
+
     thread = threading.Thread(target=run_server, daemon=True)
     thread.start()
-    
-    import socket
+
     start_time = time.time()
     while time.time() - start_time < 10:
         try:
-            with socket.create_connection(("127.0.0.1", 48912), timeout=1):
+            with socket.create_connection(("127.0.0.1", memory_port), timeout=1):
                 break
         except (OSError, ConnectionRefusedError):
             time.sleep(0.5)
             continue
     else:
-        raise RuntimeError("Mock memory server failed to start on 48912")
-        
+        raise RuntimeError(f"Mock memory server failed to start on {memory_port}")
+
     yield
-    
+
     server.should_exit = True
     thread.join(timeout=5)
 
@@ -270,37 +308,35 @@ def running_server(clean_user_data_dir, mock_memory_server):
     Waits for port to be ready.
     Depends on clean_user_data_dir to ensure config is patched BEFORE import.
     """
+    test_port = _find_free_local_port()
+    _set_runtime_test_port("MAIN_SERVER_PORT", test_port)
+
     from main_server import app
-    
-    # Use a different port for testing to avoid conflict
-    TEST_PORT = 8001
-    
-    config = uvicorn.Config(app, host="127.0.0.1", port=TEST_PORT, log_level="error")
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=test_port, log_level="error")
     server = uvicorn.Server(config)
-    
-    
+
     def run_server():
         server.run()
-        
+
     thread = threading.Thread(target=run_server, daemon=True)
     thread.start()
-    
+
     # Wait for server to start
     # Simple check loop
-    import socket
     start_time = time.time()
     while time.time() - start_time < 10:
         try:
-            with socket.create_connection(("127.0.0.1", TEST_PORT), timeout=1):
+            with socket.create_connection(("127.0.0.1", test_port), timeout=1):
                 break
         except (OSError, ConnectionRefusedError):
             time.sleep(0.5)
             continue
     else:
         raise RuntimeError("Test server failed to start")
-        
-    yield f"http://127.0.0.1:{TEST_PORT}"
-    
+
+    yield f"http://127.0.0.1:{test_port}"
+
     # Force-terminate uvicorn: graceful shutdown first, then force-kill
     server.should_exit = True
     thread.join(timeout=10)

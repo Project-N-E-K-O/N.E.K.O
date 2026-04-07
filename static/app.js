@@ -132,7 +132,9 @@ function init_app() {
 
     if (window.appTutorialPrompt && window.appTutorialPrompt.init) {
         window.appTutorialPrompt.init();
-    } else if (window.appAutostartPrompt && window.appAutostartPrompt.init) {
+    }
+
+    if (window.appAutostartPrompt && window.appAutostartPrompt.init) {
         window.appAutostartPrompt.init();
     }
 

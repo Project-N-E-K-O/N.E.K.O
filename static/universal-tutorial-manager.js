@@ -1647,6 +1647,20 @@ class UniversalTutorialManager {
         console.log('[Tutorial] 引导启动来源:', source);
     }
 
+    emitTutorialCompleted(page = this.currentPage, source = this.currentTutorialStartSource) {
+        window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+            detail: {
+                page: page,
+                source: source
+            }
+        }));
+        this.logPromptFlow('tutorial-completed', {
+            page: page,
+            source: source,
+        });
+        console.log('[Tutorial] 引导结束来源:', source);
+    }
+
     /**
      * 显示全屏提示
      */
@@ -2649,6 +2663,9 @@ class UniversalTutorialManager {
      * 引导结束时的回调
      */
     onTutorialEnd() {
+        const tutorialEndPage = this.currentPage;
+        const tutorialEndSource = this.currentTutorialStartSource;
+
         // 重置运行标志
         this.isTutorialRunning = false;
         this.clearNextButtonGuard();
@@ -2657,7 +2674,6 @@ class UniversalTutorialManager {
         this._pendingStepChange = false;
         this._applyingInteractionState = false;
         this.cachedValidSteps = null;
-        this.currentTutorialStartSource = 'auto';
 
         // 移除跳过按钮
         this.hideSkipButton();
@@ -2696,16 +2712,8 @@ class UniversalTutorialManager {
         // 标记用户已看过该页面的引导
         const storageKey = this.getStorageKey();
         localStorage.setItem(storageKey, 'true');
-        window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
-            detail: {
-                page: this.currentPage,
-                source: this.currentTutorialStartSource
-            }
-        }));
-        this.logPromptFlow('tutorial-completed', {
-            page: this.currentPage,
-            source: this.currentTutorialStartSource
-        });
+        this.emitTutorialCompleted(tutorialEndPage, tutorialEndSource);
+        this.currentTutorialStartSource = 'auto';
 
         // 对于模型管理页面，同时标记通用步骤为已看过
         if (this.currentPage === 'model_manager') {

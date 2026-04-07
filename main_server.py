@@ -161,18 +161,51 @@ _server_loop: asyncio.AbstractEventLoop | None = None
 
 _config_manager = get_config_manager()
 
-def cleanup():
-    """通知所有同步线程停止"""
-    logger.info("正在关闭同步线程...")
-    for k in sync_shutdown_event:
+def _iter_sync_connector_threads():
+    for name, thread in list(sync_process.items()):
+        if thread is None:
+            continue
+        yield name, thread
+
+
+def _signal_sync_connectors_shutdown(*, log: bool = True) -> None:
+    if log:
+        logger.info("正在关闭同步线程...")
+    for k in list(sync_shutdown_event):
         try:
             sync_shutdown_event[k].set()
         except Exception:
             pass
 
+
+def join_sync_connector_threads(timeout: float = 3.0) -> list[str]:
+    alive_threads: list[str] = []
+    wait_timeout = max(0.0, float(timeout))
+
+    for name, thread in _iter_sync_connector_threads():
+        try:
+            thread.join(timeout=wait_timeout)
+            if thread.is_alive():
+                alive_threads.append(name)
+        except Exception as e:
+            logger.debug(f"等待同步连接器线程 {name} 退出时出错: {e}", exc_info=True)
+
+    if alive_threads:
+        logger.warning(
+            "以下同步连接器线程未在 %.1fs 内退出: %s",
+            wait_timeout,
+            ", ".join(alive_threads),
+        )
+    return alive_threads
+
+
+def cleanup(*, log: bool = True):
+    """通知所有同步线程停止"""
+    _signal_sync_connectors_shutdown(log=log)
+
 # 只在主进程中注册 cleanup 函数，防止子进程退出时执行清理
 if _IS_MAIN_PROCESS:
-    atexit.register(cleanup)
+    atexit.register(cleanup, log=False)
 
 sync_message_queue = {}
 sync_shutdown_event = {}
@@ -1017,6 +1050,11 @@ async def on_shutdown():
     """服务器关闭时清理资源"""
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
+        cleanup()
+        try:
+            await asyncio.to_thread(join_sync_connector_threads, 3.0)
+        except Exception as e:
+            logger.debug(f"同步连接器线程清理失败: {e}", exc_info=True)
         
         # 等待预加载任务完成（如果还在运行）
         global _preload_task, agent_event_bridge

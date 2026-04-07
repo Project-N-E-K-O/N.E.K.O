@@ -39,6 +39,15 @@
         "never": "不再提示",
         "enableFailed": "暫時無法開啟開機自啟動，請稍後再試"
     },
+    "tutorialPrompt": {
+        "title": "要不要先看看新手引導？",
+        "message": "看起來你剛剛打開 N.E.K.O，還沒有開始操作。要不要先帶你快速認識一下首頁裡的核心功能？",
+        "note": "引導會從首頁開始，介紹常用按鈕和互動入口。",
+        "startNow": "開始引導",
+        "later": "稍後再說",
+        "never": "不再提示",
+        "startFailed": "新手引導暫時無法啟動，請稍後再試"
+    },
     "characterProfile": {
         "gender": "性別",
         "age": "年齡",

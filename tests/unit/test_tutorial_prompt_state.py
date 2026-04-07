@@ -49,11 +49,11 @@ class DummyConfig:
 
 
 @pytest.mark.unit
-def test_prompt_triggers_after_idle_home_usage(tmp_path):
+def test_prompt_triggers_immediately_on_first_open(tmp_path):
     config = DummyConfig(tmp_path)
     response = process_tutorial_prompt_heartbeat(
         {
-            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+            "foreground_ms_delta": 0,
             "chat_turns_delta": 0,
             "voice_sessions_delta": 0,
             "home_tutorial_completed": False,
@@ -63,7 +63,7 @@ def test_prompt_triggers_after_idle_home_usage(tmp_path):
     )
 
     assert response["should_prompt"] is True
-    assert response["prompt_reason"] == "idle_timeout"
+    assert response["prompt_reason"] == "first_open"
     assert response["prompt_mode"] == "tutorial"
     assert response["prompt_token"]
     assert response["state"]["user_cohort"] == "new"
@@ -202,7 +202,7 @@ def test_manual_home_tutorial_view_heartbeat_clears_stale_prompt_start_flag(tmp_
 def test_later_decision_sets_cooldown(tmp_path):
     config = DummyConfig(tmp_path)
     heartbeat = process_tutorial_prompt_heartbeat(
-        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
+        {"foreground_ms_delta": 0},
         config_manager=config,
         now_ms=1_000,
     )
@@ -225,6 +225,40 @@ def test_later_decision_sets_cooldown(tmp_path):
 
     assert blocked["should_prompt"] is False
     assert blocked["prompt_reason"] == "cooldown_active"
+
+
+@pytest.mark.unit
+def test_prompt_requires_foreground_threshold_after_first_prompt_is_deferred(tmp_path):
+    config = DummyConfig(tmp_path)
+    heartbeat = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": 0},
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    record_tutorial_prompt_decision(
+        {"decision": "later", "prompt_token": heartbeat["prompt_token"]},
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    blocked = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": 0},
+        config_manager=config,
+        now_ms=2_000 + LATER_COOLDOWN_MS + 1,
+    )
+
+    assert blocked["should_prompt"] is False
+    assert blocked["prompt_reason"] == "foreground_insufficient"
+
+    prompt = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=2_000 + LATER_COOLDOWN_MS + 2_000,
+    )
+
+    assert prompt["should_prompt"] is True
+    assert prompt["prompt_reason"] == "idle_timeout"
 
 
 @pytest.mark.unit
@@ -680,7 +714,7 @@ def test_legacy_autostart_state_is_ignored_for_new_tutorial_prompt(tmp_path):
     )
 
     assert response["should_prompt"] is True
-    assert response["prompt_reason"] == "idle_timeout"
+    assert response["prompt_reason"] == "first_open"
     assert response["state"]["shown_count"] == 0
     assert response["state"]["never_remind"] is False
 
@@ -705,7 +739,7 @@ def test_autostart_state_file_does_not_pollute_tutorial_state(tmp_path):
     )
 
     assert response["should_prompt"] is True
-    assert response["prompt_reason"] == "idle_timeout"
+    assert response["prompt_reason"] == "first_open"
     assert response["state"]["home_tutorial_completed"] is False
     assert response["state"]["shown_count"] == 0
 
@@ -817,6 +851,11 @@ def test_public_state_response_hides_internal_prompt_tokens(tmp_path):
 
     assert state["status"] == "observing"
     assert state["shown_count"] == 0
+    assert state["home_tutorial_completed"] is False
+    assert state["manual_home_tutorial_viewed"] is False
+    assert state["user_cohort"] == "new"
+    assert state["chat_turns"] == 0
+    assert state["voice_sessions"] == 0
     assert "active_prompt_token" not in state
     assert "active_prompt_issued_at" not in state
     assert "last_acknowledged_prompt_token" not in state
@@ -857,6 +896,12 @@ def test_prompt_threshold_config_overrides_idle_and_later_cooldown(tmp_path):
         "failure_cooldown_ms": 120_000,
         "max_prompt_shows": 3,
     }), encoding="utf-8")
+
+    process_tutorial_prompt_heartbeat(
+        {"home_interactions_delta": 1},
+        config_manager=config,
+        now_ms=900,
+    )
 
     blocked = process_tutorial_prompt_heartbeat(
         {"foreground_ms_delta": 29_000},
@@ -941,6 +986,12 @@ def test_invalid_prompt_threshold_config_is_clamped(tmp_path):
     assert runtime_config["later_cooldown_ms"] == 5 * 60 * 1000
     assert runtime_config["failure_cooldown_ms"] == 2 * 60 * 60 * 1000
     assert runtime_config["max_prompt_shows"] == 10
+
+    process_tutorial_prompt_heartbeat(
+        {"home_interactions_delta": 1},
+        config_manager=config,
+        now_ms=900,
+    )
 
     response = process_tutorial_prompt_heartbeat(
         {"foreground_ms_delta": 0},

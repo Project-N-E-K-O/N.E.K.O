@@ -71,6 +71,26 @@ VALID_TUTORIAL_EVENT_SOURCES = {
 
 TUTORIAL_PROMPT_FUNNEL_KEYS = PROMPT_FUNNEL_KEYS
 
+TUTORIAL_PROMPT_EXTRA_FIELDS = (
+    "home_tutorial_completed",
+    "manual_home_tutorial_viewed",
+    "manual_home_tutorial_viewed_at",
+    "user_cohort",
+    "cohort_decided_at",
+    "cohort_reason",
+    "active_tutorial_run_token",
+    "active_tutorial_run_source",
+    "active_tutorial_run_started_at",
+)
+
+TUTORIAL_PROMPT_PUBLIC_EXTRA_FIELDS = (
+    "home_tutorial_completed",
+    "manual_home_tutorial_viewed",
+    "user_cohort",
+    "chat_turns",
+    "voice_sessions",
+)
+
 DEFAULT_TUTORIAL_PROMPT_STATE = {
     **deepcopy(DEFAULT_PROMPT_FLOW_STATE),
     "prompt_kind": TUTORIAL_PROMPT_STATE_KIND,
@@ -212,23 +232,16 @@ def build_tutorial_prompt_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_state(state)
     return build_prompt_flow_snapshot(
         normalized,
-        extra_fields=(
-            "home_tutorial_completed",
-            "manual_home_tutorial_viewed",
-            "manual_home_tutorial_viewed_at",
-            "user_cohort",
-            "cohort_decided_at",
-            "cohort_reason",
-            "active_tutorial_run_token",
-            "active_tutorial_run_source",
-            "active_tutorial_run_started_at",
-        ),
+        extra_fields=TUTORIAL_PROMPT_EXTRA_FIELDS,
     )
 
 
 def build_public_tutorial_prompt_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_state(state)
-    return build_public_prompt_flow_snapshot(normalized)
+    return build_public_prompt_flow_snapshot(
+        normalized,
+        extra_fields=TUTORIAL_PROMPT_PUBLIC_EXTRA_FIELDS,
+    )
 
 
 def _normalize_tutorial_event_payload(payload: dict[str, Any] | None) -> tuple[str, str, str]:
@@ -500,9 +513,19 @@ def _compute_prompt_eligibility(
         return False, "prompt_pending"
     if state["deferred_until"] > now_ms:
         return False, "cooldown_active"
+    if _should_prompt_immediately_on_first_open(state):
+        return True, "first_open"
     if state["foreground_ms"] < min_prompt_foreground_ms:
         return False, "foreground_insufficient"
     return True, "idle_timeout"
+
+
+def _should_prompt_immediately_on_first_open(state: dict[str, Any]) -> bool:
+    return (
+        state["shown_count"] == 0
+        and state["last_shown_at"] <= 0
+        and state["home_interactions"] == 0
+    )
 
 
 def process_tutorial_prompt_heartbeat(

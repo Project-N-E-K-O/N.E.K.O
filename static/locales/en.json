@@ -39,6 +39,15 @@
         "never": "Don't remind me",
         "enableFailed": "Auto launch couldn't be enabled right now. Please try again later."
     },
+    "tutorialPrompt": {
+        "title": "Want to take a quick tutorial first?",
+        "message": "It looks like you just opened N.E.K.O and haven't started interacting yet. Want a quick walkthrough of the main features on the home page?",
+        "note": "The tutorial starts from the home page and introduces the main buttons and entry points.",
+        "startNow": "Start tutorial",
+        "later": "Maybe later",
+        "never": "Don't remind me",
+        "startFailed": "The tutorial couldn't be started right now. Please try again later."
+    },
     "characterProfile": {
         "gender": "Gender",
         "age": "Age",
