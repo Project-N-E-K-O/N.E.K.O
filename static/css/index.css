@@ -304,6 +304,16 @@ button * {
     opacity: 0;
     visibility: hidden;
 }
+/* 当 adapter 激活时，彻底隐藏旧聊天容器 */
+body.react-chat-adapter-active #chat-container {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+}
+
 /* 看板娘聊天框-容器 */
 #chat-container {
     pointer-events: auto;

@@ -1,9 +1,9 @@
 # --- Stage 1: Build plugin manager frontend ---
 FROM node:20-slim AS frontend-builder
 WORKDIR /src
-COPY plugin/frontend/vue-project/package.json plugin/frontend/vue-project/package-lock.json ./
+COPY frontend/plugin-manager/package.json frontend/plugin-manager/package-lock.json ./
 RUN npm ci
-COPY plugin/frontend/vue-project/ ./
+COPY frontend/plugin-manager/ ./
 RUN npm run build-only
 
 # --- Stage 2: Runtime ---
@@ -87,7 +87,7 @@ RUN mkdir -p /root/.config/uv && \
 COPY . /app
 
 # 7. 复制前端构建产物
-COPY --from=frontend-builder /src/dist /app/plugin/frontend/vue-project/dist
+COPY --from=frontend-builder /src/dist /app/frontend/plugin-manager/dist
 
 # 8. 设置环境变量
 ENV PATH="/root/.cargo/bin:/usr/bin:/usr/local/bin:$PATH"
