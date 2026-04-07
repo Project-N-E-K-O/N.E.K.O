@@ -9,7 +9,7 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import Version, InvalidVersion
 
 from .models import BundleAnalysisResult, BundleSdkAnalysis, PluginSource, SharedDependency
-from .pack import PluginPacker
+from .plugin_source import load_plugin_source
 
 _NAME_NORMALIZE_RE = re.compile(r"[-_.]+")
 
@@ -21,8 +21,7 @@ def analyze_bundle_plugins(
 ) -> BundleAnalysisResult:
     """Analyze bundle candidates before any multi-plugin packaging begins."""
 
-    packer = PluginPacker()
-    sources = [packer.load_plugin_source(plugin_dir) for plugin_dir in plugin_dirs]
+    sources = [load_plugin_source(plugin_dir) for plugin_dir in plugin_dirs]
     sources.sort(key=lambda item: item.plugin_id)
 
     shared_dependencies, common_dependencies = _analyze_shared_dependencies(sources)

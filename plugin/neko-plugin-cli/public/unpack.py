@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-import hashlib
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import zipfile
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib  # type: ignore[no-redef]
-
 from .models import UnpackedPlugin, UnpackResult
+from .archive_utils import (
+    collect_plugin_folders,
+    compute_archive_payload_hash,
+    read_manifest,
+    read_metadata,
+    safe_archive_path,
+    validate_package_type,
+    validate_plugin_layout,
+    verify_payload_hash,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_PLUGINS_ROOT = _REPO_ROOT / "plugin" / "plugins"
@@ -35,15 +39,15 @@ class PackageUnpacker:
         on_conflict = self.normalize_conflict_strategy(on_conflict)
 
         with zipfile.ZipFile(package_path) as archive:
-            manifest = self.read_manifest(archive)
+            manifest = read_manifest(archive)
             package_type = self.require_string(manifest, "package_type")
             package_id = self.require_string(manifest, "id")
-            metadata = self.read_metadata(archive)
-            plugin_folders = self.collect_plugin_folders(archive)
-            self.validate_package_type(package_type, plugin_folders)
-            self.validate_plugin_layout(archive, plugin_folders)
-            payload_hash = self.compute_archive_payload_hash(archive)
-            payload_hash_verified = self.verify_payload_hash(metadata, payload_hash)
+            metadata = read_metadata(archive)
+            plugin_folders = collect_plugin_folders(archive)
+            validate_package_type(package_type, plugin_folders)
+            validate_plugin_layout(archive, plugin_folders)
+            payload_hash = compute_archive_payload_hash(archive)
+            payload_hash_verified = verify_payload_hash(metadata, payload_hash)
             if payload_hash_verified is False:
                 raise ValueError("payload hash mismatch between archive payload and metadata.toml")
             folder_mapping = self.plan_plugin_targets(
@@ -81,52 +85,6 @@ class PackageUnpacker:
             conflict_strategy=on_conflict,
         )
 
-    def read_manifest(self, archive: zipfile.ZipFile) -> dict[str, object]:
-        try:
-            raw = archive.read("manifest.toml")
-        except KeyError as exc:
-            raise FileNotFoundError("manifest.toml not found in package archive") from exc
-        data = tomllib.loads(raw.decode("utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("manifest.toml root must be a table")
-        return data
-
-    def collect_plugin_folders(self, archive: zipfile.ZipFile) -> list[str]:
-        plugin_folders: set[str] = set()
-        for name in archive.namelist():
-            path = self.safe_archive_path(name)
-            if len(path.parts) >= 3 and path.parts[:2] == ("payload", "plugins"):
-                plugin_folders.add(path.parts[2])
-        if not plugin_folders:
-            raise ValueError("package archive does not contain payload/plugins entries")
-        return sorted(plugin_folders)
-
-    def read_metadata(self, archive: zipfile.ZipFile) -> dict[str, object] | None:
-        try:
-            raw = archive.read("metadata.toml")
-        except KeyError:
-            return None
-        data = tomllib.loads(raw.decode("utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("metadata.toml root must be a table")
-        return data
-
-    def validate_package_type(self, package_type: str, plugin_folders: list[str]) -> None:
-        package_type = package_type.strip().lower()
-        if package_type == "plugin" and len(plugin_folders) != 1:
-            raise ValueError("plugin package must contain exactly one plugin folder")
-        if package_type == "bundle" and not plugin_folders:
-            raise ValueError("bundle package must contain one or more plugin folders")
-        if package_type not in {"plugin", "bundle"}:
-            raise ValueError("package_type must be either plugin or bundle")
-
-    def validate_plugin_layout(self, archive: zipfile.ZipFile, plugin_folders: list[str]) -> None:
-        file_names = set(archive.namelist())
-        for folder in plugin_folders:
-            plugin_toml = f"payload/plugins/{folder}/plugin.toml"
-            if plugin_toml not in file_names:
-                raise ValueError(f"packaged plugin folder '{folder}' does not contain plugin.toml")
-
     def plan_plugin_targets(
         self,
         plugin_folders: list[str],
@@ -142,7 +100,7 @@ class PackageUnpacker:
 
     def extract_plugins(self, archive: zipfile.ZipFile, folder_mapping: dict[str, Path]) -> None:
         for name in archive.namelist():
-            path = self.safe_archive_path(name)
+            path = safe_archive_path(name)
             if len(path.parts) < 4 or path.parts[:2] != ("payload", "plugins"):
                 continue
             source_folder = path.parts[2]
@@ -165,14 +123,14 @@ class PackageUnpacker:
     ) -> Path | None:
         profile_names = [
             name for name in archive.namelist()
-            if len(self.safe_archive_path(name).parts) >= 3 and self.safe_archive_path(name).parts[:2] == ("payload", "profiles")
+            if len(safe_archive_path(name).parts) >= 3 and safe_archive_path(name).parts[:2] == ("payload", "profiles")
         ]
         if not profile_names:
             return None
 
         target_dir = self.resolve_target_dir(profiles_root / package_id, on_conflict=on_conflict)
         for name in profile_names:
-            path = self.safe_archive_path(name)
+            path = safe_archive_path(name)
             relative_parts = path.parts[2:]
             if not relative_parts:
                 continue
@@ -206,14 +164,6 @@ class PackageUnpacker:
                 return candidate.resolve()
             counter += 1
 
-    def safe_archive_path(self, name: str) -> PurePosixPath:
-        path = PurePosixPath(name)
-        if path.is_absolute():
-            raise ValueError(f"archive entry must not be absolute: {name}")
-        if ".." in path.parts:
-            raise ValueError(f"archive entry must not contain parent traversal: {name}")
-        return path
-
     def require_string(self, data: dict[str, object], key: str) -> str:
         value = data.get(key)
         if not isinstance(value, str) or not value.strip():
@@ -225,41 +175,6 @@ class PackageUnpacker:
         if normalized not in {"rename", "fail"}:
             raise ValueError("on_conflict must be either 'rename' or 'fail'")
         return normalized
-
-    def verify_payload_hash(self, metadata: dict[str, object] | None, payload_hash: str) -> bool | None:
-        if metadata is None:
-            return None
-
-        payload_table = metadata.get("payload")
-        if not isinstance(payload_table, dict):
-            raise ValueError("metadata.toml must contain a [payload] table")
-
-        algorithm = payload_table.get("hash_algorithm")
-        expected_hash = payload_table.get("hash")
-        if not isinstance(algorithm, str) or algorithm.strip().lower() != "sha256":
-            raise ValueError("metadata payload hash_algorithm must be 'sha256'")
-        if not isinstance(expected_hash, str) or not expected_hash.strip():
-            raise ValueError("metadata payload hash must be a non-empty string")
-        return expected_hash.strip().lower() == payload_hash
-
-    def compute_archive_payload_hash(self, archive: zipfile.ZipFile) -> str:
-        digest = hashlib.sha256()
-        payload_entries = []
-        for name in archive.namelist():
-            path = self.safe_archive_path(name)
-            if len(path.parts) < 2 or path.parts[0] != "payload":
-                continue
-            if name.endswith("/"):
-                continue
-            payload_entries.append((name, path))
-
-        for name, path in sorted(payload_entries, key=lambda item: item[1].as_posix()):
-            relative = PurePosixPath(*path.parts[1:]).as_posix()
-            digest.update(relative.encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(archive.read(name))
-            digest.update(b"\0")
-        return digest.hexdigest()
 
 
 def unpack_package(

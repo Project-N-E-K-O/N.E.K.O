@@ -7,13 +7,11 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib  # type: ignore[no-redef]
-
 from .models import PackResult, PayloadBuildResult, PluginSource
 from .pack_rules import PackRuleSet, load_pack_rules, should_skip_path
+from .plugin_source import load_plugin_source
+from .profile import write_default_profile
+from .toml_utils import escape_string
 
 _SCHEMA_VERSION = "1.0"
 
@@ -67,7 +65,7 @@ class PluginPacker:
         *,
         keep_staging: bool = False,
     ) -> PackResult:
-        source = self.load_plugin_source(plugin_dir)
+        source = load_plugin_source(plugin_dir)
         if source.package_type != "plugin":
             raise ValueError(
                 f"single-plugin pack only supports package_type='plugin', got {source.package_type!r}"
@@ -96,34 +94,6 @@ class PluginPacker:
             if not keep_staging:
                 shutil.rmtree(paths.staging_root, ignore_errors=True)
 
-    def load_plugin_source(self, plugin_dir: str | Path) -> PluginSource:
-        plugin_dir = Path(plugin_dir).expanduser().resolve()
-        plugin_toml_path = plugin_dir / "plugin.toml"
-        if not plugin_toml_path.is_file():
-            raise FileNotFoundError(f"plugin.toml not found: {plugin_toml_path}")
-
-        plugin_toml = _load_toml(plugin_toml_path)
-        plugin_table = _require_table(plugin_toml, "plugin", plugin_toml_path)
-        plugin_id = _require_string(plugin_table, "id", plugin_toml_path)
-        name = _optional_string(plugin_table, "name") or plugin_id
-        version = _optional_string(plugin_table, "version") or "0.1.0"
-        package_type = _optional_string(plugin_table, "type") or "plugin"
-
-        pyproject_toml_path = plugin_dir / "pyproject.toml"
-        pyproject_toml = _load_toml(pyproject_toml_path) if pyproject_toml_path.is_file() else None
-
-        return PluginSource(
-            plugin_dir=plugin_dir,
-            plugin_toml_path=plugin_toml_path,
-            pyproject_toml_path=pyproject_toml_path if pyproject_toml_path.is_file() else None,
-            plugin_id=plugin_id,
-            name=name,
-            version=version,
-            package_type=package_type,
-            plugin_toml=plugin_toml,
-            pyproject_toml=pyproject_toml,
-        )
-
     def build_payload(
         self,
         source: PluginSource,
@@ -138,7 +108,7 @@ class PluginPacker:
             paths.plugin_payload_dir,
             rules=rules,
         )
-        profile_files = self.write_default_profile(source, paths.profiles_dir)
+        profile_files = write_default_profile(source, paths.profiles_dir)
         payload_hash = self.compute_payload_hash(paths.payload_dir)
 
         return PayloadBuildResult(
@@ -175,55 +145,18 @@ class PluginPacker:
     def should_skip(self, relative_path: Path, *, is_dir: bool, rules: PackRuleSet) -> bool:
         return should_skip_path(relative_path, is_dir=is_dir, rules=rules)
 
-    def write_default_profile(self, source: PluginSource, profiles_dir: Path) -> list[Path]:
-        # First pass profile extraction is intentionally conservative: derive a
-        # single portable default profile from plugin.toml, then refine later.
-        profile_path = profiles_dir / "default.toml"
-        lines: list[str] = [
-            'name = "default"',
-            f'enabled_plugins = ["{_escape_string(source.plugin_id)}"]',
-            "",
-            f"[plugin.{_toml_bare_or_quoted_key(source.plugin_id)}]",
-            "enabled = true",
-        ]
-
-        plugin_runtime = source.plugin_toml.get("plugin_runtime")
-        if isinstance(plugin_runtime, dict):
-            auto_start = plugin_runtime.get("auto_start")
-            if isinstance(auto_start, bool):
-                lines.append(f"auto_start = {_toml_bool(auto_start)}")
-
-        runtime_config = self.extract_runtime_config(source)
-        if runtime_config:
-            lines.extend(
-                [
-                    "",
-                    f"[plugin.{_toml_bare_or_quoted_key(source.plugin_id)}.{_toml_bare_or_quoted_key(source.plugin_id)}]",
-                ]
-            )
-            lines.extend(_dump_mapping(runtime_config))
-
-        profile_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-        return [profile_path.resolve()]
-
-    def extract_runtime_config(self, source: PluginSource) -> dict[str, object]:
-        # Runtime config extraction is intentionally narrow: only the top-level
-        # table matching the plugin id is migrated into the portable profile.
-        value = source.plugin_toml.get(source.plugin_id)
-        return value if isinstance(value, dict) else {}
-
     def write_manifest(self, source: PluginSource, paths: PackPaths) -> None:
         lines = [
             f'schema_version = "{_SCHEMA_VERSION}"',
-            f'package_type = "{_escape_string(source.package_type)}"',
+            f'package_type = "{escape_string(source.package_type)}"',
             "",
-            f'id = "{_escape_string(source.plugin_id)}"',
-            f'package_name = "{_escape_string(source.name)}"',
-            f'version = "{_escape_string(source.version)}"',
+            f'id = "{escape_string(source.plugin_id)}"',
+            f'package_name = "{escape_string(source.name)}"',
+            f'version = "{escape_string(source.version)}"',
         ]
 
         if source.description:
-            lines.append(f'package_description = "{_escape_string(source.description)}"')
+            lines.append(f'package_description = "{escape_string(source.description)}"')
 
         lines.append("")
         content = "\n".join(lines)
@@ -243,7 +176,7 @@ class PluginPacker:
                 "",
                 "[source]",
                 'kind = "local"',
-                f'path = "{_escape_string(str(source.plugin_dir))}"',
+                f'path = "{escape_string(str(source.plugin_dir))}"',
                 "",
             ]
         )
@@ -305,80 +238,3 @@ def pack_plugin(
         out_file=out_file,
         keep_staging=keep_staging,
     )
-
-
-def _load_toml(path: Path) -> dict[str, object]:
-    with path.open("rb") as file_obj:
-        data = tomllib.load(file_obj)
-    if not isinstance(data, dict):
-        raise ValueError(f"TOML root must be a table: {path}")
-    return data
-
-
-def _require_table(data: dict[str, object], key: str, source_path: Path) -> dict[str, object]:
-    value = data.get(key)
-    if not isinstance(value, dict):
-        raise ValueError(f"required TOML table [{key}] missing in {source_path}")
-    return value
-
-
-def _require_string(data: dict[str, object], key: str, source_path: Path) -> str:
-    value = data.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"required string '{key}' missing in {source_path}")
-    return value.strip()
-
-
-def _optional_string(data: dict[str, object], key: str) -> str | None:
-    value = data.get(key)
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
-
-
-def _toml_bool(value: bool) -> str:
-    return "true" if value else "false"
-
-
-def _escape_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _toml_bare_or_quoted_key(key: str) -> str:
-    if key and all(ch.isalnum() or ch in ("_", "-") for ch in key):
-        return key
-    return f'"{_escape_string(key)}"'
-
-
-def _dump_mapping(mapping: dict[str, object]) -> list[str]:
-    lines: list[str] = []
-    for key, value in mapping.items():
-        lines.extend(_dump_value_assignment(key, value))
-    return lines
-
-
-def _dump_value_assignment(key: str, value: object) -> list[str]:
-    rendered = _render_toml_value(value)
-    return [f"{_toml_bare_or_quoted_key(key)} = {rendered}"]
-
-
-def _render_toml_value(value: object) -> str:
-    if isinstance(value, bool):
-        return _toml_bool(value)
-    if isinstance(value, int) and not isinstance(value, bool):
-        return str(value)
-    if isinstance(value, float):
-        return repr(value)
-    if isinstance(value, str):
-        return f'"{_escape_string(value)}"'
-    if isinstance(value, list):
-        rendered_items = ", ".join(_render_toml_value(item) for item in value)
-        return f"[{rendered_items}]"
-    if isinstance(value, dict):
-        pairs = []
-        for item_key, item_value in value.items():
-            pairs.append(f"{_toml_bare_or_quoted_key(str(item_key))} = {_render_toml_value(item_value)}")
-        return "{ " + ", ".join(pairs) + " }"
-    if value is None:
-        return '""'
-    return f'"{_escape_string(str(value))}"'
