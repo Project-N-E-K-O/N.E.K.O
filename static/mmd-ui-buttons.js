@@ -423,13 +423,19 @@ MMDManager.prototype._startUIUpdateLoop = function() {
         }
     };
     const onBlur = () => {
-        // 锁定状态下 blur 通常由鼠标穿透点击引起，保留淡化状态避免闪烁
-        if (this.isLocked) return;
+        // blur 时 Ctrl 键事件无法到达，必须主动清除 Ctrl 状态避免卡死
+        isCtrlPressed = false;
+        ctrlFadeActive = false;
+        // 锁定状态下 blur 通常由鼠标穿透点击引起，保留静止淡化状态避免闪烁
+        if (this.isLocked) {
+            applyFade();
+            return;
+        }
         clearStationaryFadeTimer();
         if (stationaryFadeActive) {
             stationaryFadeActive = false;
-            applyFade();
         }
+        applyFade();
         hasEnteredHoverRange = false;
     };
 
@@ -588,8 +594,8 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                     hasEnteredHoverRange = false;
                 }
 
-                // Ctrl 淡化：锁定 + Ctrl + 在模型范围内
-                ctrlFadeActive = this.isLocked && isCtrlPressed && isNearModel;
+                // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（UI 上时跳过）
+                ctrlFadeActive = this.isLocked && isCtrlPressed && isNearModel && !isOverUi;
                 applyFade();
             }
 

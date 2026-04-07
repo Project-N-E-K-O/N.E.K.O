@@ -1287,14 +1287,20 @@ class VRMInteraction {
             }
         };
         const onBlur = () => {
-            // 锁定状态下 blur 通常由鼠标穿透点击引起，保留淡化状态避免闪烁
-            if (this.checkLocked()) return;
+            // blur 时 Ctrl 键事件无法到达，必须主动清除 Ctrl 状态避免卡死
+            isCtrlPressed = false;
+            ctrlFadeActive = false;
+            // 锁定状态下 blur 通常由鼠标穿透点击引起，保留静止淡化状态避免闪烁
+            if (this.checkLocked()) {
+                applyFade();
+                return;
+            }
             clearStationaryFadeTimer();
             // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
             if (stationaryFadeActive) {
                 stationaryFadeActive = false;
-                applyFade();
             }
+            applyFade();
             this._vrmHasEnteredHoverRange = false;
         };
         this._vrmClearStationaryFadeTimer = clearStationaryFadeTimer;

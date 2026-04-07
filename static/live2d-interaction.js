@@ -926,8 +926,8 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 this._hasEnteredHoverRange = false;
             }
 
-            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化，移动端跳过）
-            ctrlFadeActive = !isMobileDevice && this.isLocked && ctrlKeyPressed && isNearModel;
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化，移动端跳过，UI 上时跳过）
+            ctrlFadeActive = !isMobileDevice && this.isLocked && ctrlKeyPressed && isNearModel && !isOverUi;
             applyFade();
 
             const canvasEl = document.getElementById('live2d-canvas');
@@ -982,12 +982,15 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     // 窗口失去焦点时，只重置淡化效果，不重置 Ctrl 键状态
     // 这样窗口重新获得焦点后，如果 Ctrl 仍被按住，淡化功能可以恢复
     const onBlur = () => {
+        // blur 时 Ctrl 键事件无法到达，必须主动清除 Ctrl 状态
+        isCtrlPressed = false;
+        ctrlFadeActive = false;
         clearStationaryFadeTimer();
         // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
         if (stationaryFadeActive) {
             stationaryFadeActive = false;
-            applyFade();
         }
+        applyFade();
         this._hasEnteredHoverRange = false;
     };
 
