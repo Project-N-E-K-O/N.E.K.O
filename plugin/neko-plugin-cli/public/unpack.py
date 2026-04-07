@@ -148,8 +148,10 @@ class PackageUnpacker:
             dst.write(src.read())
 
     def resolve_target_dir(self, desired: Path, *, on_conflict: str) -> Path:
-        if on_conflict == "fail" and desired.exists():
-            raise FileExistsError(f"target already exists: {desired}")
+        if on_conflict == "fail":
+            if desired.exists():
+                raise FileExistsError(f"target already exists: {desired}")
+            return desired.resolve()
         if on_conflict == "rename":
             return self.resolve_unique_dir(desired)
         raise ValueError(f"unsupported conflict strategy: {on_conflict}")
