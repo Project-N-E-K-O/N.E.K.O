@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 
-from fastapi import APIRouter, File, Form, UploadFile, HTTPException
+from fastapi import APIRouter, BackgroundTask, File, Form, UploadFile, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from .shared_state import get_config_manager
@@ -40,6 +40,55 @@ ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.flac'}
 ALLOWED_ACTION_EXTENSIONS = {'.vmd', '.bvh', '.fbx', '.vrma'}
 
 import re
+import io
+
+def check_file_size(file: UploadFile, max_size: int) -> int:
+    """检查文件大小，返回文件大小（字节），超过限制则抛出异常"""
+    file.file.seek(0, 2)
+    file_size = file.file.tell()
+    file.file.seek(0)
+    if file_size > max_size:
+        raise HTTPException(400, f"文件过大: {file_size / 1024 / 1024 / 1024:.1f}GB > {max_size / 1024 / 1024 / 1024}GB")
+    return file_size
+
+
+def file_iterator(file_path: Path, chunk_size: int = CHUNK_SIZE):
+    """文件流式迭代器，用于大文件传输"""
+    with open(file_path, "rb") as f:
+        while chunk := f.read(chunk_size):
+            yield chunk
+
+
+def cleanup_temp_path(path: str):
+    """清理临时文件或目录"""
+    try:
+        p = Path(path)
+        if p.is_file():
+            p.unlink(missing_ok=True)
+        elif p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+    except Exception as e:
+        logger.warning(f"清理临时路径失败 {path}: {e}")
+
+
+def validate_extract_path(file_path: str, extract_dir: Path) -> Path:
+    """验证解压路径安全，防止路径遍历攻击"""
+    # 规范化路径（移除 ../ 等）
+    target_path = (extract_dir / file_path).resolve()
+    extract_dir_resolved = extract_dir.resolve()
+    
+    # 确保目标路径在 extract_dir 内
+    try:
+        target_path.relative_to(extract_dir_resolved)
+    except ValueError:
+        raise HTTPException(400, f"非法路径: {file_path}")
+    
+    # 确保路径在预期的子目录内（songs/ 或 actions/）
+    relative_str = str(target_path.relative_to(extract_dir_resolved))
+    if not (relative_str.startswith("songs/") or relative_str.startswith("actions/")):
+        raise HTTPException(400, f"路径必须在 songs/ 或 actions/ 目录下: {file_path}")
+    
+    return target_path
 
 def sanitize_filename(name: str) -> str:
     """清理文件名，移除非法字符，用于生成ID"""
@@ -184,6 +233,15 @@ class JukeboxConfig:
             "actions": {**builtin_md5_index.get("actions", {}), **user_md5_index.get("actions", {})}
         }
 
+        # 应用内置资源的覆盖设置
+        builtin_overrides = user_config.get("builtinOverrides", {"songs": {}, "actions": {}})
+        for song_id, overrides in builtin_overrides.get("songs", {}).items():
+            if song_id in merged_songs:
+                merged_songs[song_id].update(overrides)
+        for action_id, overrides in builtin_overrides.get("actions", {}).items():
+            if action_id in merged_actions:
+                merged_actions[action_id].update(overrides)
+
         return {
             "version": user_config.get("version", "1.0"),
             "songs": merged_songs,
@@ -193,17 +251,39 @@ class JukeboxConfig:
         }
 
     def save(self):
-        """保存配置（排除自带资源，但保留跨类型绑定）"""
+        """保存配置（排除自带资源，但保留跨类型绑定和内置资源覆盖设置）"""
         # 获取所有资源ID及其类型
         all_songs = self.data.get("songs", {})
         all_actions = self.data.get("actions", {})
-        
+
         # 区分自带资源和用户资源
         user_songs = {k: v for k, v in all_songs.items() if not v.get("isBuiltin", False)}
         user_actions = {k: v for k, v in all_actions.items() if not v.get("isBuiltin", False)}
         builtin_song_ids = {k for k, v in all_songs.items() if v.get("isBuiltin", False)}
         builtin_action_ids = {k for k, v in all_actions.items() if v.get("isBuiltin", False)}
-        
+
+        # 收集内置资源的覆盖设置（可见性、默认动画）
+        builtin_overrides = {
+            "songs": {},
+            "actions": {}
+        }
+        for song_id in builtin_song_ids:
+            song = all_songs[song_id]
+            # 保存可见性和默认动画的覆盖
+            overrides = {}
+            if "visible" in song:
+                overrides["visible"] = song["visible"]
+            if "defaultAction" in song:
+                overrides["defaultAction"] = song["defaultAction"]
+            if overrides:
+                builtin_overrides["songs"][song_id] = overrides
+
+        for action_id in builtin_action_ids:
+            action = all_actions[action_id]
+            # 保存可见性的覆盖
+            if "visible" in action:
+                builtin_overrides["actions"][action_id] = {"visible": action["visible"]}
+
         user_data = {
             "version": self.data.get("version", "1.0"),
             "songs": user_songs,
@@ -212,23 +292,24 @@ class JukeboxConfig:
             "md5Index": {
                 "songs": {},
                 "actions": {}
-            }
+            },
+            "builtinOverrides": builtin_overrides  # 内置资源的覆盖设置
         }
-        
+
         # 保存绑定关系：只要绑定涉及用户资源就保存
         # 包括：用户歌曲↔用户动画、自带歌曲↔用户动画、用户歌曲↔自带动画
         for song_id, actions in self.data.get("bindings", {}).items():
             is_user_song = song_id in user_songs
-            
+
             for action_id, bind_data in actions.items():
                 is_user_action = action_id in user_actions
-                
+
                 # 只保存至少一方是用户资源的绑定
                 if is_user_song or is_user_action:
                     if song_id not in user_data["bindings"]:
                         user_data["bindings"][song_id] = {}
                     user_data["bindings"][song_id][action_id] = bind_data
-        
+
         # 过滤MD5索引：只保留用户资源的MD5
         for md5_key, md5_map in self.data.get("md5Index", {}).items():
             filtered_map = {}
@@ -239,7 +320,7 @@ class JukeboxConfig:
                 if not is_builtin_song and not is_builtin_action:
                     filtered_map[k] = v
             user_data["md5Index"][md5_key] = filtered_map
-        
+
         atomic_write_json(self.config_file, user_data)
     
     def get_next_id(self, prefix: str) -> str:
@@ -303,6 +384,9 @@ async def upload_songs(
     results = []
     for i, (file, meta) in enumerate(zip(files, meta_list)):
         try:
+            # 检查文件大小
+            check_file_size(file, MAX_FILE_SIZE)
+
             # 验证文件扩展名
             file_ext = Path(file.filename).suffix.lower()
             if file_ext not in ALLOWED_AUDIO_EXTENSIONS:
@@ -382,30 +466,40 @@ async def delete_song(song_id: str):
     """删除歌曲"""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
-    
+
     if song_id not in jukebox_config.data["songs"]:
         raise HTTPException(404, "歌曲不存在")
-    
+
     song = jukebox_config.data["songs"][song_id]
-    
+
+    # 内置资源：只删除绑定关系，不删除资源本身
+    if song.get("isBuiltin", False):
+        # 删除相关绑定
+        if song_id in jukebox_config.data["bindings"]:
+            del jukebox_config.data["bindings"][song_id]
+            jukebox_config.save()
+            logger.info(f"删除内置歌曲的绑定关系: {song_id}")
+        return {"success": True, "message": "内置歌曲的绑定关系已删除"}
+
+    # 用户资源：完全删除
     # 删除文件
     audio_path = jukebox_config.jukebox_dir / song["audio"]
     if audio_path.exists():
         audio_path.unlink()
-    
+
     # 删除相关绑定（使用ID）
     if song_id in jukebox_config.data["bindings"]:
         del jukebox_config.data["bindings"][song_id]
-    
+
     # 从 MD5 索引中移除
     song_md5 = song.get("audioMd5", "")
     if song_md5 and song_md5 in jukebox_config.data["md5Index"]["songs"]:
         del jukebox_config.data["md5Index"]["songs"][song_md5]
-    
+
     # 删除歌曲记录
     del jukebox_config.data["songs"][song_id]
     jukebox_config.save()
-    
+
     logger.info(f"删除歌曲: {song_id}")
     return {"success": True}
 
@@ -523,6 +617,9 @@ async def upload_actions(
     results = []
     for i, (file, meta) in enumerate(zip(files, meta_list)):
         try:
+            # 检查文件大小
+            check_file_size(file, MAX_FILE_SIZE)
+
             # 验证文件扩展名
             file_ext = Path(file.filename).suffix.lower()
             if file_ext not in ALLOWED_ACTION_EXTENSIONS:
@@ -605,6 +702,25 @@ async def delete_action(action_id: str):
 
     action = jukebox_config.data["actions"][action_id]
 
+    # 内置资源：只删除绑定关系，不删除资源本身
+    if action.get("isBuiltin", False):
+        # 从所有绑定中移除，并清理默认动画
+        for song_id, bindings in list(jukebox_config.data["bindings"].items()):
+            if action_id in bindings:
+                del bindings[action_id]
+                # 如果删除的是默认动画，清除默认动画设置
+                song = jukebox_config.data["songs"].get(song_id)
+                if song and song.get("defaultAction") == action_id:
+                    song["defaultAction"] = ""
+                    logger.info(f"清除默认动画: {song_id} (删除了内置动画 {action_id} 的绑定)")
+            # 如果没有绑定了，删除空字典
+            if not bindings:
+                del jukebox_config.data["bindings"][song_id]
+        jukebox_config.save()
+        logger.info(f"删除内置动画的绑定关系: {action_id}")
+        return {"success": True, "message": "内置动画的绑定关系已删除"}
+
+    # 用户资源：完全删除
     # 删除文件
     file_path = jukebox_config.jukebox_dir / action["file"]
     if file_path.exists():
@@ -737,22 +853,23 @@ async def export_config(
 ):
     """
     导出配置
-    songIds: JSON 字符串数组，为空时导出所有
-    actionIds: JSON 字符串数组，为空时导出所有
+    songIds: JSON 字符串数组，指定要导出的歌曲ID。为None时根据includeHidden导出所有/非隐藏歌曲
+    actionIds: JSON 字符串数组，指定要导出的动画ID（仅用于选中导出）。为None时导出所有动画
+    includeHidden: 是否包含隐藏歌曲。为False时只导出非隐藏歌曲的绑定关系
     """
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
-    
+
     # 解析 ID 列表
     selected_songs = json.loads(songIds) if songIds else None
     selected_actions = json.loads(actionIds) if actionIds else None
-    
+
     # 创建临时目录
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         export_dir = temp_path / "jukebox_export"
         export_dir.mkdir()
-        
+
         # 准备导出数据
         export_data = {
             "version": jukebox_config.data["version"],
@@ -760,54 +877,65 @@ async def export_config(
             "actions": {},
             "bindings": {}
         }
-        
+
         # 导出歌曲（注意：空列表 [] 也是有效的选择，表示不导出任何歌曲）
         songs_to_export = selected_songs if selected_songs is not None else list(jukebox_config.data["songs"].keys())
-        
+
         # 收集需要导出的歌曲ID
         song_ids_to_export = set()
         for song_id in songs_to_export:
             if song_id not in jukebox_config.data["songs"]:
                 continue
-            
+
             song = jukebox_config.data["songs"][song_id]
-            
+
             # 跳过自带资源（不可导出）
             if song.get("isBuiltin", False):
                 continue
-            
+
             # 跳过隐藏歌曲（如果不包含隐藏）
             if not includeHidden and not song.get("visible", True):
                 continue
-            
+
             song_ids_to_export.add(song_id)
-        
-        # 收集需要导出的动画ID
-        action_ids_to_export = set(selected_actions if selected_actions is not None else [])
-        
+
+        # 收集需要导出的动画ID：
+        # - "导出全部"：导出所有动画（无论是否被使用）
+        # - "导出选中"：导出选中的动画 + 被选中歌曲使用的动画
+        if selected_actions is not None:
+            # 选中导出模式：使用选中的动画 + 被选中歌曲使用的动画
+            action_ids_to_export = set(selected_actions)
+            for song_id in song_ids_to_export:
+                if song_id in jukebox_config.data.get("bindings", {}):
+                    for action_id in jukebox_config.data["bindings"][song_id]:
+                        action_ids_to_export.add(action_id)
+        else:
+            # 导出全部模式：导出所有动画
+            action_ids_to_export = set(jukebox_config.data["actions"].keys())
+
         # 导出歌曲
         for song_id in song_ids_to_export:
             song = jukebox_config.data["songs"][song_id]
             export_data["songs"][song_id] = song
-            
+
             # 复制文件
             src_path = jukebox_config.jukebox_dir / song["audio"]
             if src_path.exists():
                 dst_path = export_dir / song["audio"]
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_path, dst_path)
-        
+
         # 导出动画
         for action_id in action_ids_to_export:
             if action_id not in jukebox_config.data["actions"]:
                 continue
 
             action = jukebox_config.data["actions"][action_id]
-            
+
             # 跳过自带资源（不可导出）
             if action.get("isBuiltin", False):
                 continue
-            
+
             export_data["actions"][action_id] = action
 
             # 复制文件
@@ -821,63 +949,62 @@ async def export_config(
         # 本地存储格式: bindings[songId][actionId] = {"offset": 0}
         # 导出格式: bindings[songMd5][actionMd5] = {"offset": 0}
         md5_bindings = {}
-        
+
         # 构建ID到MD5的映射
         song_id_to_md5 = {sid: s.get("audioMd5", "") for sid, s in jukebox_config.data["songs"].items()}
         action_id_to_md5 = {aid: a.get("fileMd5", "") for aid, a in jukebox_config.data["actions"].items()}
-        
-        # 1. 收集选中歌曲的绑定（ID -> MD5）
-        for song_id in song_ids_to_export:
+
+        # 导出绑定关系：
+        # - "导出全部(忽略隐藏)"：只导出被非隐藏歌曲使用的绑定
+        # - "导出全部(含隐藏)" 或 "导出选中"：导出被导出歌曲使用的绑定
+        for song_id in jukebox_config.data.get("bindings", {}):
+            # 检查歌曲是否应该包含在绑定导出中
+            song = jukebox_config.data["songs"].get(song_id)
+            if not song:
+                continue
+
+            # 跳过隐藏歌曲的绑定（如果不包含隐藏）
+            if not includeHidden and not song.get("visible", True):
+                continue
+
+            # 跳过自带歌曲的绑定（自带资源不导出）
+            if song.get("isBuiltin", False):
+                continue
+
             song_md5 = song_id_to_md5.get(song_id, "")
             if not song_md5:
                 continue
-            
-            # 查找该歌曲ID的所有绑定
-            if song_id in jukebox_config.data.get("bindings", {}):
-                md5_bindings[song_md5] = {}
-                for action_id, binding_data in jukebox_config.data["bindings"][song_id].items():
-                    action_md5 = action_id_to_md5.get(action_id, "")
-                    if action_md5:
-                        md5_bindings[song_md5][action_md5] = {
-                            "offset": binding_data.get("offset", 0)
-                        }
-        
-        # 2. 收集选中动画相关的绑定（反向查找）
-        for action_id in action_ids_to_export:
-            action_md5 = action_id_to_md5.get(action_id, "")
-            if not action_md5:
-                continue
-            
-            # 遍历所有绑定，查找包含该动画的绑定
-            for song_id, action_bindings in jukebox_config.data.get("bindings", {}).items():
-                if action_id in action_bindings:
-                    song_md5 = song_id_to_md5.get(song_id, "")
-                    if song_md5:
-                        if song_md5 not in md5_bindings:
-                            md5_bindings[song_md5] = {}
-                        md5_bindings[song_md5][action_md5] = {
-                            "offset": action_bindings[action_id].get("offset", 0)
-                        }
+
+            # 导出该歌曲的所有绑定（只要动画存在且非内置）
+            for action_id, binding_data in jukebox_config.data["bindings"][song_id].items():
+                action = jukebox_config.data["actions"].get(action_id)
+                if not action or action.get("isBuiltin", False):
+                    continue
+
+                action_md5 = action_id_to_md5.get(action_id, "")
+                if action_md5:
+                    if song_md5 not in md5_bindings:
+                        md5_bindings[song_md5] = {}
+                    md5_bindings[song_md5][action_md5] = {
+                        "offset": binding_data.get("offset", 0)
+                    }
         
         export_data["bindings"] = md5_bindings
-        
+
         # 写入配置文件
         with open(export_dir / "config.json", "w", encoding="utf-8") as f:
             json.dump(export_data, f, ensure_ascii=False, indent=2)
-        
+
         # 打包为 zip
         zip_path = temp_path / "jukebox_export.zip"
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file_path in export_dir.rglob("*"):
                 if file_path.is_file():
                     zf.write(file_path, file_path.relative_to(export_dir))
-        
-        # 读取 zip 文件到内存（避免临时目录被清理后文件丢失）
-        with open(zip_path, "rb") as f:
-            zip_content = f.read()
-        
+
+        # 使用流式响应，避免一次性读取大文件到内存
         return StreamingResponse(
-            io.BytesIO(zip_content),
+            file_iterator(zip_path),
             media_type="application/zip",
             headers={"Content-Disposition": "attachment; filename=jukebox_export.zip"}
         )
@@ -951,11 +1078,14 @@ async def import_config(file: UploadFile = File(...)):
     # 如果有不一样的地方 虽然不知道为什么导入的文件和本身 MD5 不一样,但是既然存在修改那一定是有他的道理的.jpeg
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
-    
+
+    # 检查文件大小（压缩包限制为 10GB）
+    check_file_size(file, MAX_ZIP_SIZE)
+
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         zip_path = temp_path / "import.zip"
-        
+
         with open(zip_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
@@ -997,9 +1127,15 @@ async def import_config(file: UploadFile = File(...)):
         
         # 第一步：导入歌曲
         for song_id, song in import_data.get("songs", {}).items():
+            # 验证路径安全
+            try:
+                src_audio = validate_extract_path(song["audio"], extract_dir)
+            except HTTPException as e:
+                logger.warning(f"跳过非法路径的歌曲: {song_id}, 路径: {song['audio']}, 错误: {e.detail}")
+                continue
+
             file_md5 = song.get("audioMd5", "")
             if not file_md5:
-                src_audio = extract_dir / song["audio"]
                 if src_audio.exists():
                     file_md5 = calculate_md5(src_audio)
                     song["audioMd5"] = file_md5
@@ -1009,7 +1145,6 @@ async def import_config(file: UploadFile = File(...)):
             if existing_id:
                 stats["songsMerged"] += 1
             else:
-                src_audio = extract_dir / song["audio"]
                 if src_audio.exists():
                     original_filename = Path(song["audio"]).name
                     target_filename = get_unique_filename(jukebox_config.songs_dir, original_filename)
@@ -1036,9 +1171,15 @@ async def import_config(file: UploadFile = File(...)):
         
         # 第二步：导入动画
         for action_id, action in import_data.get("actions", {}).items():
+            # 验证路径安全
+            try:
+                src_file = validate_extract_path(action["file"], extract_dir)
+            except HTTPException as e:
+                logger.warning(f"跳过非法路径的动画: {action_id}, 路径: {action['file']}, 错误: {e.detail}")
+                continue
+
             file_md5 = action.get("fileMd5", "")
             if not file_md5:
-                src_file = extract_dir / action["file"]
                 if src_file.exists():
                     file_md5 = calculate_md5(src_file)
                     action["fileMd5"] = file_md5
@@ -1048,7 +1189,6 @@ async def import_config(file: UploadFile = File(...)):
             if existing_id:
                 stats["actionsMerged"] += 1
             else:
-                src_file = extract_dir / action["file"]
                 if src_file.exists():
                     original_filename = Path(action["file"]).name
                     target_filename = get_unique_filename(jukebox_config.actions_dir, original_filename)
@@ -1118,8 +1258,6 @@ async def import_config(file: UploadFile = File(...)):
         return {"success": True, "stats": stats}
 
 
-import io
-
 @router.post("/pack-folder")
 async def pack_folder(files: List[UploadFile] = File(...)):
     """将文件夹中的文件打包成 ZIP"""
@@ -1128,6 +1266,9 @@ async def pack_folder(files: List[UploadFile] = File(...)):
 
         # 保存所有文件到临时目录
         for file in files:
+            # 检查文件大小
+            check_file_size(file, MAX_FILE_SIZE)
+
             # 安全检查：防止路径遍历
             safe_name = Path(file.filename).name
             if safe_name != file.filename:
@@ -1145,12 +1286,9 @@ async def pack_folder(files: List[UploadFile] = File(...)):
                     arcname = file_path.relative_to(temp_path)
                     zf.write(file_path, arcname)
 
-        # 读取 zip 文件到内存（避免临时目录被清理后文件丢失）
-        with open(zip_path, "rb") as f:
-            zip_content = f.read()
-
+        # 使用流式响应，避免一次性读取大文件到内存
         return StreamingResponse(
-            io.BytesIO(zip_content),
+            file_iterator(zip_path),
             media_type="application/zip",
             headers={"Content-Disposition": "attachment; filename=packed.zip"}
         )
