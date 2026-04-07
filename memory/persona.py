@@ -157,6 +157,11 @@ def _contains_negative_signal(text: str) -> bool:
     return any(keyword in lowered for keyword in _NEGATIVE_KEYWORDS)
 
 
+def contains_negative_signal(text: str) -> bool:
+    """Public helper for cheap keyword gating before higher-cost review."""
+    return _contains_negative_signal(text)
+
+
 def _contains_cjk(text: str) -> bool:
     return any(
         '\u4e00' <= ch <= '\u9fff' or '\u3040' <= ch <= '\u30ff' or '\uac00' <= ch <= '\ud7af'

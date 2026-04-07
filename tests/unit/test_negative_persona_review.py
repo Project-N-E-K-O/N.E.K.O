@@ -96,6 +96,14 @@ def test_negative_signal_topicless_emotion_falls_back_to_tone_only() -> None:
             assert guidance.get("hard_avoid", []) == []
 
 
+def test_contains_negative_signal_keyword_gate() -> None:
+    from memory.persona import contains_negative_signal
+
+    assert contains_negative_signal("讲道理，你知道我不喜欢就别提及了嘛") is True
+    assert contains_negative_signal("我不喜欢昆虫食品") is True
+    assert contains_negative_signal("今天吃什么好呀") is False
+
+
 def test_negative_signal_explicit_avoid_uses_referenced_topic() -> None:
     with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
         mock_cm = _build_mock_config_manager(tmpdir)

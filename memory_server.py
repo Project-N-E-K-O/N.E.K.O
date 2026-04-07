@@ -22,6 +22,7 @@ from config.prompts_memory import (
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
     get_negative_preference_review_prompt,
 )
+from memory.persona import contains_negative_signal
 from utils.language_utils import get_global_language
 from utils.character_name import validate_character_name
 from utils.config_manager import get_config_manager
@@ -288,6 +289,14 @@ def _format_current_topic_guidance(lanlan_name: str) -> str:
         return "（读取失败，忽略）"
 
 
+def _should_review_negative_preferences(messages: list) -> bool:
+    """Cheap gate: only invoke the LLM reviewer when recent user text contains negative cues."""
+    user_msgs = _extract_user_messages(messages)
+    if not user_msgs:
+        return False
+    return any(contains_negative_signal(text) for text in user_msgs)
+
+
 async def _review_negative_preferences(messages: list, lanlan_name: str) -> list[dict]:
     from config import SETTING_PROPOSER_MODEL
     from utils.llm_client import create_chat_llm
@@ -333,6 +342,8 @@ async def _review_negative_preferences(messages: list, lanlan_name: str) -> list
 
 
 async def _review_and_apply_negative_preferences(messages: list, lanlan_name: str) -> int:
+    if not _should_review_negative_preferences(messages):
+        return 0
     reviewed = await _review_negative_preferences(messages, lanlan_name)
     applied = 0
     for item in reviewed[:3]:
