@@ -136,6 +136,76 @@ def test_negative_signal_explicit_avoid_uses_english_referenced_topic() -> None:
             assert result["policy"] == "avoid"
 
 
+def test_negative_signal_explicit_avoid_targets_negative_clause_in_reference() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            result = pm.register_negative_signal(
+                "测试猫娘",
+                "讲道理，你知道我不喜欢就别提及了嘛",
+                referenced_topic="寿司、生鱼片、家常菜、甜点。你喜欢哪种？不过昆虫食品你应该不会喜欢。",
+            )
+            assert result["matched"] is True
+            assert result["topic"] == "昆虫食品"
+            assert result["policy"] == "avoid"
+
+
+def test_negative_signal_direct_dislike_immediately_hard() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            result = pm.register_negative_signal("测试猫娘", "我不喜欢昆虫食品")
+            assert result["matched"] is True
+            assert result["topic"] == "昆虫食品"
+            assert result["policy"] == "avoid"
+
+            fresh_pm = PersonaManager()
+            fresh_pm._config_manager = mock_cm
+            persona = fresh_pm.get_persona("测试猫娘")
+            guidance = persona["_topic_guidance"]
+            assert guidance["soft_avoid"] == []
+            assert guidance["hard_avoid"][0]["topic"] == "昆虫食品"
+
+
+def test_apply_negative_preference_review_persists_topic_guidance() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            result = pm.apply_negative_preference_review(
+                "测试猫娘",
+                topic="昆虫食品",
+                policy="avoid",
+            )
+            assert result["matched"] is True
+            assert result["topic"] == "昆虫食品"
+            assert result["policy"] == "avoid"
+
+            fresh_pm = PersonaManager()
+            fresh_pm._config_manager = mock_cm
+            persona = fresh_pm.get_persona("测试猫娘")
+            guidance = persona["_topic_guidance"]
+            assert guidance["soft_avoid"] == []
+            assert guidance["hard_avoid"][0]["topic"] == "昆虫食品"
+
+
 def test_negative_signal_english_topic_detection() -> None:
     with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
         mock_cm = _build_mock_config_manager(tmpdir)

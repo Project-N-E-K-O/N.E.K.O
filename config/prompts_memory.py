@@ -802,6 +802,86 @@ def get_fact_extraction_prompt(lang: str = 'zh') -> str:
 # backward compat
 fact_extraction_prompt = FACT_EXTRACTION_PROMPT['zh']
 
+# ---------- negative_preference_review_prompt → i18n dict ----------
+
+NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
+    'zh': """请审查下面这段对话，判断用户是否表达了“今后不要再主动提及/推荐某个具体话题或具体事物”的稳定负面偏好。
+
+目标：
+- 只在高度确定时输出结果；不确定时返回空数组 []
+- 重点识别具体对象：食物、活动、地点、题材、称呼方式等
+- 如果用户否定的是上一条回复里的某个子项，只提取那个子项，不要提取整串列表
+- 如果用户只是在抱怨语气、时机、表达方式，而不是反感某个具体对象，返回空数组
+- 如果只是轻微烦躁、并非明确拒绝，可用 de_emphasize
+- 如果是明确拒绝、明确说不喜欢、要求别再提/别再推荐，使用 avoid
+
+严格要求：
+- topic 必须是具体、可单独识别的话题，不能是整句总结，不能是多个并列推荐项拼成的大串
+- confidence 取 0 到 1 的小数；只有你非常确定时才给 >= 0.85
+- 最多返回 3 条
+
+当前已有话题约束：
+{CURRENT_GUIDANCE}
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+请仅返回 JSON 数组，格式如下：
+[
+  {
+    "topic": "昆虫食品",
+    "policy": "avoid",
+    "confidence": 0.96,
+    "user_evidence": "你知道我不喜欢就别提及了嘛",
+    "assistant_evidence": "不过昆虫食品你应该不会喜欢。",
+    "reason": "用户明确要求不要再提及，目标是上一条回复中的子项“昆虫食品”"
+  }
+]
+""",
+    'en': """Review the conversation below and decide whether the user expressed a stable negative preference meaning the assistant should avoid proactively mentioning or recommending a specific topic or item in the future.
+
+Goal:
+- Output results only when highly certain; otherwise return []
+- Focus on concrete targets such as foods, activities, places, themes, or forms of address
+- If the user is rejecting a sub-item from the assistant's previous reply, extract only that sub-item, not the whole list
+- If the user is only complaining about tone, timing, or phrasing rather than rejecting a concrete target, return []
+- Use de_emphasize for mild aversion
+- Use avoid for explicit rejection, explicit dislike, or requests not to mention or recommend it again
+
+Strict requirements:
+- topic must be a concrete standalone target, not a sentence summary and not a long concatenated list
+- confidence must be a decimal between 0 and 1; only use >= 0.85 when you are very certain
+- Return at most 3 items
+
+Current topic constraints:
+{CURRENT_GUIDANCE}
+
+======Conversation======
+{CONVERSATION}
+======End======
+
+Return only a JSON array in this format:
+[
+  {
+    "topic": "insect food",
+    "policy": "avoid",
+    "confidence": 0.96,
+    "user_evidence": "you know I don't like it, so don't bring it up",
+    "assistant_evidence": "you probably wouldn't like insect food",
+    "reason": "The user explicitly asked not to mention it again; the target is the sub-item 'insect food'"
+  }
+]
+""",
+}
+
+
+def get_negative_preference_review_prompt(lang: str = 'zh') -> str:
+    return _loc(NEGATIVE_PREFERENCE_REVIEW_PROMPT, lang)
+
+
+negative_preference_review_prompt = NEGATIVE_PREFERENCE_REVIEW_PROMPT['zh']
+
 # ---------- reflection_prompt → i18n dict ----------
 
 REFLECTION_PROMPT = {

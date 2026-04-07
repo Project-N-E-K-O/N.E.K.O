@@ -20,6 +20,7 @@ from config.prompts_memory import (
     CHAT_HOLIDAY_CONTEXT,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
+    get_negative_preference_review_prompt,
 )
 from utils.language_utils import get_global_language
 from utils.character_name import validate_character_name
@@ -204,6 +205,7 @@ async def shutdown_memory_server():
 
 REBUTTAL_CHECK_INTERVAL = 300  # 5 分钟
 _last_rebuttal_check: dict[str, datetime] = {}  # per-character 上次检查时间戳
+NEGATIVE_PREFERENCE_CONFIDENCE_THRESHOLD = 0.85
 
 
 def _extract_user_messages_from_rows(rows: list) -> list[str]:
@@ -231,6 +233,131 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
         except (json.JSONDecodeError, TypeError):
             continue
     return user_msgs
+
+
+def _sanitize_llm_json(raw: str) -> str:
+    s = str(raw or "").strip().replace("{{", "{").replace("}}", "}")
+    s = s.replace("True", "true").replace("False", "false").replace("None", "null")
+    s = re.sub(r',\s*([}\]])', r'\1', s)
+    if '"' not in s:
+        s = s.replace("'", '"')
+    return s
+
+
+def _format_messages_for_review(messages: list, lanlan_name: str) -> str:
+    _, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
+    name_mapping['ai'] = lanlan_name
+    lines = []
+    for msg in messages:
+        role = name_mapping.get(getattr(msg, 'type', ''), getattr(msg, 'type', ''))
+        content = getattr(msg, 'content', '')
+        if isinstance(content, str):
+            text = content
+        else:
+            parts = []
+            try:
+                for item in content:
+                    if isinstance(item, dict):
+                        parts.append(item.get('text', f"|{item.get('type', '')}|"))
+                    else:
+                        parts.append(str(item))
+            except Exception:
+                parts = [str(content)]
+            text = ''.join(parts)
+        text = str(text).strip()
+        if text:
+            lines.append(f"{role} | {text}")
+    return "\n".join(lines)
+
+
+def _format_current_topic_guidance(lanlan_name: str) -> str:
+    try:
+        persona = persona_manager.get_persona(lanlan_name)
+        guidance = persona.get('_topic_guidance', {}) if isinstance(persona, dict) else {}
+        soft_topics = [str(item.get('topic', '')).strip() for item in guidance.get('soft_avoid', []) if isinstance(item, dict) and item.get('topic')]
+        hard_topics = [str(item.get('topic', '')).strip() for item in guidance.get('hard_avoid', []) if isinstance(item, dict) and item.get('topic')]
+        if not soft_topics and not hard_topics:
+            return "（暂无）"
+        lines = []
+        if soft_topics:
+            lines.append("soft_avoid: " + "、".join(soft_topics))
+        if hard_topics:
+            lines.append("hard_avoid: " + "、".join(hard_topics))
+        return "\n".join(lines)
+    except Exception:
+        return "（读取失败，忽略）"
+
+
+async def _review_negative_preferences(messages: list, lanlan_name: str) -> list[dict]:
+    from config import SETTING_PROPOSER_MODEL
+    from utils.llm_client import create_chat_llm
+    from utils.token_tracker import set_call_type
+
+    conversation_text = _format_messages_for_review(messages, lanlan_name)
+    if not conversation_text:
+        return []
+
+    prompt = get_negative_preference_review_prompt(get_global_language())
+    prompt = prompt.replace('{CONVERSATION}', conversation_text)
+    prompt = prompt.replace('{CURRENT_GUIDANCE}', _format_current_topic_guidance(lanlan_name))
+
+    try:
+        set_call_type("memory_negative_review")
+        api_config = _config_manager.get_model_api_config('summary')
+        llm = create_chat_llm(
+            api_config.get('model', SETTING_PROPOSER_MODEL),
+            api_config['base_url'], api_config['api_key'],
+            temperature=0.1,
+        )
+        try:
+            resp = await llm.ainvoke(prompt)
+        finally:
+            await llm.aclose()
+        raw = str(resp.content).strip()
+        if raw.startswith("```"):
+            match = re.search(r'```(?:json)?\s*([\s\S]*?)```', raw)
+            if match:
+                raw = match.group(1).strip()
+            else:
+                raw = raw.replace("```json", "").replace("```", "").strip()
+        try:
+            reviewed = json.loads(raw)
+        except json.JSONDecodeError:
+            reviewed = json.loads(_sanitize_llm_json(raw))
+        if not isinstance(reviewed, list):
+            return []
+        return [item for item in reviewed if isinstance(item, dict)]
+    except Exception as e:
+        logger.warning(f"[MemoryServer] 负面偏好后台审查失败: {e}")
+        return []
+
+
+async def _review_and_apply_negative_preferences(messages: list, lanlan_name: str) -> int:
+    reviewed = await _review_negative_preferences(messages, lanlan_name)
+    applied = 0
+    for item in reviewed[:3]:
+        topic = str(item.get('topic', '')).strip()
+        policy = str(item.get('policy', '')).strip()
+        try:
+            confidence = float(item.get('confidence', 0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < NEGATIVE_PREFERENCE_CONFIDENCE_THRESHOLD:
+            continue
+        if policy not in {'avoid', 'de_emphasize'}:
+            continue
+        result = persona_manager.apply_negative_preference_review(
+            lanlan_name,
+            topic=topic,
+            policy=policy,
+        )
+        if result.get('matched'):
+            applied += 1
+            logger.info(
+                f"[MemoryServer] {lanlan_name}: 后台确认负面偏好 topic={result.get('topic')} "
+                f"policy={result.get('policy')} confidence={confidence:.2f}"
+            )
+    return applied
 
 
 async def _periodic_rebuttal_loop():
@@ -473,6 +600,13 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
 
     认知框架：Facts → Reflection(pending→confirmed→promoted) → Persona
     """
+    try:
+        applied = await _review_and_apply_negative_preferences(messages, lanlan_name)
+        if applied:
+            logger.info(f"[MemoryServer] {lanlan_name}: 后台负面偏好审查应用 {applied} 条")
+    except Exception as e:
+        logger.warning(f"[MemoryServer] 负面偏好审查失败: {e}")
+
     try:
         # 1. 事实提取
         await fact_store.extract_facts(messages, lanlan_name)

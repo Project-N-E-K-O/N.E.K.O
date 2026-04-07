@@ -570,13 +570,8 @@ class LLMSessionManager:
             elif self.message_cache_for_new_session[-1]['role'] == self.master_name:
                 self.message_cache_for_new_session[-1]['text'] += transcript.strip()
 
-        if isinstance(self.session, OmniRealtimeClient):
-            try:
-                negative_instruction = await self._fetch_negative_signal_instruction(transcript.strip())
-                if negative_instruction:
-                    await self._apply_transient_response_instruction(negative_instruction)
-            except Exception as e:
-                logger.debug(f"负面情绪即时指令应用失败: {e}")
+        # 负面偏好判定已改为 memory_server 结算阶段的后台高精度审查，
+        # 不再在主回复链路里同步写 persona 或临时覆写当前回复指令。
         # 注意: 这里不能修改 current_speech_id.
         # speech_id 仅应在“模型新回复开始”时更新 (handle_new_message / 文本模式 stream 入口),
         # 否则会导致前端把同一轮 AI 语音误判为新轮次, 出现首包被重置/吞掉的问题.
@@ -2836,13 +2831,6 @@ class LLMSessionManager:
                                 )
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
-
-                    try:
-                        negative_instruction = await self._fetch_negative_signal_instruction(data.strip())
-                        if negative_instruction:
-                            await self._apply_transient_response_instruction(negative_instruction)
-                    except Exception as _neg_err:
-                        logger.debug(f"负面情绪指令获取失败: {_neg_err}")
 
                     self._reset_assistant_turn_tracking()
                     await self.session.stream_text(data)
