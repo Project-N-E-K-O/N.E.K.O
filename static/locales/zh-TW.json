@@ -30,14 +30,14 @@
         "user": "使用者",
         "project": "專案"
     },
-    "tutorialPrompt": {
-        "title": "要開始快速教學嗎？",
-        "message": "看起來你剛打開 N.E.K.O，還沒有開始使用它。要不要快速瀏覽一下首頁上的主要操作？",
-        "note": "教學會從首頁開始，並標示主要按鈕與互動入口。",
-        "startNow": "開始教學",
+    "autostartPrompt": {
+        "title": "要不要讓 N.E.K.O 開機自動啟動？",
+        "message": "下次打開電腦後，N.E.K.O 會自動準備好，不需要再手動啟動。",
+        "note": "只會為目前使用者啟用，之後也可以隨時關閉。",
+        "startNow": "開啟自啟動",
         "later": "稍後再說",
-        "never": "不要再提醒我",
-        "startFailed": "目前無法開始教學，請稍後再試。"
+        "never": "不再提示",
+        "enableFailed": "暫時無法開啟開機自啟動，請稍後再試"
     },
     "characterProfile": {
         "gender": "性別",

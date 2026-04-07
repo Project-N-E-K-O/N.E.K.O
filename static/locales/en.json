@@ -30,14 +30,14 @@
         "user": "User",
         "project": "Project"
     },
-    "tutorialPrompt": {
-        "title": "Want a quick tutorial?",
-        "message": "It looks like you just opened N.E.K.O and haven't started using it yet. Want a quick walkthrough of the main controls on the home screen?",
-        "note": "The tutorial starts on the home page and highlights the main buttons and interaction entry points.",
-        "startNow": "Start tutorial",
+    "autostartPrompt": {
+        "title": "Want N.E.K.O to launch at startup?",
+        "message": "It will be ready automatically the next time you turn on your computer, so you won't need to launch it manually.",
+        "note": "This only enables launch at login for the current user, and you can turn it off later.",
+        "startNow": "Enable auto launch",
         "later": "Maybe later",
         "never": "Don't remind me",
-        "startFailed": "The tutorial couldn't be started right now. Please try again later."
+        "enableFailed": "Auto launch couldn't be enabled right now. Please try again later."
     },
     "characterProfile": {
         "gender": "Gender",

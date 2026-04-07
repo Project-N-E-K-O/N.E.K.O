@@ -65,6 +65,12 @@ from utils.web_scraper import (
 from utils.music_crawlers import fetch_music_content
 from utils.meme_fetcher import fetch_meme_content, MEME_ALLOWED_HOSTS
 from utils.logger_config import get_module_logger
+from utils.autostart_prompt_state import (
+    get_autostart_prompt_state_response,
+    process_autostart_prompt_heartbeat,
+    record_autostart_prompt_shown,
+    record_autostart_prompt_decision,
+)
 from utils.tutorial_prompt_state import (
     get_tutorial_prompt_state_response,
     process_tutorial_prompt_heartbeat,
@@ -73,6 +79,7 @@ from utils.tutorial_prompt_state import (
     record_tutorial_started,
     record_tutorial_completed,
 )
+from utils.autostart_service import get_autostart_status, enable_autostart, disable_autostart
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
@@ -561,6 +568,88 @@ async def post_tutorial_prompt_decision(request: Request):
         return record_tutorial_prompt_decision(payload, config_manager=get_config_manager())
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.get("/autostart-prompt/state")
+async def get_autostart_prompt_state():
+    """返回开机自启动提示状态快照。"""
+    return get_autostart_prompt_state_response(config_manager=get_config_manager())
+
+
+@router.post("/autostart-prompt/heartbeat")
+async def post_autostart_prompt_heartbeat(request: Request):
+    """记录主页空闲与互动状态，并判断是否需要提示开机自启动。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    return process_autostart_prompt_heartbeat(payload, config_manager=get_config_manager())
+
+
+@router.post("/autostart-prompt/shown")
+async def post_autostart_prompt_shown(request: Request):
+    """记录开机自启动提示已实际展示给用户。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_autostart_prompt_shown(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/autostart-prompt/decision")
+async def post_autostart_prompt_decision(request: Request):
+    """记录用户对开机自启动提示的选择。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_autostart_prompt_decision(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.get("/system/autostart/status")
+async def get_system_autostart_status():
+    """返回当前平台是否支持以及是否已开启开机自启动。"""
+    try:
+        return get_autostart_status()
+    except Exception as exc:
+        logger.exception("Failed to read autostart status: %s", exc)
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": str(exc), "error_code": "status_failed"},
+        )
+
+
+@router.post("/system/autostart/enable")
+async def post_system_autostart_enable():
+    """为当前用户启用 N.E.K.O 开机自启动。"""
+    result = enable_autostart()
+    if result.get("ok"):
+        return result
+
+    status_code = 400 if result.get("error_code") in {
+        "unsupported_platform",
+        "launch_command_unavailable",
+    } else 500
+    return JSONResponse(status_code=status_code, content=result)
+
+
+@router.post("/system/autostart/disable")
+async def post_system_autostart_disable():
+    """为当前用户关闭 N.E.K.O 开机自启动。"""
+    result = disable_autostart()
+    if result.get("ok"):
+        return result
+
+    status_code = 400 if result.get("error_code") == "unsupported_platform" else 500
+    return JSONResponse(status_code=status_code, content=result)
 
 
 @router.post("/tutorial-prompt/tutorial-started")

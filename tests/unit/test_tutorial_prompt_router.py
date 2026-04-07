@@ -5,6 +5,10 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from utils.autostart_prompt_state import (
+    AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+    load_autostart_prompt_state,
+)
 from utils.tutorial_prompt_state import (
     MIN_PROMPT_FOREGROUND_MS,
     load_tutorial_prompt_state,
@@ -357,3 +361,106 @@ def test_invalid_tutorial_source_returns_400(tutorial_prompt_client):
     assert started.status_code == 400
     assert started.json()["ok"] is False
     assert "invalid source" in started.json()["error"]
+
+
+@pytest.mark.unit
+def test_autostart_heartbeat_route_returns_prompt_token(tutorial_prompt_client):
+    client, _config = tutorial_prompt_client
+
+    response = client.post("/api/autostart-prompt/heartbeat", json={
+        "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["should_prompt"] is True
+    assert body["prompt_mode"] == "autostart"
+    assert body["prompt_token"]
+
+
+@pytest.mark.unit
+def test_autostart_decision_route_persists_completed_state(tutorial_prompt_client):
+    client, config = tutorial_prompt_client
+    heartbeat = client.post("/api/autostart-prompt/heartbeat", json={
+        "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+    }).json()
+
+    response = client.post("/api/autostart-prompt/decision", json={
+        "decision": "accept",
+        "result": "enabled",
+        "prompt_token": heartbeat["prompt_token"],
+    })
+
+    assert response.status_code == 200
+    assert response.json()["state"]["status"] == "completed"
+    assert response.json()["state"]["autostart_enabled"] is True
+
+    state = load_autostart_prompt_state(config)
+    assert state["started_at"] > 0
+    assert state["autostart_enabled"] is True
+    assert state["started_via_prompt"] is True
+
+
+@pytest.mark.unit
+def test_autostart_state_route_reports_autostart_mode(tutorial_prompt_client):
+    client, _config = tutorial_prompt_client
+
+    response = client.get("/api/autostart-prompt/state")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["prompt_mode"] == "autostart"
+    assert response.json()["state"]["autostart_enabled"] is False
+
+
+@pytest.mark.unit
+def test_autostart_status_route_returns_service_status(tutorial_prompt_client, monkeypatch):
+    client, _config = tutorial_prompt_client
+    monkeypatch.setattr(system_router_module, "get_autostart_status", lambda: {
+        "ok": True,
+        "supported": True,
+        "enabled": False,
+        "platform": "linux",
+        "mechanism": "xdg-autostart",
+    })
+
+    response = client.get("/api/system/autostart/status")
+
+    assert response.status_code == 200
+    assert response.json()["supported"] is True
+    assert response.json()["enabled"] is False
+
+
+@pytest.mark.unit
+def test_autostart_enable_route_returns_service_result(tutorial_prompt_client, monkeypatch):
+    client, _config = tutorial_prompt_client
+    monkeypatch.setattr(system_router_module, "enable_autostart", lambda: {
+        "ok": True,
+        "supported": True,
+        "enabled": True,
+        "platform": "linux",
+        "mechanism": "xdg-autostart",
+    })
+
+    response = client.post("/api/system/autostart/enable")
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is True
+
+
+@pytest.mark.unit
+def test_autostart_disable_route_returns_service_result(tutorial_prompt_client, monkeypatch):
+    client, _config = tutorial_prompt_client
+    monkeypatch.setattr(system_router_module, "disable_autostart", lambda: {
+        "ok": True,
+        "supported": True,
+        "enabled": False,
+        "platform": "linux",
+        "mechanism": "xdg-autostart",
+    })
+
+    response = client.post("/api/system/autostart/disable")
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is False
