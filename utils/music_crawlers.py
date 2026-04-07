@@ -282,6 +282,7 @@ class BaseMusicCrawler:
 class NeteaseCrawler(BaseMusicCrawler):
     """
     网易云音乐爬虫，支持搜索并过滤 VIP/付费歌曲。
+    Cookie 支持热重载：每次搜索前检测凭证文件变动，自动同步最新登录态。
     """
     def __init__(self):
         super().__init__("网易云音乐")
@@ -292,7 +293,19 @@ class NeteaseCrawler(BaseMusicCrawler):
         self._has_cookies = False
         self._is_vip = False
         self._vip_checked = False
+        self._cookie_file_mtime = 0.0  # 记录 Cookie 文件最后修改时间
         self._load_cookies()
+
+    def _get_cookie_file_mtime(self) -> float:
+        """获取网易云 Cookie 文件的最后修改时间，不存在则返回 0"""
+        try:
+            from utils.cookies_login import COOKIE_FILES
+            cookie_path = COOKIE_FILES.get('netease')
+            if cookie_path and cookie_path.exists():
+                return cookie_path.stat().st_mtime
+        except Exception:
+            pass
+        return 0.0
 
     def _load_cookies(self):
         """动态加载本地配置的 Netease Cookie"""
@@ -303,11 +316,27 @@ class NeteaseCrawler(BaseMusicCrawler):
                 cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
                 self.client.headers.update({'Cookie': cookie_str})
                 self._has_cookies = True
+                self._cookie_file_mtime = self._get_cookie_file_mtime()
                 logger.info(f"[{self.platform_name}] 成功自适应加载媒体凭证 (MUSIC_U)")
-                # 不再在同步构造函数中调用 asyncio.create_task()
-                # VIP 状态改为在首次 search() 时懒检查，避免 RuntimeError: no running event loop
+            else:
+                # Cookie 文件被清空或删除，重置登录状态
+                if self._has_cookies:
+                    self.client.headers.pop('Cookie', None)
+                    self._has_cookies = False
+                    logger.info(f"[{self.platform_name}] 凭证已被清除，回退到未登录状态")
+                self._cookie_file_mtime = self._get_cookie_file_mtime()
         except Exception as e:
             logger.warning(f"[{self.platform_name}] 加载 Cookie 失败 (此异常不影响服务启动): {e}")
+
+    def _check_cookie_freshness(self):
+        """检测 Cookie 文件是否有变动，有则热重载并重置 VIP 缓存"""
+        current_mtime = self._get_cookie_file_mtime()
+        if current_mtime != self._cookie_file_mtime:
+            logger.info(f"[{self.platform_name}] 检测到凭证文件变动 (mtime: {self._cookie_file_mtime} → {current_mtime})，执行热重载")
+            self._load_cookies()
+            # 凭证变了，VIP 身份需要重新探测
+            self._is_vip = False
+            self._vip_checked = False
 
     async def _check_vip_status(self):
         """异步检查用户 VIP 状态（首次 search() 时懒触发）"""
@@ -332,8 +361,8 @@ class NeteaseCrawler(BaseMusicCrawler):
                 else:
                     logger.info(f"[{self.platform_name}] 用户为普通账号，已登录但无 VIP")
         except Exception as e:
-            self._vip_checked = True
-            logger.warning(f"[{self.platform_name}] VIP 状态检查失败: {e}")
+            # 探测失败时不锁定状态，下次搜索会重试
+            logger.warning(f"[{self.platform_name}] VIP 状态检查失败 (下次搜索将重试): {e}")
 
     async def search(self, keyword: str, limit: int = 1) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
@@ -341,9 +370,13 @@ class NeteaseCrawler(BaseMusicCrawler):
             logger.debug(f"[{self.platform_name}] 因关键词为空而跳过")
             return []
 
-        # 首次搜索时懒检查 VIP 状态，确保在 event loop 中执行
+        # 每次搜索前检测 Cookie 文件变动，确保搜索侧与播放侧状态一致
+        self._check_cookie_freshness()
+
+        # 首次搜索（或凭证变动后）懒检查 VIP 状态
         if self._has_cookies and not self._vip_checked:
             await self._check_vip_status()
+
 
         logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
         search_url = "https://music.163.com/api/search/get/web"
