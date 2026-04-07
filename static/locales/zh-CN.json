@@ -28,7 +28,8 @@
         "fieldSeparator": "、",
         "tryAgainLater": "请稍后重试",
         "user": "用户",
-        "project": "项目"
+        "project": "项目",
+        "collapse": "收起"
     },
     "characterProfile": {
         "gender": "性别",
@@ -2618,7 +2619,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "扫码登录成功！Cookie 已自动填入，请点击保存配置"
+            "successAlert": "扫码登录成功！Cookie 已自动填入，请点击保存配置",
+            "extractFailed": "⚠️ 扫码成功但未能自动提取到字段，请手动检查。"
         }
     },
     "music": {

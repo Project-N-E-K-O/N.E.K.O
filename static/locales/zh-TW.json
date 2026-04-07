@@ -28,7 +28,8 @@
         "fieldSeparator": "、",
         "tryAgainLater": "請稍後重試",
         "user": "使用者",
-        "project": "專案"
+        "project": "專案",
+        "collapse": "收起"
     },
     "characterProfile": {
         "gender": "性別",
@@ -2618,7 +2619,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "掃碼登入成功！Cookie 已自動填入，請點擊儲存設定"
+            "successAlert": "掃碼登入成功！Cookie 已自動填入，請點擊儲存設定",
+            "extractFailed": "⚠️ 掃碼成功但未能自動擷取到欄位，請手動檢查。"
         }
     },
     "music": {

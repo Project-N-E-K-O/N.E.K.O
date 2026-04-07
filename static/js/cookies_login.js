@@ -302,7 +302,7 @@ async function requestQR(config, platformKey) {
                         <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                         ${safeT('common.collapse', '收起')}
                     </button>
-                    <div style="font-weight: 600; color: #334155; margin-bottom: 12px; margin-top: 5px;">${safeT('cookiesLogin.qrLogin.scanTitle', '📱 扫码登录 {{platform}}').replace('{{platform}}', config["name"])}</div>
+                    <div style="font-weight: 600; color: #334155; margin-bottom: 12px; margin-top: 5px;">${safeT('cookiesLogin.qrLogin.scanTitle', '📱 扫码登录 {{platform}}').replace('{{platform}}', PLATFORM_CONFIG[platformKey]?.name || config["name"])}</div>
                     <img src="${result.data.qrcode_image}" alt="QR Code" style="width: 200px; height: 200px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
                     <div id="qr-status" style="margin-top: 12px; font-size: 13px; color: #64748b;">${safeT('cookiesLogin.qrLogin.waiting', '等待扫码...')}</div>
                     <div style="margin-top: 10px; font-size: 12px; color: #94a3b8;">${safeT('cookiesLogin.qrLogin.validFor', '二维码有效期: {{seconds}}秒').replace('{{seconds}}', timeout)}</div>
@@ -428,7 +428,7 @@ function startQrPoll(config, platformKey) {
                 // 统一成功提醒
                 let customAlert = safeT('cookiesLogin.qrLogin.successAlert', '扫码登录成功！Cookie 已自动填入，请点击保存配置');
                 if (capturedCount === 0 && cookieFields.length > 0) {
-                  customAlert = '⚠️ 扫码成功但未能自动提取到字段，请手动检查。';
+                  customAlert = safeT('cookiesLogin.qrLogin.extractFailed', '⚠️ 扫码成功但未能自动提取到字段，请手动检查。');
                 }
 
                 showAlert(capturedCount > 0, customAlert);

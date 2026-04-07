@@ -28,7 +28,8 @@
         "fieldSeparator": "、 ",
         "tryAgainLater": "後でもう一度お試しください",
         "user": "ユーザー",
-        "project": "プロジェクト"
+        "project": "プロジェクト",
+        "collapse": "折りたたむ"
     },
     "characterProfile": {
         "gender": "性別",
@@ -2618,7 +2619,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "QRログイン成功！Cookieが自動入力されました。「設定を保存」をクリックしてください"
+            "successAlert": "QRログイン成功！Cookieが自動入力されました。「設定を保存」をクリックしてください",
+            "extractFailed": "⚠️ QRログインは成功しましたが、フィールドの自動抽出に失敗しました。手動で確認してください。"
         }
     },
     "music": {

@@ -116,8 +116,6 @@ cython==3.2.4 ; platform_system != 'darwin' and sys_platform == 'darwin'
     # via screeninfo
 dashscope==1.25.4
     # via n-e-k-o
-diskcache==5.6.3
-
 distro==1.9.0
     # via
     #   anthropic
@@ -194,6 +192,7 @@ httpx==0.28.1
     #   n-e-k-o
     #   ollama
     #   openai
+    #   pyncm-async
 httpx-sse==0.4.3
     # via mcp
 humanize==4.14.0
@@ -252,8 +251,6 @@ multidict==6.6.4
     # via
     #   aiohttp
     #   yarl
-pyncm-async>=1.8.0
-    # via n-e-k-o
 numpy==1.26.4
     # via
     #   contourpy
@@ -311,8 +308,6 @@ psutil==7.2.2
     # via
     #   browser-use
     #   n-e-k-o
-py-mini-racer==0.6.0
-
 pyasn1==0.6.1
     # via
     #   pyasn1-modules
@@ -356,6 +351,8 @@ pyjwt==2.11.0
     #   mcp
 pymsgbox==1.0.9
     # via pyautogui
+pyncm-async==1.8.2
+    # via n-e-k-o
 pyobjc==11.1 ; platform_system == 'darwin' or sys_platform == 'darwin'
     # via
     #   browser-use

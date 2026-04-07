@@ -422,13 +422,13 @@ async def api_qr_login_poll(
             # QR 扫码成功后，自动将 Cookies 持久化到本地文件
             # 避免用户扫码后忘记点击"保存配置"导致 Cookie 丢失
             if cookies and cookie_fields:
-                try:
-                    filtered_cookies = {k: v for k, v in cookies.items() if k in cookie_fields}
-                    if filtered_cookies:
-                        save_cookies_to_file(platform, filtered_cookies)
+                filtered_cookies = {k: v for k, v in cookies.items() if k in cookie_fields}
+                if filtered_cookies:
+                    save_ok = save_cookies_to_file(platform, filtered_cookies)
+                    if save_ok:
                         logger.info(f"✅ {platform} QR 登录凭证已自动持久化")
-                except Exception as save_err:
-                    logger.warning(f"⚠️ {platform} QR 登录凭证自动保存失败 (不影响登录): {save_err}")
+                    else:
+                        logger.warning(f"⚠️ {platform} QR 登录凭证自动保存失败 (不影响登录)")
             
             ret = {
                 "success": True,

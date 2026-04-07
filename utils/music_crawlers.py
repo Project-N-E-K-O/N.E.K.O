@@ -362,23 +362,14 @@ class NeteaseCrawler(BaseMusicCrawler):
             if not songs:
                 return []
 
-            found_songs = []
+            # 针对 VIP 用户开放全部权限，不进行 fee 过滤
             if self._is_vip:
-                # VIP 会员，不过滤，让会员歌曲也能被搜到
                 found_songs = songs
-                logger.info(f"[{self.platform_name}] VIP 会员身份，跳过 fee 过滤")
-            elif self._has_cookies:
-                # 已登录但非 VIP，只返回免费歌曲，确保搜到的都能播放
-                for song in songs:
-                    if song.get("fee", 1) == 0:
-                        found_songs.append(song)
-                logger.info(f"[{self.platform_name}] 普通已登录用户，仅返回免费歌曲")
+                logger.info(f"[{self.platform_name}] VIP 会员身份，跳过 fee 过滤，保留完整搜索结果")
             else:
-                # 无 cookies（未登录），只返回免费歌曲，确保搜到的都能播放
-                for song in songs:
-                    if song.get("fee", 1) == 0:
-                        found_songs.append(song)
-
+                found_songs = [song for song in songs if song.get("fee", 1) == 0]
+                if self._has_cookies:
+                    logger.info(f"[{self.platform_name}] 普通已登录用户，仅返回免费歌曲")
             if not found_songs:
                 return []
 
@@ -392,8 +383,8 @@ class NeteaseCrawler(BaseMusicCrawler):
                 else:
                     artist_name = "未知"
                 cover_url = song.get("album", {}).get("picUrl", "")
-                # 使用外链地址，无需付费即可播放
-                audio_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
+                # 使用本地代理路由，支持 VIP 歌曲解析重定向
+                audio_url = f"/api/music/play/netease/{song_id}"
                 final_results.append(self._format_item(name=song_name, url=audio_url, artist=artist_name, cover=cover_url))
             
             return final_results
@@ -590,15 +581,24 @@ class MusopenCrawler(BaseMusicCrawler):
     Musopen 古典音乐爬虫，用于在无明确关键词时提供背景音乐。
     """
     def __init__(self):
-        # 针对 Musopen 的特殊反爬，直接覆盖父类的 client 以开启 HTTP/2 支持
+        # 针对 Musopen 的特殊反爬，需要 HTTP/2 + 特殊 Headers
         super().__init__("Musopen")
-        # 重新实例化 Client 以开启 http2=True
+        # 关闭父类创建的默认 client，避免孤儿资源泄漏
+        # （虽然全局单例影响极小，但保持代码卫生）
+        _old_client = self.client
         self.client = httpx.AsyncClient(
             headers=CH_HEADERS_CHROME,
             timeout=15.0,
             follow_redirects=True,
             http2=True  # 开启 HTTP/2 绕过 Cloudflare 基础检测
         )
+        # 在后台安全关闭旧 client（同步上下文中无法 await）
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_old_client.aclose())
+        except RuntimeError:
+            pass  # 没有 event loop 时旧 client 交由 GC 处理
 
     async def search(self, keyword: str = "", limit: int = 1) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
