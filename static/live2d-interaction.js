@@ -1077,7 +1077,10 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             const choiceFile = this.getRandomElement(expressionFiles);
             if (choiceFile && typeof this.playExpression === 'function') {
                 console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
-                await this.playExpression(emotion, choiceFile);
+                await this.playExpression(emotion, choiceFile, {
+                    suspendPersistent: true,
+                    suspendReason: 'click-effect'
+                });
             }
         } else {
             console.log("[ClickEffect] 没找到可用表情")
@@ -1680,6 +1683,7 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
             if (expressionNames.length > 0) {
                 const randomExpression = expressionNames[Math.floor(Math.random() * expressionNames.length)];
                 console.log(`[Interaction] 教程模式 - 播放表情: ${randomExpression}（将在 ${window.live2dManager.CLICK_EFFECT_DURATION}ms 后恢复）`);
+                this.suspendPersistentExpressions('tutorial-click-expression');
                 await this.currentModel.expression(randomExpression);
 
                 const playedMotion = await this.playTutorialMotion();
@@ -1978,7 +1982,10 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
             }else {
                 console.log(`[TouchSet] 尝试播放表情: ${faceInfo.File}`);
                 try {
-                    await this.playExpression(randomExpressionName, faceInfo.File);
+                    await this.playExpression(randomExpressionName, faceInfo.File, {
+                        suspendPersistent: true,
+                        suspendReason: 'touchset-expression'
+                    });
                     console.log(`[TouchSet] 播放表情成功: ${randomExpressionName}, 持续时间: ${faceHoldingTime}ms`);
                     
                     clearTimeout(this.expressionTimer);

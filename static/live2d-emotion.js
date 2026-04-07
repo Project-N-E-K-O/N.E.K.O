@@ -78,6 +78,7 @@ Live2DManager.prototype.clearExpression = function() {
     try {
         if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
             console.warn('无法清除expression：模型未加载');
+            this.resumePersistentExpressions();
             return;
         }
 
@@ -85,6 +86,7 @@ Live2DManager.prototype.clearExpression = function() {
         if (!this.initialParameters || Object.keys(this.initialParameters).length === 0) {
             console.error('严重错误：未找到初始参数记录！expression清除失败。');
             console.error('请确保在模型加载完成后立即调用recordInitialParameters()初始化参数基准');
+            this.resumePersistentExpressions();
             return;
         }
 
@@ -134,9 +136,42 @@ Live2DManager.prototype.clearExpression = function() {
         console.warn('expression重置失败:', error);
     }
 
+    this.resumePersistentExpressions();
+
     // 如存在常驻表情，清除后立即重放常驻，保证不被清掉
-    // 注意：这里传入 skipBackup=true，因为我们只是重新应用已有的常驻表情，不需要再次备份
-    this.applyPersistentExpressionsNative(true);
+    this.applyPersistentExpressionsNative(false);
+};
+
+Live2DManager.prototype.arePersistentExpressionsSuspended = function() {
+    return !!(this._persistentExpressionSuspendReasons && this._persistentExpressionSuspendReasons.size > 0);
+};
+
+Live2DManager.prototype.suspendPersistentExpressions = function(reason = 'temporary', options = {}) {
+    const { clearCurrent = true } = options || {};
+    if (!this._persistentExpressionSuspendReasons) {
+        this._persistentExpressionSuspendReasons = new Set();
+    }
+
+    if (clearCurrent) {
+        this.teardownPersistentExpressions(true);
+    }
+
+    this._persistentExpressionSuspendReasons.add(reason);
+    console.log('[Persistent] 常驻表情已挂起:', Array.from(this._persistentExpressionSuspendReasons));
+};
+
+Live2DManager.prototype.resumePersistentExpressions = function(reason = null) {
+    if (!this._persistentExpressionSuspendReasons) {
+        this._persistentExpressionSuspendReasons = new Set();
+    }
+
+    if (reason == null) {
+        this._persistentExpressionSuspendReasons.clear();
+    } else {
+        this._persistentExpressionSuspendReasons.delete(reason);
+    }
+
+    console.log('[Persistent] 常驻表情恢复检查:', Array.from(this._persistentExpressionSuspendReasons));
 };
 
 /**
@@ -252,7 +287,8 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
                 if (deltaKeys.length === 0) {
                     // 没有活跃表情，无需淡出
                     self._cancelSmoothReset();
-                    try { self.applyPersistentExpressionsNative(true); } catch (e) {}
+                    self.resumePersistentExpressions();
+                    try { self.applyPersistentExpressionsNative(false); } catch (e) {}
                     resolve();
                     return;
                 }
@@ -293,7 +329,8 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
             if (progress >= 1) {
                 self._cancelSmoothReset();
                 // 淡出完成，重新应用常驻表情
-                try { self.applyPersistentExpressionsNative(true); } catch (e) {}
+                self.resumePersistentExpressions();
+                try { self.applyPersistentExpressionsNative(false); } catch (e) {}
                 console.log('[smoothReset] 差分淡出完成');
                 resolve();
             }
@@ -406,10 +443,19 @@ Live2DManager.prototype._removeManualExpressionOverride = function() {
 };
 
 // 播放表情（优先使用 EmotionMapping.expressions）
-Live2DManager.prototype.playExpression = async function(emotion, specifiedExpressionFile = null) {
+Live2DManager.prototype.playExpression = async function(emotion, specifiedExpressionFile = null, options = {}) {
     if (!this.currentModel) {
         console.warn('无法播放表情：模型未加载');
         return;
+    }
+
+    const {
+        suspendPersistent = false,
+        suspendReason = 'temporary-expression'
+    } = options || {};
+
+    if (suspendPersistent) {
+        this.suspendPersistentExpressions(suspendReason, { clearCurrent: true });
     }
 
     // 如果指定了具体的表情文件，优先使用该文件
@@ -1031,7 +1077,7 @@ Live2DManager.prototype.setupPersistentExpressions = async function() {
     }
 };
 
-Live2DManager.prototype.teardownPersistentExpressions = function() {
+Live2DManager.prototype.teardownPersistentExpressions = function(preserveDefinitions = false) {
     // 先重置之前常驻表情应用的参数到保存的原始值
     const hasBackup = this._persistentParamsBackup && Object.keys(this._persistentParamsBackup).length > 0;
     console.log('[teardown] 开始清除常驻表情, 备份数据:', hasBackup ? Object.keys(this._persistentParamsBackup) : '无');
@@ -1040,8 +1086,14 @@ Live2DManager.prototype.teardownPersistentExpressions = function() {
         // 先停止 expression manager，防止它继续覆盖我们的参数
         if (this.currentModel.internalModel.motionManager && 
             this.currentModel.internalModel.motionManager.expressionManager) {
+            const exprMgr = this.currentModel.internalModel.motionManager.expressionManager;
             try {
-                this.currentModel.internalModel.motionManager.expressionManager.stopAllExpressions();
+                if (typeof exprMgr.stopAllExpressions === 'function') {
+                    exprMgr.stopAllExpressions();
+                }
+                if (typeof exprMgr.resetExpression === 'function') {
+                    exprMgr.resetExpression();
+                }
                 console.log('[teardown] 已停止所有表情');
             } catch (e) {
                 console.warn('[teardown] 停止表情失败:', e);
@@ -1066,14 +1118,22 @@ Live2DManager.prototype.teardownPersistentExpressions = function() {
     if (!hasBackup) {
         console.log('[teardown] 没有备份数据，跳过恢复');
     }
-    this.persistentExpressionNames = [];
-    this.persistentExpressionParamsByName = {};
+
+    if (!preserveDefinitions) {
+        this.persistentExpressionNames = [];
+        this.persistentExpressionParamsByName = {};
+    }
     this._persistentParamsBackup = {};
 };
 
 Live2DManager.prototype.applyPersistentExpressionsNative = async function(skipBackup = false) {
     console.log('[applyPersistent] 开始应用常驻表情, skipBackup:', skipBackup);
     console.log('[applyPersistent] persistentExpressionNames:', this.persistentExpressionNames);
+
+    if (this.arePersistentExpressionsSuspended()) {
+        console.log('[applyPersistent] 退出: 常驻表情当前处于挂起状态');
+        return;
+    }
     
     if (!this.currentModel) {
         console.log('[applyPersistent] 退出: currentModel 不存在');
@@ -1150,4 +1210,3 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function(skipBa
         }
     }
 };
-

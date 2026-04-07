@@ -1114,7 +1114,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                     } catch (_) {}
                 }
                 // 3. 写入常驻表情参数（覆盖模式，优先级最高）
-                if (this.persistentExpressionParamsByName) {
+                if (this.persistentExpressionParamsByName && !this.arePersistentExpressionsSuspended()) {
                     for (const name in this.persistentExpressionParamsByName) {
                         const params = this.persistentExpressionParamsByName[name];
                         if (Array.isArray(params)) {
@@ -1183,7 +1183,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             
             // 2. 写入常驻表情参数（跳过口型参数以避免覆盖lipsync）
             // 当点击效果正在淡入淡出时，跳过常驻表情写入以避免覆盖插值
-            if (this.persistentExpressionParamsByName && !this._clickFadeState) {
+            if (this.persistentExpressionParamsByName && !this._clickFadeState && !this.arePersistentExpressionsSuspended()) {
                 for (const name in this.persistentExpressionParamsByName) {
                     const params = this.persistentExpressionParamsByName[name];
                     if (Array.isArray(params)) {

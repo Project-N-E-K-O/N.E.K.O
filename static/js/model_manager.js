@@ -5556,6 +5556,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             window._currentExpressionPreviewToken = (window._currentExpressionPreviewToken || 0) + 1;
             const previewToken = window._currentExpressionPreviewToken;
 
+            if (window.live2dManager && typeof window.live2dManager.suspendPersistentExpressions === 'function') {
+                window.live2dManager.suspendPersistentExpressions('preview-expression', { clearCurrent: true });
+            }
+
             // expression 方法是异步的，需要使用 await
             // 注意：Live2D SDK 的 expression 方法可能返回 null/undefined 但仍然成功播放
             const result = await currentModel.expression(expressionName);
@@ -5585,6 +5589,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }, 5000);
         } catch (error) {
+            if (window.live2dManager && typeof window.live2dManager.resumePersistentExpressions === 'function') {
+                window.live2dManager.resumePersistentExpressions('preview-expression');
+                if (typeof window.live2dManager.applyPersistentExpressionsNative === 'function') {
+                    window.live2dManager.applyPersistentExpressionsNative(false).catch(() => {});
+                }
+            }
             console.error('播放表情失败:', error);
             showStatus(t('live2d.playExpressionFailed', `播放表情失败: ${expressionName}`, { expression: expressionName }), 2000);
         }
