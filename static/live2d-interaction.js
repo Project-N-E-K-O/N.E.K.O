@@ -881,9 +881,30 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
             const isNearModel = distance < HoverFadethreshold;
 
+            // 鼠标在 UI 元素（锁图标 / 浮动按钮）上时，重置淡化状态，
+            // 防止离开 UI 后残留的 stationaryFadeActive 立即重新触发淡化
+            const live2dLockIcon = document.getElementById('live2d-lock-icon');
+            const live2dFloatingBtns = document.getElementById('live2d-floating-buttons');
+            let isOverUi = false;
+            if (live2dLockIcon && live2dLockIcon.style.display !== 'none') {
+                const lr = live2dLockIcon.getBoundingClientRect();
+                if (pointer.x >= lr.left && pointer.x <= lr.right && pointer.y >= lr.top && pointer.y <= lr.bottom) isOverUi = true;
+            }
+            if (!isOverUi && live2dFloatingBtns && live2dFloatingBtns.style.display !== 'none') {
+                const br = live2dFloatingBtns.getBoundingClientRect();
+                if (pointer.x >= br.left && pointer.x <= br.right && pointer.y >= br.top && pointer.y <= br.bottom) isOverUi = true;
+            }
+            if (isOverUi) {
+                clearStationaryFadeTimer();
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                this._hasEnteredHoverRange = false;
+                applyFade();
+            }
+
             // 静止时启动定时器，移出范围时清除（移动端无鼠标悬停，跳过）
             const isMobileDevice = (window.appUtils && typeof window.appUtils.isMobile === 'function' && window.appUtils.isMobile()) || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-            if (!isMobileDevice && this.isLocked && isNearModel) {
+            if (!isMobileDevice && this.isLocked && isNearModel && !isOverUi) {
                 // 首次进入范围：设置标志并启动定时器
                 if (!this._hasEnteredHoverRange) {
                     this._hasEnteredHoverRange = true;

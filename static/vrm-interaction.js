@@ -1193,7 +1193,12 @@ class VRMInteraction {
             this._isMouseOverButtons = isOverButtons || isOverLock;
 
             // 如果鼠标在按钮或锁图标上，不变淡，直接显示
+            // 同时重置所有淡化状态，防止离开 UI 后残留状态导致立即重新淡化
             if (isOverButtons || isOverLock) {
+                clearStationaryFadeTimer();
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                this._vrmHasEnteredHoverRange = false;
                 applyFade(false);
                 showButtons();
                 return;

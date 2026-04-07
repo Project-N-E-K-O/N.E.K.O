@@ -539,6 +539,24 @@ MMDManager.prototype._startUIUpdateLoop = function() {
             // ── 锁定后淡化逻辑（与 VRM 侧对齐） ──
             const isMobileDevice = (window.appUtils && typeof window.appUtils.isMobile === 'function' && window.appUtils.isMobile()) || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
             if (!isMobileDevice && mouse && !mouseStale) {
+                // 鼠标在 UI 元素（锁图标 / 浮动按钮）上时，重置淡化状态
+                let isOverUi = false;
+                if (lockIcon && lockIcon.style.display !== 'none') {
+                    const lr = lockIcon.getBoundingClientRect();
+                    if (mouse.x >= lr.left && mouse.x <= lr.right && mouse.y >= lr.top && mouse.y <= lr.bottom) isOverUi = true;
+                }
+                if (!isOverUi && buttonsContainer && buttonsContainer.style.display !== 'none') {
+                    const br = buttonsContainer.getBoundingClientRect();
+                    if (mouse.x >= br.left && mouse.x <= br.right && mouse.y >= br.top && mouse.y <= br.bottom) isOverUi = true;
+                }
+                if (isOverUi) {
+                    clearStationaryFadeTimer();
+                    ctrlFadeActive = false;
+                    stationaryFadeActive = false;
+                    hasEnteredHoverRange = false;
+                    applyFade();
+                }
+
                 // 计算鼠标到模型屏幕包围盒的距离
                 const sMinX = canvasRect.left + visibleLeft;
                 const sMaxX = canvasRect.left + visibleRight;
@@ -550,7 +568,7 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                 const isNearModel = distToModel < hoverFadeThreshold;
 
                 // 静止自动淡化：锁定 + 鼠标在模型范围内静止 1 秒 → 变淡
-                if (this.isLocked && isNearModel) {
+                if (this.isLocked && isNearModel && !isOverUi) {
                     if (!hasEnteredHoverRange) {
                         hasEnteredHoverRange = true;
                         if (stationaryFadeTimer === null && !stationaryFadeActive) {
