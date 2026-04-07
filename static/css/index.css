@@ -1984,7 +1984,7 @@ body.react-chat-window-dragging {
     background: rgba(17, 24, 39, 0.45);
     backdrop-filter: blur(2px);
     -webkit-backdrop-filter: blur(2px);
-    z-index: 11000;
+    z-index: 100000;
     opacity: 0;
     transition: opacity 0.2s ease;
     pointer-events: auto;
@@ -2012,7 +2012,7 @@ body.react-chat-window-dragging {
     flex-direction: column;
     overflow: hidden;
     overflow-y: auto;
-    z-index: 11001;
+    z-index: 100001;
     opacity: 0;
     transition: opacity 0.2s ease, transform 0.2s ease;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
