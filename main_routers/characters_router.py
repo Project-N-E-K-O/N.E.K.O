@@ -466,9 +466,9 @@ async def update_catgirl_l2d(name: str, request: Request):
                     return JSONResponse(content={'success': False, 'error': 'VRM模型路径不能包含URL方案'}, status_code=400)
                 if '..' in vrm_model_str:
                     return JSONResponse(content={'success': False, 'error': 'VRM模型路径不能包含路径遍历（..）'}, status_code=400)
-                allowed_prefixes = ['/user_vrm/', '/static/vrm/']
+                allowed_prefixes = ['/user_vrm/', '/static/vrm/', '/workshop/']
                 if not any(vrm_model_str.startswith(prefix) for prefix in allowed_prefixes):
-                    return JSONResponse(content={'success': False, 'error': 'VRM模型路径必须以 /user_vrm/ 或 /static/vrm/ 开头'}, status_code=400)
+                    return JSONResponse(content={'success': False, 'error': 'VRM模型路径必须以 /user_vrm/、/static/vrm/ 或 /workshop/ 开头'}, status_code=400)
                 vrm_model = vrm_model_str
             elif mmd_model:
                 # 验证 MMD 路径
@@ -477,9 +477,9 @@ async def update_catgirl_l2d(name: str, request: Request):
                     return JSONResponse(content={'success': False, 'error': 'MMD模型路径不能包含URL方案'}, status_code=400)
                 if '..' in mmd_model_str:
                     return JSONResponse(content={'success': False, 'error': 'MMD模型路径不能包含路径遍历（..）'}, status_code=400)
-                allowed_mmd_prefixes = ['/user_mmd/', '/static/mmd/']
+                allowed_mmd_prefixes = ['/user_mmd/', '/static/mmd/', '/workshop/']
                 if not any(mmd_model_str.startswith(prefix) for prefix in allowed_mmd_prefixes):
-                    return JSONResponse(content={'success': False, 'error': 'MMD模型路径必须以 /user_mmd/ 或 /static/mmd/ 开头'}, status_code=400)
+                    return JSONResponse(content={'success': False, 'error': 'MMD模型路径必须以 /user_mmd/、/static/mmd/ 或 /workshop/ 开头'}, status_code=400)
                 mmd_model = mmd_model_str
             else:
                 return JSONResponse(content={'success': False, 'error': '未提供VRM或MMD模型路径'}, status_code=400)

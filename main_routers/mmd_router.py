@@ -10,6 +10,7 @@ Handles MMD model-related endpoints including:
 """
 
 import json
+import os
 import shutil
 import tempfile
 import zipfile
@@ -19,6 +20,7 @@ from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
+from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
 
@@ -503,7 +505,7 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
 
 
 @router.get('/models')
-def get_mmd_models():
+async def get_mmd_models():
     """获取 MMD 模型列表（PMX/PMD），包括子目录"""
     try:
         config_mgr = get_config_manager()
@@ -574,6 +576,41 @@ def get_mmd_models():
                         "location": "user",
                         "broken": True
                     })
+
+        # 3. 搜索Steam创意工坊中的MMD文件
+        try:
+            workshop_items_result = await get_subscribed_workshop_items()
+            if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):
+                items = workshop_items_result.get('items', [])
+                for item in items:
+                    installed_folder = item.get('installedFolder')
+                    item_id = item.get('publishedFileId')
+                    if installed_folder and os.path.exists(installed_folder) and os.path.isdir(installed_folder) and item_id:
+                        # 递归搜索安装目录下的PMX/PMD文件
+                        installed_path = Path(installed_folder)
+                        for ext in ALLOWED_MODEL_EXTENSIONS:
+                            for model_file in installed_path.rglob(f'*{ext}'):
+                                try:
+                                    rel_path = model_file.relative_to(installed_path)
+                                except ValueError:
+                                    continue
+                                url = f"/workshop/{item_id}/{rel_path.as_posix()}"
+                                if url in seen_urls:
+                                    continue
+                                seen_urls.add(url)
+                                models.append({
+                                    "name": model_file.stem,
+                                    "filename": model_file.name,
+                                    "url": url,
+                                    "rel_path": rel_path.as_posix(),
+                                    "type": model_file.suffix.lstrip('.'),
+                                    "size": model_file.stat().st_size,
+                                    "location": "steam_workshop",
+                                    "source": "steam_workshop",
+                                    "item_id": str(item_id)
+                                })
+        except Exception as e:
+            logger.error(f"获取创意工坊MMD模型时出错: {e}")
 
         return JSONResponse(content={"success": True, "models": models})
     except Exception as e:

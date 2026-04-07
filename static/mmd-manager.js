@@ -537,3 +537,5 @@ class MMDManager {
         console.log('[MMD Manager] 已完全销毁');
     }
 }
+
+window.MMDManager = MMDManager;

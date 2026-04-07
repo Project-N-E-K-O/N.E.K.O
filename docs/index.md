@@ -10,11 +10,11 @@ hero:
     alt: N.E.K.O. Logo
   actions:
     - theme: brand
-      text: Get on Steam
-      link: https://store.steampowered.com/app/3117010/NEKO/
-    - theme: brand
       text: Get Started
       link: /guide/
+    - theme: brand
+      text: Get on Steam
+      link: https://store.steampowered.com/app/3117010/NEKO/
     - theme: alt
       text: API Reference
       link: /api/
@@ -25,17 +25,17 @@ hero:
 features:
   - icon: 🎮
     title: Steam Workshop & Community
-    details: Available on Steam with full Workshop UGC support — share and discover characters, Live2D models, and plugins. Steam achievements, cloud saves, and one-click updates included.
+    details: Available on Steam with full Workshop UGC support — share and discover characters, models, voice packs, and plugins created by the community.
     link: https://store.steampowered.com/app/3117010/NEKO/
     linkText: View on Steam
   - icon: 🎙️
     title: Omni-Modal Dialogue
-    details: Voice, text, and vision in a unified conversation loop. Real-time speech with RNNoise neural denoising, AGC, and VAD — 13ms latency. Supports 14+ LLM providers out of the box.
+    details: Voice, text, and vision in a unified conversation loop. Real-time speech with RNNoise neural denoising, AGC, and VAD for ultra-low-latency interaction.
     link: /architecture/
     linkText: Learn more
   - icon: 💬
     title: Proactive Chat
-    details: 24/7 ambient awareness — she starts conversations based on screen content, trending topics, time of day, holidays, and personal interests. No prompt needed.
+    details: 24/7 ambient awareness — screen understanding, social media trends, personal feeds, music & memes. She initiates conversations with you.
     link: /guide/
     linkText: Learn more
   - icon: 🧠
@@ -50,17 +50,17 @@ features:
     linkText: Explore agents
   - icon: 🔌
     title: Plugin Ecosystem
-    details: Python plugin SDK v2 with marketplace, decorator-based API, async lifecycle hooks, and inter-plugin messaging. Built-in plugins for MCP, reminders, Bilibili danmaku, smart home, and more.
+    details: Full plugin SDK & marketplace for custom extensions. Decorator-based API, async lifecycle hooks, and inter-plugin messaging. Built-in plugins for MCP, reminders, livestreaming, smart home, and more.
     link: /plugins/
     linkText: Build a plugin
   - icon: 🎭
-    title: Live2D, VRM & Voice Clone
+    title: Live2D, VRM, MMD & Voice Clone
     details: Embodied avatars with emotion-mapped expressions, lip sync, and idle animations. Clone any voice from a 5-second sample via MiniMax or CosyVoice backends.
     link: /frontend/
     linkText: Frontend guide
   - icon: 🌐
-    title: i18n & Multi-Provider
-    details: Full UI and prompt localization across 7 languages (zh-CN, zh-TW, en, ja, ko, ru). Supports OpenAI, Anthropic, Google, Qwen, DeepSeek, Groq, Ollama, and more.
+    title: 14+ AI Providers & i18n
+    details: OpenAI, Anthropic, Google, Qwen, DeepSeek, Groq, Ollama, and more — with free models out of the box. Full UI and prompt localization across 6 languages (zh-CN, zh-TW, en, ja, ko, ru).
     link: /config/api-providers
     linkText: Provider list
 ---
