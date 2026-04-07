@@ -1597,22 +1597,10 @@ class UniversalTutorialManager {
                 return;
             }
 
-            const tutorialStartSource = this.consumeTutorialStartSource();
-            this.currentTutorialStartSource = tutorialStartSource;
+            this.currentTutorialStartSource = this.consumeTutorialStartSource();
 
             // 标记引导正在运行
             this.isTutorialRunning = true;
-            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
-                detail: {
-                    page: this.currentPage,
-                    source: tutorialStartSource
-                }
-            }));
-            this.logPromptFlow('tutorial-started', {
-                page: this.currentPage,
-                source: tutorialStartSource,
-            });
-            console.log('[Tutorial] 引导启动来源:', tutorialStartSource);
 
             // 立即禁用页面滚动，防止等待异步加载期间用户滚动导致高亮框位置偏移
             this.lockBodyScroll();
@@ -1631,12 +1619,32 @@ class UniversalTutorialManager {
             }
         } catch (error) {
             console.error('[Tutorial] 启动引导失败:', error);
-            this.isTutorialRunning = false;
-            window.isInTutorial = false;
-            this.unlockBodyScroll();
-            this.restoreTutorialInteractionState();
-            this.setTutorialMarkersVisible(true);
+            this.resetTutorialStartState();
         }
+    }
+
+    resetTutorialStartState() {
+        this.isTutorialRunning = false;
+        this.cachedValidSteps = null;
+        this.currentTutorialStartSource = 'auto';
+        window.isInTutorial = false;
+        this.unlockBodyScroll();
+        this.restoreTutorialInteractionState();
+        this.setTutorialMarkersVisible(true);
+    }
+
+    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {
+        window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
+            detail: {
+                page: page,
+                source: source
+            }
+        }));
+        this.logPromptFlow('tutorial-started', {
+            page: page,
+            source: source,
+        });
+        console.log('[Tutorial] 引导启动来源:', source);
     }
 
     /**
@@ -1804,11 +1812,7 @@ class UniversalTutorialManager {
 
         if (!this.driver) {
             console.error('[Tutorial] driver 实例创建失败，无法启动引导');
-            this.isTutorialRunning = false;
-            window.isInTutorial = false;
-            this.unlockBodyScroll();
-            this.restoreTutorialInteractionState();
-            this.setTutorialMarkersVisible(true);
+            this.resetTutorialStartState();
             return;
         }
 
@@ -1912,8 +1916,18 @@ class UniversalTutorialManager {
             console.error('[Tutorial] 步骤切换失败:', err);
         }));
 
+        const tutorialStartPage = this.currentPage;
+        const tutorialStartSource = this.currentTutorialStartSource;
+        let startResult;
+
         // 启动引导
-        this.driver.start();
+        try {
+            startResult = this.driver.start();
+        } catch (error) {
+            console.error('[Tutorial] 启动引导步骤失败:', error);
+            this.resetTutorialStartState();
+            return;
+        }
 
         // 监听窗口大小变化，刷新 SVG 遮罩和高亮框位置（注册前先清理旧的，防止重复注册）
         if (this._resizeHandler) {
@@ -1944,6 +1958,16 @@ class UniversalTutorialManager {
 
         // 显示跳过按钮
         this.showSkipButton();
+
+        Promise.resolve(startResult).then(() => {
+            if (!this.isTutorialRunning || !window.isInTutorial) {
+                return;
+            }
+            this.emitTutorialStarted(tutorialStartPage, tutorialStartSource);
+        }).catch(error => {
+            console.error('[Tutorial] 启动引导步骤失败:', error);
+            this.resetTutorialStartState();
+        });
 
         console.log('[Tutorial] 引导已启动，页面:', this.currentPage);
     }
