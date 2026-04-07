@@ -266,7 +266,7 @@ class PackResult(_BaseModel):
 
     plugin_id: str
     package_path: Path
-    staging_dir: Path
+    staging_dir: Path | None = None
     profile_files: list[Path] = Field(default_factory=list)
     packaged_files: list[Path] = Field(default_factory=list)
     payload_hash: str
@@ -281,10 +281,15 @@ class PackResult(_BaseModel):
             raise ValueError("plugin_id must match ^[A-Za-z0-9_-]+$")
         return normalized
 
-    @field_validator("package_path", "staging_dir", mode="before")
+    @field_validator("package_path", mode="before")
     @classmethod
     def _validate_path(cls, value: Path | str) -> Path:
         return _normalize_path(value)
+
+    @field_validator("staging_dir", mode="before")
+    @classmethod
+    def _validate_optional_path(cls, value: Path | str | None) -> Path | None:
+        return _normalize_optional_path(value)
 
     @field_validator("packaged_files", "profile_files", mode="before")
     @classmethod
@@ -307,7 +312,7 @@ class PackResult(_BaseModel):
             raise FileNotFoundError(f"package_path does not exist: {self.package_path}")
         if self.package_path.suffix not in _PACKAGE_SUFFIXES:
             raise ValueError("package_path must use .neko-plugin or .neko-bundle extension")
-        if not self.staging_dir.exists():
+        if self.staging_dir is not None and not self.staging_dir.exists():
             raise FileNotFoundError(f"staging_dir does not exist: {self.staging_dir}")
 
         for file_path in self.profile_files:
@@ -373,6 +378,95 @@ class BundleAnalysisResult(_BaseModel):
         return len(self.plugin_ids)
 
 
+class InspectedPackagePlugin(_BaseModel):
+    """Plugin entry discovered inside a packaged archive payload."""
+
+    plugin_id: str
+    archive_path: str
+    has_plugin_toml: bool = True
+
+    @field_validator("plugin_id", "archive_path")
+    @classmethod
+    def _validate_non_empty_string(cls, value: str, info) -> str:
+        normalized = str(value).strip()
+        if not normalized:
+            raise ValueError(f"{info.field_name} must be a non-empty string")
+        return normalized
+
+
+class PackageInspectResult(_BaseModel):
+    """Read-only inspection summary for a package archive."""
+
+    package_path: Path
+    package_type: str
+    package_id: str
+    schema_version: str = ""
+    package_name: str = ""
+    package_description: str = ""
+    version: str = ""
+    metadata_found: bool = False
+    payload_hash: str = ""
+    payload_hash_verified: bool | None = None
+    plugins: list[InspectedPackagePlugin] = Field(default_factory=list)
+    profile_names: list[str] = Field(default_factory=list)
+
+    @field_validator("package_path", mode="before")
+    @classmethod
+    def _validate_path(cls, value: Path | str) -> Path:
+        return _normalize_path(value)
+
+    @field_validator(
+        "package_type",
+        "package_id",
+        "schema_version",
+        "package_name",
+        "package_description",
+        "version",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_string(cls, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    @field_validator("payload_hash")
+    @classmethod
+    def _validate_payload_hash(cls, value: str) -> str:
+        normalized = str(value).strip().lower()
+        if not normalized:
+            return ""
+        if not _HEX_SHA256_RE.fullmatch(normalized):
+            raise ValueError("payload_hash must be empty or a 64-character lowercase sha256 hex string")
+        return normalized
+
+    @field_validator("profile_names", mode="before")
+    @classmethod
+    def _normalize_profile_names(cls, value: list[str]) -> list[str]:
+        normalized = sorted({str(item).strip() for item in value if str(item).strip()})
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_layout(self) -> PackageInspectResult:
+        if not self.package_path.is_file():
+            raise FileNotFoundError(f"package_path does not exist: {self.package_path}")
+        if self.package_type not in {"plugin", "bundle"}:
+            raise ValueError("package_type must be either plugin or bundle")
+        if not self.package_id:
+            raise ValueError("package_id must be a non-empty string")
+        return self
+
+    @computed_field
+    @property
+    def plugin_count(self) -> int:
+        return len(self.plugins)
+
+    @computed_field
+    @property
+    def profile_count(self) -> int:
+        return len(self.profile_names)
+
+
 class UnpackedPlugin(_BaseModel):
     """Mapping between archived plugin folder and final extracted folder."""
 
@@ -405,6 +499,10 @@ class UnpackResult(_BaseModel):
     profiles_root: Path | None = None
     unpacked_plugins: list[UnpackedPlugin] = Field(default_factory=list)
     profile_dir: Path | None = None
+    metadata_found: bool = False
+    payload_hash: str = ""
+    payload_hash_verified: bool | None = None
+    conflict_strategy: str = "rename"
 
     @field_validator("package_path", "plugins_root", mode="before")
     @classmethod
@@ -430,6 +528,24 @@ class UnpackResult(_BaseModel):
         normalized = str(value).strip()
         if not normalized:
             raise ValueError("package_id must be a non-empty string")
+        return normalized
+
+    @field_validator("payload_hash")
+    @classmethod
+    def _validate_payload_hash(cls, value: str) -> str:
+        normalized = str(value).strip().lower()
+        if not normalized:
+            return ""
+        if not _HEX_SHA256_RE.fullmatch(normalized):
+            raise ValueError("payload_hash must be empty or a 64-character lowercase sha256 hex string")
+        return normalized
+
+    @field_validator("conflict_strategy")
+    @classmethod
+    def _validate_conflict_strategy(cls, value: str) -> str:
+        normalized = str(value).strip().lower()
+        if normalized not in {"rename", "fail"}:
+            raise ValueError("conflict_strategy must be either rename or fail")
         return normalized
 
     @model_validator(mode="after")

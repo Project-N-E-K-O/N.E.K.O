@@ -5,7 +5,6 @@ import shutil
 import tempfile
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -17,8 +16,6 @@ from .models import PackResult, PayloadBuildResult, PluginSource
 from .pack_rules import PackRuleSet, load_pack_rules, should_skip_path
 
 _SCHEMA_VERSION = "1.0"
-_TOOL_NAME = "neko-plugin-cli"
-_TOOL_VERSION = "0.1.0"
 
 
 @dataclass(slots=True)
@@ -63,21 +60,41 @@ class PackPaths:
 class PluginPacker:
     """Service object that owns the single-plugin packaging pipeline."""
 
-    def pack_plugin(self, plugin_dir: str | Path, out_file: str | Path | None = None) -> PackResult:
+    def pack_plugin(
+        self,
+        plugin_dir: str | Path,
+        out_file: str | Path | None = None,
+        *,
+        keep_staging: bool = False,
+    ) -> PackResult:
         source = self.load_plugin_source(plugin_dir)
+        if source.package_type != "plugin":
+            raise ValueError(
+                f"single-plugin pack only supports package_type='plugin', got {source.package_type!r}"
+            )
         paths = PackPaths.create(plugin_id=source.plugin_id)
-        pack_rules = load_pack_rules(source.pyproject_toml)
-        payload = self.build_payload(source, paths, rules=pack_rules)
-        self.write_manifest(source, paths)
-        self.write_metadata(source, payload, paths, rules=pack_rules)
+        try:
+            pack_rules = load_pack_rules(source.pyproject_toml)
+            payload = self.build_payload(source, paths, rules=pack_rules)
+            self.write_manifest(source, paths)
+            self.write_metadata(source, payload, paths)
 
-        package_path = (
-            Path(out_file).expanduser().resolve()
-            if out_file is not None
-            else source.plugin_dir.parent / source.default_package_name
-        )
-        self.export_package(paths.staging_root, package_path)
-        return self.build_pack_result(source, payload, package_path, paths)
+            package_path = (
+                Path(out_file).expanduser().resolve()
+                if out_file is not None
+                else source.plugin_dir.parent / source.default_package_name
+            )
+            self.export_package(paths.staging_root, package_path)
+            return self.build_pack_result(
+                source,
+                payload,
+                package_path,
+                paths,
+                keep_staging=keep_staging,
+            )
+        finally:
+            if not keep_staging:
+                shutil.rmtree(paths.staging_root, ignore_errors=True)
 
     def load_plugin_source(self, plugin_dir: str | Path) -> PluginSource:
         plugin_dir = Path(plugin_dir).expanduser().resolve()
@@ -176,7 +193,7 @@ class PluginPacker:
             if isinstance(auto_start, bool):
                 lines.append(f"auto_start = {_toml_bool(auto_start)}")
 
-        runtime_config = self.extract_runtime_config(source.plugin_toml)
+        runtime_config = self.extract_runtime_config(source)
         if runtime_config:
             lines.extend(
                 [
@@ -189,20 +206,16 @@ class PluginPacker:
         profile_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
         return [profile_path.resolve()]
 
-    def extract_runtime_config(self, plugin_toml: dict[str, object]) -> dict[str, object]:
-        # `plugin` and `plugin_runtime` stay as package metadata; everything else
-        # is currently treated as portable runtime config for the default profile.
-        reserved = {"plugin", "plugin_runtime"}
-        return {
-            key: value
-            for key, value in plugin_toml.items()
-            if key not in reserved
-        }
+    def extract_runtime_config(self, source: PluginSource) -> dict[str, object]:
+        # Runtime config extraction is intentionally narrow: only the top-level
+        # table matching the plugin id is migrated into the portable profile.
+        value = source.plugin_toml.get(source.plugin_id)
+        return value if isinstance(value, dict) else {}
 
     def write_manifest(self, source: PluginSource, paths: PackPaths) -> None:
         lines = [
             f'schema_version = "{_SCHEMA_VERSION}"',
-            'package_type = "plugin"',
+            f'package_type = "{_escape_string(source.package_type)}"',
             "",
             f'id = "{_escape_string(source.plugin_id)}"',
             f'package_name = "{_escape_string(source.name)}"',
@@ -221,8 +234,6 @@ class PluginPacker:
         source: PluginSource,
         payload: PayloadBuildResult,
         paths: PackPaths,
-        *,
-        rules: PackRuleSet,
     ) -> None:
         content = "\n".join(
             [
@@ -268,21 +279,32 @@ class PluginPacker:
         payload: PayloadBuildResult,
         package_path: Path,
         paths: PackPaths,
+        *,
+        keep_staging: bool,
     ) -> PackResult:
         return PackResult(
             plugin_id=source.plugin_id,
             package_path=package_path,
-            staging_dir=paths.staging_root,
-            profile_files=payload.profile_files,
-            packaged_files=payload.packaged_files,
+            staging_dir=paths.staging_root if keep_staging else None,
+            profile_files=payload.profile_files if keep_staging else [],
+            packaged_files=payload.packaged_files if keep_staging else [],
             payload_hash=payload.payload_hash,
         )
 
 
-def pack_plugin(plugin_dir: str | Path, out_file: str | Path | None = None) -> PackResult:
+def pack_plugin(
+    plugin_dir: str | Path,
+    out_file: str | Path | None = None,
+    *,
+    keep_staging: bool = False,
+) -> PackResult:
     """Public convenience wrapper for one-shot single-plugin packaging."""
 
-    return PluginPacker().pack_plugin(plugin_dir=plugin_dir, out_file=out_file)
+    return PluginPacker().pack_plugin(
+        plugin_dir=plugin_dir,
+        out_file=out_file,
+        keep_staging=keep_staging,
+    )
 
 
 def _load_toml(path: Path) -> dict[str, object]:
@@ -312,10 +334,6 @@ def _optional_string(data: dict[str, object], key: str) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _toml_bool(value: bool) -> str:

@@ -120,6 +120,12 @@ Profiles may define:
 - per-plugin runtime flags
 - per-plugin config values
 
+Current lightweight rule for single-plugin packing:
+
+- `[plugin_runtime]` contributes runtime flags such as `auto_start`
+- the top-level table whose name equals the plugin id is migrated into the default profile as plugin config
+- other metadata tables stay in `plugin.toml`
+
 ## Package Type Rules
 
 ### `.neko-plugin`
@@ -237,6 +243,7 @@ Recommended validation:
 1. `metadata.toml` exists
 2. bundle `[[plugins]]` entries match packaged plugin directory names
 3. `metadata.payload.hash` matches computed payload hash
+4. each packaged plugin directory contains `plugin.toml`
 
 Optional trust validation:
 
@@ -257,6 +264,12 @@ Recommended pipeline for a single plugin:
 7. Generate `metadata.toml`
 8. Optionally generate `sign.toml`
 9. Export ZIP archive with `.neko-plugin` extension
+
+Current implementation notes:
+
+- single-plugin packing only accepts `package_type = "plugin"`
+- unpack verifies `metadata.toml` payload hash when metadata exists
+- unpack conflict handling currently supports `rename` and `fail`
 
 Recommended pipeline for a bundle:
 
