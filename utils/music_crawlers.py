@@ -953,13 +953,13 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     if keyword: 
         # 场景 A: 用户指定了明确关键词 -> 开启"梯队降级"机制
         kw_lower = keyword.lower()
-        # 1. 【强古典词】补回 "古典" 与 "classical" 核心词，确保正确路由至 Musopen
+        # 1. 【强古典词】确保正确路由至 Musopen
         strong_classical = [
             "古典", "肖邦", "贝多芬", "莫扎特", "交响", "夜曲", "协奏曲", "奏鸣曲",
             "classical", "chopin", "beethoven", "mozart", "symphony", "nocturne", "concerto", "sonata",
-            "クラシック", "ショパン", "ベートーヴェン", "モーツァルト", "交響", "夜想曲",  # ← 补回 クラシック
-            "클래식", "쇼팽", "베토벤", "모차르트", "교향곡", "야상곡",                   # ← 补回 클래식
-            "классическая", "шопен", "бетховен", "моцарт", "симфония", "ноктюрн",       # ← 补回 классическая
+            "クラシック", "ショパン", "ベートーヴェン", "モーツァルト", "交響", "夜想曲",
+            "클래식", "쇼팽", "베토벤", "모차르트", "교향곡", "야상곡",
+            "классическая", "шопен", "бетховен", "моцарт", "симфония", "ноктюрн",
         ]
         
         # 2. 【乐器词】具有歧义，可能是古典也可能是现代
@@ -1000,7 +1000,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         
         # --- 组建第一梯队（最优解竞速） ---
         
-        # 1. 【核心修复】古典乐意图判定：强古典词 OR (包含乐器词且非现代风格词)
+        # 1. 古典乐意图判定：强古典词 OR (包含乐器词且非现代风格词)
         is_classical = any(kw in kw_lower for kw in strong_classical) or \
                        (any(kw in kw_lower for kw in instruments) and not any(kw in kw_lower for kw in modern_styles))
         
@@ -1008,7 +1008,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             logger.info(f"[智能调度] 识别到古典/纯正乐器意图，优先调度 Musopen: {keyword}")
             primary_tasks.append(all_crawlers['musopen'].search(keyword, limit))
         
-        # 2. 【补充修复】华语/流行路由：命中你定义的华语歌手或关键词
+        # 2. 华语/流行路由：命中华语歌手或关键词
         elif any(kw in kw_lower for kw in chinese_keywords):
             logger.info(f"[智能调度] 识别到华语检索意图，优先调度网易云: {keyword}")
             primary_tasks.append(all_crawlers['netease'].search(keyword, limit))

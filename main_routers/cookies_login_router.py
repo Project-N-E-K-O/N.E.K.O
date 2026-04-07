@@ -403,9 +403,9 @@ async def api_qr_login_poll(
         status_info = status_codes.get(code, {"status": "unknown", "message": raw_message})
         
         # 动态匹配各平台的成功码，不再硬编码 code == 0
-        # 例如：Bilibili 成功码为 0，网易云成功码为 803
+        # 例如：Bilibili 成功码为 0
         if status_info.get("status") == "success":
-            # 兼容性设计：优先从响应头提取，若 JSON Body 中包含 cookie 字段则解析合并 (网易云常见行为)
+            # 兼容性设计：优先从响应头提取，若 JSON Body 中包含 cookie 字段则解析合并
             cookies = dict(response.cookies)
             body_cookie_str = resp_data.get("cookie")
             if body_cookie_str:

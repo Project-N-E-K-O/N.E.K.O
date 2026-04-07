@@ -2590,7 +2590,7 @@
             },
             "MUSIC_U": {
                 "label": "MUSIC_U",
-                "desc": "コア身份凭证 (必須)"
+                "desc": "コアIDクレデンシャル (必須)"
             },
             "NMTID": {
                 "label": "NMTID",
