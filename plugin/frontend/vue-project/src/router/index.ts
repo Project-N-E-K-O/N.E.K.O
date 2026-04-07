@@ -47,6 +47,14 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'packages',
+        name: 'PackageManager',
+        component: () => import('@/views/PackageManager.vue'),
+        meta: {
+          titleKey: 'nav.packageManager'
+        }
+      },
+      {
         path: 'logs/:id',
         name: 'Logs',
         component: () => import('@/views/Logs.vue'),
@@ -84,4 +92,3 @@ router.beforeEach((to, from, next) => {
 })
 
 export default router
-

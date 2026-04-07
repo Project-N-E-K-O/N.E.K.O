@@ -21,6 +21,10 @@
         <el-icon><DataAnalysis /></el-icon>
         <span>{{ $t('nav.runs') }}</span>
       </el-menu-item>
+      <el-menu-item index="/packages">
+        <el-icon><Files /></el-icon>
+        <span>{{ $t('nav.packageManager') }}</span>
+      </el-menu-item>
       <el-menu-item index="/logs/_server">
         <el-icon><Monitor /></el-icon>
         <span>{{ $t('nav.serverLogs') }}</span>
@@ -48,7 +52,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { Odometer, Box, Monitor, DataAnalysis, Connection, Link } from '@element-plus/icons-vue'
+import { Odometer, Box, Monitor, DataAnalysis, Connection, Link, Files } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
 
 const route = useRoute()
@@ -68,6 +72,9 @@ const activeRoute = computed(() => {
   }
   if (route.path.startsWith('/runs')) {
     return '/runs'
+  }
+  if (route.path.startsWith('/packages')) {
+    return '/packages'
   }
   if (route.path.startsWith('/logs')) {
     return '/logs/_server'
@@ -108,4 +115,3 @@ onMounted(() => {
   border-right: none;
 }
 </style>
-

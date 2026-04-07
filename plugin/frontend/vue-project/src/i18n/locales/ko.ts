@@ -36,6 +36,7 @@ export default {
     metrics: '성능 지표',
     logs: '로그',
     runs: '실행 기록',
+    packageManager: '패키지 관리',
     serverLogs: '서버 로그',
     adapters: '어댑터',
     adapterUI: '어댑터 UI'

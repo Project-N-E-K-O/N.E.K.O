@@ -29,7 +29,7 @@ function resolveLocaleFromBrowser(): AppLocale {
     }
 
     // 按基础语言代码部分匹配
-    const langCode = lang.split('-')[0].toLowerCase()
+    const langCode = (lang.split('-')[0] ?? '').toLowerCase()
     if (langCode === 'en') return 'en-US'
     if (langCode === 'ja') return 'ja'
     if (langCode === 'ko') return 'ko'

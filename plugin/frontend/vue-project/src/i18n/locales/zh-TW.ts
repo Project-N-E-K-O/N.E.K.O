@@ -36,6 +36,7 @@ export default {
     metrics: '效能指標',
     logs: '日誌',
     runs: '執行記錄',
+    packageManager: '套件管理',
     serverLogs: '伺服器日誌',
     adapters: '適配器',
     adapterUI: '適配器介面'

@@ -36,6 +36,7 @@ export default {
     metrics: 'Производительность',
     logs: 'Логи',
     runs: 'Запуски',
+    packageManager: 'Пакеты',
     serverLogs: 'Логи сервера',
     adapters: 'Адаптеры',
     adapterUI: 'Интерфейс адаптера'

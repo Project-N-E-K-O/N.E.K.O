@@ -22,6 +22,32 @@ Both package types are standard ZIP archives and must remain compatible with nor
 - Unified reader/writer for plugin package and bundle package
 - Optional trust/signature support without blocking basic use
 
+## CLI Entry
+
+`neko-plugin-cli` now uses a single CLI entry:
+
+```bash
+uv run python plugin/neko-plugin-cli/cli.py <command> ...
+```
+
+Current commands:
+
+- `pack`
+- `inspect`
+- `verify`
+- `unpack`
+- `analyze`
+
+Examples:
+
+```bash
+uv run python plugin/neko-plugin-cli/cli.py pack qq_auto_reply
+uv run python plugin/neko-plugin-cli/cli.py inspect qq_auto_reply.neko-plugin
+uv run python plugin/neko-plugin-cli/cli.py verify qq_auto_reply.neko-plugin
+uv run python plugin/neko-plugin-cli/cli.py unpack qq_auto_reply.neko-plugin
+uv run python plugin/neko-plugin-cli/cli.py analyze qq_auto_reply mijia
+```
+
 ## Archive Layout
 
 ```text

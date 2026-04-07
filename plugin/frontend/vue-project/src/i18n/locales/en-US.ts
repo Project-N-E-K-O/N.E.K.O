@@ -36,6 +36,7 @@ export default {
     metrics: 'Metrics',
     logs: 'Logs',
     runs: 'Runs',
+    packageManager: 'Packages',
     serverLogs: 'Server Logs',
     adapters: 'Adapters',
     adapterUI: 'Adapter UI'

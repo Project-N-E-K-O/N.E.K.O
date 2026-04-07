@@ -13,6 +13,7 @@ from plugin.server.routes.logs import router as logs_router
 from plugin.server.routes.frontend import router as frontend_router
 from plugin.server.routes.websocket import router as websocket_router
 from plugin.server.routes.plugin_ui import router as plugin_ui_router
+from plugin.server.routes.plugin_cli import router as plugin_cli_router
 
 __all__ = [
     'health_router',
@@ -25,4 +26,5 @@ __all__ = [
     'frontend_router',
     'websocket_router',
     'plugin_ui_router',
+    'plugin_cli_router',
 ]
