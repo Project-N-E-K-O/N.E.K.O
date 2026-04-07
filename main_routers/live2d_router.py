@@ -28,6 +28,31 @@ router = APIRouter(prefix="/api/live2d", tags=["live2d"])
 logger = get_module_logger(__name__, "Main")
 
 
+def _normalize_persistent_expression_group(mapping):
+    if not isinstance(mapping, dict):
+        return {"motions": {}, "expressions": {}}
+
+    motions = mapping.get('motions')
+    expressions = mapping.get('expressions')
+    if not isinstance(motions, dict):
+        motions = {}
+    if not isinstance(expressions, dict):
+        expressions = {}
+
+    persistent_files = expressions.get('常驻')
+    if isinstance(persistent_files, list):
+        normalized_files = [f for f in persistent_files if isinstance(f, str) and f]
+        expressions['常驻'] = normalized_files[-1:] if normalized_files else []
+    elif persistent_files:
+        expressions['常驻'] = [str(persistent_files)]
+    else:
+        expressions['常驻'] = []
+
+    mapping['motions'] = motions
+    mapping['expressions'] = expressions
+    return mapping
+
+
 def _normalize_model_path(path: str) -> str:
     """Strip any surrounding quotes, then encode a model URL path."""
     return encode_url_path(path.strip('"'))
@@ -312,6 +337,8 @@ def get_emotion_mapping(model_name: str):
 
             emotion_mapping = derived_mapping
         
+        emotion_mapping = _normalize_persistent_expression_group(emotion_mapping)
+
         return {"success": True, "config": emotion_mapping}
     except Exception as e:
         logger.error(f"获取情绪映射配置失败: {e}")
@@ -328,6 +355,8 @@ async def update_emotion_mapping(model_name: str, request: Request):
         
         if not data:
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的数据"})
+
+        data = _normalize_persistent_expression_group(data if isinstance(data, dict) else {})
 
         # 查找模型目录（可能在static或用户文档目录）
         model_dir, url_prefix = find_model_directory(model_name)
@@ -373,7 +402,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
         file_refs['Motions'] = motions_output
 
         # 处理 expressions: 将按 emotion 前缀生成扁平列表，Name 采用 "{emotion}_{basename}" 的约定
-        expressions_input = (data.get('expressions') if isinstance(data, dict) else None) or {}
+        expressions_input = data.get('expressions') or {}
 
         # 先保留不属于我们情感前缀的原始表达（避免覆盖用户自定义）
         existing_expressions = file_refs.get('Expressions', []) or []
@@ -1349,5 +1378,4 @@ def get_user_models():
     except Exception as e:
         logger.error(f"获取用户模型列表失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
-
 

@@ -6846,22 +6846,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (data && data.success && data.config && data.config.expressions && data.config.expressions['常驻']) {
                 const persistentExpressions = data.config.expressions['常驻'];
-                if (persistentExpressions && persistentExpressions.length > 0) {
+                const activePersistentExpression = Array.isArray(persistentExpressions) && persistentExpressions.length > 0
+                    ? persistentExpressions[persistentExpressions.length - 1]
+                    : null;
+                if (activePersistentExpression) {
                     persistentList.innerHTML = '';
-                    persistentExpressions.forEach(file => {
-                        const item = document.createElement('div');
-                        item.className = 'persistent-item';
-                        const fileName = file.split('/').pop().replace('.exp3.json', '');
-                        const nameSpan = document.createElement('span');
-                        nameSpan.textContent = fileName;
-                        const deleteBtn = document.createElement('button');
-                        deleteBtn.className = 'persistent-delete-btn';
-                        deleteBtn.textContent = t('live2d.delete', '删除');
-                        deleteBtn.addEventListener('click', () => removePersistentExpression(file));
-                        item.appendChild(nameSpan);
-                        item.appendChild(deleteBtn);
-                        persistentList.appendChild(item);
-                    });
+                    const item = document.createElement('div');
+                    item.className = 'persistent-item';
+                    const fileName = activePersistentExpression.split('/').pop().replace('.exp3.json', '');
+                    const nameSpan = document.createElement('span');
+                    nameSpan.textContent = fileName;
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'persistent-delete-btn';
+                    deleteBtn.textContent = t('live2d.delete', '删除');
+                    deleteBtn.addEventListener('click', () => removePersistentExpression(activePersistentExpression));
+                    item.appendChild(nameSpan);
+                    item.appendChild(deleteBtn);
+                    persistentList.appendChild(item);
                     persistentList.style.display = 'block';
                 } else {
                     persistentList.style.display = 'none';
@@ -6901,15 +6902,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                 currentConfig.expressions['常驻'] = [];
             }
 
+            const currentPersistentExpressions = Array.isArray(currentConfig.expressions['常驻'])
+                ? currentConfig.expressions['常驻']
+                : [];
+            const previousPersistentExpression = currentPersistentExpressions.length > 0
+                ? currentPersistentExpressions[currentPersistentExpressions.length - 1]
+                : null;
+
             // 检查是否已存在
-            if (currentConfig.expressions['常驻'].includes(selectedFile)) {
+            if (previousPersistentExpression === selectedFile) {
                 showStatus(t('live2d.persistentExpressionExists', '该表情已添加为常驻表情'), 2000);
                 persistentSelect.value = '';
                 return; // 注意：这里return后会在finally中恢复disabled状态
             }
 
-            // 添加到常驻表情列表
-            currentConfig.expressions['常驻'].push(selectedFile);
+            // 单选：选择新表情时直接替换旧的常驻表情
+            currentConfig.expressions['常驻'] = [selectedFile];
 
             // 保存配置（使用 RequestHelper 确保统一的错误处理和超时）
             const saveData = await RequestHelper.fetchJson(
@@ -6921,7 +6929,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             );
             if (saveData.success) {
-                showStatus(t('live2d.persistentExpressionAdded', '常驻表情已添加'), 2000);
+                if (previousPersistentExpression) {
+                    showStatus(t('live2d.updatedPersistentExpression', '已更新常驻表情'), 2000);
+                } else {
+                    showStatus(t('live2d.persistentExpressionAdded', '常驻表情已添加'), 2000);
+                }
                 await loadPersistentExpressions();
                 persistentSelect.value = '';
                 // 立即应用常驻表情到预览模型
@@ -6957,9 +6969,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             const currentConfig = data && data.success ? (data.config || { motions: {}, expressions: {} }) : { motions: {}, expressions: {} };
 
             if (currentConfig.expressions && currentConfig.expressions['常驻']) {
-                const index = currentConfig.expressions['常驻'].indexOf(file);
-                if (index > -1) {
-                    currentConfig.expressions['常驻'].splice(index, 1);
+                const currentPersistentExpressions = Array.isArray(currentConfig.expressions['常驻'])
+                    ? currentConfig.expressions['常驻']
+                    : [];
+                const activePersistentExpression = currentPersistentExpressions.length > 0
+                    ? currentPersistentExpressions[currentPersistentExpressions.length - 1]
+                    : null;
+                if (activePersistentExpression === file) {
+                    currentConfig.expressions['常驻'] = [];
 
                     // 使用 RequestHelper 确保统一的错误处理和超时
                     const saveData = await RequestHelper.fetchJson(

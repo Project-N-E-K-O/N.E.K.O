@@ -1038,7 +1038,8 @@ Live2DManager.prototype.collectPersistentExpressionFiles = function() {
 
     const all = [...filesFromMapping, ...filesFromRefs];
     // 去重
-    return Array.from(new Set(all));
+    const normalized = Array.from(new Set(all));
+    return normalized.length > 0 ? [normalized[normalized.length - 1]] : [];
 };
 
 Live2DManager.prototype.setupPersistentExpressions = async function() {
