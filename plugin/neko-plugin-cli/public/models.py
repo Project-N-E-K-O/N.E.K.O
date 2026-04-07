@@ -371,3 +371,84 @@ class BundleAnalysisResult(_BaseModel):
     @property
     def plugin_count(self) -> int:
         return len(self.plugin_ids)
+
+
+class UnpackedPlugin(_BaseModel):
+    """Mapping between archived plugin folder and final extracted folder."""
+
+    source_folder: str
+    target_plugin_id: str
+    target_dir: Path
+    renamed: bool = False
+
+    @field_validator("source_folder", "target_plugin_id")
+    @classmethod
+    def _validate_non_empty(cls, value: str, info) -> str:
+        normalized = str(value).strip()
+        if not normalized:
+            raise ValueError(f"{info.field_name} must be a non-empty string")
+        return normalized
+
+    @field_validator("target_dir", mode="before")
+    @classmethod
+    def _validate_target_dir(cls, value: Path | str) -> Path:
+        return _normalize_path(value)
+
+
+class UnpackResult(_BaseModel):
+    """Result of extracting a package archive into runtime directories."""
+
+    package_path: Path
+    package_type: str
+    package_id: str
+    plugins_root: Path
+    profiles_root: Path | None = None
+    unpacked_plugins: list[UnpackedPlugin] = Field(default_factory=list)
+    profile_dir: Path | None = None
+
+    @field_validator("package_path", "plugins_root", mode="before")
+    @classmethod
+    def _validate_required_path(cls, value: Path | str) -> Path:
+        return _normalize_path(value)
+
+    @field_validator("profiles_root", "profile_dir", mode="before")
+    @classmethod
+    def _validate_optional_path(cls, value: Path | str | None) -> Path | None:
+        return _normalize_optional_path(value)
+
+    @field_validator("package_type")
+    @classmethod
+    def _validate_package_type(cls, value: str) -> str:
+        normalized = str(value).strip().lower()
+        if normalized not in {"plugin", "bundle"}:
+            raise ValueError("package_type must be either plugin or bundle")
+        return normalized
+
+    @field_validator("package_id")
+    @classmethod
+    def _validate_package_id(cls, value: str) -> str:
+        normalized = str(value).strip()
+        if not normalized:
+            raise ValueError("package_id must be a non-empty string")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_layout(self) -> UnpackResult:
+        if not self.package_path.is_file():
+            raise FileNotFoundError(f"package_path does not exist: {self.package_path}")
+        if not self.plugins_root.exists():
+            raise FileNotFoundError(f"plugins_root does not exist: {self.plugins_root}")
+        if not self.plugins_root.is_dir():
+            raise NotADirectoryError(f"plugins_root is not a directory: {self.plugins_root}")
+        if self.profiles_root is not None and not self.profiles_root.is_dir():
+            raise NotADirectoryError(f"profiles_root is not a directory: {self.profiles_root}")
+        if self.profile_dir is not None and self.profiles_root is not None:
+            _ensure_within(self.profile_dir, self.profiles_root, field_name="profile_dir")
+        for item in self.unpacked_plugins:
+            _ensure_within(item.target_dir, self.plugins_root, field_name="unpacked plugin target_dir")
+        return self
+
+    @computed_field
+    @property
+    def unpacked_plugin_count(self) -> int:
+        return len(self.unpacked_plugins)

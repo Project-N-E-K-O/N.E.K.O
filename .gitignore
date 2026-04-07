@@ -130,6 +130,9 @@ data/browser_use_extensions/
 # 插件服务器运行时生成的凭证文件
 plugin/.plugin_server_admin_code
 
+# 插件包解包后提取出的 profile 目录（运行/导入产物，不入库）
+plugin/.neko-package-profiles/
+
 # 插件备忘提醒运行时数据库
 plugin/plugins/memo_reminder/store.db
 
