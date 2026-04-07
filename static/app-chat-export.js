@@ -1511,7 +1511,7 @@
         var frame = document.createElement('iframe');
         frame.className = 'chat-export-preview-frame';
         frame.hidden = true;
-        frame.setAttribute('sandbox', 'allow-same-origin allow-scripts');
+        frame.setAttribute('sandbox', 'allow-same-origin');
         frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
 
         var previewImageWrap = document.createElement('div');
@@ -1997,14 +1997,11 @@
             event.preventDefault();
             event.stopPropagation();
         }
-        console.log('[app-chat-export] handleExportButtonClick called');
         if (state.isPreparingPreview) {
-            console.log('[app-chat-export] already preparing preview, skip');
             return;
         }
 
         var host = getReactChatHost();
-        console.log('[app-chat-export] host:', !!host);
         if (host && typeof host.ensureBundleLoaded === 'function') {
             try {
                 await host.ensureBundleLoaded();
@@ -2014,7 +2011,6 @@
         }
 
         var messages = getReactMessages();
-        console.log('[app-chat-export] messages count:', messages.length);
         if (messages.length === 0) {
             showToast('chat.exportEmpty', 'There is no conversation to export yet.', 3000);
             return;
@@ -2025,9 +2021,7 @@
             state.allMessages = messages;
             state.selectedIds = new Set(messages.map(function (message) { return message.id; }));
             clearPreviewCache();
-            console.log('[app-chat-export] opening preview modal...');
             await openPreviewModal();
-            console.log('[app-chat-export] preview modal opened');
         } catch (error) {
             logExportError('handleExportButtonClick', error);
             showToastMessage(
@@ -2042,7 +2036,6 @@
 
     function init() {
         var button = document.getElementById('exportConversationButton');
-        console.log('[app-chat-export] init — button found:', !!button);
         if (!button) return;
 
         button.addEventListener('click', handleExportButtonClick);

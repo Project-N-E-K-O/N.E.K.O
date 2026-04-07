@@ -2365,7 +2365,7 @@ body.chat-export-modal-open {
         max-height: 22vh;
     }
     .chat-export-preview-footer {
-        justify-content: stretch;
+        justify-content: flex-start;
     }
     .chat-export-preview-action {
         flex: 1;
