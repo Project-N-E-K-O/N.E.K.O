@@ -329,6 +329,11 @@
             <div class="card-header">
               <span>本地包</span>
               <div class="package-header-actions">
+                <el-radio-group v-model="packageFilterType" size="small">
+                  <el-radio-button label="all">全部</el-radio-button>
+                  <el-radio-button label="plugin">插件包</el-radio-button>
+                  <el-radio-button label="bundle">整合包</el-radio-button>
+                </el-radio-group>
                 <el-tag size="small" type="info">{{ localPackages.length }}</el-tag>
                 <el-button text :loading="packagesLoading" @click="refreshPackageSources">刷新</el-button>
               </div>
@@ -340,11 +345,11 @@
             <span class="package-list-meta__value">{{ targetDir }}</span>
           </div>
 
-          <el-empty v-if="!packagesLoading && localPackages.length === 0" description="target 中还没有本地包" />
+          <el-empty v-if="!packagesLoading && filteredLocalPackages.length === 0" description="没有匹配的本地包" />
 
           <div v-else class="package-list">
             <button
-              v-for="pkg in localPackages"
+              v-for="pkg in filteredLocalPackages"
               :key="pkg.path"
               type="button"
               class="package-list-item"
@@ -352,7 +357,16 @@
               @click="selectPackage(pkg)"
             >
               <div class="package-list-item__main">
-                <div class="package-list-item__name">{{ pkg.name }}</div>
+                <div class="package-list-item__title">
+                  <div class="package-list-item__name">{{ pkg.name }}</div>
+                  <el-tag
+                    size="small"
+                    effect="plain"
+                    :type="packageTagType(pkg)"
+                  >
+                    {{ packageLabel(pkg) }}
+                  </el-tag>
+                </div>
                 <div class="package-list-item__meta">
                   <span>{{ formatPackageSize(pkg.size_bytes) }}</span>
                   <span>{{ formatPackageTime(pkg.modified_at) }}</span>
@@ -500,6 +514,7 @@ const pluginsLoading = ref(false)
 const packagesLoading = ref(false)
 const localPackages = ref<PluginCliLocalPackageItem[]>([])
 const targetDir = ref('')
+const packageFilterType = ref<'all' | 'plugin' | 'bundle'>('all')
 
 const packing = ref(false)
 const inspecting = ref(false)
@@ -611,6 +626,13 @@ const resolvedPackTargets = computed(() => {
     return packForm.value.plugin ? [packForm.value.plugin] : []
   }
   return selectedPluginIds.value
+})
+
+const filteredLocalPackages = computed(() => {
+  if (packageFilterType.value === 'all') {
+    return localPackages.value
+  }
+  return localPackages.value.filter((pkg) => inferPackageType(pkg) === packageFilterType.value)
 })
 
 const primaryPackResult = computed<Record<string, any> | null>(() => {
@@ -897,6 +919,18 @@ function formatPackageTime(raw: string): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(date)
+}
+
+function inferPackageType(pkg: PluginCliLocalPackageItem): 'plugin' | 'bundle' {
+  return pkg.name.endsWith('.neko-bundle') ? 'bundle' : 'plugin'
+}
+
+function packageLabel(pkg: PluginCliLocalPackageItem): string {
+  return inferPackageType(pkg) === 'bundle' ? '整合包' : '插件包'
+}
+
+function packageTagType(pkg: PluginCliLocalPackageItem): 'primary' | 'success' {
+  return inferPackageType(pkg) === 'bundle' ? 'success' : 'primary'
 }
 
 async function inspectSelectedPackage(pkg: PluginCliLocalPackageItem) {
@@ -1450,6 +1484,13 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.package-list-item__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .package-list-item__name {
