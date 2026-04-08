@@ -1,6 +1,7 @@
 from utils.llm_client import SQLChatMessageHistory, SystemMessage
 from sqlalchemy import create_engine, text
 from config import TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME
+from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from datetime import datetime
@@ -99,6 +100,11 @@ class TimeIndexedMemory:
                 logger.exception(f"[TimeIndexedMemory] 迁移 {lanlan_name} 表 {table} 失败")
 
     async def store_conversation(self, event_id, messages, lanlan_name, timestamp=None):
+        assert_cloudsave_writable(
+            get_config_manager(),
+            operation="save",
+            target=f"memory/{lanlan_name}/time_indexed.db",
+        )
         # 确保数据库引擎和路径存在
         if not self._ensure_engine_exists(lanlan_name):
             logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")

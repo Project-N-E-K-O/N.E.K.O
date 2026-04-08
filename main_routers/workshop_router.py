@@ -55,6 +55,23 @@ _ugc_sync_lock = asyncio.Lock()
 _ugc_query_lock = asyncio.Lock()
 
 
+def _load_deleted_character_names(config_mgr) -> set[str]:
+    deleted_names: set[str] = set()
+    try:
+        tombstone_state = config_mgr.load_character_tombstones_state()
+    except Exception as exc:
+        logger.warning(f"sync_workshop_character_cards: 读取 tombstone 状态失败: {exc}")
+        return deleted_names
+
+    for entry in tombstone_state.get("tombstones") or []:
+        if not isinstance(entry, dict):
+            continue
+        character_name = str(entry.get("character_name") or "").strip()
+        if character_name:
+            deleted_names.add(character_name)
+    return deleted_names
+
+
 def _is_item_cache_valid(item_id: int) -> bool:
     """检查单个 UGC 缓存条目是否在有效期内"""
     entry = _ugc_details_cache.get(item_id)
@@ -2850,6 +2867,7 @@ async def sync_workshop_character_cards() -> dict:
             characters = config_mgr.load_characters()
             if '猫娘' not in characters:
                 characters['猫娘'] = {}
+            deleted_character_names = _load_deleted_character_names(config_mgr)
             
             need_save = False
             
@@ -2876,6 +2894,15 @@ async def sync_workshop_character_cards() -> dict:
                             
                             chara_name = chara_data.get('档案名') or chara_data.get('name')
                             if not chara_name:
+                                continue
+
+                            if chara_name in deleted_character_names:
+                                skipped_count += 1
+                                logger.info(
+                                    "sync_workshop_character_cards: 跳过已删除角色 '%s'（tombstone 生效，物品 %s）",
+                                    chara_name,
+                                    item_id,
+                                )
                                 continue
                             
                             # 已存在则跳过（当前设计：仅填充缺失角色卡，不覆盖已有数据；

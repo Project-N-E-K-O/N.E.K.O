@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from config import SETTING_PROPOSER_MODEL
+from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
@@ -93,6 +94,11 @@ class ReflectionEngine:
 
         promoted/denied 超过 _REFLECTION_ARCHIVE_DAYS 的条目自动移入归档文件。
         """
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{name}/reflections.json",
+        )
         path = self._reflections_path(name)
         # Load all (including archived) to preserve them
         all_on_disk = []
@@ -165,6 +171,11 @@ class ReflectionEngine:
         return []
 
     def save_surfaced(self, name: str, surfaced: list[dict]) -> None:
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{name}/surfaced.json",
+        )
         atomic_write_json(self._surfaced_path(name), surfaced, indent=2, ensure_ascii=False)
 
     # ── synthesis ────────────────────────────────────────────────────

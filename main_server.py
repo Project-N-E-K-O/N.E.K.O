@@ -47,7 +47,16 @@ import asyncio # noqa
 import logging # noqa
 import atexit # noqa
 import httpx # noqa
+from datetime import datetime, timezone # noqa
 from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
+from utils.cloudsave_runtime import (
+    MaintenanceModeError,
+    ROOT_MODE_NORMAL,
+    bootstrap_local_cloudsave_environment,
+    is_write_fence_active,
+    maintenance_error_payload,
+    set_root_mode,
+)
 from utils.config_manager import get_config_manager, get_reserved # noqa
 # 将日志初始化提前，确保导入阶段异常也能落盘
 from utils.logger_config import setup_logging # noqa: E402
@@ -622,19 +631,17 @@ async def initialize_character_data():
     
     logger.info(f"角色配置加载完成，当前角色: {catgirl_names}，主人: {master_name}")
 
-# 初始化角色数据（使用asyncio.run在模块级别执行async函数）
-# 只在主进程中执行，防止 Windows 上子进程重复导入时再次启动子进程
-if _IS_MAIN_PROCESS:
-    import asyncio as _init_asyncio
-    try:
-        _init_asyncio.get_event_loop()
-    except RuntimeError:
-        _init_asyncio.set_event_loop(_init_asyncio.new_event_loop())
-    _init_asyncio.get_event_loop().run_until_complete(initialize_character_data())
 lock = asyncio.Lock()
 
 # --- FastAPI App Setup ---
 app = FastAPI()
+
+
+@app.exception_handler(MaintenanceModeError)
+async def handle_maintenance_mode_error(_request, exc: MaintenanceModeError):
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(status_code=409, content=maintenance_error_payload(exc))
 
 
 
@@ -935,6 +942,18 @@ async def on_startup():
     if _IS_MAIN_PROCESS:
         global steamworks, _preload_task, agent_event_bridge, _server_loop
         _server_loop = asyncio.get_running_loop()
+        bootstrap_local_cloudsave_environment(_config_manager)
+        await initialize_character_data()
+        try:
+            set_root_mode(
+                _config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(_config_manager.app_docs_dir),
+                last_known_good_root=str(_config_manager.app_docs_dir),
+                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        except Exception as e:
+            logger.warning(f"写入 main_server 启动成功标记失败: {e}")
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         
@@ -970,6 +989,9 @@ async def on_startup():
             
             async def _sync_characters_only():
                 """等待预热完成后同步角色卡"""
+                if is_write_fence_active(_config_manager):
+                    logger.info("创意工坊角色卡同步被维护态拦截，延后到后续安全时机")
+                    return
                 # 先等预热完成，角色卡同步依赖订阅物品列表
                 if _wr._ugc_warmup_task is not None:
                     try:

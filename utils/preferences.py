@@ -2,13 +2,23 @@ import json
 import os
 from typing import Dict, Any, Optional, List
 from utils.config_manager import get_config_manager
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import atomic_write_json
 
 # 初始化配置管理器
 _config_manager = get_config_manager()
 
+
+def _get_preferences_read_path() -> str:
+    return str(_config_manager.get_config_path('user_preferences.json'))
+
+
+def _get_preferences_write_path() -> str:
+    return str(_config_manager.get_runtime_config_path('user_preferences.json'))
+
+
 # 用户偏好文件路径（从配置管理器获取）
-PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
+PREFERENCES_FILE = _get_preferences_read_path()
 
 def load_user_preferences() -> List[Dict[str, Any]]:
     """
@@ -19,7 +29,7 @@ def load_user_preferences() -> List[Dict[str, Any]]:
     """
     try:
         global PREFERENCES_FILE
-        PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
+        PREFERENCES_FILE = _get_preferences_read_path()
         if os.path.exists(PREFERENCES_FILE):
             with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -50,12 +60,15 @@ def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
     try:
         # 确保配置目录存在
         _config_manager.ensure_config_directory()
+        assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
         # 更新路径（可能已迁移）
         global PREFERENCES_FILE
-        PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
+        PREFERENCES_FILE = _get_preferences_write_path()
         
         atomic_write_json(PREFERENCES_FILE, preferences, ensure_ascii=False, indent=2)
         return True
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         print(f"保存用户偏好失败: {e}")
         return False
@@ -291,7 +304,7 @@ def load_global_conversation_settings() -> Dict[str, Any]:
     """
     try:
         global PREFERENCES_FILE
-        PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
+        PREFERENCES_FILE = _get_preferences_read_path()
         if os.path.exists(PREFERENCES_FILE):
             with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -319,8 +332,9 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
     try:
         # 确保配置目录存在，并使用最新路径（与 save_user_preferences 保持一致）
         _config_manager.ensure_config_directory()
+        assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
         global PREFERENCES_FILE
-        PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
+        PREFERENCES_FILE = _get_preferences_write_path()
 
         # 直接读取完整文件（不经过 load_user_preferences，避免哨兵被过滤）
         if os.path.exists(PREFERENCES_FILE):
@@ -389,6 +403,8 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
 
         atomic_write_json(PREFERENCES_FILE, data, ensure_ascii=False, indent=2)
         return True
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         print(f"保存全局对话设置失败: {e}")
         return False 

@@ -2840,16 +2840,18 @@ window.renameCatgirl = async function (oldName) {
             localStorage.removeItem(oldStorageKey);
         }
 
-        // 更新记忆文件中的角色名称
-        try {
-            await fetch('/api/memory/update_catgirl_name', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ old_name: oldName, new_name: newName })
-            });
-        } catch (error) {
-            console.error('更新记忆文件中的角色名称失败:', error);
-            // 不阻止主流程，继续加载数据
+        // 兼容旧后端：如果主事务没有返回 memory_renamed，再尝试旧记忆改名接口。
+        if (result.memory_renamed !== true) {
+            try {
+                await fetch('/api/memory/update_catgirl_name', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ old_name: oldName, new_name: newName })
+                });
+            } catch (error) {
+                console.error('更新记忆文件中的角色名称失败:', error);
+                // 不阻止主流程，继续加载数据
+            }
         }
 
         await loadCharacterData();

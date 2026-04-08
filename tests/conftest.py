@@ -190,12 +190,15 @@ def clean_user_data_dir(tmp_path_factory):
 
     # Also patch the class method for any NEW instances that might be created
     patcher = patch("utils.config_manager.ConfigManager._get_documents_directory", return_value=tmp_path)
+    legacy_patcher = patch("utils.config_manager.ConfigManager.get_legacy_app_root_candidates", return_value=[])
     patcher.start()
+    legacy_patcher.start()
     
     try:
         yield tmp_path
     finally:
         patcher.stop()
+        legacy_patcher.stop()
         # Restore original state
         cm.docs_dir = original_docs_dir
         cm.app_docs_dir = original_app_docs_dir
@@ -221,7 +224,7 @@ def mock_page(page):
     page.on("pageerror", lambda err: print(f"Browser Error: {err}"))
     return page
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def mock_memory_server():
     """
     Runs a minimal mock memory server on port 48912 to satisfy core.py's
@@ -236,6 +239,15 @@ def mock_memory_server():
     def get_memory(character: str):
         return PlainTextResponse(f"Mock memory context for {character}.")
         
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", 48912), timeout=1):
+            yield
+            return
+    except (OSError, ConnectionRefusedError):
+        pass
+
     config = uvicorn.Config(app, host="127.0.0.1", port=48912, log_level="error")
     server = uvicorn.Server(config)
     
@@ -245,7 +257,6 @@ def mock_memory_server():
     thread = threading.Thread(target=run_server, daemon=True)
     thread.start()
     
-    import socket
     start_time = time.time()
     while time.time() - start_time < 10:
         try:

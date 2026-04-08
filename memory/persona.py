@@ -24,6 +24,7 @@ import re
 from datetime import datetime, timedelta
 
 from config import SETTING_PROPOSER_MODEL
+from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
@@ -386,6 +387,11 @@ class PersonaManager:
         if persona is None:
             persona = self._personas.get(name, self._empty_persona())
         self._personas[name] = persona
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{name}/persona.json",
+        )
         atomic_write_json(self._persona_path(name), persona, indent=2, ensure_ascii=False)
 
     def get_persona(self, name: str) -> dict:
@@ -539,6 +545,11 @@ class PersonaManager:
             'entity': entity,
             'created_at': datetime.now().isoformat(),
         })
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{name}/persona_corrections.json",
+        )
         atomic_write_json(self._corrections_path(name), corrections, indent=2, ensure_ascii=False)
         logger.info(f"[Persona] {name}: 发现潜在矛盾，加入审视队列")
 
@@ -664,6 +675,11 @@ class PersonaManager:
                 except (ValueError, TypeError):
                     continue
             remaining = [c for i, c in enumerate(corrections) if i not in processed_indices]
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{name}/persona_corrections.json",
+            )
             atomic_write_json(self._corrections_path(name), remaining,
                               indent=2, ensure_ascii=False)
             logger.info(f"[Persona] {name}: 批量审视完成 {resolved} 条矛盾，剩余 {len(remaining)} 条")

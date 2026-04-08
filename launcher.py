@@ -57,6 +57,15 @@ from utils.port_utils import (
     is_port_in_excluded_range,
     set_port_probe_reuse,
 )
+from utils.cloudsave_runtime import (
+    ROOT_MODE_BOOTSTRAP_IMPORTING,
+    ROOT_MODE_MAINTENANCE_READONLY,
+    ROOT_MODE_NORMAL,
+    bootstrap_local_cloudsave_environment,
+    cloud_apply_fence,
+    set_root_mode,
+)
+from utils.config_manager import get_config_manager
 
 # 本次 launcher 启动的唯一标识
 LAUNCH_ID = uuid.uuid4().hex
@@ -1182,6 +1191,41 @@ def main():
         # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
         setup_job_object()
 
+        print("[Launcher] 初始化本地 cloudsave 基础设施...", flush=True)
+        try:
+            _config_manager = get_config_manager(APP_NAME)
+            with cloud_apply_fence(
+                _config_manager,
+                mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
+                reason="launcher_phase0_bootstrap",
+            ):
+                bootstrap_local_cloudsave_environment(_config_manager)
+            bootstrap_root_state = set_root_mode(
+                _config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(_config_manager.app_docs_dir),
+                last_known_good_root=str(_config_manager.app_docs_dir),
+            )
+            emit_frontend_event(
+                "cloudsave_bootstrap_ready",
+                {
+                    "root_state": bootstrap_root_state,
+                    "manifest_path": str(_config_manager.cloudsave_manifest_path),
+                },
+            )
+        except Exception as e:
+            try:
+                _config_manager = get_config_manager(APP_NAME)
+                set_root_mode(
+                    _config_manager,
+                    ROOT_MODE_MAINTENANCE_READONLY,
+                    last_migration_result=f"launcher_phase0_bootstrap_failed:{e}",
+                )
+            except Exception:
+                pass
+            report_startup_failure(f"Startup failed: cloudsave bootstrap error: {e}")
+            return 1
+
         # 自动安装 Playwright Chromium（browser-use 依赖）
         _ensure_playwright_browsers()
 
@@ -1246,6 +1290,18 @@ def main():
             return 1
 
         # 3. 服务器已启动，通知前端
+        try:
+            _config_manager = get_config_manager(APP_NAME)
+            set_root_mode(
+                _config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(_config_manager.app_docs_dir),
+                last_known_good_root=str(_config_manager.app_docs_dir),
+                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        except Exception as e:
+            print(f"[Launcher] Warning: failed to persist root_state boot success: {e}", flush=True)
+
         emit_frontend_event("startup_ready", {
             "instance_id": INSTANCE_ID,
             "selected": {

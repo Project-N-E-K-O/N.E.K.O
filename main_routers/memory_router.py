@@ -10,11 +10,15 @@ Handles memory-related endpoints including:
 import os
 import re
 import json
-import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Request
 from utils.character_name import validate_character_name
+from utils.character_memory import (
+    character_memory_exists,
+    rename_character_memory_storage,
+)
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
 from fastapi.responses import JSONResponse
@@ -303,6 +307,16 @@ async def save_recent_file(request: Request):
     
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
+    catgirl_name = extract_catgirl_name_from_recent_filename(filename)
+    if catgirl_name is None:
+        logger.warning(f"Failed to extract catgirl name from filename: {filename!r}")
+        return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
+
+    assert_cloudsave_writable(
+        cm,
+        operation="save",
+        target=f"memory/{catgirl_name}/recent.json",
+    )
 
     resolved_path, path_error, _path_error_code, catgirl_name = resolve_recent_file_path(cm, filename, create=True)
     if resolved_path is None:
@@ -345,6 +359,8 @@ async def save_recent_file(request: Request):
         
         # 返回成功并提示需要刷新上下文
         return {"success": True, "need_refresh": True, "catgirl_name": catgirl_name}
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.error(f"Failed to save recent file: {e}")
         return {"success": False, "error": str(e)}
@@ -379,98 +395,27 @@ async def update_catgirl_name(request: Request):
     try:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
-        old_filename = f'recent_{old_name}.json'
-        new_filename = f'recent_{new_name}.json'
-
-        old_file_path, old_path_error, old_path_error_code, _old_catgirl_name = resolve_recent_file_path(cm, old_filename)
-        if old_file_path is None:
-            logger.warning(f"Recent file path resolution failed for old_name: {old_name!r} - {old_path_error}")
-            return JSONResponse(
-                {"success": False, "error": old_path_error},
-                status_code=path_error_status_code(old_path_error_code),
+        if character_memory_exists(cm, old_name) or character_memory_exists(cm, new_name):
+            assert_cloudsave_writable(
+                cm,
+                operation="rename",
+                target=f"memory/{old_name} -> memory/{new_name}",
             )
 
-        new_file_path, new_path_error, new_path_error_code, _new_catgirl_name = resolve_recent_file_path(
-            cm,
-            new_filename,
-            create=True,
+        result = rename_character_memory_storage(cm, old_name, new_name)
+        logger.info(
+            "已更新猫娘名称从 '%s' 到 '%s' 的记忆文件，changed=%s",
+            old_name,
+            new_name,
+            result.get("changed", False),
         )
-        if new_file_path is None:
-            logger.warning(f"Recent file path resolution failed for new_name: {new_name!r} - {new_path_error}")
-            return JSONResponse(
-                {"success": False, "error": new_path_error},
-                status_code=path_error_status_code(new_path_error_code),
-            )
-
-        old_file_path = Path(old_file_path)
-        new_file_path = Path(new_file_path)
-
-        # 2. 先完整读取旧文件，确认可解析后再写入新路径，避免中途失败导致源文件丢失
-        with open(old_file_path, 'r', encoding='utf-8') as f:
-            file_content = json.load(f)
-        
-        # 遍历所有消息，仅在特定字段中更新猫娘名称
-        for item in file_content:
-            if isinstance(item, dict):
-                # 安全的方式：只在特定的字段中替换猫娘名称
-                # 避免在整个content中进行字符串替换
-                
-                # 检查角色名称相关字段
-                name_fields = ['speaker', 'author', 'name', 'character', 'role']
-                for field in name_fields:
-                    if field in item and isinstance(item[field], str) and old_name in item[field]:
-                        if item[field] == old_name:  # 完全匹配才替换
-                            item[field] = new_name
-                            logger.debug(f"更新角色名称字段 {field}: {old_name} -> {new_name}")
-                
-                # 如果item有data嵌套结构，也检查其中的name字段
-                if 'data' in item and isinstance(item['data'], dict):
-                    data = item['data']
-                    for field in name_fields:
-                        if field in data and isinstance(data[field], str) and old_name in data[field]:
-                            if data[field] == old_name:  # 完全匹配才替换
-                                data[field] = new_name
-                                logger.debug(f"更新data中角色名称字段 {field}: {old_name} -> {new_name}")
-                    
-                    # 对于content字段，使用更保守的方法 - 仅在明确标识为角色名称的地方替换
-                    if 'content' in data and isinstance(data['content'], str):
-                        content = data['content']
-                        # 检查是否是明确的角色发言格式，如"小白说："或"小白: "
-                        # 这种格式通常表示后面的内容是角色发言
-                        patterns = [
-                            f"{old_name}说：",  # 中文冒号
-                            f"{old_name}说:",   # 英文冒号  
-                            f"{old_name}:",     # 纯冒号
-                            f"{old_name}->",    # 箭头
-                            f"[{old_name}]",    # 方括号
-                            f"{old_name} | ",   # 摘要中的角色标识格式
-                        ]
-                        
-                        for pattern in patterns:
-                            if pattern in content:
-                                new_pattern = pattern.replace(old_name, new_name)
-                                content = content.replace(pattern, new_pattern)
-                                logger.debug(f"在消息内容中发现角色标识，更新: {pattern} -> {new_pattern}")
-                        
-                        data['content'] = content
-        
-        # 保存更新后的内容；写入成功后再删除旧路径，避免改名过程中数据丢失
-        atomic_write_json(new_file_path, file_content, ensure_ascii=False, indent=2)
-
-        user_memory_dir = Path(cm.memory_dir).resolve()
-        resolved_old_file_path = old_file_path.resolve()
-        if (
-            resolved_old_file_path != new_file_path.resolve()
-            and old_file_path.exists()
-            and resolved_old_file_path.is_relative_to(user_memory_dir)
-        ):
-            if old_file_path.is_dir():
-                shutil.rmtree(old_file_path)
-            else:
-                old_file_path.unlink()
-        
-        logger.info(f"已更新猫娘名称从 '{old_name}' 到 '{new_name}' 的记忆文件")
-        return {"success": True}
+        return {
+            "success": True,
+            "changed": bool(result.get("changed", False)),
+            "exists_after": bool(result.get("exists_after", False)),
+        }
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.exception("更新猫娘名称失败")
         return {"success": False, "error": str(e)}
@@ -482,15 +427,8 @@ async def get_review_config():
     try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        config_path = str(config_manager.get_config_path('core_config.json'))
-        if os.path.exists(config_path):
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config_data = json.load(f)
-                # 如果配置中没有这个键，默认返回True（开启）
-                return {"enabled": config_data.get('recent_memory_auto_review', True)}
-        else:
-            # 如果配置文件不存在，默认返回True（开启）
-            return {"enabled": True}
+        config_data = config_manager.load_json_config('core_config.json', default_value={})
+        return {"enabled": config_data.get('recent_memory_auto_review', True)}
     except Exception as e:
         logger.error(f"读取记忆整理配置失败: {e}")
         return {"enabled": True}
@@ -505,19 +443,13 @@ async def update_review_config(request: Request):
         
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        config_path = str(config_manager.get_config_path('core_config.json'))
-        config_data = {}
-        
-        # 读取现有配置
-        if os.path.exists(config_path):
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config_data = json.load(f)
+        config_data = config_manager.load_json_config('core_config.json', default_value={})
         
         # 更新配置
         config_data['recent_memory_auto_review'] = enabled
         
         # 保存配置
-        atomic_write_json(config_path, config_data, ensure_ascii=False, indent=2)
+        config_manager.save_json_config('core_config.json', config_data)
         
         logger.info(f"记忆整理配置已更新: enabled={enabled}")
         return {"success": True, "enabled": enabled}

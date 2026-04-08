@@ -12,6 +12,7 @@ from config.prompts_memory import (
     get_recent_history_manager_prompt, get_detailed_recent_history_manager_prompt,
     get_further_summarize_prompt, get_history_review_prompt,
 )
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import get_global_language
 
 # Setup logger
@@ -49,9 +50,16 @@ class CompressedRecentHistoryManager:
     def _reset_history_file(self, file_path, lanlan_name, reason):
         """当 recent 文件损坏或为空时，重置为合法的空 JSON 数组。"""
         try:
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="reset",
+                target=f"memory/{lanlan_name}/recent.json",
+            )
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             atomic_write_json(file_path, [], indent=2, ensure_ascii=False)
             logger.warning(f"[RecentHistory] {lanlan_name} 的历史记录文件无效（{reason}），已重置为空列表: {file_path}")
+        except MaintenanceModeError:
+            raise
         except Exception as reset_error:
             logger.error(f"[RecentHistory] 重置 {lanlan_name} 的历史记录文件失败: {reset_error}", exc_info=True)
 
@@ -100,6 +108,12 @@ class CompressedRecentHistoryManager:
             self.log_file_path = recent_log
         except Exception as e:
             logger.error(f"获取角色配置失败: {e}")
+
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{lanlan_name}/recent.json",
+        )
 
         self._ensure_path_for_character(lanlan_name)
 

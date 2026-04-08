@@ -23,13 +23,20 @@ from config.prompts_memory import (
 )
 from utils.language_utils import get_global_language
 from utils.character_name import validate_character_name
+from utils.cloudsave_runtime import (
+    MaintenanceModeError,
+    ROOT_MODE_NORMAL,
+    bootstrap_local_cloudsave_environment,
+    maintenance_error_payload,
+    set_root_mode,
+)
 from utils.config_manager import get_config_manager
 from pydantic import BaseModel
 import re
 import asyncio
 import logging
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 from utils.frontend_utils import get_timestamp
 
 # 配置日志
@@ -43,6 +50,11 @@ class HistoryRequest(BaseModel):
     input_history: str
 
 app = FastAPI()
+
+
+@app.exception_handler(MaintenanceModeError)
+async def handle_maintenance_mode_error(_request, exc: MaintenanceModeError):
+    return JSONResponse(status_code=409, content=maintenance_error_payload(exc))
 
 
 # ── 健康检查 / 指纹端点 ──────────────────────────────────────────
@@ -65,6 +77,7 @@ def validate_lanlan_name(name: str) -> str:
 
 # 初始化组件（迁移必须在实例化之前，否则旧路径文件找不到）
 _config_manager = get_config_manager()
+bootstrap_local_cloudsave_environment(_config_manager)
 try:
     from memory import migrate_to_character_dirs
     _config_manager.ensure_memory_directory()
@@ -335,6 +348,17 @@ async def startup_event_handler():
         logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
     except Exception as e:
         logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
+
+    try:
+        set_root_mode(
+            _config_manager,
+            ROOT_MODE_NORMAL,
+            current_root=str(_config_manager.app_docs_dir),
+            last_known_good_root=str(_config_manager.app_docs_dir),
+            last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
+    except Exception as e:
+        logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
 
     # 启动定期后台任务
     _spawn_background_task(_periodic_rebuttal_loop())

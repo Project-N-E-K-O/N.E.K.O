@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from config import SETTING_PROPOSER_MODEL
 from config.prompts_memory import get_fact_extraction_prompt
+from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_json
@@ -104,6 +105,11 @@ class FactStore:
                         data = json.load(f)
                     if isinstance(data, list):
                         if self._migrate_v1_entity_values(data):
+                            assert_cloudsave_writable(
+                                self._config_manager,
+                                operation="migrate",
+                                target=f"memory/{name}/facts.json",
+                            )
                             atomic_write_json(path, data, indent=2, ensure_ascii=False)
                             logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
                         self._facts[name] = data
@@ -127,6 +133,11 @@ class FactStore:
 
     def save_facts(self, name: str) -> None:
         with self._get_lock(name):
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{name}/facts.json",
+            )
             facts = self._facts.get(name, [])
             path = self._facts_path(name)
             # Read-merge-write: 保护其他进程写入的 absorbed 标记
@@ -173,6 +184,11 @@ class FactStore:
     def _archive_absorbed(self, name: str) -> int:
         """将已 absorbed 且超过 _ARCHIVE_AGE_DAYS 的 facts 移入归档文件。"""
         from datetime import timedelta
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="archive",
+            target=f"memory/{name}/facts.json",
+        )
         facts = self._facts.get(name, [])
         cutoff = datetime.now() - timedelta(days=_ARCHIVE_AGE_DAYS)
         active, to_archive = [], []

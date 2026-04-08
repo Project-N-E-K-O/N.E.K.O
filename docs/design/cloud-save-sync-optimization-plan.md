@@ -1,816 +1,626 @@
-# 云存档同步优化方案
+# 云存档同步优化实施计划（按当前实现校准）
 
-> 核心方向：把云存档从“同步一批本地文件”升级为“可控的导出 / 导入管理层”。
-> v1 只同步角色状态等小文件与关键状态文件；Live2D / VRM / MMD / Workshop 等大文件资源默认不进入云端，目标设备若已有对应资源则直接复用，没有则由用户手动导入或重新下载恢复。
 > 关联文档：`cloud-save-sync-optimization-overview.md`
+> 本文目标：基于项目当前已经落地的实现，修正文档口径，并把后续实施方向调整为“本地全局唯一 + 云端手动上传/下载 + 单猫娘管理”。
 
 ---
 
 ## 1. 文档目标
 
-本文只做四件事：
-
-- 固化云存档方案的统一口径，避免继续在“现状 / 目标 / 临时补丁”之间来回摇摆。
-- 明确 v1 同步边界：哪些内容默认同步，哪些内容保留本地，哪些内容永不进云端。
-- 在不大改现有运行时存储结构的前提下，给出可落地的导出、导入、冲突和恢复流程。
-- 把“当前实现基线”和“目标状态”分开写，避免把尚未落地的改造误写成现状。
-
-本文默认面向 Steam v1，但导出层本身不绑定 Steam，可复用于其他云端实现。
+- 明确阶段 0 中哪些基础能力已经完成，避免继续把已实现内容写成“待实现”。
+- 明确产品口径已经变化：v1 不再以“启动自动同步 / 自动导入云端覆盖本地”为主路径，而是以“用户手动管理云端角色”为主路径。
+- 明确本地存档仍然保持全局唯一，不按 Steam 用户拆分本地运行时目录。
+- 明确前端入口要放在角色设置中，点击后进入独立的云存档管理页面。
+- 明确 v1 的核心粒度是“单只猫娘上传 / 下载”，而不是整包自动同步。
 
 ---
 
-## 2. 当前实现基线
+## 2. 当前实现基线（按代码核对）
 
-这一节描述的是当前项目代码已经存在的基础，不是目标态。
+这一节描述的是当前仓库里已经存在的事实，后续阶段设计必须建立在这份基线上。
 
-### 2.1 存档根与运行时目录
+### 2.1 已经落地的阶段 0 基础
 
-- `ConfigManager` 已承担用户目录解析、迁移和配置写入职责。
-- Windows 侧主写入根已基本收敛到 `%LOCALAPPDATA%/N.E.K.O`，并保留从历史 `Documents` 目录迁移旧数据的能力。
-- Windows 还存在 CFA / 受控文件夹访问兼容逻辑：写入可能落到 AppData，但读取仍可能兼容原始 `Documents/N.E.K.O/live2d`。
-- macOS / Linux 代码当前仍主要使用 `Documents` 或 `cwd` 作为候选目录，因此“统一到标准应用数据目录”目前仍是阶段 0 的改造目标，不是既有事实。
-- 当前运行时主目录主要包括：
-  - `config/`
-  - `memory/`
-  - `plugins/`
-  - `live2d/`
-  - `vrm/`
-  - `mmd/`
-  - `workshop/`
-  - `character_cards/`
+- 已有稳定的应用数据根目录选择与初始化逻辑，`ConfigManager` 已优先指向标准 app data 目录，并保留旧目录发现与兼容导入能力。
+- 已有本地运行时根目录迁移 / 修复机制，可从旧根目录一次性导入到当前确定性根目录，并保留备份。
+- 已有本地 `cloudsave/` 导出层、staging 目录、备份目录和 `manifest.json`。
+- 已有 `root_state.json`、`cloudsave_local_state.json`、`character_tombstones.json` 这类本地状态文件。
+- 已有启动期 bootstrap 逻辑，`launcher` 会先执行本地云存档环境初始化，再进入后续服务启动。
+- 已有 `main_server` 启动期 bootstrap 兜底逻辑，因此即使绕过 launcher 直接从源码 / GitHub 环境启动，也会先补做本地 cloudsave 环境初始化。
+- 已有全局写保护 / 维护模式恢复机制，可在异常退出后恢复 stale maintenance 状态。
+- 已有维护态写保护接入到多条真实写链路，而不只是存在底层能力：
+  - 角色重命名 / 删除。
+  - 记忆 recent 保存与记忆重命名。
+  - 用户偏好与对话设置保存。
+  - 启动期 bootstrap 与部分 Workshop 同步链路。
+- 已有“运行时真源优先写入”修正，避免在项目目录 fallback 文件存在时误把配置继续写回项目内置位置：
+  - `characters.json`
+  - `core_config.json`
+  - `user_preferences.json`
+- 已有本地整包快照导出 / 导入能力：
+  - `export_local_cloudsave_snapshot`
+  - `import_local_cloudsave_snapshot`
+- 已有一套导出内容组织方式，当前已覆盖：
+  - `catalog/catgirls_index.json`
+  - `catalog/current_character.json`
+  - `catalog/character_tombstones.json`
+  - `profiles/characters.json`
+  - `profiles/conversation_settings.json`
+  - `bindings/<character_name>.json`
+  - `memory/<character_name>/...`
 
-### 2.2 角色、记忆与配置的现状
+### 2.2 当前实现的真实含义
 
-- 角色配置当前聚合在 `config/characters.json`，运行时主键仍是猫娘档案名。
-- 记忆数据已基本按 `memory/<name>/...` 组织，包含 `recent.json`、`settings.json`、`facts.json`、`persona.json`、`persona_corrections.json`、`reflections.json`、`surfaced.json` 与 `time_indexed.db`。
-- `time_indexed.db` 当前是长期记忆真实持久化的一部分，不是简单缓存。
-- `user_preferences.json` 当前同时存放：
-  - 模型位置、缩放、视口、显示器、相机等设备相关偏好
-  - `__global_conversation__` 下的全局对话设置
-- 角色当前还有一批与体验强相关的小配置直接保存在 `characters.json` 的 `_reserved` 中，例如 `touch_set`、VRM 打光、MMD 的 `lighting / rendering / physics / cursor_follow`。
-- `core_config.json`、`workshop_config.json`、`voice_storage.json` 等仍属于本地配置。
+- 现在已经完成的是“本地云存档基础设施”和“本地快照导入导出能力”。
+- 这套能力证明目录切换、迁移、导出层、状态保护和回滚基础已经具备。
+- 但它还不是最终产品形态，因为当前实现更接近“整包快照能力”，而不是“用户可见的单猫娘云端管理能力”。
+- 角色相关的若干关键事务也已经开始按新方向收敛，而不是完全停留在设计层：
+  - 角色重命名已联动记忆目录迁移。
+  - 角色删除已联动记忆目录删除与 tombstone 写入。
+  - 角色变更后已接入现有角色 reload 与 memory server reload。
+- Workshop 启动同步已经开始尊重 tombstone，并通过串行锁避免和角色写入流程互相覆盖。
+- 源码 / GitHub 启动路径与运行时配置写入路径的一致性也已开始修正，不再完全依赖“只能通过 launcher/打包环境启动”这一前提。
+- 已经存在 cloudsave/config_manager/character_memory 相关回归测试，因此文档不应再把这些内容写成“纯设计、未验证”。
 
-### 2.3 模型与资源来源的现状
+### 2.3 当前仍未完成的部分
 
-- Live2D、VRM、MMD 与 Workshop 资源并不只来自一个物理目录。
-- 当前运行时实际会同时识别以下资源来源：
-  - 项目内置资源，例如 `/static/vrm/*`、`/static/mmd/*`
-  - 用户导入资源，例如 `/user_live2d/*`、`/user_vrm/*`、`/user_mmd/*`
-  - Steam Workshop 资源，例如 `/workshop/<item_id>/*`
-- 因此云存档层不能把“模型绑定”简单等同于“某个固定目录下的一份文件”，而应同步绑定摘要、来源类型和可恢复线索。
+- 角色设置中的云存档入口还没有形成正式产品入口。
+- 前端独立云存档管理页面还没有完成。
+- 远端云端列表展示、本地与云端差异对比还没有形成正式产品能力。
+- 单猫娘上传 / 下载 API 与完整流程还没有完成。
+- 云端数据形态仍偏整包 / 聚合导出，尚未正式收敛为“按单猫娘分片”的产品形态。
+- `time_indexed.db` 的最终安全 shadow copy 方案仍需要继续收尾和验证。
+- 启动链路中 launcher / main_server / memory_server 的最终职责边界还应继续收敛。
+- 维护态写保护虽然已接入多条关键链路，但还没有形成“所有潜在角色真源写入点都已统一接入”的最终闭环。
 
-### 2.4 与云存档直接相关的现状风险
+### 2.4 当前必须写死的产品事实
 
-- 运行时主键是名称，而 v1 云同步也决定继续按名称组织；跨平台命名规范、同名碰撞和改名语义还没有在实现里被统一写死。
-- 当前删除、改名、当前角色切换、记忆目录变更仍是分散链路，不适合直接拿来当云导入事务复用。
-- Workshop 的部分删除路径当前会顺带改 `characters.json`，这说明“卸载资源”和“删除角色”尚未完全分离。
-- 全局对话设置仍直接写 `user_preferences.json`，因此它在文档中只能算“v1 要拆分的内容”，不能写成“现状已完成”。
-- 项目当前已经存在“角色卡导出 / 导入并可附带模型资源”的链路，它的语义是人工分享 / 手工备份，不是云存档 v1 的“小文件漫游”语义；如果两者不显式分离，后续实现很容易误复用整包回灌逻辑。
-- `main_server` 启动后会在后台执行 Workshop 角色卡同步，这条链路会读写 `characters.json` 并触发 `initialize_character_data()`；如果云导入也在启动期修改角色数据，实际会形成并发写入和重载竞争。
-- 当前改名与删除实现还没有覆盖 `memory/<name>/...` 目录迁移 / 清理、tombstone 生成和导入期回退等完整事务要求，说明这部分必须先在设计上写成硬约束，不能默认“现有接口稍作包装即可复用”。
-
----
-
-## 3. v1 统一口径
-
-以下结论是整份方案的统一前提。
-
-### 3.1 云端只同步 `cloudsave/`
-
-- Steam AutoCloud v1 只监控 `cloudsave/`，不直接监控整个用户目录。
-- 运行时目录和云端导出目录必须解耦。
-- 任何需要进云端的内容，都必须先经导出层规范化后再写入 `cloudsave/`。
-
-### 3.2 运行时与云端都按档案名组织
-
-- v1 不再引入 `character_id`。
-- 运行时界面、现有 API、当前角色、绑定摘要、记忆路径和云端目录键都统一按猫娘档案名组织。
-- 同名即视为同一角色；不同名即视为不同角色。
-- `catalog/current_character.json`、`bindings/`、`memory/` 与 tombstone 也统一按档案名表达。
-
-### 3.3 同名角色按云端直接覆盖
-
-- 名称相同即视为命中本地同名角色，直接应用云端覆盖。
-- 覆盖前必须保留本地冲突备份。
-- v1 不再尝试跨设备识别“同一角色改名”。
-- 改名在云同步语义上等价于“旧名称删除 + 新名称新增”。
-
-### 3.4 小文件默认同步，大文件默认留本地
-
-- v1 默认同步角色状态等小文件与关键状态文件。
-- Live2D / VRM / MMD / Workshop 等大资源文件默认不进入云端。
-- 目标设备若已有对应资源，应直接复用。
-- 目标设备若没有对应资源，云存档只恢复角色与绑定摘要，不自动回灌大文件；用户通过现有模型导入或 Workshop 恢复流程补齐资源。
-- v1 不要求新增云存档专属开关，也不要求新增专门前端入口。
-- 当前项目中的角色卡导出 / 导入继续保留为“分享 / 手工备份”通道；云存档 v1 不得复用其“整包模型资源导出 / 回灌”语义。
-
-### 3.5 `time_indexed.db` 在 v1 走 shadow copy
-
-- `time_indexed.db` 在 v1 继续纳入同步范围，因为它属于关键状态。
-- 但进入云端的必须是安全影子快照，而不是运行中的主库。
-- Steam 不应直接监控运行中的 SQLite 文件。
-
-### 3.6 导入导出必须可回滚、可审计
-
-- 所有覆盖本地数据的导入动作都必须先经过 staging。
-- 正式应用必须采用原子替换，不直接就地覆盖运行时目录。
-- 覆盖前必须保留冲突备份。
-- 失败时必须可以整体回滚到导入前状态。
-- 启动期任何会改写 `characters.json`、`user_preferences.json` 或 `memory/<name>/...` 的后台链路，都必须服从同一导入屏障；至少要与 Workshop 角色卡同步串行化，不能与云导入并发落盘。
-
-### 3.7 冲突判定不能只看时间戳
-
-- `manifest.json` 必须包含 `client_id`、`device_id`、`sequence_number` 与版本锁字段。
-- 新旧判断优先使用 `client_id + sequence_number`。
-- 时间戳只作为辅助信号，且统一使用 UTC。
-
-### 3.8 档案名必须满足跨平台安全约束
-
-- 既然 v1 直接用档案名作为云端键，导出前必须做统一的档案名安全校验。
-- 至少需要拦截：
-  - 路径分隔符
-  - `..`
-  - Windows 保留名
-  - 尾部空格 / 尾部点
-  - 导入后会落成空字符串的非法名称
-- 导入和导出前都必须做 Unicode 规范化与大小写折叠冲突检查。
-- 如果两个角色在跨平台规范化后映射到同一个安全名称，必须进入显式冲突分支，不能静默覆盖。
-
-### 3.9 根路径切换必须带确定性兜底
-
-- 阶段 0 的根路径切换不能只靠“改默认目录”完成，必须配套 `root_state` 和 `last_known_good_root`。
-- `Documents`、exe 目录和 `cwd` 只允许作为历史导入源，不能继续作为随机长期写入根。
-- 启动时如果目标根异常、迁移中断或云端导入失败，系统至少应能回到最后一次本地可用状态，或进入只读救援模式。
-
-### 3.10 不要求先大改运行时存储结构
-
-- 当前角色状态与模型资源已经基本分开存储。
-- v1 的重点是建立导出层、同步边界和恢复流程，而不是整体重做运行时目录。
-- 运行时仍可继续读写现有主文件，导出层负责规范化，导入层负责回填兼容字段。
-
-### 3.11 运行中会话下的导入必须有维护栏杆
-
-- 项目当前已经对“语音会话中切换角色 / 改名”做了运行时限制，因此云导入若会影响当前角色、当前绑定或相关记忆，也必须进入同级别的 maintenance fence。
-- 如果当前存在活跃语音会话或其他不能被安全热替换的角色会话，导入层至少应支持：
-  - 延迟应用到安全时机
-  - 或进入明确的维护 / 只读分支
-- 不允许在活跃会话中静默热替换当前角色配置，再依赖后续 `initialize_character_data()` 碰运气恢复一致性。
+- 本地运行时存档是全局唯一的。
+- 本计划不把“同一台设备上不同 Steam 用户使用不同本地运行时根目录”作为 v1 目标。
+- v1 只解决“显式手动管理云端角色存档”，不解决“自动按 Steam 用户切分本地目录”。
 
 ---
 
-## 4. v1 同步边界
+## 3. 更新后的 v1 产品口径
 
-### 4.1 默认同步的小文件与关键状态文件
+### 3.1 本地与云端的职责
 
-| 类别 | 当前来源 | 导出到 `cloudsave/` | 说明 |
-| --- | --- | --- | --- |
-| 猫娘目录与当前选择 | `characters.json` 中的目录信息、当前角色状态 | `catalog/catgirls_index.json`、`catalog/current_character.json` | 先恢复“有哪些猫娘”和“当前是谁” |
-| 角色删除墓碑 | 本地删除事务日志 | `catalog/character_tombstones.json` | 防止旧设备把已删除角色重新导出；墓碑至少按旧档案名记录删除结果 |
-| 角色配置 | `config/characters.json` | `profiles/characters.json` | v1 仍允许聚合导出，继续按档案名组织 |
-| 全局对话设置 | `user_preferences.json` 中 `__global_conversation__` | `profiles/conversation_settings.json` | 这是 v1 的拆分目标，不代表当前实现已完成 |
-| 模型引用与资源状态摘要 | 角色配置中的模型选择状态 | `bindings/<character_name>.json` | 只同步绑定、来源与状态，不同步模型本体 |
-| 角色体验保留配置 | `characters.json` 中 `_reserved.touch_set`、`_reserved.avatar.vrm.lighting`、`_reserved.avatar.mmd.{lighting,rendering,physics,cursor_follow}` | `bindings/<character_name>.json` | 属于角色体验的一部分，应与绑定摘要一起导出，而不是继续散落在运行时私有结构里 |
-| 角色记忆 JSON | `memory/<name>/recent.json`、`settings.json`、`facts*.json`、`persona*.json`、`reflections*.json`、`surfaced.json` | `memory/<character_name>/...` | 云端目录继续按档案名组织 |
-| 长期记忆快照 | `memory/<name>/time_indexed.db` | `memory/<character_name>/time_indexed.db` | 通过 shadow copy 导出 |
-| 小型参数 / 映射文件 | `live2d/<模型>/parameters.json`、`static/vrm/configs/*_emotion.json`、`mmd/emotion_config/*.json` | `overrides/...` | 体积小、与角色体验强相关 |
-| Workshop 轻量元数据 | `character_cards/*.workshop_meta.json` | `meta/workshop/*.workshop_meta.json` | 用于恢复提示与来源识别 |
+- 本地存档继续作为唯一运行时真源。
+- 云端不再承担“启动自动覆盖本地”的职责。
+- v1 云端改为手动上传 / 手动下载。
+- 用户必须在明确操作后才会发生云端覆盖或本地覆盖。
 
-补充约束：
+### 3.2 角色粒度
 
-- `catalog/catgirls_index.json` 中每个角色条目至少应包含 `character_name`、展示字段、资源状态摘要和最近导出版本信息。
-- `catalog/catgirls_index.json` 中每个角色条目还应包含 `entry_sequence_number` 或等价字段，用于与 tombstone 做先后比较。
-- `catalog/current_character.json` 至少应包含 `current_character_name`、`last_known_name` 与最近一次成功应用时间或等价标记。
-- `profiles/characters.json` 继续按名称组织，但导出层必须保证条目顺序稳定，避免无意义整文件抖动。
+- v1 以“单只猫娘”为主要管理单位。
+- 用户可以看到云上有哪些猫娘。
+- 用户可以看到哪些猫娘本地有、云上也有，哪些只有本地有，哪些只有云上有。
+- 对于同名猫娘，v1 直接视为同一猫娘，不做跨名称识别、不做 rename merge。
 
-### 4.2 v1 默认不进入云端的大文件
+### 3.3 前端入口
 
-| 类别 | 当前来源 | v1 处理方式 | 恢复方式 |
-| --- | --- | --- | --- |
-| Live2D 模型本体 | `live2d/` 下模型文件、贴图、动作等 | 不进入云端 | 目标设备已有则直接复用，否则用户手动导入 |
-| VRM 模型本体 | `vrm/` 下 `.vrm`、贴图、动画等 | 不进入云端 | 目标设备已有则直接复用，否则用户手动导入 |
-| MMD 模型与动作资源 | `mmd/` 下 `pmx` / `pmd` / `vmd` / 音频等 | 不进入云端 | 目标设备已有则直接复用，否则用户手动导入 |
-| Workshop 下载资源与缓存 | `workshop/` 下 item 资源、缓存包 | 不进入云端 | 目标设备已有则直接复用，否则通过 Workshop 重新下载恢复 |
+- 在角色设置 / 角色管理区域增加“云存档管理”入口按钮。
+- 点击按钮后打开独立页面，而不是在当前表单里堆叠复杂操作。
+- 该页面负责展示本地与云端的角色对照关系，并提供逐只上传 / 下载操作。
 
-### 4.3 始终不纳入同步
+### 3.4 v1 明确不做的事情
 
-| 类别 | 当前来源 | 不同步原因 |
-| --- | --- | --- |
-| 敏感配置 | `core_config.json` 中的 API Key、Provider 地址、Cookie、密钥 | 安全红线 |
-| 本机设备参数 | `user_preferences.json` 中的布局、显示器、视口、相机参数 | 跨设备会错位 |
-| 本机路径配置 | `workshop_config.json`、Workshop 路径缓存 | 换机后失效 |
-| 运行态统计与配额文件 | `token_usage.json`、`.telemetry_unsent.json`、`agent_quota.json` 等 | 会污染统计和配额 |
-| 插件目录与插件数据 | `plugins/<plugin_id>/...` | v1 不支持插件级同步协议 |
-| `voice_storage.json` | `config/voice_storage.json` | 当前与 API Key 相关，不适合直接漫游 |
-| 普通角色卡资产 | `character_cards/*.chara.json`、角色卡 PNG / `.nekocfg` 等人工分享文件 | 属于角色卡分享 / 手工备份通道，不属于云存档 v1 的运行时真源 |
-
-### 4.4 需要轻量整理后再同步
-
-| 内容 | 当前问题 | v1 处理方式 |
-| --- | --- | --- |
-| 角色身份 | 运行时与大量现有接口都以名称为主键 | v1 不引入新身份字段，继续按档案名组织导出与导入 |
-| `user_preferences.json` | 同时包含漫游配置和本机设备参数 | 拆出 `conversation_settings.json` |
-| 模型绑定信息 | 当前散落在角色配置与资源路径字段里 | 导出层补一份 `bindings/<character_name>.json` |
-| 角色体验保留配置 | `touch_set`、VRM / MMD 小型体验配置当前散落在 `_reserved` 中 | 与模型绑定摘要一起归并到 `bindings/<character_name>.json` 的派生结果中 |
-| 小型参数 / 映射文件 | 位置分散 | 先按白名单导出，必要时只在导出层归一化到 `overrides/` |
-| 长期记忆导出 | 当前是运行中的 SQLite 文件 | 改为 checkpoint + shadow copy |
-| 根路径统一 | macOS / Linux 仍存在旧逻辑 | 作为阶段 0 目标改造，不写成既有事实 |
-| 角色卡导入导出 | 当前会按“角色 + 模型资源整包”处理 | 明确与云存档导入 / 导出分离，禁止直接复用整包回灌语义 |
+- 不做启动自动从云端覆盖本地。
+- 不做退出自动全量上传。
+- 不做跨名称角色识别。
+- 不做大资源文件随云同步。
+- 不做一开始就支持“全量双向智能合并”。
 
 ---
 
-## 5. 目标架构
+## 4. v1 云存档边界
 
-### 5.1 分层原则
+### 4.1 v1 同步对象
 
-- `Local Root` 是运行时真实读写根。
-- `cloudsave/` 是唯一云端导出目录。
-- Steam 只负责传输 `cloudsave/`，不直接读运行时目录。
-- 导出层负责：
-  - 白名单序列化
-  - 目录归一化
-  - 版本与冲突元数据
-  - 敏感字段检查
-- 导入层负责：
-  - 读取 `cloudsave/`
-  - staging 校验
-  - 原子应用
-  - 回填现有运行时兼容字段
+v1 同步的目标应收敛到“单猫娘恢复所需的小文件与关键状态”，核心包括：
 
-### 5.2 建议的 `cloudsave/` 结构
+- 角色基础配置。
+- 该角色相关的记忆文件。
+- 该角色的模型绑定摘要和资源状态。
+- 角色删除 / 替换判断所需的最小元数据。
 
-```text
-cloudsave/
-  manifest.json
-  catalog/
-    catgirls_index.json
-    current_character.json
-    character_tombstones.json
-  profiles/
-    characters.json
-    conversation_settings.json
-  bindings/
-    <character_name>.json
-  memory/
-    <character_name>/
-      recent.json
-      settings.json
-      facts.json
-      persona.json
-      persona_corrections.json
-      reflections.json
-      surfaced.json
-      time_indexed.db
-  overrides/
-    live2d/
-      <model_key>/
-        parameters.json
-        model3_overrides.json
-    vrm/
-      <model_key>_emotion.json
-    mmd/
-      <model_key>.json
-  meta/
-    workshop/
-      <character_card_name>.workshop_meta.json
-  backups/
-    conflict_<timestamp>.zip
-```
+### 4.2 v1 不进入云端的内容
 
-说明：
+- Live2D / VRM / MMD / Workshop 大资源本体。
+- API Key、Cookie、Token、Provider 地址等敏感配置。
+- 设备相关窗口、显示器、路径类设置。
+- 普通运行态统计和临时状态文件。
 
-- v1 不需要 `assets/` 目录，因为大文件本体不进入云端。
-- `bindings/` 与 `memory/` 从 v1 开始统一使用档案名作为键。
-- `catalog/current_character.json` 建议保存 `current_character_name`，必要时可附带展示字段用于提示。
-- `backups/` 只用于本地回滚与排障，不应进入 Steam 同步白名单。
-- 如果平台侧无法稳定排除 `backups/`，应改为 `Local Root` 下的本地专用目录，且 `manifest.json` 不得引用该目录内容。
-- `backups/` 必须做轮转清理，建议至少满足以下之一：
-  - 仅保留最近 5 个冲突包
-  - 或总大小不超过 50MB
+### 4.3 资源缺失时的行为
 
-### 5.3 真源关系
-
-- `profiles/characters.json` 负责角色设定、展示字段和非资源型配置。
-- `bindings/<character_name>.json` 负责模型类型、资源来源、资源状态、回退信息以及与绑定强相关的小型体验配置。
-- `memory/<character_name>/...` 负责云端统一视角下的角色记忆。
-- 运行时仍可保留现有 `characters.json`、`memory/<name>/...` 与模型目录结构。
-- 如果角色配置和绑定摘要出现重叠字段，应以 `bindings/<character_name>.json` 为准处理资源相关逻辑。
-
-### 5.4 迁移期兼容契约
-
-为了避免阶段 0 / 1 期间形成双真源，v1 必须把迁移期规则写死。
-
-#### 5.4.1 `conversation_settings.json`
-
-- 当前运行时真实读写点仍是 `user_preferences.json` 中的 `__global_conversation__` 条目。
-- 在业务层尚未切到新文件前，`profiles/conversation_settings.json` 只能作为导出层的规范化结果，不能单独成为新的运行时真源。
-- 导出顺序应为：
-  1. 先读取 `user_preferences.json` 中的白名单字段
-  2. 再生成 `profiles/conversation_settings.json`
-- 导入顺序应为：
-  1. 先应用 `profiles/conversation_settings.json`
-  2. 再把兼容字段回填到 `user_preferences.json` 的全局哨兵条目
-- 只有当运行时读写路径正式切到新文件后，才允许去掉这层兼容回填。
-
-#### 5.4.2 `bindings/<character_name>.json`
-
-- 当前模型类型、模型来源、模型路径等信息仍主要来自角色配置里的现有字段和 `_reserved.avatar...` 结构。
-- 在业务层尚未直接读取 `bindings/<character_name>.json` 之前，绑定摘要必须由导出层从现有角色配置派生。
-- 导入时必须先解析 `bindings/<character_name>.json`，再把兼容字段回填到现有角色配置结构。
-- 在运行时正式切到绑定摘要前，不允许出现“角色配置直接写绑定字段”和“业务层单独写 bindings 文件”并行长期存在的双真源。
-- 现有 `_reserved.touch_set`、`_reserved.avatar.vrm.lighting`、`_reserved.avatar.mmd.{lighting,rendering,physics,cursor_follow}` 也属于这份派生 / 回填契约的一部分；在运行时真源尚未迁移前，仍只能由导出层归并和回填，不能额外形成第三套持久化真源。
+- 云端下载角色后，即使本地没有对应模型资源，也应先恢复角色可见性和配置摘要。
+- 页面需要明确标识资源状态，例如：
+  - `ready`：本地资源齐全，可直接使用。
+  - `import_required`：角色配置可恢复，但模型资源需要用户手动导入。
+  - `downloadable`：可通过 Workshop 或既有资源恢复链路补齐。
+  - `missing`：仅恢复了角色配置，资源仍缺失。
 
 ---
 
-## 6. 核心流程
+## 5. 目标架构调整
 
-### 6.1 启动与导入流程
+### 5.1 启动期职责
 
-启动链路必须先完成云端导入判定，再让依赖角色与记忆状态的服务进入正常写态。
+- 启动时只做本地 bootstrap、目录修复、状态恢复和必要的本地迁移。
+- 启动时不自动拉取远端并覆盖本地角色数据。
+- 启动时也不根据远端状态自动触发角色导入。
 
-建议顺序：
+### 5.2 产品主流程
 
-1. 进入 launcher 预导入屏障，或等价的 bootstrap 只读屏障。
-2. 读取本地 `manifest` 指纹与云端 `manifest`。
-3. 如果云端无变化，快速跳过导入。
-4. 如果云端有变化，只把变更文件导入到 staging 区，不做无差别全量恢复。
-5. 先应用 `catalog/`、`profiles/`、`bindings/` 与当前角色必需状态，再补齐其余数据。
-6. 通过导入结果回填现有运行时兼容字段。
-7. 导入成功后记录 `last_applied_manifest_fingerprint` 或等价状态。
-8. 解除 sync fence，允许服务进入正常写态。
+1. 用户进入角色设置。
+2. 点击“云存档管理”按钮。
+3. 打开独立云存档管理页面。
+4. 页面拉取本地角色摘要与云端角色摘要。
+5. 页面展示本地 / 云端关系：
+   - `local_only`
+   - `cloud_only`
+   - `matched`
+   - `diverged`
+6. 用户对单只猫娘执行上传或下载。
+7. 执行前给出覆盖提示，执行中做备份与校验，执行后刷新页面状态。
 
-要求：
+### 5.3 推荐的数据组织方向
 
-- 不允许让 `memory_server`、`main_server` 先按旧本地状态初始化，再被云导入反向覆盖。
-- 导入失败时必须回退到最后一次本地可用状态，并给出明确降级状态。
-- 如果 `current_character_name` 在导入后不存在、被 tombstone 命中或资源未就绪到无法使用，必须先回退到第一个有效角色，再解除启动屏障。
-- 如果导入后没有任何有效角色，必须进入明确的 `no_character` / 救援分支，而不是让角色相关服务按半初始化状态继续运行。
-- 启动期必须把云导入与 Workshop 角色卡后台同步、其他 `characters.json` 写链路串行化；在导入结论落定前，不允许后台补卡任务先把新角色写入本地再触发二次重载。
+当前本地整包快照能力保留，但后续正式云端产品形态应逐步转向“按单猫娘分片”。
 
-#### 6.1.1 启动屏障归属与放行顺序
+建议后续云端对象按角色名组织，例如：
 
-v1 必须把“谁拥有启动导入屏障”写死，不能只写成抽象原则。
+- `characters/<name>/profile.json`
+- `characters/<name>/binding.json`
+- `characters/<name>/memory/...`
+- `characters/<name>/meta.json`
 
-默认实现约束：
+同时保留全局目录索引，用于快速展示云端角色清单与状态摘要。
 
-1. `launcher` 或等价 bootstrap 进程是唯一的启动屏障拥有者。
-2. 屏障拥有者在拉起 `memory_server`、`main_server` 前，只允许读取最小本地状态和云端 `manifest`，不允许先启动角色相关运行时。
-3. 如果云端无变化，屏障拥有者写入本地 `cloudsave_local_state` / `root_state` 的“本次启动已判定”标记后，再放行子进程启动。
-4. 如果云端有变化，屏障拥有者必须先完成 staging、校验、正式应用、回滚判定和 `current_character` 回退，再放行子进程启动。
-5. `main_server` 的 Workshop 后台同步只能在启动屏障释放后进入可写阶段；在此之前只允许做不落盘的准备动作。
-6. `memory_server` 和 `main_server` 若因架构限制必须先起进程，也只能停留在 `bootstrap_readonly` / `deferred_init` 状态，不得在模块导入或 startup 中初始化角色真源、迁移 `memory/<name>/...`、实例化长期记忆引擎或启动角色卡同步。
-
-禁止事项：
-
-- 不允许把“先启动服务，启动后再热导入覆盖旧状态”作为 v1 的主启动路径。
-- 不允许由 `memory_server` 和 `main_server` 各自判断云导入时机，否则会形成双重屏障和竞态。
-
-#### 6.1.2 `manifest.json` 最小字段与版本闸门
-
-`manifest.json` 至少应包含：
+`meta.json` 建议至少包含：
 
 - `schema_version`
-- `min_reader_schema_version`
-- `min_app_version`
-- `client_id`
-- `device_id`
-- `sequence_number`
-- `exported_at_utc`
-- 导出文件清单、文件哈希和总指纹
-
-约束：
-
-- 只有当本轮导出全部成功后，才允许更新 `manifest.json`。
-- 低版本客户端不得静默导入高版本 `manifest`。
-- `sequence_number` 必须单调递增；时间戳只作辅助。
-- 如果导入后的规范化结果与刚应用的云端内容哈希一致，不应立即生成新的等价 `manifest`，避免回声导出。
-
-#### 6.1.3 本地 `cloudsave_local_state`
-
-除云端文件外，本地还应维护一份不进入云端的 `cloudsave_local_state`，至少记录：
-
-- `client_id`
-- `next_sequence_number`
-- `last_applied_manifest_fingerprint`
-- `last_successful_export_at`
-- `last_successful_import_at`
-
-约束：
-
-- `client_id` 只在首次启用云存档、明确重置本地同步身份或本地同步状态文件丢失时重新生成。
-- 根路径迁移、应用升级和普通重启都不应重置 `client_id`。
-- `next_sequence_number` 必须在本地持久化，且不得因回滚旧备份、切根或应用崩溃而倒退。
-- 启动时若发现本地 `next_sequence_number` 小于最近一次已应用 `manifest` 或本地 tombstone / 目录索引里的最大序列号，必须先把它推进到安全值后再允许导出。
-- 切 Steam 账号时默认不重置 `client_id`，但必须进入 `account_switch_pending` 保护分支，防止错误把旧本地状态自动导出到新账号。
-
-#### 6.1.4 导入期全局写栅栏
-
-除了启动屏障外，v1 还必须有一个实现层可调用的全局写栅栏，例如 `cloud_apply_lock`、`maintenance_mode` 或等价机制。
-
-要求：
-
-- 任何会改写以下真源的链路都必须服从同一把写栅栏，而不是各自加锁：
-  - `characters.json` / `profiles/characters.json`
-  - `user_preferences.json` / `profiles/conversation_settings.json`
-  - `memory/<name>/recent.json`、`settings.json`、`facts*.json`、`persona*.json`、`reflections*.json`、`surfaced.json`
-  - `memory/<name>/time_indexed.db`
-  - Workshop 角色卡后台同步、退出前 flush、运行期 dirty exporter
-- 写栅栏进入后，普通写接口只能二选一：
-  - 返回明确的 retryable / locked 状态
-  - 或进入有上限的队列，等待正式应用结束后重试
-- 写栅栏进入后，`memory_server` 的长期记忆写入、`characters_router` 的角色配置修改、Workshop 同步和导出任务都必须暂停，不能靠“尽量快执行完”碰运气。
-- 写栅栏释放前必须先完成：
-  - 角色配置与绑定摘要回填
-  - `current_character` 回退校验
-  - 角色 / 记忆 reload
-  - 失败时的整体回滚或只读降级
-
-### 6.2 运行期导出与退出 flush
-
-运行时不能把每次本地落盘都直接变成一次完整云导出。
-
-建议使用分域 dirty queue：
-
-- P0：目录索引、当前角色、当前角色绑定摘要、对话设置
-- P1：角色配置、记忆 JSON、小型参数 / 映射文件、Workshop 轻量元数据
-- P2：`time_indexed.db` 影子快照等重文件
-
-导出规则：
-
-1. 业务层本地写成功后，只做 `mark_dirty`。
-2. `CloudSaveManager` 按域合并写入，避免重复导出同一批文件。
-3. P0 / P1 使用较短 debounce。
-4. P2 只在空闲窗口、角色切换、会话收束点或退出前执行快照。
-5. 如果目标导出文件哈希未变化，直接跳过重写。
-6. 只有本轮导出全部成功后，才更新 `manifest.json`。
-7. 退出时进入 shutdown fence，只刷关键小文件与确实 dirty 的长期记忆快照，并设置超时上限。
-
-额外约束：
-
-- `CloudSaveManager` 不得直接复用现有角色卡导出 / 导入接口作为云导出 / 云导入实现，因为那条链路的语义是“分享 / 手工备份 + 可选模型资源整包”。
-- 角色卡链路可以继续存在，但其产物不得被自动视为 `cloudsave/` 真源，也不得在云导入时触发模型资源整包回灌。
-
-重点打点入口至少包括：
-
-- `characters.json` 写入
-- 当前角色切换
-- 全局对话设置保存
-- 角色记忆 JSON 写入
-- 模型绑定摘要变化
-- 小型参数 / 映射文件写入
-- `time_indexed.db` shadow copy 生成完成
-
-### 6.3 名称主键、重名、改名与删除
-
-#### 6.3.1 名称主键原则
-
-- v1 不引入 `character_id`。
-- 角色档案名同时作为运行时主键、云端目录键和绑定摘要 / 记忆目录键。
-- 文档中的“同名”判断，都以档案名为准。
-- 首次启用云存档前，必须先执行一次档案名审计。
-- 档案名审计至少要检查：
-  - 非法字符与路径穿越片段
-  - Windows 保留名
-  - Unicode 规范化冲突
-  - 大小写折叠冲突
-- 如果审计发现冲突或不安全名称，必须先进入显式整改分支，再允许任何角色进入正式导出队列。
-- 整改方式只能是：
-  - 用户显式改名
-  - 或系统执行一次可回滚的安全重命名事务，并记录本地迁移日志
-- 不允许在导出时静默把本地名称映射成另一个云端安全名而不改变本地真源，否则后续删除、当前角色和记忆路径都会失配。
-
-#### 6.3.2 重名处理
-
-- `profiles/characters.json` 虽然仍是聚合文件，但冲突决策不得采用整文件 last-writer-wins。
-- v1 必须按“角色条目”决策，再重建聚合文件：
-  - 角色是否存在、是否被删除，先看 `catalog/catgirls_index.json` 与 `catalog/character_tombstones.json`
-  - 同名角色的胜负先看 `entry_sequence_number`
-  - tombstone 与普通角色文件的胜负先看 tombstone `sequence_number` 与角色条目 `entry_sequence_number`
-- 只有“同一个角色条目”发生真正冲突时，才允许在该角色范围内做 deterministic tie-break；不同角色的无关修改必须共存，不能因为聚合文件整体较新就互相覆盖。
-- 如果同名角色条目的 `entry_sequence_number` 相同但内容哈希不同，必须：
-  - 保留失败方的本地冲突备份
-  - 记录冲突日志
-  - 再按稳定规则决策，例如 `(manifest.sequence_number, client_id)` 的固定顺序
-- 导入落盘时必须根据最终条目集合重建 `profiles/characters.json`，并保持稳定排序，不能直接把云端整文件原样覆盖到本地。
-
-#### 6.3.3 改名事务
-
-- 本地改名仍必须走名称级事务。
-- 事务范围至少覆盖：
-  - `profiles/characters.json`
-  - 当前角色索引
-  - 整棵 `memory/<old_name>/` 目录
-  - 相关缓存刷新
-- 事务期间必须进入 sync fence，禁止半完成状态重新导出。
-- 但跨设备云同步不再尝试识别“同一角色改名”。
-- v1 中，改名的云同步语义等价于：旧名称被删除，新名称作为一个新角色出现。
-
-#### 6.3.4 删除事务
-
-- 删除角色不能只靠“角色条目消失”表达，必须写 tombstone。
-- tombstone 至少应包含旧档案名、`deleted_at` 与 `sequence_number` 或等价版本信息。
-- 卸载 Workshop item、本地模型删除或路径失效，不等于删除角色。
-- 资源卸载只应更新 `bindings/<character_name>.json` 中的 `asset_state`，不应直接写角色 tombstone。
-- 导入时必须先应用 tombstone，再处理普通角色文件，避免已删除角色被旧设备普通文件重新带回。
-- 如果被删除的是当前角色，必须先完成当前角色回退，再应用删除结果。
-- 如果同一档案名后续被重新创建，必须把它视为一次显式“名称复用”事件，而不是普通覆盖。
-- 名称复用至少要满足以下规则之一，实施时必须二选一写死：
-  - 新角色条目的 `entry_sequence_number` 严格大于同名 tombstone 的 `sequence_number`，并在下一轮导出中撤销或清理旧 tombstone
-  - 或进入显式确认 / 冲突分支，由用户确认“这是重新创建，不是恢复旧角色”
-- 在没有满足以上条件前，同名 tombstone 应继续优先于普通角色文件生效。
-
-### 6.4 模型绑定与资源恢复
-
-v1 的关键不是同步模型本体，而是同步“绑定了什么、资源来自哪里、能否在目标设备恢复”。
-
-建议 `bindings/<character_name>.json` 至少包含：
-
 - `character_name`
-- `model_type`
-- `asset_source`
-  - `builtin`
-  - `steam_workshop`
-  - `local_imported`
-  - `manual_external`
-- `asset_source_id`
-- `model_ref`
-- `asset_display_name`
-- `asset_fingerprint`
+- `payload_fingerprint`
+- `updated_at_utc`
+- `sequence_number`
+- `source_client_id`
+- `source_device_id`
 - `asset_state`
-  - `ready`
-  - `downloadable`
-  - `import_required`
-  - `missing`
-  - `fallback_active`
-- `fallback_model_ref`
-- `last_verified_at`
-- `experience_overrides`
-  - `touch_set`
-  - `vrm_lighting`
-  - `mmd_lighting`
-  - `mmd_rendering`
-  - `mmd_physics`
-  - `mmd_cursor_follow`
+- `asset_source`
+- `asset_source_id`
+
+### 5.4 当前整包快照能力的定位
+
+- 继续保留现有 `cloudsave/` 整包导出 / 导入能力，作为底层基础设施。
+- 它适合作为：
+  - 本地迁移与修复兜底。
+  - 回归测试与调试工具。
+  - 后续单猫娘云存档能力的底层拼装件。
+- 但它不再是 v1 面向用户的主要交互模型。
+
+---
+
+## 6. 本地与云端的匹配规则
+
+### 6.1 匹配规则
+
+- 同名即视为同一猫娘。
+- v1 不做 rename 检测。
+- v1 不做跨名称合并。
+- 名称比较应继续沿用现有安全校验与规范化规则。
+
+### 6.2 上传规则
+
+- 云端不存在同名角色时，允许直接上传。
+- 云端已存在同名角色时，必须显式提示“覆盖云端”。
+- 上传前应刷新本地摘要，避免使用过期页面状态做覆盖决策。
+
+### 6.3 下载规则
+
+- 本地不存在同名角色时，允许直接下载。
+- 本地已存在同名角色时，必须显式提示“覆盖本地”。
+- 下载覆盖前必须先做本地备份。
+- 下载失败时必须可回滚到覆盖前状态。
+
+### 6.4 删除与墓碑
+
+- v1 首版可以先不开放云端删除。
+- 但本地和云端的数据模型仍应继续保留 tombstone 思路，防止后续扩展时语义断裂。
+- 即使前端暂不暴露删除动作，也不能破坏现有 tombstone 保护机制。
+
+---
+
+## 7. 实施级规格补充
+
+### 7.1 页面入口与路由建议
+
+- 入口放在现有角色管理页 `chara_manager` 中。
+- 至少保留两个可放置位置：
+  - 当前角色设置面板中的“云存档管理”按钮。
+  - 角色列表或角色操作区中的“打开云存档页”入口。
+- 推荐使用独立页面路由 `/cloudsave_manager`。
+- 为兼容当前页面层已有的参数命名习惯，页面 query 参数可沿用 `lanlan_name`，例如：
+  - `/cloudsave_manager?lanlan_name=<角色名>`
+- 页面内部状态和所有后端 API 字段统一使用 `character_name`，避免继续扩散 `lanlan_name` 命名到新接口层。
+- 推荐新增独立文件：
+  - `templates/cloudsave_manager.html`
+  - `static/js/cloudsave_manager.js`
+- 页面应提供返回角色管理页的明确入口，默认返回 `/chara_manager`。
+
+### 7.2 页面列表与状态模型
+
+云存档管理页不直接渲染运行时原始文件，而应先消费一层摘要数据。
+
+建议列表接口返回结构：
+
+```json
+{
+  "success": true,
+  "current_character_name": "mao",
+  "provider_available": true,
+  "items": [
+    {
+      "character_name": "mao",
+      "display_name": "猫猫",
+      "relation_state": "diverged",
+      "local_exists": true,
+      "cloud_exists": true,
+      "model_type": "live2d",
+      "asset_source": "steam_workshop",
+      "asset_source_id": "123456",
+      "local_asset_state": "ready",
+      "cloud_asset_state": "downloadable",
+      "local_updated_at_utc": "2026-04-08T10:00:00Z",
+      "cloud_updated_at_utc": "2026-04-08T08:00:00Z",
+      "local_fingerprint": "sha256:...",
+      "cloud_fingerprint": "sha256:...",
+      "available_actions": ["upload", "download"],
+      "warnings": ["resource_missing_on_this_device"]
+    }
+  ]
+}
+```
+
+状态字段要求：
+
+- `relation_state` 只允许：
+  - `local_only`
+  - `cloud_only`
+  - `matched`
+  - `diverged`
+- `matched` 的判断应基于单角色有效载荷指纹，而不是只看角色名相同。
+- `diverged` 表示同名角色在本地和云端同时存在，但有效载荷指纹不同。
+- `available_actions` 必须由后端给出，前端不应自己推导覆盖权限。
+- `provider_available = false` 时，页面仍应能展示本地摘要，但上传 / 下载按钮必须禁用。
+
+### 7.3 单角色数据范围
+
+v1 单猫娘上传 / 下载只允许触达该角色必要数据，不能把整包快照行为直接暴露给前端。
+
+单角色上传 / 下载应包含：
+
+- `profiles/characters.json` 中该角色自己的条目。
+- `bindings/<character_name>.json`。
+- `memory/<character_name>/...`。
+- 该角色对应的云端 `meta.json`。
+- 全局目录索引中该角色的摘要条目。
+- 与该角色直接相关的 tombstone 决策信息。
+
+单角色上传 / 下载默认不应包含：
+
+- 其他角色条目。
+- `profiles/conversation_settings.json`。
+- `catalog/current_character.json`。
+- 设备偏好、窗口布局、路径配置。
+- 模型本体资源。
+- 普通角色卡导出文件。
+
+这条边界必须写死，否则“单猫娘下载”仍可能误覆盖全局配置，重新引入数据丢失问题。
+
+### 7.4 后端 API 草案
+
+推荐新增独立 `cloudsave_router`，前缀为 `/api/cloudsave`，不要继续堆到 `/api/characters` 中。
+
+建议最小接口集：
+
+- `GET /api/cloudsave/summary`
+  - 返回本地 / 云端全部角色摘要和状态分类。
+- `GET /api/cloudsave/character/{name}`
+  - 返回单角色本地摘要、云端摘要、推荐动作和警告。
+- `POST /api/cloudsave/character/{name}/upload`
+  - 请求体建议：`{"overwrite": false}`
+  - 语义：将本地该角色上传到云端。
+- `POST /api/cloudsave/character/{name}/download`
+  - 请求体建议：`{"overwrite": false, "backup_before_overwrite": true}`
+  - 语义：将云端该角色下载并应用到本地。
+
+建议错误码：
+
+- `CLOUDSAVE_WRITE_FENCE_ACTIVE`
+- `LOCAL_CHARACTER_EXISTS`
+- `CLOUD_CHARACTER_EXISTS`
+- `CLOUD_CHARACTER_NOT_FOUND`
+- `NAME_AUDIT_FAILED`
+- `REMOTE_PROVIDER_UNAVAILABLE`
+- `ACTIVE_SESSION_BLOCKED`
+- `LOCAL_RELOAD_FAILED_ROLLED_BACK`
 
 约束：
 
-- 绝对物理路径不得直接进入绑定摘要。
-- Local Root 内资源可以导出为相对路径标识。
-- Local Root 外资源只允许导出指纹、逻辑 ID、展示名或来源类型。
+- 上传 / 下载接口必须返回更新后的单角色摘要，前端不应依赖整页硬刷新才能获得状态。
+- 接口失败时必须返回机器可判定的错误码，而不是只返回自由文本。
+- 新接口不得复用角色卡 `.nekocfg` / PNG 导出链路。
 
-导入行为：
+### 7.5 操作决策矩阵
 
-1. 先恢复猫娘目录、配置、记忆与绑定摘要。
-2. 再按 `asset_source`、`asset_source_id`、`model_ref`、`asset_fingerprint` 在当前设备已有资源中做匹配。
-3. 若命中已有资源，直接恢复绑定并使用本机模型。
-4. 若未命中，保留角色与绑定摘要，不自动回灌大文件。
-5. 用户后续通过现有模型导入或 Workshop 恢复流程补齐资源。
+页面行为应按状态固定，不允许前端临时猜测。
 
-派生约束：
-
-- 现有运行时里依赖路径前缀和 `_reserved` 字段判断来源，因此 v1 必须把“旧字段 / URL 前缀 -> `asset_source` / `asset_source_id` / `model_ref` / `experience_overrides`”的映射规则写死，不能由各模块各自推断。
-- `asset_source` 至少要覆盖：
-  - `builtin`
-  - `steam_workshop`
-  - `local_imported`
-  - `manual_external`
-- 现有只写 `model_path` 但未写 `asset_source` 的链路，在导出层必须按来源补全，而不是把“未知来源”直接导进云端。
-
-### 6.5 长期记忆与冲突策略
-
-#### 6.5.1 `time_indexed.db`
-
-- `time_indexed.db` 的 shadow copy 在本项目里必须定义成“SQLite 一致性快照”，不能等价理解为对运行中文件做普通文件复制。
-- 推荐实现协议：
-  1. 先获取该角色的 `memory_snapshot_lock` 或等价写栅栏，阻止 `/cache`、`/process`、`/renew`、review 后台任务继续写入
-  2. 等待该角色当前写事务结束
-  3. 通过同一数据库连接执行 `PRAGMA wal_checkpoint(TRUNCATE)` 或等价 checkpoint
-  4. 使用 SQLite 原生 backup API，例如 Python `sqlite3.Connection.backup()`，生成临时快照文件
-  5. 校验快照能被打开，且核心表存在，再写入 `cloudsave/memory/<character_name>/time_indexed.db`
-  6. 释放该角色写栅栏
-- 禁止直接对运行中的 `time_indexed.db` 主文件做普通文件复制；也不允许把 `.wal` / `.shm` 一并交给 Steam 观察。
-- 导入替换协议也必须写死：
-  1. 获取同一把角色级写栅栏
-  2. 停止该角色的后台记忆任务并结束新写入
-  3. 显式释放 / 重建该角色的 SQLAlchemy engine，例如调用 `dispose_engine(name)` 或等价逻辑
-  4. 原子替换本地 `time_indexed.db`
-  5. 清理遗留 WAL / SHM
-  6. reload 该角色记忆组件并做一次可打开性验证
-  7. 只有验证成功后才允许释放写栅栏
-- 如果任一步失败，必须回退到替换前的本地库或进入只读救援，不能带着半替换状态继续启动。
-
-#### 6.5.2 v1 文件级冲突策略
-
-| 数据类型 | v1 策略 |
-| --- | --- |
-| `profiles/characters.json` | 按角色条目合并；禁止整文件 last-writer-wins |
-| `profiles/conversation_settings.json` | last-writer-wins，并记录 manifest 决策来源 |
-| `memory/<character_name>/recent.json` | last-writer-wins |
-| `facts*.json` / `persona*.json` / `reflections*.json` | v1 先做文件级 last-writer-wins |
-| `memory/<character_name>/time_indexed.db` | last-writer-wins + 序列号校验 + 备份池 |
-| `overrides/*` | last-writer-wins；资源缺失时保留覆盖层 |
+- `local_only`
+  - 主操作：上传。
+  - 下载按钮默认不可用。
+- `cloud_only`
+  - 主操作：下载。
+  - 上传按钮默认不可用。
+- `matched`
+  - 默认展示“已同步”或“无差异”。
+  - 如需强制上传 / 下载，应降级到二级操作并再次确认。
+- `diverged`
+  - 同时提供上传和下载。
+  - 两个操作都必须带覆盖确认。
 
 补充规则：
 
-- `profiles/characters.json` 的冲突决策必须以 `catalog/` 中的角色级元数据为准，`profiles/characters.json` 只是聚合承载体，不是独立的冲突时钟。
-- 如果某个角色被 tombstone 命中，则该角色在重建后的 `profiles/characters.json` 中必须缺席，即使云端聚合文件仍残留旧条目也不能把它带回。
-- `bindings/<character_name>.json`、`catalog/catgirls_index.json` 与 `profiles/characters.json` 同名条目之间如果不一致，必须先进入 staging 冲突分支，不能直接套用 last-writer-wins。
+- 上传不会修改本地运行时，不应触发本地角色 reload。
+- 下载会修改本地运行时，必须走备份、应用、重载、刷新链路。
+- 若当前角色存在活跃语音会话或其他不能安全热替换的会话，下载必须被阻止或延后，不能直接热覆盖。
 
-### 6.6 敏感信息防线、staging 与回滚
+### 7.6 覆盖确认与备份策略
 
-- 导出层必须采用白名单序列化，默认不允许把运行时原文件原样打包进云端。
-- 敏感字段扫描至少覆盖：
-  - `api_key`
-  - `authorization`
-  - `bearer`
-  - `cookie`
-  - `token`
-  - `sk-`
-- staging 校验不通过时，必须整体回滚，不进入正式应用。
-- 冲突备份池必须做轮转清理。
+下载同名覆盖时，必须提示以下事实：
 
-staging 阶段至少应覆盖：
+- 将覆盖本地同名角色配置。
+- 将覆盖该角色对应记忆目录。
+- 将不会自动下载模型资源本体。
+- 将先创建本地备份。
 
-- 版本闸门校验
-- 文件哈希校验
-- 档案名安全检查
-- tombstone / 当前角色 / 绑定摘要之间的一致性检查
-- 目标文件可写性和原子替换前置条件检查
+上传同名覆盖时，必须提示以下事实：
 
-### 6.7 同机切换 Steam 账号与旧档回灌保护
+- 将覆盖云端同名角色数据。
+- 不会改动本地当前角色配置。
+- 不会上传模型资源本体。
 
-- 本地维护一份不进入云端的 `account_state`。
-- 启动时若检测到 Steam 账号变化，不允许立刻把当前 Local Root 自动导出到新账号云端。
-- 应进入 `account_switch_pending`、`needs_confirmation` 或等价保护状态。
-- 对手动还原旧本地备份、离线长时间游玩后再联网的场景，必须阻止静默把旧快照回灌成新的云真相。
+备份要求：
 
-### 6.8 运行中会话与维护栏杆
+- 单角色下载覆盖前，至少备份：
+  - 该角色在 `profiles/characters.json` 中的原条目。
+  - `memory/<character_name>/...`
+  - 必要的本地状态快照。
+- 备份建议路径：
+  - `cloudsave_backups/character-download-<timestamp>/<character_name>/...`
+- 如果下载后本地应用失败、角色初始化失败或 memory reload 失败，必须自动从该备份恢复。
 
-- 如果当前角色存在活跃语音会话或其他不能被安全热替换的角色会话，导入层不得直接覆盖其配置、绑定或记忆目录。
-- 至少需要二选一写死：
-  - 延迟到安全时机再应用
-  - 进入维护 / 只读分支并要求显式恢复
-- 当前项目已经对“语音状态下改名 / 切换角色”做保护，因此云导入不能比本地接口更宽松。
-- 除了当前角色会话外，所有运行期写链路也必须进入统一维护态：
-  - `characters_router` 的改名、删除、当前角色切换、模型绑定、`touch_set` / VRM / MMD 配置修改
-  - Workshop 角色卡后台同步
-  - `memory_server` 的 `/cache`、`/process`、`/renew` 与后台 review
-  - 运行期 dirty exporter 与退出前 flush
-- 维护态必须由实现层提供统一可观测状态，例如 `root_state.mode = bootstrap_importing | maintenance_readonly | normal`；不能只靠零散锁对象隐式协调。
-- 如果运行中热导入无法在有限时间内拿到全局写栅栏，必须放弃本次热应用并延迟到下次启动，而不是部分成功后继续执行。
+### 7.7 下载后的本地应用与重载顺序
 
-### 6.9 根路径切换、`root_state` 与只读救援
+单角色下载不是简单写文件，必须和项目当前运行时刷新方式对齐。
 
-建议本地额外维护不进入云端的 `root_state`，至少记录：
+推荐顺序：
 
-- `current_root`
-- `last_known_good_root`
-- `last_migration_source`
-- `last_migration_result`
-- `last_successful_boot_at`
+1. 进入全局 cloudsave fence。
+2. 对目标角色创建本地备份。
+3. 将云端单角色数据写入 staging。
+4. 合并生成新的本地角色条目与目标记忆目录。
+5. 原子替换本地文件。
+6. 调用角色配置重载逻辑。
+7. 调用 memory server reload。
+8. 若当前前端正在查看该角色，再决定是否发送页面刷新提示。
+9. 任一步失败则自动回滚备份。
+10. 全部成功后解除 fence。
 
-要求：
+与当前工程的直接对齐要求：
 
-- 切根时必须先写迁移结果，再切正式读写入口。
-- 如果新根异常、迁移中断或导入失败，允许回到 `last_known_good_root` 或进入只读救援。
-- 只读救援不等于回退到 `Documents` / exe 目录 / `cwd` 做随机写入；它必须是可解释、可复现的确定性分支。
+- 本地应用后应沿用现有 `initialize_character_data()` 重载链路。
+- 记忆相关刷新应沿用现有 `memory_server /reload`。
+- 不应新增一套绕开现有重载机制的“云存档专用角色刷新”。
 
----
+### 7.8 与现有功能的边界
 
-## 7. 分阶段实施
+必须明确以下边界，防止互相污染：
 
-### 阶段 0：先把本地闭环打通
+- `chara_manager`
+  - 仍然是角色配置编辑真源页面。
+  - 云存档页只负责对比、上传、下载，不负责常规角色编辑。
+- `/api/characters`
+  - 继续承担角色 CRUD 和本地配置修改。
+  - 云存档接口不要混进这个 router，避免职责膨胀。
+- Workshop 同步
+  - 仍是资源发现 / 恢复链路，不是云端角色真源。
+  - 当前实现已经采用“只补缺失角色、不覆盖已存在角色”的策略，后续云存档设计不应默默改变这个默认行为。
+  - 云端下载角色时，不应自动触发 Workshop 覆盖角色配置。
+  - 若 `asset_source = steam_workshop` 且本地缺资源，可以给出“可恢复”提示，但恢复动作仍应单独触发。
+- 角色卡导出 / 导入
+  - 继续是人工分享 / 手工备份通道。
+  - 不得作为云存档上传 / 下载载体复用。
 
-目标：在不接 Steam 的前提下，把本地导出 / 导入 / 回滚链路跑通，并把根路径问题说清楚。
+### 7.9 启动方式与运行方式
 
-处理内容：
+无论以下哪种启动方式，v1 云存档语义都应保持一致：
 
-1. 明确三平台目标根路径
-   - Windows：`%LOCALAPPDATA%/N.E.K.O`
-   - macOS：`~/Library/Application Support/N.E.K.O`
-   - Linux：`${XDG_DATA_HOME:-~/.local/share}/N.E.K.O`
-2. 保留 `Documents`、exe 目录、`cwd` 仅作为历史导入源，不再作为长期真实写入根。
-3. 建立 `cloudsave/`、`manifest.json`、staging、原子替换与回滚框架。
-4. 建立 `root_state`、`last_known_good_root` 与只读救援分支。
-5. 建立冲突备份池与敏感信息扫描。
-6. 建立由 `launcher` 或等价 bootstrap 单点持有的启动屏障。
-7. 建立全局写栅栏，至少覆盖角色配置修改、Workshop 同步、`memory_server` 写入和退出前 flush。
+- Steam / Electron 正常启动。
+- 打包后的 launcher 启动。
+- 开发态直接运行 `launcher.py`。
+- GitHub / 源码环境下直接运行 `main_server.py` 或等价开发启动方式。
 
-完成标志：
+统一要求：
 
-- 不接 Steam 也能稳定完成一次完整导出和导入。
-- Windows 主写入根与现有实现一致。
-- macOS / Linux 的“目标路径”和“当前代码现状”在文档中不再混写。
-- 启动屏障的持有者、放行时机和失败回退路径已经明确，`memory_server` / `main_server` 不会先按旧状态完成初始化。
-- 运行期主要写链路已经能被统一写栅栏拦住，不会在导入应用期间继续落盘。
-
-### 阶段 1：把同步边界和绑定摘要定清楚
-
-目标：在基础设施稳定后，正式定义同步边界、角色身份与资源恢复策略。
-
-处理内容：
-
-1. 明确云端目录、绑定摘要、记忆目录都继续按档案名组织。
-2. 建立 `catalog/`、`bindings/` 与 tombstone 语义。
-3. 建立档案名审计、冲突整改与安全重命名事务。
-4. 拆分 `user_preferences.json`，把全局对话设置导出为 `profiles/conversation_settings.json`，并补齐兼容回填。
-5. 建立 `bindings/` 与现有角色配置之间的派生 / 回填契约，避免双真源。
-6. 建立“小文件默认同步 / 大文件默认留本地”的资源清单。
-7. 为 `time_indexed.db` 建立安全 shadow copy 导出链路。
-8. 建立启动快路径与当前角色优先恢复流程。
-9. 把 `profiles/characters.json` 的冲突策略从整文件覆盖改成角色条目级合并。
-10. 把角色卡导入 / 导出与云存档导入 / 导出的语义边界写死，禁止后续实现重新混用。
-
-完成标志：
-
-- 可以明确列出默认同步、小文件、本地保留与永不同步的内容。
-- 同名覆盖、改名事务、删除墓碑和资源缺失恢复规则已成体系。
-- tombstone、名称复用、档案名审计、当前角色回退和迁移期兼容契约都已写死。
-- 目标设备即使缺少模型资源，也能先看到猫娘和绑定状态。
-- `profiles/characters.json` 的冲突决策已经与 `catalog/` / tombstone 规则对齐，不再依赖整文件 last-writer-wins。
-- `time_indexed.db` 的导出 / 导入协议已经细化到可直接实现的停写、快照、替换与校验步骤。
-
-### 阶段 2：接入 Steam AutoCloud 并优化体验
-
-目标：把 Steam 作为传输层接入，同时保证启动、运行和退出体验可接受。
-
-处理内容：
-
-1. 配置 Steam 只监听 `cloudsave/`。
-2. 补齐 `mark_dirty` 打点与覆盖审计。
-3. 建立分域 dirty queue 与退出前限时 flush。
-4. 增加导出耗时、体积、失败原因等可观测性。
-5. 校验现有模型导入 / Workshop 恢复流程与绑定摘要兼容，无需新增云存档专属前端入口。
-
-完成标志：
-
-- 双机之间可以通过 Steam 稳定同步 v1 范围内的数据。
-- 启动不会因为全量恢复而明显拖慢。
-- 缺资源时的恢复路径仍落在现有导入 / Workshop 流程上。
-
-### 阶段 3：继续演进长期记忆与合并策略
-
-目标：在 v1 可上线后，再处理成本更高、改动更大的优化项。
-
-处理内容：
-
-1. 评估把长期记忆从整库 shadow copy 演进为事件流或更细粒度同步。
-2. 如果 `profiles/characters.json` 的体积或冲突率成为问题，再考虑角色分片。
-3. 从文件级覆盖逐步演进到更细粒度的冲突合并。
+- 启动时都只做本地 `bootstrap_local_cloudsave_environment`。
+- 启动时都不自动从远端拉取并覆盖本地角色。
+- 启动时都不自动把当前本地整包推到远端。
+- 若远端 provider 不可用，页面应进入只读 / 禁用上传下载状态，但本地角色功能不能受影响。
 
 ---
 
-## 8. 验收标准
+## 8. 分阶段实施计划（按新方向重排）
 
-至少覆盖以下结果：
+### 8.1 阶段 0：基础设施
 
-- Windows 首次启动时主存档根落在 `%LOCALAPPDATA%/N.E.K.O`，历史 `Documents` 旧档可迁移。
-- `profiles/characters.json` 即使继续聚合导出，也不会因整文件 last-writer-wins 吃掉无关角色的并行修改。
-- 本地角色改名时，会走名称级事务，至少保证 `profiles/characters.json`、当前角色与 `memory/<old_name>/` 不留下半完成状态。
-- 跨设备导入改名结果时，表现为旧名称消失、新名称出现，而不是错误覆盖另一只同名角色。
-- 删除角色会写 tombstone，旧设备不会把已删除角色重新导出回来。
-- 目标设备已有本地模型资源时，可直接恢复绑定并使用本机资源。
-- 目标设备缺少模型资源时，猫娘仍可见，后续通过现有模型导入或 Workshop 恢复流程补齐资源。
-- `time_indexed.db` 导出 / 导入都有明确的角色级停写、checkpoint、SQLite backup、engine 释放与 reload 校验步骤。
-- 导入必须先经 staging，失败可整体回滚。
-- 启动时若云端无变化，应快速跳过导入；有变化时只导入变更文件。
-- 启动导入由 `launcher` 或等价 bootstrap 单点持有屏障；`memory_server`、`main_server` 不会先按旧状态完成角色初始化再被覆盖。
-- 启动期云导入与 Workshop 角色卡后台同步不会并发改写 `characters.json`。
-- 运行期热导入、Workshop 同步、角色配置修改和记忆写入都受同一全局写栅栏约束，不会在导入应用期间交叉落盘。
-- 云存档链路不会复用角色卡“整包模型资源导入 / 导出”语义；角色卡仍是人工分享 / 手工备份通道。
-- `touch_set`、VRM / MMD 小型体验配置会与绑定摘要一起被稳定导出和恢复，或被显式标记为本地不漫游，而不是处于未定义状态。
+状态：已基本完成。
+
+已完成内容：
+
+- 标准 app data 根目录收敛。
+- 旧目录导入 / 修复。
+- `cloudsave/` 基础结构。
+- `manifest`、staging、备份、状态文件。
+- launcher bootstrap。
+- main_server 启动期 bootstrap 兜底。
+- 全局写保护和异常恢复。
+- 多条真实写链路已接入维护态写保护。
+- 角色重命名 / 删除已开始与记忆目录、tombstone、reload 链路联动。
+- Workshop 同步已开始尊重 tombstone 和串行化要求。
+- 运行时配置写入路径已开始从项目 fallback 根纠正到真实运行时根。
+- 本地整包快照导出 / 导入。
+- 已补一批 unit / frontend 回归测试。
+
+剩余收尾：
+
+- 继续补齐尚未覆盖的回归测试场景。
+- 继续核对 `time_indexed.db` 的导出 / 导入安全性。
+- 继续压实 launcher、main_server、memory_server 的职责边界。
+
+### 8.2 阶段 1：数据模型从整包导出转向单猫娘视角
+
+目标：
+
+- 在不破坏当前基础设施的前提下，抽出“单猫娘摘要”和“单猫娘读写单元”。
+- 明确单猫娘上传 / 下载所需的最小数据集合。
+- 将云端正式数据模型从“整包快照优先”调整为“单角色对象优先”。
+
+交付内容：
+
+- 本地角色摘要构建器。
+- 云端角色摘要构建器。
+- 同名匹配、状态分类、资源状态分类规则。
+- 单猫娘导出 / 导入内部接口。
+
+额外要求：
+
+- 单角色数据范围必须与 `7.3` 保持一致。
+- 单角色摘要返回字段必须与 `7.2` 保持一致。
+
+### 8.3 阶段 2：角色设置入口与独立页面
+
+目标：
+
+- 在角色设置中加入云存档入口按钮。
+- 新增独立云存档管理页面。
+
+页面至少应支持：
+
+- 展示当前角色和全部角色的本地 / 云端对照状态。
+- 区分 `local_only`、`cloud_only`、`matched`、`diverged`。
+- 展示资源可恢复性状态。
+- 对单只猫娘显示上传 / 下载按钮。
+
+建议：
+
+- 页面优先以角色列表 + 状态标签 + 操作按钮的形式实现。
+- 不要把这套能力继续塞回现有角色表单，避免角色设置页继续膨胀。
+
+额外要求：
+
+- 路由和参数命名遵循 `7.1`。
+- 页面状态与操作矩阵遵循 `7.2` 和 `7.5`。
+
+### 8.4 阶段 3：单猫娘上传 / 下载能力
+
+目标：
+
+- 打通前端页面到后端的单猫娘上传 / 下载 API。
+- 补齐覆盖确认、备份、回滚、刷新和错误提示。
+
+上传要求：
+
+- 明确上传对象范围。
+- 明确是否覆盖云端同名角色。
+- 上传完成后刷新云端摘要。
+
+下载要求：
+
+- 明确下载对象范围。
+- 下载前备份当前本地同名角色。
+- 下载后触发角色配置与记忆重载。
+- 资源缺失时不阻断角色恢复，但要给出明确状态提示。
+
+额外要求：
+
+- 后端接口契约遵循 `7.4`。
+- 本地应用与回滚顺序遵循 `7.6` 和 `7.7`。
+- 与现有角色管理 / Workshop / 角色卡边界遵循 `7.8`。
+
+### 8.5 阶段 4：后续增强
+
+可延期能力：
+
+- 云端删除角色。
+- 批量上传 / 批量下载。
+- 按更新时间排序、差异明细展示。
+- 冲突详情页。
+- 全局设置是否纳入云端的二期评估。
+- 与 Workshop 恢复链路更深的联动。
 
 ---
 
-## 9. 与当前项目实现的主要差距
+## 9. 验收标准
 
-这部分不是改设计，而是明确“目前代码还没完全走到文档目标态”的地方，避免误判。
+### 9.1 文档口径正确
 
-- Windows 主存档根已基本符合方向，但 macOS / Linux 当前代码仍主要走 `Documents` / `cwd` 逻辑，尚未切到标准应用数据目录。
-- 全局对话设置当前仍直接写 `user_preferences.json`，`conversation_settings.json` 还没有真正落地。
-- `cloudsave/`、`manifest`、`bindings/`、tombstone、导入屏障、sync fence 目前仍是设计目标，不是既有实现。
-- 资源来源现实上同时覆盖项目内置、用户导入和 Workshop 三类路径，因此绑定摘要必须以“来源 + 引用 + 指纹”为主，不能假设只有单一路径。
-- Workshop 的部分删除路径当前仍会删除 `characters.json` 中的角色配置，说明“资源卸载”和“角色删除”还需要在实现层继续拆开。
-- 当前角色卡导出 / 导入链路仍会按“角色 + 模型资源整包”工作，这条能力需要继续保留，但必须与云存档导出层严格分开。
-- 当前改名 / 删除实现还没有覆盖 `memory/<name>/...` 目录迁移 / 清理、tombstone 生成和导入期事务回退，离文档目标态还有明显差距。
-- `main_server` 启动后会后台执行 Workshop 角色卡同步，这条链路目前可能与未来云导入形成并发写入竞争，因此必须在实现层补导入屏障或串行调度。
-- `touch_set`、VRM / MMD 小型体验配置当前仍直接散落在 `_reserved`，还没有收敛成文档定义的云端绑定摘要结构。
-- `client_id + sequence_number` 的本地状态文件、名称复用撤销 tombstone 的规则、以及档案名审计整改链路，目前都还没有正式实现。
+- 不能再把已经落地的阶段 0 内容写成“未实现”。
+- 不能再把“自动同步 / 启动自动导入”写成 v1 主路径。
+- 不能再把“无需新增前端入口”作为当前结论。
+
+### 9.2 交互符合新要求
+
+- 角色设置中存在云存档入口。
+- 点击后进入独立页面。
+- 页面能看到云上有哪些猫娘。
+- 页面能看出哪些与本地对应、哪些本地没有、哪些云端没有。
+- 单只猫娘可以单独上传、单独下载。
+
+### 9.3 安全性达标
+
+- 用户未明确点击上传 / 下载时，不发生远端覆盖或本地覆盖。
+- 下载覆盖前必须有本地备份。
+- 覆盖失败可以回滚。
+- 不因资源缺失导致角色元数据丢失。
+
+### 9.4 与现有工程行为一致
+
+- 单角色下载不会覆盖其他角色条目。
+- 单角色下载不会顺带覆盖 `profiles/conversation_settings.json`。
+- 下载完成后会走现有角色重载与 memory reload 链路。
+- 不同启动方式下，云存档都不会在启动时自动覆盖本地。
 
 ---
 
-## 10. 结论
+## 10. 主要风险与注意事项
 
-这份方案的核心不是“把哪些目录交给 Steam”，而是先建立一层稳定、可分类、可导入、可回滚的云存档规范。
+本节如果提到“整包快照”“启动自动导入”“聚合 `profiles/characters.json`”等旧方向，仅用于说明当前仍需避免的回退风险，不代表后续继续按这些旧方案实施。
 
-v1 的明确落点是：
+- 当前已有的整包快照能力如果直接当作前端产品能力暴露，会与“单猫娘上传 / 下载”的新要求冲突。
+- 如果仍保留启动自动导入思路，容易再次引入角色配置被旧数据覆盖的问题。
+- 如果继续沿用聚合 `profiles/characters.json` 作为远端主对象，单角色上传 / 下载会变得复杂且更容易误覆盖。
+- 大资源不入云后，必须把“角色可恢复”和“资源可用”两个概念明确区分，否则用户会误判为下载失败。
+- 本地全局唯一意味着同一台设备上的不同 Steam 用户不会自动拥有隔离本地运行时目录，因此产品文案和预期需要明确。
+- 如果单角色下载仍偷懒复用整包导入逻辑，就有较大概率再次覆盖全局对话设置或其他角色数据。
+- 如果前端自己推导 `available_actions`，而不是以后端摘要为准，容易出现覆盖按钮显示错误或状态判断不一致。
 
-1. 运行时继续基于现有目录结构工作，不做大规模重构。
-2. Steam 只同步 `cloudsave/`。
-3. 默认同步猫娘目录、角色配置、对话设置、记忆、模型引用摘要、小型参数文件和轻量元数据。
-4. Live2D / VRM / MMD / Workshop 等大文件资源在 v1 默认不进入云端，目标设备有则直接用，没有则用户手动导入或重新下载恢复。
-5. 运行时与云端都继续按档案名组织，不再引入 `character_id`。
-6. 同名角色按云端直接覆盖；改名在云同步语义上按“旧名称删除 + 新名称新增”处理，本地改名仍需事务化。
-7. `time_indexed.db` 只以 shadow copy 方式进入云端。
-8. 导入导出必须具备 staging、原子应用、冲突备份与回滚能力。
+---
 
-只要以上口径保持不变，文档与后续实现就不会再因为“临时补丁式追加”而偏离核心设计方向。
+## 11. 结论
+
+这一节只总结当前应继续推进的方向，不再延续任何已废弃的自动整包同步方案。
+
+- 阶段 0 基础设施已经基本完成，文档应从“是否做基础设施”切换为“如何把现有基础设施转成正确的产品能力”。
+- 后续实施应明确转向“角色设置入口 + 独立管理页面 + 单猫娘手动上传 / 下载”。
+- 本地存档继续保持全局唯一，云端只做用户显式触发的角色级同步，不再以自动整包同步作为 v1 主方向。

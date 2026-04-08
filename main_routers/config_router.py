@@ -19,8 +19,8 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
-from utils.file_utils import atomic_write_json
 from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, load_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
+from utils.cloudsave_runtime import MaintenanceModeError
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
 from config import (
@@ -377,6 +377,8 @@ async def save_conversation_settings(request: Request):
             _apply_noise_reduction_to_active_sessions(data['noiseReductionEnabled'])
 
         return {"success": True, "message": "对话设置已保存"}
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.exception(f"保存对话设置失败: {e}")
         return {"success": False, "error": "Internal server error"}
@@ -600,12 +602,8 @@ async def update_core_config(request: Request):
                 return {"success": False, "error": "API Key不能为空"}
         
         # 保存到core_config.json
-        from pathlib import Path
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        core_config_path = str(config_manager.get_config_path('core_config.json'))
-        # 确保配置目录存在
-        Path(core_config_path).parent.mkdir(parents=True, exist_ok=True)
         
         # 构建配置对象
         core_cfg = {}
@@ -660,7 +658,7 @@ async def update_core_config(request: Request):
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
         
-        atomic_write_json(core_config_path, core_cfg, indent=2, ensure_ascii=False)
+        config_manager.save_json_config('core_config.json', core_cfg)
         
         # API配置更新后，需要先通知所有客户端，再关闭session，最后重新加载配置
         logger.info("API配置已更新，准备通知客户端并重置所有session...")

@@ -2,6 +2,7 @@
 
 > 关联文档：`cloud-save-sync-optimization-plan.md`
 > 目标：给技术评审提供一份短版结论，明确当前实现基线、v1 同步边界、核心流程和实施顺序。
+> 注意：截至 2026-04-08，产品口径已调整为“本地全局唯一 + 云端手动上传/下载 + 单猫娘管理”，后续实施与排期请以 `cloud-save-sync-optimization-plan.md` 为准；本文中仍保留的 AutoCloud / 自动同步表述仅代表旧评审背景，不再作为当前 v1 产品要求。
 
 ---
 
@@ -26,9 +27,9 @@
 
 ## 2. 当前实现基线
 
-这一节只描述项目当前代码已经存在的事实。
+这一节只描述项目当前代码已经存在的事实；如果与后文实施阶段的目标表述不同，应以这一节作为“当前现状”口径。
 
-- Windows 侧主写入根已基本收敛到 `%LOCALAPPDATA%/N.E.K.O`，并保留从历史 `Documents` 迁移旧档的能力。
+- Windows 当前代码仍优先尝试 `Documents` 系路径；`%LOCALAPPDATA%` / `AppData/Local` 主要作为 `Documents` 不可写时的回退写入位置，因此“统一到 `%LOCALAPPDATA%/N.E.K.O`”仍应视为阶段 0 目标，而不是现状。
 - macOS / Linux 当前代码仍主要使用 `Documents` 或 `cwd` 作为候选路径，因此“统一到 Application Support / XDG 数据目录”仍是阶段 0 目标，不是现状。
 - 运行时主要目录包括：
   - `config/`
@@ -195,7 +196,7 @@
 
 ## 6. 主要落地差距与风险
 
-- Windows 路径方向已基本一致，但 macOS / Linux 当前代码还没有切到标准应用数据目录。
+- Windows 当前已有 `AppData` 回退与 `Documents` 兼容基础，但默认主候选仍主要是 `Documents` 系路径；macOS / Linux 当前代码也还没有切到标准应用数据目录。
 - `conversation_settings.json` 仍未真正从 `user_preferences.json` 拆出。
 - `cloudsave/`、`manifest`、`bindings/`、tombstone、导入屏障和 sync fence 目前仍是设计目标，不是既有实现。
 - 资源来源现实上同时覆盖项目内置、用户导入和 Workshop 三类路径，因此绑定摘要设计必须保持“来源 + 引用 + 指纹”导向。
