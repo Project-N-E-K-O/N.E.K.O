@@ -64,6 +64,42 @@ http://localhost:48911
 | 智能体/工具服务器 | 48915 | 智能体任务执行 |
 | 插件服务器 | 48916 | 用户插件 |
 
+## 构建前端项目
+
+项目在 `frontend/` 下有两个现代前端项目。完整运行应用前需要先构建它们。
+
+### 一键构建
+
+```bash
+# Windows
+build_frontend.bat
+
+# Linux / macOS
+./build_frontend.sh
+```
+
+### 聊天窗口（React）
+
+```bash
+cd frontend/react-neko-chat
+npm install
+npm run dev          # 开发服务器（端口 5174）
+npm run build        # 生产构建 → static/react/neko-chat/
+```
+
+聊天窗口以 IIFE 库（`NekoChatWindow`）的形式构建，嵌入到 `templates/index.html` 中。
+
+### 插件管理面板（Vue）
+
+```bash
+cd frontend/plugin-manager
+npm install
+npm run dev          # 开发服务器（端口 5173，代理 API 到 localhost:48916）
+npm run build-only   # 生产构建 → frontend/plugin-manager/dist/
+```
+
+插件管理面板由插件服务器（端口 48916）在 `/ui/` 路径下提供服务。
+
 ## 运行测试
 
 ```bash

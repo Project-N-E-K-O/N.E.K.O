@@ -28,7 +28,8 @@
         "fieldSeparator": ", ",
         "tryAgainLater": "Пожалуйста, попробуйте позже",
         "user": "Пользователь",
-        "project": "Проект"
+        "project": "Проект",
+        "collapse": "Свернуть"
     },
     "characterProfile": {
         "gender": "Пол",
@@ -478,6 +479,7 @@
         "RESPONSE_INVALID": "Ответ AI не соответствует требованиям, вывод отброшен",
         "NO_USER_MESSAGE": "⚠️ В истории диалога нет сообщений пользователя, невозможно сгенерировать ответ",
         "LLM_RETRY": "⚠️ LLM {{error_type}}, повторная попытка ({{attempt}}/{{max_retries}})...",
+        "LLM_UPSTREAM_ERROR": "⚠️ Приносим извинения, внутренняя ошибка вышестоящего AI-провайдера. Автоматический повтор...",
         "LLM_CONNECTION_EXHAUSTED": "💥 Ошибка подключения LLM ({{error_type}}), исчерпано {{max_retries}} попыток: {{error}}",
         "TEXT_GEN_ERROR": "💥 Ошибка генерации текста: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM не вернул ответ. Проверьте подключение к API и настройки.",
@@ -521,8 +523,12 @@
         "tooltip": "Область чата",
         "textInputPlaceholder": "Режим текстового чата... Нажмите Enter для отправки, Shift+Enter для новой строки",
         "send": "Отправить",
+        "importImage": "Импортировать изображение",
+        "importImageAriaLabel": "Импортировать изображение",
         "screenshot": "Скриншот",
+        "screenshotAriaLabel": "Сделать скриншот",
         "takePhoto": "Сделать фото",
+        "takePhotoAriaLabel": "Сделать фото",
         "screenshotsTitle": "Ожидающие скриншоты",
         "clearAll": "Очистить всё",
         "screenshotAlt": "Скриншот {{index}}",
@@ -530,6 +536,34 @@
         "removeScreenshot": "Удалить этот скриншот",
         "avatarPreview": "Показать текущий аватар",
         "avatarPreviewLabel": "Текущий аватар",
+        "avatarPreviewCardTitle": "Текущий аватар",
+        "avatarPreviewCardStatus": "Нажмите кнопку выше, чтобы создать аватар из текущей модели",
+        "avatarPreviewClose": "Закрыть предпросмотр аватара",
+        "avatarPreviewImageAlt": "Предпросмотр текущего аватара",
+        "avatarPreviewPlaceholder": "AVATAR",
+        "avatarPreviewCardNote": "Аватар будет создан на основе текущей отображаемой модели Live2D / VRM / MMD.",
+        "avatarPreviewRefresh": "Обновить аватар",
+        "emptyState": "Сообщения появятся здесь после подключения чата.",
+        "messageStreaming": "Генерация",
+        "messageFailed": "Ошибка отправки",
+        "reactWindowOpen": "Открыть новое окно чата",
+        "reactWindowLabel": "Новое окно чата",
+        "reactWindowClose": "Закрыть новое окно чата",
+        "reactWindowMinimize": "Свернуть новое окно чата",
+        "reactWindowMinimizeShort": "Свернуть",
+        "reactWindowRestore": "Восстановить новое окно чата",
+        "reactWindowRestoreShort": "Восстановить",
+        "reactWindowMountFailed": "Не удалось встроить новое окно чата",
+        "reactWindowLoadFailed": "Не удалось загрузить ресурсы нового окна чата",
+        "reactWindowAriaLabel": "Окно чата Neko",
+        "reactWindowInputHint": "Enter для отправки, Shift + Enter для новой строки",
+        "messageListAriaLabel": "Список сообщений чата",
+        "composerToolsAriaLabel": "Инструменты ввода",
+        "pendingImagesAriaLabel": "Изображения к отправке",
+        "pendingImageAlt": "Изображение {{index}}",
+        "removePendingImage": "Удалить изображение",
+        "emojiButtonAriaLabel": "Эмодзи",
+        "attachmentButtonAriaLabel": "Вложение",
         "jukebox": "Музыкальный автомат",
         "jukeboxLabel": "Музыкальный автомат"
     },
@@ -1124,9 +1158,12 @@
     },
     "voice": {
         "title": "Регистрация голоса",
-        "alibabaApiRequired": "⚠️ Для этой функции нужна модель CosyVoice. Сохраните API-ключ Alibaba Bailian в настройках API (включение Assist API не требуется) или настройте локальный голосовой сервер.",
-        "minimaxApiRequired": "⚠️ Для этой функции необходима модель MiniMax (Китай). Сохраните ключ API MiniMax в настройках API (включение Assist API не требуется).",
-        "minimaxIntlApiRequired": "⚠️ Для этой функции необходима модель MiniMax (Международная). Сохраните ключ API MiniMax (Международная) в настройках API (включение Assist API не требуется).",
+        "gotoApiSettings": "Перейти к настройкам API",
+        "noApiKeyPrompt": "API-ключ для клонирования голоса ещё не настроен. Хотите настроить?",
+        "dismissNoApiPrompt": "Позже",
+        "alibabaApiRequired": "Для этой функции нужна модель CosyVoice. Сохраните API-ключ Alibaba Bailian в настройках API (включение Assist API не требуется) или настройте локальный голосовой сервер.",
+        "minimaxApiRequired": "Для этой функции необходима модель MiniMax (Китай). Сохраните ключ API MiniMax в настройках API (включение Assist API не требуется).",
+        "minimaxIntlApiRequired": "Для этой функции необходима модель MiniMax (Международная). Сохраните ключ API MiniMax (Международная) в настройках API (включение Assist API не требуется).",
         "providerLabel": "Провайдер клонирования голоса",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
@@ -1144,6 +1181,8 @@
         "prefixFormatError": "Ошибка формата префикса: максимум 10 символов, только цифры и латинские буквы",
         "registering": "Регистрация голоса, подождите!",
         "registerSuccess": "Регистрация успешна! voice_id: {{voiceId}}",
+        "registerSuccessButSaveFailed": "Голос зарегистрирован, но локальное сохранение не удалось",
+        "pleaseCopyVoiceId": "Скопируйте voice_id выше и сохраните его вручную",
         "reusedExisting": "Использован существующий голос, загрузка пропущена. voice_id: {{voiceId}}",
         "registerFailed": "Ошибка регистрации: {{error}}",
         "prefixShouldBeEnglishLetterAndNumber": "Префикс должен состоять из английских букв и цифр",
@@ -1417,6 +1456,8 @@
         "initializingText": "Инициализация текстового чата...",
         "textChattingShort": "Текстовый чат",
         "capturing": "Захват...",
+        "importImageAdded": "Добавлено изображений: {{count}}. Они будут отправлены вместе",
+        "importImageFailed": "Не удалось импортировать изображение",
         "screenshotAdded": "Скриншот добавлен, нажмите отправить",
         "screenshotFailed": "Ошибка скриншота",
         "screenshotCancelled": "Скриншот отменён пользователем",
@@ -1669,6 +1710,8 @@
         "emotionConfig": "Конфигурация эмоций VRM",
         "idleAnimation": {
             "title": "Анимация покоя",
+            "selectHint": "Выберите анимации ожидания",
+            "selectedCount": "Выбрано: {{count}}",
             "changed": "Анимация покоя изменена: {{name}}",
             "changeFailed": "Не удалось изменить анимацию покоя"
         },
@@ -1715,6 +1758,8 @@
         },
         "idleAnimation": {
             "title": "Анимация ожидания",
+            "selectHint": "Выберите анимации ожидания",
+            "selectedCount": "Выбрано: {{count}}",
             "changed": "Анимация ожидания изменена",
             "changeFailed": "Не удалось изменить анимацию ожидания"
         }
@@ -2434,6 +2479,7 @@
         "weibo": "🌏 Weibo",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 NetEase Cloud Music",
         "saveConfig": "Сохранить конфигурацию",
         "encryptStorage": "Безопасное шифрование и сохранение в локальный файл",
         "localMonitoring": "Мониторинг локального статуса",
@@ -2459,7 +2505,8 @@
             "kuaishou": "📌 <b>Цель:</b> Перейдите на <b>kuaishou.com</b>, чтобы получить эти файлы cookie.",
             "weibo": "📌 <b>Цель:</b> Перейдите на <b>weibo.com</b>, чтобы получить эти файлы cookie.",
             "twitter": "📌 <b>Цель:</b> Перейдите на <b>x.com</b>, чтобы получить эти файлы cookie.",
-            "reddit": "📌 <b>Цель:</b> Перейдите на <b>reddit.com</b>, чтобы получить эти файлы cookie."
+            "reddit": "📌 <b>Цель:</b> Перейдите на <b>reddit.com</b>, чтобы получить эти файлы cookie.",
+            "netease": "📌 <b>Цель:</b> Перейдите на <b>music.163.com</b>, чтобы получить эти файлы cookie."
         },
         "guide": {
             "title": "Универсальное руководство для новичков",
@@ -2541,6 +2588,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF-токен"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "Основные учётные данные (Обязательно)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "Идентификатор устройства (Необязательно)"
             }
         },
         "status": {
@@ -2564,7 +2619,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "QR-вход успешен! Cookies автоматически заполнены, нажмите Сохранить конфигурацию"
+            "successAlert": "QR-вход успешен! Cookies автоматически заполнены, нажмите Сохранить конфигурацию",
+            "extractFailed": "⚠️ QR-вход выполнен, но не удалось автоматически извлечь поля. Проверьте вручную."
         }
     },
     "music": {

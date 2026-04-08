@@ -28,7 +28,8 @@
         "fieldSeparator": "、",
         "tryAgainLater": "请稍后重试",
         "user": "用户",
-        "project": "项目"
+        "project": "项目",
+        "collapse": "收起"
     },
     "characterProfile": {
         "gender": "性别",
@@ -478,6 +479,7 @@
         "RESPONSE_INVALID": "AI回复不符合要求，已放弃输出",
         "NO_USER_MESSAGE": "⚠️ 对话历史中没有用户消息，无法生成回复",
         "LLM_RETRY": "⚠️ LLM {{error_type}}，正在重试（{{attempt}}/{{max_retries}}）...",
+        "LLM_UPSTREAM_ERROR": "⚠️ 抱歉喵，上游AI服务商内部错误，正在自动重试...",
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM连接失败（{{error_type}}），已重试{{max_retries}}次: {{error}}",
         "TEXT_GEN_ERROR": "💥 文本生成异常: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM未返回任何回复，请检查API连接和配置",
@@ -521,8 +523,12 @@
         "tooltip": "对话区",
         "textInputPlaceholder": "文字聊天模式...回车发送，Shift+回车换行",
         "send": "发送",
+        "importImage": "导入图片",
+        "importImageAriaLabel": "导入图片",
         "screenshot": "截图",
+        "screenshotAriaLabel": "截图",
         "takePhoto": "拍照",
+        "takePhotoAriaLabel": "拍照",
         "screenshotsTitle": "待发送截图",
         "clearAll": "清空全部",
         "screenshotAlt": "截图 {{index}}",
@@ -530,6 +536,34 @@
         "removeScreenshot": "移除此截图",
         "avatarPreview": "显示当前头像",
         "avatarPreviewLabel": "当前头像",
+        "avatarPreviewCardTitle": "当前头像",
+        "avatarPreviewCardStatus": "点击上方按钮生成当前模型头像",
+        "avatarPreviewClose": "关闭头像预览",
+        "avatarPreviewImageAlt": "当前头像预览",
+        "avatarPreviewPlaceholder": "AVATAR",
+        "avatarPreviewCardNote": "将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。",
+        "avatarPreviewRefresh": "刷新头像",
+        "emptyState": "聊天内容接入后会显示在这里。",
+        "messageStreaming": "生成中",
+        "messageFailed": "发送失败",
+        "reactWindowOpen": "打开新版聊天框",
+        "reactWindowLabel": "新版聊天框",
+        "reactWindowClose": "关闭新版聊天框",
+        "reactWindowMinimize": "最小化新版聊天框",
+        "reactWindowMinimizeShort": "最小化",
+        "reactWindowRestore": "恢复新版聊天框",
+        "reactWindowRestoreShort": "恢复",
+        "reactWindowMountFailed": "新版聊天框挂载失败",
+        "reactWindowLoadFailed": "新版聊天框资源加载失败",
+        "reactWindowAriaLabel": "Neko 聊天窗口",
+        "reactWindowInputHint": "Enter 发送，Shift + Enter 换行",
+        "messageListAriaLabel": "聊天消息列表",
+        "composerToolsAriaLabel": "输入工具栏",
+        "pendingImagesAriaLabel": "待发送图片",
+        "pendingImageAlt": "图片 {{index}}",
+        "removePendingImage": "移除图片",
+        "emojiButtonAriaLabel": "表情",
+        "attachmentButtonAriaLabel": "附件",
         "jukebox": "点歌台",
         "jukeboxLabel": "点歌台"
     },
@@ -1124,9 +1158,12 @@
     },
     "voice": {
         "title": "音色注册",
-        "alibabaApiRequired": "⚠️ 此功能需要阿里CosyVoice模型，请在API密钥设置页中保存阿里百炼API Key（不要求启用辅助API）或配置本地语音服务器",
-        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（国服），请在API密钥设置页中保存MiniMax API Key（不要求启用辅助API）",
-        "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（国际服），请在API密钥设置页中保存MiniMax国际服API Key（不要求启用辅助API）",
+        "gotoApiSettings": "前往API设置",
+        "noApiKeyPrompt": "还没有设置任何可使用克隆功能的API，是否前往设置？",
+        "dismissNoApiPrompt": "稍后再说",
+        "alibabaApiRequired": "此功能需要阿里CosyVoice模型，请在API密钥设置页中保存阿里百炼API Key（不要求启用辅助API）或配置本地语音服务器",
+        "minimaxApiRequired": "此功能需要MiniMax模型（国服），请在API密钥设置页中保存MiniMax API Key（不要求启用辅助API）",
+        "minimaxIntlApiRequired": "此功能需要MiniMax模型（国际服），请在API密钥设置页中保存MiniMax国际服API Key（不要求启用辅助API）",
         "providerLabel": "语音克隆服务商",
         "provider": {
             "cosyvoice": "阿里云 CosyVoice",
@@ -1144,6 +1181,8 @@
         "prefixFormatError": "前缀格式错误：不超过10个字符，只支持数字和英文字母",
         "registering": "正在注册声音，请稍后！",
         "registerSuccess": "注册成功！voice_id: {{voiceId}}",
+        "registerSuccessButSaveFailed": "音色注册成功，但本地保存失败",
+        "pleaseCopyVoiceId": "请复制上面的voice_id手动保存",
         "reusedExisting": "已复用现有音色，跳过上传。voice_id: {{voiceId}}",
         "registerFailed": "注册失败：{{error}}",
         "prefixShouldBeEnglishLetterAndNumber": "前缀应为英文字母和数字",
@@ -1417,6 +1456,8 @@
         "initializingText": "正在初始化文本对话...",
         "textChattingShort": "正在文本聊天中",
         "capturing": "正在截图...",
+        "importImageAdded": "已添加 {{count}} 张图片，发送时会一并带上",
+        "importImageFailed": "导入图片失败",
         "screenshotAdded": "截图已添加，点击发送一起发送",
         "screenshotFailed": "截图失败",
         "screenshotCancelled": "用户取消了截图",
@@ -1669,6 +1710,8 @@
         "emotionConfig": "VRM情感配置",
         "idleAnimation": {
             "title": "待机动作",
+            "selectHint": "选择待机动作",
+            "selectedCount": "已选 {{count}} 个",
             "changed": "待机动作已切换: {{name}}",
             "changeFailed": "切换待机动作失败"
         },
@@ -1715,6 +1758,8 @@
         },
         "idleAnimation": {
             "title": "待机动作",
+            "selectHint": "选择待机动作",
+            "selectedCount": "已选 {{count}} 个",
             "changed": "待机动作已切换",
             "changeFailed": "切换待机动作失败"
         }
@@ -2434,6 +2479,7 @@
         "weibo": "🌏 微博",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 网易云音乐",
         "saveConfig": "保存配置",
         "encryptStorage": "安全加密存储至本地文件",
         "localMonitoring": "本地状态监控",
@@ -2459,7 +2505,8 @@
             "kuaishou": "📌 <b>目标：</b> 请前往 <b>kuaishou.com</b> 获取这些 Cookies。",
             "weibo": "📌 <b>目标：</b> 请前往 <b>weibo.com</b> 获取这些 Cookies。",
             "twitter": "📌 <b>目标：</b> 请前往 <b>x.com</b> 获取这些 Cookies。",
-            "reddit": "📌 <b>目标：</b> 请前往 <b>reddit.com</b> 获取这些 Cookies。"
+            "reddit": "📌 <b>目标：</b> 请前往 <b>reddit.com</b> 获取这些 Cookies。",
+            "netease": "📌 <b>目标：</b> 请前往 <b>music.163.com</b> 获取这些 Cookies。"
         },
         "guide": {
             "title": "新手通用获取教程",
@@ -2541,6 +2588,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF 令牌"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "核心身份凭证 (必填)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "设备标识 (选填)"
             }
         },
         "status": {
@@ -2564,7 +2619,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "扫码登录成功！Cookie 已自动填入，请点击保存配置"
+            "successAlert": "扫码登录成功！Cookie 已自动填入，请点击保存配置",
+            "extractFailed": "⚠️ 扫码成功但未能自动提取到字段，请手动检查。"
         }
     },
     "music": {

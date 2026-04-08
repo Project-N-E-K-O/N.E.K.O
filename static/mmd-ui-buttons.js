@@ -383,6 +383,74 @@ MMDManager.prototype._startUIUpdateLoop = function() {
     let lastMobileUpdate = 0;
     const MOBILE_UPDATE_INTERVAL = 100;
 
+    // ── 锁定后淡化机制（与 VRM 侧对齐） ──
+    const mmdContainer = document.getElementById('mmd-container');
+    const hoverFadeThreshold = 60;
+    const STATIONARY_FADE_DELAY = 1000;
+    let ctrlFadeActive = false;
+    let stationaryFadeActive = false;
+    let isCtrlPressed = false;
+    let hasEnteredHoverRange = false;
+    let stationaryFadeTimer = null;
+
+    const clearStationaryFadeTimer = () => {
+        if (stationaryFadeTimer !== null) {
+            clearTimeout(stationaryFadeTimer);
+            stationaryFadeTimer = null;
+        }
+    };
+
+    const applyFade = (forceFade) => {
+        if (!mmdContainer) return;
+        // 确保过渡动画已设置（仅操作 opacity，避免干扰其他属性）
+        if (!mmdContainer.style.transition || mmdContainer.style.transition.indexOf('opacity') === -1) {
+            mmdContainer.style.transition = 'opacity 0.3s ease';
+        }
+        const shouldFade = forceFade !== undefined ? forceFade : (ctrlFadeActive || stationaryFadeActive);
+        mmdContainer.style.opacity = shouldFade ? '0.12' : '1';
+    };
+    this._setMmdLockedHoverFade = applyFade;
+
+    // Ctrl 键跟踪
+    const onKeyDown = (event) => {
+        if (event.ctrlKey || event.metaKey) isCtrlPressed = true;
+    };
+    const onKeyUp = (event) => {
+        if (!event.ctrlKey && !event.metaKey) {
+            isCtrlPressed = false;
+            ctrlFadeActive = false;
+            applyFade();
+        }
+    };
+    const onBlur = () => {
+        // blur 时 Ctrl 键事件无法到达，必须主动清除 Ctrl 状态避免卡死
+        isCtrlPressed = false;
+        ctrlFadeActive = false;
+        // 锁定状态下 blur 通常由鼠标穿透点击引起，保留静止淡化状态避免闪烁
+        if (this.isLocked) {
+            applyFade();
+            return;
+        }
+        clearStationaryFadeTimer();
+        if (stationaryFadeActive) {
+            stationaryFadeActive = false;
+        }
+        applyFade();
+        hasEnteredHoverRange = false;
+    };
+
+    // 清理旧的键盘 / blur 监听器
+    if (this._mmdCtrlKeyDownListener) window.removeEventListener('keydown', this._mmdCtrlKeyDownListener);
+    if (this._mmdCtrlKeyUpListener) window.removeEventListener('keyup', this._mmdCtrlKeyUpListener);
+    if (this._mmdWindowBlurListener) window.removeEventListener('blur', this._mmdWindowBlurListener);
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    this._mmdCtrlKeyDownListener = onKeyDown;
+    this._mmdCtrlKeyUpListener = onKeyUp;
+    this._mmdWindowBlurListener = onBlur;
+
     const update = () => {
         if (this._uiUpdateLoopId === null || this._uiUpdateLoopId === undefined) return;
 
@@ -473,6 +541,63 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                 mouse.y <= canvasRect.top + visibleBottom + padY;
 
             this._mmdMouseInModelRegion = !!mouseInModelRegion;
+
+            // ── 锁定后淡化逻辑（与 VRM 侧对齐） ──
+            const isMobileDevice = (window.appUtils && typeof window.appUtils.isMobile === 'function' && window.appUtils.isMobile()) || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            if (!isMobileDevice && mouse && !mouseStale) {
+                // 鼠标在 UI 元素（锁图标 / 浮动按钮）上时，重置淡化状态
+                let isOverUi = false;
+                if (lockIcon && lockIcon.style.display !== 'none') {
+                    const lr = lockIcon.getBoundingClientRect();
+                    if (mouse.x >= lr.left && mouse.x <= lr.right && mouse.y >= lr.top && mouse.y <= lr.bottom) isOverUi = true;
+                }
+                if (!isOverUi && buttonsContainer && buttonsContainer.style.display !== 'none') {
+                    const br = buttonsContainer.getBoundingClientRect();
+                    if (mouse.x >= br.left && mouse.x <= br.right && mouse.y >= br.top && mouse.y <= br.bottom) isOverUi = true;
+                }
+                if (isOverUi) {
+                    clearStationaryFadeTimer();
+                    ctrlFadeActive = false;
+                    stationaryFadeActive = false;
+                    hasEnteredHoverRange = false;
+                    applyFade();
+                }
+
+                // 计算鼠标到模型屏幕包围盒的距离
+                const sMinX = canvasRect.left + visibleLeft;
+                const sMaxX = canvasRect.left + visibleRight;
+                const sMinY = canvasRect.top + visibleTop;
+                const sMaxY = canvasRect.top + visibleBottom;
+                const dx = Math.max(sMinX - mouse.x, 0, mouse.x - sMaxX);
+                const dy = Math.max(sMinY - mouse.y, 0, mouse.y - sMaxY);
+                const distToModel = Math.sqrt(dx * dx + dy * dy);
+                const isNearModel = distToModel < hoverFadeThreshold;
+
+                // 静止自动淡化：锁定 + 鼠标在模型范围内静止 1 秒 → 变淡
+                if (this.isLocked && isNearModel && !isOverUi) {
+                    if (!hasEnteredHoverRange) {
+                        hasEnteredHoverRange = true;
+                        if (stationaryFadeTimer === null && !stationaryFadeActive) {
+                            stationaryFadeTimer = setTimeout(() => {
+                                stationaryFadeTimer = null;
+                                stationaryFadeActive = true;
+                                applyFade();
+                            }, STATIONARY_FADE_DELAY);
+                        }
+                    }
+                } else {
+                    if (stationaryFadeTimer !== null || stationaryFadeActive) {
+                        clearStationaryFadeTimer();
+                        stationaryFadeActive = false;
+                        applyFade();
+                    }
+                    hasEnteredHoverRange = false;
+                }
+
+                // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（UI 上时跳过）
+                ctrlFadeActive = this.isLocked && isCtrlPressed && isNearModel && !isOverUi;
+                applyFade();
+            }
 
             const showThreshold = baseThreshold;
             const hideThreshold = baseThreshold * 1.2;

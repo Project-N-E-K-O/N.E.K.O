@@ -49,7 +49,7 @@ dependencies = [
   "qrcode>=8.2",
   "httpx>=0.28.1",
   "psutil>=7.0.0",
-  "neteasecloudmusic>=0.1.10",
+  "pyncm-async>=1.8.0",
   "tornado>=6.5.4",
   "jmespath>=1.1.0",
 

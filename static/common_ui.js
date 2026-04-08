@@ -215,32 +215,68 @@ function setupResizableChatContainer() {
     restoreContainerSize();
 
     let isResizing = false;
+    let resizeRAFId = null;
     let startX = 0;
     let startY = 0;
     let startWidth = 0;
     let startHeight = 0;
     let startBottom = 0;
-    // 处理调整大小移动事件
-    const onResizeMove = (e) => {
-        if (!isResizing) return;
-        const clientX = e.type.startsWith('touch') ? e.touches[0].clientX : e.clientX;
-        const clientY = e.type.startsWith('touch') ? e.touches[0].clientY : e.clientY;
-        const nextWidth = startWidth + (clientX - startX);
-        const rawNextHeight = startHeight + (clientY - startY);
+    let pendingResizeClientX = 0;
+    let pendingResizeClientY = 0;
+
+    // rAF 回调：批量应用 resize 尺寸
+    const applyResizeFrame = () => {
+        resizeRAFId = null;
+        const nextWidth = startWidth + (pendingResizeClientX - startX);
+        const rawNextHeight = startHeight + (pendingResizeClientY - startY);
         // 当底边触达屏幕底部后，继续向下拖拽不再增高（顶部保持锚定）
         const bottomLimitedMaxHeight = startHeight + Math.max(0, startBottom);
         const nextHeight = Math.min(rawNextHeight, bottomLimitedMaxHeight);
         const applied = applyContainerSize(nextWidth, nextHeight);
-        // chat-container 采用 bottom 定位；同步调整 bottom 让垂直拉伸表现为“向下展开”
+        // chat-container 采用 bottom 定位；同步调整 bottom 让垂直拉伸表现为"向下展开"
         const consumedDeltaY = applied.height - startHeight;
         chatContainer.style.bottom = `${Math.max(0, startBottom - consumedDeltaY)}px`;
+    };
+
+    // 处理调整大小移动事件（仅记录位置，通过 rAF 合并更新）
+    const onResizeMove = (e) => {
+        if (!isResizing) return;
+        const clientX = e.type.startsWith('touch') ? e.touches[0].clientX : e.clientX;
+        const clientY = e.type.startsWith('touch') ? e.touches[0].clientY : e.clientY;
+        pendingResizeClientX = clientX;
+        pendingResizeClientY = clientY;
+        if (!resizeRAFId) {
+            resizeRAFId = requestAnimationFrame(applyResizeFrame);
+        }
         e.preventDefault();
     };
+
+    // 动态绑定/解绑全局 resize 事件监听器
+    const bindResizeListeners = () => {
+        document.addEventListener('mousemove', onResizeMove);
+        document.addEventListener('touchmove', onResizeMove, { passive: false });
+        document.addEventListener('mouseup', stopResize);
+        document.addEventListener('touchend', stopResize);
+    };
+    const unbindResizeListeners = () => {
+        document.removeEventListener('mousemove', onResizeMove);
+        document.removeEventListener('touchmove', onResizeMove);
+        document.removeEventListener('mouseup', stopResize);
+        document.removeEventListener('touchend', stopResize);
+    };
+
     // 处理调整大小结束事件
     const stopResize = () => {
         if (!isResizing) return;
+        // 取消待执行的 rAF，立即应用最终尺寸
+        if (resizeRAFId) {
+            cancelAnimationFrame(resizeRAFId);
+            resizeRAFId = null;
+            applyResizeFrame();
+        }
         isResizing = false;
         chatContainer.classList.remove('is-resizing');
+        unbindResizeListeners();
         persistContainerSize();
         if (window.ChatDialogSnap && typeof window.ChatDialogSnap.snapIntoScreen === 'function') {
             window.ChatDialogSnap.snapIntoScreen({ animate: true });
@@ -258,20 +294,21 @@ function setupResizableChatContainer() {
         startY = point.clientY;
         startWidth = rect.width;
         startHeight = rect.height;
+        pendingResizeClientX = point.clientX;
+        pendingResizeClientY = point.clientY;
         const computedStyle = window.getComputedStyle(chatContainer);
         const parsedBottom = parseFloat(computedStyle.bottom);
         startBottom = Number.isFinite(parsedBottom) ? parsedBottom : (window.innerHeight - rect.bottom);
 
+        // 动态绑定全局事件
+        bindResizeListeners();
+
         e.stopPropagation();
         e.preventDefault();
     };
-    // 绑定调整大小事件
+    // 绑定调整大小启动事件（仅 handle 上绑定 mousedown/touchstart）
     resizeHandle.addEventListener('mousedown', startResize);
     resizeHandle.addEventListener('touchstart', startResize, { passive: false });
-    document.addEventListener('mousemove', onResizeMove);
-    document.addEventListener('touchmove', onResizeMove, { passive: false });
-    document.addEventListener('mouseup', stopResize);
-    document.addEventListener('touchend', stopResize);
 
     window.addEventListener('resize', () => {
         const rect = chatContainer.getBoundingClientRect();
@@ -279,6 +316,7 @@ function setupResizableChatContainer() {
         persistContainerSize();
     });
 }
+
 
 // --- 切换聊天框最小化/展开状态 ---
 // 用于跟踪是否刚刚发生了拖动
@@ -384,6 +422,8 @@ if (toggleBtn) {
                     iconImg.src = '/static/icons/expand_icon_off.png';
                     iconImg.alt = window.t ? window.t('common.expand') : '展开';
                     toggleBtn.title = window.t ? window.t('common.expand') : '展开';
+                    // 折叠后执行回弹，避免位置越界
+                    triggerExpandSnap();
                 } else {
                     iconImg.src = '/static/icons/expand_icon_off.png';
                     iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
@@ -446,13 +486,51 @@ if (toggleBtn) {
                     finishCollapse();
                 }, transitionDuration);
             } else {
+                // 展开动画：从最小化尺寸过渡到完整尺寸
+                const targetSize = 50;
+                // 计算初始 scale（从最小尺寸到完整尺寸的逆向）
+                const storedSize = getStoredChatContainerSize ? getStoredChatContainerSize() : null;
+                const targetW = storedSize ? storedSize.width : 400;
+                const targetH = storedSize ? storedSize.height : 500;
+                const startScaleX = targetW > 0 ? Math.min(1, targetSize / targetW) : 1;
+                const startScaleY = targetH > 0 ? Math.min(1, targetSize / targetH) : 1;
+
                 chatContainer.classList.remove('minimized');
                 chatContainer.classList.remove('collapsing');
-                chatContainer.style.removeProperty('--chat-collapse-scale-x');
-                chatContainer.style.removeProperty('--chat-collapse-scale-y');
-                if (chatContainer.classList.length === 0) {
-                    chatContainer.removeAttribute('class');
-                }
+
+                // 设置初始 scale 并添加展开类
+                chatContainer.style.setProperty('--chat-expand-scale-x', String(startScaleX));
+                chatContainer.style.setProperty('--chat-expand-scale-y', String(startScaleY));
+                chatContainer.classList.add('expanding');
+
+                // 强制 reflow，确保初始状态被渲染
+                void chatContainer.offsetHeight;
+
+                // 在下一帧设置目标 scale 为 1，触发动画
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        chatContainer.style.setProperty('--chat-expand-scale-x', '1');
+                        chatContainer.style.setProperty('--chat-expand-scale-y', '1');
+                    });
+                });
+
+                // 动画结束后清理
+                let expandHandled = false;
+                const finishExpand = () => {
+                    if (expandHandled) return;
+                    expandHandled = true;
+                    chatContainer.removeEventListener('transitionend', onExpandEnd);
+                    chatContainer.classList.remove('expanding');
+                    chatContainer.style.removeProperty('--chat-expand-scale-x');
+                    chatContainer.style.removeProperty('--chat-expand-scale-y');
+                    isTransitioning = false;
+                };
+                const onExpandEnd = (e) => {
+                    if (e.target !== chatContainer || e.propertyName !== 'transform') return;
+                    finishExpand();
+                };
+                chatContainer.addEventListener('transitionend', onExpandEnd);
+                setTimeout(finishExpand, 400);
             }
 
             const isMinimized = willMinimize;
@@ -481,6 +559,8 @@ if (toggleBtn) {
                 toggleBtn.title = window.t ? window.t('common.expand') : '展开';
                 iconImg.style.width = '100%';
                 iconImg.style.height = '100%';
+                // 折叠后执行回弹，避免位置越界
+                triggerExpandSnap();
             } else {
                 // 刚刚还原展开，显示最小化图标（减号）
                 iconImg.src = '/static/icons/expand_icon_off.png';
@@ -493,8 +573,10 @@ if (toggleBtn) {
                 // 展开后执行回弹，避免位置越界
                 triggerExpandSnap();
             }
-            // 动画结束后清除过渡标志
-            setTimeout(() => { isTransitioning = false; }, 350);
+            // 折叠动画结束后清除过渡标志（展开动画由 finishExpand 清除）
+            if (willMinimize) {
+                setTimeout(() => { isTransitioning = false; }, 350);
+            }
         } catch (e) {
             // 发生异常时立即重置过渡标志
             isTransitioning = false;
@@ -534,6 +616,11 @@ if (toggleBtn) {
     let startMouseY = 0; // 开始拖动时的鼠标Y位置
     let startContainerLeft = 0; // 开始拖动时容器的left值
     let startContainerBottom = 0; // 开始拖动时容器的bottom值
+    let cachedEffectiveWidth = 0; // 拖动开始时缓存的宽度（避免拖动中反复触发 reflow）
+    let cachedEffectiveHeight = 0; // 拖动开始时缓存的高度
+    let dragRAFId = null; // 拖动时的 requestAnimationFrame ID
+    let pendingDragClientX = 0; // 待处理的鼠标位置
+    let pendingDragClientY = 0;
 
     // 拖动回弹配置（多屏幕切换时使用）
     const CHAT_SNAP_CONFIG = {
@@ -694,6 +781,8 @@ if (toggleBtn) {
     function startDrag(e, skipPreventDefault = false) {
         isDragging = true;
         hasMoved = false;
+        // 设置全局拖拽标志，供 preload 等跳过昂贵操作
+        if (window.DragHelpers) window.DragHelpers.isDragging = true;
         dragStartedFromToggleBtn = (e.target === toggleBtn || toggleBtn.contains(e.target));
 
         // 获取初始鼠标/触摸位置
@@ -703,15 +792,29 @@ if (toggleBtn) {
         // 记录开始时的鼠标位置
         startMouseX = clientX;
         startMouseY = clientY;
+        // 同步初始化 pending 坐标，防止 click-without-move 时
+        // commitDragPosition() 使用过期值产生错误位移
+        pendingDragClientX = clientX;
+        pendingDragClientY = clientY;
 
         // 获取当前容器的实际位置（从计算样式中读取，确保准确）
         const computedStyle = window.getComputedStyle(chatContainer);
         startContainerLeft = parseFloat(computedStyle.left) || 0;
         startContainerBottom = parseFloat(computedStyle.bottom) || 0;
 
-        console.log('[Drag Start] Mouse:', clientX, clientY, 'Container:', startContainerLeft, startContainerBottom);
+        // 缓存拖动期间不变的尺寸，避免每次 mousemove 触发 reflow
+        cachedEffectiveWidth = chatContainer.offsetWidth;
+        cachedEffectiveHeight = chatContainer.offsetHeight;
+        if (isCollapsed() && toggleBtn) {
+            const toggleRect = toggleBtn.getBoundingClientRect();
+            if (toggleRect.width > 0 && toggleRect.height > 0) {
+                cachedEffectiveWidth = toggleRect.width;
+                cachedEffectiveHeight = toggleRect.height;
+            }
+        }
 
-        // 添加拖动样式
+        // 添加拖动样式（禁用 backdrop-filter 等昂贵效果）
+        chatContainer.classList.add('dragging');
         chatContainer.style.cursor = 'grabbing';
         if (chatHeader) chatHeader.style.cursor = 'grabbing';
 
@@ -726,6 +829,46 @@ if (toggleBtn) {
         }
     }
 
+    // 计算边界限制后的位移量
+    function clampedDragDelta() {
+        const deltaX = pendingDragClientX - startMouseX;
+        const deltaY = pendingDragClientY - startMouseY;
+
+        const newLeft = startContainerLeft + deltaX;
+        const newBottom = startContainerBottom - deltaY;
+
+        const maxLeft = window.innerWidth - cachedEffectiveWidth;
+        const maxBottomRaw = window.innerHeight - cachedEffectiveHeight;
+        const topBoundary = CHAT_SNAP_CONFIG.margin;
+        const maxBottom = Math.max(0, maxBottomRaw - topBoundary);
+
+        const clampedLeft = Math.max(0, Math.min(maxLeft, newLeft));
+        const clampedBottom = Math.max(0, Math.min(maxBottom, newBottom));
+
+        return {
+            tx: clampedLeft - startContainerLeft,
+            ty: -(clampedBottom - startContainerBottom), // transform Y 轴向下为正
+            finalLeft: clampedLeft,
+            finalBottom: clampedBottom
+        };
+    }
+
+    // 实际执行位置更新（在 rAF 回调中调用，避免跳帧）
+    // 使用 transform: translate() 移动，完全跳过 layout，仅走 GPU 合成
+    function applyDragPosition() {
+        dragRAFId = null;
+        const { tx, ty } = clampedDragDelta();
+        chatContainer.style.transform = `translate(${tx}px, ${ty}px)`;
+    }
+
+    // 拖动结束时，将 transform 位移落实到 left/bottom，并清除 transform
+    function commitDragPosition() {
+        const { finalLeft, finalBottom } = clampedDragDelta();
+        chatContainer.style.transform = '';
+        chatContainer.style.left = finalLeft + 'px';
+        chatContainer.style.bottom = finalBottom + 'px';
+    }
+
     // 移动中
     function onDragMove(e) {
         if (!isDragging) return;
@@ -733,44 +876,31 @@ if (toggleBtn) {
         const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
         const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
 
-        // 计算鼠标的位移
+        // 检查是否真的移动了（移动距离超过5px）
         const deltaX = clientX - startMouseX;
         const deltaY = clientY - startMouseY;
-
-        // 检查是否真的移动了（移动距离超过5px）
-        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-
-        if (distance > 5) {
+        if (!hasMoved && (deltaX * deltaX + deltaY * deltaY) > 25) {
             hasMoved = true;
         }
 
-        // 立即更新位置：初始位置 + 鼠标位移
-        const newLeft = startContainerLeft + deltaX;
-        // 注意：Y轴向下为正，但bottom值向上为正，所以要减去deltaY
-        const newBottom = startContainerBottom - deltaY;
-
-        // 限制在视口内
-        let effectiveWidth = chatContainer.offsetWidth;
-        let effectiveHeight = chatContainer.offsetHeight;
-        if (isCollapsed() && toggleBtn) {
-            const toggleRect = toggleBtn.getBoundingClientRect();
-            if (toggleRect.width > 0 && toggleRect.height > 0) {
-                effectiveWidth = toggleRect.width;
-                effectiveHeight = toggleRect.height;
-            }
+        // 记录最新鼠标位置，通过 rAF 合并更新，避免每个 mousemove 都触发重绘
+        pendingDragClientX = clientX;
+        pendingDragClientY = clientY;
+        if (!dragRAFId) {
+            dragRAFId = requestAnimationFrame(applyDragPosition);
         }
-        const maxLeft = window.innerWidth - effectiveWidth;
-        const maxBottomRaw = window.innerHeight - effectiveHeight;
-        const topBoundary = CHAT_SNAP_CONFIG.margin;
-        const maxBottom = Math.max(0, maxBottomRaw - topBoundary);
-
-        chatContainer.style.left = Math.max(0, Math.min(maxLeft, newLeft)) + 'px';
-        chatContainer.style.bottom = Math.max(0, Math.min(maxBottom, newBottom)) + 'px';
     }
 
     // 结束拖动
     function endDrag() {
         if (isDragging) {
+            // 取消待执行的 rAF，将 transform 位移落实到 left/bottom
+            if (dragRAFId) {
+                cancelAnimationFrame(dragRAFId);
+                dragRAFId = null;
+            }
+            commitDragPosition();
+
             const wasDragging = isDragging;
             const didMove = hasMoved;
             const fromToggleBtn = dragStartedFromToggleBtn;
@@ -778,15 +908,17 @@ if (toggleBtn) {
             isDragging = false;
             hasMoved = false;
             dragStartedFromToggleBtn = false;
+            chatContainer.classList.remove('dragging');
             chatContainer.style.cursor = '';
             if (chatHeader) chatHeader.style.cursor = '';
 
-            // 拖拽结束后恢复按钮的 pointer-events（使用 live2d-ui-drag.js 中的共享工具函数）
+            // 清除全局拖拽标志
+            if (window.DragHelpers) window.DragHelpers.isDragging = false;
+
+            // 拖拽结束后恢复按钮的 pointer-events
             if (window.DragHelpers) {
                 window.DragHelpers.restoreButtonPointerEvents();
             }
-
-            console.log('[Drag End] Moved:', didMove, 'FromToggleBtn:', fromToggleBtn);
 
             // 如果发生了移动，标记 justDragged 以阻止后续的 click 事件
             if (didMove && fromToggleBtn) {
@@ -896,6 +1028,16 @@ if (toggleBtn) {
     // 屏幕切换后，确保对话框回弹到新屏幕内侧
     window.addEventListener('electron-display-changed', () => {
         snapChatContainerIntoScreen({ animate: true });
+    });
+
+    // 窗口大小改变后，确保对话框回弹到屏幕内侧（包括折叠状态）
+    let resizeSnapTimer = null;
+    window.addEventListener('resize', () => {
+        if (resizeSnapTimer) clearTimeout(resizeSnapTimer);
+        resizeSnapTimer = setTimeout(() => {
+            resizeSnapTimer = null;
+            snapChatContainerIntoScreen({ animate: true });
+        }, 200);
     });
 })();
 

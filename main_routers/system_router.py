@@ -1961,7 +1961,12 @@ async def proxy_meme_image(url: str):
 
 # ==================== 网易云音乐代理 ====================
 # 解决浏览器无法直接播放网易云外链的问题（需要 Referer 头）
-MUSIC_PROXY_CACHE = TTLCache(maxsize=200, ttl=3600 * 6)  # 6小时缓存
+# 使用基于字节的体积限制（500MB），而非按条数限制，防止大音频文件导致 OOM
+MUSIC_PROXY_CACHE = TTLCache(
+    maxsize=500 * 1024 * 1024,  # 500MB 内存预算
+    ttl=3600 * 6,
+    getsizeof=lambda item: len(item.get('body', b''))
+)
 
 @router.get('/music/proxy-netease')
 async def proxy_netease_music(url: str):

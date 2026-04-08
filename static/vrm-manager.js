@@ -1071,6 +1071,25 @@ class VRMManager {
 
         let width, height;
 
+        // 多窗口模式下（Pet 窗口可能被缩小），渲染缓冲区使用实际可见尺寸，
+        // 配合 setPixelRatio（vrm-core.js）保证 Retina 清晰度，
+        // 避免分配全屏分辨率的 GPU buffer 浪费显存。
+        if (window.__NEKO_MULTI_WINDOW__) {
+            const screenWidth = window.screen.width || 1920;
+            const screenHeight = window.screen.height || 1080;
+            const visibleWidth = (this.container && this.container.clientWidth > 0)
+                ? this.container.clientWidth : (window.innerWidth || screenWidth);
+            const visibleHeight = (this.container && this.container.clientHeight > 0)
+                ? this.container.clientHeight : (window.innerHeight || screenHeight);
+
+            this.camera.aspect = visibleWidth / visibleHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setSize(visibleWidth, visibleHeight, false);
+            this.renderer.domElement.style.width = visibleWidth + 'px';
+            this.renderer.domElement.style.height = visibleHeight + 'px';
+            return;
+        }
+
         if (this.container && this.container.clientWidth > 0 && this.container.clientHeight > 0) {
             width = this.container.clientWidth;
             height = this.container.clientHeight;
