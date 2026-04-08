@@ -928,7 +928,12 @@ class DirectTaskExecutor:
                 final_has = decision.get("has_task", False)
                 final_can = decision.get("can_execute", False)
                 if final_has and final_can:
-                    if not final_eid and valid_entries_map.get(final_pid):
+                    if valid_entries_map and final_pid not in valid_entries_map:
+                        logger.warning("[UserPlugin Assessment] Final check: plugin_id '%s' still invalid after retry, forcing can_execute=false", final_pid)
+                        final_can = False
+                        decision["can_execute"] = False
+                        decision["reason"] = f"plugin_id '{final_pid}' not found"
+                    elif not final_eid and valid_entries_map.get(final_pid):
                         logger.warning(
                             "[UserPlugin Assessment] Final check: entry_id missing while has_task/can_execute=true (plugin_id=%s), forcing can_execute=false",
                             final_pid,
@@ -940,11 +945,6 @@ class DirectTaskExecutor:
                         # Plugin has no declared entries — fall back to default 'run'
                         final_eid = "run"
                         decision["entry_id"] = "run"
-                    elif valid_entries_map and final_pid not in valid_entries_map:
-                        logger.warning("[UserPlugin Assessment] Final check: plugin_id '%s' still invalid after retry, forcing can_execute=false", final_pid)
-                        final_can = False
-                        decision["can_execute"] = False
-                        decision["reason"] = f"plugin_id '{final_pid}' not found"
                     elif valid_entries_map and valid_entries_map.get(final_pid) and final_eid not in valid_entries_map[final_pid]:
                         logger.warning("[UserPlugin Assessment] Final check: entry_id '%s' still invalid for plugin '%s', forcing can_execute=false", final_eid, final_pid)
                         final_can = False
