@@ -28,7 +28,8 @@
         "fieldSeparator": ", ",
         "tryAgainLater": "Please try again later",
         "user": "User",
-        "project": "Project"
+        "project": "Project",
+        "collapse": "Collapse"
     },
     "autostartPrompt": {
         "title": "Want N.E.K.O to launch at startup?",
@@ -2496,6 +2497,7 @@
         "weibo": "🌏 Weibo",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 NetEase Cloud Music",
         "saveConfig": "Save Configuration",
         "encryptStorage": "Securely encrypt and store to local file",
         "localMonitoring": "Local Status Monitoring",
@@ -2521,7 +2523,8 @@
             "kuaishou": "📌 <b>Target:</b> Go to <b>kuaishou.com</b> to fetch these cookies.",
             "weibo": "📌 <b>Target:</b> Go to <b>weibo.com</b> to fetch these cookies.",
             "twitter": "📌 <b>Target:</b> Go to <b>x.com</b> to fetch these cookies.",
-            "reddit": "📌 <b>Target:</b> Go to <b>reddit.com</b> to fetch these cookies."
+            "reddit": "📌 <b>Target:</b> Go to <b>reddit.com</b> to fetch these cookies.",
+            "netease": "📌 <b>Target:</b> Go to <b>music.163.com</b> to fetch these cookies."
         },
         "guide": {
             "title": "Universal Guide for Beginners",
@@ -2603,6 +2606,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF token"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "Core identity credential (Required)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "Device identifier (Optional)"
             }
         },
         "status": {
@@ -2626,7 +2637,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "QR login successful! Cookies have been filled in automatically, please click Save Configuration"
+            "successAlert": "QR login successful! Cookies have been filled in automatically, please click Save Configuration",
+            "extractFailed": "⚠️ QR login succeeded but failed to extract fields automatically. Please check manually."
         }
     },
     "music": {
