@@ -674,9 +674,19 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     let stationaryFadeActive = false; // 静止1秒淡化
     const applyFade = () => {
         if (!live2dContainer) return;
-        const shouldFade = ctrlFadeActive || stationaryFadeActive;
+        const shouldFade = (ctrlFadeActive || stationaryFadeActive) && window.lockedHoverFadeEnabled !== false;
         live2dContainer.classList.toggle('locked-hover-fade', shouldFade);
     };
+
+    // 监听锁定悬停淡化设置变更
+    const onLockedHoverFadeChanged = () => {
+        if (window.lockedHoverFadeEnabled === false) {
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
+        }
+    };
+    window.addEventListener('neko-locked-hover-fade-changed', onLockedHoverFadeChanged);
 
     // 跟踪 Ctrl 键状态（作为备用，主要从事件中直接读取）
     let isCtrlPressed = false;

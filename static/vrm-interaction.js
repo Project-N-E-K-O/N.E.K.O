@@ -956,10 +956,21 @@ class VRMInteraction {
 
         const applyFade = (forceFade) => {
             if (!vrmContainer) return;
-            const shouldFade = forceFade !== undefined ? forceFade : (ctrlFadeActive || stationaryFadeActive);
+            let shouldFade = forceFade !== undefined ? forceFade : (ctrlFadeActive || stationaryFadeActive);
+            if (window.lockedHoverFadeEnabled === false) shouldFade = false;
             vrmContainer.style.opacity = shouldFade ? '0.12' : '1';
         };
         this._setLockedHoverFade = applyFade;
+
+        // 监听锁定悬停淡化设置变更
+        const onLockedHoverFadeChanged = () => {
+            if (window.lockedHoverFadeEnabled === false) {
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                applyFade();
+            }
+        };
+        window.addEventListener('neko-locked-hover-fade-changed', onLockedHoverFadeChanged);
 
         // 初始化缓存
         this.updateModelBoundsCache();
