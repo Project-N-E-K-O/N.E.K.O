@@ -1390,4 +1390,133 @@ html #chat-container {
   opacity: 1 !important;
 }
 
+/* ============================================================ */
+/* Chat Export — dark mode overrides                            */
+/* ============================================================ */
+
+[data-theme="dark"] #exportConversationButton {
+  color: #cbd5e1;
+}
+
+[data-theme="dark"] #exportConversationButton:hover {
+  background: rgba(203, 213, 225, 0.14);
+  color: #f8fafc;
+}
+
+[data-theme="dark"] .chat-export-preview-backdrop {
+  background: rgba(2, 6, 23, 0.6);
+}
+
+[data-theme="dark"] .chat-export-preview-panel {
+  background: #1e293b;
+  color: #e2e8f0;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+[data-theme="dark"] .chat-export-preview-header,
+[data-theme="dark"] .chat-export-selection-section,
+[data-theme="dark"] .chat-export-preview-controls,
+[data-theme="dark"] .chat-export-preview-footer {
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+[data-theme="dark"] .chat-export-preview-title {
+  color: #f1f5f9;
+}
+
+[data-theme="dark"] .chat-export-preview-summary {
+  color: #94a3b8;
+}
+
+[data-theme="dark"] .chat-export-preview-close {
+  color: #94a3b8;
+}
+
+[data-theme="dark"] .chat-export-preview-close:hover {
+  background: rgba(148, 163, 184, 0.18);
+  color: #f1f5f9;
+}
+
+[data-theme="dark"] .chat-export-selection-tool,
+[data-theme="dark"] .chat-export-format-chip,
+[data-theme="dark"] .chat-export-style-chip,
+[data-theme="dark"] .chat-export-image-format-chip {
+  background: #0f172a;
+  border-color: rgba(148, 163, 184, 0.3);
+  color: #cbd5e1;
+}
+
+[data-theme="dark"] .chat-export-selection-tool:hover,
+[data-theme="dark"] .chat-export-format-chip:hover,
+[data-theme="dark"] .chat-export-style-chip:hover,
+[data-theme="dark"] .chat-export-image-format-chip:hover {
+  background: rgba(99, 102, 241, 0.22);
+  border-color: #818cf8;
+  color: #e0e7ff;
+}
+
+[data-theme="dark"] .chat-export-format-chip.is-active,
+[data-theme="dark"] .chat-export-style-chip.is-active,
+[data-theme="dark"] .chat-export-image-format-chip.is-active {
+  background: #6366f1;
+  border-color: #6366f1;
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+}
+
+[data-theme="dark"] .chat-export-selection-row:hover {
+  background: rgba(30, 41, 59, 0.8);
+}
+
+[data-theme="dark"] .chat-export-selection-author {
+  color: #e2e8f0;
+}
+
+[data-theme="dark"] .chat-export-selection-time {
+  color: #64748b;
+}
+
+[data-theme="dark"] .chat-export-selection-preview {
+  color: #94a3b8;
+}
+
+[data-theme="dark"] .chat-export-preview-body {
+  background: #0f172a;
+}
+
+[data-theme="dark"] .chat-export-preview-frame {
+  background: #0f172a;
+}
+
+[data-theme="dark"] .chat-export-preview-placeholder {
+  background: rgba(15, 23, 42, 0.92);
+  color: #94a3b8;
+}
+
+[data-theme="dark"] .chat-export-preview-action {
+  background: #0f172a;
+  border-color: rgba(148, 163, 184, 0.3);
+  color: #cbd5e1;
+}
+
+[data-theme="dark"] .chat-export-preview-action:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.22);
+  border-color: #818cf8;
+  color: #e0e7ff;
+}
+
+[data-theme="dark"] .chat-export-preview-action-primary {
+  background: #6366f1;
+  border-color: #6366f1;
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+}
+
+[data-theme="dark"] .chat-export-preview-action-primary:hover:not(:disabled) {
+  background: #4f46e5;
+  border-color: #4f46e5;
+  color: #ffffff;
+  box-shadow: 0 6px 18px rgba(79, 70, 229, 0.55);
+}
+
 /* Steam Workshop 图标保持原样（黑夜模式与白天一致） */

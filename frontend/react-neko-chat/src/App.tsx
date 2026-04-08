@@ -107,7 +107,7 @@ export default function App({
             >
               <img
                 className="composer-tool-chip-icon"
-                src="/static/icons/upload_icon.png"
+                src="/static/icons/image_icon.svg"
                 alt=""
                 aria-hidden="true"
               />
