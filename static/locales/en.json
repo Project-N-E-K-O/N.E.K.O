@@ -28,7 +28,8 @@
         "fieldSeparator": ", ",
         "tryAgainLater": "Please try again later",
         "user": "User",
-        "project": "Project"
+        "project": "Project",
+        "collapse": "Collapse"
     },
     "characterProfile": {
         "gender": "Gender",
@@ -564,7 +565,50 @@
         "emojiButtonAriaLabel": "Emoji",
         "attachmentButtonAriaLabel": "Attachment",
         "jukebox": "Jukebox",
-        "jukeboxLabel": "Jukebox"
+        "jukeboxLabel": "Jukebox",
+        "exportConversation": "Export Conversation",
+        "exportSelected": "Export Selected",
+        "exportPreviewTitle": "Export Preview",
+        "exportPreviewSummary": "{{count}} selected item(s)",
+        "exportPreviewEmpty": "There is nothing selected to preview.",
+        "exportFormatLabel": "Export Format",
+        "exportFormatMarkdown": "Markdown",
+        "exportFormatImage": "Image",
+        "exportImageFormatPng": "PNG",
+        "exportImageFormatJpeg": "JPEG",
+        "exportImageFormatWebp": "WebP",
+        "exportImageStyleNeko": "N.E.K.O",
+        "exportImageStyleOriginal": "Original",
+        "exportImageStylePoster": "Fresh",
+        "exportImageStyleLyrics": "Lyrics",
+        "exportPosterTitle": "Conversation Highlights",
+        "exportPosterSubtitle": "Shared from N.E.K.O",
+        "exportImageFormatUnsupported": "{{format}} export is not supported in the current environment.",
+        "confirmExportAs": "Export {{format}}",
+        "exportMarkdownPreviewSubtitle": "Rendered preview of the exported Markdown content.",
+        "exportPreviewLoading": "Generating preview...",
+        "exportPreviewFailed": "Failed to build the preview.",
+        "previewOpenWindow": "Open In Window",
+        "previewClose": "Close",
+        "previewOpenBlocked": "Unable to open a new preview window.",
+        "previewOpenFailed": "Failed to open the preview window.",
+        "copyMarkdown": "Copy Markdown",
+        "copyMarkdownSuccess": "Markdown copied to clipboard.",
+        "copyMarkdownFailed": "Failed to copy Markdown.",
+        "exportEmpty": "There is no conversation to export yet.",
+        "exportSelectionEmpty": "Select at least one message to export.",
+        "exportSuccess": "Conversation exported successfully",
+        "exportFileTitle": "Project N.E.K.O Conversation Export",
+        "exportGeneratedAt": "Exported At",
+        "exportUser": "User",
+        "exportAssistant": "N.E.K.O.",
+        "exportImageLabel": "Image",
+        "exportAudioLabel": "Audio",
+        "exportVideoLabel": "Video",
+        "exportSelectAll": "Select All",
+        "exportSelectNone": "Clear",
+        "exportSelectInvert": "Invert",
+        "exportSelectionCount": "{{selected}} / {{total}} selected"
     },
     "voiceControl": {
         "startVoice": "Start Voice",
@@ -2478,6 +2522,7 @@
         "weibo": "🌏 Weibo",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 NetEase Cloud Music",
         "saveConfig": "Save Configuration",
         "encryptStorage": "Securely encrypt and store to local file",
         "localMonitoring": "Local Status Monitoring",
@@ -2503,7 +2548,8 @@
             "kuaishou": "📌 <b>Target:</b> Go to <b>kuaishou.com</b> to fetch these cookies.",
             "weibo": "📌 <b>Target:</b> Go to <b>weibo.com</b> to fetch these cookies.",
             "twitter": "📌 <b>Target:</b> Go to <b>x.com</b> to fetch these cookies.",
-            "reddit": "📌 <b>Target:</b> Go to <b>reddit.com</b> to fetch these cookies."
+            "reddit": "📌 <b>Target:</b> Go to <b>reddit.com</b> to fetch these cookies.",
+            "netease": "📌 <b>Target:</b> Go to <b>music.163.com</b> to fetch these cookies."
         },
         "guide": {
             "title": "Universal Guide for Beginners",
@@ -2585,6 +2631,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF token"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "Core identity credential (Required)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "Device identifier (Optional)"
             }
         },
         "status": {
@@ -2608,7 +2662,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "QR login successful! Cookies have been filled in automatically, please click Save Configuration"
+            "successAlert": "QR login successful! Cookies have been filled in automatically, please click Save Configuration",
+            "extractFailed": "⚠️ QR login succeeded but failed to extract fields automatically. Please check manually."
         }
     },
     "music": {

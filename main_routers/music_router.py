@@ -1,7 +1,11 @@
 # 音乐路由
 
 from fastapi import APIRouter, Query
+from fastapi.responses import RedirectResponse
+import pyncm_async
+from pyncm_async.apis.track import GetTrackAudio
 from utils.music_crawlers import fetch_music_content
+from utils.cookies_login import load_cookies_from_file
 from utils.logger_config import get_module_logger
 
 router = APIRouter()
@@ -60,3 +64,38 @@ async def search_music(
             "error": "MUSIC_SEARCH_ERROR",
             "message": "音乐搜索服务异常，请稍后重试"
         }
+
+@router.get("/api/music/play/netease/{song_id}")
+async def play_netease_music(song_id: str):
+    """
+    网易云 VIP 音乐智能跳转路由：
+    利用后端 MUSIC_U Cookie 获取真实高音质/鉴权直链，通过 307 重定向至前端播放。
+    """
+    try:
+        # 加载 Cookie 并同步到 pyncm_async 会话
+        cookies = load_cookies_from_file('netease')
+        if cookies:
+            session = pyncm_async.GetCurrentSession()
+            # 兼容性处理：pyncm_async 内部使用 httpx，直接注入 cookiejar
+            for k, v in cookies.items():
+                session.client.cookies.set(k, v)
+        
+        # 获取真实播放地址 (IDs 接受列表)
+        # 默认获取 standard 标准音质，VIP 账户通常可获得更多 Token 授权
+        res = await GetTrackAudio([int(song_id)])
+        
+        if res and res.get('data') and len(res['data']) > 0:
+            track_info = res['data'][0]
+            real_url = track_info.get('url')
+            
+            if real_url:
+                logger.info(f"[音乐播放] 成功解析歌曲 {song_id} 的 VIP/鉴权直链")
+                return RedirectResponse(url=real_url)
+                
+    except Exception as e:
+        logger.error(f"[音乐播放] 解析歌曲 {song_id} 真实地址时发生异常: {e}")
+
+    # Fallback: 如果解析失败或无 Cookie，降级使用免登录的 outer/url 外链
+    fallback_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
+    logger.warning(f"[音乐播放] 无法获取歌曲 {song_id} 的真实链接，降级使用公开外链")
+    return RedirectResponse(url=fallback_url)

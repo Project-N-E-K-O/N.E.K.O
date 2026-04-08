@@ -163,6 +163,12 @@
         <div id="react-chat-window-shell" role="dialog" aria-modal="true" aria-labelledby="react-chat-window-title">
             <div id="react-chat-window-drag-handle" aria-hidden="true"></div>
             <div id="react-chat-window-header-actions">
+                <button id="exportConversationButton" type="button"
+                        data-i18n-aria="chat.exportConversation"
+                        data-i18n-title="chat.exportConversation"
+                        aria-label="导出对话" title="导出对话">
+                    <img src="/static/icons/fenxiang.svg" alt="" aria-hidden="true" width="20" height="20">
+                </button>
                 <button id="reactChatWindowMinimizeButton" type="button" data-i18n-aria="chat.reactWindowMinimize" data-i18n-title="chat.reactWindowMinimize">
                     <img id="reactChatWindowMinimizeIcon" src="/static/icons/expand_icon_off.png" data-i18n-alt="chat.reactWindowMinimize" alt="最小化新版聊天框" width="32" height="32">
                 </button>
@@ -259,6 +265,7 @@
     <script src="/static/app.js"></script>
     <script src="/static/react/neko-chat/neko-chat-window.iife.js"></script>
     <script src="/static/app-react-chat-window.js"></script>
+    <script src="/static/app-chat-export.js"></script>
 
     <script src="/static/subtitle.js"></script>
 
