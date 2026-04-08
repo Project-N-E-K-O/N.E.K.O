@@ -111,3 +111,34 @@ def test_cli_verify_fails_when_package_hash_is_tampered(
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "payload_hash_verified=False" in captured.out
+
+
+def test_cli_pack_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    first_plugin = _make_plugin_dir(tmp_path, plugin_id="bundle_cli_one")
+    second_plugin = _make_plugin_dir(tmp_path, plugin_id="bundle_cli_two")
+    target_dir = tmp_path / "target"
+
+    exit_code = neko_plugin_cli.main(
+        [
+            "pack",
+            str(first_plugin),
+            str(second_plugin),
+            "--bundle",
+            "--bundle-id",
+            "bundle_cli_demo",
+            "--target-dir",
+            str(target_dir),
+        ]
+    )
+    assert exit_code == 0
+
+    package_path = target_dir / "bundle_cli_demo.neko-bundle"
+    assert package_path.is_file()
+
+    inspect_exit = neko_plugin_cli.main(["inspect", str(package_path)])
+    assert inspect_exit == 0
+
+    captured = capsys.readouterr()
+    assert "package_type=bundle" in captured.out
+    assert "plugin_count=2" in captured.out
+    assert "type=bundle" in captured.out

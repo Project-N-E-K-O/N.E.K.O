@@ -93,3 +93,28 @@ async def test_plugin_cli_list_plugins_route_returns_shape(
         assert "plugins" in body
         assert "count" in body
         assert isinstance(body["plugins"], list)
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_list_packages_route_returns_target_packages(
+    plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, plugin_id="route_pkg_demo")
+    package_path = tmp_path / "route_pkg_demo.neko-plugin"
+    pack_plugin(plugin_dir, package_path)
+
+    import plugin.server.application.plugin_cli.service as plugin_cli_service_module
+
+    monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
+
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/plugin-cli/packages")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["count"] == 1
+        assert body["target_dir"] == str(tmp_path)
+        assert body["packages"][0]["name"] == "route_pkg_demo.neko-plugin"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -16,7 +17,7 @@ _TARGET_ROOT = _CLI_ROOT / "target"
 if str(_CLI_ROOT) not in sys.path:
     sys.path.insert(0, str(_CLI_ROOT))
 
-from public import analyze_bundle_plugins, inspect_package, pack_plugin, unpack_package
+from public import analyze_bundle_plugins, inspect_package, pack_bundle, pack_plugin, unpack_package
 
 logger = get_logger("server.application.plugin_cli")
 
@@ -25,22 +26,37 @@ class PluginCliService:
     async def list_local_plugins(self) -> dict[str, object]:
         return await asyncio.to_thread(self._list_local_plugins_sync)
 
+    async def list_local_packages(self) -> dict[str, object]:
+        return await asyncio.to_thread(self._list_local_packages_sync)
+
     async def pack(
         self,
         *,
         plugin: str | None = None,
+        plugins: list[str] | None = None,
         pack_all: bool = False,
         out: str | None = None,
         target_dir: str | None = None,
         keep_staging: bool = False,
+        bundle: bool = False,
+        bundle_id: str | None = None,
+        package_name: str | None = None,
+        package_description: str | None = None,
+        version: str | None = None,
     ) -> dict[str, object]:
         return await asyncio.to_thread(
             self._pack_sync,
             plugin=plugin,
+            plugins=plugins,
             pack_all=pack_all,
             out=out,
             target_dir=target_dir,
             keep_staging=keep_staging,
+            bundle=bundle,
+            bundle_id=bundle_id,
+            package_name=package_name,
+            package_description=package_description,
+            version=version,
         )
 
     async def inspect(self, *, package: str) -> dict[str, object]:
@@ -88,22 +104,77 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="list_plugins") from exc
 
+    def _list_local_packages_sync(self) -> dict[str, object]:
+        try:
+            items: list[dict[str, object]] = []
+            for path in sorted(
+                _TARGET_ROOT.glob("*.neko-*"),
+                key=lambda item: item.stat().st_mtime if item.exists() else 0,
+                reverse=True,
+            ):
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+                items.append(
+                    {
+                        "name": path.name,
+                        "path": str(path.resolve()),
+                        "suffix": path.suffix,
+                        "size_bytes": stat.st_size,
+                        "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                    }
+                )
+            return {"packages": items, "count": len(items), "target_dir": str(_TARGET_ROOT)}
+        except Exception as exc:
+            raise self._domain_error_from_exception(exc, action="list_packages") from exc
+
     def _pack_sync(
         self,
         *,
         plugin: str | None,
+        plugins: list[str] | None,
         pack_all: bool,
         out: str | None,
         target_dir: str | None,
         keep_staging: bool,
+        bundle: bool,
+        bundle_id: str | None,
+        package_name: str | None,
+        package_description: str | None,
+        version: str | None,
     ) -> dict[str, object]:
         try:
-            plugin_dirs = self._resolve_plugin_dirs(plugin=plugin, pack_all=pack_all)
+            plugin_dirs = self._resolve_plugin_dirs(plugin=plugin, plugins=plugins or [], pack_all=pack_all)
             resolved_target_dir = Path(target_dir).expanduser().resolve() if target_dir else _TARGET_ROOT
             resolved_target_dir.mkdir(parents=True, exist_ok=True)
 
-            if out and len(plugin_dirs) != 1:
+            if out and not bundle and len(plugin_dirs) != 1:
                 raise ValueError("'out' can only be used when packing a single plugin")
+
+            if bundle or len(plugin_dirs) > 1:
+                resolved_bundle_id = bundle_id or "__".join(sorted(item.name for item in plugin_dirs))
+                output_path = (
+                    Path(out).expanduser().resolve()
+                    if out
+                    else resolved_target_dir / f"{resolved_bundle_id}.neko-bundle"
+                )
+                result = pack_bundle(
+                    plugin_dirs,
+                    output_path,
+                    bundle_id=resolved_bundle_id,
+                    package_name=package_name,
+                    package_description=package_description,
+                    version=version or "0.1.0",
+                    keep_staging=keep_staging,
+                )
+                packed = [result.model_dump(mode="json")]
+                return {
+                    "packed": packed,
+                    "packed_count": len(packed),
+                    "failed": [],
+                    "failed_count": 0,
+                    "ok": True,
+                }
 
             packed: list[dict[str, object]] = []
             failed: list[dict[str, object]] = []
@@ -186,7 +257,7 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="analyze") from exc
 
-    def _resolve_plugin_dirs(self, *, plugin: str | None, pack_all: bool) -> list[Path]:
+    def _resolve_plugin_dirs(self, *, plugin: str | None, plugins: list[str], pack_all: bool) -> list[Path]:
         if pack_all:
             plugin_dirs = sorted(
                 path.parent.resolve()
@@ -197,10 +268,11 @@ class PluginCliService:
                 raise FileNotFoundError(f"No plugin.toml files found under {_RUNTIME_PLUGINS_ROOT}")
             return plugin_dirs
 
-        if not plugin:
-            raise ValueError("Please provide a plugin or set pack_all=true")
-
-        return [self._resolve_plugin_dir_candidate(plugin)]
+        if plugin:
+            return [self._resolve_plugin_dir_candidate(plugin)]
+        if plugins:
+            return [self._resolve_plugin_dir_candidate(item) for item in plugins]
+        raise ValueError("Please provide one or more plugins or set pack_all=true")
 
     def _resolve_plugin_dir_candidate(self, raw: str) -> Path:
         candidate = Path(raw).expanduser()

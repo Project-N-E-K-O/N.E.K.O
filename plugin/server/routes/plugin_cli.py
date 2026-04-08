@@ -16,10 +16,16 @@ service = PluginCliService()
 
 class PluginCliPackRequest(BaseModel):
     plugin: str | None = None
+    plugins: list[str] = Field(default_factory=list)
     pack_all: bool = False
     out: str | None = None
     target_dir: str | None = None
     keep_staging: bool = False
+    bundle: bool = False
+    bundle_id: str | None = None
+    package_name: str | None = None
+    package_description: str | None = None
+    version: str | None = None
 
 
 class PluginCliPackageRequest(BaseModel):
@@ -46,6 +52,14 @@ async def list_plugin_cli_plugins(_: str = require_admin) -> dict[str, object]:
         raise_http_from_domain(error, logger=logger)
 
 
+@router.get("/plugin-cli/packages")
+async def list_plugin_cli_packages(_: str = require_admin) -> dict[str, object]:
+    try:
+        return await service.list_local_packages()
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
 @router.post("/plugin-cli/pack")
 async def plugin_cli_pack(
     payload: PluginCliPackRequest,
@@ -54,10 +68,16 @@ async def plugin_cli_pack(
     try:
         return await service.pack(
             plugin=payload.plugin,
+            plugins=payload.plugins,
             pack_all=payload.pack_all,
             out=payload.out,
             target_dir=payload.target_dir,
             keep_staging=payload.keep_staging,
+            bundle=payload.bundle,
+            bundle_id=payload.bundle_id,
+            package_name=payload.package_name,
+            package_description=payload.package_description,
+            version=payload.version,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

@@ -7,10 +7,16 @@ export type PluginCliConflictStrategy = 'rename' | 'fail'
 
 export interface PluginCliPackRequest {
   plugin?: string
+  plugins?: string[]
   pack_all?: boolean
   out?: string
   target_dir?: string
   keep_staging?: boolean
+  bundle?: boolean
+  bundle_id?: string
+  package_name?: string
+  package_description?: string
+  version?: string
 }
 
 export interface PluginCliPluginItem {
@@ -20,6 +26,10 @@ export interface PluginCliPluginItem {
 
 export interface PluginCliPackResult {
   plugin_id: string
+  package_type: string
+  plugin_ids: string[]
+  package_name?: string
+  version?: string
   package_path: string
   staging_dir?: string | null
   profile_files: string[]
@@ -133,11 +143,32 @@ export interface PluginCliLocalPluginsResponse {
   count: number
 }
 
+export interface PluginCliLocalPackageItem {
+  name: string
+  path: string
+  suffix: string
+  size_bytes: number
+  modified_at: string
+}
+
+export interface PluginCliLocalPackagesResponse {
+  packages: PluginCliLocalPackageItem[]
+  count: number
+  target_dir: string
+}
+
 /**
  * 列出当前本地可打包插件
  */
 export function getPluginCliPlugins(): Promise<PluginCliLocalPluginsResponse> {
   return get('/plugin-cli/plugins')
+}
+
+/**
+ * 列出当前 target 目录中的本地包
+ */
+export function getPluginCliPackages(): Promise<PluginCliLocalPackagesResponse> {
+  return get('/plugin-cli/packages')
 }
 
 /**

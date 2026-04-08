@@ -10,7 +10,7 @@ CLI_ROOT = Path(__file__).resolve().parents[2] / "neko-plugin-cli"
 if str(CLI_ROOT) not in sys.path:
     sys.path.insert(0, str(CLI_ROOT))
 
-from public import inspect_package, pack_plugin, unpack_package
+from public import inspect_package, pack_bundle, pack_plugin, unpack_package
 from public.pack_rules import PackRuleSet, should_skip_path
 
 pytestmark = pytest.mark.plugin_unit
@@ -258,3 +258,40 @@ def test_inspect_package_without_metadata_reports_unverified_hash(tmp_path: Path
     assert result.metadata_found is False
     assert result.payload_hash
     assert result.payload_hash_verified is None
+
+
+def test_pack_bundle_writes_multi_plugin_archive_and_unpacks(tmp_path: Path) -> None:
+    first_plugin = _make_plugin_dir(tmp_path, plugin_id="bundle_one")
+    second_plugin = _make_plugin_dir(tmp_path, plugin_id="bundle_two")
+    package_path = tmp_path / "demo_bundle.neko-bundle"
+
+    result = pack_bundle(
+        [first_plugin, second_plugin],
+        package_path,
+        bundle_id="demo_bundle",
+        package_name="Demo Bundle",
+        version="0.2.0",
+    )
+
+    assert result.package_type == "bundle"
+    assert result.plugin_id == "demo_bundle"
+    assert result.plugin_ids == ["bundle_one", "bundle_two"]
+    assert result.package_path == package_path.resolve()
+
+    inspect_result = inspect_package(package_path)
+    assert inspect_result.package_type == "bundle"
+    assert inspect_result.package_id == "demo_bundle"
+    assert inspect_result.package_name == "Demo Bundle"
+    assert inspect_result.plugin_count == 2
+    assert [item.plugin_id for item in inspect_result.plugins] == ["bundle_one", "bundle_two"]
+
+    unpack_result = unpack_package(
+        package_path,
+        plugins_root=tmp_path / "plugins",
+        profiles_root=tmp_path / "profiles",
+        on_conflict="rename",
+    )
+    assert unpack_result.package_type == "bundle"
+    assert unpack_result.unpacked_plugin_count == 2
+    assert (tmp_path / "plugins" / "bundle_one" / "plugin.toml").is_file()
+    assert (tmp_path / "plugins" / "bundle_two" / "plugin.toml").is_file()

@@ -14,7 +14,7 @@ DEFAULT_PROFILES_ROOT = REPO_ROOT / "plugin" / ".neko-package-profiles"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from public import analyze_bundle_plugins, inspect_package, pack_plugin, unpack_package
+from public import analyze_bundle_plugins, inspect_package, pack_bundle, pack_plugin, unpack_package
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,11 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    pack_parser = subparsers.add_parser("pack", help="Pack one plugin or all plugins")
+    pack_parser = subparsers.add_parser("pack", help="Pack one plugin, multiple plugins, or all plugins")
     pack_parser.add_argument(
-        "plugin",
-        nargs="?",
-        help="Plugin directory name under plugin/plugins (ignored when --all is set)",
+        "plugins",
+        nargs="*",
+        help="Plugin directory names under plugin/plugins",
     )
     pack_parser.add_argument(
         "--all",
@@ -59,6 +59,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep staging directories and expose staged file paths in results",
     )
+    pack_parser.add_argument(
+        "--bundle",
+        action="store_true",
+        help="Pack selected plugins into a single .neko-bundle archive",
+    )
+    pack_parser.add_argument("--bundle-id", help="Bundle package id")
+    pack_parser.add_argument("--package-name", help="Bundle package name")
+    pack_parser.add_argument("--package-description", help="Bundle package description")
+    pack_parser.add_argument("--version", help="Bundle package version")
     pack_parser.set_defaults(handler=handle_pack)
 
     inspect_parser = subparsers.add_parser("inspect", help="Inspect a package archive")
@@ -114,12 +123,44 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def handle_pack(args: argparse.Namespace) -> int:
-    plugin_dirs = resolve_plugin_dirs(plugin_name=args.plugin, pack_all=args.all)
+    plugin_dirs = resolve_plugin_dirs(plugin_names=args.plugins, pack_all=args.all)
     target_dir = Path(args.target_dir).expanduser().resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.out and len(plugin_dirs) != 1:
+    if args.out and not args.bundle and len(plugin_dirs) != 1:
         raise ValueError("--out can only be used when packing a single plugin")
+
+    if args.bundle or len(plugin_dirs) > 1:
+        bundle_id = args.bundle_id or "__".join(sorted(item.name for item in plugin_dirs))
+        output_path = (
+            Path(args.out).expanduser().resolve()
+            if args.out
+            else target_dir / f"{bundle_id}.neko-bundle"
+        )
+        try:
+            result = pack_bundle(
+                plugin_dirs,
+                output_path,
+                bundle_id=bundle_id,
+                package_name=args.package_name,
+                package_description=args.package_description,
+                version=args.version or "0.1.0",
+                keep_staging=args.keep_staging,
+            )
+        except Exception as exc:
+            print(f"[FAIL] bundle: {exc}", file=sys.stderr)
+            return 1
+
+        print(f"[OK] {result.plugin_id} -> {result.package_path}")
+        print(f"  package_type={result.package_type}")
+        print(f"  plugin_count={result.plugin_count}")
+        print(f"  plugins={', '.join(result.plugin_ids)}")
+        if result.staging_dir is not None:
+            print(f"  staging_dir={result.staging_dir}")
+            print(f"  packaged_file_count={result.packaged_file_count}")
+            print(f"  profile_file_count={result.profile_file_count}")
+        print("Completed: packed=1, failed=0")
+        return 0
 
     packed_count = 0
     failed_count = 0
@@ -274,7 +315,7 @@ def handle_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
-def resolve_plugin_dirs(*, plugin_name: str | None, pack_all: bool) -> list[Path]:
+def resolve_plugin_dirs(*, plugin_names: list[str], pack_all: bool) -> list[Path]:
     if pack_all:
         plugin_dirs = sorted(
             path.parent.resolve()
@@ -285,10 +326,10 @@ def resolve_plugin_dirs(*, plugin_name: str | None, pack_all: bool) -> list[Path
             raise FileNotFoundError(f"No plugin.toml files found under {PLUGIN_ROOT}")
         return plugin_dirs
 
-    if not plugin_name:
+    if not plugin_names:
         raise ValueError("Please provide a plugin name or use --all")
 
-    return [resolve_plugin_dir_candidate(plugin_name)]
+    return [resolve_plugin_dir_candidate(item) for item in plugin_names]
 
 
 def resolve_plugin_dir_candidate(raw: str) -> Path:

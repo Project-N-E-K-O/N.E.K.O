@@ -242,7 +242,7 @@ class PayloadBuildResult(_BaseModel):
         for file_path in self.packaged_files:
             if not file_path.is_file():
                 raise FileNotFoundError(f"packaged file does not exist: {file_path}")
-            _ensure_within(file_path, self.plugin_payload_dir, field_name="packaged_files item")
+            _ensure_within(file_path, self.payload_dir, field_name="packaged_files item")
 
         for file_path in self.profile_files:
             if not file_path.is_file():
@@ -265,6 +265,10 @@ class PackResult(_BaseModel):
     """Final result returned by the public `pack_plugin(...)` entrypoint."""
 
     plugin_id: str
+    package_type: str = "plugin"
+    plugin_ids: list[str] = Field(default_factory=list)
+    package_name: str = ""
+    version: str = ""
     package_path: Path
     staging_dir: Path | None = None
     profile_files: list[Path] = Field(default_factory=list)
@@ -306,14 +310,49 @@ class PackResult(_BaseModel):
             raise ValueError("payload_hash must be a 64-character lowercase sha256 hex string")
         return normalized
 
+    @field_validator("package_type")
+    @classmethod
+    def _validate_package_type(cls, value: str) -> str:
+        normalized = str(value).strip().lower()
+        if normalized not in {"plugin", "bundle"}:
+            raise ValueError("package_type must be either plugin or bundle")
+        return normalized
+
+    @field_validator("plugin_ids", mode="before")
+    @classmethod
+    def _validate_plugin_ids(cls, value: list[str] | None) -> list[str]:
+        if value is None:
+            return []
+        normalized = sorted({str(item).strip() for item in value if str(item).strip()})
+        for item in normalized:
+            if not _PLUGIN_ID_RE.fullmatch(item):
+                raise ValueError("plugin_ids items must match ^[A-Za-z0-9_-]+$")
+        return normalized
+
+    @field_validator("package_name", "version", mode="before")
+    @classmethod
+    def _normalize_string(cls, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
     @model_validator(mode="after")
     def _validate_layout(self) -> PackResult:
         if not self.package_path.is_file():
             raise FileNotFoundError(f"package_path does not exist: {self.package_path}")
         if self.package_path.suffix not in _PACKAGE_SUFFIXES:
             raise ValueError("package_path must use .neko-plugin or .neko-bundle extension")
+        if self.package_type == "plugin" and self.package_path.suffix != ".neko-plugin":
+            raise ValueError("plugin package_path must use .neko-plugin extension")
+        if self.package_type == "bundle" and self.package_path.suffix != ".neko-bundle":
+            raise ValueError("bundle package_path must use .neko-bundle extension")
         if self.staging_dir is not None and not self.staging_dir.exists():
             raise FileNotFoundError(f"staging_dir does not exist: {self.staging_dir}")
+        if self.package_type == "plugin":
+            if self.plugin_ids and self.plugin_ids != [self.plugin_id]:
+                raise ValueError("plugin package plugin_ids must be empty or contain only plugin_id")
+        if self.package_type == "bundle" and len(self.plugin_ids) < 2:
+            raise ValueError("bundle package must contain at least two plugin_ids")
 
         for file_path in self.profile_files:
             if not file_path.is_file():
@@ -337,6 +376,11 @@ class PackResult(_BaseModel):
     @property
     def profile_file_count(self) -> int:
         return len(self.profile_files)
+
+    @computed_field
+    @property
+    def plugin_count(self) -> int:
+        return len(self.plugin_ids) if self.plugin_ids else 1
 
 
 class SharedDependency(_BaseModel):
