@@ -18,6 +18,7 @@ from config.prompts_agent import (
     CHANNEL_DESC_BROWSER_USE,
     CHANNEL_DESC_COMPUTER_USE,
     USER_PLUGIN_SYSTEM_PROMPT,
+    USER_PLUGIN_COARSE_SCREEN_PROMPT,
 )
 from config.prompts_sys import _loc
 from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
@@ -28,6 +29,12 @@ from .computer_use import ComputerUseAdapter
 from .browser_use_adapter import BrowserUseAdapter
 from .openclaw_adapter import OpenClawAdapter
 from .openfang_adapter import OpenFangAdapter
+from .plugin_filter import (
+    stage1_filter,
+    build_coarse_screening_prompt,
+    annotate_keyword_hits,
+    _match_keywords,
+)
 
 logger = get_module_logger(__name__, "Agent")
 _TIMEOUT_UNSET = object()
@@ -196,6 +203,46 @@ class DirectTaskExecutor:
         """Allow agent_server to inject a custom async provider for plugin discovery."""
         self._external_plugin_provider = provider
 
+    async def _ensure_short_descriptions(self, plugins: List[Dict[str, Any]]) -> None:
+        """For plugins missing short_description, generate one via LLM (best-effort)."""
+        to_generate: list[dict] = []
+        for p in plugins:
+            if not isinstance(p, dict):
+                continue
+            short = str(p.get("short_description", "") or "").strip()
+            desc = str(p.get("description", "") or "").strip()
+            if not short and desc:
+                to_generate.append(p)
+
+        if not to_generate:
+            return
+
+        logger.info("[Agent] Generating short_description for %d plugins", len(to_generate))
+        try:
+            client = self._get_client()
+            model = self._get_model()
+            for p in to_generate:
+                try:
+                    pid = p.get("id", "unknown")
+                    desc = str(p.get("description", ""))
+                    resp = await client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": "Generate a concise plugin summary under 300 characters in English."},
+                            {"role": "user", "content": f"Plugin: {pid}\nDescription: {desc}\n\nReturn ONLY the summary."},
+                        ],
+                        temperature=0,
+                        max_completion_tokens=150,
+                    )
+                    text = (resp.choices[0].message.content or "").strip()
+                    if text and len(text) <= 300:
+                        p["short_description"] = text
+                        logger.debug("[Agent] Generated short_description for %s: %s", pid, text[:80])
+                except Exception as e:
+                    logger.debug("[Agent] Failed to generate short_description for %s: %s", p.get("id"), e)
+        except Exception as e:
+            logger.warning("[Agent] short_description generation batch failed: %s", e)
+
     async def plugin_list_provider(self, force_refresh: bool = True) -> List[Dict[str, Any]]:
         # return cached list when allowed
         if self.plugin_list and not force_refresh:
@@ -207,6 +254,7 @@ class DirectTaskExecutor:
                 plugins = await self._external_plugin_provider(force_refresh)
                 if isinstance(plugins, list):
                     self.plugin_list = plugins
+                    await self._ensure_short_descriptions(self.plugin_list)
                     logger.info(f"[Agent] Loaded {len(self.plugin_list)} plugins via external provider")
                     return self.plugin_list
             except Exception as e:
@@ -229,6 +277,7 @@ class DirectTaskExecutor:
                     # only update cache when we obtained a non-empty list
                     if plugin_list:
                         self.plugin_list = plugin_list  # 更新实例变量
+                        await self._ensure_short_descriptions(self.plugin_list)
             except Exception as e:
                 logger.warning(f"[Agent] plugin_list_provider http fetch failed: {e}")
         logger.info(f"[Agent] Loaded {len(self.plugin_list)} plugins: {[p.get('id', 'unknown') for p in self.plugin_list if isinstance(p, dict)]}")
@@ -493,32 +542,17 @@ class DirectTaskExecutor:
     # NOTE: _rule_assess_openclaw / _assess_computer_use / _assess_browser_use / _assess_openfang
     # have been replaced by the unified _assess_unified_channels() method above.
 
-    async def _assess_user_plugin(self, conversation: str, plugins: Any, lang: str = "en") -> UserPluginDecision:
-        """
-        评估本地用户插件可行性（plugins 为外部传入的插件列表）
-        返回结构与 MCP 决策类似，但包含 plugin_id/plugin_args
-        """
-        # 如果没有插件，快速返回
-        try:
-            if not plugins:
-                return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="No plugins")
-        except Exception:
-            logger.debug("[UserPlugin] Failed to check plugins validity", exc_info=True)
-            return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Invalid plugins")
-
-        # 构建插件描述供 LLM 参考（包含 id, description, input_schema 以及 entries 列表）
+    def _build_plugin_desc_lines(self, plugins: Any) -> list:
+        """Build per-plugin description lines for LLM prompt."""
         lines = []
         try:
-            # plugins can be dict or list
             iterable = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
             for _, p in iterable:
                 pid = p.get("id") if isinstance(p, dict) else getattr(p, "id", None)
                 desc = p.get("description", "") if isinstance(p, dict) else getattr(p, "description", "")
                 entries = p.get("entries", []) if isinstance(p, dict) else getattr(p, "entries", []) or []
-                # Only include well-formed plugin entries
                 if not pid:
                     continue
-                # Build entries description: entry id + description + input_schema summary
                 entry_lines = []
                 try:
                     for e in entries:
@@ -527,7 +561,6 @@ class DirectTaskExecutor:
                             edesc = e.get("description", "") if isinstance(e, dict) else getattr(e, "description", "")
                             if not eid:
                                 continue
-                            # Extract input_schema field names+types for LLM context
                             schema_hint = ""
                             try:
                                 schema = e.get("input_schema") if isinstance(e, dict) else getattr(e, "input_schema", None)
@@ -555,17 +588,148 @@ class DirectTaskExecutor:
                 lines.append(f"- {pid}: {desc} | entries: [{entry_desc}]")
         except Exception:
             pass
-        
-        plugins_desc = "\n".join(lines) if lines else "No plugins available."
-        # truncate to avoid overly large prompts
-        if len(plugins_desc) > 4000:
-            plugins_desc = plugins_desc[:4000] + "\n... (truncated)"
-        logger.debug(f"[UserPlugin] passing plugin descriptions (truncated): {plugins_desc[:1000]}")
-        
-        # Strongly enforce JSON-only output to reduce parsing errors
-        # NOTE: Require the model to return entry_id when has_task and can_execute are true.
-        system_prompt = _loc(USER_PLUGIN_SYSTEM_PROMPT, lang).format(plugins_desc=plugins_desc)
+        return lines
+
+    async def _stage1_llm_coarse_screen(
+        self, user_text: str, plugins: list, lang: str = "en",
+    ) -> list[str]:
+        """Stage 1 LLM coarse screening: return list of plugin IDs deemed relevant."""
+        summaries = []
+        for p in plugins:
+            pid = p.get("id", "unknown") if isinstance(p, dict) else "unknown"
+            short = (p.get("short_description") or p.get("description", "")) if isinstance(p, dict) else ""
+            if len(short) > 200:
+                short = short[:200] + "..."
+            summaries.append(f"- {pid}: {short}")
+        plugin_summaries = "\n".join(summaries)
+
+        system_prompt = _loc(USER_PLUGIN_COARSE_SCREEN_PROMPT, lang).format(
+            plugin_summaries=plugin_summaries,
+            user_text=user_text,
+        )
+
+        try:
+            client = self._get_client()
+            model = self._get_model()
+            request_params = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_text},
+                ],
+                "temperature": 0,
+                "max_completion_tokens": 300,
+            }
+            extra_body = get_extra_body(model)
+            if extra_body:
+                request_params["extra_body"] = extra_body
+
+            quota_error = self._check_agent_quota("task_executor.coarse_screen")
+            if quota_error:
+                return []
+
+            response = await client.chat.completions.create(**request_params)
+            text = (response.choices[0].message.content or "").strip()
+            if text.startswith("```"):
+                text = text.replace("```json", "").replace("```", "").strip()
+            ids = json.loads(text)
+            if isinstance(ids, list):
+                return [str(i) for i in ids if isinstance(i, str)]
+        except Exception as e:
+            logger.warning("[PluginFilter] Stage1 LLM coarse screen failed: %s", e)
+        return []
+
+    async def _assess_user_plugin(self, conversation: str, plugins: Any, lang: str = "en") -> UserPluginDecision:
+        """
+        Two-stage plugin assessment:
+        - Stage 2 only (< 4000 chars): full LLM assessment with all plugins
+        - Stage 1 + 2 (>= 4000 chars): BM25 + LLM coarse screen + keyword → filtered → Stage 2
+        """
+        # 如果没有插件，快速返回
+        try:
+            if not plugins:
+                return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="No plugins")
+        except Exception:
+            logger.debug("[UserPlugin] Failed to check plugins validity", exc_info=True)
+            return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Invalid plugins")
+
+        # Normalize plugins to list of dicts
+        plugin_list: list[dict] = []
+        try:
+            iterable = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
+            for _, p in iterable:
+                if isinstance(p, dict):
+                    plugin_list.append(p)
+        except Exception:
+            pass
+
+        # Extract user intent for keyword / BM25 matching
         user_intent = self._extract_latest_user_intent(conversation)
+
+        # Build full description
+        lines = self._build_plugin_desc_lines(plugin_list)
+        plugins_desc = "\n".join(lines) if lines else "No plugins available."
+
+        # Check keyword hits across ALL plugins (needed for annotation in both paths)
+        keyword_hit_ids: list[str] = []
+        for p in plugin_list:
+            kws = p.get("keywords", [])
+            pid = p.get("id", "")
+            if isinstance(kws, list) and kws and pid and _match_keywords(
+                user_intent or conversation, kws
+            ):
+                keyword_hit_ids.append(pid)
+
+        # ── Two-stage decision ──────────────────────────────────
+        if len(plugins_desc) > 4000:
+            # Stage 1: coarse filter
+            logger.info(
+                "[UserPlugin] Stage 1 triggered: plugins_desc=%d chars, %d plugins",
+                len(plugins_desc), len(plugin_list),
+            )
+
+            # BM25 + keyword filter
+            bm25_filtered, bm25_kw_hits = stage1_filter(
+                user_intent or conversation,
+                plugin_list,
+                bm25_top_k=10,
+            )
+            bm25_ids = {p.get("id") for p in bm25_filtered if isinstance(p, dict)}
+
+            # LLM coarse screen (parallel with BM25 — but BM25 is instant so sequential is fine)
+            llm_ids = await self._stage1_llm_coarse_screen(user_intent or conversation, plugin_list, lang=lang)
+            llm_id_set = set(llm_ids)
+
+            # Union: BM25 + LLM + keyword hits
+            selected_ids = bm25_ids | llm_id_set | set(keyword_hit_ids)
+
+            if not selected_ids:
+                logger.info("[UserPlugin] Stage 1: no plugins selected, skipping stage 2")
+                return UserPluginDecision(
+                    has_task=False, can_execute=False, task_description="",
+                    plugin_id=None, plugin_args=None, reason="No relevant plugins after filtering",
+                )
+
+            # Filter to selected plugins and rebuild description
+            stage2_plugins = [p for p in plugin_list if p.get("id") in selected_ids]
+            lines = self._build_plugin_desc_lines(stage2_plugins)
+            plugins_desc = "\n".join(lines) if lines else "No plugins available."
+
+            logger.info(
+                "[UserPlugin] Stage 1 result: %d/%d plugins → stage 2 (bm25=%d, llm=%d, kw=%d)",
+                len(stage2_plugins), len(plugin_list),
+                len(bm25_ids), len(llm_id_set), len(keyword_hit_ids),
+            )
+        else:
+            logger.debug("[UserPlugin] Skipping stage 1: plugins_desc=%d chars <= 4000", len(plugins_desc))
+
+        # Annotate keyword-hit plugins
+        plugins_desc = annotate_keyword_hits(plugins_desc, keyword_hit_ids)
+
+        logger.debug(f"[UserPlugin] passing plugin descriptions: {plugins_desc[:1000]}")
+
+        # Stage 2: full LLM assessment
+        system_prompt = _loc(USER_PLUGIN_SYSTEM_PROMPT, lang).format(plugins_desc=plugins_desc)
 
         user_prompt = f"Conversation:\n{conversation}\n\nUser intent (one-line): {user_intent}"
 

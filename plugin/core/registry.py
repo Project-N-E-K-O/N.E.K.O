@@ -550,6 +550,8 @@ def register_plugin(
             name=plugin.name,
             type=plugin.type,
             description=plugin.description,
+            short_description=plugin.short_description,
+            keywords=plugin.keywords,
             version=plugin.version,
             sdk_version=plugin.sdk_version,
             sdk_recommended=plugin.sdk_recommended,
@@ -674,11 +676,24 @@ def _build_plugin_meta(
             email=author_data.get("email"),
         )
 
+    # 读取 keywords（正则表达式列表）和 short_description
+    raw_keywords = pdata.get("keywords", [])
+    keywords: list[str] = []
+    if isinstance(raw_keywords, list):
+        for kw in raw_keywords:
+            if isinstance(kw, str) and kw.strip():
+                keywords.append(kw.strip())
+    short_desc = str(pdata.get("short_description", "") or "").strip()
+    if len(short_desc) > 300:
+        short_desc = short_desc[:300]
+
     return PluginMeta(
         id=pid,
         name=pdata.get("name", pid),
         type=pdata.get("type", "plugin"),
         description=pdata.get("description", ""),
+        short_description=short_desc,
+        keywords=keywords,
         version=pdata.get("version", "0.1.0"),
         sdk_version=sdk_supported_str or SDK_VERSION,
         sdk_recommended=sdk_recommended_str,
