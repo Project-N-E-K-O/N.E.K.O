@@ -670,7 +670,7 @@ def _build_plugin_meta(
     short_desc = str(pdata.get("short_description", "") or "").strip()
     if len(short_desc) > 300:
         short_desc = short_desc[:300]
-    passive = bool(pdata.get("passive", False))
+    passive = parse_bool_config(pdata.get("passive"), default=False)
 
     return PluginMeta(
         id=pid,
