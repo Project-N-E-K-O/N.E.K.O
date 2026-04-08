@@ -56,6 +56,9 @@ class CredentialProvider:
         """
         logger.info("开始二维码登录流程")
 
+        # 清空 cookie jar，确保不会因为旧 cookie 而报"已有有效Token"
+        self._client.cookies.clear()
+
         try:
             # Step 1: 从 serviceLogin 获取登录链接参数
             location_data = self._get_location()
