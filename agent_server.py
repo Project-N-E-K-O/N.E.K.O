@@ -1074,6 +1074,13 @@ async def _run_computer_use_task(
     finally:
         info["status"] = "cancelled" if info.get("error") == "Task was cancelled" else ("completed" if success else "failed")
         info["end_time"] = _now_iso()
+        # 记录任务完成状态供 analyzer 去重
+        _task_tracker.record_completed(
+            lanlan_name, task_id=task_id, method="computer_use",
+            desc=instruction or "",
+            detail=cu_detail[:200] if cu_detail else "",
+            success=success and info["status"] != "cancelled",
+        )
         # 失败时将解析后的 cu_detail 写入 info["error"]（仅在非异常路径下补全）
         if not success and not info.get("error") and cu_detail:
             info["error"] = cu_detail[:500]

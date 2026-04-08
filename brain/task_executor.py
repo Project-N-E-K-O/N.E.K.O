@@ -703,16 +703,14 @@ class DirectTaskExecutor:
             selected_ids = bm25_ids | llm_id_set | set(keyword_hit_ids)
 
             if not selected_ids:
-                logger.info("[UserPlugin] Stage 1: no plugins selected, skipping stage 2")
-                return UserPluginDecision(
-                    has_task=False, can_execute=False, task_description="",
-                    plugin_id=None, plugin_args=None, reason="No relevant plugins after filtering",
-                )
-
-            # Filter to selected plugins and rebuild description
-            stage2_plugins = [p for p in plugin_list if p.get("id") in selected_ids]
-            lines = self._build_plugin_desc_lines(stage2_plugins)
-            plugins_desc = "\n".join(lines) if lines else "No plugins available."
+                # Stage 1 未选出任何插件 — 回退到完整列表进入 Stage 2，
+                # 避免因 BM25/LLM 全部 miss 导致误判
+                logger.info("[UserPlugin] Stage 1: no plugins selected, falling back to full list for stage 2")
+            else:
+                # Filter to selected plugins and rebuild description
+                stage2_plugins = [p for p in plugin_list if p.get("id") in selected_ids]
+                lines = self._build_plugin_desc_lines(stage2_plugins)
+                plugins_desc = "\n".join(lines) if lines else "No plugins available."
 
             logger.info(
                 "[UserPlugin] Stage 1 result: %d/%d plugins → stage 2 (bm25=%d, llm=%d, kw=%d)",
