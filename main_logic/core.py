@@ -2258,24 +2258,26 @@ class LLMSessionManager:
         """
         if not self.pending_agent_callbacks:
             return ""
-        _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
-        lines: list[str] = []
-        for cb in self.pending_agent_callbacks:
-            status = cb.get("status", "completed")
-            summary = (cb.get("summary") or "").strip()
-            detail = (cb.get("detail") or "").strip()
-            if status == "completed":
-                tag = _loc(RESULT_PARSER_PHRASES['task_completed'], _lang)
-            elif status == "partial":
-                tag = _loc(RESULT_PARSER_PHRASES['task_partial'], _lang)
-            else:
-                tag = _loc(RESULT_PARSER_PHRASES['task_failed_tag'], _lang)
-            lines.append(f"{tag} {summary}")
-            if detail and detail != summary:
-                prefix = _loc(RESULT_PARSER_PHRASES['detail_prefix'], _lang)
-                lines.append(f"{prefix}{detail[:300]}")
-        self.pending_agent_callbacks.clear()
-        return "\n".join(lines)
+        try:
+            _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
+            lines: list[str] = []
+            for cb in self.pending_agent_callbacks:
+                status = cb.get("status", "completed")
+                summary = (cb.get("summary") or "").strip()
+                detail = (cb.get("detail") or "").strip()
+                if status == "completed":
+                    tag = _loc(RESULT_PARSER_PHRASES['task_completed'], _lang)
+                elif status == "partial":
+                    tag = _loc(RESULT_PARSER_PHRASES['task_partial'], _lang)
+                else:
+                    tag = _loc(RESULT_PARSER_PHRASES['task_failed_tag'], _lang)
+                lines.append(f"{tag} {summary}")
+                if detail and detail != summary:
+                    prefix = _loc(RESULT_PARSER_PHRASES['detail_prefix'], _lang)
+                    lines.append(f"{prefix}{detail[:300]}")
+            return "\n".join(lines)
+        finally:
+            self.pending_agent_callbacks.clear()
 
     async def _perform_final_swap_sequence(self):
         """[热切换相关] 执行最终的swap序列"""
