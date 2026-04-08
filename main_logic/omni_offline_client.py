@@ -605,12 +605,10 @@ class OmniOfflineClient:
 
         Args:
             text: Context to append (incremental cache + summary/ready).
-            skipped: If True, the next LLM response on this session will
-                     be silently discarded (used for warmup priming).
+            skipped: Accepted for interface compatibility with
+                     OmniRealtimeClient but not implemented in the
+                     offline (text-mode) path.
         """
-        if skipped:
-            self._skip_until_next_response = True
-
         if not text or not text.strip():
             return
 
@@ -640,12 +638,10 @@ class OmniOfflineClient:
 
         Args:
             instructions: Text to inject as a HumanMessage.
-            skipped: If True, mark the next response to be silently
-                     discarded.
+            skipped: Accepted for interface compatibility with
+                     OmniRealtimeClient but not implemented in the
+                     offline (text-mode) path.
         """
-        if skipped:
-            self._skip_until_next_response = True
-
         if instructions and instructions.strip():
             self._conversation_history.append(HumanMessage(content=instructions))
     
@@ -738,10 +734,10 @@ class OmniOfflineClient:
                 master_match = self._match_name_prefix(prefix_buffer, self.master_name)
                 lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
                 if master_match:
-                    logger.info(f"OmniOfflineClient.prompt_ephemeral: 流结束时剥离主人名前缀")
+                    logger.info("OmniOfflineClient.prompt_ephemeral: 流结束时剥离主人名前缀")
                     flush_text = prefix_buffer[master_match:]
                 elif lanlan_match:
-                    logger.info(f"OmniOfflineClient.prompt_ephemeral: 流结束时剥离角色名前缀")
+                    logger.info("OmniOfflineClient.prompt_ephemeral: 流结束时剥离角色名前缀")
                     flush_text = prefix_buffer[lanlan_match:]
                 else:
                     flush_text = prefix_buffer
