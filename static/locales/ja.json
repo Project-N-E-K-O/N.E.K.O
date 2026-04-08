@@ -28,7 +28,8 @@
         "fieldSeparator": "、 ",
         "tryAgainLater": "後でもう一度お試しください",
         "user": "ユーザー",
-        "project": "プロジェクト"
+        "project": "プロジェクト",
+        "collapse": "折りたたむ"
     },
     "characterProfile": {
         "gender": "性別",
@@ -2521,6 +2522,7 @@
         "weibo": "🌏 微博 (Weibo)",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 网易雲音楽",
         "saveConfig": "設定を保存",
         "encryptStorage": "ローカルファイルに安全に暗号化保存",
         "localMonitoring": "ローカルステータス監視",
@@ -2546,7 +2548,8 @@
             "kuaishou": "📌 <b>対象：</b> <b>kuaishou.com</b> にアクセスして Cookie を取得してください。",
             "weibo": "📌 <b>対象：</b> <b>weibo.com</b> にアクセスして Cookie を取得してください。",
             "twitter": "📌 <b>対象：</b> <b>x.com</b> にアクセスして Cookie を取得してください。",
-            "reddit": "📌 <b>対象：</b> <b>reddit.com</b> にアクセスして Cookie を取得してください。"
+            "reddit": "📌 <b>対象：</b> <b>reddit.com</b> にアクセスして Cookie を取得してください。",
+            "netease": "📌 <b>対象：</b> <b>music.163.com</b> にアクセスして Cookie を取得してください。"
         },
         "guide": {
             "title": "初心者向け共通ガイド",
@@ -2628,6 +2631,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRFトークン"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "コアIDクレデンシャル (必須)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "デバイス識別子 (任意)"
             }
         },
         "status": {
@@ -2651,7 +2662,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "QRログイン成功！Cookieが自動入力されました。「設定を保存」をクリックしてください"
+            "successAlert": "QRログイン成功！Cookieが自動入力されました。「設定を保存」をクリックしてください",
+            "extractFailed": "⚠️ QRログインは成功しましたが、フィールドの自動抽出に失敗しました。手動で確認してください。"
         }
     },
     "music": {

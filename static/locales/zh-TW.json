@@ -28,7 +28,8 @@
         "fieldSeparator": "、",
         "tryAgainLater": "請稍後重試",
         "user": "使用者",
-        "project": "專案"
+        "project": "專案",
+        "collapse": "收起"
     },
     "characterProfile": {
         "gender": "性別",
@@ -2521,6 +2522,7 @@
         "weibo": "🌏 微博",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 網易雲音樂",
         "saveConfig": "儲存設定",
         "encryptStorage": "安全加密儲存至本地檔案",
         "localMonitoring": "本地狀態監控",
@@ -2546,7 +2548,8 @@
             "kuaishou": "📌 <b>目標：</b> 請前往 <b>kuaishou.com</b> 獲取這些 Cookies。",
             "weibo": "📌 <b>目標：</b> 請前往 <b>weibo.com</b> 獲取這些 Cookies。",
             "twitter": "📌 <b>目標：</b> 請前往 <b>x.com</b> 獲取這些 Cookies。",
-            "reddit": "📌 <b>目標：</b> 請前往 <b>reddit.com</b> 獲取這些 Cookies。"
+            "reddit": "📌 <b>目標：</b> 請前往 <b>reddit.com</b> 獲取這些 Cookies。",
+            "netease": "📌 <b>目標：</b> 請前往 <b>music.163.com</b> 獲取這些 Cookies。"
         },
         "guide": {
             "title": "新手通用獲取教學",
@@ -2628,6 +2631,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF 令牌"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "核心身份憑證 (必填)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "設備識別碼 (選填)"
             }
         },
         "status": {
@@ -2651,7 +2662,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "掃碼登入成功！Cookie 已自動填入，請點擊儲存設定"
+            "successAlert": "掃碼登入成功！Cookie 已自動填入，請點擊儲存設定",
+            "extractFailed": "⚠️ 掃碼成功但未能自動擷取到欄位，請手動檢查。"
         }
     },
     "music": {
