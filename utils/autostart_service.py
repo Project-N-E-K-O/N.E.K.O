@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import plistlib
-import shlex
 import shutil
 import subprocess
 import sys
@@ -19,6 +18,8 @@ _MAC_LAUNCH_AGENT_LABEL = "com.project-neko.autostart"
 _MAC_LAUNCH_AGENT_FILENAME = "com.project-neko.autostart.plist"
 _LINUX_AUTOSTART_FILENAME = "project-neko-autostart.desktop"
 _DEFAULT_POSIX_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+_DESKTOP_EXEC_FIELD_CODES = frozenset("fFuUdDnNickvm")
+_DESKTOP_EXEC_QUOTE_CHARS = frozenset("\"'<>~|&;$*?#()`\\")
 _PASSTHROUGH_ENV_KEYS = (
     "LANG",
     "LC_ALL",
@@ -41,7 +42,7 @@ def _get_launcher_script_path() -> Path:
 
 
 def _get_current_executable_path() -> Path | None:
-    executable = Path(sys.executable).resolve()
+    executable = Path(sys.executable)
     if executable.exists():
         return executable
     return None
@@ -144,8 +145,46 @@ def _get_working_directory() -> Path:
     return _get_project_root()
 
 
+def _escape_desktop_exec_percent(value: str) -> str:
+    escaped: list[str] = []
+    index = 0
+
+    while index < len(value):
+        current = value[index]
+        if current != "%":
+            escaped.append(current)
+            index += 1
+            continue
+
+        if index + 1 < len(value) and value[index + 1] in _DESKTOP_EXEC_FIELD_CODES:
+            escaped.append("%")
+            escaped.append(value[index + 1])
+            index += 2
+            continue
+
+        escaped.append("%%")
+        index += 1
+
+    return "".join(escaped)
+
+
+def _quote_desktop_exec_argument(argument: str) -> str:
+    escaped = _escape_desktop_exec_percent(argument)
+    requires_quotes = any(char.isspace() or char in _DESKTOP_EXEC_QUOTE_CHARS for char in escaped)
+    if not requires_quotes:
+        return escaped
+
+    quoted_parts: list[str] = ['"']
+    for char in escaped:
+        if char in {'"', "`", "$", "\\"}:
+            quoted_parts.append("\\")
+        quoted_parts.append(char)
+    quoted_parts.append('"')
+    return "".join(quoted_parts)
+
+
 def _quote_posix_command(command: list[str]) -> str:
-    return " ".join(shlex.quote(part) for part in command)
+    return " ".join(_quote_desktop_exec_argument(part) for part in command)
 
 
 def _get_windows_command_line(command: list[str]) -> str:

@@ -15,6 +15,7 @@ from utils.tutorial_prompt_state import (
 )
 
 system_router_module = importlib.import_module("main_routers.system_router")
+_DEFAULT_AUTOSTART_TOKEN = object()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -49,13 +50,33 @@ def tutorial_prompt_client(tmp_path, monkeypatch):
         yield client, config
 
 
+def _mutation_headers(*, origin: str | None = "http://testserver", referer: str | None = None, token=_DEFAULT_AUTOSTART_TOKEN):
+    headers = {}
+    if origin is not None:
+        headers["Origin"] = origin
+    if referer is not None:
+        headers["Referer"] = referer
+    if token is _DEFAULT_AUTOSTART_TOKEN:
+        token = system_router_module.AUTOSTART_CSRF_TOKEN
+    if token is not None:
+        headers["X-CSRF-Token"] = token
+    return headers
+
+
+_autostart_mutation_headers = _mutation_headers
+
+
 @pytest.mark.unit
 def test_heartbeat_route_returns_prompt_token(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
 
-    response = client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
-    })
+    response = client.post(
+        "/api/tutorial-prompt/heartbeat",
+        headers=_mutation_headers(),
+        json={
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -67,13 +88,21 @@ def test_heartbeat_route_returns_prompt_token(tutorial_prompt_client):
 @pytest.mark.unit
 def test_shown_route_acknowledges_first_display(tutorial_prompt_client):
     client, config = tutorial_prompt_client
-    heartbeat = client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
-    }).json()
+    heartbeat = client.post(
+        "/api/tutorial-prompt/heartbeat",
+        headers=_mutation_headers(),
+        json={
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+        },
+    ).json()
 
-    response = client.post("/api/tutorial-prompt/shown", json={
-        "prompt_token": heartbeat["prompt_token"],
-    })
+    response = client.post(
+        "/api/tutorial-prompt/shown",
+        headers=_mutation_headers(),
+        json={
+            "prompt_token": heartbeat["prompt_token"],
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -88,13 +117,25 @@ def test_shown_route_acknowledges_first_display(tutorial_prompt_client):
 @pytest.mark.unit
 def test_shown_route_is_idempotent_for_repeated_ack(tutorial_prompt_client):
     client, config = tutorial_prompt_client
-    heartbeat = client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
-    }).json()
+    heartbeat = client.post(
+        "/api/tutorial-prompt/heartbeat",
+        headers=_mutation_headers(),
+        json={
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+        },
+    ).json()
     token = heartbeat["prompt_token"]
 
-    first = client.post("/api/tutorial-prompt/shown", json={"prompt_token": token})
-    second = client.post("/api/tutorial-prompt/shown", json={"prompt_token": token})
+    first = client.post(
+        "/api/tutorial-prompt/shown",
+        headers=_mutation_headers(),
+        json={"prompt_token": token},
+    )
+    second = client.post(
+        "/api/tutorial-prompt/shown",
+        headers=_mutation_headers(),
+        json={"prompt_token": token},
+    )
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -107,14 +148,22 @@ def test_shown_route_is_idempotent_for_repeated_ack(tutorial_prompt_client):
 @pytest.mark.unit
 def test_decision_route_backfills_missing_shown_ack(tutorial_prompt_client):
     client, config = tutorial_prompt_client
-    heartbeat = client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
-    }).json()
+    heartbeat = client.post(
+        "/api/tutorial-prompt/heartbeat",
+        headers=_mutation_headers(),
+        json={
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+        },
+    ).json()
 
-    response = client.post("/api/tutorial-prompt/decision", json={
-        "decision": "later",
-        "prompt_token": heartbeat["prompt_token"],
-    })
+    response = client.post(
+        "/api/tutorial-prompt/decision",
+        headers=_mutation_headers(),
+        json={
+            "decision": "later",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -128,21 +177,33 @@ def test_decision_route_backfills_missing_shown_ack(tutorial_prompt_client):
 @pytest.mark.unit
 def test_later_route_enters_cooldown(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
-    heartbeat = client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
-    }).json()
+    heartbeat = client.post(
+        "/api/tutorial-prompt/heartbeat",
+        headers=_mutation_headers(),
+        json={
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+        },
+    ).json()
 
-    decision = client.post("/api/tutorial-prompt/decision", json={
-        "decision": "later",
-        "prompt_token": heartbeat["prompt_token"],
-    })
+    decision = client.post(
+        "/api/tutorial-prompt/decision",
+        headers=_mutation_headers(),
+        json={
+            "decision": "later",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+    )
 
     assert decision.status_code == 200
     assert decision.json()["state"]["status"] == "deferred"
 
-    blocked = client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": 0,
-    })
+    blocked = client.post(
+        "/api/tutorial-prompt/heartbeat",
+        headers=_mutation_headers(),
+        json={
+            "foreground_ms_delta": 0,
+        },
+    )
 
     assert blocked.status_code == 200
     assert blocked.json()["should_prompt"] is False
@@ -152,21 +213,33 @@ def test_later_route_enters_cooldown(tutorial_prompt_client):
 @pytest.mark.unit
 def test_never_route_persists_never_remind_state(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
-    heartbeat = client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
-    }).json()
+    heartbeat = client.post(
+        "/api/tutorial-prompt/heartbeat",
+        headers=_mutation_headers(),
+        json={
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+        },
+    ).json()
 
-    decision = client.post("/api/tutorial-prompt/decision", json={
-        "decision": "never",
-        "prompt_token": heartbeat["prompt_token"],
-    })
+    decision = client.post(
+        "/api/tutorial-prompt/decision",
+        headers=_mutation_headers(),
+        json={
+            "decision": "never",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+    )
 
     assert decision.status_code == 200
     assert decision.json()["state"]["status"] == "never"
 
-    blocked = client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
-    })
+    blocked = client.post(
+        "/api/tutorial-prompt/heartbeat",
+        headers=_mutation_headers(),
+        json={
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+        },
+    )
 
     assert blocked.status_code == 200
     assert blocked.json()["should_prompt"] is False
@@ -176,15 +249,23 @@ def test_never_route_persists_never_remind_state(tutorial_prompt_client):
 @pytest.mark.unit
 def test_accept_started_route_persists_started_state(tutorial_prompt_client):
     client, config = tutorial_prompt_client
-    heartbeat = client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
-    }).json()
+    heartbeat = client.post(
+        "/api/tutorial-prompt/heartbeat",
+        headers=_mutation_headers(),
+        json={
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+        },
+    ).json()
 
-    decision = client.post("/api/tutorial-prompt/decision", json={
-        "decision": "accept",
-        "result": "started",
-        "prompt_token": heartbeat["prompt_token"],
-    })
+    decision = client.post(
+        "/api/tutorial-prompt/decision",
+        headers=_mutation_headers(),
+        json={
+            "decision": "accept",
+            "result": "started",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+    )
 
     assert decision.status_code == 200
     assert decision.json()["state"]["status"] == "started"
@@ -193,9 +274,13 @@ def test_accept_started_route_persists_started_state(tutorial_prompt_client):
     assert state["started_at"] > 0
     assert state["started_via_prompt"] is True
 
-    blocked = client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
-    })
+    blocked = client.post(
+        "/api/tutorial-prompt/heartbeat",
+        headers=_mutation_headers(),
+        json={
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+        },
+    )
 
     assert blocked.status_code == 200
     assert blocked.json()["should_prompt"] is False
@@ -206,10 +291,14 @@ def test_accept_started_route_persists_started_state(tutorial_prompt_client):
 def test_decision_route_requires_prompt_token(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
 
-    response = client.post("/api/tutorial-prompt/decision", json={
-        "decision": "accept",
-        "result": "accepted",
-    })
+    response = client.post(
+        "/api/tutorial-prompt/decision",
+        headers=_mutation_headers(),
+        json={
+            "decision": "accept",
+            "result": "accepted",
+        },
+    )
 
     assert response.status_code == 400
     assert response.json()["ok"] is False
@@ -220,10 +309,14 @@ def test_decision_route_requires_prompt_token(tutorial_prompt_client):
 def test_manual_tutorial_started_route_persists_started_state(tutorial_prompt_client):
     client, config = tutorial_prompt_client
 
-    response = client.post("/api/tutorial-prompt/tutorial-started", json={
-        "page": "home",
-        "source": "manual",
-    })
+    response = client.post(
+        "/api/tutorial-prompt/tutorial-started",
+        headers=_mutation_headers(),
+        json={
+            "page": "home",
+            "source": "manual",
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -241,15 +334,23 @@ def test_manual_tutorial_started_route_persists_started_state(tutorial_prompt_cl
 @pytest.mark.unit
 def test_prompt_tutorial_started_route_requires_valid_prompt_token(tutorial_prompt_client):
     client, config = tutorial_prompt_client
-    heartbeat = client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
-    }).json()
+    heartbeat = client.post(
+        "/api/tutorial-prompt/heartbeat",
+        headers=_mutation_headers(),
+        json={
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+        },
+    ).json()
 
-    response = client.post("/api/tutorial-prompt/tutorial-started", json={
-        "page": "home",
-        "source": "idle_prompt",
-        "prompt_token": heartbeat["prompt_token"],
-    })
+    response = client.post(
+        "/api/tutorial-prompt/tutorial-started",
+        headers=_mutation_headers(),
+        json={
+            "page": "home",
+            "source": "idle_prompt",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -265,17 +366,25 @@ def test_prompt_tutorial_started_route_requires_valid_prompt_token(tutorial_prom
 @pytest.mark.unit
 def test_tutorial_completed_route_persists_completion_state(tutorial_prompt_client):
     client, config = tutorial_prompt_client
-    started = client.post("/api/tutorial-prompt/tutorial-started", json={
-        "page": "home",
-        "source": "manual",
-    })
+    started = client.post(
+        "/api/tutorial-prompt/tutorial-started",
+        headers=_mutation_headers(),
+        json={
+            "page": "home",
+            "source": "manual",
+        },
+    )
     tutorial_run_token = started.json()["tutorial_run_token"]
 
-    response = client.post("/api/tutorial-prompt/tutorial-completed", json={
-        "page": "home",
-        "source": "manual",
-        "tutorial_run_token": tutorial_run_token,
-    })
+    response = client.post(
+        "/api/tutorial-prompt/tutorial-completed",
+        headers=_mutation_headers(),
+        json={
+            "page": "home",
+            "source": "manual",
+            "tutorial_run_token": tutorial_run_token,
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -292,9 +401,13 @@ def test_tutorial_completed_route_persists_completion_state(tutorial_prompt_clie
 @pytest.mark.unit
 def test_state_route_hides_internal_prompt_tokens(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
-    client.post("/api/tutorial-prompt/heartbeat", json={
-        "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
-    })
+    client.post(
+        "/api/tutorial-prompt/heartbeat",
+        headers=_mutation_headers(),
+        json={
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+        },
+    )
 
     response = client.get("/api/tutorial-prompt/state")
 
@@ -313,13 +426,21 @@ def test_state_route_hides_internal_prompt_tokens(tutorial_prompt_client):
 def test_invalid_prompt_token_returns_400(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
 
-    shown = client.post("/api/tutorial-prompt/shown", json={
-        "prompt_token": "not-a-real-token",
-    })
-    decision = client.post("/api/tutorial-prompt/decision", json={
-        "decision": "later",
-        "prompt_token": "not-a-real-token",
-    })
+    shown = client.post(
+        "/api/tutorial-prompt/shown",
+        headers=_mutation_headers(),
+        json={
+            "prompt_token": "not-a-real-token",
+        },
+    )
+    decision = client.post(
+        "/api/tutorial-prompt/decision",
+        headers=_mutation_headers(),
+        json={
+            "decision": "later",
+            "prompt_token": "not-a-real-token",
+        },
+    )
 
     assert shown.status_code == 400
     assert shown.json()["ok"] is False
@@ -333,16 +454,24 @@ def test_invalid_prompt_token_returns_400(tutorial_prompt_client):
 @pytest.mark.unit
 def test_invalid_tutorial_run_token_returns_400(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
-    client.post("/api/tutorial-prompt/tutorial-started", json={
-        "page": "home",
-        "source": "manual",
-    })
+    client.post(
+        "/api/tutorial-prompt/tutorial-started",
+        headers=_mutation_headers(),
+        json={
+            "page": "home",
+            "source": "manual",
+        },
+    )
 
-    response = client.post("/api/tutorial-prompt/tutorial-completed", json={
-        "page": "home",
-        "source": "manual",
-        "tutorial_run_token": "not-a-real-run-token",
-    })
+    response = client.post(
+        "/api/tutorial-prompt/tutorial-completed",
+        headers=_mutation_headers(),
+        json={
+            "page": "home",
+            "source": "manual",
+            "tutorial_run_token": "not-a-real-run-token",
+        },
+    )
 
     assert response.status_code == 400
     assert response.json()["ok"] is False
@@ -353,10 +482,14 @@ def test_invalid_tutorial_run_token_returns_400(tutorial_prompt_client):
 def test_invalid_tutorial_source_returns_400(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
 
-    started = client.post("/api/tutorial-prompt/tutorial-started", json={
-        "page": "home",
-        "source": "unexpected",
-    })
+    started = client.post(
+        "/api/tutorial-prompt/tutorial-started",
+        headers=_mutation_headers(),
+        json={
+            "page": "home",
+            "source": "unexpected",
+        },
+    )
 
     assert started.status_code == 400
     assert started.json()["ok"] is False
@@ -364,12 +497,55 @@ def test_invalid_tutorial_source_returns_400(tutorial_prompt_client):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/tutorial-prompt/heartbeat", {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS}),
+        ("/api/tutorial-prompt/shown", {"prompt_token": "not-a-real-token"}),
+        ("/api/tutorial-prompt/decision", {"decision": "later", "prompt_token": "not-a-real-token"}),
+        ("/api/tutorial-prompt/tutorial-started", {"page": "home", "source": "manual"}),
+        (
+            "/api/tutorial-prompt/tutorial-completed",
+            {"page": "home", "source": "manual", "tutorial_run_token": "not-a-real-run-token"},
+        ),
+    ],
+)
+def test_tutorial_mutation_routes_require_csrf_headers(tutorial_prompt_client, path, payload):
+    client, _config = tutorial_prompt_client
+
+    response = client.post(path, json=payload)
+
+    assert response.status_code == 403
+    assert response.json()["ok"] is False
+    assert response.json()["error_code"] == "csrf_validation_failed"
+
+
+@pytest.mark.unit
+def test_tutorial_started_route_without_csrf_does_not_persist_state(tutorial_prompt_client):
+    client, config = tutorial_prompt_client
+
+    response = client.post("/api/tutorial-prompt/tutorial-started")
+
+    assert response.status_code == 403
+    assert response.json()["ok"] is False
+    assert response.json()["error_code"] == "csrf_validation_failed"
+
+    state = load_tutorial_prompt_state(config)
+    assert state["started_at"] == 0
+    assert state["status"] == "observing"
+
+
+@pytest.mark.unit
 def test_autostart_heartbeat_route_returns_prompt_token(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
 
-    response = client.post("/api/autostart-prompt/heartbeat", json={
-        "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
-    })
+    response = client.post(
+        "/api/autostart-prompt/heartbeat",
+        headers=_autostart_mutation_headers(),
+        json={
+            "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -380,17 +556,38 @@ def test_autostart_heartbeat_route_returns_prompt_token(tutorial_prompt_client):
 
 
 @pytest.mark.unit
+def test_autostart_heartbeat_route_requires_csrf_headers(tutorial_prompt_client):
+    client, _config = tutorial_prompt_client
+
+    response = client.post("/api/autostart-prompt/heartbeat", json={
+        "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+    })
+
+    assert response.status_code == 403
+    assert response.json()["ok"] is False
+    assert response.json()["error_code"] == "csrf_validation_failed"
+
+
+@pytest.mark.unit
 def test_autostart_decision_route_persists_completed_state(tutorial_prompt_client):
     client, config = tutorial_prompt_client
-    heartbeat = client.post("/api/autostart-prompt/heartbeat", json={
-        "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
-    }).json()
+    heartbeat = client.post(
+        "/api/autostart-prompt/heartbeat",
+        headers=_autostart_mutation_headers(),
+        json={
+            "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+        },
+    ).json()
 
-    response = client.post("/api/autostart-prompt/decision", json={
-        "decision": "accept",
-        "result": "enabled",
-        "prompt_token": heartbeat["prompt_token"],
-    })
+    response = client.post(
+        "/api/autostart-prompt/decision",
+        headers=_autostart_mutation_headers(),
+        json={
+            "decision": "accept",
+            "result": "enabled",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+    )
 
     assert response.status_code == 200
     assert response.json()["state"]["status"] == "completed"
@@ -433,6 +630,80 @@ def test_autostart_status_route_returns_service_status(tutorial_prompt_client, m
 
 
 @pytest.mark.unit
+def test_autostart_status_route_sanitizes_internal_failure_message(tutorial_prompt_client, monkeypatch):
+    client, _config = tutorial_prompt_client
+
+    def _raise_status_failure():
+        raise RuntimeError("launchctl print failed for /Users/demo/Library/LaunchAgents/com.project-neko.autostart.plist")
+
+    monkeypatch.setattr(system_router_module, "get_autostart_status", _raise_status_failure)
+
+    response = client.get("/api/system/autostart/status")
+
+    assert response.status_code == 500
+    assert response.json()["ok"] is False
+    assert response.json()["supported"] is False
+    assert response.json()["enabled"] is False
+    assert response.json()["error"] == "Failed to read autostart status"
+    assert response.json()["error_code"] == "status_failed"
+    assert "/Users/demo" not in response.text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("path", "service_name"),
+    [
+        ("/api/system/autostart/enable", "enable_autostart"),
+        ("/api/system/autostart/disable", "disable_autostart"),
+    ],
+)
+def test_autostart_mutation_routes_require_csrf_token(
+    tutorial_prompt_client,
+    monkeypatch,
+    path,
+    service_name,
+):
+    client, _config = tutorial_prompt_client
+    called = False
+
+    def _service():
+        nonlocal called
+        called = True
+        return {"ok": True, "supported": True, "enabled": True}
+
+    monkeypatch.setattr(system_router_module, service_name, _service)
+
+    response = client.post(path, headers=_autostart_mutation_headers(token=None))
+
+    assert response.status_code == 403
+    assert response.json()["ok"] is False
+    assert response.json()["error_code"] == "csrf_validation_failed"
+    assert called is False
+
+
+@pytest.mark.unit
+def test_autostart_enable_route_rejects_untrusted_origin(tutorial_prompt_client, monkeypatch):
+    client, _config = tutorial_prompt_client
+    called = False
+
+    def _enable():
+        nonlocal called
+        called = True
+        return {"ok": True, "supported": True, "enabled": True}
+
+    monkeypatch.setattr(system_router_module, "enable_autostart", _enable)
+
+    response = client.post(
+        "/api/system/autostart/enable",
+        headers=_autostart_mutation_headers(origin="https://evil.example"),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "csrf_validation_failed"
+    assert called is False
+
+
+@pytest.mark.unit
 def test_autostart_enable_route_returns_service_result(tutorial_prompt_client, monkeypatch):
     client, _config = tutorial_prompt_client
     monkeypatch.setattr(system_router_module, "enable_autostart", lambda: {
@@ -443,10 +714,39 @@ def test_autostart_enable_route_returns_service_result(tutorial_prompt_client, m
         "mechanism": "xdg-autostart",
     })
 
-    response = client.post("/api/system/autostart/enable")
+    response = client.post(
+        "/api/system/autostart/enable",
+        headers=_autostart_mutation_headers(),
+    )
 
     assert response.status_code == 200
     assert response.json()["enabled"] is True
+
+
+@pytest.mark.unit
+def test_autostart_enable_route_sanitizes_internal_failure_message(
+    tutorial_prompt_client,
+    monkeypatch,
+):
+    client, _config = tutorial_prompt_client
+    monkeypatch.setattr(system_router_module, "enable_autostart", lambda: {
+        "ok": False,
+        "supported": True,
+        "enabled": False,
+        "platform": "macos",
+        "error_code": "enable_failed",
+        "error": "launchctl bootstrap failed for /Users/demo/Library/LaunchAgents/com.project-neko.autostart.plist",
+    })
+
+    response = client.post(
+        "/api/system/autostart/enable",
+        headers=_autostart_mutation_headers(),
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error_code"] == "enable_failed"
+    assert response.json()["error"] == "Failed to enable autostart"
+    assert "/Users/demo" not in response.text
 
 
 @pytest.mark.unit
@@ -460,7 +760,36 @@ def test_autostart_disable_route_returns_service_result(tutorial_prompt_client, 
         "mechanism": "xdg-autostart",
     })
 
-    response = client.post("/api/system/autostart/disable")
+    response = client.post(
+        "/api/system/autostart/disable",
+        headers=_autostart_mutation_headers(),
+    )
 
     assert response.status_code == 200
     assert response.json()["enabled"] is False
+
+
+@pytest.mark.unit
+def test_autostart_disable_route_sanitizes_internal_failure_message(
+    tutorial_prompt_client,
+    monkeypatch,
+):
+    client, _config = tutorial_prompt_client
+    monkeypatch.setattr(system_router_module, "disable_autostart", lambda: {
+        "ok": False,
+        "supported": True,
+        "enabled": False,
+        "platform": "macos",
+        "error_code": "disable_failed",
+        "error": "bootout failed for gui/501/com.project-neko.autostart",
+    })
+
+    response = client.post(
+        "/api/system/autostart/disable",
+        headers=_autostart_mutation_headers(),
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error_code"] == "disable_failed"
+    assert response.json()["error"] == "Failed to disable autostart"
+    assert "gui/501" not in response.text

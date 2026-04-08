@@ -16,10 +16,12 @@ import base64
 import difflib
 import math
 import re
+import secrets
 import time
 from collections import deque
 from io import BytesIO
-from urllib.parse import unquote
+from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -31,7 +33,12 @@ from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from config import get_extra_body, MEMORY_SERVER_PORT
+from config import (
+    AUTOSTART_ALLOWED_ORIGINS,
+    AUTOSTART_CSRF_TOKEN,
+    MEMORY_SERVER_PORT,
+    get_extra_body,
+)
 from config.prompts_sys import _loc
 from config.prompts_emotion import get_outward_emotion_analysis_prompt
 from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
@@ -83,6 +90,102 @@ from utils.autostart_service import get_autostart_status, enable_autostart, disa
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
+_AUTOSTART_CSRF_HEADER = "X-CSRF-Token"
+
+
+def _build_public_error_response(
+    *,
+    error_code: str,
+    status_code: int,
+    result: dict | None = None,
+    defaults: dict | None = None,
+):
+    public_messages = {
+        "status_failed": "Failed to read autostart status",
+        "enable_failed": "Failed to enable autostart",
+        "disable_failed": "Failed to disable autostart",
+        "unsupported_platform": "Autostart is not supported on this platform",
+        "launch_command_unavailable": "Autostart launch command is unavailable",
+        "csrf_validation_failed": "Request could not be verified",
+    }
+
+    content = {}
+    if defaults:
+        content.update(defaults)
+    if result:
+        content.update(result)
+
+    content["ok"] = False
+    content["error_code"] = error_code
+    content["error"] = public_messages.get(error_code, "Operation failed")
+    return JSONResponse(status_code=status_code, content=content)
+
+
+def _normalize_origin_value(raw_value: str | None) -> str:
+    if not raw_value:
+        return ""
+
+    try:
+        parsed = urlsplit(raw_value.strip())
+    except ValueError:
+        return ""
+
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}".rstrip("/")
+
+
+def _get_request_origin(request: Request) -> str:
+    origin = _normalize_origin_value(request.headers.get("origin"))
+    if origin:
+        return origin
+    return _normalize_origin_value(request.headers.get("referer"))
+
+
+def _get_allowed_local_origins(request: Request) -> set[str]:
+    allowed_origins = {
+        origin
+        for origin in AUTOSTART_ALLOWED_ORIGINS
+        if isinstance(origin, str) and origin
+    }
+    request_origin = _normalize_origin_value(str(request.base_url))
+    if request_origin:
+        allowed_origins.add(request_origin)
+    return allowed_origins
+
+
+def _validate_local_mutation_request(
+    request: Request,
+    *,
+    error_defaults: dict[str, Any] | None = None,
+) -> JSONResponse | None:
+    csrf_token = request.headers.get(_AUTOSTART_CSRF_HEADER, "")
+    has_valid_csrf = bool(
+        csrf_token
+        and AUTOSTART_CSRF_TOKEN
+        and secrets.compare_digest(csrf_token, AUTOSTART_CSRF_TOKEN)
+    )
+    request_origin = _get_request_origin(request)
+    allowed_origins = _get_allowed_local_origins(request)
+    has_valid_origin = bool(request_origin and request_origin in allowed_origins)
+
+    if has_valid_csrf and has_valid_origin:
+        return None
+
+    logger.warning(
+        "Rejected local mutation request due to failed CSRF/origin validation: "
+        "origin=%r allowed_origins=%r has_csrf=%s referer=%r",
+        request_origin,
+        sorted(allowed_origins),
+        has_valid_csrf,
+        request.headers.get("referer"),
+    )
+    return _build_public_error_response(
+        error_code="csrf_validation_failed",
+        status_code=403,
+        defaults=error_defaults,
+    )
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 
@@ -535,6 +638,10 @@ async def get_tutorial_prompt_state():
 @router.post("/tutorial-prompt/heartbeat")
 async def post_tutorial_prompt_heartbeat(request: Request):
     """记录主页空闲与互动状态，并判断是否需要提示新手引导。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         payload = await request.json()
     except Exception:
@@ -545,6 +652,10 @@ async def post_tutorial_prompt_heartbeat(request: Request):
 @router.post("/tutorial-prompt/shown")
 async def post_tutorial_prompt_shown(request: Request):
     """记录新手引导提示已实际展示给用户。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         payload = await request.json()
     except Exception:
@@ -559,6 +670,10 @@ async def post_tutorial_prompt_shown(request: Request):
 @router.post("/tutorial-prompt/decision")
 async def post_tutorial_prompt_decision(request: Request):
     """记录用户对新手引导提示的选择。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         payload = await request.json()
     except Exception:
@@ -579,6 +694,10 @@ async def get_autostart_prompt_state():
 @router.post("/autostart-prompt/heartbeat")
 async def post_autostart_prompt_heartbeat(request: Request):
     """记录主页空闲与互动状态，并判断是否需要提示开机自启动。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         payload = await request.json()
     except Exception:
@@ -589,6 +708,10 @@ async def post_autostart_prompt_heartbeat(request: Request):
 @router.post("/autostart-prompt/shown")
 async def post_autostart_prompt_shown(request: Request):
     """记录开机自启动提示已实际展示给用户。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         payload = await request.json()
     except Exception:
@@ -603,6 +726,10 @@ async def post_autostart_prompt_shown(request: Request):
 @router.post("/autostart-prompt/decision")
 async def post_autostart_prompt_decision(request: Request):
     """记录用户对开机自启动提示的选择。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         payload = await request.json()
     except Exception:
@@ -621,40 +748,69 @@ async def get_system_autostart_status():
         return get_autostart_status()
     except Exception as exc:
         logger.exception("Failed to read autostart status: %s", exc)
-        return JSONResponse(
+        return _build_public_error_response(
+            error_code="status_failed",
             status_code=500,
-            content={"ok": False, "error": str(exc), "error_code": "status_failed"},
+            defaults={"supported": False, "enabled": False},
         )
 
 
 @router.post("/system/autostart/enable")
-async def post_system_autostart_enable():
+async def post_system_autostart_enable(request: Request):
     """为当前用户启用 N.E.K.O 开机自启动。"""
+    validation_error = _validate_local_mutation_request(
+        request,
+        error_defaults={"enabled": False},
+    )
+    if validation_error is not None:
+        return validation_error
+
     result = enable_autostart()
     if result.get("ok"):
         return result
 
+    error_code = result.get("error_code") or "enable_failed"
     status_code = 400 if result.get("error_code") in {
         "unsupported_platform",
         "launch_command_unavailable",
     } else 500
-    return JSONResponse(status_code=status_code, content=result)
+    return _build_public_error_response(
+        error_code=error_code,
+        status_code=status_code,
+        result=result,
+    )
 
 
 @router.post("/system/autostart/disable")
-async def post_system_autostart_disable():
+async def post_system_autostart_disable(request: Request):
     """为当前用户关闭 N.E.K.O 开机自启动。"""
+    validation_error = _validate_local_mutation_request(
+        request,
+        error_defaults={"enabled": False},
+    )
+    if validation_error is not None:
+        return validation_error
+
     result = disable_autostart()
     if result.get("ok"):
         return result
 
+    error_code = result.get("error_code") or "disable_failed"
     status_code = 400 if result.get("error_code") == "unsupported_platform" else 500
-    return JSONResponse(status_code=status_code, content=result)
+    return _build_public_error_response(
+        error_code=error_code,
+        status_code=status_code,
+        result=result,
+    )
 
 
 @router.post("/tutorial-prompt/tutorial-started")
 async def post_tutorial_started(request: Request):
     """记录主页新手引导已实际开始。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         payload = await request.json()
     except Exception:
@@ -669,6 +825,10 @@ async def post_tutorial_started(request: Request):
 @router.post("/tutorial-prompt/tutorial-completed")
 async def post_tutorial_completed(request: Request):
     """记录主页新手引导已完成。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         payload = await request.json()
     except Exception:

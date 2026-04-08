@@ -689,6 +689,19 @@ def test_legacy_autostart_state_is_ignored_for_new_tutorial_prompt(tmp_path):
 
 
 @pytest.mark.unit
+def test_corrupted_legacy_autostart_state_does_not_break_tutorial_state_load(tmp_path):
+    config = DummyConfig(tmp_path)
+    legacy_state_path = config.config_dir / "autostart_prompt.json"
+    legacy_state_path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+
+    state = load_tutorial_prompt_state(config)
+
+    assert state["status"] == "observing"
+    assert state["shown_count"] == 0
+    assert state["home_tutorial_completed"] is False
+
+
+@pytest.mark.unit
 def test_autostart_state_file_does_not_pollute_tutorial_state(tmp_path):
     config = DummyConfig(tmp_path)
     autostart_state = load_autostart_prompt_state(config)

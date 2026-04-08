@@ -221,7 +221,7 @@
             let settled = false;
             const dismissValue = Object.prototype.hasOwnProperty.call(modalConfig, 'dismissValue')
                 ? modalConfig.dismissValue
-                : (modalConfig.type === 'prompt' || modalConfig.type === 'decision' ? null : false);
+                : (modalConfig.type === 'prompt' ? null : false);
 
             // 创建遮罩层
             const overlay = document.createElement('div');

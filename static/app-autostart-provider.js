@@ -3,6 +3,7 @@
 
     const DESKTOP_PROVIDER_NAME = 'neko-pc';
     const BACKEND_PROVIDER_NAME = 'backend';
+    const AUTOSTART_CSRF_HEADER_NAME = 'X-CSRF-Token';
 
     function getNavigatorPlatform() {
         if (navigator.userAgentData && navigator.userAgentData.platform) {
@@ -12,6 +13,37 @@
             return String(navigator.platform);
         }
         return 'unknown';
+    }
+
+    async function parseJsonResponse(response) {
+        if (!response || response.status === 204) {
+            return null;
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        if (!contentType.toLowerCase().includes('application/json')) {
+            return null;
+        }
+
+        try {
+            return await response.json();
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function buildRequestError(response, payload) {
+        const error = new Error(
+            payload && typeof payload.error === 'string' && payload.error
+                ? payload.error
+                : ('HTTP ' + response.status)
+        );
+        error.status = response.status;
+        if (payload && typeof payload === 'object') {
+            Object.assign(error, payload);
+            error.payload = payload;
+        }
+        return error;
     }
 
     function requestJson(url, options) {
@@ -28,13 +60,55 @@
             body: hasJsonBody ? JSON.stringify(requestOptions.json || {}) : requestOptions.body,
             keepalive: !!requestOptions.keepalive,
             cache: requestOptions.cache,
-        }).then(function (response) {
+        }).then(async function (response) {
+            const payload = await parseJsonResponse(response);
             if (!response.ok) {
-                throw new Error('HTTP ' + response.status);
+                throw buildRequestError(response, payload);
             }
-            return response.json();
+            return payload;
         });
     }
+
+    function waitForPageConfig() {
+        if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
+            return window.pageConfigReady.catch(function () {
+                return null;
+            });
+        }
+        return Promise.resolve(null);
+    }
+
+    function getAutostartCsrfToken() {
+        return waitForPageConfig().then(function (pageConfig) {
+            if (
+                pageConfig
+                && typeof pageConfig === 'object'
+                && typeof pageConfig.autostart_csrf_token === 'string'
+                && pageConfig.autostart_csrf_token
+            ) {
+                return pageConfig.autostart_csrf_token;
+            }
+            return '';
+        });
+    }
+
+    function getAutostartMutationHeaders() {
+        return getAutostartCsrfToken().then(function (csrfToken) {
+            if (!csrfToken) {
+                return {};
+            }
+            const headers = {};
+            headers[AUTOSTART_CSRF_HEADER_NAME] = csrfToken;
+            return headers;
+        });
+    }
+
+    const mutationSecurityApi = {
+        getCsrfToken: getAutostartCsrfToken,
+        getMutationHeaders: getAutostartMutationHeaders,
+    };
+    window.nekoAutostartSecurity = mutationSecurityApi;
+    window.nekoLocalMutationSecurity = mutationSecurityApi;
 
     // Desktop shells can inject window.nekoAutostart with getStatus/enable/disable methods.
     function getDesktopBridge() {
@@ -102,18 +176,24 @@
     }
 
     function enableBackendAutostart() {
-        return requestJson('/api/system/autostart/enable', {
-            method: 'POST',
-            json: {},
+        return getAutostartMutationHeaders().then(function (headers) {
+            return requestJson('/api/system/autostart/enable', {
+                method: 'POST',
+                headers: headers,
+                json: {},
+            });
         }).then(function (result) {
             return normalizeResult(result, getBackendDefaults());
         });
     }
 
     function disableBackendAutostart() {
-        return requestJson('/api/system/autostart/disable', {
-            method: 'POST',
-            json: {},
+        return getAutostartMutationHeaders().then(function (headers) {
+            return requestJson('/api/system/autostart/disable', {
+                method: 'POST',
+                headers: headers,
+                json: {},
+            });
         }).then(function (result) {
             return normalizeResult(result, getBackendDefaults());
         });

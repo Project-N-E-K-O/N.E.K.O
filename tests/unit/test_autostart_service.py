@@ -95,10 +95,46 @@ def test_get_launch_command_falls_back_to_current_interpreter_without_venv_or_uv
 
 
 @pytest.mark.unit
+def test_get_current_executable_path_preserves_symlink_entrypoint(tmp_path, monkeypatch):
+    real_executable = tmp_path / "python-base"
+    symlink_executable = tmp_path / "bin" / "python"
+    real_executable.write_text("", encoding="utf-8")
+    symlink_executable.parent.mkdir(parents=True, exist_ok=True)
+    symlink_executable.symlink_to(real_executable)
+
+    monkeypatch.setattr(autostart_service.sys, "executable", str(symlink_executable))
+
+    executable = autostart_service._get_current_executable_path()
+
+    assert executable == symlink_executable
+    assert executable is not None
+    assert executable.resolve() == real_executable
+
+
+@pytest.mark.unit
+def test_quote_posix_command_uses_xdg_exec_escaping():
+    command = [
+        "/usr/bin/neko",
+        "hello world",
+        "100%",
+        "%f",
+        'quote"$HOME`\\',
+    ]
+
+    quoted = autostart_service._quote_posix_command(command)
+
+    assert quoted == '/usr/bin/neko "hello world" 100%% %f "quote\\\"\\$HOME\\`\\\\"'
+
+
+@pytest.mark.unit
 def test_enable_autostart_writes_linux_desktop_entry(tmp_path, monkeypatch):
     _patch_home(monkeypatch, tmp_path)
     monkeypatch.setattr(autostart_service.sys, "platform", "linux")
-    monkeypatch.setattr(autostart_service, "_get_launch_command", lambda: ["/usr/bin/neko", "--flag"])
+    monkeypatch.setattr(
+        autostart_service,
+        "_get_launch_command",
+        lambda: ["/usr/bin/neko", "hello world", "100%", "%f"],
+    )
     monkeypatch.setattr(autostart_service, "_get_working_directory", lambda: tmp_path / "app")
 
     result = autostart_service.enable_autostart()
@@ -108,7 +144,7 @@ def test_enable_autostart_writes_linux_desktop_entry(tmp_path, monkeypatch):
     assert result["enabled"] is True
     assert desktop_entry.exists()
     content = desktop_entry.read_text(encoding="utf-8")
-    assert "Exec=/usr/bin/neko --flag" in content
+    assert 'Exec=/usr/bin/neko "hello world" 100%% %f' in content
     assert f"Path={tmp_path / 'app'}" in content
 
 

@@ -78,7 +78,9 @@ async function loadPageConfig() {
             ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
             : '/api/config/page_config';
 
-        const response = await fetch(apiUrl);
+        const response = await fetch(apiUrl, {
+            cache: 'no-store',
+        });
         const data = await response.json();
 
         if (data.success) {
