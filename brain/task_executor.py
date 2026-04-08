@@ -241,7 +241,7 @@ class DirectTaskExecutor:
                     request_params: dict = {
                         "model": model,
                         "messages": [
-                            {"role": "system", "content": "Generate a concise plugin summary under 300 characters in English."},
+                            {"role": "system", "content": "You are an agentic automation assessment agent. Generate a concise plugin summary under 300 characters in English."},
                             {"role": "user", "content": f"Plugin: {pid}\nDescription: {desc}\n\nReturn ONLY the summary."},
                         ],
                         "temperature": 0,
@@ -617,8 +617,8 @@ class DirectTaskExecutor:
         for p in plugins:
             pid = p.get("id", "unknown") if isinstance(p, dict) else "unknown"
             short = (p.get("short_description") or p.get("description", "")) if isinstance(p, dict) else ""
-            if len(short) > 200:
-                short = short[:200] + "..."
+            if len(short) > 300:
+                short = short[:300] + "..."
             summaries.append(f"- {pid}: {short}")
         plugin_summaries = "\n".join(summaries)
 
