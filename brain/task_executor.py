@@ -653,7 +653,7 @@ class DirectTaskExecutor:
                 text = text.replace("```json", "").replace("```", "").strip()
             ids = json.loads(text)
             if isinstance(ids, list):
-                return [str(i) for i in ids if isinstance(i, str)]
+                return [str(i) for i in ids if isinstance(i, (str, int))]
         except Exception as e:
             logger.warning("[PluginFilter] Stage1 LLM coarse screen failed: %s", e)
         return []
