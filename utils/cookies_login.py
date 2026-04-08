@@ -30,6 +30,7 @@ if not logger.handlers:
 
 CONFIG_DIR = Path("config")
 COOKIE_FILES = {
+    'netease': CONFIG_DIR / 'netease_cookies.json',
     'bilibili': CONFIG_DIR / 'bilibili_cookies.json',
     "douyin": CONFIG_DIR / 'douyin_cookies.json',
     "kuaishou": CONFIG_DIR / 'kuaishou_cookies.json', 
@@ -57,6 +58,7 @@ def mask_string(s: str) -> str:
 def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
     """核心凭证防伪校验，防止残缺 Cookie 导致账号异常或风控"""
     required_keys = {
+        'netease': ['MUSIC_U'],
         'bilibili': ['SESSDATA'],
         "douyin": ['sessionid', 'ttwid'],
         "kuaishou": ['kuaishou.server.web_st', 'userId'], 
@@ -329,12 +331,23 @@ async def get_twitter_cookies(_method: str = "manual") -> Optional[Dict[str, str
         save_cookies_to_file('twitter', cookies)
     return cookies
 
+async def get_netease_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
+    print("\n" + "-" * 40)
+    print("【网易云音乐手动导入】(需包含 MUSIC_U 字段)")
+    cookie_string = input("👉 请粘贴 Cookie: ").strip()
+    print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]")
+    cookies = parse_cookie_string(cookie_string)
+    if cookies:
+        save_cookies_to_file('netease', cookies)
+    return cookies
+
 # ==========================================
 # 交互式终端 UI 引擎
 # ==========================================
 class PlatformLoginManager:
     def __init__(self):
         self.platforms = {
+            'netease': {'name': '网易云音乐', 'methods': ['manual'], 'func': get_netease_cookies},
             'bilibili': {'name': 'Bilibili', 'methods': ['manual'], 'func': get_bilibili_cookies},
             "douyin": {'name': '抖音', 'methods': ['manual'], 'func': get_douyin_cookies},
             "kuaishou": {'name': '快手', 'methods': ['manual'], 'func': get_kuaishou_cookies},

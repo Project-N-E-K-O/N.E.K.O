@@ -28,7 +28,8 @@
         "fieldSeparator": ", ",
         "tryAgainLater": "Пожалуйста, попробуйте позже",
         "user": "Пользователь",
-        "project": "Проект"
+        "project": "Проект",
+        "collapse": "Свернуть"
     },
     "characterProfile": {
         "gender": "Пол",
@@ -2478,6 +2479,7 @@
         "weibo": "🌏 Weibo",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 NetEase Cloud Music",
         "saveConfig": "Сохранить конфигурацию",
         "encryptStorage": "Безопасное шифрование и сохранение в локальный файл",
         "localMonitoring": "Мониторинг локального статуса",
@@ -2503,7 +2505,8 @@
             "kuaishou": "📌 <b>Цель:</b> Перейдите на <b>kuaishou.com</b>, чтобы получить эти файлы cookie.",
             "weibo": "📌 <b>Цель:</b> Перейдите на <b>weibo.com</b>, чтобы получить эти файлы cookie.",
             "twitter": "📌 <b>Цель:</b> Перейдите на <b>x.com</b>, чтобы получить эти файлы cookie.",
-            "reddit": "📌 <b>Цель:</b> Перейдите на <b>reddit.com</b>, чтобы получить эти файлы cookie."
+            "reddit": "📌 <b>Цель:</b> Перейдите на <b>reddit.com</b>, чтобы получить эти файлы cookie.",
+            "netease": "📌 <b>Цель:</b> Перейдите на <b>music.163.com</b>, чтобы получить эти файлы cookie."
         },
         "guide": {
             "title": "Универсальное руководство для новичков",
@@ -2585,6 +2588,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF-токен"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "Основные учётные данные (Обязательно)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "Идентификатор устройства (Необязательно)"
             }
         },
         "status": {
@@ -2608,7 +2619,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "QR-вход успешен! Cookies автоматически заполнены, нажмите Сохранить конфигурацию"
+            "successAlert": "QR-вход успешен! Cookies автоматически заполнены, нажмите Сохранить конфигурацию",
+            "extractFailed": "⚠️ QR-вход выполнен, но не удалось автоматически извлечь поля. Проверьте вручную."
         }
     },
     "music": {

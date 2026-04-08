@@ -624,15 +624,6 @@ wheels = [
 ]
 
 [[package]]
-name = "diskcache"
-version = "5.6.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/3f/21/1c1ffc1a039ddcc459db43cc108658f32c57d271d7289a2794e401d0fdb6/diskcache-5.6.3.tar.gz", hash = "sha256:2c3a3fa2743d8535d832ec61c2054a1641f41775aa7c556758a109941e33e4fc", size = 67916, upload-time = "2023-08-31T06:12:00.316Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/27/4570e78fc0bf5ea0ca45eb1de3818a23787af9b390c0b0a0033a1b8236f9/diskcache-5.6.3-py3-none-any.whl", hash = "sha256:5e31b2d5fbad117cc363ebaf6b689474db18a1f6438bc82358b024abd4c2ca19", size = 45550, upload-time = "2023-08-31T06:11:58.822Z" },
-]
-
-[[package]]
 name = "distro"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1452,7 +1443,6 @@ dependencies = [
     { name = "jinja2" },
     { name = "jmespath" },
     { name = "loguru" },
-    { name = "neteasecloudmusic" },
     { name = "numpy" },
     { name = "openai" },
     { name = "ormsgpack" },
@@ -1460,6 +1450,7 @@ dependencies = [
     { name = "psutil" },
     { name = "pyautogui" },
     { name = "pygetwindow", marker = "sys_platform == 'win32'" },
+    { name = "pyncm-async" },
     { name = "pyobjc", marker = "sys_platform == 'darwin'" },
     { name = "pyrnnoise" },
     { name = "pytesseract" },
@@ -1509,7 +1500,6 @@ requires-dist = [
     { name = "jinja2" },
     { name = "jmespath", specifier = ">=1.1.0" },
     { name = "loguru", specifier = ">=0.7.0" },
-    { name = "neteasecloudmusic", specifier = ">=0.1.10" },
     { name = "numpy", specifier = "~=1.26.4" },
     { name = "openai" },
     { name = "ormsgpack", specifier = ">=1.4.0" },
@@ -1517,6 +1507,7 @@ requires-dist = [
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pyautogui" },
     { name = "pygetwindow", marker = "sys_platform == 'win32'" },
+    { name = "pyncm-async", specifier = ">=1.8.0" },
     { name = "pyobjc", marker = "sys_platform == 'darwin'" },
     { name = "pyrnnoise", specifier = ">=0.4.3" },
     { name = "pytesseract" },
@@ -1557,20 +1548,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/83/f8/51569ac65d696c8ecbee95938f89d4abf00f47d58d48f6fbabfe8f0baefe/nest_asyncio-1.6.0.tar.gz", hash = "sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe", size = 7418, upload-time = "2024-01-21T14:25:19.227Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/c4/c2971a3ba4c6103a3d10c4b0f24f461ddc027f0f09763220cf35ca1401b3/nest_asyncio-1.6.0-py3-none-any.whl", hash = "sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c", size = 5195, upload-time = "2024-01-21T14:25:17.223Z" },
-]
-
-[[package]]
-name = "neteasecloudmusic"
-version = "0.1.10"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "diskcache" },
-    { name = "py-mini-racer" },
-    { name = "requests" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/43/45/92f6b32687202ab379a3339a0b58b78a66ef8d900ce8871d85835fec73a1/NeteaseCloudMusic-0.1.10.tar.gz", hash = "sha256:b8f820f69aa157c29e2ea0c67ba0d7c3356dac855e0d659ed9e12269863ec23b", size = 294254, upload-time = "2023-12-19T17:27:06.93Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/37/88118a849b6e979342a227b49301ab67feef2168ed92b820f0b4655cfb20/NeteaseCloudMusic-0.1.10-py2.py3-none-any.whl", hash = "sha256:91a96f2e48a66130ff691028907a897ce8edf9848b3dcd4bfddcab4b09a2678d", size = 295932, upload-time = "2023-12-19T17:27:05.419Z" },
 ]
 
 [[package]]
@@ -1873,17 +1850,6 @@ wheels = [
 ]
 
 [[package]]
-name = "py-mini-racer"
-version = "0.6.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/50/97/a578b918b2e5923dd754cb60bb8b8aeffc85255ffb92566e3c65b148ff72/py_mini_racer-0.6.0.tar.gz", hash = "sha256:f71e36b643d947ba698c57cd9bd2232c83ca997b0802fc2f7f79582377040c11", size = 5994836, upload-time = "2021-04-22T07:58:35.993Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/13/13/058240c7fd1fbf29a24bda048d93346c2a56275736b76b56afe64050a161/py_mini_racer-0.6.0-py2.py3-none-macosx_10_10_x86_64.whl", hash = "sha256:346e73bb89a2024888244d487834be24a121089ceb0641dd0200cb96c4e24b57", size = 5280865, upload-time = "2021-04-22T07:58:29.118Z" },
-    { url = "https://files.pythonhosted.org/packages/29/a9/8ce0ca222ef04d602924a1e099be93f5435ca6f3294182a30574d4159ca2/py_mini_racer-0.6.0-py2.py3-none-manylinux1_x86_64.whl", hash = "sha256:42896c24968481dd953eeeb11de331f6870917811961c9b26ba09071e07180e2", size = 5416149, upload-time = "2021-04-22T07:58:25.615Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/71/76ac5d593e14b148a4847b608c5ad9a2c7c4827c796c33b396d0437fa113/py_mini_racer-0.6.0-py2.py3-none-win_amd64.whl", hash = "sha256:97cab31bbf63ce462ba4cd6e978c572c916d8b15586156c7c5e0b2e42c10baab", size = 4797809, upload-time = "2021-04-22T07:58:32.286Z" },
-]
-
-[[package]]
 name = "pyasn1"
 version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2074,6 +2040,18 @@ name = "pymsgbox"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/7d/ff/4c6f31a4f08979f12a663f2aeb6c8b765d3bd592e66eaaac445f547bb875/PyMsgBox-1.0.9.tar.gz", hash = "sha256:2194227de8bff7a3d6da541848705a155dcbb2a06ee120d9f280a1d7f51263ff", size = 18829, upload-time = "2020-10-11T01:51:43.227Z" }
+
+[[package]]
+name = "pyncm-async"
+version = "1.8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/52/14/8892c8bef54293eaf13c3ff95685a097d8a48272ce07b8600138f5c24d3e/pyncm_async-1.8.2.tar.gz", hash = "sha256:3ea9914f3fbcd4a76ef1d34a4681cff3733507b54caa9aa79f1d04f0e8cd27a7", size = 42045, upload-time = "2025-10-24T08:34:04.522Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4f/76/ab75311b491c83d4066820eba5275b44980718f25d6392cb54404db20d07/pyncm_async-1.8.2-py3-none-any.whl", hash = "sha256:65645bb88a3c2c91eff2ac747914dc2b58c037c8e03ef55550c1f4552ae5f64b", size = 47569, upload-time = "2025-10-24T08:34:03.342Z" },
+]
 
 [[package]]
 name = "pyobjc"
