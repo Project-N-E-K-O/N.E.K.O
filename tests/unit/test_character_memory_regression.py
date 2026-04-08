@@ -105,7 +105,8 @@ async def test_character_management_and_recent_save_regression():
             assert switch_back_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == initial_name
 
-            delete_result = await characters_router_module.delete_catgirl("测试角色")
+            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+                delete_result = await characters_router_module.delete_catgirl("测试角色")
             assert delete_result["success"] is True
             assert "测试角色" not in cm.load_characters().get("猫娘", {})
             assert not (Path(cm.memory_dir) / "测试角色").exists()
@@ -240,7 +241,18 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
             characters["猫娘"]["工坊角色"] = {"昵称": "会复活吗"}
             cm.save_characters(characters, bypass_write_fence=True)
 
-            delete_result = await characters_router_module.delete_catgirl("工坊角色")
+            fake_response = type(
+                "Resp",
+                (),
+                {"status_code": 200, "json": lambda self: {"status": "success"}},
+            )()
+            fake_client = AsyncMock()
+            fake_client.__aenter__.return_value = fake_client
+            fake_client.__aexit__.return_value = False
+            fake_client.post.return_value = fake_response
+
+            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+                delete_result = await characters_router_module.delete_catgirl("工坊角色")
             assert delete_result["success"] is True
             assert "工坊角色" not in cm.load_characters().get("猫娘", {})
 
@@ -273,3 +285,97 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
             current_characters = cm.load_characters()
             assert "工坊角色" not in current_characters.get("猫娘", {})
             assert current_characters["当前猫娘"] == initial_name
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            characters_router_module = importlib.import_module("main_routers.characters_router")
+
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})["删除失败角色"] = {"昵称": "删除失败角色"}
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            fake_response = type(
+                "Resp",
+                (),
+                {"status_code": 200, "json": lambda self: {"status": "success"}},
+            )()
+            fake_client = AsyncMock()
+            fake_client.__aenter__.return_value = fake_client
+            fake_client.__aexit__.return_value = False
+            fake_client.post.return_value = fake_response
+
+            with (
+                patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client),
+                patch(
+                    "main_routers.characters_router.delete_character_memory_storage",
+                    side_effect=OSError("time_indexed.db is locked"),
+                ),
+            ):
+                delete_result = await characters_router_module.delete_catgirl("删除失败角色")
+
+            assert delete_result.status_code == 500
+            payload = json.loads(delete_result.body.decode("utf-8"))
+            assert payload["success"] is False
+            assert "time_indexed.db is locked" in payload["error"]
+            assert payload["memory_server_released"] is True
+            assert "删除失败角色" in cm.load_characters().get("猫娘", {})
+
+
+@pytest.mark.unit
+def test_timeindexed_dispose_engine_also_clears_sql_chat_engine_cache():
+    from memory.timeindex import TimeIndexedMemory
+    from utils.llm_client import SQLChatMessageHistory
+
+    class _DummyEngine:
+        def __init__(self):
+            self.dispose_calls = 0
+
+        def dispose(self):
+            self.dispose_calls += 1
+
+    primary_engine = _DummyEngine()
+    cached_engine = _DummyEngine()
+    connection_string = "sqlite:///D:/tmp/test-time-indexed.db"
+
+    original_cache = dict(SQLChatMessageHistory._engine_cache)
+    try:
+        SQLChatMessageHistory._engine_cache[connection_string] = cached_engine
+
+        manager = object.__new__(TimeIndexedMemory)
+        manager.engines = {"测试角色": primary_engine}
+        manager.db_paths = {"测试角色": "D:/tmp/test-time-indexed.db"}
+
+        manager.dispose_engine("测试角色")
+
+        assert primary_engine.dispose_calls == 1
+        assert cached_engine.dispose_calls == 1
+        assert "测试角色" not in manager.engines
+        assert "测试角色" not in manager.db_paths
+        assert connection_string not in SQLChatMessageHistory._engine_cache
+    finally:
+        SQLChatMessageHistory._engine_cache.clear()
+        SQLChatMessageHistory._engine_cache.update(original_cache)

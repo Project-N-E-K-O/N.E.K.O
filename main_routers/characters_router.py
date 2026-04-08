@@ -181,6 +181,46 @@ async def notify_memory_server_reload(*, reason: str = "") -> bool:
     return False
 
 
+async def release_memory_server_character(character_name: str, *, reason: str = "") -> bool:
+    from urllib.parse import quote
+
+    try:
+        encoded_name = quote(character_name, safe="")
+        async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
+            response = await client.post(
+                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/release_character/{encoded_name}",
+                timeout=5.0,
+            )
+        if response.status_code != 200:
+            logger.warning(
+                "⚠️ 释放记忆服务器角色句柄失败，status=%s, character=%s, reason=%s",
+                response.status_code,
+                character_name,
+                reason,
+            )
+            return False
+
+        payload = response.json()
+        if payload.get("status") == "success":
+            logger.info("✅ 已释放角色 %s 的记忆服务器句柄（%s）", character_name, reason or "角色文件操作前")
+            return True
+
+        logger.warning(
+            "⚠️ 释放记忆服务器角色句柄返回非成功状态，payload=%s, character=%s, reason=%s",
+            payload,
+            character_name,
+            reason,
+        )
+    except Exception as exc:
+        logger.warning(
+            "⚠️ 调用记忆服务器释放角色句柄时出错: %s（character=%s, reason=%s）",
+            exc,
+            character_name,
+            reason,
+        )
+    return False
+
+
 @router.get('')
 async def get_characters(request: Request):
     """获取角色数据，支持根据用户语言自动翻译人设"""
@@ -1198,6 +1238,11 @@ async def rename_catgirl(old_name: str, request: Request):
         target=f"characters/{old_name} -> {new_name}",
     )
 
+    await release_memory_server_character(
+        old_name,
+        reason=f"角色重命名前释放 SQLite 句柄: {old_name} -> {new_name}",
+    )
+
     rename_character_memory_storage(_config_manager, old_name, new_name)
 
     # 重命名角色真源
@@ -1628,6 +1673,11 @@ async def delete_catgirl(name: str):
         target=f"characters/{name}",
     )
 
+    released_memory_handle = await release_memory_server_character(
+        name,
+        reason=f"角色删除前释放 SQLite 句柄: {name}",
+    )
+
     # 删除对应的记忆文件
     try:
         removed_memory_paths = delete_character_memory_storage(_config_manager, name)
@@ -1635,6 +1685,14 @@ async def delete_catgirl(name: str):
             logger.info(f"已删除: {entry_path}")
     except Exception as e:
         logger.error(f"删除记忆文件时出错: {e}")
+        return JSONResponse(
+            {
+                "success": False,
+                "error": f"删除角色记忆文件失败: {e}",
+                "memory_server_released": released_memory_handle,
+            },
+            status_code=500,
+        )
 
     try:
         cloud_state = _config_manager.load_cloudsave_local_state()

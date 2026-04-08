@@ -49,11 +49,16 @@ class TimeIndexedMemory:
 
     def dispose_engine(self, lanlan_name: str):
         """释放指定角色的数据库引擎资源喵~"""
+        db_path = self.db_paths.pop(lanlan_name, None)
         engine = self.engines.pop(lanlan_name, None)
         if engine:
             engine.dispose()
             logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
-        self.db_paths.pop(lanlan_name, None)
+        if db_path:
+            connection_string = f"sqlite:///{db_path}"
+            cached_engine = SQLChatMessageHistory._engine_cache.pop(connection_string, None)
+            if cached_engine and cached_engine is not engine:
+                cached_engine.dispose()
 
     def cleanup(self):
         """清理所有引擎资源喵~"""

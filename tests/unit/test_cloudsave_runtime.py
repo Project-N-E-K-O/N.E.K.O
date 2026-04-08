@@ -1,4 +1,7 @@
+import copy
 import json
+import shutil
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
@@ -564,6 +567,36 @@ def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
 
 
 @pytest.mark.unit
+def test_export_creates_valid_sqlite_shadow_copy_for_time_indexed_db(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot
+
+    _write_runtime_state(cm)
+
+    runtime_db_path = Path(cm.memory_dir) / "小满" / "time_indexed.db"
+    runtime_db_path.unlink()
+
+    with sqlite3.connect(str(runtime_db_path)) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE IF NOT EXISTS entries (id INTEGER PRIMARY KEY, content TEXT)")
+        conn.execute("INSERT INTO entries(content) VALUES (?)", ("来自 WAL 的长期记忆",))
+        conn.commit()
+
+    assert Path(f"{runtime_db_path}-wal").exists()
+
+    export_local_cloudsave_snapshot(cm)
+
+    exported_db_path = cm.cloudsave_dir / "memory" / "小满" / "time_indexed.db"
+    with sqlite3.connect(str(exported_db_path)) as conn:
+        row = conn.execute("SELECT content FROM entries").fetchone()
+        quick_check = conn.execute("PRAGMA quick_check").fetchone()
+
+    assert row == ("来自 WAL 的长期记忆",)
+    assert quick_check == ("ok",)
+
+
+@pytest.mark.unit
 def test_export_persists_local_tombstones_into_catalog_and_import_state(tmp_path):
     cm = _make_config_manager(tmp_path)
 
@@ -593,6 +626,170 @@ def test_export_persists_local_tombstones_into_catalog_and_import_state(tmp_path
 
     restored_tombstones = cm.load_character_tombstones_state()
     assert restored_tombstones["tombstones"][0]["character_name"] == "已删除角色"
+
+
+@pytest.mark.unit
+def test_cross_device_import_overwrites_existing_runtime_without_duplicates_or_partial_loss(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "device_a")
+    target_cm = _make_config_manager(tmp_path / "device_b")
+
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot, import_local_cloudsave_snapshot
+
+    character_name = "\u5c0f\u6ee1"
+    extra_name = "\u672c\u5730\u591a\u4f59\u89d2\u8272"
+
+    _write_runtime_state(source_cm, character_name=character_name)
+    source_memory_dir = Path(source_cm.memory_dir) / character_name
+    atomic_write_json(
+        source_memory_dir / "recent.json",
+        [{"role": "user", "content": "from-device-a"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    atomic_write_json(
+        source_memory_dir / "facts.json",
+        [{"id": "fact-a", "content": "source-fact"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    atomic_write_json(
+        source_memory_dir / "persona.json",
+        {"traits": ["source-persona"]},
+        ensure_ascii=False,
+        indent=2,
+    )
+    source_settings_path = source_memory_dir / "settings.json"
+    if source_settings_path.exists():
+        source_settings_path.unlink()
+    source_db_path = source_memory_dir / "time_indexed.db"
+    source_db_path.unlink()
+    with sqlite3.connect(str(source_db_path)) as conn:
+        conn.execute("CREATE TABLE entries (id INTEGER PRIMARY KEY, content TEXT)")
+        conn.execute("INSERT INTO entries(content) VALUES (?)", ("source-db-entry",))
+        conn.commit()
+
+    export_local_cloudsave_snapshot(source_cm)
+
+    _write_runtime_state(target_cm, character_name=character_name)
+    target_memory_dir = Path(target_cm.memory_dir) / character_name
+    atomic_write_json(
+        target_memory_dir / "recent.json",
+        [{"role": "user", "content": "from-device-b"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    atomic_write_json(
+        target_memory_dir / "settings.json",
+        {"mood": "stale-target-state"},
+        ensure_ascii=False,
+        indent=2,
+    )
+    atomic_write_json(
+        target_memory_dir / "facts.json",
+        [{"id": "fact-b", "content": "target-fact"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    atomic_write_json(
+        target_memory_dir / "persona.json",
+        {"traits": ["target-persona"]},
+        ensure_ascii=False,
+        indent=2,
+    )
+    target_db_path = target_memory_dir / "time_indexed.db"
+    target_db_path.unlink()
+    with sqlite3.connect(str(target_db_path)) as conn:
+        conn.execute("CREATE TABLE entries (id INTEGER PRIMARY KEY, content TEXT)")
+        conn.execute("INSERT INTO entries(content) VALUES (?)", ("target-db-entry",))
+        conn.commit()
+
+    target_characters = target_cm.load_characters()
+    template_character = copy.deepcopy(next(iter(target_characters["\u732b\u5a18"].values())))
+    target_characters["\u732b\u5a18"][extra_name] = template_character
+    target_characters["\u5f53\u524d\u732b\u5a18"] = extra_name
+    target_cm.save_characters(target_characters, bypass_write_fence=True)
+    extra_memory_dir = Path(target_cm.memory_dir) / extra_name
+    extra_memory_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        extra_memory_dir / "recent.json",
+        [{"role": "user", "content": "extra-local-character"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    import_result = import_local_cloudsave_snapshot(target_cm)
+
+    assert import_result["applied_character_count"] == 1
+    assert target_cm.load_characters() == source_cm.load_characters()
+    assert not extra_memory_dir.exists()
+    assert not (target_memory_dir / "settings.json").exists()
+
+    restored_recent = json.loads((target_memory_dir / "recent.json").read_text(encoding="utf-8"))
+    restored_facts = json.loads((target_memory_dir / "facts.json").read_text(encoding="utf-8"))
+    restored_persona = json.loads((target_memory_dir / "persona.json").read_text(encoding="utf-8"))
+    assert restored_recent[0]["content"] == "from-device-a"
+    assert restored_facts[0]["content"] == "source-fact"
+    assert restored_persona["traits"] == ["source-persona"]
+
+    with sqlite3.connect(str(target_memory_dir / "time_indexed.db")) as conn:
+        rows = conn.execute("SELECT content FROM entries ORDER BY id").fetchall()
+    assert rows == [("source-db-entry",)]
+
+
+@pytest.mark.unit
+def test_cross_device_import_applies_remote_tombstones_without_recreating_deleted_character(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "device_a")
+    target_cm = _make_config_manager(tmp_path / "device_b")
+
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot, import_local_cloudsave_snapshot
+
+    kept_name = "\u4fdd\u7559\u89d2\u8272"
+    deleted_name = "\u5df2\u5220\u9664\u89d2\u8272"
+
+    _write_runtime_state(source_cm, character_name=kept_name)
+    source_cm.save_character_tombstones_state(
+        {
+            "version": source_cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+            "tombstones": [
+                {
+                    "character_name": deleted_name,
+                    "deleted_at": "2026-04-08T00:00:00Z",
+                    "sequence_number": 9,
+                }
+            ],
+        }
+    )
+    export_local_cloudsave_snapshot(source_cm)
+
+    _write_runtime_state(target_cm, character_name=kept_name)
+    target_characters = target_cm.load_characters()
+    template_character = copy.deepcopy(next(iter(target_characters["\u732b\u5a18"].values())))
+    target_characters["\u732b\u5a18"][deleted_name] = template_character
+    target_characters["\u5f53\u524d\u732b\u5a18"] = deleted_name
+    target_cm.save_characters(target_characters, bypass_write_fence=True)
+    deleted_memory_dir = Path(target_cm.memory_dir) / deleted_name
+    deleted_memory_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        deleted_memory_dir / "recent.json",
+        [{"role": "user", "content": "stale-local-data"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    import_result = import_local_cloudsave_snapshot(target_cm)
+
+    assert import_result["applied_character_count"] == 1
+    imported_characters = target_cm.load_characters()
+    assert deleted_name not in imported_characters.get("\u732b\u5a18", {})
+    assert imported_characters["\u5f53\u524d\u732b\u5a18"] == kept_name
+    assert not deleted_memory_dir.exists()
+
+    restored_tombstones = target_cm.load_character_tombstones_state()
+    assert restored_tombstones["tombstones"][0]["character_name"] == deleted_name
 
 
 @pytest.mark.unit

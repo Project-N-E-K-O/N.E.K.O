@@ -107,6 +107,7 @@ async def reload_memory_components():
     global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine
     async with _reload_lock:
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
+        old_time_manager = time_manager
         try:
             # 先创建所有新实例
             new_recent = CompressedRecentHistoryManager()
@@ -123,12 +124,34 @@ async def reload_memory_components():
             fact_store = new_facts
             persona_manager = new_persona
             reflection_engine = new_reflection
+
+            if old_time_manager is not None and old_time_manager is not new_time:
+                try:
+                    old_time_manager.cleanup()
+                except Exception as cleanup_exc:
+                    logger.warning("[MemoryServer] 释放旧的 SQLite 引擎失败: %s", cleanup_exc)
             
             logger.info("[MemoryServer] ✅ 记忆组件配置重新加载完成")
             return True
         except Exception as e:
             logger.error(f"[MemoryServer] ❌ 重新加载记忆组件配置失败: {e}", exc_info=True)
             return False
+
+
+@app.post("/release_character/{lanlan_name}")
+async def release_character_resources(lanlan_name: str):
+    """在角色重命名/删除前主动释放对应 SQLite 句柄。"""
+    async with _reload_lock:
+        try:
+            time_manager.dispose_engine(lanlan_name)
+            logger.info("[MemoryServer] 已主动释放角色 %s 的 SQLite 引擎", lanlan_name)
+            return {"status": "success", "character_name": lanlan_name}
+        except Exception as exc:
+            logger.warning("[MemoryServer] 释放角色 %s 的 SQLite 引擎失败: %s", lanlan_name, exc)
+            return JSONResponse(
+                {"status": "error", "character_name": lanlan_name, "message": str(exc)},
+                status_code=500,
+            )
 
 # 全局变量用于控制服务器关闭
 shutdown_event = asyncio.Event()

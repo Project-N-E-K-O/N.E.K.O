@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unicodedata
@@ -17,6 +19,8 @@ from config import DEFAULT_CONFIG_DATA
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.file_utils import atomic_write_json
 
+
+logger = logging.getLogger(__name__)
 
 ROOT_MODE_NORMAL = "normal"
 ROOT_MODE_BOOTSTRAP_IMPORTING = "bootstrap_importing"
@@ -99,6 +103,7 @@ RUNTIME_ASSET_DIR_NAMES = (
 
 _cloud_apply_lock_handle = None
 _cloud_apply_lock_file = None
+SQLITE_FILE_HEADER = b"SQLite format 3\x00"
 
 
 class MaintenanceModeError(RuntimeError):
@@ -192,6 +197,80 @@ def _stage_file_copy(stage_root: Path, relative_path: str, source_path: Path) ->
     staged_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_path, staged_path)
     return staged_path
+
+
+def _looks_like_sqlite_database(source_path: Path) -> bool:
+    try:
+        if source_path.stat().st_size < len(SQLITE_FILE_HEADER):
+            return False
+        with open(source_path, "rb") as file_obj:
+            return file_obj.read(len(SQLITE_FILE_HEADER)) == SQLITE_FILE_HEADER
+    except OSError:
+        return False
+
+
+def _run_sqlite_shadow_copy(source_path: Path, target_path: Path) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    journal_mode = ""
+
+    with sqlite3.connect(str(source_path), timeout=5.0, isolation_level=None) as source_conn:
+        source_conn.execute("PRAGMA busy_timeout = 5000")
+        try:
+            row = source_conn.execute("PRAGMA journal_mode").fetchone()
+            journal_mode = str(row[0]).lower() if row and row[0] is not None else ""
+        except sqlite3.DatabaseError:
+            journal_mode = ""
+
+        if journal_mode == "wal":
+            try:
+                checkpoint_row = source_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() or ()
+                if checkpoint_row and int(checkpoint_row[0] or 0) != 0:
+                    logger.warning(
+                        "SQLite wal_checkpoint(TRUNCATE) reported busy=%s for %s; continuing with backup API",
+                        checkpoint_row[0],
+                        source_path,
+                    )
+            except sqlite3.DatabaseError as exc:
+                logger.warning(
+                    "SQLite wal_checkpoint(TRUNCATE) failed for %s; continuing with backup API: %s",
+                    source_path,
+                    exc,
+                )
+
+        with sqlite3.connect(str(target_path), timeout=5.0, isolation_level=None) as target_conn:
+            target_conn.execute("PRAGMA busy_timeout = 5000")
+            source_conn.backup(target_conn)
+            quick_check = target_conn.execute("PRAGMA quick_check").fetchone()
+            quick_check_result = str(quick_check[0]) if quick_check and quick_check[0] is not None else ""
+            if quick_check_result.lower() != "ok":
+                raise sqlite3.DatabaseError(
+                    f"shadow copy integrity check failed for {source_path}: {quick_check_result or 'unknown'}"
+                )
+
+
+def _stage_memory_file(stage_root: Path, relative_path: str, source_path: Path) -> Path:
+    if source_path.name != "time_indexed.db" or not _looks_like_sqlite_database(source_path):
+        return _stage_file_copy(stage_root, relative_path, source_path)
+
+    staged_path = stage_root / relative_path
+    try:
+        _run_sqlite_shadow_copy(source_path, staged_path)
+        return staged_path
+    except sqlite3.DatabaseError as exc:
+        raise RuntimeError(f"failed to create SQLite shadow copy for {source_path}: {exc}") from exc
+
+
+def _apply_runtime_file(source_path: Path, target_path: Path) -> None:
+    if source_path.name == "time_indexed.db" and _looks_like_sqlite_database(source_path):
+        target_looks_like_sqlite = not target_path.exists() or _looks_like_sqlite_database(target_path)
+        if target_looks_like_sqlite:
+            try:
+                _run_sqlite_shadow_copy(source_path, target_path)
+                return
+            except sqlite3.DatabaseError as exc:
+                raise RuntimeError(f"failed to apply SQLite backup copy for {target_path}: {exc}") from exc
+
+    _atomic_copy_file(source_path, target_path)
 
 
 def _list_existing_cloudsave_files(config_manager) -> set[str]:
@@ -1319,7 +1398,7 @@ def _collect_memory_stage_entries(config_manager, stage_root: Path, character_na
             if not source_path.is_file():
                 continue
             relative_path = f"memory/{character_name}/{filename}"
-            staged_entries[relative_path] = _stage_file_copy(stage_root, relative_path, source_path)
+            staged_entries[relative_path] = _stage_memory_file(stage_root, relative_path, source_path)
     return staged_entries
 
 
@@ -1633,7 +1712,7 @@ def import_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
 
         try:
             for target_path, staged_path in runtime_targets.items():
-                _atomic_copy_file(staged_path, target_path)
+                _apply_runtime_file(staged_path, target_path)
 
             for target_path in sorted(delete_file_targets):
                 if target_path.exists():
@@ -1663,8 +1742,7 @@ def import_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
                 if record["is_dir"]:
                     shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
                 else:
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(backup_path, target_path)
+                    _apply_runtime_file(backup_path, target_path)
             raise
 
 
@@ -1680,7 +1758,7 @@ def save_cloudsave_manifest(config_manager, data: dict[str, Any]) -> None:
     atomic_write_json(config_manager.cloudsave_manifest_path, data, ensure_ascii=False, indent=2)
 
 
-def ensure_cloudsave_manifest(config_manager) -> dict[str, Any]:
+def ensure_cloudsave_manifest(config_manager, *, preserve_existing_client_id: bool = False) -> dict[str, Any]:
     config_manager.ensure_cloudsave_structure()
     cloud_state = config_manager.load_cloudsave_local_state()
     manifest = load_cloudsave_manifest(
@@ -1688,7 +1766,12 @@ def ensure_cloudsave_manifest(config_manager) -> dict[str, Any]:
         default_value=build_default_cloudsave_manifest(client_id=cloud_state.get("client_id", "")),
     )
     changed = False
-    if manifest.get("client_id") != cloud_state.get("client_id", ""):
+    current_client_id = str(manifest.get("client_id") or "")
+    expected_client_id = str(cloud_state.get("client_id", "") or "")
+    if not current_client_id:
+        manifest["client_id"] = expected_client_id
+        changed = True
+    elif not preserve_existing_client_id and current_client_id != expected_client_id:
         manifest["client_id"] = cloud_state.get("client_id", "")
         changed = True
     if "schema_version" not in manifest:
@@ -1768,7 +1851,7 @@ def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
     if cloud_changed:
         config_manager.save_cloudsave_local_state(cloud_state)
 
-    manifest = ensure_cloudsave_manifest(config_manager)
+    manifest = ensure_cloudsave_manifest(config_manager, preserve_existing_client_id=True)
     return {
         "root_state": config_manager.load_root_state(),
         "cloudsave_local_state": config_manager.load_cloudsave_local_state(),
