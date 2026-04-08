@@ -41,6 +41,23 @@ def _wait_for_prompt_status(base_url: str, path: str, expected_status: str, time
     )
 
 
+def _wait_for_prompt_metric(base_url: str, path: str, key: str, expected_value: int, timeout_s: float = 10.0) -> dict:
+    deadline = time.time() + timeout_s
+    last_state = None
+
+    while time.time() < deadline:
+        body = _load_json_response(base_url + path)
+        last_state = body.get("state") or {}
+        if last_state.get(key) == expected_value:
+            return last_state
+        time.sleep(0.1)
+
+    raise AssertionError(
+        f"Timed out waiting for {path} to reach {key}={expected_value!r}, "
+        f"last_state={last_state!r}"
+    )
+
+
 def _prepare_new_user_prompt_state(*, autostart_foreground_ms: int = 0) -> None:
     config = get_config_manager("N.E.K.O")
 
@@ -140,6 +157,76 @@ def _install_prompt_test_hooks(page: Page) -> None:
     )
 
 
+def _install_beacon_capture(page: Page) -> None:
+    page.add_init_script(
+        """
+        (() => {
+            window.__nekoCapturedBeacons = [];
+            const originalSendBeacon = typeof navigator.sendBeacon === 'function'
+                ? navigator.sendBeacon.bind(navigator)
+                : null;
+            navigator.sendBeacon = function (url, data) {
+                Promise.resolve(
+                    typeof data === 'string'
+                        ? data
+                        : (data && typeof data.text === 'function' ? data.text() : '')
+                ).then((body) => {
+                    window.__nekoCapturedBeacons.push({
+                        url: String(url || ''),
+                        body: body,
+                    });
+                });
+                if (originalSendBeacon) {
+                    return originalSendBeacon(url, data);
+                }
+                return true;
+            };
+        })();
+        """
+    )
+
+
+def _install_tutorial_heartbeat_stall(page: Page) -> None:
+    page.add_init_script(
+        """
+        (() => {
+            const originalFetch = window.fetch.bind(window);
+            const pendingResolvers = [];
+
+            window.__nekoTutorialHeartbeatStallConsumed = false;
+            window.__nekoReleaseTutorialHeartbeat = function () {
+                while (pendingResolvers.length) {
+                    const release = pendingResolvers.shift();
+                    release();
+                }
+            };
+
+            window.fetch = function (url, options) {
+                if (typeof url === 'string' && url === '/api/tutorial-prompt/heartbeat') {
+                    let payload = {};
+                    try {
+                        payload = JSON.parse((options && options.body) || '{}');
+                    } catch (_) {
+                        payload = {};
+                    }
+
+                    if (!window.__nekoTutorialHeartbeatStallConsumed && payload.chat_turns_delta === 1) {
+                        window.__nekoTutorialHeartbeatStallConsumed = true;
+                        return new Promise((resolve, reject) => {
+                            pendingResolvers.push(() => {
+                                originalFetch(url, options).then(resolve).catch(reject);
+                            });
+                        });
+                    }
+                }
+
+                return originalFetch(url, options);
+            };
+        })();
+        """
+    )
+
+
 def _expect_prompt_title(page: Page, title: str) -> None:
     expect(page.locator(".modal-title")).to_have_text(title, timeout=15_000)
     expect(page.locator(".modal-overlay")).to_have_count(1)
@@ -191,3 +278,148 @@ def test_home_serializes_tutorial_and_autostart_prompts(mock_page: Page, running
         AUTOSTART_PROMPT_TITLE,
     ]
     assert prompt_stats["maxOverlayCount"] == 1
+
+
+@pytest.mark.e2e
+def test_tutorial_prompt_flushes_pending_heartbeat_on_beforeunload(mock_page: Page, running_server: str):
+    _prepare_new_user_prompt_state()
+
+    page = mock_page
+    _install_beacon_capture(page)
+    page.add_init_script(
+        """
+        (() => {
+            localStorage.setItem('neko_tutorial_home', 'true');
+        })();
+        """
+    )
+    page.goto(f"{running_server}/")
+
+    expect(page.locator("#chatContainer")).to_be_attached(timeout=15_000)
+
+    page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
+            window.dispatchEvent(new Event('beforeunload'));
+        }
+        """
+    )
+
+    page.wait_for_function(
+        """
+        () => window.__nekoCapturedBeacons.some(
+            (entry) => entry.url === '/api/tutorial-prompt/heartbeat'
+        )
+        """,
+        timeout=15_000,
+    )
+
+    beacon = page.evaluate(
+        """
+        () => window.__nekoCapturedBeacons.find(
+            (entry) => entry.url === '/api/tutorial-prompt/heartbeat'
+        )
+        """
+    )
+    payload = json.loads(beacon["body"])
+
+    assert payload["chat_turns_delta"] == 1
+    assert payload["foreground_ms_delta"] >= 0
+    assert payload["home_interactions_delta"] == 0
+    assert payload["voice_sessions_delta"] == 0
+
+
+@pytest.mark.e2e
+def test_tutorial_prompt_beforeunload_replays_inflight_heartbeat_without_double_count(
+    mock_page: Page,
+    running_server: str,
+):
+    _prepare_new_user_prompt_state()
+
+    page = mock_page
+    _install_beacon_capture(page)
+    _install_tutorial_heartbeat_stall(page)
+    page.add_init_script(
+        """
+        (() => {
+            localStorage.setItem('neko_tutorial_home', 'true');
+        })();
+        """
+    )
+    page.goto(f"{running_server}/")
+
+    expect(page.locator("#chatContainer")).to_be_attached(timeout=15_000)
+
+    page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
+        }
+        """
+    )
+
+    page.wait_for_function(
+        "() => window.__nekoTutorialHeartbeatStallConsumed === true",
+        timeout=15_000,
+    )
+
+    page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new Event('beforeunload'));
+        }
+        """
+    )
+
+    page.wait_for_function(
+        """
+        () => window.__nekoCapturedBeacons.some((entry) => {
+            if (entry.url !== '/api/tutorial-prompt/heartbeat') {
+                return false;
+            }
+            try {
+                return JSON.parse(entry.body).chat_turns_delta === 1;
+            } catch (_) {
+                return false;
+            }
+        })
+        """,
+        timeout=15_000,
+    )
+
+    beacon = page.evaluate(
+        """
+        () => window.__nekoCapturedBeacons.find((entry) => {
+            if (entry.url !== '/api/tutorial-prompt/heartbeat') {
+                return false;
+            }
+            try {
+                return JSON.parse(entry.body).chat_turns_delta === 1;
+            } catch (_) {
+                return false;
+            }
+        })
+        """
+    )
+    payload = json.loads(beacon["body"])
+    assert payload["chat_turns_delta"] == 1
+    assert payload["heartbeat_token"]
+
+    beacon_state = _wait_for_prompt_metric(
+        running_server,
+        "/api/tutorial-prompt/state",
+        "chat_turns",
+        1,
+    )
+    assert beacon_state["chat_turns"] == 1
+
+    page.evaluate("() => window.__nekoReleaseTutorialHeartbeat()")
+
+    final_state = _wait_for_prompt_metric(
+        running_server,
+        "/api/tutorial-prompt/state",
+        "chat_turns",
+        1,
+    )
+    assert final_state["chat_turns"] == 1

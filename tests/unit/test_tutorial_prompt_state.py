@@ -73,6 +73,39 @@ def test_prompt_triggers_immediately_on_first_open(tmp_path):
     assert state["shown_count"] == 0
     assert state["active_prompt_token"] == response["prompt_token"]
     assert state["last_shown_at"] == 0
+    assert state["recent_heartbeat_tokens"] == []
+
+
+@pytest.mark.unit
+def test_heartbeat_token_is_idempotent_for_replayed_tutorial_heartbeat(tmp_path):
+    config = DummyConfig(tmp_path)
+
+    first = process_tutorial_prompt_heartbeat(
+        {
+            "heartbeat_token": "heartbeat-1",
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+            "chat_turns_delta": 1,
+        },
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    replay = process_tutorial_prompt_heartbeat(
+        {
+            "heartbeat_token": "heartbeat-1",
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+            "chat_turns_delta": 1,
+        },
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    state = load_tutorial_prompt_state(config)
+    assert first["state"]["chat_turns"] == 1
+    assert replay["state"]["chat_turns"] == 1
+    assert state["chat_turns"] == 1
+    assert state["foreground_ms"] == MIN_PROMPT_FOREGROUND_MS
+    assert state["recent_heartbeat_tokens"] == ["heartbeat-1"]
 
 
 @pytest.mark.unit
@@ -720,6 +753,31 @@ def test_legacy_autostart_state_is_ignored_for_new_tutorial_prompt(tmp_path):
 
     tutorial_state_path = config.config_dir / "tutorial_prompt.json"
     assert tutorial_state_path.exists()
+
+
+@pytest.mark.unit
+def test_legacy_autostart_shared_home_interaction_state_is_ignored_for_tutorial_prompt(tmp_path):
+    config = DummyConfig(tmp_path)
+    legacy_state_path = config.config_dir / "autostart_prompt.json"
+    legacy_state_path.write_text(json.dumps({
+        "schema_version": 1,
+        "status": "observing",
+        "foreground_ms": 0,
+        "chat_turns": 0,
+        "voice_sessions": 0,
+        "last_weak_home_interaction_at": 4_321,
+    }), encoding="utf-8")
+
+    response = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=9_000,
+    )
+
+    assert response["should_prompt"] is True
+    assert response["prompt_reason"] == "first_open"
+    assert response["state"]["shown_count"] == 0
+    assert response["state"]["last_weak_home_interaction_at"] == 0
 
 
 @pytest.mark.unit

@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -14,6 +15,10 @@ def mock_memory_server():
 
 
 def _run_common_dialogs_node_scenario(script_body: str) -> dict:
+    node_executable = shutil.which("node")
+    if node_executable is None:
+        pytest.skip("node not found")
+
     node_harness = f"""
 const assert = require('assert');
 const fs = require('fs');
@@ -260,11 +265,12 @@ runScenario()
 """
 
     result = subprocess.run(
-        ["node", "-"],
+        [node_executable, "-"],
         input=node_harness,
         text=True,
         capture_output=True,
         check=False,
+        timeout=10,
     )
 
     if result.returncode != 0:

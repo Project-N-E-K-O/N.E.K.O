@@ -45,6 +45,7 @@ from utils.prompt_state_core import (
 
 TUTORIAL_PROMPT_CONFIG_FILENAME = "tutorial_prompt_config.json"
 TUTORIAL_PROMPT_STATE_KIND = "tutorial_prompt"
+MAX_RECENT_HEARTBEAT_TOKENS = 16
 
 MIN_PROMPT_FOREGROUND_MS = 15 * 1000
 LATER_COOLDOWN_MS = 24 * 60 * 60 * 1000
@@ -103,6 +104,7 @@ DEFAULT_TUTORIAL_PROMPT_STATE = {
     "active_tutorial_run_token": "",
     "active_tutorial_run_source": "",
     "active_tutorial_run_started_at": 0,
+    "recent_heartbeat_tokens": [],
 }
 
 _STATE_LOCK = threading.RLock()
@@ -123,6 +125,9 @@ def _normalize_state(raw_state: Any) -> dict[str, Any]:
         state["active_tutorial_run_token"] = _clean_str(state.get("active_tutorial_run_token"), limit=128)
         state["active_tutorial_run_source"] = source if source in VALID_TUTORIAL_EVENT_SOURCES else ""
         state["active_tutorial_run_started_at"] = _clamp_int(state.get("active_tutorial_run_started_at"))
+        state["recent_heartbeat_tokens"] = _normalize_recent_heartbeat_tokens(
+            state.get("recent_heartbeat_tokens")
+        )
 
     def _resolve_status(state: dict[str, Any]) -> None:
         if state["never_remind"]:
@@ -204,7 +209,6 @@ def _looks_like_tutorial_prompt_state(raw_state: dict[str, Any]) -> bool:
         _clean_str(raw_state.get("active_tutorial_run_token"), limit=128),
         _clean_str(raw_state.get("active_tutorial_run_source"), limit=64),
         _clamp_int(raw_state.get("active_tutorial_run_started_at")) > 0,
-        _clamp_int(raw_state.get("last_weak_home_interaction_at")) > 0,
     ))
 
 
@@ -282,6 +286,48 @@ def _apply_weak_home_interaction(state: dict[str, Any], delta: int, now_ms: int)
     if state["last_weak_home_interaction_at"] != now_ms:
         state["last_weak_home_interaction_at"] = now_ms
     return changed
+
+
+def _normalize_recent_heartbeat_tokens(raw_tokens: Any) -> list[str]:
+    if not isinstance(raw_tokens, list):
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_token in raw_tokens:
+        token = _clean_str(raw_token, limit=128)
+        if not token or token in seen:
+            continue
+        normalized.append(token)
+        seen.add(token)
+
+    if len(normalized) > MAX_RECENT_HEARTBEAT_TOKENS:
+        normalized = normalized[-MAX_RECENT_HEARTBEAT_TOKENS:]
+    return normalized
+
+
+def _is_heartbeat_replayed(state: dict[str, Any], heartbeat_token: str) -> bool:
+    token = _clean_str(heartbeat_token, limit=128)
+    if not token:
+        return False
+    return token in _normalize_recent_heartbeat_tokens(state.get("recent_heartbeat_tokens"))
+
+
+def _mark_heartbeat_token(state: dict[str, Any], heartbeat_token: str) -> bool:
+    token = _clean_str(heartbeat_token, limit=128)
+    if not token:
+        return False
+
+    tokens = _normalize_recent_heartbeat_tokens(state.get("recent_heartbeat_tokens"))
+    if token in tokens:
+        return False
+
+    tokens.append(token)
+    if len(tokens) > MAX_RECENT_HEARTBEAT_TOKENS:
+        tokens = tokens[-MAX_RECENT_HEARTBEAT_TOKENS:]
+
+    state["recent_heartbeat_tokens"] = tokens
+    return True
 
 
 def _apply_completed_state(state: dict[str, Any], now_ms: int) -> bool:
@@ -563,6 +609,10 @@ def process_tutorial_prompt_heartbeat(
     )
     home_tutorial_completed = bool(payload.get("home_tutorial_completed"))
     manual_home_tutorial_viewed = bool(payload.get("manual_home_tutorial_viewed"))
+    heartbeat_token = _clean_str(
+        payload.get("heartbeat_token") or payload.get("delivery_token"),
+        limit=128,
+    )
 
     with _STATE_LOCK:
         state = load_tutorial_prompt_state(config_manager)
@@ -573,6 +623,24 @@ def process_tutorial_prompt_heartbeat(
             now_ms=now_ms,
         )
         changed |= cohort_changed
+
+        if heartbeat_token and _is_heartbeat_replayed(state, heartbeat_token):
+            should_prompt, prompt_reason = _compute_prompt_eligibility(
+                state,
+                now_ms=now_ms,
+                min_prompt_foreground_ms=runtime_config["min_prompt_foreground_ms"],
+                max_prompt_shows=runtime_config["max_prompt_shows"],
+            )
+            return {
+                "ok": True,
+                "should_prompt": should_prompt,
+                "prompt_reason": prompt_reason,
+                "prompt_mode": "tutorial",
+                "prompt_token": (
+                    _clean_str(state.get("active_prompt_token"), limit=128) or None
+                ) if should_prompt else None,
+                "state": build_tutorial_prompt_snapshot(state),
+            }
 
         if state["first_seen_at"] <= 0:
             state["first_seen_at"] = now_ms
@@ -620,6 +688,9 @@ def process_tutorial_prompt_heartbeat(
                 changed |= _increment_funnel_count(state, "issued")
         else:
             changed |= _clear_active_prompt_token(state)
+
+        if heartbeat_token:
+            changed |= _mark_heartbeat_token(state, heartbeat_token)
 
         if changed:
             state = save_tutorial_prompt_state(state, config_manager)

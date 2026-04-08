@@ -2,6 +2,220 @@
     'use strict';
 
     const FLOW_LOG_PREFIX_FALLBACK = '[PromptFlow]';
+    const PROMPT_DISPLAY_BATCH_WINDOW_MS = 80;
+
+    function createPromptDisplayCoordinator(defaultBatchWindowMs) {
+        const queuedRequests = [];
+        const keyedRequests = new Map();
+        let activeRequest = null;
+        let drainTimer = null;
+        let drainInProgress = false;
+        let nextSequence = 1;
+        let queueVersion = 0;
+
+        function normalizePriority(value) {
+            const number = Number(value);
+            return Number.isFinite(number) ? number : 0;
+        }
+
+        function normalizeDelay(value) {
+            const number = Number(value);
+            return Number.isFinite(number) && number >= 0 ? number : 0;
+        }
+
+        function clearRequestKey(request) {
+            if (!request || !request.key) {
+                return;
+            }
+            if (keyedRequests.get(request.key) === request) {
+                keyedRequests.delete(request.key);
+            }
+        }
+
+        function bumpQueueVersion() {
+            queueVersion += 1;
+        }
+
+        function settleRequest(request, method, value) {
+            if (!request || request.settled) {
+                return;
+            }
+            request.settled = true;
+            clearRequestKey(request);
+            request[method](value);
+        }
+
+        function removeQueuedRequest(request) {
+            const index = queuedRequests.indexOf(request);
+            if (index < 0) {
+                return false;
+            }
+            queuedRequests.splice(index, 1);
+            bumpQueueVersion();
+            return true;
+        }
+
+        function sortQueuedRequests() {
+            queuedRequests.sort(function (left, right) {
+                if (right.priority !== left.priority) {
+                    return right.priority - left.priority;
+                }
+                return left.sequence - right.sequence;
+            });
+        }
+
+        function peekNextRequest() {
+            if (!queuedRequests.length) {
+                return null;
+            }
+            sortQueuedRequests();
+            return queuedRequests[0] || null;
+        }
+
+        function isRequestCurrentAfterGuard(request, revisionSnapshot, versionSnapshot) {
+            if (!request || request.settled || request.revision !== revisionSnapshot) {
+                return false;
+            }
+
+            if (queueVersion !== versionSnapshot && peekNextRequest() !== request) {
+                return false;
+            }
+
+            return true;
+        }
+
+        function scheduleDrain(delayMs) {
+            if (activeRequest || drainTimer || !queuedRequests.length) {
+                return;
+            }
+
+            const waitMs = normalizeDelay(
+                typeof delayMs === 'number'
+                    ? delayMs
+                    : defaultBatchWindowMs
+            );
+            drainTimer = setTimeout(function () {
+                drainTimer = null;
+                void drainQueue();
+            }, waitMs);
+        }
+
+        async function drainQueue() {
+            if (activeRequest || drainInProgress) {
+                return;
+            }
+
+            drainInProgress = true;
+            try {
+                while (!activeRequest && queuedRequests.length) {
+                    const nextRequest = peekNextRequest();
+                    if (!nextRequest) {
+                        return;
+                    }
+
+                    const versionBeforeCheck = queueVersion;
+                    const revisionBeforeCheck = nextRequest.revision;
+                    let canDisplay = true;
+                    try {
+                        if (typeof nextRequest.shouldDisplay === 'function') {
+                            canDisplay = await nextRequest.shouldDisplay();
+                        }
+                    } catch (error) {
+                        removeQueuedRequest(nextRequest);
+                        settleRequest(nextRequest, 'reject', error);
+                        continue;
+                    }
+
+                    // Re-run arbitration after async guards so stale guard results
+                    // cannot authorize a newer request revision or skip a higher-priority
+                    // request that arrived while the guard was in flight.
+                    if (!isRequestCurrentAfterGuard(nextRequest, revisionBeforeCheck, versionBeforeCheck)) {
+                        continue;
+                    }
+
+                    if (!removeQueuedRequest(nextRequest)) {
+                        continue;
+                    }
+                    if (!canDisplay) {
+                        settleRequest(nextRequest, 'resolve', null);
+                        continue;
+                    }
+
+                    activeRequest = nextRequest;
+                    try {
+                        const result = await nextRequest.display();
+                        settleRequest(nextRequest, 'resolve', result);
+                    } catch (error) {
+                        settleRequest(nextRequest, 'reject', error);
+                    } finally {
+                        activeRequest = null;
+                    }
+                }
+            } finally {
+                drainInProgress = false;
+                if (queuedRequests.length) {
+                    scheduleDrain(0);
+                }
+            }
+        }
+
+        function requestPromptDisplay(options) {
+            const requestOptions = options || {};
+            if (typeof requestOptions.display !== 'function') {
+                return Promise.reject(new Error('prompt_display_handler_required'));
+            }
+
+            const key = typeof requestOptions.key === 'string' && requestOptions.key
+                ? requestOptions.key
+                : '';
+            if (key) {
+                const existingRequest = keyedRequests.get(key);
+                if (existingRequest) {
+                    if (!existingRequest.settled && existingRequest !== activeRequest) {
+                        existingRequest.priority = normalizePriority(requestOptions.priority);
+                        existingRequest.revision += 1;
+                        existingRequest.shouldDisplay = requestOptions.shouldDisplay;
+                        existingRequest.display = requestOptions.display;
+                        bumpQueueVersion();
+                        scheduleDrain(0);
+                    }
+                    return existingRequest.promise;
+                }
+            }
+
+            let resolvePromise;
+            let rejectPromise;
+            const request = {
+                key: key,
+                priority: normalizePriority(requestOptions.priority),
+                sequence: nextSequence++,
+                revision: 1,
+                shouldDisplay: requestOptions.shouldDisplay,
+                display: requestOptions.display,
+                settled: false,
+                promise: new Promise(function (resolve, reject) {
+                    resolvePromise = resolve;
+                    rejectPromise = reject;
+                }),
+                resolve: resolvePromise,
+                reject: rejectPromise,
+            };
+
+            if (key) {
+                keyedRequests.set(key, request);
+            }
+            queuedRequests.push(request);
+            bumpQueueVersion();
+            scheduleDrain();
+            return request.promise;
+        }
+
+        return {
+            requestPromptDisplay: requestPromptDisplay,
+        };
+    }
+
+    const promptDisplayCoordinator = createPromptDisplayCoordinator(PROMPT_DISPLAY_BATCH_WINDOW_MS);
 
     function createPromptTools(options) {
         const toolOptions = options || {};
@@ -199,6 +413,7 @@
             fireAndForgetJson: fireAndForgetJson,
             attachForegroundTracker: attachForegroundTracker,
             createFastHeartbeatScheduler: createFastHeartbeatScheduler,
+            requestPromptDisplay: promptDisplayCoordinator.requestPromptDisplay,
             isWeakHomePointerTarget: isWeakHomePointerTarget,
             isWeakHomeFocusTarget: isWeakHomeFocusTarget,
             isWeakHomeChangeTarget: isWeakHomeChangeTarget,

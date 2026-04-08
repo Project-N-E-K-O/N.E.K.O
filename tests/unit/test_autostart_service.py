@@ -170,6 +170,23 @@ def test_enable_autostart_writes_linux_desktop_entry(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+def test_enable_autostart_writes_linux_desktop_entry_to_xdg_config_home(tmp_path, monkeypatch):
+    _patch_home(monkeypatch, tmp_path)
+    monkeypatch.setattr(autostart_service.sys, "platform", "linux")
+    monkeypatch.setattr(autostart_service, "_get_launch_command", lambda: ["/usr/bin/neko", "--flag"])
+    monkeypatch.setattr(autostart_service, "_get_working_directory", lambda: tmp_path / "app")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+    result = autostart_service.enable_autostart()
+
+    desktop_entry = tmp_path / "xdg-config" / "autostart" / "project-neko-autostart.desktop"
+    assert result["ok"] is True
+    assert result["enabled"] is True
+    assert desktop_entry.exists()
+    assert result["path"] == str(desktop_entry)
+
+
+@pytest.mark.unit
 def test_enable_autostart_writes_macos_launch_agent_with_logs_and_environment(tmp_path, monkeypatch):
     _patch_home(monkeypatch, tmp_path)
     monkeypatch.setattr(autostart_service.sys, "platform", "darwin")
@@ -318,6 +335,29 @@ def test_disable_autostart_removes_linux_desktop_entry(tmp_path, monkeypatch):
     assert result["ok"] is True
     assert result["supported"] is True
     assert result["enabled"] is False
+    assert not desktop_entry.exists()
+
+
+@pytest.mark.unit
+def test_linux_status_and_disable_respect_xdg_config_home(tmp_path, monkeypatch):
+    _patch_home(monkeypatch, tmp_path)
+    monkeypatch.setattr(autostart_service.sys, "platform", "linux")
+    monkeypatch.setattr(autostart_service, "_get_launch_command", lambda: ["/usr/bin/neko"])
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+    desktop_entry = tmp_path / "xdg-config" / "autostart" / "project-neko-autostart.desktop"
+    desktop_entry.parent.mkdir(parents=True, exist_ok=True)
+    desktop_entry.write_text("[Desktop Entry]\n", encoding="utf-8")
+
+    status = autostart_service.get_autostart_status()
+    assert status["ok"] is True
+    assert status["enabled"] is True
+    assert status["path"] == str(desktop_entry)
+
+    result = autostart_service.disable_autostart()
+    assert result["ok"] is True
+    assert result["enabled"] is False
+    assert result["path"] == str(desktop_entry)
     assert not desktop_entry.exists()
 
 

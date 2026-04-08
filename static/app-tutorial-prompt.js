@@ -5,6 +5,9 @@
     const FAST_HEARTBEAT_DELAY_MS = 1200;
     const HOME_TUTORIAL_START_WAIT_TIMEOUT_MS = 15000;
     const HOME_TUTORIAL_STORAGE_KEY_FALLBACK = 'neko_tutorial_home';
+    const HEARTBEAT_ENDPOINT = '/api/tutorial-prompt/heartbeat';
+    const TUTORIAL_PROMPT_COORDINATION_KEY = 'home-tutorial-prompt';
+    const TUTORIAL_PROMPT_PRIORITY = 200;
 
     const promptShared = window.nekoPromptShared;
     if (!promptShared || typeof promptShared.createPromptTools !== 'function') {
@@ -26,6 +29,7 @@
         heartbeatTimer: null,
         fastHeartbeatTimer: null,
         requestInFlight: false,
+        inFlightHeartbeatSnapshot: null,
         pendingHeartbeatAfterFlight: false,
         promptOpen: false,
         tutorialRunning: false,
@@ -54,6 +58,7 @@
     const normalizeMs = promptTools.normalizeMs;
     const requestJson = promptTools.requestJson;
     const fireAndForgetJson = promptTools.fireAndForgetJson;
+    const requestPromptDisplay = promptTools.requestPromptDisplay;
     const isWeakHomePointerTarget = promptTools.isWeakHomePointerTarget;
     const isWeakHomeFocusTarget = promptTools.isWeakHomeFocusTarget;
     const isWeakHomeChangeTarget = promptTools.isWeakHomeChangeTarget;
@@ -63,6 +68,13 @@
 
     function shortTutorialRunToken(tutorialRunToken) {
         return shortPromptToken(tutorialRunToken);
+    }
+
+    function createHeartbeatToken() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return window.crypto.randomUUID();
+        }
+        return 'heartbeat-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
     }
 
     function getHomeTutorialStorageKey() {
@@ -266,6 +278,114 @@
         return state.tutorialRunToken;
     }
 
+    function takeHeartbeatSnapshot() {
+        const snapshot = {
+            foregroundMsDelta: consumeForegroundDelta(),
+            homeInteractionsDelta: state.pendingWeakHomeInteractions,
+            chatTurnsDelta: state.pendingChatTurns,
+            voiceSessionsDelta: state.pendingVoiceSessions,
+            homeTutorialCompleted: state.homeTutorialCompleted,
+            manualHomeTutorialViewed: state.manualHomeTutorialViewed,
+            unloadQueued: false,
+        };
+
+        if (hasReplaySensitiveHeartbeatMetrics(snapshot)) {
+            snapshot.heartbeatToken = createHeartbeatToken();
+        }
+
+        return snapshot;
+    }
+
+    function clearHeartbeatSnapshot() {
+        state.pendingWeakHomeInteractions = 0;
+        state.pendingChatTurns = 0;
+        state.pendingVoiceSessions = 0;
+    }
+
+    function restoreHeartbeatSnapshot(snapshot) {
+        state.pendingForegroundMs += snapshot.foregroundMsDelta;
+        state.pendingWeakHomeInteractions += snapshot.homeInteractionsDelta;
+        state.pendingChatTurns += snapshot.chatTurnsDelta;
+        state.pendingVoiceSessions += snapshot.voiceSessionsDelta;
+    }
+
+    function hasReplaySensitiveHeartbeatMetrics(snapshot) {
+        if (!snapshot) {
+            return false;
+        }
+
+        return snapshot.foregroundMsDelta > 0
+            || snapshot.homeInteractionsDelta > 0
+            || snapshot.chatTurnsDelta > 0
+            || snapshot.voiceSessionsDelta > 0;
+    }
+
+    function shouldFlushHeartbeatSnapshot(snapshot) {
+        if (!snapshot) {
+            return false;
+        }
+
+        return hasReplaySensitiveHeartbeatMetrics(snapshot)
+            || snapshot.homeTutorialCompleted
+            || snapshot.manualHomeTutorialViewed;
+    }
+
+    function buildHeartbeatPayload(snapshot) {
+        const payload = {
+            heartbeat_token: snapshot.heartbeatToken,
+            foreground_ms_delta: snapshot.foregroundMsDelta,
+            home_interactions_delta: snapshot.homeInteractionsDelta,
+            chat_turns_delta: snapshot.chatTurnsDelta,
+            voice_sessions_delta: snapshot.voiceSessionsDelta,
+            home_tutorial_completed: snapshot.homeTutorialCompleted,
+            manual_home_tutorial_viewed: snapshot.manualHomeTutorialViewed,
+        };
+
+        if (!snapshot.heartbeatToken) {
+            delete payload.heartbeat_token;
+        }
+
+        return payload;
+    }
+
+    function queueHeartbeatSnapshotForUnload(snapshot) {
+        if (!shouldFlushHeartbeatSnapshot(snapshot)) {
+            return;
+        }
+
+        snapshot.unloadQueued = true;
+        void fireAndForgetJson(HEARTBEAT_ENDPOINT, buildHeartbeatPayload(snapshot)).catch(function (error) {
+            snapshot.unloadQueued = false;
+            if (state.inFlightHeartbeatSnapshot !== snapshot) {
+                restoreHeartbeatSnapshot(snapshot);
+            }
+            console.warn('[TutorialPrompt] failed to flush heartbeat on unload:', error);
+        });
+    }
+
+    function flushHeartbeatOnUnload() {
+        if (!state.initialized) {
+            return;
+        }
+
+        const snapshotsToFlush = [];
+        if (shouldFlushHeartbeatSnapshot(state.inFlightHeartbeatSnapshot)) {
+            snapshotsToFlush.push(state.inFlightHeartbeatSnapshot);
+        }
+
+        const snapshot = takeHeartbeatSnapshot();
+        if (shouldFlushHeartbeatSnapshot(snapshot)) {
+            snapshotsToFlush.push(snapshot);
+        }
+
+        if (!snapshotsToFlush.length) {
+            return;
+        }
+
+        clearHeartbeatSnapshot();
+        snapshotsToFlush.forEach(queueHeartbeatSnapshotForUnload);
+    }
+
     async function sendHeartbeat() {
         if (!state.initialized) return;
         if (state.requestInFlight) {
@@ -274,47 +394,35 @@
         }
 
         state.requestInFlight = true;
-        const foregroundDelta = consumeForegroundDelta();
-        const homeInteractionsDelta = state.pendingWeakHomeInteractions;
-        const chatTurnsDelta = state.pendingChatTurns;
-        const voiceSessionsDelta = state.pendingVoiceSessions;
-
-        const payload = {
-            foreground_ms_delta: foregroundDelta,
-            home_interactions_delta: homeInteractionsDelta,
-            chat_turns_delta: chatTurnsDelta,
-            voice_sessions_delta: voiceSessionsDelta,
-            home_tutorial_completed: state.homeTutorialCompleted,
-            manual_home_tutorial_viewed: state.manualHomeTutorialViewed,
-        };
+        const snapshot = takeHeartbeatSnapshot();
+        const payload = buildHeartbeatPayload(snapshot);
+        state.inFlightHeartbeatSnapshot = snapshot;
         let data = null;
 
         try {
-            state.pendingWeakHomeInteractions = 0;
-            state.pendingChatTurns = 0;
-            state.pendingVoiceSessions = 0;
+            clearHeartbeatSnapshot();
 
-            data = await requestJson('/api/tutorial-prompt/heartbeat', {
+            data = await requestJson(HEARTBEAT_ENDPOINT, {
                 method: 'POST',
                 json: payload,
+                keepalive: true,
             });
             if (data && data.state) {
                 applyServerState(data.state, 'heartbeat');
             }
             logFlow('heartbeat', {
-                foregroundMsDelta: foregroundDelta,
-                weakHomeInteractionsDelta: homeInteractionsDelta,
-                chatTurnsDelta: chatTurnsDelta,
-                voiceSessionsDelta: voiceSessionsDelta,
+                foregroundMsDelta: snapshot.foregroundMsDelta,
+                weakHomeInteractionsDelta: snapshot.homeInteractionsDelta,
+                chatTurnsDelta: snapshot.chatTurnsDelta,
+                voiceSessionsDelta: snapshot.voiceSessionsDelta,
                 shouldPrompt: !!(data && data.should_prompt),
                 reason: data && data.prompt_reason,
                 token: shortPromptToken(data && data.prompt_token),
             });
         } catch (error) {
-            state.pendingForegroundMs += foregroundDelta;
-            state.pendingWeakHomeInteractions += homeInteractionsDelta;
-            state.pendingChatTurns += chatTurnsDelta;
-            state.pendingVoiceSessions += voiceSessionsDelta;
+            if (!snapshot.unloadQueued) {
+                restoreHeartbeatSnapshot(snapshot);
+            }
             console.warn('[TutorialPrompt] heartbeat failed:', error);
         }
 
@@ -325,6 +433,9 @@
         } catch (error) {
             console.warn('[TutorialPrompt] failed to render tutorial prompt:', error);
         } finally {
+            if (state.inFlightHeartbeatSnapshot === snapshot) {
+                state.inFlightHeartbeatSnapshot = null;
+            }
             state.requestInFlight = false;
             if (state.pendingHeartbeatAfterFlight) {
                 state.pendingHeartbeatAfterFlight = false;
@@ -445,20 +556,20 @@
         }
     }
 
-    async function maybeShowPrompt(promptToken) {
+    function canShowPrompt(promptToken) {
         if (state.promptOpen || state.tutorialRunning) {
-            return;
+            return false;
         }
         if (!promptToken) {
-            return;
+            return false;
         }
         if (isHomeTutorialSeen() || hasPromptBlockingInteractionPending()) {
-            return;
+            return false;
         }
-        if (typeof window.showDecisionPrompt !== 'function') {
-            return;
-        }
+        return typeof window.showDecisionPrompt === 'function';
+    }
 
+    async function showPrompt(promptToken) {
         state.promptOpen = true;
         state.lastPromptTokenSeen = promptToken;
         logFlow('prompt-open', { token: shortPromptToken(promptToken) });
@@ -514,6 +625,23 @@
         } finally {
             state.promptOpen = false;
         }
+    }
+
+    async function maybeShowPrompt(promptToken) {
+        if (!promptToken) {
+            return;
+        }
+
+        await requestPromptDisplay({
+            key: TUTORIAL_PROMPT_COORDINATION_KEY,
+            priority: TUTORIAL_PROMPT_PRIORITY,
+            shouldDisplay: function () {
+                return canShowPrompt(promptToken);
+            },
+            display: function () {
+                return showPrompt(promptToken);
+            },
+        });
     }
 
     function bindEvents() {
@@ -635,7 +763,7 @@
             scheduleFastHeartbeat();
         });
 
-        window.addEventListener('beforeunload', syncForegroundWindow);
+        window.addEventListener('beforeunload', flushHeartbeatOnUnload);
     }
 
     mod.init = function init() {

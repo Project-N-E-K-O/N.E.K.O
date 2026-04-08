@@ -4,6 +4,8 @@
     const HEARTBEAT_INTERVAL_MS = 15000;
     const FAST_HEARTBEAT_DELAY_MS = 1200;
     const AUTOSTART_STATUS_MAX_AGE_MS = HEARTBEAT_INTERVAL_MS;
+    const AUTOSTART_PROMPT_COORDINATION_KEY = 'home-autostart-prompt';
+    const AUTOSTART_PROMPT_PRIORITY = 100;
 
     const promptShared = window.nekoPromptShared;
     if (!promptShared || typeof promptShared.createPromptTools !== 'function') {
@@ -49,6 +51,7 @@
     const translate = promptTools.translate;
     const normalizeMs = promptTools.normalizeMs;
     const requestJson = promptTools.requestJson;
+    const requestPromptDisplay = promptTools.requestPromptDisplay;
     const isWeakHomePointerTarget = promptTools.isWeakHomePointerTarget;
     const isWeakHomeFocusTarget = promptTools.isWeakHomeFocusTarget;
     const isWeakHomeChangeTarget = promptTools.isWeakHomeChangeTarget;
@@ -421,12 +424,12 @@
         }
     }
 
-    async function maybeShowPrompt(promptToken) {
+    async function canShowPrompt(promptToken) {
         if (state.promptOpen) {
-            return;
+            return false;
         }
         if (!promptToken) {
-            return;
+            return false;
         }
         try {
             await ensureAutostartStatusFresh({
@@ -434,16 +437,15 @@
                 silent: true,
             });
         } catch (_) {
-            return;
+            return false;
         }
         if (!state.autostartSupported || isPromptSuppressedLocally()) {
-            return;
+            return false;
         }
+        return typeof window.showDecisionPrompt === 'function';
+    }
 
-        if (typeof window.showDecisionPrompt !== 'function') {
-            return;
-        }
-
+    async function showPrompt(promptToken) {
         state.promptOpen = true;
         logFlow('prompt-open', { token: shortPromptToken(promptToken) });
         try {
@@ -496,6 +498,23 @@
         } finally {
             state.promptOpen = false;
         }
+    }
+
+    async function maybeShowPrompt(promptToken) {
+        if (!promptToken) {
+            return;
+        }
+
+        await requestPromptDisplay({
+            key: AUTOSTART_PROMPT_COORDINATION_KEY,
+            priority: AUTOSTART_PROMPT_PRIORITY,
+            shouldDisplay: function () {
+                return canShowPrompt(promptToken);
+            },
+            display: function () {
+                return showPrompt(promptToken);
+            },
+        });
     }
 
     function bindEvents() {

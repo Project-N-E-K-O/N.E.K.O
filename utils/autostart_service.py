@@ -502,6 +502,9 @@ def _disable_macos_autostart() -> dict[str, Any]:
 
 
 def _get_linux_autostart_path() -> Path:
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        return Path(xdg_config_home).expanduser() / "autostart" / _LINUX_AUTOSTART_FILENAME
     return Path.home() / ".config" / "autostart" / _LINUX_AUTOSTART_FILENAME
 
 
