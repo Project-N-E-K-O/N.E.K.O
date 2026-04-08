@@ -545,25 +545,7 @@ def register_plugin(
     
     # 如果 ID 被重命名，更新插件元数据
     if resolved_id != plugin.id:
-        plugin = PluginMeta(
-            id=resolved_id,
-            name=plugin.name,
-            type=plugin.type,
-            description=plugin.description,
-            short_description=plugin.short_description,
-            keywords=plugin.keywords,
-            version=plugin.version,
-            sdk_version=plugin.sdk_version,
-            sdk_recommended=plugin.sdk_recommended,
-            sdk_supported=plugin.sdk_supported,
-            sdk_untested=plugin.sdk_untested,
-            sdk_conflicts=plugin.sdk_conflicts,
-            input_schema=plugin.input_schema,
-            author=plugin.author,
-            dependencies=plugin.dependencies,
-            host_plugin_id=plugin.host_plugin_id,
-            passive=plugin.passive,
-        )
+        plugin = plugin.model_copy(update={"id": resolved_id})
 
     with state.acquire_plugins_write_lock():
         plugin_dump = plugin.model_dump()

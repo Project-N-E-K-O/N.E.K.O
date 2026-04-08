@@ -196,6 +196,7 @@ class DirectTaskExecutor:
         self._cached_client: Optional[AsyncOpenAI] = None
         self._cached_client_key: tuple = ()
         self._cleanup_tasks: set = set()  # 持有关闭任务的强引用，防止 GC 回收
+        self._short_desc_memo: set = set()  # plugin_id 集合，已生成过 short_description 的不再重复
     
     
     def set_plugin_list_provider(self, provider: Callable[[bool], Awaitable[List[Dict[str, Any]]]]):
@@ -203,26 +204,38 @@ class DirectTaskExecutor:
         self._external_plugin_provider = provider
 
     async def _ensure_short_descriptions(self, plugins: List[Dict[str, Any]]) -> None:
-        """For plugins missing short_description, generate one via LLM (best-effort)."""
+        """For plugins missing short_description, generate one via LLM (best-effort, memoized)."""
         to_generate: list[dict] = []
         for p in plugins:
             if not isinstance(p, dict):
+                continue
+            pid = p.get("id", "")
+            if pid in self._short_desc_memo:
                 continue
             short = str(p.get("short_description", "") or "").strip()
             desc = str(p.get("description", "") or "").strip()
             if not short and desc:
                 to_generate.append(p)
+            else:
+                # Already has short_description or no description to generate from
+                self._short_desc_memo.add(pid)
 
         if not to_generate:
             return
 
-        logger.info("[Agent] Generating short_description for %d plugins", len(to_generate))
+        # Quota gate — don't consume agent quota silently
+        quota_error = self._check_agent_quota("task_executor.ensure_short_desc")
+        if quota_error:
+            logger.debug("[Agent] Skipping short_description generation: quota exceeded")
+            return
+
+        logger.info("[Agent] Generating short_description for %d plugin(s)", len(to_generate))
         try:
             client = self._get_client()
             model = self._get_model()
             for p in to_generate:
+                pid = p.get("id", "unknown")
                 try:
-                    pid = p.get("id", "unknown")
                     desc = str(p.get("description", ""))
                     resp = await client.chat.completions.create(
                         model=model,
@@ -238,7 +251,8 @@ class DirectTaskExecutor:
                         p["short_description"] = text
                         logger.debug("[Agent] Generated short_description for %s: %s", pid, text[:80])
                 except Exception as e:
-                    logger.debug("[Agent] Failed to generate short_description for %s: %s", p.get("id"), e)
+                    logger.debug("[Agent] Failed to generate short_description for %s: %s", pid, e)
+                self._short_desc_memo.add(pid)
         except Exception as e:
             logger.warning("[Agent] short_description generation batch failed: %s", e)
 
@@ -728,6 +742,7 @@ class DirectTaskExecutor:
             plugins = stage2_plugins
         else:
             logger.debug("[UserPlugin] Skipping stage 1: plugins_desc=%d chars <= 4000", len(plugins_desc))
+            plugins = plugin_list
 
         # Annotate keyword-hit plugins
         plugins_desc = annotate_keyword_hits(plugins_desc, keyword_hit_ids)
