@@ -382,23 +382,27 @@ docker-compose up -d
 
 > Полная документация для разработчиков на [project-neko.online](https://project-neko.online)
 
-**Требования**: Python 3.11 (другие версии не поддерживаются), пакетный менеджер [uv](https://docs.astral.sh/uv/)
+**Требования**: Python 3.11 (другие версии не поддерживаются), пакетный менеджер [uv](https://docs.astral.sh/uv/), Node.js (>=20.19)
 
 ```bash
 # 1. Клонировать проект
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
-# 2. Установить зависимости
+# 2. Установить Python-зависимости
 uv sync
 
-# 3. Запустить сервисы (минимум main_server и memory_server)
+# 3. Собрать фронтенд-проекты (необходимо при первом запуске или после изменений фронтенда)
+cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+cd frontend/plugin-manager && npm install && npm run build && cd ../..
+
+# 4. Запустить сервисы (минимум main_server и memory_server)
 uv run python memory_server.py
 uv run python main_server.py
 # Опционально: запуск Agent-сервиса
 uv run python agent_server.py
 
-# 4. Перейдите на http://localhost:48911 для настройки API Key и начала работы
+# 5. Перейдите на http://localhost:48911 для настройки API Key и начала работы
 ```
 
 Разработчикам рекомендуется присоединиться к QQ-группе 1022939659.
