@@ -41,6 +41,7 @@
             assistantTurnCompletedId: S.assistantTurnCompletedId,
             assistantTurnCompletionSource: S.assistantTurnCompletionSource,
             assistantSpeechActiveTurnId: S.assistantSpeechActiveTurnId,
+            assistantSpeechStartedTurnId: S.assistantSpeechStartedTurnId,
             currentPlayingSpeechId: S.currentPlayingSpeechId,
             scheduledSources: S.scheduledSources.length,
             audioBufferQueue: S.audioBufferQueue.length,
@@ -64,6 +65,7 @@
             return;
         }
         S.assistantSpeechActiveTurnId = normalizedTurnId;
+        S.assistantSpeechStartedTurnId = normalizedTurnId;
         clearAssistantTurnCompletionFallback();
         logAudioLifecycle('dispatchAssistantSpeechStart', {
             turnId: normalizedTurnId
@@ -170,6 +172,7 @@
         clearAssistantTurnCompletionFallback();
         S.assistantTurnCompletedId = null;
         S.assistantTurnCompletionSource = null;
+        S.assistantSpeechStartedTurnId = null;
     }
 
     function scheduleAssistantTurnCompletionFallback(turnId, source) {
@@ -346,9 +349,11 @@
         window.addEventListener('neko-assistant-turn-end', function (event) {
             var turnId = normalizeAssistantTurnId(event.detail && event.detail.turnId);
             var source = event.detail && event.detail.source;
+            var speechStartedForTurn = normalizeAssistantTurnId(S.assistantSpeechStartedTurnId) === turnId;
             logAudioLifecycle('event:turn-end', {
                 turnId: turnId,
-                source: source
+                source: source,
+                speechStartedForTurn: speechStartedForTurn
             });
             if (!turnId) {
                 return;
@@ -357,6 +362,14 @@
             S.assistantTurnCompletedId = turnId;
             S.assistantTurnCompletionSource = source || null;
             if (!hasAssistantSpeechActivity(turnId)) {
+                if (!speechStartedForTurn) {
+                    clearAssistantTurnCompletionFallback();
+                    logAudioLifecycle('event:turn-end:await_late_speech_start', {
+                        turnId: turnId,
+                        source: source
+                    });
+                    return;
+                }
                 logAudioLifecycle('event:turn-end:defer_finalize_until_speech', {
                     turnId: turnId,
                     source: source
@@ -525,6 +538,13 @@
             initializeGlobalAnalyser();
             // If init still failed, fall back to connecting sources directly to destination
             var hasAnalyser = !!S.globalAnalyser;
+
+            // Clamp nextChunkTime to now so stale values never cause past-scheduled
+            // (and therefore simultaneously playing) audio chunks.
+            var now = S.audioPlayerContext.currentTime;
+            if (S.nextChunkTime < now) {
+                S.nextChunkTime = now;
+            }
 
             // Pre-schedule all chunks within the lookahead window
             while (S.nextChunkTime < S.audioPlayerContext.currentTime + scheduleAheadTime) {

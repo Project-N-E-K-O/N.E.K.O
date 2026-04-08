@@ -377,16 +377,17 @@
         </div>
         </div>
 
-        <!-- VRM 待机动作选择（独立于打光设置） -->
+        <!-- VRM 待机动作多选 -->
         <div class="control-group" id="vrm-idle-animation-group" style="display:none;">
         <div class="vrm-idle-animation-wrapper">
             <div class="vrm-idle-animation-content">
                 <div class="lighting-control" id="idle-animation-control">
-                    <label for="idle-animation-select" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.idleAnimation.title">待机动作</label>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <select id="idle-animation-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
-                            <option value="" style="color: #4f8cff;" data-i18n="common.loading">加载中...</option>
-                        </select>
+                    <label style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.idleAnimation.title">待机动作</label>
+                    <div class="custom-multiselect idle-animation-multiselect" id="vrm-idle-animation-multiselect" data-type="vrm">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="vrm.idleAnimation.selectHint">选择待机动作</span>
+                        </div>
+                        <div class="multiselect-options idle-animation-options"></div>
                     </div>
                 </div>
             </div>
@@ -486,16 +487,17 @@
             </div>
 
 
-        <!-- MMD 待机动作选择 -->
+        <!-- MMD 待机动作多选 -->
         <div class="control-group" id="mmd-idle-animation-group" style="display:none;">
             <div class="mmd-idle-animation-wrapper">
                 <div class="mmd-idle-animation-content">
                     <div class="lighting-control" id="mmd-idle-animation-control">
-                        <label for="mmd-idle-animation-select" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.idleAnimation.title">待机动作</label>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <select id="mmd-idle-animation-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #2ecc71;">
-                                <option value="" style="color: #2ecc71;" data-i18n="common.loading">加载中...</option>
-                            </select>
+                        <label style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.idleAnimation.title">待机动作</label>
+                        <div class="custom-multiselect idle-animation-multiselect" id="mmd-idle-animation-multiselect" data-type="mmd">
+                            <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                                <span class="selected-text" data-i18n="mmd.idleAnimation.selectHint">选择待机动作</span>
+                            </div>
+                            <div class="multiselect-options idle-animation-options"></div>
                         </div>
                     </div>
                 </div>

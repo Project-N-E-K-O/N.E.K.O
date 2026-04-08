@@ -589,8 +589,29 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                 except Exception:
                     pass
 
+    async def _shutdown_watcher():
+        """轮询 shutdown_event，一旦触发就让 maintain_connection 自然退出并执行清理"""
+        while not shutdown_event.is_set():
+            await asyncio.sleep(0.2)
+        # shutdown_event 已触发，maintain_connection 的 while 循环会在下次检查时退出，
+        # 并执行自身的清理逻辑（关闭 WebSocket / aiohttp session / reader task）。
+        # 不再强制取消所有 task，避免打断 maintain_connection 的 finally/cleanup 流程。
+
+    async def _run_with_shutdown():
+        watcher = asyncio.ensure_future(_shutdown_watcher())
+        try:
+            await maintain_connection(chat_history, lanlan_name)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
+
     try:
-        loop.run_until_complete(maintain_connection(chat_history, lanlan_name))
+        loop.run_until_complete(_run_with_shutdown())
     except Exception as e:
         logger.error(f"[{lanlan_name}] Sync进程错误: {e}", exc_info=True)
     finally:

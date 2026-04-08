@@ -274,14 +274,22 @@
 </div>
 </div>
                             
-<!-- 右上：Live2D预览 -->
+<!-- 右上：模型预览 -->
 <div class="character-card-live2d-section">
-<h3 data-i18n="steam.live2dPreview">Live2D</h3>
+<h3 id="model-preview-title" data-i18n="steam.live2dPreview">Live2D</h3>
 <div id="live2d-preview-container">
 <!-- Live2D预览内容区域 -->
 <div id="live2d-preview-content" style="flex: 1; position: relative; min-height: 0; pointer-events: none; background-color: transparent;">
 <!-- Live2D预览Canvas -->
 <canvas id="live2d-preview-canvas" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
+<!-- VRM预览容器 -->
+<div id="vrm-preview-container" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0;">
+<canvas id="vrm-preview-canvas" style="width: 100%; height: 100%;"></canvas>
+</div>
+<!-- MMD预览容器 -->
+<div id="mmd-preview-container" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0;">
+<canvas id="mmd-preview-canvas" style="width: 100%; height: 100%;"></canvas>
+</div>
 <!-- 占位符 -->
 <div class="preview-placeholder" style="display: flex; justify-content: center; align-items: center; height: 100%; position: relative; z-index: 1; background-color: transparent;">
 <div class="preview-ring-perspective">
@@ -614,6 +622,26 @@
     
     <script src="/static/js/reserved_fields_utils.js"></script>
     <script src="/static/js/steam_workshop_manager.js"></script>
+
+    <!-- Three.js 核心库和importmap（用于VRM/MMD模型预览）-->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "/static/libs/three.module.js",
+            "three/addons/": "/static/libs/three/addons/",
+            "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
+            "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js",
+            "@moeru/three-mmd": "/static/libs/three-mmd.module.js",
+            "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v=23",
+            "ammojs-typed": "/static/libs/ammojs-typed.module.js"
+        }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        window.THREE = THREE;
+        window.dispatchEvent(new CustomEvent('three-ready'));
+    </script>
 
     <!-- Driver.js 库 -->
     <script src="/static/libs/driver.min.js"></script>

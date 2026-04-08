@@ -16,24 +16,25 @@
     <div class="container">
         <div class="container-header">
             <h2 data-i18n="voice.title" data-text="Voice Registration">音色注册</h2>
+            <a href="javascript:void(0)" onclick="openApiSettings()" class="goto-api-settings-btn" data-i18n="voice.gotoApiSettings">前往API设置</a>
             <button class="close-page-btn" onclick="closeVoiceClonePage()" data-i18n-title="common.close">
                 <img src="/static/icons/close_button.png" data-i18n-alt="common.close">
             </button>
         </div>
         <div class="container-content">
-            <div class="field-row" style="margin-bottom: 16px;">
+            <div class="field-row">
                 <label data-i18n="voice.providerLabel">语音克隆服务商</label>
-                <select id="voiceProvider" style="max-width: 600px;">
+                <select id="voiceProvider">
                     <option value="cosyvoice" data-i18n="voice.provider.cosyvoice">阿里云 CosyVoice</option>
                     <option value="minimax" data-i18n="voice.provider.minimax">MiniMax（国服）</option>
                     <option value="minimax_intl" data-i18n="voice.provider.minimax_intl">MiniMax（国际服）</option>
                 </select>
             </div>
-            <div id="provider-notice" class="alibaba-api-notice" style="background: linear-gradient(135deg, #ff6b6b 0%, #ffa500 100%); color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-weight: bold; text-align: center; box-shadow: 0 2px 8px rgba(255, 107, 107, 0.3);">
-                <span data-i18n="voice.alibabaApiRequired">⚠️ 此功能只支持特定语音模型，请在API密钥设置页中保存对应API Key（不要求启用辅助API）或配置本地语音服务器</span>
+            <div id="provider-notice" class="alibaba-api-notice">
+                <span data-i18n="voice.alibabaApiRequired">此功能只支持特定语音模型，请在API密钥设置页中保存对应API Key（不要求启用辅助API）或配置本地语音服务器</span>
             </div>
             <!-- 克隆方式切换 -->
-            <div class="field-row" style="margin-bottom: 16px;">
+            <div class="field-row">
                 <label data-i18n="voice.cloneMethod">克隆方式</label>
                 <div class="clone-method-toggle" role="tablist" aria-label="克隆方式选择">
                     <button type="button" class="clone-method-btn active" id="btnFileClone" onclick="switchCloneMethod('file')"
@@ -51,8 +52,8 @@
             <div class="clone-input-container">
                 <!-- 本地文件克隆区域 -->
                 <div id="fileCloneSection" class="clone-section">
-                    <label style="display: flex; align-items: center; gap: 8px;">
-                        <img src="/static/icons/exclamation.png" alt="" style="width: 48px; height: 48px; flex-shrink: 0;">
+                    <label class="section-label">
+                        <img src="/static/icons/exclamation.png" alt="" class="section-icon">
                         <span data-i18n="voice.selectFile">选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）</span>
                     </label>
                     <div class="file-input-wrapper">
@@ -67,13 +68,13 @@
 
                 <!-- 直链克隆区域 -->
                 <div id="directLinkCloneSection" class="clone-section" style="display: none;">
-                    <label style="display: flex; align-items: center; gap: 8px;">
-                        <img src="/static/icons/exclamation.png" alt="" style="width: 48px; height: 48px; flex-shrink: 0;">
+                    <label class="section-label">
+                        <img src="/static/icons/exclamation.png" alt="" class="section-icon">
                         <span data-i18n="voice.directLinkUrl">音频直链URL（8秒最佳，请勿超过20秒，wav/mp3格式）</span>
                     </label>
                     <div class="field-row">
                         <input type="url" id="directLinkUrl" data-i18n-placeholder="voice.directLinkPlaceholder"
-                            placeholder="https://example.com/audio.wav" style="max-width: 600px;">
+                            placeholder="https://example.com/audio.wav">
                     </div>
                     <label class="hint" data-i18n="voice.directLinkHint">输入可公网访问的音频文件直链，系统将跳过上传步骤直接使用该链接注册音色</label>
                 </div>
@@ -82,7 +83,7 @@
             <div class="field-row">
                 <label data-i18n="voice.refLanguage">参考音频语言（注意：不是目标音频，是您上传的参考音频的语言）</label>
                 <label class="hint" data-i18n="voice.refLanguageNote">选择您上传的参考音频的语言，中文以外的语言需要指定</label>
-                <select id="refLanguage" style="max-width: 600px;">
+                <select id="refLanguage">
                     <option value="ch" data-i18n="voice.lang.ch">中文</option>
                     <option value="en" data-i18n="voice.lang.en">英语</option>
                     <option value="fr" data-i18n="voice.lang.fr">法语</option>
@@ -96,7 +97,7 @@
             <div class="field-row">
                 <label data-i18n="voice.customPrefix">自定义前缀（必填，用于区分音色）</label>
                 <input type="text" id="prefix" data-i18n-placeholder="voice.voiceIdPlaceholder"
-                    placeholder="Maximum 10 characters, numbers and English letters only" required style="max-width: 600px;">
+                    placeholder="Maximum 10 characters, numbers and English letters only" required>
             </div>
 
             <input type="hidden" id="lanlan_name" value="">
@@ -109,18 +110,18 @@
             <div class="result" id="result"></div>
 
             <!-- 已注册音色列表 -->
-            <div class="voice-list-section" style="margin-top: 40px;">
-                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
-                    <label style="display: flex; align-items: center; gap: 8px; margin: 0;">
-                        <img src="/static/icons/key.png" alt="" style="width: 48px; height: 48px; flex-shrink: 0;">
-                        <span data-i18n="voice.registeredVoices" style="color: #40C5F1; font-weight: bold;">已注册音色</span>
+            <div class="voice-list-section">
+                <div class="voice-list-header">
+                    <label class="voice-list-header-label">
+                        <img src="/static/icons/key.png" alt="" class="section-icon">
+                        <span data-i18n="voice.registeredVoices" class="voice-list-header-title">已注册音色</span>
                     </label>
                     <button class="btn sm" onclick="loadVoices()" id="refresh-voices-btn">
                         <span data-i18n="voice.refresh">刷新</span>
                     </button>
                 </div>
-                <div id="voice-list-container" class="voice-list-bg" style="border-radius: 8px; padding: 16px; min-height: 100px; max-height: 400px; overflow-y: auto;">
-                    <div style="text-align: center; color: #999; padding: 20px;" id="voice-list-loading">
+                <div id="voice-list-container" class="voice-list-bg">
+                    <div class="voice-list-loading" id="voice-list-loading">
                         <span data-i18n="voice.loading">加载中...</span>
                     </div>
                 </div>
@@ -129,6 +130,19 @@
     </div>
     <script src="/static/js/voice_clone.js"></script>
     <script src="/static/js/voice_silence_remover.js"></script>
+
+    <!-- API未设置提示弹窗 -->
+    <div id="noApiModal" class="no-api-modal-overlay" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="noApiModalTitle">
+        <div class="no-api-modal">
+            <p id="noApiModalTitle" data-i18n="voice.noApiKeyPrompt">还没有设置任何可使用克隆功能的API，是否前往设置？</p>
+            <button class="no-api-modal-btn" onclick="openApiSettings()">
+                <span data-i18n="voice.gotoApiSettings">前往API设置</span>
+            </button>
+            <button class="no-api-modal-dismiss" onclick="document.getElementById('noApiModal').style.display='none';">
+                <span data-i18n="voice.dismissNoApiPrompt">稍后再说</span>
+            </button>
+        </div>
+    </div>
 
     <!-- 智能静音移除模态对话框 -->
     <div id="silenceModal" class="silence-modal-overlay" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="silenceModalTitle">

@@ -2,6 +2,8 @@
 name = "MCP Adapter"
 type = "adapter"
 description = "MCP (Model Context Protocol) Router - Connect to MCP servers and expose their tools as NEKO entries"
+short_description = "Connect to MCP servers and expose their tools as NEKO plugin entries. Gateway mode for external tool integration."
+keywords = ["mcp", "MCP", "tool", "server", "gateway", "adapter", "protocol"]
 version = "0.1.0"
 id = "mcp_adapter"
 entry = "plugin.plugins.mcp_adapter:MCPAdapterPlugin"

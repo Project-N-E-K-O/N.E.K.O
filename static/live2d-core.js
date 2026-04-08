@@ -95,6 +95,8 @@ class Live2DManager {
         this._isModelReadyForInteraction = false;
         this._initPIXIPromise = null;
         this._lastPIXIContext = { canvasId: null, containerId: null };
+        this._displayInfo = null;
+        this._autoNamedHitAreaIds = new Set();
 
         // 常驻表情：使用官方 expression 播放并在清理后自动重放
         this.persistentExpressionNames = [];
@@ -544,6 +546,90 @@ class Live2DManager {
         return this.pixi_app;
     }
 
+    _isFiniteMatrix2D(matrix) {
+        return !!(matrix &&
+            Number.isFinite(matrix.a) &&
+            Number.isFinite(matrix.b) &&
+            Number.isFinite(matrix.c) &&
+            Number.isFinite(matrix.d) &&
+            Number.isFinite(matrix.tx) &&
+            Number.isFinite(matrix.ty));
+    }
+
+    _applyMatrixToPoint(matrix, x, y) {
+        if (!this._isFiniteMatrix2D(matrix) || !Number.isFinite(x) || !Number.isFinite(y)) {
+            return null;
+        }
+
+        return {
+            x: matrix.a * x + matrix.c * y + matrix.tx,
+            y: matrix.b * x + matrix.d * y + matrix.ty
+        };
+    }
+
+    _ensureModelWorldTransform(model = this.currentModel) {
+        if (!model) {
+            return;
+        }
+
+        try {
+            if (typeof model._recursivePostUpdateTransform === 'function') {
+                model._recursivePostUpdateTransform();
+            }
+
+            if (typeof model.displayObjectUpdateTransform === 'function') {
+                if (model.parent) {
+                    model.displayObjectUpdateTransform();
+                } else if (model._tempDisplayObjectParent) {
+                    const originalParent = model.parent;
+                    model.parent = model._tempDisplayObjectParent;
+                    model.displayObjectUpdateTransform();
+                    model.parent = originalParent || null;
+                }
+            }
+        } catch (_) {}
+    }
+
+    _getDrawableVertexSequence(drawableIndex) {
+        const internalModel = this.currentModel?.internalModel;
+        if (!internalModel || typeof internalModel.getDrawableVertices !== 'function') {
+            return null;
+        }
+
+        let vertices = null;
+        try {
+            vertices = internalModel.getDrawableVertices(drawableIndex);
+        } catch (_) {
+            return null;
+        }
+
+        return vertices && typeof vertices.length === 'number' && vertices.length >= 4
+            ? vertices
+            : null;
+    }
+
+    _isDrawableRenderable(coreModel, drawableIndex) {
+        if (!coreModel || !Number.isInteger(drawableIndex) || drawableIndex < 0) {
+            return false;
+        }
+
+        try {
+            const visible = coreModel.getDrawableDynamicFlagIsVisible?.(drawableIndex);
+            if (typeof visible === 'boolean' && !visible) {
+                return false;
+            }
+        } catch (_) {}
+
+        try {
+            const opacity = coreModel.getDrawableOpacity?.(drawableIndex);
+            if (Number.isFinite(opacity) && opacity <= 0.01) {
+                return false;
+            }
+        } catch (_) {}
+
+        return true;
+    }
+
     _getDrawableLogicalRect(drawableIndex) {
         const internalModel = this.currentModel?.internalModel;
         if (!internalModel || typeof internalModel.getDrawableBounds !== 'function') {
@@ -564,13 +650,52 @@ class Live2DManager {
         };
     }
 
-    _getModelLogicalRect() {
-        const internalModel = this.currentModel?.internalModel;
-        const drawableCount = internalModel?.coreModel?.getDrawableCount?.();
-        if (!internalModel || !Number.isInteger(drawableCount) || drawableCount <= 0) {
+    _getDrawableDirectScreenRect(drawableIndex) {
+        const model = this.currentModel;
+        const internalModel = model?.internalModel;
+        const vertices = this._getDrawableVertexSequence(drawableIndex);
+        const localTransform = internalModel?.localTransform;
+        const worldTransform = model?.worldTransform;
+        if (!model || !internalModel || !vertices ||
+            !this._isFiniteMatrix2D(localTransform) ||
+            !this._isFiniteMatrix2D(worldTransform)) {
             return null;
         }
 
+        this._ensureModelWorldTransform(model);
+
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+
+        for (let index = 0; index < vertices.length; index += 2) {
+            const vx = Number(vertices[index]);
+            const vy = Number(vertices[index + 1]);
+            const localPoint = this._applyMatrixToPoint(localTransform, vx, vy);
+            const screenPoint = localPoint
+                ? this._applyMatrixToPoint(worldTransform, localPoint.x, localPoint.y)
+                : null;
+            if (!screenPoint) {
+                continue;
+            }
+
+            minX = Math.min(minX, screenPoint.x);
+            maxX = Math.max(maxX, screenPoint.x);
+            minY = Math.min(minY, screenPoint.y);
+            maxY = Math.max(maxY, screenPoint.y);
+        }
+
+        return this._createScreenRect(minX, minY, maxX, maxY);
+    }
+
+    _getModelLogicalRect() {
+        const internalModel = this.currentModel?.internalModel;
+        const coreModel = internalModel?.coreModel;
+        const drawableCount = coreModel?.getDrawableCount?.();
+        if (!internalModel || !coreModel || !Number.isInteger(drawableCount) || drawableCount <= 0) {
+            return null;
+        }
         let minX = Infinity;
         let maxX = -Infinity;
         let minY = Infinity;
@@ -619,46 +744,418 @@ class Live2DManager {
         };
     }
 
-    _getHeadHitAreaLogicalRect() {
+    _createScreenRect(left, top, right, bottom) {
+        const width = right - left;
+        const height = bottom - top;
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(right) || !Number.isFinite(bottom) ||
+            width <= 0 || height <= 0) {
+            return null;
+        }
+
+        return {
+            left,
+            right,
+            top,
+            bottom,
+            width,
+            height,
+            centerX: left + width * 0.5,
+            centerY: top + height * 0.5
+        };
+    }
+
+    _createRectInfoFromScreenRect(screenRect, mode, source = null) {
+        if (!screenRect) {
+            return null;
+        }
+
+        return {
+            rect: {
+                left: screenRect.left,
+                right: screenRect.right,
+                top: screenRect.top,
+                bottom: screenRect.bottom,
+                width: screenRect.width,
+                height: screenRect.height,
+                centerX: screenRect.centerX,
+                centerY: screenRect.centerY
+            },
+            mode,
+            source
+        };
+    }
+
+    _getDrawableScreenRect(drawableIndex, modelLogicalRect = null, modelBounds = null) {
+        const directScreenRect = this._getDrawableDirectScreenRect(drawableIndex);
+        if (directScreenRect) {
+            return directScreenRect;
+        }
+
+        const logicalRect = this._getDrawableLogicalRect(drawableIndex);
+        const resolvedModelLogicalRect = modelLogicalRect || this._getModelLogicalRect();
+        const resolvedModelBounds = modelBounds || this.getModelScreenBounds();
+        const mappedRect = this._mapLogicalRectToScreen(logicalRect, resolvedModelLogicalRect, resolvedModelBounds);
+        if (!mappedRect) {
+            return null;
+        }
+
+        return this._createScreenRect(
+            mappedRect.left,
+            mappedRect.top,
+            mappedRect.left + mappedRect.width,
+            mappedRect.top + mappedRect.height
+        );
+    }
+
+    _mergeScreenRects(rects) {
+        if (!Array.isArray(rects) || rects.length === 0) {
+            return null;
+        }
+
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+
+        for (const rect of rects) {
+            if (!rect) continue;
+            minX = Math.min(minX, rect.left);
+            maxX = Math.max(maxX, rect.right);
+            minY = Math.min(minY, rect.top);
+            maxY = Math.max(maxY, rect.bottom);
+        }
+
+        if (!Number.isFinite(minX) || !Number.isFinite(maxX) ||
+            !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+            return null;
+        }
+
+        return this._createScreenRect(minX, minY, maxX, maxY);
+    }
+
+    _getCoreModelSequence(coreModel, methodNames = [], propertyNames = []) {
+        if (!coreModel) {
+            return [];
+        }
+
+        for (const methodName of methodNames) {
+            const getter = coreModel?.[methodName];
+            if (typeof getter !== 'function') {
+                continue;
+            }
+
+            try {
+                const value = getter.call(coreModel);
+                if (value && typeof value.length === 'number') {
+                    return value;
+                }
+            } catch (_) {}
+        }
+
+        for (const propertyName of propertyNames) {
+            const value = coreModel?.[propertyName];
+            if (value && typeof value.length === 'number') {
+                return value;
+            }
+        }
+
+        return [];
+    }
+
+    _getCoreModelSequenceFromIndexedGetter(coreModel, countMethodNames = [], countPropertyNames = [], itemMethodNames = []) {
+        if (!coreModel || !Array.isArray(itemMethodNames) || itemMethodNames.length === 0) {
+            return [];
+        }
+
+        let count = null;
+
+        for (const methodName of countMethodNames) {
+            const getter = coreModel?.[methodName];
+            if (typeof getter !== 'function') {
+                continue;
+            }
+
+            try {
+                const value = Number(getter.call(coreModel));
+                if (Number.isInteger(value) && value > 0) {
+                    count = value;
+                    break;
+                }
+            } catch (_) {}
+        }
+
+        if (!Number.isInteger(count) || count <= 0) {
+            for (const propertyName of countPropertyNames) {
+                const value = Number(coreModel?.[propertyName]);
+                if (Number.isInteger(value) && value > 0) {
+                    count = value;
+                    break;
+                }
+            }
+        }
+
+        if (!Number.isInteger(count) || count <= 0) {
+            return [];
+        }
+
+        for (const methodName of itemMethodNames) {
+            const getter = coreModel?.[methodName];
+            if (typeof getter !== 'function') {
+                continue;
+            }
+
+            const values = [];
+            let succeeded = true;
+
+            for (let index = 0; index < count; index += 1) {
+                try {
+                    values.push(getter.call(coreModel, index));
+                } catch (_) {
+                    succeeded = false;
+                    break;
+                }
+            }
+
+            if (succeeded && values.length === count) {
+                return values;
+            }
+        }
+
+        return [];
+    }
+
+    _getCoreModelPartIds(coreModel) {
+        const directPartIds = this._getCoreModelSequence(coreModel, ['getPartIds'], [
+            '_partIds',
+            'partIds'
+        ]);
+        if (directPartIds.length > 0) {
+            return directPartIds;
+        }
+
+        const indexedPartIds = this._getCoreModelSequenceFromIndexedGetter(
+            coreModel,
+            ['getPartCount'],
+            [],
+            ['getPartId']
+        );
+        if (indexedPartIds.length > 0) {
+            return indexedPartIds;
+        }
+
+        const nestedPartIds = coreModel?._model?.parts?.ids;
+        return nestedPartIds && typeof nestedPartIds.length === 'number'
+            ? nestedPartIds
+            : [];
+    }
+
+    _getCoreModelPartParentPartIndices(coreModel) {
+        const directParentIndices = this._getCoreModelSequence(coreModel, ['getPartParentPartIndices'], [
+            '_partParentPartIndices',
+            'partParentPartIndices'
+        ]);
+        if (directParentIndices.length > 0) {
+            return directParentIndices;
+        }
+
+        const indexedParentIndices = this._getCoreModelSequenceFromIndexedGetter(
+            coreModel,
+            ['getPartCount'],
+            [],
+            ['getPartParentPartIndex']
+        );
+        if (indexedParentIndices.length > 0) {
+            return indexedParentIndices;
+        }
+
+        const nestedParentIndices = coreModel?._model?.parts?.parentPartIndices;
+        return nestedParentIndices && typeof nestedParentIndices.length === 'number'
+            ? nestedParentIndices
+            : [];
+    }
+
+    _getCoreModelDrawableParentPartIndices(coreModel) {
+        const directParentIndices = this._getCoreModelSequence(coreModel, ['getDrawableParentPartIndices'], [
+            '_drawableParentPartIndices',
+            'drawableParentPartIndices'
+        ]);
+        if (directParentIndices.length > 0) {
+            return directParentIndices;
+        }
+
+        const indexedParentIndices = this._getCoreModelSequenceFromIndexedGetter(
+            coreModel,
+            ['getDrawableCount'],
+            [],
+            ['getDrawableParentPartIndex']
+        );
+        if (indexedParentIndices.length > 0) {
+            return indexedParentIndices;
+        }
+
+        const nestedParentIndices = coreModel?._model?.drawables?.parentPartIndices;
+        return nestedParentIndices && typeof nestedParentIndices.length === 'number'
+            ? nestedParentIndices
+            : [];
+    }
+
+    _partIndexMatchesTargetIds(partIndex, partIds, partParentIndices, targetPartIdSet) {
+        if (!Number.isInteger(partIndex) || partIndex < 0 || partIndex >= partIds.length || !(targetPartIdSet instanceof Set)) {
+            return false;
+        }
+
+        let currentPartIndex = partIndex;
+        let depth = 0;
+
+        while (Number.isInteger(currentPartIndex) &&
+            currentPartIndex >= 0 &&
+            currentPartIndex < partIds.length &&
+            depth <= partIds.length) {
+            const currentPartId = String(partIds[currentPartIndex] || '');
+            if (currentPartId && targetPartIdSet.has(currentPartId)) {
+                return true;
+            }
+
+            const nextPartIndex = Number(partParentIndices?.[currentPartIndex]);
+            if (!Number.isInteger(nextPartIndex) || nextPartIndex < 0 || nextPartIndex === currentPartIndex) {
+                break;
+            }
+
+            currentPartIndex = nextPartIndex;
+            depth += 1;
+        }
+
+        return false;
+    }
+
+    _findDisplayInfoPartIds(patterns) {
+        const displayParts = this._displayInfo?.Parts;
+        if (!Array.isArray(displayParts) || !Array.isArray(patterns) || patterns.length === 0) {
+            return [];
+        }
+
+        return displayParts
+            .filter((part) => {
+                const label = String(part?.Name || part?.Id || '');
+                return patterns.some((pattern) => pattern.test(label));
+            })
+            .map((part) => String(part?.Id || ''))
+            .filter(Boolean);
+    }
+
+    _collectDisplayInfoPartScreenRectInfo(targetPartIds, mode) {
+        const internalModel = this.currentModel?.internalModel;
+        const coreModel = internalModel?.coreModel;
+        const drawableCount = coreModel?.getDrawableCount?.();
+        const modelBounds = this.getModelScreenBounds();
+        const modelLogicalRect = this._getModelLogicalRect();
+        if (!internalModel || !coreModel || !Number.isInteger(drawableCount) || drawableCount <= 0 ||
+            !modelBounds || !modelLogicalRect || !Array.isArray(targetPartIds) || targetPartIds.length === 0) {
+            return null;
+        }
+
+        const partIds = this._getCoreModelPartIds(coreModel);
+        const drawableParentPartIndices = this._getCoreModelDrawableParentPartIndices(coreModel);
+        const partParentPartIndices = this._getCoreModelPartParentPartIndices(coreModel);
+        if (partIds.length === 0 || drawableParentPartIndices.length === 0) {
+            return null;
+        }
+
+        const targetPartIdSet = new Set(targetPartIds);
+        const rects = [];
+
+        for (let index = 0; index < drawableCount; index += 1) {
+            const parentPartIndex = Number(drawableParentPartIndices[index]);
+            if (!this._partIndexMatchesTargetIds(parentPartIndex, partIds, partParentPartIndices, targetPartIdSet)) {
+                continue;
+            }
+
+            if (!this._isDrawableRenderable(coreModel, index)) {
+                continue;
+            }
+
+            const rect = this._getDrawableScreenRect(index, modelLogicalRect, modelBounds);
+            if (rect) {
+                rects.push(rect);
+            }
+        }
+
+        return this._createRectInfoFromScreenRect(this._mergeScreenRects(rects), mode, 'displayInfo');
+    }
+
+    _getDisplayInfoPartScreenRectInfo(kind) {
+        if (kind === 'head') {
+            const facePartIds = this._findDisplayInfoPartIds([/(^|[^a-z])face([^a-z]|$)|顔|脸/i]);
+            const neckPartIds = this._findDisplayInfoPartIds([/(^|[^a-z])neck([^a-z]|$)|首/i]);
+            const headPartIds = this._findDisplayInfoPartIds([/(^|[^a-z])head([^a-z]|$)|頭|头/i]);
+
+            const faceInfo = this._collectDisplayInfoPartScreenRectInfo(
+                [...new Set([...facePartIds, ...neckPartIds])],
+                'face'
+            );
+            if (faceInfo) {
+                return faceInfo;
+            }
+
+            return this._collectDisplayInfoPartScreenRectInfo(
+                [...new Set([...headPartIds, ...neckPartIds])],
+                'head'
+            );
+        }
+
+        if (kind === 'body') {
+            const bodyPartIds = this._findDisplayInfoPartIds([
+                /(^|[^a-z])body([^a-z]|$)|身体|身體|体|胴|胴体|胸|torso|chest|upperbody|upper_body|bust/i
+            ]);
+            const bodyInfo = this._collectDisplayInfoPartScreenRectInfo(bodyPartIds, 'body');
+            if (bodyInfo) {
+                return bodyInfo;
+            }
+
+            // Some models leave "body" parts empty and attach visible torso meshes to
+            // outfit parts instead. Use upper-body clothing as a fallback body proxy.
+            const outfitPartIds = this._findDisplayInfoPartIds([
+                /(^|[^a-z])dress([^a-z]|$)|(^|[^a-z])clothes([^a-z]|$)|(^|[^a-z])costume([^a-z]|$)|(^|[^a-z])coat([^a-z]|$)|(^|[^a-z])jacket([^a-z]|$)|(^|[^a-z])shirt([^a-z]|$)|(^|[^a-z])uniform([^a-z]|$)|(^|[^a-z])hoodie([^a-z]|$)|(^|[^a-z])jersey([^a-z]|$)|(^|[^a-z])onepiece([^a-z]|$)|(^|[^a-z])one_piece([^a-z]|$)|ワンピース|ジャージ|服|衣|上着/i
+            ]);
+            return this._collectDisplayInfoPartScreenRectInfo(
+                [...new Set([...bodyPartIds, ...outfitPartIds])],
+                'body'
+            );
+        }
+
+        return null;
+    }
+
+    _normalizeHitAreaMatchKey(value) {
+        return String(value || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff]/g, '');
+    }
+
+    _findBestHitAreaLogicalRectInfo(matchInfoFn) {
         const model = this.currentModel;
         const internalModel = model?.internalModel;
         const hitAreaDefs = internalModel?.settings?.hitAreas;
         const hitAreas = internalModel?.hitAreas;
-        if (!Array.isArray(hitAreaDefs) || !hitAreas) {
+        if (!Array.isArray(hitAreaDefs) || !hitAreas || typeof matchInfoFn !== 'function') {
             return null;
         }
 
-        const normalizeKey = (value) => String(value || '')
-            .toLowerCase()
-            .replace(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff]/g, '');
-        const matchScore = (value) => {
-            const key = normalizeKey(value);
-            if (!key) return -1;
-            if (key === 'face' || key === 'hitareaface' || key === '顔' || key === '脸' || key === '脸部' || key === '面') {
-                return 4;
-            }
-            if (key.indexOf('face') !== -1 || key.indexOf('顔') !== -1 || key.indexOf('脸') !== -1 || key.indexOf('面') !== -1) {
-                return 3;
-            }
-            if (key === 'head' || key === 'hitareahead' || key === '頭' || key === '头') {
-                return 2;
-            }
-            if (key.indexOf('head') !== -1 || key.indexOf('頭') !== -1 || key.indexOf('头') !== -1) {
-                return 1;
-            }
-            return -1;
-        };
-
         let bestRect = null;
         let bestScore = -1;
+        let bestHitArea = null;
 
         for (const hitAreaDef of hitAreaDefs) {
             if (!hitAreaDef) continue;
 
             const name = String(hitAreaDef.Name || '');
             const id = String(hitAreaDef.Id || '');
-            const score = Math.max(matchScore(name), matchScore(id));
-            if (score < 0) continue;
+            const nameMatch = matchInfoFn(name) || {};
+            const idMatch = matchInfoFn(id) || {};
+            const matchInfo = Number(nameMatch.score) >= Number(idMatch.score) ? nameMatch : idMatch;
+            const score = Number(matchInfo.score);
+            if (!Number.isFinite(score) || score < 0) continue;
 
             const hitArea = hitAreas[name] || hitAreas[id];
             const drawableIndex = Number.isInteger(hitArea?.index)
@@ -674,24 +1171,279 @@ class Live2DManager {
             if (!bestRect || score > bestScore) {
                 bestRect = rect;
                 bestScore = score;
+                bestHitArea = {
+                    id,
+                    name,
+                    autoNamed: this._autoNamedHitAreaIds instanceof Set && this._autoNamedHitAreaIds.has(id)
+                };
             }
         }
 
-        return bestRect;
+        if (!bestRect) {
+            return null;
+        }
+
+        return {
+            rect: bestRect,
+            id: bestHitArea?.id || null,
+            name: bestHitArea?.name || null,
+            autoNamed: !!bestHitArea?.autoNamed
+        };
+    }
+
+    _getHeadHitAreaLogicalRectInfo() {
+        return this._findBestHitAreaLogicalRectInfo((value) => {
+            const key = this._normalizeHitAreaMatchKey(value);
+            if (!key) return { score: -1 };
+            if (key === 'face' || key === 'hitareaface' || key === '顔' || key === '脸' || key === '脸部' || key === '面') {
+                return { score: 4 };
+            }
+            if (key.indexOf('face') !== -1 || key.indexOf('顔') !== -1 || key.indexOf('脸') !== -1 || key.indexOf('面') !== -1) {
+                return { score: 3 };
+            }
+            if (key === 'head' || key === 'hitareahead' || key === '頭' || key === '头') {
+                return { score: 2 };
+            }
+            if (key.indexOf('head') !== -1 || key.indexOf('頭') !== -1 || key.indexOf('头') !== -1) {
+                return { score: 1 };
+            }
+            return { score: -1 };
+        });
+    }
+
+    _getBodyHitAreaLogicalRectInfo() {
+        return this._findBestHitAreaLogicalRectInfo((value) => {
+            const key = this._normalizeHitAreaMatchKey(value);
+            if (!key) return { score: -1 };
+            if (key === 'body' || key === 'hitareabody' || key === '身体' || key === '身體' || key === '体' || key === 'torso') {
+                return { score: 4 };
+            }
+            if (key.indexOf('body') !== -1 || key.indexOf('身体') !== -1 || key.indexOf('身體') !== -1 ||
+                key.indexOf('体') !== -1 || key.indexOf('torso') !== -1 || key.indexOf('chest') !== -1) {
+                return { score: 3 };
+            }
+            return { score: -1 };
+        });
+    }
+
+    _createHitAreaScreenRectInfo(logicalInfo, mode, modelBounds = null, modelLogicalRect = null) {
+        const resolvedModelBounds = modelBounds || this.getModelScreenBounds();
+        const resolvedModelLogicalRect = modelLogicalRect || this._getModelLogicalRect();
+        const screenRect = this._mapLogicalRectToScreen(logicalInfo?.rect, resolvedModelLogicalRect, resolvedModelBounds);
+        if (!screenRect) {
+            return null;
+        }
+
+        return Object.assign(
+            this._createRectInfoFromScreenRect(
+                this._createScreenRect(
+                    screenRect.left,
+                    screenRect.top,
+                    screenRect.left + screenRect.width,
+                    screenRect.top + screenRect.height
+                ),
+                mode,
+                'hitArea'
+            ),
+            {
+                hitAreaId: logicalInfo?.id || null,
+                hitAreaName: logicalInfo?.name || null,
+                autoNamed: !!logicalInfo?.autoNamed
+            }
+        );
+    }
+
+    _getHeadHitAreaScreenRectInfo(modelBounds = null, modelLogicalRect = null) {
+        return this._createHitAreaScreenRectInfo(
+            this._getHeadHitAreaLogicalRectInfo(),
+            'face',
+            modelBounds,
+            modelLogicalRect
+        );
+    }
+
+    _getBodyHitAreaScreenRectInfo(modelBounds = null, modelLogicalRect = null) {
+        return this._createHitAreaScreenRectInfo(
+            this._getBodyHitAreaLogicalRectInfo(),
+            'body',
+            modelBounds,
+            modelLogicalRect
+        );
+    }
+
+    _getRectArea(rectInfo) {
+        const rect = rectInfo?.rect || rectInfo;
+        const width = Number(rect?.width);
+        const height = Number(rect?.height);
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            return 0;
+        }
+        return width * height;
+    }
+
+    _getRectIntersectionArea(rectAInfo, rectBInfo) {
+        const rectA = rectAInfo?.rect || rectAInfo;
+        const rectB = rectBInfo?.rect || rectBInfo;
+        if (!rectA || !rectB) {
+            return 0;
+        }
+
+        const left = Math.max(Number(rectA.left), Number(rectB.left));
+        const top = Math.max(Number(rectA.top), Number(rectB.top));
+        const right = Math.min(Number(rectA.right), Number(rectB.right));
+        const bottom = Math.min(Number(rectA.bottom), Number(rectB.bottom));
+        const width = right - left;
+        const height = bottom - top;
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            return 0;
+        }
+
+        return width * height;
+    }
+
+    _isRectInfoPlausibleWithinModel(rectInfo, modelBounds, options = {}) {
+        const rect = rectInfo?.rect;
+        if (!rect || !modelBounds) {
+            return false;
+        }
+
+        const boundsRight = Number.isFinite(modelBounds.right)
+            ? modelBounds.right
+            : Number(modelBounds.left) + Number(modelBounds.width);
+        const boundsBottom = Number.isFinite(modelBounds.bottom)
+            ? modelBounds.bottom
+            : Number(modelBounds.top) + Number(modelBounds.height);
+        const toleranceX = Number.isFinite(options.toleranceX)
+            ? options.toleranceX
+            : Math.max(18, Number(modelBounds.width) * 0.12);
+        const toleranceY = Number.isFinite(options.toleranceY)
+            ? options.toleranceY
+            : Math.max(18, Number(modelBounds.height) * 0.12);
+        const maxWidthRatio = Number.isFinite(options.maxWidthRatio) ? options.maxWidthRatio : 1.02;
+        const maxHeightRatio = Number.isFinite(options.maxHeightRatio) ? options.maxHeightRatio : 1.02;
+
+        return rect.left >= Number(modelBounds.left) - toleranceX &&
+            rect.right <= boundsRight + toleranceX &&
+            rect.top >= Number(modelBounds.top) - toleranceY &&
+            rect.bottom <= boundsBottom + toleranceY &&
+            rect.width <= Number(modelBounds.width) * maxWidthRatio &&
+            rect.height <= Number(modelBounds.height) * maxHeightRatio;
+    }
+
+    _shouldPreferDisplayInfoRect(kind, hitAreaInfo, displayInfoInfo, modelBounds) {
+        if (!displayInfoInfo) {
+            return false;
+        }
+
+        if (!hitAreaInfo) {
+            return true;
+        }
+
+        const displayPlausible = this._isRectInfoPlausibleWithinModel(
+            displayInfoInfo,
+            modelBounds,
+            kind === 'head'
+                ? { maxWidthRatio: 0.98, maxHeightRatio: 0.88 }
+                : { maxWidthRatio: 1.04, maxHeightRatio: 1.02 }
+        );
+        if (!displayPlausible) {
+            return false;
+        }
+
+        if (hitAreaInfo.autoNamed) {
+            return true;
+        }
+
+        const hitAreaArea = this._getRectArea(hitAreaInfo);
+        const displayArea = this._getRectArea(displayInfoInfo);
+        if (!(hitAreaArea > 0 && displayArea > 0)) {
+            return false;
+        }
+
+        const overlapArea = this._getRectIntersectionArea(hitAreaInfo, displayInfoInfo);
+        const overlapRatio = overlapArea / Math.max(1, Math.min(hitAreaArea, displayArea));
+        const areaOversizeRatio = hitAreaArea / Math.max(displayArea, 1);
+        const hitRect = hitAreaInfo.rect;
+        const displayRect = displayInfoInfo.rect;
+        const widthOversizeRatio = hitRect.width / Math.max(displayRect.width, 1);
+        const heightOversizeRatio = hitRect.height / Math.max(displayRect.height, 1);
+
+        if (kind === 'head') {
+            const displayClearlyInsideHitArea = overlapRatio >= 0.68 ||
+                (displayRect.left >= hitRect.left - 12 &&
+                    displayRect.right <= hitRect.right + 12 &&
+                    displayRect.top >= hitRect.top - 12 &&
+                    displayRect.bottom <= hitRect.bottom + 12);
+            const hitAreaLooksCoarse = areaOversizeRatio >= 1.5 ||
+                widthOversizeRatio >= 1.3 ||
+                heightOversizeRatio >= 1.3 ||
+                displayRect.top >= hitRect.top + Math.max(18, displayRect.height * 0.16);
+            return displayClearlyInsideHitArea && hitAreaLooksCoarse;
+        }
+
+        return overlapRatio >= 0.5 && (
+            areaOversizeRatio >= 1.45 ||
+            widthOversizeRatio >= 1.25 ||
+            heightOversizeRatio >= 1.25
+        );
+    }
+
+    getHeadScreenRectInfo() {
+        const modelBounds = this.getModelScreenBounds();
+        const modelLogicalRect = this._getModelLogicalRect();
+        const hitAreaInfo = this._getHeadHitAreaScreenRectInfo(modelBounds, modelLogicalRect);
+        const displayInfoInfo = this._getDisplayInfoPartScreenRectInfo('head');
+        if (this._shouldPreferDisplayInfoRect('head', hitAreaInfo, displayInfoInfo, modelBounds)) {
+            return displayInfoInfo;
+        }
+
+        return hitAreaInfo || displayInfoInfo;
+    }
+
+    getBodyScreenRectInfo() {
+        const modelBounds = this.getModelScreenBounds();
+        const modelLogicalRect = this._getModelLogicalRect();
+        const hitAreaInfo = this._getBodyHitAreaScreenRectInfo(modelBounds, modelLogicalRect);
+        const displayInfoInfo = this._getDisplayInfoPartScreenRectInfo('body');
+        if (this._shouldPreferDisplayInfoRect('body', hitAreaInfo, displayInfoInfo, modelBounds)) {
+            return displayInfoInfo;
+        }
+
+        return hitAreaInfo || displayInfoInfo;
     }
 
     getHeadScreenAnchor() {
-        const modelBounds = this.getModelScreenBounds();
-        const modelLogicalRect = this._getModelLogicalRect();
-        const headLogicalRect = this._getHeadHitAreaLogicalRect();
-        const headScreenRect = this._mapLogicalRectToScreen(headLogicalRect, modelLogicalRect, modelBounds);
+        const headScreenInfo = this.getHeadScreenRectInfo();
+        const headScreenRect = headScreenInfo?.rect;
         if (!headScreenRect) {
             return null;
         }
 
         return {
-            x: headScreenRect.left + headScreenRect.width * 0.5,
-            y: headScreenRect.top + headScreenRect.height * 0.58
+            x: headScreenRect.centerX,
+            y: headScreenRect.top + headScreenRect.height * (headScreenInfo.mode === 'face' ? 0.42 : 0.5)
+        };
+    }
+
+    getBubbleAnchorDebugInfo() {
+        const settings = this.currentModel?.internalModel?.settings;
+        const settingsJson = settings?.json;
+        const hitAreaDefs = settings?.hitAreas;
+
+        return {
+            modelName: this.modelName || null,
+            modelRootPath: this.modelRootPath || null,
+            displayInfoLoaded: !!this._displayInfo,
+            displayInfoPath: settingsJson?.FileReferences?.DisplayInfo || null,
+            hitAreas: Array.isArray(hitAreaDefs)
+                ? hitAreaDefs.map((hitArea) => ({
+                    id: String(hitArea?.Id || ''),
+                    name: String(hitArea?.Name || '')
+                }))
+                : [],
+            bounds: this.getModelScreenBounds(),
+            headInfo: this.getHeadScreenRectInfo(),
+            bodyInfo: this.getBodyScreenRectInfo()
         };
     }
 
@@ -701,7 +1453,11 @@ class Live2DManager {
      */
     getModelScreenBounds() {
         const model = this.currentModel;
-        if (!model || typeof model.getBounds !== 'function') {
+        if (!model) {
+            return null;
+        }
+
+        if (typeof model.getBounds !== 'function') {
             return null;
         }
 
@@ -733,7 +1489,7 @@ class Live2DManager {
             return null;
         }
 
-        return {
+        const stableBounds = {
             left: left,
             right: right,
             top: top,
@@ -743,6 +1499,8 @@ class Live2DManager {
             centerX: left + width / 2,
             centerY: top + height / 2
         };
+
+        return stableBounds;
     }
 
     // 复位模型位置和缩放到初始状态

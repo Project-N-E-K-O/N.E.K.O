@@ -987,9 +987,14 @@ class MMDCore {
         }
 
         if (!locked) {
-            const container = document.getElementById('mmd-container');
-            if (container) {
-                container.style.opacity = '1';
+            // 解锁时恢复容器透明度（同时重置淡化状态）
+            if (typeof this.manager._setMmdLockedHoverFade === 'function') {
+                this.manager._setMmdLockedHoverFade(false);
+            } else {
+                const container = document.getElementById('mmd-container');
+                if (container) {
+                    container.style.opacity = '1';
+                }
             }
         }
 
@@ -1233,3 +1238,5 @@ class MMDCore {
         console.log('[MMD Core] 资源已完全清理');
     }
 }
+
+window.MMDCore = MMDCore;

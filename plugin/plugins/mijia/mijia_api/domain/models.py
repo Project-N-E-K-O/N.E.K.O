@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class DeviceStatus(str, Enum):
@@ -86,6 +86,14 @@ class Home(BaseModel):
     name: str = Field(description="家庭名称")
     uid: str = Field(description="用户ID")
     rooms: List[dict[str, Any]] = Field(default_factory=list, description="房间列表")
+
+    @field_validator("uid", mode="before")
+    @classmethod
+    def _uid_int_to_str(cls, v: Any) -> str:
+        """自动将 int 类型的 uid 转换为 str"""
+        if isinstance(v, int):
+            return str(v)
+        return v
 
 
 class Device(BaseModel):

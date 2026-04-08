@@ -54,6 +54,9 @@ import httpx
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
 
+# TTS 错误码中不应自动重试的类型（欠费 / 配额耗尽）
+NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_QUOTA_TIME'}
+
 # ---------------------------------------------------------------------------
 # 重要通知缓冲池
 # 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息；
@@ -256,6 +259,8 @@ class LLMSessionManager:
         self.tts_pending_chunks = []  # 待处理的TTS文本chunk: [(speech_id, text), ...]
         self.tts_cache_lock = asyncio.Lock()  # 保护缓存的锁
         self._last_tts_respawn_time: float = 0.0  # 上次 respawn 时间戳，用于 12 秒冷却
+        self._tts_respawn_task: Optional[asyncio.Task] = None  # 延迟重试 Task，end_session 时取消
+        self._last_tts_error_code: str = ''  # 上次 TTS 错误码
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -882,6 +887,70 @@ class LLMSessionManager:
         )
         self.tts_thread.start()
 
+    def _reset_tts_retry_state(self):
+        """Cancel pending TTS respawn task and clear error/cooldown state.
+
+        Safe to call whether or not a session is active.  When called from
+        within an ``async with self.lock`` block the cancellation of
+        ``_tts_respawn_task`` is race-free; outside the lock the worst case
+        is a harmless double-cancel.
+        """
+        if self._tts_respawn_task and not self._tts_respawn_task.done():
+            self._tts_respawn_task.cancel()
+            self._tts_respawn_task = None
+        self._last_tts_error_code = ''
+        self._last_tts_respawn_time = 0.0
+
+    async def _teardown_tts_runtime(self, handler_task_ref, thread_ref,
+                                     req_queue_ref, resp_queue_ref):
+        """Tear down TTS handler task, worker thread, and drain queues.
+
+        Operates only on the snapshot references passed in to prevent
+        accidentally killing resources that have been recreated by a
+        concurrent start_session.
+        """
+        if handler_task_ref and not handler_task_ref.done():
+            handler_task_ref.cancel()
+            try:
+                await asyncio.wait_for(handler_task_ref, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            if self.tts_handler_task is handler_task_ref:
+                self.tts_handler_task = None
+
+        if thread_ref and thread_ref.is_alive():
+            try:
+                req_queue_ref.put((None, None))
+                await asyncio.to_thread(thread_ref.join, 2.0)
+            except Exception as e:
+                logger.error(f"💥 关闭TTS线程时出错: {e}")
+
+            if thread_ref.is_alive():
+                logger.warning("⚠️ TTS worker 未在超时内退出，清除引用以允许重建")
+                if self.tts_thread is thread_ref:
+                    self.tts_thread = None
+            else:
+                if self.tts_thread is thread_ref:
+                    self.tts_thread = None
+                # 仅在线程确实已停止后才安全地清空队列
+                try:
+                    while not req_queue_ref.empty():
+                        req_queue_ref.get_nowait()
+                except Exception:
+                    pass
+                try:
+                    while not resp_queue_ref.empty():
+                        resp_queue_ref.get_nowait()
+                except Exception:
+                    pass
+
+        # 只在被拆除的 runtime 仍是当前 runtime 时才清全局 TTS 状态，
+        # 避免新 session 已创建新队列/worker 后被旧 teardown 误重置
+        if resp_queue_ref is self.tts_response_queue:
+            async with self.tts_cache_lock:
+                self.tts_ready = False
+                self.tts_pending_chunks.clear()
+
     def _respawn_tts_worker(self):
         """检测 TTS Worker 线程已死亡时重新拉起，不阻塞等待就绪。
 
@@ -893,10 +962,20 @@ class LLMSessionManager:
         if self.tts_thread and self.tts_thread.is_alive():
             return
 
+        # 如果上次错误属于不应自动重试的类型，直接跳过 respawn
+        if self._last_tts_error_code in NO_RETRY_TTS_CODES:
+            logger.warning(f"⚠️ _respawn_tts_worker: 上次错误为 {self._last_tts_error_code}，跳过自动重试")
+            return
+
         import time
         now = time.monotonic()
         if now - self._last_tts_respawn_time < 12.0:
-            return
+            return  # 冷却中，保留待执行的延迟任务和错误码状态
+
+        # 通过冷却检查后，取消可能仍在等待的延迟重试任务，既然已经在直接 respawn 了
+        if self._tts_respawn_task and not self._tts_respawn_task.done():
+            self._tts_respawn_task.cancel()
+            self._tts_respawn_task = None
         self._last_tts_respawn_time = now
 
         logger.info("🔄 TTS Worker 已死亡，尝试重新拉起...")
@@ -1580,6 +1659,7 @@ class LLMSessionManager:
             # prompt += plugin_prompt
             active_tasks_prompt = await self._fetch_active_agent_tasks_prompt()
             prompt += active_tasks_prompt
+
         return prompt
 
     def _is_agent_enabled(self):
@@ -1827,107 +1907,6 @@ class LLMSessionManager:
         except Exception:
             pass
 
-    async def deliver_text_proactively(
-        self,
-        text: str,
-        min_idle_secs: float = 30.0,
-    ) -> bool:
-        """Directly deliver text as an AI proactive message without LLM generation.
-
-        Used when an agent task finishes and the user hasn't spoken recently.
-        Mirrors the delivery block in system_router.proactive_chat (post-LLM step).
-
-        Returns True if the message was delivered, False if skipped/aborted.
-        """
-        if not text or not text.strip():
-            return False
-
-        # Skip if user was active recently
-        if self.last_user_activity_time is not None:
-            time_since = time.time() - self.last_user_activity_time
-            if time_since < min_idle_secs:
-                logger.info(
-                    "[%s] deliver_text_proactively skipped: user active %.1fs ago",
-                    self.lanlan_name, time_since,
-                )
-                return False
-
-        # Skip if voice session is currently running (don't interrupt)
-        if self.is_active and isinstance(self.session, OmniRealtimeClient):
-            logger.info(
-                "[%s] deliver_text_proactively skipped: voice session active",
-                self.lanlan_name,
-            )
-            return False
-
-        # Need a live WebSocket
-        if not self.websocket:
-            return False
-        try:
-            if (
-                hasattr(self.websocket, 'client_state')
-                and self.websocket.client_state != self.websocket.client_state.CONNECTED
-            ):
-                return False
-        except Exception:
-            pass
-
-        # Ensure a text session exists (create if absent)
-        if not self.session or not hasattr(self.session, '_conversation_history'):
-            try:
-                await self.start_session(self.websocket, new=False, input_mode='text')
-            except Exception as e:
-                logger.warning("[%s] deliver_text_proactively: failed to start session: %s", self.lanlan_name, e)
-                return False
-            if not self.session or not hasattr(self.session, '_conversation_history'):
-                return False
-
-        # Record in conversation history so the LLM remembers it said this
-        from utils.llm_client import AIMessage as _AIMsg
-        self.session._conversation_history.append(_AIMsg(content=text))
-
-        # Fresh speech_id for TTS / lipsync
-        async with self.lock:
-            self.current_speech_id = str(uuid4())
-
-        output_start_time = time.time()
-
-        # Deliver in small chunks to allow mid-delivery interruption and smooth TTS
-        chunks = [text[i:i + 10] for i in range(0, len(text), 10)]
-        for i, chunk in enumerate(chunks):
-            # Abort if the user started speaking mid-delivery
-            if (
-                self.last_user_activity_time is not None
-                and self.last_user_activity_time > output_start_time
-            ):
-                logger.info("[%s] deliver_text_proactively: user active mid-delivery, aborting", self.lanlan_name)
-                await self.handle_new_message()
-                return False
-            await self.handle_text_data(chunk, is_first_chunk=(i == 0))
-            await asyncio.sleep(0.15)
-
-        # TTS end signal
-        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            try:
-                self.tts_request_queue.put((None, None))
-            except Exception:
-                pass
-
-        # Turn-end (mirrors proactive_chat — does NOT trigger hot-swap)
-        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-        try:
-            if (
-                self.websocket
-                and hasattr(self.websocket, 'client_state')
-                and self.websocket.client_state == self.websocket.client_state.CONNECTED
-            ):
-                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
-        except Exception:
-            pass
-
-        logger.info("[%s] Proactive task result delivered: %.40s…", self.lanlan_name, text)
-        return True
-
     # ------------------------------------------------------------------
     # Voice-chat proactive audio nudge (dedicated path)
     # ------------------------------------------------------------------
@@ -1935,10 +1914,9 @@ class LLMSessionManager:
     async def trigger_voice_proactive_nudge(self) -> bool:
         """Inject a pre-recorded audio prompt to nudge the voice model into speaking.
 
-        This is the **only** caller of ``OmniRealtimeClient.stream_proactive``
+        This is the **only** caller of ``OmniRealtimeClient.prompt_ephemeral``
         for the voice-chat proactive feature.  It is completely independent of
-        ``deliver_text_proactively`` (which handles text delivery from agents)
-        and ``trigger_agent_callbacks`` (which handles agent task results).
+        ``trigger_agent_callbacks`` (which handles agent task results).
 
         Returns True if the audio was fully injected, False if skipped.
         """
@@ -1948,7 +1926,7 @@ class LLMSessionManager:
             logger.info("[%s] voice proactive nudge skipped: hot-swap imminent", self.lanlan_name)
             return False
         _lang = normalize_language_code(self.user_language, format='short') or 'zh'
-        delivered = await self.session.stream_proactive(language=_lang)
+        delivered = await self.session.prompt_ephemeral(language=_lang)
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)
         else:
@@ -2079,10 +2057,10 @@ class LLMSessionManager:
         """Proactively deliver pending agent task results via LLM rephrase.
 
         Design:
-        - Text mode (OmniOfflineClient): calls session.stream_proactive() so the
+        - Text mode (OmniOfflineClient): calls session.prompt_ephemeral() so the
           LLM generates a styled response in the character's voice.
-        - Voice mode (OmniRealtimeClient): calls session.create_response() to
-          trigger a proactive AI turn.
+        - Voice mode (OmniRealtimeClient): defers to hot-swap — callbacks are
+          kept in pending_extra_replies for injection via prime_context().
         - On failure or when the session is busy, restores callbacks so the next
           handle_response_complete() call will retry automatically.
         - Re-entrance guard prevents concurrent deliveries.
@@ -2140,13 +2118,13 @@ class LLMSessionManager:
                 async with self._proactive_write_lock:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
-                    logger.debug("[%s] trigger_agent_callbacks: text session ready, calling stream_proactive", self.lanlan_name)
+                    logger.debug("[%s] trigger_agent_callbacks: text session ready, calling prompt_ephemeral", self.lanlan_name)
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
                         self.session.update_max_response_length(self._get_text_guard_max_length())
                     self.pending_agent_callbacks.clear()
-                    delivered = await self.session.stream_proactive(instruction)
-                    logger.debug("[%s] trigger_agent_callbacks: text session stream_proactive delivered=%s", self.lanlan_name, delivered)
+                    delivered = await self.session.prompt_ephemeral(instruction)
+                    logger.debug("[%s] trigger_agent_callbacks: text session prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
                     if delivered:
                         self.pending_extra_replies.clear()
                     else:
@@ -2167,7 +2145,7 @@ class LLMSessionManager:
                         if hasattr(self.session, 'update_max_response_length'):
                             self.session.update_max_response_length(self._get_text_guard_max_length())
                         self.pending_agent_callbacks.clear()
-                        delivered = await self.session.stream_proactive(instruction)
+                        delivered = await self.session.prompt_ephemeral(instruction)
                         if delivered:
                             self.pending_extra_replies.clear()
                         else:
@@ -2203,19 +2181,17 @@ class LLMSessionManager:
             return
 
         _lang = normalize_language_code(self.user_language, format='short')
-        from config.prompts_proactive import get_greeting_prompt
+        from config.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
         from utils.time_format import format_elapsed as _format_elapsed
+        from utils.holiday_cache import get_holiday_or_weekend_hint
         template = get_greeting_prompt(gap_seconds, _lang)
         if not template:
             return
 
-        elapsed = _format_elapsed(_lang, gap_seconds)
-        instruction = template.format(elapsed=elapsed, name=self.lanlan_name, master=self.master_name)
-        logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", self.lanlan_name, gap_seconds, elapsed)
-
-        # 如果已有 text session 且空闲，直接投递
+        # 先确认投递通道可用，再消费节日预算（避免 session 拉起失败白扣次数）
+        # 如果已有 text session 且空闲，直接走投递逻辑
         if isinstance(self.session, OmniOfflineClient) and not getattr(self.session, "_is_responding", False):
-            pass  # 直接走下面的投递逻辑
+            pass
         else:
             # 没有 session 或不是 text session → 主动拉起
             ws = self.websocket
@@ -2233,18 +2209,37 @@ class LLMSessionManager:
             logger.warning("[%s] trigger_greeting: session is not text mode after start, aborting", self.lanlan_name)
             return
 
+        # 投递通道已就绪，构建 instruction（此时才消费节日预算）
+        elapsed = _format_elapsed(_lang, gap_seconds)
+        time_hint = get_time_of_day_hint(_lang).format(master=self.master_name)
+
+        try:
+            holiday_hint_text = await get_holiday_or_weekend_hint(_lang, self.lanlan_name)
+        except Exception as e:
+            logger.debug("[%s] trigger_greeting: holiday hint failed: %s", self.lanlan_name, e)
+            holiday_hint_text = None
+        holiday_hint = (holiday_hint_text + '\n') if holiday_hint_text else ''
+
+        instruction = template.format(
+            elapsed=elapsed, name=self.lanlan_name, master=self.master_name,
+            time_hint=time_hint, holiday_hint=holiday_hint,
+        )
+        print(f"[trigger_greeting] instruction:\n{instruction}")
+        logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", self.lanlan_name, gap_seconds, elapsed)
+
         async with self._proactive_write_lock:
             async with self.lock:
                 self.current_speech_id = str(uuid4())
-            delivered = await self.session.stream_proactive(instruction)
+            delivered = await self.session.prompt_ephemeral(instruction)
             logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
 
-        Text mode: drained before the next stream_text call and injected as
-        system context, OR proactively via trigger_agent_callbacks().
-        Voice mode: also appended to pending_extra_replies for hot-swap injection.
+        Text mode: drained before the next stream_text call and injected via
+        prompt_ephemeral(), OR proactively via trigger_agent_callbacks().
+        Voice mode: also appended to pending_extra_replies for hot-swap
+        injection via prime_context().
         """
         try:
             self.pending_agent_callbacks.append(callback)
@@ -2263,24 +2258,26 @@ class LLMSessionManager:
         """
         if not self.pending_agent_callbacks:
             return ""
-        _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
-        lines: list[str] = []
-        for cb in self.pending_agent_callbacks:
-            status = cb.get("status", "completed")
-            summary = (cb.get("summary") or "").strip()
-            detail = (cb.get("detail") or "").strip()
-            if status == "completed":
-                tag = _loc(RESULT_PARSER_PHRASES['task_completed'], _lang)
-            elif status == "partial":
-                tag = _loc(RESULT_PARSER_PHRASES['task_partial'], _lang)
-            else:
-                tag = _loc(RESULT_PARSER_PHRASES['task_failed_tag'], _lang)
-            lines.append(f"{tag} {summary}")
-            if detail and detail != summary:
-                prefix = _loc(RESULT_PARSER_PHRASES['detail_prefix'], _lang)
-                lines.append(f"{prefix}{detail[:300]}")
-        self.pending_agent_callbacks.clear()
-        return "\n".join(lines)
+        try:
+            _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
+            lines: list[str] = []
+            for cb in self.pending_agent_callbacks:
+                status = cb.get("status", "completed")
+                summary = (cb.get("summary") or "").strip()
+                detail = (cb.get("detail") or "").strip()
+                if status == "completed":
+                    tag = _loc(RESULT_PARSER_PHRASES['task_completed'], _lang)
+                elif status == "partial":
+                    tag = _loc(RESULT_PARSER_PHRASES['task_partial'], _lang)
+                else:
+                    tag = _loc(RESULT_PARSER_PHRASES['task_failed_tag'], _lang)
+                lines.append(f"{tag} {summary}")
+                if detail and detail != summary:
+                    prefix = _loc(RESULT_PARSER_PHRASES['detail_prefix'], _lang)
+                    lines.append(f"{prefix}{detail[:300]}")
+            return "\n".join(lines)
+        finally:
+            self.pending_agent_callbacks.clear()
 
     async def _perform_final_swap_sequence(self):
         """[热切换相关] 执行最终的swap序列"""
@@ -2332,7 +2329,7 @@ class LLMSessionManager:
                 # 清空队列，避免重复注入
                 self.pending_extra_replies.clear()
                 try:
-                    await self.pending_session.create_response(final_prime_text, skipped=False)
+                    await self.pending_session.prime_context(final_prime_text, skipped=False)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
                     # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
@@ -2344,7 +2341,7 @@ class LLMSessionManager:
                 _lang = normalize_language_code(self.user_language, format='short')
                 final_prime_text += _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                 try:
-                    await self.pending_session.create_response(final_prime_text, skipped=True)
+                    await self.pending_session.prime_context(final_prime_text, skipped=True)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
                     # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
@@ -2604,14 +2601,14 @@ class LLMSessionManager:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
 
-                    # 文本模式：在发送用户输入前，将挂起的 agent 任务回调注入 LLM 上下文
+                    # 文本模式：在发送用户输入前，将挂起的 agent 任务回调通过
+                    # prompt_ephemeral 注入 — 指令不持久化，只保留 AI 回复。
                     if self.pending_agent_callbacks:
                         try:
                             ctx = self.drain_agent_callbacks_for_llm()
                             if ctx:
-                                await self.session.create_response(
+                                await self.session.prompt_ephemeral(
                                     _loc(AGENT_CALLBACK_NOTIFICATION, normalize_language_code(self.user_language, format='short')) + ctx,
-                                    skipped=False,
                                 )
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
@@ -2670,11 +2667,6 @@ class LLMSessionManager:
                                     # RNNoise可能返回空字节（缓冲中），跳过
                                     if len(processed_audio) == 0:
                                         return
-                                    
-                                    # 检查是否有待发送的静音重置事件（4秒静音触发）
-                                    if hasattr(self.session, '_silence_reset_pending') and self.session._silence_reset_pending:
-                                        self.session._silence_reset_pending = False
-                                        await self.session.clear_audio_buffer()
                                 except Exception as e:
                                     logger.error(f"💥 音频预处理失败: {e}")
                                     return
@@ -2786,12 +2778,39 @@ class LLMSessionManager:
     async def end_session(self, by_server=False, *, expected_session=None):  # 与Core API断开连接
         # Pre-check: no-side-effect guard before _init_renew_status which mutates
         # pending/prewarm state.  A stale callback must not nuke preparation state.
+        _inactive_early = False
         async with self.lock:
             if not self.is_active:
-                return
-            if expected_session is not None and expected_session is not self.session:
+                # Stale-session guard: 即使未激活，也要确认不是过期回调，
+                # 否则会误清理新 session 正在创建的 TTS 资源
+                if expected_session is not None and expected_session is not self.session:
+                    logger.info("⏭️ end_session: expected_session stale (inactive-early), skipping")
+                    return
+                # 即使会话未完全激活（如 start_session 失败），也要清理
+                # 可能残留的 TTS 重试状态，防止污染下一次会话
+                self._reset_tts_retry_state()
+                _inactive_early = True
+                # start_tts_if_needed 可能已启动 TTS 线程/handler，
+                # 但 is_active 尚未置 True 就失败了——快照引用以便释放锁后清理
+                _orphan_tts_handler = self.tts_handler_task
+                _orphan_tts_thread = self.tts_thread
+                _orphan_tts_rq = self.tts_request_queue
+                _orphan_tts_rsq = self.tts_response_queue
+            elif expected_session is not None and expected_session is not self.session:
                 logger.info("⏭️ end_session: expected_session stale (pre-check), skipping")
                 return
+            else:
+                # 尽早取消 TTS 延迟重试任务并清理错误码（持锁状态下），
+                # 防止 _init_renew_status 期间 respawn task 触发无效重试
+                self._reset_tts_retry_state()
+
+        if _inactive_early:
+            # start_tts_if_needed 可能已启动 TTS 但 is_active 未置 True（如 LLM 启动失败），
+            # 必须清理这些孤儿资源，否则线程/task 会泄漏
+            await self._teardown_tts_runtime(
+                _orphan_tts_handler, _orphan_tts_thread,
+                _orphan_tts_rq, _orphan_tts_rsq)
+            return
 
         await self._init_renew_status()
 
@@ -2845,41 +2864,18 @@ class LLMSessionManager:
                 if self.session is main_session_ref:
                     self.session = None
 
-        if tts_handler_task_ref and not tts_handler_task_ref.done():
-            tts_handler_task_ref.cancel()
-            try:
-                await asyncio.wait_for(tts_handler_task_ref, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-            if self.tts_handler_task is tts_handler_task_ref:
-                self.tts_handler_task = None
-            
-        if tts_thread_ref and tts_thread_ref.is_alive():
-            try:
-                tts_request_queue_ref.put((None, None))
-                tts_thread_ref.join(timeout=2.0)
-            except Exception as e:
-                logger.error(f"💥 关闭TTS线程时出错: {e}")
-            finally:
-                if self.tts_thread is tts_thread_ref:
-                    self.tts_thread = None
-                
-        # 清理TTS队列和缓存状态（使用快照的队列引用）
-        try:
-            while not tts_request_queue_ref.empty():
-                tts_request_queue_ref.get_nowait()
-        except: # noqa
-            pass
-        try:
-            while not tts_response_queue_ref.empty():
-                tts_response_queue_ref.get_nowait()
-        except: # noqa
-            pass
-        
-        # 重置TTS缓存状态
-        async with self.tts_cache_lock:
-            self.tts_ready = False
-            self.tts_pending_chunks.clear()
+        await self._teardown_tts_runtime(
+            tts_handler_task_ref, tts_thread_ref,
+            tts_request_queue_ref, tts_response_queue_ref)
+        # handler 可能在锁释放到 task 取消之间重新引入了过期错误码——
+        # 在活跃会话拆除路径（is_active 已置 False）补充一次清理。
+        # 但仅当 TTS 资源尚未被新会话替换时才重置，避免擦除新会话的状态。
+        tts_replaced_by_new_session = (
+            (self.tts_handler_task is not None and self.tts_handler_task is not tts_handler_task_ref) or
+            (self.tts_thread is not None and self.tts_thread is not tts_thread_ref)
+        )
+        if not tts_replaced_by_new_session:
+            self._reset_tts_retry_state()
         
         # 重置输入缓存状态
         async with self.input_cache_lock:
@@ -3046,10 +3042,41 @@ class LLMSessionManager:
                         async with self.tts_cache_lock:
                             self.tts_ready = ready_flag
                         if ready_flag:
+                            self._last_tts_error_code = ''
                             logger.info("✅ 收到TTS运行时就绪信号，开始刷新缓存文本")
                             await self._flush_tts_pending_chunks()
                         else:
-                            logger.warning("⚠️ 收到TTS未就绪信号，继续缓存文本等待恢复")
+                            # 复用 __error__ 分支记录的 code 判断是否重试
+                            _last_code = self._last_tts_error_code
+                            if _last_code in NO_RETRY_TTS_CODES:
+                                logger.warning(f"⚠️ TTS 未就绪且上次错误为 {_last_code}，跳过自动重试")
+                                # 取消可能仍在等待的延迟重试任务，避免绕过 no-retry 策略
+                                if self._tts_respawn_task and not self._tts_respawn_task.done():
+                                    self._tts_respawn_task.cancel()
+                                    self._tts_respawn_task = None
+                                # TTS 不会恢复，清空无用的缓存文本，避免白白占用内存
+                                async with self.tts_cache_lock:
+                                    self.tts_pending_chunks.clear()
+                            else:
+                                logger.warning("⚠️ 收到TTS未就绪信号，13秒后尝试重新拉起Worker")
+                                # 取消之前的延迟重试任务（如有）
+                                if self._tts_respawn_task and not self._tts_respawn_task.done():
+                                    self._tts_respawn_task.cancel()
+                                    self._tts_respawn_task = None
+                                # 捕获当前会话身份与 TTS 标志，防止跨会话的错误 respawn
+                                _expected_session = self.session
+                                _expected_use_tts = self.use_tts
+                                async def _delayed_respawn(_expected_session=_expected_session,
+                                                           _expected_use_tts=_expected_use_tts):
+                                    await asyncio.sleep(13)
+                                    if not self.is_active or self.tts_ready:
+                                        return
+                                    if self.session is not _expected_session or self.use_tts != _expected_use_tts:
+                                        logger.info("🔄 TTS 延迟重试：会话已变更，跳过 respawn")
+                                        return
+                                    logger.info("🔄 TTS 延迟重试：尝试重新拉起 Worker...")
+                                    self._respawn_tts_worker()
+                                self._tts_respawn_task = asyncio.ensure_future(_delayed_respawn())
                         continue
                     elif data[0] == "__reconnecting__":
                         logger.info("🌊 TTS 正在自动重连，发送呼吸感状态到前端")
@@ -3060,20 +3087,50 @@ class LLMSessionManager:
                         error_msg = data[1]
                         error_msg_text = str(error_msg)
                         logger.error(f"TTS Worker Error: {error_msg}")
-                        error_msg_lower = error_msg_text.lower()
-                        # 识别配额限制
-                        if '欠费' in error_msg_lower or 'standing' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_ARREARS"})
-                        elif 'quota' in error_msg_lower or 'time limit' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_QUOTA_TIME"})
-                        elif '429' in error_msg_lower or 'too many' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_RATE_LIMIT"})
-                        elif 'policy violation' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": error_msg_text}})
-                        elif '1008' in error_msg_lower:
-                            user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
+
+                        # 优先尝试从结构化 JSON 中提取明确的 code 字段
+                        _known_codes = {
+                            'API_ARREARS', 'API_QUOTA_TIME', 'API_RATE_LIMIT',
+                            'API_POLICY_VIOLATION', 'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
+                        }
+                        _parsed_code = None
+                        try:
+                            _parsed = json.loads(error_msg_text)
+                            if isinstance(_parsed, dict):
+                                _candidate = _parsed.get('code', '')
+                                if isinstance(_candidate, str) and _candidate in _known_codes:
+                                    _parsed_code = _candidate
+                        except (json.JSONDecodeError, TypeError):
+                            # JSON parsing may fail for free-form error strings from
+                            # tts.response.error events; this is expected and harmless —
+                            # the keyword-based fallback below will handle classification.
+                            # self._last_tts_error_code is only set when a valid code is parsed.
+                            pass
+
+                        if _parsed_code:
+                            user_msg = json.dumps({"code": _parsed_code, "details": {"msg": error_msg_text}})
+                            self._last_tts_error_code = _parsed_code
                         else:
-                            user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
+                            # 回退到关键词匹配
+                            error_msg_lower = error_msg_text.lower()
+                            if '欠费' in error_msg_lower or 'standing' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_ARREARS"})
+                                self._last_tts_error_code = 'API_ARREARS'
+                            elif 'quota' in error_msg_lower or 'time limit' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_QUOTA_TIME"})
+                                self._last_tts_error_code = 'API_QUOTA_TIME'
+                            elif '429' in error_msg_lower or 'too many' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_RATE_LIMIT"})
+                                self._last_tts_error_code = 'API_RATE_LIMIT'
+                            elif 'policy violation' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": error_msg_text}})
+                                self._last_tts_error_code = 'API_POLICY_VIOLATION'
+                            elif '1008' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
+                                self._last_tts_error_code = 'API_1008_FALLBACK'
+                            else:
+                                user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
+                                self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
                         self._fire_task(self.send_status(user_msg))
                         continue
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":

@@ -190,19 +190,20 @@ jobs:
             Write-Warning "Playwright Chromium install failed; will download on first run."
           }
 
-      - name: Set up Node.js for plugin frontend
+      - name: Set up Node.js for frontend builds
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: plugin/frontend/vue-project/package-lock.json
 
-      - name: Build plugin manager frontend
+      - name: Build all frontend projects
         shell: bash
         run: |
-          cd plugin/frontend/vue-project
+          cd frontend/plugin-manager
           npm ci
           npm run build-only
+          cd ../react-neko-chat
+          npm ci
+          npm run build
 
       # --- Build with Nuitka ---
       - name: Build with Nuitka (Unix)
@@ -232,10 +233,10 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=templates=templates"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
           # Plugin manager UI (vite dist; gitignored)
-          if [ -d "plugin/frontend/vue-project/dist" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/frontend/vue-project/dist=plugin/frontend/vue-project/dist"
+          if [ -d "frontend/plugin-manager/dist" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist"
           else
-            echo "[WARNING] plugin/frontend/vue-project/dist missing; /ui will be empty in bundle."
+            echo "[WARNING] frontend/plugin-manager/dist missing; /ui will be empty in bundle."
           fi
           if [ -d "plugin/plugins" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/plugins=plugin/plugins"
@@ -346,8 +347,8 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=assets=assets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=templates=templates
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/browser_use_prompts=data/browser_use_prompts
-          if not exist "plugin\frontend\vue-project\dist" echo [WARNING] plugin\frontend\vue-project\dist missing; /ui will be empty in bundle.
-          if exist "plugin\frontend\vue-project\dist" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/frontend/vue-project/dist=plugin/frontend/vue-project/dist
+          if not exist "frontend\plugin-manager\dist" echo [WARNING] frontend\plugin-manager\dist missing; /ui will be empty in bundle.
+          if exist "frontend\plugin-manager\dist" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist
           if exist "plugin\plugins" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/plugins=plugin/plugins
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=playwright_browsers=playwright_browsers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=static=static

@@ -97,45 +97,24 @@ normal_relay_probability = 0.1
 
 ## 使用教程
 
-### 0. 插件位置
+### 1. 启动方式
 
-```
-...\N.E.K.O\plugin\plugins\
-```
+启动顺序如下：
 
-### 1. 自动启动（推荐）
-
-**插件完全自动化，启动顺序如下：**
-
-1. 加载配置，初始化权限管理器
-2. 后台启动 `NapCat.Shell/launcher.bat`
-3. 等待 NapCat 初始化（约 5 秒）
-4. 初始化 QQ 客户端，连接 `ws://127.0.0.1:3001`
-5. 调用"启动自动回复"开始监听 QQ 消息
+1. 在插件管理面板手动启动 `qq_auto_reply`
+2. 插件初始化权限管理器和 QQ 客户端
+3. 插件自动在前台启动 NapCat
+4. 在NapCat的网络配置处设置`WS服务器`并把数据写入`plugin.toml`
+5. 调用“启动自动回复”开始监听 QQ 消息
 
 **注意事项：**
-- 首次使用需要登录 QQ，请使用"前台启动 NapCat"功能
-- 已登录后，插件会自动后台启动并连接
-- 插件关闭时会自动执行 `KillQQ.bat` 停止 NapCat
-PS1： 关闭用户插件需要等几秒，让 `KillQQ.bat` 运行完成 ，然后再关闭猫爪功能。
-PS2：注意注意！`KillQQ.bat` 会把所有的QQ进程关闭。
+- 登录成功后，确保 NapCat 的 OneBot 服务已启动，再启用自动回复
 
-### 2. 首次登录（仅首次需要）
-
-如果是第一次使用，需要先登录 QQ：
-
-```
-用户: "前台启动 NapCat"
-→ 直接运行 NapCat.Shell/launcher.bat，弹出窗口扫码登录 QQ
-```
-
-登录成功后，需要去NapCat设置页开启网络配置，最好还能配置一下自动登录以免每次都需要扫码。
-
-### 3. 管理信任用户
+### 2. 管理信任用户
 
 #### 添加用户
 
-对话栏输入"添加信任用户 "123455555","normal""
+对话栏输入"添加信任用户 \"123455555\",\"normal\""
 
 ```python
 # 添加管理员
@@ -164,11 +143,11 @@ await plugin.set_user_nickname(qq_number="123456789", nickname="小明")
 await plugin.set_user_nickname(qq_number="123456789", nickname="")
 ```
 
-### 4. 管理信任群聊
+### 3. 管理信任群聊
 
 #### 添加群聊
 
-对话栏输入"添加信任群聊 "123455555","normal""
+对话栏输入"添加信任群聊 \"123455555\",\"normal\""
 
 ```python
 # 添加信任群聊（响应 @）
@@ -184,7 +163,7 @@ await plugin.add_trusted_group(group_id="123456789", level="normal")
 await plugin.remove_trusted_group(group_id="985066274")
 ```
 
-### 5. 停止插件
+### 4. 停止插件
 
 ```python
 await plugin.stop_auto_reply()
@@ -293,8 +272,8 @@ QQAutoReplyPlugin
 
 ## 开发信息
 
-- **作者**：zhaijiu
-- **版本**：0.2.0
+- **作者**：ZhaiJiu
+- **版本**：0.3.0
 - **SDK 版本**：>=0.1.0,<0.3.0
 
 ## 许可证

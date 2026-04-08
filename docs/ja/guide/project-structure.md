@@ -49,6 +49,10 @@ N.E.K.O/
 ├── memory/                     # メモリ管理
 │   └── store/                  # メモリデータストレージ（SQLite）
 │
+├── frontend/                   # モダンフロントエンドプロジェクト
+│   ├── react-neko-chat/        # React チャットウィンドウ（ビルド先 → static/react/neko-chat/）
+│   └── plugin-manager/         # Vue プラグイン管理（ビルド先 → frontend/plugin-manager/dist/）
+│
 ├── plugin/                     # プラグインシステム
 │   ├── sdk/                    # プラグインSDK（ベースクラス、デコレーター）
 │   │   ├── base.py             # NekoPluginBase

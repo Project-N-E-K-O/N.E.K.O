@@ -10,6 +10,7 @@ Handles VRM model-related endpoints including:
 """
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
+from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
 
@@ -200,7 +202,7 @@ async def upload_vrm_animation(file: UploadFile = File(...)):
 
 
 @router.get('/models')
-def get_vrm_models():
+async def get_vrm_models():
     """获取VRM模型列表（不暴露绝对文件系统路径）"""
     try:
         config_mgr = get_config_manager()
@@ -251,6 +253,59 @@ def get_vrm_models():
                         "size": vrm_file.stat().st_size,
                         "location": "user"  
                     })
+
+        # 3. 搜索Steam创意工坊中的VRM文件
+        try:
+            workshop_items_result = await get_subscribed_workshop_items()
+            if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):
+                items = workshop_items_result.get('items', [])
+                for item in items:
+                    installed_folder = item.get('installedFolder')
+                    item_id = item.get('publishedFileId')
+                    if installed_folder and os.path.exists(installed_folder) and os.path.isdir(installed_folder) and item_id:
+                        # 检查安装目录下是否有.vrm文件
+                        for filename in os.listdir(installed_folder):
+                            if filename.lower().endswith('.vrm'):
+                                url = f"/workshop/{item_id}/{filename}"
+                                if url in seen_urls:
+                                    continue
+                                seen_urls.add(url)
+                                vrm_path = os.path.join(installed_folder, filename)
+                                models.append({
+                                    "name": Path(filename).stem,
+                                    "filename": filename,
+                                    "path": url,
+                                    "url": url,
+                                    "type": "vrm",
+                                    "size": os.path.getsize(vrm_path),
+                                    "location": "steam_workshop",
+                                    "source": "steam_workshop",
+                                    "item_id": str(item_id)
+                                })
+                        # 检查子目录
+                        for subdir in os.listdir(installed_folder):
+                            subdir_path = os.path.join(installed_folder, subdir)
+                            if os.path.isdir(subdir_path):
+                                for filename in os.listdir(subdir_path):
+                                    if filename.lower().endswith('.vrm'):
+                                        url = f"/workshop/{item_id}/{subdir}/{filename}"
+                                        if url in seen_urls:
+                                            continue
+                                        seen_urls.add(url)
+                                        vrm_path = os.path.join(subdir_path, filename)
+                                        models.append({
+                                            "name": Path(filename).stem,
+                                            "filename": filename,
+                                            "path": url,
+                                            "url": url,
+                                            "type": "vrm",
+                                            "size": os.path.getsize(vrm_path),
+                                            "location": "steam_workshop",
+                                            "source": "steam_workshop",
+                                            "item_id": str(item_id)
+                                        })
+        except Exception as e:
+            logger.error(f"获取创意工坊VRM模型时出错: {e}")
 
         return JSONResponse(content={
             "success": True,

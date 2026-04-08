@@ -2317,27 +2317,23 @@ body {
     margin-bottom: 6px;
 }
 
-/* 色调映射 & 待机动作下拉框样式 */
-#tonemapping-select,
-#idle-animation-select {
+/* 色调映射下拉框样式 */
+#tonemapping-select {
     color: #4f8cff !important;
     background: linear-gradient(135deg, rgba(240, 248, 255, 0.95), rgba(230, 245, 255, 0.95)) !important;
     border: 1px solid rgba(150, 232, 255, 0.5) !important;
 }
 
-#tonemapping-select option,
-#idle-animation-select option {
+#tonemapping-select option {
     color: #4f8cff;
     background-color: rgba(240, 248, 255, 0.98);
 }
 
-#tonemapping-select option:hover,
-#idle-animation-select option:hover {
+#tonemapping-select option:hover {
     background-color: rgba(150, 232, 255, 0.3);
 }
 
-#tonemapping-select option:checked,
-#idle-animation-select option:checked {
+#tonemapping-select option:checked {
     background-color: rgba(150, 232, 255, 0.6);
     color: #fff;
 }
@@ -3026,6 +3022,152 @@ body {
     background: linear-gradient(180deg, rgba(200, 255, 220, 0.65), rgba(180, 250, 200, 0.55));
     border: 1px solid rgba(100, 230, 150, 0.55);
     box-shadow: 0 4px 10px rgba(46, 204, 113, 0.12);
+}
+
+/* ===== 待机动作多选组件样式 ===== */
+.idle-animation-multiselect {
+    position: relative;
+    width: 100%;
+}
+
+.idle-animation-multiselect .multiselect-header {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-height: 36px;
+    transition: border-color 0.2s ease, transform 0.1s ease;
+    user-select: none;
+}
+
+.idle-animation-multiselect .multiselect-header::after {
+    content: '';
+    width: 10px;
+    height: 10px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(45deg);
+    margin-left: auto;
+    flex-shrink: 0;
+    opacity: 0.6;
+    transition: transform 0.2s ease;
+}
+
+.idle-animation-multiselect.active .multiselect-header::after {
+    transform: rotate(-135deg);
+}
+
+.idle-animation-multiselect .multiselect-options {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    display: none;
+    border-radius: 8px;
+    max-height: 200px;
+    overflow-y: auto;
+    z-index: 100;
+    scrollbar-width: thin;
+}
+
+.idle-animation-multiselect.active .multiselect-options {
+    display: block;
+}
+
+.idle-animation-multiselect.active.open-up .multiselect-options {
+    top: auto;
+    bottom: calc(100% + 4px);
+}
+
+.idle-animation-multiselect .multiselect-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: background 0.15s ease;
+    font-size: 13px;
+}
+
+.idle-animation-multiselect .multiselect-item:hover {
+    background: rgba(0, 0, 0, 0.05);
+}
+
+.idle-animation-multiselect .multiselect-item input[type="checkbox"] {
+    accent-color: currentColor;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+.idle-animation-multiselect .selected-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    line-height: 1.4;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* VRM 待机多选主题 */
+#vrm-idle-animation-multiselect .multiselect-header {
+    color: #4f8cff;
+    background: linear-gradient(135deg, rgba(240, 248, 255, 0.95), rgba(230, 245, 255, 0.95));
+    border: 1px solid rgba(150, 232, 255, 0.5);
+}
+
+#vrm-idle-animation-multiselect .multiselect-header:hover {
+    border-color: rgba(79, 140, 255, 0.6);
+}
+
+#vrm-idle-animation-multiselect .multiselect-options {
+    background: rgba(240, 248, 255, 0.98);
+    border: 1px solid rgba(150, 232, 255, 0.5);
+    box-shadow: 0 4px 12px rgba(64, 197, 241, 0.15);
+    scrollbar-color: #96e8ff #f0f8ff;
+}
+
+#vrm-idle-animation-multiselect .multiselect-item {
+    color: #4f8cff;
+}
+
+#vrm-idle-animation-multiselect .selected-tag {
+    background: rgba(150, 232, 255, 0.25);
+    color: #4f8cff;
+}
+
+/* MMD 待机多选主题 */
+#mmd-idle-animation-multiselect .multiselect-header {
+    color: #2ecc71;
+    background: linear-gradient(135deg, rgba(220, 255, 230, 0.95), rgba(200, 250, 215, 0.95));
+    border: 1px solid rgba(100, 230, 150, 0.5);
+}
+
+#mmd-idle-animation-multiselect .multiselect-header:hover {
+    border-color: rgba(46, 204, 113, 0.6);
+}
+
+#mmd-idle-animation-multiselect .multiselect-options {
+    background: rgba(220, 255, 230, 0.98);
+    border: 1px solid rgba(100, 230, 150, 0.5);
+    box-shadow: 0 4px 12px rgba(46, 204, 113, 0.15);
+    scrollbar-color: #7dcea0 #f0fff0;
+}
+
+#mmd-idle-animation-multiselect .multiselect-item {
+    color: #2ecc71;
+}
+
+#mmd-idle-animation-multiselect .selected-tag {
+    background: rgba(100, 230, 150, 0.25);
+    color: #2ecc71;
 }
 
 /* 隐藏已简化的辅助打光控件 */

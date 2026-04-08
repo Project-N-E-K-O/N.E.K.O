@@ -108,10 +108,10 @@ window.addEventListener('mmd-modules-ready', async () => {
     const subType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
     if (modelType !== 'live3d' || subType !== 'mmd') return;
 
-    const mmdPath = window.mmdModel;
+    let mmdPath = window.mmdModel;
     if (!mmdPath || mmdPath === 'undefined' || mmdPath === 'null' || mmdPath.trim() === '') {
-        console.warn('[MMD Init] MMD 模型路径为空，跳过自动加载');
-        return;
+        console.warn('[MMD Init] MMD 模型路径为空，使用默认模型');
+        mmdPath = '/static/mmd/Miku/Miku.pmx';
     }
 
     console.log('[MMD Init] 检测到 MMD 模式，自动初始化并加载:', mmdPath);
@@ -233,9 +233,11 @@ async function fetchMMDConfig() {
  * 路径转换：将模型路径转换为可访问的 URL
  */
 window._mmdConvertPath = function (modelPath, options = {}) {
-    const defaultPath = options.defaultPath || null;
+    const defaultPath = options.defaultPath || '/static/mmd/Miku/Miku.pmx';
 
-    if (!modelPath || typeof modelPath !== 'string' || modelPath.trim() === '') {
+    if (!modelPath || typeof modelPath !== 'string' || modelPath.trim() === '' ||
+        modelPath === 'undefined' || modelPath === 'null' || modelPath.includes('undefined')) {
+        console.warn('[MMD Path] 路径无效，使用默认路径:', modelPath);
         return defaultPath;
     }
 

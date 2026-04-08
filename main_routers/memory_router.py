@@ -131,6 +131,8 @@ def validate_catgirl_name(name: str, allow_dots: bool = False) -> tuple[bool, st
         return False, "名称不能包含路径分隔符或目录遍历字符"
     if result.code == "contains_dot":
         return False, "名称不能包含点号(.)"
+    if result.code == "unsafe_dot":
+        return False, "名称不能仅由点号组成或以点号结尾"
     if result.code == "reserved_device_name":
         return False, "名称不能使用 Windows 保留设备名"
     if result.code == "invalid_character":

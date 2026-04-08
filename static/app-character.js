@@ -689,6 +689,11 @@
                                 window.vrmManager.bottomLight.intensity = lighting.bottom ?? defaultLighting.bottom;
                             }
 
+                            // 应用描边粗细设置
+                            if (lighting.outlineWidthScale !== undefined && typeof applyVRMOutlineWidth === 'function') {
+                                applyVRMOutlineWidth(lighting.outlineWidthScale, window.vrmManager);
+                            }
+
                             // 强制渲染一次，确保光照立即生效
                             if (window.vrmManager.renderer && window.vrmManager.scene && window.vrmManager.camera) {
                                 window.vrmManager.renderer.render(window.vrmManager.scene, window.vrmManager.camera);
@@ -974,11 +979,14 @@
                     window.live2dManager = new window.Live2DManager();
                 }
 
+                if (!window.live2dManager) {
+                    console.error('[猫娘切换] Live2DManager 不可用，无法加载模型');
+                    throw new Error('Live2DManager unavailable');
+                }
+
                 // 初始化或重用 PIXI
-                if (window.live2dManager) {
-                    if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.renderer) {
-                        await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
-                    }
+                if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.renderer) {
+                    await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
                 }
 
                 // 加载新模型

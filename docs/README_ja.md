@@ -43,13 +43,13 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 <tr>
 <td align="center" width="25%">🎙️<br><b>オムニモーダル対話</b><br>リアルタイム音声 (Realtime API) + テキストチャット (ChatCompletion)、視覚理解対応</td>
 <td align="center" width="25%">🧠<br><b>三層記憶システム</b><br>事実記憶 / 反省記憶 / 人格記憶——彼女は本当にあなたを「覚えて」います</td>
-<td align="center" width="25%">🤖<br><b>エージェント能力</b><br>ブラウザ操作 (CUA)、PC操作、MCPツール呼び出し——彼女があなたの仕事を手伝います</td>
+<td align="center" width="25%">🤖<br><b>エージェント能力</b><br>ブラウザ操作 (CUA)、PC操作、OpenClaw A2A呼び出し——彼女があなたの仕事を手伝います</td>
 <td align="center" width="25%">🎭<br><b>マルチフォームAvatar</b><br>Live2D / VRM / MMD の3形態、モーションキャプチャとフルスクリーン追跡対応</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>プラグインエコシステム</b><br>完全なプラグインSDKでカスタム拡張が可能</td>
+<td align="center">🔌<br><b>プラグインエコシステム</b><br>完全なプラグインSDKとマーケットプレイスでカスタム拡張が可能</td>
 <td align="center">🌐<br><b>14以上のAIプロバイダー</b><br>OpenAI / Gemini / Qwen / DeepSeek等、無料モデルも即座に利用可能</td>
-<td align="center">💬<br><b>プロアクティブチャット</b><br>24/7環境認識：画面理解、SNSトレンド、個人フィード、ニュース——彼女から話しかけてきます</td>
+<td align="center">💬<br><b>プロアクティブチャット</b><br>24/7環境認識：画面理解、SNSトレンド、個人フィード、音楽やミーム——彼女から話しかけてきます</td>
 <td align="center">🏪<br><b>UGCワークショップ</b><br>Steam Workshop経由でカスタムキャラクター、モデル、ボイスパックをアップロード・共有</td>
 </tr>
 </table>
@@ -375,8 +375,6 @@ docker-compose up -d
 
 </details>
 
-**注：** 現在のDockerデプロイソリューションは [**HINS**](https://home.hinswu.top) により提供されています
-
 ### ソースコード開発
 
 <details>
@@ -384,23 +382,27 @@ docker-compose up -d
 
 > 完全な開発者ドキュメントは [project-neko.online](https://project-neko.online) をご覧ください
 
-**要件**：Python 3.11（他のバージョンはサポートされていません）、[uv](https://docs.astral.sh/uv/) パッケージマネージャー
+**要件**：Python 3.11（他のバージョンはサポートされていません）、[uv](https://docs.astral.sh/uv/) パッケージマネージャー、Node.js（>=20.19）
 
 ```bash
 # 1. プロジェクトをクローン
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
-# 2. 依存関係をインストール
+# 2. Python依存関係をインストール
 uv sync
 
-# 3. サービスを起動（最低限 main_server と memory_server が必要）
+# 3. フロントエンドプロジェクトをビルド（初回実行時またはフロントエンドコード変更後に必要）
+cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+cd frontend/plugin-manager && npm install && npm run build && cd ../..
+
+# 4. サービスを起動（最低限 main_server と memory_server が必要）
 uv run python memory_server.py
 uv run python main_server.py
 # オプション：Agentサービスを起動
 uv run python agent_server.py
 
-# 4. http://localhost:48911 にアクセスしてAPI Keyを設定し、使用開始
+# 5. http://localhost:48911 にアクセスしてAPI Keyを設定し、使用開始
 ```
 
 開発者はQQグループ 1022939659 への参加をお勧めします。
@@ -472,11 +474,13 @@ N.E.K.O/
 │   ├── facts/                   # 事実記憶
 │   ├── reflection/              # 反省記憶
 │   └── persona/                 # 人格記憶
+├── 📁 frontend/                 # 🖥️ モダンフロントエンドプロジェクト
+│   ├── react-neko-chat/         # React チャットウィンドウコンポーネント
+│   └── plugin-manager/          # Vue プラグイン管理ダッシュボード
 ├── 📁 plugin/                   # 🔌 プラグインシステム
 │   ├── sdk/                     # プラグインSDK
-│   ├── server/                  # プラグインサーバー
-│   └── frontend/                # プラグインフロントエンド
-├── 📁 static/                   # 🌐 フロントエンド静的リソース
+│   └── server/                  # プラグインサーバー
+├── 📁 static/                   # 🌐 フロントエンド静的リソース（ビルド成果物を含む）
 ├── 📁 templates/                # 📄 フロントエンドHTMLテンプレート（14ページ）
 ├── 📁 utils/                    # 🛠️ ユーティリティモジュール
 ├── main_server.py               # 🌐 メインサーバー

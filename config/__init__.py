@@ -13,7 +13,7 @@ from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_pr
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.7.3"
+APP_VERSION = "0.7.3.1"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -78,14 +78,14 @@ RESERVED_FIELD_SCHEMA = {
         "vrm": {
             "model_path": str,
             "animation": (str, dict, list, type(None)),
-            "idle_animation": str,
+            "idle_animation": (str, list, type(None)),
             "lighting": (dict, type(None)),
             "cursor_follow": (dict, type(None)),
         },
         "mmd": {
             "model_path": str,
             "animation": (str, dict, list, type(None)),
-            "idle_animation": str,
+            "idle_animation": (str, list, type(None)),
             "lighting": (dict, type(None)),
             "rendering": (dict, type(None)),
             "physics": (dict, type(None)),
@@ -282,13 +282,13 @@ DEFAULT_LANLAN_TEMPLATE = {
                 "vrm": {
                     "model_path": "",
                     "animation": None,
-                    "idle_animation": "",
+                    "idle_animation": [],
                     "lighting": None,
                 },
                 "mmd": {
                     "model_path": "",
                     "animation": None,
-                    "idle_animation": "",
+                    "idle_animation": [],
                 },
             },
         },
@@ -537,7 +537,7 @@ DEFAULT_VOICE_STORAGE = {}
 # 默认API配置（供 utils.api_config_loader 作为回退选项使用）
 DEFAULT_CORE_API_PROFILES = {
     'free': {
-        'CORE_URL': "wss://lanlan.tech/core",
+        'CORE_URL': "wss://api.lanlan.tech/core",
         'CORE_MODEL': "free-model",
         'CORE_API_KEY': "free-access",
         'IS_FREE_VERSION': True,
@@ -566,7 +566,7 @@ DEFAULT_CORE_API_PROFILES = {
 
 DEFAULT_ASSIST_API_PROFILES = {
     'free': {
-        'OPENROUTER_URL': "https://lanlan.tech/text/v1",
+        'OPENROUTER_URL': "https://api.lanlan.tech/text/v1",
         'CONVERSATION_MODEL' : "free-model" ,
         'SUMMARY_MODEL': "free-model",
         'CORRECTION_MODEL': "free-model",

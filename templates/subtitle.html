@@ -1,174 +1,108 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="subtitle.title">实时字幕</title>
-    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
+    <title>N.E.K.O. Subtitle</title>
+    <link rel="stylesheet" href="/static/css/index.css">
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
     <style>
-        body {
-            margin: 0;
-            padding: 0;
+        html, body {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
             background: transparent;
-            font-family: 'Microsoft YaHei', Arial, sans-serif;
             overflow: hidden;
-            height: 100vh;
-            width: 100vw;
         }
 
-        .subtitle-container {
-            position: fixed;
-            top: 20px;
-            left: 15%;
-            width: 65%;
-            background: rgba(0, 0, 0, 0.7);
-            border-radius: 10px;
-            padding: 15px 20px;
-            box-sizing: border-box;
-            backdrop-filter: blur(5px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            min-height: 60px;
+        #subtitle-container {
+            width: 100%; height: 100%;
             display: flex;
             align-items: center;
             justify-content: center;
+            padding: 4px 16px;
+            cursor: grab;
         }
 
-        .subtitle-text {
-            color: white;
-            font-size: 24px;
+        #subtitle-text {
+            background: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            padding: 6px 18px;
+            border-radius: 8px;
+            font-size: 1rem;
             line-height: 1.4;
             text-align: center;
-            overflow-wrap: break-word;
-            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+            max-width: 100%;
+            word-break: break-word;
+            backdrop-filter: blur(8px);
+            transition: opacity 0.3s ease;
             opacity: 0;
-            transition: opacity 0.3s ease-in-out;
+            pointer-events: none;
         }
 
-        .subtitle-text.show {
+        #subtitle-text.visible {
             opacity: 1;
         }
 
-        .connection-status {
-            position: fixed;
-            top: 25px;
-            left: 80%;
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 12px;
-            color: white;
-        }
-
-        .connected {
-            background: rgba(0, 255, 0, 0.7);
-        }
-
-        .disconnected {
-            background: rgba(255, 0, 0, 0.7);
+        [data-theme="dark"] #subtitle-text {
+            background: rgba(20, 20, 30, 0.85);
         }
     </style>
 </head>
 <body>
-    <div class="subtitle-container">
-        <div class="subtitle-text" id="subtitleText"></div>
+    <div id="subtitle-container">
+        <span id="subtitle-text"></span>
     </div>
-    <div class="connection-status disconnected" id="status" data-i18n="status.notConnected">未连接</div>
 
     <script>
-        class SubtitleClient {
-            constructor() {
-                this.ws = null;
-                this.subtitleElement = document.getElementById('subtitleText');
-                this.statusElement = document.getElementById('status');
-                this.currentText = '';
-                this.connect();
-            }
+        var subtitleText = document.getElementById('subtitle-text');
+        var container = document.getElementById('subtitle-container');
+        var hideTimer = null;
 
-            connect() {
-                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const wsUrl = `${protocol}//${window.location.host}/subtitle_ws`;
-
-                this.ws = new WebSocket(wsUrl);
-
-                this.ws.onopen = () => {
-                    console.log('字幕WebSocket连接已建立');
-                    this.updateStatus(window.t ? window.t('status.connected') : '已连接', true);
-                };
-
-                this.ws.onmessage = (event) => {
-                    try {
-                        const data = JSON.parse(event.data);
-                        console.log(data)
-                        this.handleMessage(data);
-                    } catch (error) {
-                        console.error('解析消息错误:', error);
-                    }
-                };
-
-                this.ws.onclose = () => {
-                    console.log('字幕WebSocket连接已关闭');
-                    this.updateStatus(window.t ? window.t('status.connectionClosed') : '连接断开', false);
-                    // 3秒后重连
-                    setTimeout(() => this.connect(), 3000);
-                };
-
-                this.ws.onerror = (error) => {
-                    console.error('字幕WebSocket错误:', error);
-                    this.updateStatus(window.t ? window.t('status.connectionError') : '连接错误', false);
-                };
-            }
-
-            handleMessage(data) {
-                if (data.type === 'subtitle') {
-                    this.displaySubtitle(data.text);
-                } else if (data.type === 'clear') {
-                    this.clearSubtitle();
+        // 监听转写消息和翻译消息
+        window.addEventListener('neko-ws-transcript', function(e) {
+            var data = e.detail;
+            if (data && data.transcript) {
+                subtitleText.textContent = data.transcript;
+                subtitleText.classList.add('visible');
+                if (hideTimer) clearTimeout(hideTimer);
+                // 翻译文本显示更久
+                var duration = data.translated ? 8000 : (data.is_final ? 3000 : 2500);
+                if (duration > 0) {
+                    hideTimer = setTimeout(function() {
+                        subtitleText.classList.remove('visible');
+                    }, duration);
                 }
             }
+        });
 
-            displaySubtitle(text) {
-                this.currentText = text;
-                this.subtitleElement.textContent = text;
-                this.subtitleElement.classList.add('show');
-            }
+        // JS 拖拽窗口
+        if (window.nekoSubtitle && window.nekoSubtitle.getBounds) {
+            var isDragging = false;
+            var ready = false;
+            var sx = 0, sy = 0, ox = 0, oy = 0;
 
-            clearSubtitle() {
-                this.subtitleElement.classList.remove('show');
-                setTimeout(() => {
-                    this.subtitleElement.textContent = '';
-                    this.currentText = '';
-                }, 300);
-            }
+            container.addEventListener('mousedown', function(e) {
+                isDragging = true; ready = false;
+                sx = e.screenX; sy = e.screenY;
+                window.nekoSubtitle.enableInteraction();
+                window.nekoSubtitle.getBounds().then(function(b) {
+                    if (b) { ox = b.x; oy = b.y; }
+                    ready = true;
+                });
+                container.style.cursor = 'grabbing';
+                e.preventDefault();
+            });
 
-            updateStatus(text, connected) {
-                this.statusElement.textContent = text;
-                this.statusElement.className = `connection-status ${connected ? 'connected' : 'disconnected'}`;
-            }
+            document.addEventListener('mousemove', function(e) {
+                if (!isDragging || !ready) return;
+                window.nekoSubtitle.setPosition(ox + e.screenX - sx, oy + e.screenY - sy);
+            });
+
+            document.addEventListener('mouseup', function() {
+                if (isDragging) container.style.cursor = 'grab';
+                isDragging = false; ready = false;
+            });
         }
-
-        // 初始化字幕客户端
-        const subtitleClient = new SubtitleClient();
-
-        // Electron白屏修复
-        (function() {
-            const fixWhiteScreen = () => {
-                if (document.body) {
-                    void document.body.offsetHeight;
-                    const currentOpacity = document.body.style.opacity || '1';
-                    document.body.style.opacity = '0.99';
-                    requestAnimationFrame(() => {
-                        document.body.style.opacity = currentOpacity;
-                    });
-                }
-            };
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', fixWhiteScreen);
-            } else {
-                fixWhiteScreen();
-            }
-            window.addEventListener('load', fixWhiteScreen);
-        })();
     </script>
 </body>
 </html>

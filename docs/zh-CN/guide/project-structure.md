@@ -49,6 +49,10 @@ N.E.K.O/
 ├── memory/                     # 记忆管理
 │   └── store/                  # 记忆数据存储（SQLite）
 │
+├── frontend/                   # 现代前端项目
+│   ├── react-neko-chat/        # React 聊天窗口组件（构建产物 → static/react/neko-chat/）
+│   └── plugin-manager/         # Vue 插件管理面板（构建产物 → frontend/plugin-manager/dist/）
+│
 ├── plugin/                     # 插件系统
 │   ├── sdk/                    # 插件 SDK（基类、装饰器）
 │   │   ├── base.py             # NekoPluginBase

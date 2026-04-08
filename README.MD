@@ -42,13 +42,13 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 <tr>
 <td align="center" width="25%">🎙️<br><b>全模态对话</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持视觉理解</td>
 <td align="center" width="25%">🧠<br><b>三层记忆系统</b><br>事实记忆 / 反思记忆 / 人格记忆，她真的会"记住"你</td>
-<td align="center" width="25%">🤖<br><b>Agent 智能体</b><br>浏览器操控 (CUA)、电脑操控、MCP工具调用，她能帮你干活</td>
+<td align="center" width="25%">🤖<br><b>Agent 智能体</b><br>浏览器操控 (CUA)、电脑操控、OpenClaw A2A调用，她能帮你干活</td>
 <td align="center" width="25%">🎭<br><b>多形态 Avatar</b><br>Live2D / VRM / MMD 三种形态，支持动作捕捉与全屏追踪</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>插件生态</b><br>完整的插件 SDK，支持自定义扩展功能</td>
+<td align="center">🔌<br><b>插件生态</b><br>完整的插件 SDK 与商城，支持自定义扩展功能</td>
 <td align="center">🌐<br><b>14+ AI 服务商</b><br>OpenAI / Gemini / Qwen / DeepSeek 等，含免费模型开箱即用</td>
-<td align="center">💬<br><b>主动对话</b><br>24/7环境感知：屏幕理解、社交媒体热搜、个人动态、新闻推送，她会主动找你聊天</td>
+<td align="center">💬<br><b>主动对话</b><br>24/7环境感知：屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天</td>
 <td align="center">🏪<br><b>UGC 创意工坊</b><br>Steam 创意工坊上传分享自定义角色、模型、语音包</td>
 </tr>
 </table>
@@ -89,7 +89,6 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 <details>
 <summary>点击展开 Docker 部署指南</summary>
 
-#### 部署教程也可以查看 [***HINS's*** ***Blog***](https://blog.hinswu.top/archives/project-n.e.k.o.-dockerbu-shu-zhi-dao)
 #### 部署方式一：Docker Compose（推荐）
 
 <details>
@@ -441,8 +440,6 @@ curl -k https://localhost:48912
 
 </details>
 
-**注**：当前 Docker 部署方案由 [**HINS**](https://home.hinswu.top) 提供
-
 ### 源码开发
 
 <details>
@@ -450,23 +447,27 @@ curl -k https://localhost:48912
 
 > 完整的开发者文档请访问 [project-neko.online](https://project-neko.online)
 
-**环境要求**：Python 3.11（不支持其他版本）、[uv](https://docs.astral.sh/uv/) 包管理器
+**环境要求**：Python 3.11（不支持其他版本）、[uv](https://docs.astral.sh/uv/) 包管理器、Node.js（>=20.19）
 
 ```bash
 # 1. 克隆项目
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
-# 2. 安装依赖
+# 2. 安装 Python 依赖
 uv sync
 
-# 3. 启动服务（至少需要 main_server 和 memory_server）
+# 3. 构建前端项目（首次运行或前端代码变更后需要）
+cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+cd frontend/plugin-manager && npm install && npm run build && cd ../..
+
+# 4. 启动服务（至少需要 main_server 和 memory_server）
 uv run python memory_server.py
 uv run python main_server.py
 # 可选：启动 Agent 服务
 uv run python agent_server.py
 
-# 4. 访问 http://localhost:48911 配置 API Key 并开始使用
+# 5. 访问 http://localhost:48911 配置 API Key 并开始使用
 ```
 
 开发者建议加入企鹅群 1022939659 交流。
@@ -538,11 +539,13 @@ N.E.K.O/
 │   ├── facts/                   # 事实记忆
 │   ├── reflection/              # 反思记忆
 │   └── persona/                 # 人格记忆
+├── 📁 frontend/                 # 🖥️ 现代前端项目
+│   ├── react-neko-chat/         # React 聊天窗口组件
+│   └── plugin-manager/          # Vue 插件管理面板
 ├── 📁 plugin/                   # 🔌 插件系统
 │   ├── sdk/                     # 插件 SDK
-│   ├── server/                  # 插件服务端
-│   └── frontend/                # 插件前端
-├── 📁 static/                   # 🌐 前端静态资源
+│   └── server/                  # 插件服务端
+├── 📁 static/                   # 🌐 前端静态资源（含构建产物）
 ├── 📁 templates/                # 📄 前端HTML模板（14个页面）
 ├── 📁 utils/                    # 🛠️ 工具模块
 ├── main_server.py               # 🌐 主服务器
