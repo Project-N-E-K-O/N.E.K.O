@@ -505,11 +505,15 @@
     async function inlineImageSourceToDataUrl(source) {
         if (!source) throw new Error('Image source missing.');
         if (/^data:/i.test(source)) return source;
+        var controller = new AbortController();
+        var timeout = setTimeout(function () { controller.abort(); }, 5000);
         try {
-            var response = await fetch(source, { mode: 'cors' });
+            var response = await fetch(source, { mode: 'cors', signal: controller.signal });
+            clearTimeout(timeout);
             if (!response.ok) throw new Error('Image fetch failed: HTTP ' + response.status);
             return await blobToDataUrl(await response.blob());
         } catch (error) {
+            clearTimeout(timeout);
             // Fall back to direct URL (may still work cross-origin if CORS-allowed)
             return source;
         }
