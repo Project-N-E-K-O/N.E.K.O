@@ -17,6 +17,7 @@ _WINDOWS_RUN_VALUE_NAME = APP_NAME
 _MAC_LAUNCH_AGENT_LABEL = "com.project-neko.autostart"
 _MAC_LAUNCH_AGENT_FILENAME = "com.project-neko.autostart.plist"
 _LINUX_AUTOSTART_FILENAME = "project-neko-autostart.desktop"
+_MAC_LAUNCHCTL_FALLBACK_PATH = Path("/bin/launchctl")
 _DEFAULT_POSIX_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 _DESKTOP_ENTRY_EXEC_FIELD_CODES = frozenset("fFuUdDnNickvm")
 _DESKTOP_ENTRY_EXEC_RESERVED_CHARS = frozenset((
@@ -47,6 +48,7 @@ _PASSTHROUGH_ENV_KEYS = (
     "TMPDIR",
     "UV_CACHE_DIR",
 )
+_MAC_LAUNCHCTL_EXECUTABLE: str | None = None
 
 
 def _get_project_root() -> Path:
@@ -289,9 +291,35 @@ def _get_macos_launchctl_service_target() -> str:
     return f"{_get_macos_launchctl_domain()}/{_MAC_LAUNCH_AGENT_LABEL}"
 
 
+def _is_executable_file(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def _get_macos_launchctl_executable() -> str:
+    global _MAC_LAUNCHCTL_EXECUTABLE
+
+    if _MAC_LAUNCHCTL_EXECUTABLE:
+        return _MAC_LAUNCHCTL_EXECUTABLE
+
+    if _is_executable_file(_MAC_LAUNCHCTL_FALLBACK_PATH):
+        _MAC_LAUNCHCTL_EXECUTABLE = str(_MAC_LAUNCHCTL_FALLBACK_PATH)
+        return _MAC_LAUNCHCTL_EXECUTABLE
+
+    resolved = shutil.which("launchctl")
+    if resolved:
+        resolved_path = Path(resolved).expanduser()
+        if not resolved_path.is_absolute():
+            resolved_path = resolved_path.resolve(strict=False)
+        if _is_executable_file(resolved_path):
+            _MAC_LAUNCHCTL_EXECUTABLE = str(resolved_path)
+            return _MAC_LAUNCHCTL_EXECUTABLE
+
+    raise RuntimeError("Unable to locate a trusted launchctl executable")
+
+
 def _run_launchctl_command(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["launchctl", *args],
+        [_get_macos_launchctl_executable(), *args],
         capture_output=True,
         text=True,
         check=False,

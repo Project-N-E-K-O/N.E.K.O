@@ -29,6 +29,44 @@ else:
     # 运行在正常 Python 环境
     bundle_dir = os.path.dirname(os.path.abspath(__file__))
 
+
+def _get_project_venv_python(project_dir: str) -> str | None:
+    if sys.platform == 'win32':
+        candidate = os.path.join(project_dir, '.venv', 'Scripts', 'python.exe')
+    else:
+        candidate = os.path.join(project_dir, '.venv', 'bin', 'python')
+
+    return candidate if os.path.exists(candidate) else None
+
+
+def _maybe_reexec_into_project_venv(project_dir: str) -> None:
+    """Prefer the repo-local virtualenv when launching from source.
+
+    Users often invoke ``python launcher.py`` with the system interpreter.
+    When that interpreter differs from the project's managed ``.venv``,
+    imports fail even though the dependency is already installed locally.
+    """
+    if getattr(sys, 'frozen', False):
+        return
+
+    current_executable = os.path.abspath(sys.executable or "")
+    if not current_executable:
+        return
+
+    candidate = _get_project_venv_python(project_dir)
+    if not candidate:
+        return
+
+    target_executable = os.path.abspath(candidate)
+    if current_executable == target_executable:
+        return
+
+    print(f"[Launcher] 当前解释器不是项目虚拟环境，正在切换到: {candidate}")
+    os.execv(target_executable, [target_executable] + sys.argv)
+
+
+_maybe_reexec_into_project_venv(bundle_dir)
+
 sys.path.insert(0, bundle_dir)
 os.chdir(bundle_dir)
 
@@ -44,6 +82,7 @@ import json
 import logging
 import uuid
 import importlib
+import multiprocessing
 from datetime import datetime, timezone
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
@@ -57,6 +96,24 @@ from utils.port_utils import (
     is_port_in_excluded_range,
     set_port_probe_reuse,
 )
+
+
+def _configure_multiprocessing_executable(project_dir: str) -> None:
+    """Force macOS/Windows spawn children to reuse the project virtualenv."""
+    if getattr(sys, 'frozen', False):
+        return
+
+    candidate = _get_project_venv_python(project_dir)
+    if not candidate:
+        return
+
+    try:
+        multiprocessing.set_executable(os.path.abspath(candidate))
+    except Exception as exc:
+        print(f"[Launcher] Warning: failed to pin multiprocessing executable: {exc}", flush=True)
+
+
+_configure_multiprocessing_executable(bundle_dir)
 
 # 本次 launcher 启动的唯一标识
 LAUNCH_ID = uuid.uuid4().hex
