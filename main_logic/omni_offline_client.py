@@ -557,31 +557,121 @@ class OmniOfflineClient:
         """Check if there are pending images waiting to be sent."""
         return len(self._pending_images) > 0
     
+    # ------------------------------------------------------------------
+    # LLM message injection channels
+    #
+    # There are three distinct channels for injecting content into the
+    # LLM context.  Each has different persistence and triggering
+    # semantics.  Callers should pick the right one:
+    #
+    #   prime_context(text, skipped)
+    #       Session-start context priming.  Appends *text* to the system
+    #       prompt (position 0 in _conversation_history).  Used during
+    #       hot-swap to inject incremental conversation cache and task
+    #       summaries into a freshly created session.  The text becomes
+    #       part of the permanent system prompt.
+    #       Typical caller: core._perform_final_swap_sequence()
+    #
+    #   create_response(text, skipped)
+    #       Mid-conversation persistent message.  Appends a HumanMessage
+    #       to _conversation_history so the instruction and its reply
+    #       both persist across turns.  Mirrors the OpenAI Realtime API's
+    #       conversation.item.create + response.create pattern.
+    #       No active callers at present; kept as a stable interface.
+    #
+    #   prompt_ephemeral(instruction)
+    #       Fire-and-forget instruction.  The instruction is sent to the
+    #       LLM together with the conversation history but is NOT saved;
+    #       only the AI's response (AIMessage) is persisted.  Used for
+    #       agent task notifications, greetings, and other proactive
+    #       messages where the instruction is a stage direction that
+    #       should not pollute long-term context.
+    #       Typical callers: core.trigger_agent_callbacks(),
+    #                        core.trigger_greeting()
+    # ------------------------------------------------------------------
+
+    async def prime_context(self, text: str, skipped: bool = False) -> None:
+        """Append context to the system prompt at session start.
+
+        Called during hot-swap to inject incremental conversation cache
+        and/or task summaries into a freshly created session.  The *text*
+        is concatenated to the existing SystemMessage at position 0 —
+        format naturally continues the ``role | text`` lines already
+        present in the initial prompt, followed by ``======`` delimiters.
+
+        This method MUST only be called before any user interaction on the
+        session (i.e. the conversation history contains only the initial
+        SystemMessage from ``connect()``).
+
+        Args:
+            text: Context to append (incremental cache + summary/ready).
+            skipped: If True, the next LLM response on this session will
+                     be silently discarded (used for warmup priming).
+        """
+        if skipped:
+            self._skip_until_next_response = True
+
+        if not text or not text.strip():
+            return
+
+        if self._conversation_history and isinstance(self._conversation_history[0], SystemMessage):
+            self._conversation_history[0] = SystemMessage(
+                content=self._conversation_history[0].content + text
+            )
+        else:
+            # Defensive: should never happen — connect() always sets [0].
+            self._conversation_history.insert(0, SystemMessage(content=text))
+
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
+        """Inject a persistent message and trigger an LLM response.
+
+        Appends *instructions* as a HumanMessage to the conversation
+        history.  Both the instruction and the LLM's reply persist across
+        turns.  This mirrors the OpenAI Realtime API's
+        ``conversation.item.create`` (role=user) + ``response.create``
+        pattern.
+
+        Unlike ``prime_context`` (system-prompt level, session start only)
+        and ``prompt_ephemeral`` (instruction discarded after response),
+        messages injected here become permanent conversation history.
+
+        No active callers at present; kept as a stable interface for
+        future mid-conversation injection needs.
+
+        Args:
+            instructions: Text to inject as a HumanMessage.
+            skipped: If True, mark the next response to be silently
+                     discarded.
         """
-        Process a system message or instruction.
-        For compatibility with OmniRealtimeClient interface.
-        """
-        # Extract actual instruction if it starts with "SYSTEM_MESSAGE | "
-        if instructions.startswith("SYSTEM_MESSAGE | "):
-            instructions = instructions[17:]  # Remove prefix
-        
-        # Add as system message using langchain format
-        if instructions.strip():
-            self._conversation_history.append(SystemMessage(content=instructions))
+        if skipped:
+            self._skip_until_next_response = True
+
+        if instructions and instructions.strip():
+            self._conversation_history.append(HumanMessage(content=instructions))
     
-    async def stream_proactive(self, instruction: str) -> bool:
-        """Generate and stream a proactive AI response driven by a system instruction.
+    async def prompt_ephemeral(self, instruction: str) -> bool:
+        """Send a fire-and-forget instruction to the LLM and stream the response.
 
-        The *instruction* is expected to be pre-formatted by the caller using the
-        ========...======== convention and is injected as a temporary HumanMessage.
-        It is **not** persisted to _conversation_history.  Only the AI's
-        natural-language response (AIMessage) is kept in history.
+        The *instruction* (typically wrapped in ``======...======`` delimiters)
+        is appended as a temporary HumanMessage for this single LLM call
+        but is **not** persisted to ``_conversation_history``.  Only the
+        AI's natural-language response (AIMessage) is kept in history.
 
-        Calls on_proactive_done() when finished — a lightweight callback that only
-        flushes TTS and sends turn_end to the frontend, WITHOUT triggering hot-swap
-        or analyze_request logic.  Falls back to on_response_done() if
-        on_proactive_done is not set.
+        This is the correct channel for agent task notifications, greeting
+        nudges, and any scenario where the AI should respond to a stage
+        direction that must not pollute long-term context.
+
+        Unlike ``prime_context`` (appends to system prompt, session start)
+        and ``create_response`` (persistent HumanMessage), the instruction
+        here is truly ephemeral — it exists only for the duration of this
+        single LLM inference call.
+
+        Calls ``on_proactive_done()`` when finished — a lightweight
+        callback that only flushes TTS and sends ``turn_end`` to the
+        frontend, WITHOUT triggering hot-swap or ``analyze_request``
+        logic.  Falls back to ``on_response_done()`` if
+        ``on_proactive_done`` is not set.
+
         Returns True if any text was generated, False if aborted or empty.
         """
         if not instruction or not instruction.strip():
@@ -625,10 +715,10 @@ class OmniOfflineClient:
                             master_match = self._match_name_prefix(prefix_buffer, self.master_name)
                             lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
                             if master_match:
-                                logger.info(f"OmniOfflineClient.stream_proactive: 剥离主人名前缀 '{prefix_buffer[:master_match]}'")
+                                logger.info(f"OmniOfflineClient.prompt_ephemeral: 剥离主人名前缀 '{prefix_buffer[:master_match]}'")
                                 emit_content = prefix_buffer[master_match:]
                             elif lanlan_match:
-                                logger.info(f"OmniOfflineClient.stream_proactive: 剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
+                                logger.info(f"OmniOfflineClient.prompt_ephemeral: 剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
                                 emit_content = prefix_buffer[lanlan_match:]
                             else:
                                 emit_content = prefix_buffer
@@ -648,10 +738,10 @@ class OmniOfflineClient:
                 master_match = self._match_name_prefix(prefix_buffer, self.master_name)
                 lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
                 if master_match:
-                    logger.info(f"OmniOfflineClient.stream_proactive: 流结束时剥离主人名前缀")
+                    logger.info(f"OmniOfflineClient.prompt_ephemeral: 流结束时剥离主人名前缀")
                     flush_text = prefix_buffer[master_match:]
                 elif lanlan_match:
-                    logger.info(f"OmniOfflineClient.stream_proactive: 流结束时剥离角色名前缀")
+                    logger.info(f"OmniOfflineClient.prompt_ephemeral: 流结束时剥离角色名前缀")
                     flush_text = prefix_buffer[lanlan_match:]
                 else:
                     flush_text = prefix_buffer
@@ -661,7 +751,7 @@ class OmniOfflineClient:
                         await self.on_text_delta(flush_text, is_first_chunk)
                     is_first_chunk = False
         except Exception as e:
-            error_msg = f"OmniOfflineClient.stream_proactive error: {e}"
+            error_msg = f"OmniOfflineClient.prompt_ephemeral error: {e}"
             logger.error(error_msg)
             if self.on_status_message:
                 await self.on_status_message(json.dumps({"code": "PROACTIVE_GEN_FAILED", "details": {"error_type": type(e).__name__, "error": str(e)}}))

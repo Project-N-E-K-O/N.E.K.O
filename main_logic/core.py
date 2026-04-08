@@ -1907,107 +1907,6 @@ class LLMSessionManager:
         except Exception:
             pass
 
-    async def deliver_text_proactively(
-        self,
-        text: str,
-        min_idle_secs: float = 30.0,
-    ) -> bool:
-        """Directly deliver text as an AI proactive message without LLM generation.
-
-        Used when an agent task finishes and the user hasn't spoken recently.
-        Mirrors the delivery block in system_router.proactive_chat (post-LLM step).
-
-        Returns True if the message was delivered, False if skipped/aborted.
-        """
-        if not text or not text.strip():
-            return False
-
-        # Skip if user was active recently
-        if self.last_user_activity_time is not None:
-            time_since = time.time() - self.last_user_activity_time
-            if time_since < min_idle_secs:
-                logger.info(
-                    "[%s] deliver_text_proactively skipped: user active %.1fs ago",
-                    self.lanlan_name, time_since,
-                )
-                return False
-
-        # Skip if voice session is currently running (don't interrupt)
-        if self.is_active and isinstance(self.session, OmniRealtimeClient):
-            logger.info(
-                "[%s] deliver_text_proactively skipped: voice session active",
-                self.lanlan_name,
-            )
-            return False
-
-        # Need a live WebSocket
-        if not self.websocket:
-            return False
-        try:
-            if (
-                hasattr(self.websocket, 'client_state')
-                and self.websocket.client_state != self.websocket.client_state.CONNECTED
-            ):
-                return False
-        except Exception:
-            pass
-
-        # Ensure a text session exists (create if absent)
-        if not self.session or not hasattr(self.session, '_conversation_history'):
-            try:
-                await self.start_session(self.websocket, new=False, input_mode='text')
-            except Exception as e:
-                logger.warning("[%s] deliver_text_proactively: failed to start session: %s", self.lanlan_name, e)
-                return False
-            if not self.session or not hasattr(self.session, '_conversation_history'):
-                return False
-
-        # Record in conversation history so the LLM remembers it said this
-        from utils.llm_client import AIMessage as _AIMsg
-        self.session._conversation_history.append(_AIMsg(content=text))
-
-        # Fresh speech_id for TTS / lipsync
-        async with self.lock:
-            self.current_speech_id = str(uuid4())
-
-        output_start_time = time.time()
-
-        # Deliver in small chunks to allow mid-delivery interruption and smooth TTS
-        chunks = [text[i:i + 10] for i in range(0, len(text), 10)]
-        for i, chunk in enumerate(chunks):
-            # Abort if the user started speaking mid-delivery
-            if (
-                self.last_user_activity_time is not None
-                and self.last_user_activity_time > output_start_time
-            ):
-                logger.info("[%s] deliver_text_proactively: user active mid-delivery, aborting", self.lanlan_name)
-                await self.handle_new_message()
-                return False
-            await self.handle_text_data(chunk, is_first_chunk=(i == 0))
-            await asyncio.sleep(0.15)
-
-        # TTS end signal
-        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            try:
-                self.tts_request_queue.put((None, None))
-            except Exception:
-                pass
-
-        # Turn-end (mirrors proactive_chat — does NOT trigger hot-swap)
-        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-        try:
-            if (
-                self.websocket
-                and hasattr(self.websocket, 'client_state')
-                and self.websocket.client_state == self.websocket.client_state.CONNECTED
-            ):
-                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
-        except Exception:
-            pass
-
-        logger.info("[%s] Proactive task result delivered: %.40s…", self.lanlan_name, text)
-        return True
-
     # ------------------------------------------------------------------
     # Voice-chat proactive audio nudge (dedicated path)
     # ------------------------------------------------------------------
@@ -2015,10 +1914,9 @@ class LLMSessionManager:
     async def trigger_voice_proactive_nudge(self) -> bool:
         """Inject a pre-recorded audio prompt to nudge the voice model into speaking.
 
-        This is the **only** caller of ``OmniRealtimeClient.stream_proactive``
+        This is the **only** caller of ``OmniRealtimeClient.prompt_ephemeral``
         for the voice-chat proactive feature.  It is completely independent of
-        ``deliver_text_proactively`` (which handles text delivery from agents)
-        and ``trigger_agent_callbacks`` (which handles agent task results).
+        ``trigger_agent_callbacks`` (which handles agent task results).
 
         Returns True if the audio was fully injected, False if skipped.
         """
@@ -2028,7 +1926,7 @@ class LLMSessionManager:
             logger.info("[%s] voice proactive nudge skipped: hot-swap imminent", self.lanlan_name)
             return False
         _lang = normalize_language_code(self.user_language, format='short') or 'zh'
-        delivered = await self.session.stream_proactive(language=_lang)
+        delivered = await self.session.prompt_ephemeral(language=_lang)
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)
         else:
@@ -2159,10 +2057,10 @@ class LLMSessionManager:
         """Proactively deliver pending agent task results via LLM rephrase.
 
         Design:
-        - Text mode (OmniOfflineClient): calls session.stream_proactive() so the
+        - Text mode (OmniOfflineClient): calls session.prompt_ephemeral() so the
           LLM generates a styled response in the character's voice.
-        - Voice mode (OmniRealtimeClient): calls session.create_response() to
-          trigger a proactive AI turn.
+        - Voice mode (OmniRealtimeClient): defers to hot-swap — callbacks are
+          kept in pending_extra_replies for injection via prime_context().
         - On failure or when the session is busy, restores callbacks so the next
           handle_response_complete() call will retry automatically.
         - Re-entrance guard prevents concurrent deliveries.
@@ -2220,13 +2118,13 @@ class LLMSessionManager:
                 async with self._proactive_write_lock:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
-                    logger.debug("[%s] trigger_agent_callbacks: text session ready, calling stream_proactive", self.lanlan_name)
+                    logger.debug("[%s] trigger_agent_callbacks: text session ready, calling prompt_ephemeral", self.lanlan_name)
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
                         self.session.update_max_response_length(self._get_text_guard_max_length())
                     self.pending_agent_callbacks.clear()
-                    delivered = await self.session.stream_proactive(instruction)
-                    logger.debug("[%s] trigger_agent_callbacks: text session stream_proactive delivered=%s", self.lanlan_name, delivered)
+                    delivered = await self.session.prompt_ephemeral(instruction)
+                    logger.debug("[%s] trigger_agent_callbacks: text session prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
                     if delivered:
                         self.pending_extra_replies.clear()
                     else:
@@ -2247,7 +2145,7 @@ class LLMSessionManager:
                         if hasattr(self.session, 'update_max_response_length'):
                             self.session.update_max_response_length(self._get_text_guard_max_length())
                         self.pending_agent_callbacks.clear()
-                        delivered = await self.session.stream_proactive(instruction)
+                        delivered = await self.session.prompt_ephemeral(instruction)
                         if delivered:
                             self.pending_extra_replies.clear()
                         else:
@@ -2332,15 +2230,16 @@ class LLMSessionManager:
         async with self._proactive_write_lock:
             async with self.lock:
                 self.current_speech_id = str(uuid4())
-            delivered = await self.session.stream_proactive(instruction)
+            delivered = await self.session.prompt_ephemeral(instruction)
             logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
 
-        Text mode: drained before the next stream_text call and injected as
-        system context, OR proactively via trigger_agent_callbacks().
-        Voice mode: also appended to pending_extra_replies for hot-swap injection.
+        Text mode: drained before the next stream_text call and injected via
+        prompt_ephemeral(), OR proactively via trigger_agent_callbacks().
+        Voice mode: also appended to pending_extra_replies for hot-swap
+        injection via prime_context().
         """
         try:
             self.pending_agent_callbacks.append(callback)
@@ -2428,7 +2327,7 @@ class LLMSessionManager:
                 # 清空队列，避免重复注入
                 self.pending_extra_replies.clear()
                 try:
-                    await self.pending_session.create_response(final_prime_text, skipped=False)
+                    await self.pending_session.prime_context(final_prime_text, skipped=False)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
                     # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
@@ -2440,7 +2339,7 @@ class LLMSessionManager:
                 _lang = normalize_language_code(self.user_language, format='short')
                 final_prime_text += _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                 try:
-                    await self.pending_session.create_response(final_prime_text, skipped=True)
+                    await self.pending_session.prime_context(final_prime_text, skipped=True)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
                     # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
@@ -2700,14 +2599,14 @@ class LLMSessionManager:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
 
-                    # 文本模式：在发送用户输入前，将挂起的 agent 任务回调注入 LLM 上下文
+                    # 文本模式：在发送用户输入前，将挂起的 agent 任务回调通过
+                    # prompt_ephemeral 注入 — 指令不持久化，只保留 AI 回复。
                     if self.pending_agent_callbacks:
                         try:
                             ctx = self.drain_agent_callbacks_for_llm()
                             if ctx:
-                                await self.session.create_response(
+                                await self.session.prompt_ephemeral(
                                     _loc(AGENT_CALLBACK_NOTIFICATION, normalize_language_code(self.user_language, format='short')) + ctx,
-                                    skipped=False,
                                 )
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
