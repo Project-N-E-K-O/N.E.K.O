@@ -623,7 +623,13 @@ async def get_system_autostart_status():
         logger.exception("Failed to read autostart status: %s", exc)
         return JSONResponse(
             status_code=500,
-            content={"ok": False, "error": str(exc), "error_code": "status_failed"},
+            content={
+                "ok": False,
+                "supported": False,
+                "enabled": False,
+                "error": str(exc),
+                "error_code": "status_failed",
+            },
         )
 
 

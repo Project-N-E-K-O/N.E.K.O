@@ -95,6 +95,63 @@ def test_get_launch_command_falls_back_to_current_interpreter_without_venv_or_uv
 
 
 @pytest.mark.unit
+def test_get_current_executable_path_preserves_symlink_path(tmp_path, monkeypatch):
+    target = tmp_path / "python-base"
+    executable = tmp_path / "python"
+    target.write_text("", encoding="utf-8")
+
+    try:
+        executable.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink unsupported in this environment: {exc}")
+
+    monkeypatch.setattr(autostart_service.sys, "executable", str(executable))
+
+    result = autostart_service._get_current_executable_path()
+
+    assert result == executable
+    assert result != executable.resolve()
+
+
+@pytest.mark.unit
+def test_quote_posix_command_uses_desktop_entry_exec_escaping():
+    quoted = autostart_service._quote_posix_command([
+        "/usr/bin/neko",
+        "hello world",
+        'quote"tick`dollar$slash\\',
+        "50% done",
+        "%f",
+        "plain",
+    ])
+
+    expected = (
+        '/usr/bin/neko '
+        '"hello world" '
+        + '"quote\\"tick\\`dollar\\$slash'
+        + ("\\" * 4)
+        + '" '
+        '"50%% done" '
+        '%f '
+        'plain'
+    )
+
+    assert quoted == expected
+
+
+@pytest.mark.unit
+def test_quote_posix_command_preserves_placeholders_and_escapes_literal_percent():
+    quoted = autostart_service._quote_posix_command([
+        "/usr/bin/neko",
+        "%u",
+        "100%",
+        "already%%escaped",
+        "prefix%x",
+    ])
+
+    assert quoted == "/usr/bin/neko %u 100%% already%%escaped prefix%%x"
+
+
+@pytest.mark.unit
 def test_enable_autostart_writes_linux_desktop_entry(tmp_path, monkeypatch):
     _patch_home(monkeypatch, tmp_path)
     monkeypatch.setattr(autostart_service.sys, "platform", "linux")

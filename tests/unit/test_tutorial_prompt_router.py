@@ -439,6 +439,27 @@ def test_autostart_status_route_returns_service_status(tutorial_prompt_client, m
 
 
 @pytest.mark.unit
+def test_autostart_status_route_returns_explicit_unsupported_contract_on_failure(
+    tutorial_prompt_client,
+    monkeypatch,
+):
+    client, _config = tutorial_prompt_client
+
+    def _raise_status_failure():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(system_router_module, "get_autostart_status", _raise_status_failure)
+
+    response = client.get("/api/system/autostart/status")
+
+    assert response.status_code == 500
+    assert response.json()["ok"] is False
+    assert response.json()["supported"] is False
+    assert response.json()["enabled"] is False
+    assert response.json()["error_code"] == "status_failed"
+
+
+@pytest.mark.unit
 def test_autostart_enable_route_returns_service_result(tutorial_prompt_client, monkeypatch):
     client, _config = tutorial_prompt_client
     monkeypatch.setattr(system_router_module, "enable_autostart", lambda: {

@@ -3,6 +3,7 @@
 
     const HEARTBEAT_INTERVAL_MS = 15000;
     const FAST_HEARTBEAT_DELAY_MS = 1200;
+    const HOME_TUTORIAL_START_WAIT_TIMEOUT_MS = 15000;
     const HOME_TUTORIAL_STORAGE_KEY_FALLBACK = 'neko_tutorial_home';
 
     const promptShared = window.nekoPromptShared;
@@ -278,21 +279,22 @@
         const chatTurnsDelta = state.pendingChatTurns;
         const voiceSessionsDelta = state.pendingVoiceSessions;
 
-        try {
-            const payload = {
-                foreground_ms_delta: foregroundDelta,
-                home_interactions_delta: homeInteractionsDelta,
-                chat_turns_delta: chatTurnsDelta,
-                voice_sessions_delta: voiceSessionsDelta,
-                home_tutorial_completed: state.homeTutorialCompleted,
-                manual_home_tutorial_viewed: state.manualHomeTutorialViewed,
-            };
+        const payload = {
+            foreground_ms_delta: foregroundDelta,
+            home_interactions_delta: homeInteractionsDelta,
+            chat_turns_delta: chatTurnsDelta,
+            voice_sessions_delta: voiceSessionsDelta,
+            home_tutorial_completed: state.homeTutorialCompleted,
+            manual_home_tutorial_viewed: state.manualHomeTutorialViewed,
+        };
+        let data = null;
 
+        try {
             state.pendingWeakHomeInteractions = 0;
             state.pendingChatTurns = 0;
             state.pendingVoiceSessions = 0;
 
-            const data = await requestJson('/api/tutorial-prompt/heartbeat', {
+            data = await requestJson('/api/tutorial-prompt/heartbeat', {
                 method: 'POST',
                 json: payload,
             });
@@ -308,15 +310,20 @@
                 reason: data && data.prompt_reason,
                 token: shortPromptToken(data && data.prompt_token),
             });
-            if (data && data.should_prompt) {
-                await maybeShowPrompt(data.prompt_token);
-            }
         } catch (error) {
             state.pendingForegroundMs += foregroundDelta;
             state.pendingWeakHomeInteractions += homeInteractionsDelta;
             state.pendingChatTurns += chatTurnsDelta;
             state.pendingVoiceSessions += voiceSessionsDelta;
             console.warn('[TutorialPrompt] heartbeat failed:', error);
+        }
+
+        try {
+            if (data && data.should_prompt) {
+                await maybeShowPrompt(data.prompt_token);
+            }
+        } catch (error) {
+            console.warn('[TutorialPrompt] failed to render tutorial prompt:', error);
         } finally {
             state.requestInFlight = false;
             if (state.pendingHeartbeatAfterFlight) {
@@ -406,7 +413,7 @@
     }
 
     async function handlePromptAcceptance(promptToken) {
-        const startWaiter = createHomeTutorialStartWaiter(5000);
+        const startWaiter = createHomeTutorialStartWaiter(HOME_TUTORIAL_START_WAIT_TIMEOUT_MS);
         state.promptDrivenTutorialToken = promptToken;
         try {
             await startHomeTutorialFromPrompt();
@@ -418,7 +425,6 @@
             });
         } catch (error) {
             startWaiter.cancel();
-            state.promptDrivenTutorialToken = null;
             state.tutorialRunToken = null;
             const message = error && error.message ? error.message : String(error);
             console.warn('[TutorialPrompt] failed to start tutorial:', error);
@@ -435,6 +441,7 @@
                     3500
                 );
             }
+            state.promptDrivenTutorialToken = null;
         }
     }
 

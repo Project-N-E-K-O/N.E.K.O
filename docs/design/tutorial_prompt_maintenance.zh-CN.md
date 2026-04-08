@@ -238,8 +238,8 @@
 
 ## 兼容说明
 
-当前新逻辑主文件已经迁到 `utils/tutorial_prompt_state.py`。
+`utils/tutorial_prompt_state.py` 负责新手引导提示相关状态与生命周期；`utils/autostart_prompt_state.py` 仍然是开机自启动提示的在用模块，不是“仅用于兼容”的壳文件。
 
-旧文件 `utils/autostart_prompt_state.py` 仅作为兼容层保留，避免历史引用立即失效。新代码请优先引用：
+当前测试与运行流程仍然直接依赖 `utils/autostart_prompt_state.py`：例如 `tests/e2e/test_home_prompt_flow.py` 会导入并写入自启动提示状态，`tests/unit/test_tutorial_prompt_router.py` 会同时校验 tutorial/autostart 两套状态模块，运行时 `main_routers/system_router.py` 也分别从 `utils/autostart_prompt_state.py` 和 `utils/tutorial_prompt_state.py` 暴露对应接口。
 
-- `utils.tutorial_prompt_state`
+因此，维护时应继续保持 autostart 相关逻辑与 `utils/tutorial_prompt_state.py` 分离，不要直接把 `utils/autostart_prompt_state.py` 合并进 `utils/tutorial_prompt_state.py`。只有在显式迁移所有调用方、测试和路由之后，才适合重新评估是否合并。

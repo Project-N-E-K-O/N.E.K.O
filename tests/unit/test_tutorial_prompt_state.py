@@ -745,6 +745,23 @@ def test_autostart_state_file_does_not_pollute_tutorial_state(tmp_path):
 
 
 @pytest.mark.unit
+def test_corrupted_legacy_autostart_state_list_is_ignored_for_tutorial_prompt(tmp_path):
+    config = DummyConfig(tmp_path)
+    legacy_state_path = config.config_dir / "autostart_prompt.json"
+    legacy_state_path.write_text(json.dumps(["bad", "state"]), encoding="utf-8")
+
+    response = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=9_000,
+    )
+
+    assert response["should_prompt"] is True
+    assert response["prompt_reason"] == "first_open"
+    assert response["state"]["shown_count"] == 0
+
+
+@pytest.mark.unit
 def test_legacy_tutorial_state_does_not_mark_autostart_as_enabled(tmp_path):
     config = DummyConfig(tmp_path)
     legacy_state_path = config.config_dir / "autostart_prompt.json"

@@ -221,7 +221,7 @@
             let settled = false;
             const dismissValue = Object.prototype.hasOwnProperty.call(modalConfig, 'dismissValue')
                 ? modalConfig.dismissValue
-                : (modalConfig.type === 'prompt' || modalConfig.type === 'decision' ? null : false);
+                : (modalConfig.type === 'prompt' ? null : false);
 
             // 创建遮罩层
             const overlay = document.createElement('div');
@@ -345,6 +345,13 @@
                 }, 200);
             }
 
+            function dismissIfAllowed() {
+                if (dismissValue === false) {
+                    return;
+                }
+                finish(dismissValue);
+            }
+
             // 根据类型创建按钮
             if (modalConfig.type === 'alert') {
                 const okBtn = document.createElement('button');
@@ -432,7 +439,7 @@
                         input.setCustomValidity('');
                         finish(input.value);
                     } else if (e.key === 'Escape' && modalConfig.closeOnEscape !== false) {
-                        finish(dismissValue);
+                        dismissIfAllowed();
                     }
                 });
             } else if (modalConfig.type === 'decision') {
@@ -465,7 +472,7 @@
             if (modalConfig.closeOnClickOutside !== false) {
                 overlay.addEventListener('click', (e) => {
                     if (e.target === overlay) {
-                        finish(dismissValue);
+                        dismissIfAllowed();
                     }
                 });
             }
@@ -476,7 +483,7 @@
                     return;
                 }
                 if (e.key === 'Escape') {
-                    finish(dismissValue);
+                    dismissIfAllowed();
                 }
             };
             document.addEventListener('keydown', escHandler);

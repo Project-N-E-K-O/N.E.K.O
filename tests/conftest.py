@@ -56,6 +56,7 @@ from tests.utils.llm_judger import LLMJudger
 logger = logging.getLogger(__name__)
 
 SYSTEM_CHROME_PATH = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+_RUNTIME_TEST_PORTS: dict[str, int] = {}
 
 # Map camelCase keys in api_keys.json to UPPER_SNAKE_CASE env vars expected by ConfigManager
 KEY_MAPPING = {
@@ -108,6 +109,37 @@ def _set_runtime_test_port(port_name: str, port_value: int) -> None:
     setattr(config_module, port_name, port_value)
 
 
+def _resolve_runtime_test_port(port_name: str) -> int:
+    env_name = f"NEKO_{port_name}"
+    raw_value = os.environ.get(env_name)
+    if raw_value:
+        try:
+            return int(raw_value)
+        except ValueError:
+            logger.warning("Ignoring invalid %s=%r", env_name, raw_value)
+    return _find_free_local_port()
+
+
+def _initialize_runtime_test_ports() -> None:
+    if _RUNTIME_TEST_PORTS:
+        for port_name, port_value in _RUNTIME_TEST_PORTS.items():
+            _set_runtime_test_port(port_name, port_value)
+        return
+
+    for port_name in ("MEMORY_SERVER_PORT", "MAIN_SERVER_PORT"):
+        port_value = _resolve_runtime_test_port(port_name)
+        _RUNTIME_TEST_PORTS[port_name] = port_value
+        _set_runtime_test_port(port_name, port_value)
+
+
+def _get_runtime_test_port(port_name: str) -> int:
+    _initialize_runtime_test_ports()
+    return _RUNTIME_TEST_PORTS[port_name]
+
+
+_initialize_runtime_test_ports()
+
+
 @pytest.fixture(scope="session")
 def browser_context_args(browser_context_args):
     """
@@ -120,7 +152,7 @@ def browser_context_args(browser_context_args):
     }
 
 @pytest.fixture(scope="session")
-def browser_type_launch_args(browser_type_launch_args):
+def browser_type_launch_args(browser_type_launch_args, browser_name):
     launch_args = {
         **browser_type_launch_args,
         "args": [
@@ -128,7 +160,7 @@ def browser_type_launch_args(browser_type_launch_args):
             "--use-fake-device-for-media-stream",
         ]
     }
-    if SYSTEM_CHROME_PATH.exists():
+    if browser_name == "chromium" and SYSTEM_CHROME_PATH.exists():
         launch_args["executable_path"] = str(SYSTEM_CHROME_PATH)
     return launch_args
 
@@ -266,8 +298,7 @@ def mock_memory_server():
     from fastapi import FastAPI
     from fastapi.responses import PlainTextResponse
 
-    memory_port = _find_free_local_port()
-    _set_runtime_test_port("MEMORY_SERVER_PORT", memory_port)
+    memory_port = _get_runtime_test_port("MEMORY_SERVER_PORT")
 
     app = FastAPI()
 
@@ -308,8 +339,7 @@ def running_server(clean_user_data_dir, mock_memory_server):
     Waits for port to be ready.
     Depends on clean_user_data_dir to ensure config is patched BEFORE import.
     """
-    test_port = _find_free_local_port()
-    _set_runtime_test_port("MAIN_SERVER_PORT", test_port)
+    test_port = _get_runtime_test_port("MAIN_SERVER_PORT")
 
     from main_server import app
 

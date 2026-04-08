@@ -187,6 +187,9 @@ def load_tutorial_prompt_runtime_config(config_manager=None) -> dict[str, int]:
 
 
 def _looks_like_tutorial_prompt_state(raw_state: dict[str, Any]) -> bool:
+    if not isinstance(raw_state, dict):
+        return False
+
     prompt_kind = _clean_str(raw_state.get("prompt_kind"), limit=64).lower()
     if prompt_kind:
         return prompt_kind == TUTORIAL_PROMPT_STATE_KIND

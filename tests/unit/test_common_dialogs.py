@@ -164,11 +164,28 @@ class FakeElement {{
 const document = {{
   head: new FakeElement('head'),
   body: new FakeElement('body'),
+  _listeners: new Map(),
   createElement(tagName) {{
     return new FakeElement(tagName);
   }},
-  addEventListener() {{}},
-  removeEventListener() {{}},
+  addEventListener(type, handler) {{
+    const handlers = this._listeners.get(type) || [];
+    handlers.push(handler);
+    this._listeners.set(type, handlers);
+  }},
+  removeEventListener(type, handler) {{
+    const handlers = this._listeners.get(type) || [];
+    const index = handlers.indexOf(handler);
+    if (index >= 0) {{
+      handlers.splice(index, 1);
+    }}
+  }},
+  dispatchEvent(event) {{
+    const handlers = this._listeners.get(event.type) || [];
+    for (const handler of [...handlers]) {{
+      handler.call(this, event);
+    }}
+  }},
   querySelectorAll(selector) {{
     const root = {{
       children: [this.head, this.body],
@@ -257,6 +274,58 @@ runScenario()
         )
 
     return json.loads(result.stdout)
+
+
+@pytest.mark.unit
+def test_show_decision_prompt_blocks_implicit_dismiss_by_default():
+    result = _run_common_dialogs_node_scenario(
+        """
+    const state = {
+      resolved: [],
+      overlayCountAfterOutside: null,
+      overlayCountAfterEscape: null,
+    };
+
+    window.showDecisionPrompt({
+      title: 'Implicit Dismiss Guard',
+      message: 'pick one',
+      buttons: [
+        { value: 'start-now', text: 'Start', variant: 'primary' },
+        { value: 'later', text: 'Later', variant: 'secondary' },
+      ],
+    }).then((value) => {
+      state.resolved.push(value);
+    });
+
+    await wait(10);
+    const overlay = document.querySelectorAll('.modal-overlay')[0];
+
+    overlay.dispatchEvent({ type: 'click', target: overlay });
+    await wait(10);
+    state.overlayCountAfterOutside = overlayCount();
+
+    document.dispatchEvent({ type: 'keydown', key: 'Escape' });
+    await wait(10);
+    state.overlayCountAfterEscape = overlayCount();
+
+    assert.strictEqual(overlayCount(), 1);
+    assert.deepStrictEqual(state.resolved, []);
+
+    overlay.querySelectorAll('.modal-btn')[0].onclick();
+    await wait(250);
+
+    assert.strictEqual(overlayCount(), 0);
+    assert.deepStrictEqual(state.resolved, ['start-now']);
+
+    return state;
+        """
+    )
+
+    assert result == {
+        "resolved": ["start-now"],
+        "overlayCountAfterOutside": 1,
+        "overlayCountAfterEscape": 1,
+    }
 
 
 @pytest.mark.unit
