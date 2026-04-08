@@ -237,7 +237,7 @@ class DirectTaskExecutor:
                     break
                 pid = p.get("id", "unknown")
                 try:
-                    desc = str(p.get("description", ""))
+                    desc = str(p.get("description", "") or "").strip()
                     request_params: dict = {
                         "model": model,
                         "messages": [
@@ -894,7 +894,7 @@ class DirectTaskExecutor:
                         correction_hint = f"plugin_id is required when has_task/can_execute are true. Available plugins: {list(valid_entries_map.keys())}"
                     elif d_pid not in valid_entries_map:
                         correction_hint = f"plugin_id '{d_pid}' does not exist. Available plugins: {list(valid_entries_map.keys())}"
-                    elif not d_eid:
+                    elif not d_eid and valid_entries_map.get(d_pid):
                         correction_hint = (
                             f"entry_id is required for plugin '{d_pid}' when has_task/can_execute are true. "
                             f"Available entries: {valid_entries_map.get(d_pid, [])}"
@@ -928,7 +928,7 @@ class DirectTaskExecutor:
                 final_has = decision.get("has_task", False)
                 final_can = decision.get("can_execute", False)
                 if final_has and final_can:
-                    if not final_eid:
+                    if not final_eid and valid_entries_map.get(final_pid):
                         logger.warning(
                             "[UserPlugin Assessment] Final check: entry_id missing while has_task/can_execute=true (plugin_id=%s), forcing can_execute=false",
                             final_pid,
@@ -936,6 +936,10 @@ class DirectTaskExecutor:
                         final_can = False
                         decision["can_execute"] = False
                         decision["reason"] = "entry_id missing"
+                    elif not final_eid:
+                        # Plugin has no declared entries — fall back to default 'run'
+                        final_eid = "run"
+                        decision["entry_id"] = "run"
                     elif valid_entries_map and final_pid not in valid_entries_map:
                         logger.warning("[UserPlugin Assessment] Final check: plugin_id '%s' still invalid after retry, forcing can_execute=false", final_pid)
                         final_can = False

@@ -970,6 +970,8 @@ def _parse_single_plugin_config(
                 base_config=conf,
                 config_path=toml_path,
             )
+            # Refresh pdata from post-overlay config so new fields (passive, keywords, etc.) pick up overrides
+            pdata = conf.get("plugin") or pdata
     except Exception as e:
         logger.warning(
             "Plugin {}: failed to apply user config profile overlay: {}. Using base config only.",
