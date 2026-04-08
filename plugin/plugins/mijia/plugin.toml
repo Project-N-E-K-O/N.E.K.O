@@ -2,6 +2,8 @@
 id = "mijia"
 name = "米家智能家居"
 description = "控制米家设备，让AI伙伴帮你开关灯、调节空调等"
+short_description = "Control Xiaomi/Mijia smart home devices: lights, AC, sensors, scenes."
+keywords = ["米家", "(?i)mijia", "小米", "(?i)xiaomi", "智能家居", "(?i)smart.?home", "开灯", "关灯", "空调", "设备", "(?i)device", "灯", "(?i)light", "开关"]
 version = "1.0.0"
 entry = "plugin.plugins.mijia:MijiaPlugin"
 

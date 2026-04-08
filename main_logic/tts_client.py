@@ -192,7 +192,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     async def async_worker():
         """异步TTS worker主循环"""
         if free_mode:
-            tts_url = _adjust_free_tts_url("wss://lanlan.tech/tts")
+            tts_url = _adjust_free_tts_url("wss://api.lanlan.tech/tts")
         else:
             tts_url = "wss://api.stepfun.com/v1/realtime/audio?model=step-tts-2"
         ws = None
