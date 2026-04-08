@@ -731,6 +731,121 @@ body.react-chat-adapter-active #chat-container {
     pointer-events: auto;
 }
 
+/* ===== React Chat Window Resize Edges ===== */
+.react-chat-resize-edge {
+    position: absolute;
+    z-index: 5;
+    pointer-events: auto;
+}
+
+.react-chat-resize-n {
+    top: -3px;
+    left: 8px;
+    right: 8px;
+    height: 6px;
+    cursor: n-resize;
+}
+
+.react-chat-resize-s {
+    bottom: -3px;
+    left: 8px;
+    right: 8px;
+    height: 6px;
+    cursor: s-resize;
+}
+
+.react-chat-resize-w {
+    top: 8px;
+    bottom: 8px;
+    left: -3px;
+    width: 6px;
+    cursor: w-resize;
+}
+
+.react-chat-resize-e {
+    top: 8px;
+    bottom: 8px;
+    right: -3px;
+    width: 6px;
+    cursor: e-resize;
+}
+
+.react-chat-resize-nw {
+    top: -3px;
+    left: -3px;
+    width: 12px;
+    height: 12px;
+    cursor: nw-resize;
+}
+
+.react-chat-resize-ne {
+    top: -3px;
+    right: -3px;
+    width: 12px;
+    height: 12px;
+    cursor: ne-resize;
+}
+
+.react-chat-resize-sw {
+    bottom: -3px;
+    left: -3px;
+    width: 12px;
+    height: 12px;
+    cursor: sw-resize;
+}
+
+.react-chat-resize-se {
+    bottom: -3px;
+    right: -3px;
+    width: 12px;
+    height: 12px;
+    cursor: se-resize;
+    /* 视觉指示器 */
+    background-image: linear-gradient(135deg,
+        transparent 0 35%, rgba(111, 129, 158, 0.3) 35% 43%,
+        transparent 43% 52%, rgba(111, 129, 158, 0.45) 52% 60%,
+        transparent 60% 70%, rgba(111, 129, 158, 0.6) 70% 78%,
+        transparent 78% 100%);
+    border-radius: 0 0 10px 0;
+}
+
+body.react-chat-window-resizing {
+    user-select: none;
+}
+
+/* ===== React Chat Window Dark Mode ===== */
+[data-theme="dark"] #react-chat-window-shell {
+    background: rgba(30, 30, 42, 0.96);
+    box-shadow: 0 30px 100px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] #react-chat-window-shell.is-dragging {
+    box-shadow: 0 36px 110px rgba(0, 0, 0, 0.6);
+}
+
+[data-theme="dark"] #reactChatWindowMinimizeButton,
+[data-theme="dark"] #reactChatWindowCloseButton {
+    color: #aab0bc;
+}
+
+[data-theme="dark"] #reactChatWindowMinimizeButton:hover,
+[data-theme="dark"] #reactChatWindowCloseButton:hover {
+    background: rgba(200, 210, 230, 0.12);
+    color: #dde0e8;
+}
+
+[data-theme="dark"] #react-chat-window-root {
+    background: #1c1c2e;
+}
+
+[data-theme="dark"] .react-chat-resize-se {
+    background-image: linear-gradient(135deg,
+        transparent 0 35%, rgba(68, 183, 254, 0.35) 35% 43%,
+        transparent 43% 52%, rgba(68, 183, 254, 0.5) 52% 60%,
+        transparent 60% 70%, rgba(68, 183, 254, 0.7) 70% 78%,
+        transparent 78% 100%);
+}
+
 body.react-chat-window-open {
     overflow: hidden;
 }

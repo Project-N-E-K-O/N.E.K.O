@@ -1,3 +1,4 @@
+import { useRef, useEffect, useCallback } from 'react';
 import MessageBubble from './MessageBubble';
 import { type ChatMessage, type MessageAction } from './message-schema';
 
@@ -31,16 +32,65 @@ export default function MessageList({
   failedStatusLabel = '发送失败',
   onAction,
 }: MessageListProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const shouldScrollRef = useRef(true);
+
+  const isStreaming = messages.some(m => m.status === 'streaming');
+
+  const scrollToBottom = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || !shouldScrollRef.current) return;
+
+    if (isStreaming) {
+      container.scrollTop = container.scrollHeight;
+    } else {
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
+  }, [isStreaming]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const observer = new ResizeObserver(() => {
+      if (shouldScrollRef.current) {
+        container.scrollTop = container.scrollHeight;
+      }
+    });
+
+    for (const child of container.children) {
+      observer.observe(child);
+    }
+
+    return () => observer.disconnect();
+  }, [messages.length]);
+
+  const handleScroll = () => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const isNearBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+    shouldScrollRef.current = isNearBottom;
+  };
+
   if (messages.length === 0) {
     return (
-      <div className="message-list" aria-label={ariaLabel}>
+      <div className="message-list" ref={containerRef} aria-label={ariaLabel}>
         <div className="message-empty-state">{emptyText}</div>
       </div>
     );
   }
 
   return (
-    <div className="message-list" aria-label={ariaLabel} data-message-list-kind="static">
+    <div className="message-list" ref={containerRef} aria-label={ariaLabel} onScroll={handleScroll}>
       {messages.map((message, index) => (
         <MessageBubble
           key={message.id}
