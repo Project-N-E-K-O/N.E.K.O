@@ -17,6 +17,8 @@ logger = get_module_logger(__name__, "Music")
 # ---------------------------------------------------------------------------
 def _patch_pyncm_async() -> None:
     import os, sys, tempfile
+    if sys.version_info >= (3, 12):
+        return
     for p in sys.path:
         target = os.path.join(p, "pyncm_async", "apis", "cloud.py")
         if not os.path.isfile(target):
@@ -27,7 +29,7 @@ def _patch_pyncm_async() -> None:
             if 'objectKey.replace("/", "%2F")' in code:
                 if not os.access(target, os.W_OK):
                     logger.error("[Music] pyncm_async cloud.py is read-only, cannot patch: %s", target)
-                    break
+                    return
                 code = code.replace(
                     'objectKey.replace("/", "%2F")',
                     "objectKey.replace('/', '%2F')",
@@ -46,9 +48,10 @@ def _patch_pyncm_async() -> None:
                         logger.debug("[Music] Failed to remove temp file %s: %s", tmp_path, cleanup_exc)
                     raise
                 logger.info("[Music] Patched pyncm_async cloud.py for Python <3.12 compat")
-            break
+            return
         except Exception as exc:
             logger.error("[Music] Failed to patch pyncm_async: %s", exc)
+            return
 
 _patch_pyncm_async()
 
