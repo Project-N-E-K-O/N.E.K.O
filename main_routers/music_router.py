@@ -124,10 +124,9 @@ async def play_netease_music(song_id: str):
     网易云 VIP 音乐智能跳转路由：
     利用后端 MUSIC_U Cookie 获取真实高音质/鉴权直链，通过 307 重定向至前端播放。
     """
-    try:
-        song_id_int = int(song_id)
-    except (ValueError, TypeError):
+    if not (song_id.isascii() and song_id.isdecimal()):
         return JSONResponse(content={"success": False, "error": "invalid song_id"}, status_code=400)
+    song_id_int = int(song_id)
 
     if not _PYNCM_AVAILABLE:
         fallback_url = f"https://music.163.com/song/media/outer/url?id={song_id_int}.mp3"
