@@ -1,160 +1,167 @@
 <template>
   <div class="plugin-list">
-    <el-card>
-      <template #header>
-        <div class="card-header">
-          <span>{{ $t('plugins.title') }}</span>
-          <div class="header-actions">
-            <el-button
-              :type="showMetrics ? 'success' : 'default'"
-              :icon="DataAnalysis"
-              @click="toggleMetrics"
-            >
-              {{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}
-            </el-button>
-            <el-button
-              type="warning"
-              :icon="RefreshRight"
-              :loading="reloadingAll"
-              :disabled="runningPlugins.length === 0"
-              @click="handleReloadAll"
-            >
-              {{ $t('plugins.reloadAll') }}
-            </el-button>
-            <el-button type="primary" :icon="Refresh" @click="handleRefresh" :loading="loading">
-              {{ $t('common.refresh') }}
-            </el-button>
-          </div>
-        </div>
-
-        <div class="filter-bar" @mouseenter="showFilter" @mouseleave="scheduleHideFilter">
-          <Transition name="filter-fade" mode="out-in">
-            <div v-if="filterVisible" key="controls" class="filter-controls">
-              <el-input
-                v-model="filterText"
-                clearable
-                class="filter-input"
-                :placeholder="$t('plugins.filterPlaceholder')"
-              />
-              <el-switch
-                v-model="useRegex"
-                class="filter-switch"
-                active-text="Regex"
-                inactive-text="Text"
-              />
-              <el-radio-group v-model="filterMode" size="small" class="filter-mode">
-                <el-radio-button label="whitelist">{{ $t('plugins.filterWhitelist') }}</el-radio-button>
-                <el-radio-button label="blacklist">{{ $t('plugins.filterBlacklist') }}</el-radio-button>
-              </el-radio-group>
-              <span v-if="regexError" class="filter-error">{{ $t('plugins.invalidRegex') }}</span>
+    <el-tabs v-model="activeWorkbenchTab" class="workbench-tabs">
+      <el-tab-pane :label="$t('plugins.title')" name="plugins">
+        <el-card>
+          <template #header>
+            <div class="card-header">
+              <span>{{ $t('plugins.title') }}</span>
+              <div class="header-actions">
+                <el-button text @click="openPackageTab">包管理</el-button>
+                <el-button
+                  :type="showMetrics ? 'success' : 'default'"
+                  :icon="DataAnalysis"
+                  @click="toggleMetrics"
+                >
+                  {{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}
+                </el-button>
+                <el-button
+                  type="warning"
+                  :icon="RefreshRight"
+                  :loading="reloadingAll"
+                  :disabled="runningPlugins.length === 0"
+                  @click="handleReloadAll"
+                >
+                  {{ $t('plugins.reloadAll') }}
+                </el-button>
+                <el-button type="primary" :icon="Refresh" @click="handleRefresh" :loading="loading">
+                  {{ $t('common.refresh') }}
+                </el-button>
+              </div>
             </div>
-            <span v-else key="placeholder" class="filter-placeholder">{{ $t('plugins.hoverToShowFilter') }}</span>
-          </Transition>
-        </div>
 
-        <div class="type-filter-bar">
-          <el-checkbox-group v-model="selectedTypes" class="type-filter-group">
-            <el-checkbox-button label="plugin">
-              <el-icon><Box /></el-icon>
-              {{ $t('plugins.typePlugin') }} ({{ pluginCount }})
-            </el-checkbox-button>
-            <el-checkbox-button label="adapter">
-              <el-icon><Connection /></el-icon>
-              {{ $t('plugins.typeAdapter') }} ({{ adapterCount }})
-            </el-checkbox-button>
-            <el-checkbox-button label="extension">
-              <el-icon><Expand /></el-icon>
-              {{ $t('plugins.typeExtension') }} ({{ extensionCount }})
-            </el-checkbox-button>
-          </el-checkbox-group>
-        </div>
-      </template>
-
-      <LoadingSpinner v-if="loading && rawPlugins.length === 0" :loading="true" :text="$t('common.loading')" />
-      <EmptyState v-else-if="rawPlugins.length === 0" :description="$t('plugins.noPlugins')" />
-      
-      <template v-else>
-        <!-- 普通插件 -->
-        <template v-if="filteredPurePlugins.length > 0">
-          <div class="section-header">
-            <span class="section-title">
-              <el-icon><Box /></el-icon>
-              {{ $t('plugins.pluginsSection') }} ({{ filteredPurePlugins.length }})
-            </span>
-          </div>
-          <TransitionGroup name="list" tag="div" class="plugin-grid">
-            <div
-              v-for="plugin in filteredPurePlugins"
-              :key="plugin.id"
-              class="plugin-item"
-            >
-              <PluginCard
-                :plugin="plugin"
-                :show-metrics="showMetrics"
-                @click="handlePluginClick(plugin.id)"
-              />
+            <div class="filter-bar" @mouseenter="showFilter" @mouseleave="scheduleHideFilter">
+              <Transition name="filter-fade" mode="out-in">
+                <div v-if="filterVisible" key="controls" class="filter-controls">
+                  <el-input
+                    v-model="filterText"
+                    clearable
+                    class="filter-input"
+                    :placeholder="$t('plugins.filterPlaceholder')"
+                  />
+                  <el-switch
+                    v-model="useRegex"
+                    class="filter-switch"
+                    active-text="Regex"
+                    inactive-text="Text"
+                  />
+                  <el-radio-group v-model="filterMode" size="small" class="filter-mode">
+                    <el-radio-button label="whitelist">{{ $t('plugins.filterWhitelist') }}</el-radio-button>
+                    <el-radio-button label="blacklist">{{ $t('plugins.filterBlacklist') }}</el-radio-button>
+                  </el-radio-group>
+                  <span v-if="regexError" class="filter-error">{{ $t('plugins.invalidRegex') }}</span>
+                </div>
+                <span v-else key="placeholder" class="filter-placeholder">{{ $t('plugins.hoverToShowFilter') }}</span>
+              </Transition>
             </div>
-          </TransitionGroup>
-        </template>
 
-        <!-- 适配器 -->
-        <template v-if="filteredAdapters.length > 0">
-          <div class="section-header section-header--adapter">
-            <span class="section-title">
-              <el-icon><Connection /></el-icon>
-              {{ $t('plugins.adaptersSection') }} ({{ filteredAdapters.length }})
-            </span>
-          </div>
-          <TransitionGroup name="list" tag="div" class="plugin-grid">
-            <div
-              v-for="adapter in filteredAdapters"
-              :key="adapter.id"
-              class="plugin-item"
-            >
-              <PluginCard
-                :plugin="adapter"
-                :show-metrics="showMetrics"
-                @click="handlePluginClick(adapter.id)"
-              />
+            <div class="type-filter-bar">
+              <el-checkbox-group v-model="selectedTypes" class="type-filter-group">
+                <el-checkbox-button label="plugin">
+                  <el-icon><Box /></el-icon>
+                  {{ $t('plugins.typePlugin') }} ({{ pluginCount }})
+                </el-checkbox-button>
+                <el-checkbox-button label="adapter">
+                  <el-icon><Connection /></el-icon>
+                  {{ $t('plugins.typeAdapter') }} ({{ adapterCount }})
+                </el-checkbox-button>
+                <el-checkbox-button label="extension">
+                  <el-icon><Expand /></el-icon>
+                  {{ $t('plugins.typeExtension') }} ({{ extensionCount }})
+                </el-checkbox-button>
+              </el-checkbox-group>
             </div>
-          </TransitionGroup>
-        </template>
+          </template>
 
-        <!-- 扩展插件 -->
-        <template v-if="filteredExtensions.length > 0">
-          <div class="section-header section-header--ext">
-            <span class="section-title">
-              <el-icon><Expand /></el-icon>
-              {{ $t('plugins.extensionsSection') }} ({{ filteredExtensions.length }})
-            </span>
-          </div>
-          <TransitionGroup name="list" tag="div" class="plugin-grid">
-            <div
-              v-for="ext in filteredExtensions"
-              :key="ext.id"
-              class="plugin-item"
-            >
-              <PluginCard
-                :plugin="ext"
-                :show-metrics="showMetrics"
-                @click="handlePluginClick(ext.id)"
-              />
-            </div>
-          </TransitionGroup>
-        </template>
-      </template>
-    </el-card>
+          <LoadingSpinner v-if="loading && rawPlugins.length === 0" :loading="true" :text="$t('common.loading')" />
+          <EmptyState v-else-if="rawPlugins.length === 0" :description="$t('plugins.noPlugins')" />
+
+          <template v-else>
+            <template v-if="filteredPurePlugins.length > 0">
+              <div class="section-header">
+                <span class="section-title">
+                  <el-icon><Box /></el-icon>
+                  {{ $t('plugins.pluginsSection') }} ({{ filteredPurePlugins.length }})
+                </span>
+              </div>
+              <TransitionGroup name="list" tag="div" class="plugin-grid">
+                <div
+                  v-for="plugin in filteredPurePlugins"
+                  :key="plugin.id"
+                  class="plugin-item"
+                >
+                  <PluginCard
+                    :plugin="plugin"
+                    :show-metrics="showMetrics"
+                    @click="handlePluginClick(plugin.id)"
+                  />
+                </div>
+              </TransitionGroup>
+            </template>
+
+            <template v-if="filteredAdapters.length > 0">
+              <div class="section-header section-header--adapter">
+                <span class="section-title">
+                  <el-icon><Connection /></el-icon>
+                  {{ $t('plugins.adaptersSection') }} ({{ filteredAdapters.length }})
+                </span>
+              </div>
+              <TransitionGroup name="list" tag="div" class="plugin-grid">
+                <div
+                  v-for="adapter in filteredAdapters"
+                  :key="adapter.id"
+                  class="plugin-item"
+                >
+                  <PluginCard
+                    :plugin="adapter"
+                    :show-metrics="showMetrics"
+                    @click="handlePluginClick(adapter.id)"
+                  />
+                </div>
+              </TransitionGroup>
+            </template>
+
+            <template v-if="filteredExtensions.length > 0">
+              <div class="section-header section-header--ext">
+                <span class="section-title">
+                  <el-icon><Expand /></el-icon>
+                  {{ $t('plugins.extensionsSection') }} ({{ filteredExtensions.length }})
+                </span>
+              </div>
+              <TransitionGroup name="list" tag="div" class="plugin-grid">
+                <div
+                  v-for="ext in filteredExtensions"
+                  :key="ext.id"
+                  class="plugin-item"
+                >
+                  <PluginCard
+                    :plugin="ext"
+                    :show-metrics="showMetrics"
+                    @click="handlePluginClick(ext.id)"
+                  />
+                </div>
+              </TransitionGroup>
+            </template>
+          </template>
+        </el-card>
+      </el-tab-pane>
+
+      <el-tab-pane label="包管理" name="packages">
+        <PackageManagerPanel />
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import PluginCard from '@/components/plugin/PluginCard.vue'
+import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { reloadAllPlugins } from '@/api/plugins'
@@ -162,43 +169,41 @@ import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import { useI18n } from 'vue-i18n'
 
 const router = useRouter()
+const route = useRoute()
 const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
 const { t } = useI18n()
 
+const activeWorkbenchTab = ref<'plugins' | 'packages'>('plugins')
 const reloadingAll = ref(false)
 
 const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
 const rawNormalPlugins = computed(() => pluginStore.normalPlugins)
 const rawExtensions = computed(() => pluginStore.extensions)
 
-// 类型过滤
 const selectedTypes = ref<string[]>(['plugin', 'adapter', 'extension'])
 
-// 判断插件类型（仅依赖 type 字段，避免基于名称的不可靠猜测）
 function getPluginType(plugin: any): 'plugin' | 'adapter' | 'extension' {
   if (plugin.type === 'extension') return 'extension'
   if (plugin.type === 'adapter') return 'adapter'
   return 'plugin'
 }
 
-// 各类型数量
-const pluginCount = computed(() => 
-  rawPlugins.value.filter(p => getPluginType(p) === 'plugin').length
+const pluginCount = computed(() =>
+  rawPlugins.value.filter((p) => getPluginType(p) === 'plugin').length
 )
-const adapterCount = computed(() => 
-  rawPlugins.value.filter(p => getPluginType(p) === 'adapter').length
+const adapterCount = computed(() =>
+  rawPlugins.value.filter((p) => getPluginType(p) === 'adapter').length
 )
-const extensionCount = computed(() => 
-  rawPlugins.value.filter(p => getPluginType(p) === 'extension').length
+const extensionCount = computed(() =>
+  rawPlugins.value.filter((p) => getPluginType(p) === 'extension').length
 )
 
-// 按类型过滤的插件列表
-const rawAdapters = computed(() => 
-  rawPlugins.value.filter(p => getPluginType(p) === 'adapter')
+const rawAdapters = computed(() =>
+  rawPlugins.value.filter((p) => getPluginType(p) === 'adapter')
 )
-const rawPurePlugins = computed(() => 
-  rawPlugins.value.filter(p => getPluginType(p) === 'plugin')
+const rawPurePlugins = computed(() =>
+  rawPlugins.value.filter((p) => getPluginType(p) === 'plugin')
 )
 
 const filterVisible = ref(false)
@@ -219,10 +224,12 @@ function scheduleHideFilter() {
     hideTimer = null
   }, 1000)
 }
+
 const filterText = ref('')
 const useRegex = ref(false)
 const filterMode = ref<'whitelist' | 'blacklist'>('whitelist')
 const regexError = ref(false)
+
 function applyFilter<T extends { id: string; name: string; description: string }>(list: T[]): T[] {
   const text = filterText.value.trim()
   if (!text) {
@@ -235,7 +242,7 @@ function applyFilter<T extends { id: string; name: string; description: string }
       const re = new RegExp(text, 'i')
       regexError.value = false
       const matches = (p: T) => re.test(p.id || '') || re.test(p.name || '') || re.test(p.description || '')
-      return filterMode.value === 'blacklist' ? list.filter(p => !matches(p)) : list.filter(p => matches(p))
+      return filterMode.value === 'blacklist' ? list.filter((p) => !matches(p)) : list.filter((p) => matches(p))
     } catch {
       regexError.value = true
       return list
@@ -245,14 +252,15 @@ function applyFilter<T extends { id: string; name: string; description: string }
   regexError.value = false
   const lower = text.toLowerCase()
   const match = (p: T) => {
-    return (p.id || '').toLowerCase().includes(lower) ||
-           (p.name || '').toLowerCase().includes(lower) ||
-           (p.description || '').toLowerCase().includes(lower)
+    return (
+      (p.id || '').toLowerCase().includes(lower) ||
+      (p.name || '').toLowerCase().includes(lower) ||
+      (p.description || '').toLowerCase().includes(lower)
+    )
   }
-  return filterMode.value === 'blacklist' ? list.filter(p => !match(p)) : list.filter(p => match(p))
+  return filterMode.value === 'blacklist' ? list.filter((p) => !match(p)) : list.filter((p) => match(p))
 }
 
-// 应用文本过滤和类型过滤
 const filteredPurePlugins = computed(() => {
   if (!selectedTypes.value.includes('plugin')) return []
   return applyFilter(rawPurePlugins.value || [])
@@ -265,8 +273,7 @@ const filteredExtensions = computed(() => {
   if (!selectedTypes.value.includes('extension')) return []
   return applyFilter(rawExtensions.value || [])
 })
-// 兼容旧代码
-const filteredNormalPlugins = computed(() => [...filteredPurePlugins.value, ...filteredAdapters.value])
+
 const loading = computed(() => pluginStore.loading)
 const showMetrics = ref(false)
 let metricsRefreshTimer: number | null = null
@@ -325,12 +332,14 @@ function handlePluginClick(pluginId: string) {
   router.push(`/plugins/${safeId}`)
 }
 
-// 获取运行中的普通插件列表（排除 extension）
+function openPackageTab() {
+  activeWorkbenchTab.value = 'packages'
+}
+
 const runningPlugins = computed(() => {
-  return rawNormalPlugins.value.filter(p => p.status === 'running' && p.enabled !== false)
+  return rawNormalPlugins.value.filter((p) => p.status === 'running' && p.enabled !== false)
 })
 
-// 全局重载所有运行中的插件（使用后端批量 API）
 async function handleReloadAll() {
   const plugins = runningPlugins.value
   if (plugins.length === 0) return
@@ -342,7 +351,7 @@ async function handleReloadAll() {
       {
         confirmButtonText: t('common.confirm'),
         cancelButtonText: t('common.cancel'),
-        type: 'warning'
+        type: 'warning',
       }
     )
   } catch {
@@ -352,14 +361,12 @@ async function handleReloadAll() {
   reloadingAll.value = true
 
   try {
-    // 使用后端批量 API，避免锁竞争导致超时
     const result = await reloadAllPlugins()
-    
+
     const successCount = result.reloaded.length
     const failCount = result.failed.length
 
-    // 记录失败的插件
-    result.failed.forEach(item => {
+    result.failed.forEach((item) => {
       console.error(`Failed to reload plugin ${item.plugin_id}:`, item.error)
     })
 
@@ -375,12 +382,24 @@ async function handleReloadAll() {
     reloadingAll.value = false
   }
 
-  // 刷新列表
   await handleRefresh()
 }
 
 onMounted(async () => {
+  if (route.query.tab === 'packages') {
+    activeWorkbenchTab.value = 'packages'
+  }
   await handleRefresh()
+})
+
+watch(activeWorkbenchTab, (tab) => {
+  const nextQuery = { ...route.query }
+  if (tab === 'packages') {
+    nextQuery.tab = 'packages'
+  } else {
+    delete nextQuery.tab
+  }
+  router.replace({ path: route.path, query: nextQuery })
 })
 
 onUnmounted(() => {
@@ -393,6 +412,10 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.workbench-tabs :deep(.el-tabs__header) {
+  margin-bottom: 16px;
+}
+
 .filter-bar {
   margin-top: 16px;
   padding: 12px;
@@ -475,6 +498,7 @@ onUnmounted(() => {
   display: flex;
   gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .section-header {
@@ -526,28 +550,27 @@ onUnmounted(() => {
 .plugin-item {
   display: flex;
   flex-direction: column;
-  height: 100%; /* 确保项目占满网格单元格高度 */
+  height: 100%;
 }
 
 .plugin-item :deep(.plugin-card) {
-  height: 100%; /* 让卡片占满容器高度 */
+  height: 100%;
   display: flex;
   flex-direction: column;
 }
 
 .plugin-item :deep(.el-card__body) {
-  flex: 1; /* 让卡片内容区域自动填充剩余空间 */
+  flex: 1;
   display: flex;
   flex-direction: column;
 }
 
 .plugin-card-body {
-  flex: 1; /* 让卡片主体内容区域自动填充 */
+  flex: 1;
   display: flex;
   flex-direction: column;
 }
 
-/* 列表项过渡动画 */
 .list-enter-active,
 .list-leave-active {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -566,6 +589,4 @@ onUnmounted(() => {
 .list-move {
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
-
 </style>
-
