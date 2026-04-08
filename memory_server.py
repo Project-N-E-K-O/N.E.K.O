@@ -22,7 +22,7 @@ from config.prompts_memory import (
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
     get_negative_preference_review_prompt,
 )
-from memory.persona import contains_negative_signal
+from memory.persona import contains_negative_signal, is_topic_refusal_signal
 from utils.language_utils import get_global_language
 from utils.character_name import validate_character_name
 from utils.config_manager import get_config_manager
@@ -327,7 +327,8 @@ def _should_skip_recent_message_for_prompt(message, hard_topics: list[str], clea
     role = getattr(message, 'type', '')
     if role != 'ai':
         return False
-    return any(topic in cleaned_text for topic in hard_topics)
+    cleaned_cf = cleaned_text.casefold()
+    return any(topic.casefold() in cleaned_cf for topic in hard_topics if isinstance(topic, str) and topic.strip())
 
 
 def _get_recent_prompt_skip_indexes(messages: list, hard_topics: list[str], brackets_pattern: re.Pattern[str]) -> set[int]:
@@ -346,7 +347,7 @@ def _get_recent_prompt_skip_indexes(messages: list, hard_topics: list[str], brac
         if getattr(next_message, 'type', '') != 'human':
             continue
         next_text = _extract_message_text_for_prompt(next_message, brackets_pattern)
-        if contains_negative_signal(next_text):
+        if is_topic_refusal_signal(next_text, referenced_topic=cleaned_text):
             skip_indexes.add(idx)
     return skip_indexes
 
@@ -419,14 +420,42 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
         f"{_truncate_log_text(' | '.join(negative_user_msgs), 240)}"
     )
     reviewed = await _review_negative_preferences(messages, lanlan_name)
-    applied = 0
+    deduped_candidates: dict[str, dict] = {}
     for item in reviewed[:3]:
         topic = str(item.get('topic', '')).strip()
+        normalized_topic = topic.casefold()
+        if not normalized_topic:
+            continue
         policy = str(item.get('policy', '')).strip()
         try:
             confidence = float(item.get('confidence', 0))
         except (TypeError, ValueError):
             confidence = 0.0
+        current = deduped_candidates.get(normalized_topic)
+        if current is None:
+            deduped_candidates[normalized_topic] = {
+                'topic': topic,
+                'policy': policy,
+                'confidence': confidence,
+            }
+            continue
+        current_rank = 1 if current['policy'] == 'avoid' else 0
+        next_rank = 1 if policy == 'avoid' else 0
+        if next_rank > current_rank or (next_rank == current_rank and confidence > current['confidence']):
+            deduped_candidates[normalized_topic] = {
+                'topic': topic,
+                'policy': policy,
+                'confidence': confidence,
+            }
+    if len(deduped_candidates) != len(reviewed[:3]):
+        logger.info(
+            f"[MemoryServer] {lanlan_name}: 负面偏好候选已去重 raw={len(reviewed[:3])} deduped={len(deduped_candidates)}"
+        )
+    applied = 0
+    for item in deduped_candidates.values():
+        topic = item['topic']
+        policy = item['policy']
+        confidence = item['confidence']
         if confidence < NEGATIVE_PREFERENCE_CONFIDENCE_THRESHOLD:
             logger.info(
                 f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={topic or '∅'} "

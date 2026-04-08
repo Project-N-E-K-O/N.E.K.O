@@ -1861,9 +1861,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    function cancelExpressionPreview({ reapplyPersistent = true } = {}) {
+        if (window._expressionPreviewRestoreTimer) {
+            clearTimeout(window._expressionPreviewRestoreTimer);
+            window._expressionPreviewRestoreTimer = null;
+        }
+        if (typeof window._resumeExpressionPreviewSuspend === 'function') {
+            window._resumeExpressionPreviewSuspend(reapplyPersistent);
+            window._resumeExpressionPreviewSuspend = null;
+        }
+        window._currentExpressionPreviewToken = null;
+    }
+
     // 模型类型切换处理
     // subType: 当 type === 'live3d' 时，传入 'vrm' 或 'mmd' 以区分子类型
     async function switchModelDisplay(type, subType) {
+        cancelExpressionPreview({ reapplyPersistent: true });
         currentModelType = type;
         if (type === 'live3d' && subType) {
             currentLive3dSubType = subType;
@@ -5175,6 +5188,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 加载模型的函数
     async function loadModel(modelName, modelInfo, steam_id) {
         if (!modelName || !modelInfo) return;
+        cancelExpressionPreview({ reapplyPersistent: true });
 
         // 确保获取正确的steam_id，优先使用传入的，然后从modelInfo中获取
         let finalSteamId = steam_id || modelInfo.item_id;
@@ -5401,14 +5415,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         clearTimeout(window._motionPreviewRestoreTimer);
                         window._motionPreviewRestoreTimer = null;
                     }
-                    if (window._expressionPreviewRestoreTimer) {
-                        clearTimeout(window._expressionPreviewRestoreTimer);
-                        window._expressionPreviewRestoreTimer = null;
-                    }
-                    if (typeof window._resumeExpressionPreviewSuspend === 'function') {
-                        window._resumeExpressionPreviewSuspend(false);
-                        window._resumeExpressionPreviewSuspend = null;
-                    }
+                    cancelExpressionPreview({ reapplyPersistent: false });
                     // 使在途的表情 await 回调失效，防止异步返回后设置恢复定时器打断动作
                     window._currentExpressionPreviewToken = null;
 
@@ -5552,14 +5559,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         try {
             // 清除之前的表情预览恢复定时器
-            if (window._expressionPreviewRestoreTimer) {
-                clearTimeout(window._expressionPreviewRestoreTimer);
-                window._expressionPreviewRestoreTimer = null;
-            }
-            if (typeof window._resumeExpressionPreviewSuspend === 'function') {
-                window._resumeExpressionPreviewSuspend(false);
-                window._resumeExpressionPreviewSuspend = null;
-            }
+            cancelExpressionPreview({ reapplyPersistent: false });
             // 使在途的动作预览 fetch 回调失效，防止异步返回后设置恢复定时器打断表情
             if (window._motionPreviewRestoreTimer) {
                 clearTimeout(window._motionPreviewRestoreTimer);

@@ -70,7 +70,7 @@ Live2DManager.prototype.recordInitialParameters = function() {
 };
 
 // 清除expression到默认状态（使用保存的初始参数）
-Live2DManager.prototype.clearExpression = function() {
+Live2DManager.prototype.clearExpression = function(reason = null, forceAll = false) {
     // 取消正在进行的平滑过渡和手动表情覆盖
     this._cancelSmoothReset();
     this._removeManualExpressionOverride();
@@ -78,7 +78,7 @@ Live2DManager.prototype.clearExpression = function() {
     try {
         if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
             console.warn('无法清除expression：模型未加载');
-            this.resumePersistentExpressions();
+            this.resumePersistentExpressions(reason, forceAll);
             return;
         }
 
@@ -86,7 +86,7 @@ Live2DManager.prototype.clearExpression = function() {
         if (!this.initialParameters || Object.keys(this.initialParameters).length === 0) {
             console.error('严重错误：未找到初始参数记录！expression清除失败。');
             console.error('请确保在模型加载完成后立即调用recordInitialParameters()初始化参数基准');
-            this.resumePersistentExpressions();
+            this.resumePersistentExpressions(reason, forceAll);
             return;
         }
 
@@ -136,7 +136,7 @@ Live2DManager.prototype.clearExpression = function() {
         console.warn('expression重置失败:', error);
     }
 
-    this.resumePersistentExpressions();
+    this.resumePersistentExpressions(reason, forceAll);
 
     // 如存在常驻表情，清除后立即重放常驻，保证不被清掉
     this.applyPersistentExpressionsNative(false);
@@ -165,14 +165,14 @@ Live2DManager.prototype.suspendPersistentExpressions = function(reason = 'tempor
     console.log('[Persistent] 常驻表情已挂起:', Array.from(this._persistentExpressionSuspendReasons));
 };
 
-Live2DManager.prototype.resumePersistentExpressions = function(reason = null) {
+Live2DManager.prototype.resumePersistentExpressions = function(reason = null, forceAll = false) {
     if (!this._persistentExpressionSuspendReasons) {
         this._persistentExpressionSuspendReasons = new Set();
     }
 
-    if (reason == null) {
+    if (forceAll === true) {
         this._persistentExpressionSuspendReasons.clear();
-    } else {
+    } else if (reason != null) {
         this._persistentExpressionSuspendReasons.delete(reason);
     }
 
@@ -203,7 +203,11 @@ Live2DManager.prototype.resumePersistentExpressions = function(reason = null) {
  * @param {number} duration - 淡出持续时间（毫秒），默认 800ms
  * @returns {Promise} 淡出完成后 resolve
  */
-Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
+Live2DManager.prototype.smoothResetToInitialState = function(duration = 800, options = {}) {
+    const {
+        persistentResumeReason = null,
+        forceAllPersistentResume = false,
+    } = options || {};
     // 钳制 duration：非法值回退到默认，范围 [0, 5000]
     if (!Number.isFinite(duration) || duration < 0) {
         duration = 800;
@@ -215,7 +219,7 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
 
         if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
             this._removeManualExpressionOverride();
-            try { this.clearExpression(); } catch (e) {}
+            try { this.clearExpression(persistentResumeReason, forceAllPersistentResume); } catch (e) {}
             resolve();
             return;
         }
@@ -292,7 +296,7 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
                 if (deltaKeys.length === 0) {
                     // 没有活跃表情，无需淡出
                     self._cancelSmoothReset();
-                    self.resumePersistentExpressions();
+                    self.resumePersistentExpressions(persistentResumeReason, forceAllPersistentResume);
                     try { self.applyPersistentExpressionsNative(false); } catch (e) {}
                     resolve();
                     return;
@@ -334,7 +338,7 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
             if (progress >= 1) {
                 self._cancelSmoothReset();
                 // 淡出完成，重新应用常驻表情
-                self.resumePersistentExpressions();
+                self.resumePersistentExpressions(persistentResumeReason, forceAllPersistentResume);
                 try { self.applyPersistentExpressionsNative(false); } catch (e) {}
                 console.log('[smoothReset] 差分淡出完成');
                 resolve();

@@ -1067,6 +1067,9 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         clearTimeout(this._clickEffectRestoreTimer);
         this._clickEffectRestoreTimer = null;
     }
+    const clickEffectSuspendReason = window.isInTutorial
+        ? 'tutorial-click-expression'
+        : 'click-effect';
     
     if (this._clickEffectMotion && typeof this._clickEffectMotion.stop === 'function') {
         try { this._clickEffectMotion.stop(); } catch (e) {}
@@ -1173,14 +1176,16 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             // smoothResetToInitialState 会在第一帧 beforeModelUpdate 中捕获快照后，
             // 再停止 motion/expression，确保过渡起点与屏幕一致，无视觉跳变。
             if (typeof this.smoothResetToInitialState === 'function') {
-                this.smoothResetToInitialState().catch(e => {
+                this.smoothResetToInitialState(800, {
+                    persistentResumeReason: 'click-effect',
+                }).catch(e => {
                     console.warn('[ClickEffect] 平滑恢复失败，回退到即时恢复:', e);
                     if (typeof this.clearExpression === 'function') {
-                        this.clearExpression();
+                        this.clearExpression('click-effect');
                     }
                 });
             } else if (typeof this.clearExpression === 'function') {
-                this.clearExpression();
+                this.clearExpression('click-effect');
             }
         }, duration);
 
@@ -1706,9 +1711,16 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
             // 随机播放表情
             if (expressionNames.length > 0) {
                 const randomExpression = expressionNames[Math.floor(Math.random() * expressionNames.length)];
+                const randomExpressionInfo = this.fileReferences.Expressions.find(e => e && e.Name === randomExpression);
                 console.log(`[Interaction] 教程模式 - 播放表情: ${randomExpression}（将在 ${window.live2dManager.CLICK_EFFECT_DURATION}ms 后恢复）`);
-                this.suspendPersistentExpressions('tutorial-click-expression');
-                await this.currentModel.expression(randomExpression);
+                if (randomExpressionInfo && randomExpressionInfo.File && typeof this.playExpression === 'function') {
+                    await this.playExpression(randomExpression, randomExpressionInfo.File, {
+                        suspendPersistent: true,
+                        suspendReason: clickEffectSuspendReason,
+                    });
+                } else {
+                    console.warn('[Interaction] 教程模式 - 表情文件缺失，跳过表情播放');
+                }
 
                 const playedMotion = await this.playTutorialMotion();
 
@@ -1807,12 +1819,14 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         this._currentClickEffectId = null;
         // 使用平滑过渡恢复到常驻表情或默认状态（smoothReset 内部会在快照后停止 motion/expression）
         if (typeof this.smoothResetToInitialState === 'function') {
-            this.smoothResetToInitialState().catch(e => {
+            this.smoothResetToInitialState(800, {
+                persistentResumeReason: clickEffectSuspendReason,
+            }).catch(e => {
                 console.warn('[Interaction] 平滑恢复失败，回退到即时恢复:', e);
-                if (typeof this.clearExpression === 'function') this.clearExpression();
+                if (typeof this.clearExpression === 'function') this.clearExpression(clickEffectSuspendReason);
             });
         } else if (typeof this.clearExpression === 'function') {
-            this.clearExpression();
+            this.clearExpression(clickEffectSuspendReason);
         }
     }, window.live2dManager.CLICK_EFFECT_DURATION);
 };
@@ -2014,7 +2028,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                     
                     clearTimeout(this.expressionTimer);
                     this.expressionTimer = setTimeout(() => {
-                        this.clearExpression?.();
+                        this.clearExpression?.('touchset-expression');
                     }, faceHoldingTime);
                 } catch (e) {
                     console.warn(`[TouchSet] 播放表情失败: ${randomExpressionName}`, e);

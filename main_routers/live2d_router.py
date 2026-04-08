@@ -41,10 +41,10 @@ def _normalize_persistent_expression_group(mapping):
 
     persistent_files = expressions.get('常驻')
     if isinstance(persistent_files, list):
-        normalized_files = [f for f in persistent_files if isinstance(f, str) and f]
+        normalized_files = [item.strip() for item in persistent_files if isinstance(item, str) and item.strip()]
         expressions['常驻'] = normalized_files[-1:] if normalized_files else []
-    elif persistent_files:
-        expressions['常驻'] = [str(persistent_files)]
+    elif isinstance(persistent_files, str) and persistent_files.strip():
+        expressions['常驻'] = [persistent_files.strip()]
     else:
         expressions['常驻'] = []
 

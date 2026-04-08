@@ -89,6 +89,12 @@ _TOPIC_SUFFIX_CLEANUPS = (
 _GENERIC_TOPIC_WORDS = {
     "这个", "那个", "这件事", "这话题", "这个话题", "事情", "话题", "内容",
 }
+_GENERIC_LATIN_TOPIC_WORDS = {
+    "it", "this", "that", "these", "those", "them",
+    "this one", "that one", "these ones", "those ones",
+    "this thing", "that thing", "these things", "those things",
+    "anymore",
+}
 _REFERENCE_TOPIC_PATTERNS = (
     re.compile(r'(?:关于|聊聊|继续聊|说说|提到|提起|讲到)(?P<topic>[^，。！？!?]{1,24})'),
     re.compile(r'(?P<topic>[^，。！？!?]{1,24})(?:这个话题|这件事|这个事情)'),
@@ -115,6 +121,19 @@ _META_AVOID_TOPIC_RE = re.compile(
 
 # Split on any CJK/Latin punctuation, symbols, whitespace
 _SPLIT_RE = re.compile(r'[，。、！？；：\u201c\u201d\u2018\u2019（）()\[\]{}<>《》【】\s,.!?;:\-\u2014\u2026\xb7\u3000]+')
+
+
+def _contains_ascii_letters(text: str) -> bool:
+    return bool(re.search(r'[A-Za-z]', text or ''))
+
+
+def _matches_latin_keyword(lowered_text: str, keyword: str) -> bool:
+    if not keyword:
+        return False
+    if _contains_ascii_letters(keyword) and not _contains_cjk(keyword):
+        pattern = r'(?<![a-z])' + re.escape(keyword.casefold()) + r'(?![a-z])'
+        return re.search(pattern, lowered_text) is not None
+    return keyword in lowered_text
 
 def _extract_keywords(text: str) -> set[str]:
     """从文本提取关键词/n-gram，支持 CJK 和拉丁文。
@@ -159,14 +178,20 @@ def _contains_negative_signal(text: str) -> bool:
     lowered = raw.lower()
     if not lowered:
         return False
-    if any(keyword in lowered for keyword in _NEGATIVE_KEYWORDS):
-        return True
+    for keyword in _NEGATIVE_KEYWORDS:
+        if _matches_latin_keyword(lowered, keyword):
+            return True
     return _GENERIC_AVOID_SIGNAL_RE.search(raw) is not None
 
 
 def contains_negative_signal(text: str) -> bool:
     """Public helper for cheap keyword gating before higher-cost review."""
     return _contains_negative_signal(text)
+
+
+def is_topic_refusal_signal(text: str, referenced_topic: str = "") -> bool:
+    topic, explicit = _extract_negative_topic(text, referenced_topic=referenced_topic)
+    return bool(explicit and topic)
 
 
 def _contains_cjk(text: str) -> bool:
@@ -211,6 +236,8 @@ def _is_specific_topic(topic: str) -> bool:
     if len(topic) < 2:
         return False
     if topic in _GENERIC_TOPIC_WORDS:
+        return False
+    if topic.casefold() in _GENERIC_LATIN_TOPIC_WORDS:
         return False
     if _META_AVOID_TOPIC_RE.fullmatch(topic):
         return False
