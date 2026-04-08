@@ -1,4 +1,4 @@
-# --- Stage 1: Build plugin manager frontend ---
+# --- Stage 1: Build frontend projects ---
 FROM node:24-slim AS frontend-builder
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
@@ -11,6 +11,8 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     git clone --depth 1 --branch main https://github.com/Project-N-E-K-O/N.E.K.O.git .
 WORKDIR /src/frontend/plugin-manager
 RUN npm ci && npm run build-only
+WORKDIR /src/frontend/react-neko-chat
+RUN npm ci && npm run build
 
 # --- Stage 2: Runtime ---
 FROM debian:bookworm
@@ -99,6 +101,7 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
 
 # 7. 复制前端构建产物
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
+COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
 
 # 8. 设置环境变量
 ENV PATH="/root/.cargo/bin:/usr/bin:/usr/local/bin:$PATH"

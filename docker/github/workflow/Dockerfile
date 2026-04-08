@@ -1,10 +1,15 @@
-# --- Stage 1: Build plugin manager frontend ---
+# --- Stage 1: Build frontend projects ---
 FROM node:20-slim AS frontend-builder
-WORKDIR /src
+WORKDIR /src/frontend/plugin-manager
 COPY frontend/plugin-manager/package.json frontend/plugin-manager/package-lock.json ./
 RUN npm ci
 COPY frontend/plugin-manager/ ./
 RUN npm run build-only
+WORKDIR /src/frontend/react-neko-chat
+COPY frontend/react-neko-chat/package.json frontend/react-neko-chat/package-lock.json ./
+RUN npm ci
+COPY frontend/react-neko-chat/ ./
+RUN npm run build
 
 # --- Stage 2: Runtime ---
 # 使用多架构支持的 Debian bookworm 作为基础镜像
@@ -87,7 +92,8 @@ RUN mkdir -p /root/.config/uv && \
 COPY . /app
 
 # 7. 复制前端构建产物
-COPY --from=frontend-builder /src/dist /app/frontend/plugin-manager/dist
+COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
+COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
 
 # 8. 设置环境变量
 ENV PATH="/root/.cargo/bin:/usr/bin:/usr/local/bin:$PATH"
