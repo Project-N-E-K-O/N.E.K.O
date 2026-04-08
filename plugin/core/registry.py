@@ -561,6 +561,7 @@ def register_plugin(
             input_schema=plugin.input_schema,
             author=plugin.author,
             dependencies=plugin.dependencies,
+            host_plugin_id=plugin.host_plugin_id,
         )
     
     with state.acquire_plugins_write_lock():

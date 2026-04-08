@@ -25,6 +25,9 @@ def _patch_pyncm_async() -> None:
             with open(target, "r", encoding="utf-8") as f:
                 code = f.read()
             if 'objectKey.replace("/", "%2F")' in code:
+                if not os.access(target, os.W_OK):
+                    logger.error("[Music] pyncm_async cloud.py is read-only, cannot patch: %s", target)
+                    break
                 code = code.replace(
                     'objectKey.replace("/", "%2F")',
                     "objectKey.replace('/', '%2F')",
@@ -109,7 +112,7 @@ async def play_netease_music(song_id: str):
     """
     if not _PYNCM_AVAILABLE:
         fallback_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
-        logger.warning(f"[音乐播放] pyncm_async 不可用，直接使用公开外链")
+        logger.warning("[音乐播放] pyncm_async 不可用，直接使用公开外链")
         return RedirectResponse(url=fallback_url)
 
     try:

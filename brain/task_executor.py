@@ -688,7 +688,7 @@ class DirectTaskExecutor:
             )
 
             # BM25 + keyword filter
-            bm25_filtered, bm25_kw_hits = stage1_filter(
+            bm25_filtered, _ = stage1_filter(
                 user_intent or conversation,
                 plugin_list,
                 bm25_top_k=10,
@@ -706,6 +706,7 @@ class DirectTaskExecutor:
                 # Stage 1 未选出任何插件 — 回退到完整列表进入 Stage 2，
                 # 避免因 BM25/LLM 全部 miss 导致误判
                 logger.info("[UserPlugin] Stage 1: no plugins selected, falling back to full list for stage 2")
+                stage2_plugins = plugin_list
             else:
                 # Filter to selected plugins and rebuild description
                 stage2_plugins = [p for p in plugin_list if p.get("id") in selected_ids]
@@ -717,6 +718,8 @@ class DirectTaskExecutor:
                 len(stage2_plugins), len(plugin_list),
                 len(bm25_ids), len(llm_id_set), len(keyword_hit_ids),
             )
+            # 后续校验用 stage2 子集，不接受全量列表中但未进入 stage2 的插件
+            plugins = stage2_plugins
         else:
             logger.debug("[UserPlugin] Skipping stage 1: plugins_desc=%d chars <= 4000", len(plugins_desc))
 

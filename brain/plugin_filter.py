@@ -80,7 +80,7 @@ class _BM25:
             idf = self.idf.get(token, 0.0)
             if idf <= 0:
                 continue
-            for i, (freqs, dl) in enumerate(zip(self.doc_freqs, self.doc_lens)):
+            for i, (freqs, dl) in enumerate(zip(self.doc_freqs, self.doc_lens, strict=True)):
                 tf = freqs.get(token, 0)
                 if tf == 0:
                     continue

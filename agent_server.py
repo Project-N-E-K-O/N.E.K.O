@@ -222,32 +222,35 @@ class AgentTaskTracker:
                 ts = float(i)
             msg_with_ts.append((ts, m))
 
-        # 构建 record 消息
-        rec_msgs: list[tuple[float, dict]] = []
+        # 构建 record 文本行（合并为单条 system 消息，避免挤占对话窗口）
+        lines: list[str] = []
+        latest_ts = records[-1]["ts"]
         for r in records:
             kind = r["kind"]
             method = r["method"]
             desc = r["desc"]
             detail = r.get("detail", "")
             if kind == "assigned":
-                text = f"[AGENT TASK ASSIGNED] method={method} | {desc}"
+                line = f"[ASSIGNED] method={method} | {desc}"
             elif kind == "completed":
-                text = f"[AGENT TASK COMPLETED] method={method} | {desc}"
+                line = f"[COMPLETED] method={method} | {desc}"
                 if detail:
-                    text += f" | result: {detail}"
+                    line += f" | result: {detail}"
             else:
-                text = f"[AGENT TASK FAILED] method={method} | {desc}"
+                line = f"[FAILED] method={method} | {desc}"
                 if detail:
-                    text += f" | error: {detail}"
-            rec_msgs.append((r["ts"], {"role": "system", "content": text}))
+                    line += f" | error: {detail}"
+            lines.append(line)
 
-        # 如果原始消息都没有有效时间戳（都是伪时间 0..N），
-        # 就把 records 追加到末尾（最新的位置），避免乱序
+        summary_text = "[AGENT TASK TRACKING]\n" + "\n".join(lines)
+        summary_msg = (latest_ts, {"role": "system", "content": summary_text})
+
+        # 插入单条汇总消息而非多条，防止挤占 _format_messages 的 10 条窗口
         has_real_ts = any(t > 1e9 for t, _ in msg_with_ts)  # epoch timestamp > 1e9
         if has_real_ts:
-            merged = sorted(msg_with_ts + rec_msgs, key=lambda x: x[0])
+            merged = sorted(msg_with_ts + [summary_msg], key=lambda x: x[0])
         else:
-            merged = msg_with_ts + rec_msgs
+            merged = msg_with_ts + [summary_msg]
 
         return [m for _, m in merged]
 
@@ -2665,6 +2668,17 @@ async def complete_deferred_task(task_id: str):
     info["status"] = "completed"
     info["end_time"] = _now_iso()
     lanlan_name = info.get("lanlan_name")
+    params = info.get("params", {})
+    plugin_id = params.get("plugin_id", "")
+    entry_id = params.get("entry_id", "")
+    desc = params.get("description", "")
+
+    # 关闭 tracker 记录（deferred 任务之前只有 assigned 没有 completed）
+    _task_tracker.record_completed(
+        lanlan_name, task_id=task_id, method="user_plugin",
+        desc=f"{plugin_id}.{entry_id}: {desc}" if plugin_id else desc,
+        detail="deferred callback completed", success=True,
+    )
 
     try:
         await _emit_main_event(
@@ -2675,7 +2689,7 @@ async def complete_deferred_task(task_id: str):
                 "type": info.get("type"),
                 "start_time": info.get("start_time"),
                 "end_time": info["end_time"],
-                "params": info.get("params", {}),
+                "params": params,
             },
         )
     except Exception as e:
