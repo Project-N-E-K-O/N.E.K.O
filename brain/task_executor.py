@@ -31,7 +31,6 @@ from .openclaw_adapter import OpenClawAdapter
 from .openfang_adapter import OpenFangAdapter
 from .plugin_filter import (
     stage1_filter,
-    build_coarse_screening_prompt,
     annotate_keyword_hits,
     _match_keywords,
 )
