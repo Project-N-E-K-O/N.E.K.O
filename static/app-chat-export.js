@@ -88,6 +88,35 @@
         });
     }
 
+    /** Return true when the given URL string uses a safe protocol. */
+    function isSafeUrl(url) {
+        if (!url) return false;
+        try {
+            // Handle protocol-relative or schemeless URLs gracefully
+            var parsed = new URL(url, window.location.href);
+            var protocol = parsed.protocol;
+            return protocol === 'http:' || protocol === 'https:' || protocol === 'data:' || protocol === 'blob:';
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /**
+     * Strip unsafe protocol URLs from anchor href and img/iframe src attributes
+     * inside an HTML string. Attributes that fail isSafeUrl are replaced with
+     * a safe empty value so the surrounding markup is preserved.
+     */
+    function sanitizeHtmlUrls(html) {
+        return String(html || '').replace(
+            /(<(?:a|img|iframe)\b[^>]*?\s)(href|src)(=["'])([^"']*)(["'])/gi,
+            function (match, before, attr, eq, value, quote) {
+                if (isSafeUrl(value)) return match;
+                // Replace dangerous URL with a harmless empty string
+                return before + attr + eq + quote;
+            }
+        );
+    }
+
     function escapeMarkdown(text) {
         return String(text == null ? '' : text).replace(/([\\`*_\{\}\[\]\(\)#+\-\.!>|])/g, '\\$1');
     }
@@ -355,11 +384,13 @@
     function renderInlineMarkdown(text) {
         var source = String(text || '');
         source = escapeHtml(source);
-        // images first (they look like links)
+        // images first (they look like links) – only emit src/href for safe URLs
         source = source.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function (_, alt, url) {
-            return '<img src="' + url + '" alt="' + alt + '">';
+            var safeUrl = isSafeUrl(url) ? url : '';
+            return '<img src="' + safeUrl + '" alt="' + alt + '">';
         });
         source = source.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (_, label, url) {
+            if (!isSafeUrl(url)) return label;
             return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
         });
         source = source.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -1622,6 +1653,21 @@
         openWindowButton.addEventListener('click', handleOpenWindowClick);
         downloadButton.addEventListener('click', handleDownloadClick);
 
+        // Update localized modal attributes when the app locale changes
+        var localeHandler = function () {
+            closeButton.setAttribute('aria-label', translateLabel('common.close', 'Close'));
+            title.textContent = translateLabel('chat.exportPreviewTitle', 'Export Preview');
+            frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
+            previewImage.alt = translateLabel('chat.exportPreviewTitle', 'Export Preview');
+            selectAllButton.textContent = translateLabel('chat.exportSelectAll', 'Select All');
+            selectNoneButton.textContent = translateLabel('chat.exportSelectNone', 'Clear');
+            selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
+            copyButton.textContent = translateLabel('chat.copyMarkdown', 'Copy Markdown');
+            openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
+        };
+        window.addEventListener('localechange', localeHandler);
+        modal._localeHandler = localeHandler;
+
         return modal;
     }
 
@@ -1881,6 +1927,10 @@
             document.removeEventListener('keydown', state.previewEscHandler);
             state.previewEscHandler = null;
         }
+        if (modal._localeHandler) {
+            window.removeEventListener('localechange', modal._localeHandler);
+            modal._localeHandler = null;
+        }
     }
 
     // ======================== Action handlers ========================
@@ -1966,6 +2016,10 @@
             var chromeHtml = buildWindowChromeHtml(previewTitle);
             if (payload.previewKind === 'image') {
                 var imgUrl = payload.previewUrl;
+                if (!isSafeUrl(imgUrl)) {
+                    showToast('chat.previewOpenFailed', 'The preview URL uses an unsupported protocol.', 4000);
+                    return;
+                }
                 var imgWin = window.open('', '_blank');
                 if (!imgWin) {
                     showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
@@ -1975,11 +2029,13 @@
                     + escapeHtml(previewTitle)
                     + '</title></head><body style="margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh;padding-top:36px;">'
                     + chromeHtml
-                    + '<img src="' + imgUrl + '" style="max-width:100%;max-height:calc(100vh - 36px);"/></body></html>');
+                    + '<img src="' + escapeHtml(imgUrl) + '" style="max-width:100%;max-height:calc(100vh - 36px);"/></body></html>');
                 imgWin.document.close();
                 return;
             }
             var doc = payload.previewDocument;
+            // Sanitize any unsafe protocol URLs before injecting into the new window
+            doc = sanitizeHtmlUrls(doc);
             // Inject window chrome (title bar + close button) into the preview document
             doc = doc.replace(/(<body[^>]*>)/, '$1' + chromeHtml + '<div style="padding-top:36px;">');
             doc = doc.replace(/<\/body>/, '</div></body>');
