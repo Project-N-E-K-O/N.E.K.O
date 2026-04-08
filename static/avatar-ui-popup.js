@@ -1041,6 +1041,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         checkbox.checked = enabled;
         updateRowStyle();
         updateTrackingModeToggleState();
+        trackingClickArea.setAttribute('aria-checked', String(enabled));
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
         if (typeof manager._onMouseTrackingToggle === 'function') {
             manager._onMouseTrackingToggle(enabled);
@@ -1059,7 +1060,6 @@ function createAnimationSettingsSidePanel(manager, prefix) {
             e.preventDefault();
             e.stopPropagation();
             handleTrackingChange();
-            trackingClickArea.setAttribute('aria-checked', String(checkbox.checked));
         }
     });
 
@@ -1122,6 +1122,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         const enabled = !modeCheckbox.checked;
         modeCheckbox.checked = enabled;
         updateModeRowStyle();
+        modeClickArea.setAttribute('aria-checked', String(enabled));
 
         if (prefix === 'live2d') {
             window.live2dFullscreenTrackingEnabled = enabled;
@@ -1146,7 +1147,6 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     });
     modeClickArea.setAttribute('role', 'switch');
     modeClickArea.setAttribute('aria-checked', String(modeCheckbox.checked));
-    modeClickArea.tabIndex = 0;
     modeClickArea.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();

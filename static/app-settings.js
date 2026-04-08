@@ -423,6 +423,7 @@
             window.mouseTrackingEnabled = true;
             window.live2dFullscreenTrackingEnabled = false;
             window.humanoidLocalTrackingEnabled = false;
+            window.lockedHoverFadeEnabled = true;
         }
 
         // 以下逻辑不依赖本地 JSON 解析结果，始终执行
