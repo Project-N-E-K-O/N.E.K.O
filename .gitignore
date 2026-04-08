@@ -103,6 +103,8 @@ static/yui/*
 runtime_hook_inflect.py
 backup/
 build*
+!build_frontend.bat
+!build_frontend.sh
 metadata.package.json
 version_info.txt
 
