@@ -661,7 +661,7 @@ class DirectTaskExecutor:
                 if isinstance(p, dict):
                     plugin_list.append(p)
         except Exception:
-            pass
+            logger.debug("[UserPlugin] Failed to normalize plugins to list, continuing with empty list", exc_info=True)
 
         # Extract user intent for keyword / BM25 matching
         user_intent = self._extract_latest_user_intent(conversation)
@@ -935,7 +935,9 @@ class DirectTaskExecutor:
                     return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"Assessment error: {e}")
             except Exception as e:
                 return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"Assessment error: {e}")
-    
+
+        return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="No suitable plugin")
+
     async def analyze_and_execute(
         self,
         messages: List[Dict[str, str]],

@@ -16,7 +16,7 @@ Stage 2 (fine — always runs):
 import math
 import re
 from collections import Counter
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from utils.logger_config import get_module_logger
 
