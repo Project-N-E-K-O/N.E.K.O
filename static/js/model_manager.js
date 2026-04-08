@@ -5636,6 +5636,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (previewSuspendReason) {
                 resumePreviewSuspend(true);
             }
+            if (window._currentExpressionPreviewToken !== previewToken) {
+                return;
+            }
             console.error('播放表情失败:', error);
             showStatus(t('live2d.playExpressionFailed', `播放表情失败: ${expressionName}`, { expression: expressionName }), 2000);
         }

@@ -570,11 +570,13 @@ class LLMSessionManager:
             elif self.message_cache_for_new_session[-1]['role'] == self.master_name:
                 self.message_cache_for_new_session[-1]['text'] += transcript.strip()
 
-        # 负面偏好判定已改为 memory_server 结算阶段的后台高精度审查，
-        # 不再在主回复链路里同步写 persona 或临时覆写当前回复指令。
+        # 在进入实际生成前，同步查询一次本轮即时负面偏好指令。
         # 注意: 这里不能修改 current_speech_id.
         # speech_id 仅应在“模型新回复开始”时更新 (handle_new_message / 文本模式 stream 入口),
         # 否则会导致前端把同一轮 AI 语音误判为新轮次, 出现首包被重置/吞掉的问题.
+        instruction = await self._fetch_negative_signal_instruction(transcript.strip())
+        if instruction:
+            await self._apply_transient_response_instruction(instruction)
 
     def _clear_transient_response_instruction_state(self) -> None:
         self._transient_response_instruction_active = ""
@@ -635,7 +637,7 @@ class LLMSessionManager:
             return
 
         if isinstance(self.session, OmniOfflineClient):
-            await self.session.queue_temporary_system_message(instruction)
+            self.session.queue_temporary_system_message(instruction)
             return
 
         if not isinstance(self.session, OmniRealtimeClient):

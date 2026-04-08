@@ -982,7 +982,7 @@ def get_negative_preference_review_prompt(lang: str = 'zh') -> str:
     return _loc(NEGATIVE_PREFERENCE_REVIEW_PROMPT, lang)
 
 
-negative_preference_review_prompt = _loc(NEGATIVE_PREFERENCE_REVIEW_PROMPT, 'zh')
+negative_preference_review_prompt = NEGATIVE_PREFERENCE_REVIEW_PROMPT['zh']
 
 # ---------- reflection_prompt → i18n dict ----------
 

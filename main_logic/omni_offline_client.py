@@ -574,7 +574,7 @@ class OmniOfflineClient:
         if instructions.strip():
             self._conversation_history.append(SystemMessage(content=instructions))
 
-    async def queue_temporary_system_message(self, instructions: str) -> None:
+    def queue_temporary_system_message(self, instructions: str) -> None:
         """Queue a one-shot system message for the next user turn only."""
         if instructions and instructions.strip():
             self._temporary_system_messages.append(SystemMessage(content=instructions.strip()))

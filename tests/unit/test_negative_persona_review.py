@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import asyncio
-import tempfile
 import importlib
+import json
 import sys
+import tempfile
 from unittest.mock import MagicMock, patch
 
 
@@ -206,6 +207,32 @@ def test_negative_review_runs_after_review_history_with_raw_messages() -> None:
 
         assert events[0] == ("review_history", "测试猫娘", False)
         assert events[1] == ("negative_review", "测试猫娘", review_messages)
+
+
+def test_negative_review_uses_recent_history_when_increment_is_empty() -> None:
+    mock_cm = _build_mock_config_manager(tempfile.gettempdir())
+    with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+         patch("utils.config_manager._config_manager", mock_cm):
+        sys.modules.pop("memory_server", None)
+        memory_server = importlib.import_module("memory_server")
+
+        events: list[tuple] = []
+        fallback_messages = [type("Msg", (), {"type": "human", "content": "不要日本动漫"})()]
+
+        async def fake_review_history(name, cancel_event):
+            events.append(("review_history", name, cancel_event.is_set()))
+
+        async def fake_review_negative_preferences(messages, name):
+            events.append(("negative_review", name, messages))
+            return 1
+
+        with patch.object(memory_server.recent_history_manager, "review_history", side_effect=fake_review_history), \
+             patch.object(memory_server.recent_history_manager, "get_recent_history", return_value=fallback_messages), \
+             patch.object(memory_server, "_review_and_apply_negative_preferences", side_effect=fake_review_negative_preferences):
+            asyncio.run(memory_server._run_review_in_background("测试猫娘", []))
+
+        assert events[0] == ("review_history", "测试猫娘", False)
+        assert events[1] == ("negative_review", "测试猫娘", fallback_messages)
 
 
 def test_negative_review_deduplicates_same_topic_in_one_round() -> None:
@@ -428,6 +455,24 @@ def test_apply_negative_preference_review_persists_topic_guidance() -> None:
             guidance = persona["_topic_guidance"]
             assert guidance["soft_avoid"] == []
             assert guidance["hard_avoid"][0]["topic"] == "昆虫食品"
+
+
+def test_handle_negative_signal_returns_server_error_on_exception() -> None:
+    mock_cm = _build_mock_config_manager(tempfile.gettempdir())
+    with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+         patch("utils.config_manager._config_manager", mock_cm):
+        sys.modules.pop("memory_server", None)
+        memory_server = importlib.import_module("memory_server")
+
+        request = memory_server.NegativeSignalRequest(message="别提了", referenced_topic="工作")
+
+        with patch.object(memory_server.persona_manager, "register_negative_signal", side_effect=RuntimeError("boom")):
+            response = asyncio.run(memory_server.handle_negative_signal(request, "测试猫娘"))
+
+        assert response.status_code == 500
+        payload = json.loads(response.body)
+        assert payload["matched"] is False
+        assert payload["error"] == "boom"
 
 
 def test_negative_signal_english_topic_detection() -> None:

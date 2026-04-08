@@ -697,7 +697,8 @@ async def _run_review_in_background(lanlan_name: str, review_messages: list | No
     try:
         # 直接异步调用review_history方法
         await recent_history_manager.review_history(lanlan_name, cancel_event)
-        applied = await _review_and_apply_negative_preferences(review_messages or [], lanlan_name)
+        messages = review_messages or recent_history_manager.get_recent_history(lanlan_name)
+        applied = await _review_and_apply_negative_preferences(messages, lanlan_name)
         if applied:
             logger.info(f"[MemoryServer] {lanlan_name}: 后台负面偏好审查应用 {applied} 条")
         logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
@@ -865,12 +866,13 @@ async def handle_negative_signal(request: NegativeSignalRequest, lanlan_name: st
         )
         return JSONResponse(result)
     except Exception as e:
-        logger.warning(f"[MemoryServer] 负面信号处理失败: {e}")
-        return JSONResponse({
+        logger.exception(f"[MemoryServer] 负面信号处理失败: {e}")
+        return JSONResponse(status_code=500, content={
             "matched": False,
             "topic": "",
             "policy": "none",
             "response_instruction": "",
+            "error": str(e),
         })
 
 

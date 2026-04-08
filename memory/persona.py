@@ -209,6 +209,9 @@ def _topics_match(left: str, right: str) -> bool:
         left_tokens = _normalize_topic_tokens(left_clean)
         right_tokens = _normalize_topic_tokens(right_clean)
         if left_tokens and right_tokens:
+            # _topics_match 对纯拉丁 topic 允许 left_tokens/right_tokens 的子集匹配。
+            # 这意味着 "work" 与 "work tomorrow"、"insect food" 与 "insect foods"
+            # 会被视为同一主题，代价是更宽松，但能更稳定地覆盖大小写、复数和轻微扩写变体。
             return left_tokens <= right_tokens or right_tokens <= left_tokens
     return left_clean in right_clean or right_clean in left_clean
 

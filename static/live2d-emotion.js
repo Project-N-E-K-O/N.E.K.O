@@ -143,40 +143,46 @@ Live2DManager.prototype.clearExpression = function(reason = null, forceAll = fal
 };
 
 Live2DManager.prototype.arePersistentExpressionsSuspended = function() {
-    return !!(this._persistentExpressionSuspendReasons && this._persistentExpressionSuspendReasons.size > 0);
+    return !!(this._persistentExpressionSuspendCounts && this._persistentExpressionSuspendCounts.size > 0);
 };
 
 // 常驻表情的预期调用顺序是：
-// arePersistentExpressionsSuspended() 读取 _persistentExpressionSuspendReasons，
+// arePersistentExpressionsSuspended() 读取 _persistentExpressionSuspendCounts，
 // suspendPersistentExpressions() 可选地 teardownPersistentExpressions()，
 // resumePersistentExpressions() 只清理由 suspend 添加的 reason，不会自动重放；
 // 调用方若需要恢复显示，必须显式调用 applyPersistentExpressionsNative()。
 Live2DManager.prototype.suspendPersistentExpressions = function(reason = 'temporary', options = {}) {
     const { clearCurrent = true } = options || {};
-    if (!this._persistentExpressionSuspendReasons) {
-        this._persistentExpressionSuspendReasons = new Set();
+    if (!this._persistentExpressionSuspendCounts) {
+        this._persistentExpressionSuspendCounts = new Map();
     }
 
     if (clearCurrent) {
         this.teardownPersistentExpressions(true);
     }
 
-    this._persistentExpressionSuspendReasons.add(reason);
-    console.log('[Persistent] 常驻表情已挂起:', Array.from(this._persistentExpressionSuspendReasons));
+    const currentCount = this._persistentExpressionSuspendCounts.get(reason) || 0;
+    this._persistentExpressionSuspendCounts.set(reason, currentCount + 1);
+    console.log('[Persistent] 常驻表情已挂起:', Array.from(this._persistentExpressionSuspendCounts.entries()));
 };
 
 Live2DManager.prototype.resumePersistentExpressions = function(reason = null, forceAll = false) {
-    if (!this._persistentExpressionSuspendReasons) {
-        this._persistentExpressionSuspendReasons = new Set();
+    if (!this._persistentExpressionSuspendCounts) {
+        this._persistentExpressionSuspendCounts = new Map();
     }
 
     if (forceAll === true) {
-        this._persistentExpressionSuspendReasons.clear();
+        this._persistentExpressionSuspendCounts.clear();
     } else if (reason != null) {
-        this._persistentExpressionSuspendReasons.delete(reason);
+        const currentCount = this._persistentExpressionSuspendCounts.get(reason) || 0;
+        if (currentCount <= 1) {
+            this._persistentExpressionSuspendCounts.delete(reason);
+        } else {
+            this._persistentExpressionSuspendCounts.set(reason, currentCount - 1);
+        }
     }
 
-    console.log('[Persistent] 常驻表情恢复检查:', Array.from(this._persistentExpressionSuspendReasons));
+    console.log('[Persistent] 常驻表情恢复检查:', Array.from(this._persistentExpressionSuspendCounts.entries()));
 };
 
 /**
@@ -1157,8 +1163,8 @@ Live2DManager.prototype.teardownPersistentExpressions = function(preserveDefinit
     if (!preserveDefinitions) {
         this.persistentExpressionNames = [];
         this.persistentExpressionParamsByName = {};
-        if (this._persistentExpressionSuspendReasons) {
-            this._persistentExpressionSuspendReasons.clear();
+        if (this._persistentExpressionSuspendCounts) {
+            this._persistentExpressionSuspendCounts.clear();
         }
     }
     this._persistentParamsBackup = {};

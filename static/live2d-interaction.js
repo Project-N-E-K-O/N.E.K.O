@@ -1106,7 +1106,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                 console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
                 await this.playExpression(emotion, choiceFile, {
                     suspendPersistent: true,
-                    suspendReason: 'click-effect'
+                    suspendReason: clickEffectSuspendReason
                 });
             }
         } else {
