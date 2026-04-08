@@ -77,6 +77,7 @@ class CookieSubmit(BaseModel):
 def validate_platform_fields(platform: str, cookies: Dict[str, str]):
     """统一的各平台核心字段防呆校验"""
     platform_validations = {
+        "netease": ["MUSIC_U"],
         "bilibili": ["SESSDATA"],
         "douyin": ["sessionid", "ttwid"],
         "kuaishou": ["kuaishou.server.web_st", "userId"], 
@@ -259,7 +260,9 @@ async def get_CanQRLoginLists():
 
 
 
-def get_nested_value(data: dict, path: str ,default=None):
+def get_nested_value(data: dict, path: str, default=None):
+    if not path:
+        return data
     value = data
     for key in path.split("."):
         if isinstance(value, dict) and key in value:
@@ -280,8 +283,18 @@ async def api_get_qr_code(
     response_config = config.get("response", {})
     
     try:
+        import time
+        ts = str(int(time.time() * 1000))
         async with httpx.AsyncClient() as client:
-            response = await client.get(url=config["get"], headers=config["headers"], timeout=10)
+            req_method = config.get("method", "GET").upper()
+            raw_get_params = config.get("get_params", {})
+            # 处理动态参数插入
+            req_data = {k: (v.replace("{{timestamp}}", ts) if isinstance(v, str) else v) for k, v in raw_get_params.items()}
+
+            if req_method == "POST":
+                response = await client.post(url=config["get"], headers=config["headers"], data=req_data, timeout=10)
+            else:
+                response = await client.get(url=config["get"], headers=config["headers"], params=req_data, timeout=10)
             response.raise_for_status()
             resp_data = response.json()
         
@@ -297,6 +310,11 @@ async def api_get_qr_code(
         
         qrcode_key = get_nested_value(data, qrcode_key_path) if "." in qrcode_key_path else data.get(qrcode_key_path)
         qrcode_url = get_nested_value(data, qrcode_url_path) if "." in qrcode_url_path else data.get(qrcode_url_path)
+        
+        # 兼容自定义拼接，例如网易云的二维码 URL 需要直接用 key 去拼
+        url_template = response_config.get("qrcode_url_template")
+        if url_template and qrcode_key:
+            qrcode_url = url_template.replace("{{qrcode_key}}", str(qrcode_key))
         
         if not qrcode_key or not qrcode_url:
             raise HTTPException(status_code=500, detail="二维码数据解析失败")
@@ -349,13 +367,28 @@ async def api_qr_login_poll(
     cookie_fields = config.get("cookie_fields", [])
     
     try:
+        import time
+        ts = str(int(time.time() * 1000))
+        req_method = config.get("method", "GET").upper()
+        # 处理动态参数插入
+        raw_poll_params = config.get("poll_params", {"qrcode_key": "{{qrcode_key}}"})
+        processed_params = {k: (v.replace("{{qrcode_key}}", qrcode_key).replace("{{timestamp}}", ts) if isinstance(v, str) else v) for k, v in raw_poll_params.items()}
+
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                url=config["login"], 
-                params={"qrcode_key": qrcode_key}, 
-                headers=config["headers"],
-                timeout=10
-            )
+            if req_method == "POST":
+                response = await client.post(
+                    url=config["login"], 
+                    data=processed_params, 
+                    headers=config["headers"],
+                    timeout=10
+                )
+            else:
+                response = await client.get(
+                    url=config["login"], 
+                    params=processed_params, 
+                    headers=config["headers"],
+                    timeout=10
+                )
             resp_data = response.json()
         
         poll_code_path = response_config.get("poll_code_path", "data.code")
@@ -369,11 +402,33 @@ async def api_qr_login_poll(
         
         status_info = status_codes.get(code, {"status": "unknown", "message": raw_message})
         
-        if code == 0:
+        # 动态匹配各平台的成功码，不再硬编码 code == 0
+        # 例如：Bilibili 成功码为 0
+        if status_info.get("status") == "success":
+            # 兼容性设计：优先从响应头提取，若 JSON Body 中包含 cookie 字段则解析合并
             cookies = dict(response.cookies)
+            body_cookie_str = resp_data.get("cookie")
+            if body_cookie_str:
+                try:
+                    body_cookies = parse_cookie_string(body_cookie_str)
+                    cookies.update(body_cookies)
+                except Exception as parse_err:
+                    logger.warning(f"⚠️ 解析响应体中的 Cookie 字符串失败: {parse_err}")
+
             cookie_string = "; ".join([f"{k}={v}" for k, v in cookies.items()])
             
-            logger.info(f"✅ {platform} 二维码登录成功")
+            logger.info(f"✅ {platform} 二维码登录成功 (code={code})")
+            
+            # QR 扫码成功后，自动将 Cookies 持久化到本地文件
+            # 避免用户扫码后忘记点击"保存配置"导致 Cookie 丢失
+            if cookies and cookie_fields:
+                filtered_cookies = {k: v for k, v in cookies.items() if k in cookie_fields}
+                if filtered_cookies:
+                    save_ok = save_cookies_to_file(platform, filtered_cookies)
+                    if save_ok:
+                        logger.info(f"✅ {platform} QR 登录凭证已自动持久化")
+                    else:
+                        logger.warning(f"⚠️ {platform} QR 登录凭证自动保存失败 (不影响登录)")
             
             ret = {
                 "success": True,
@@ -408,7 +463,7 @@ async def api_qr_login_poll(
 
 #存在用于直接复制后替换内容的方便示例,不需要检查NetworkQRLoginInfo["示例"]内部的东西
 NetworkQRLoginInfo = {
-    "Bilibili": {
+    "bilibili": {
         "get": "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
         "login": "https://passport.bilibili.com/x/passport-login/web/qrcode/poll",
         "timeout": 180,

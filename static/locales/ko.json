@@ -28,7 +28,8 @@
         "fieldSeparator": ", ",
         "tryAgainLater": "나중에 다시 시도해 주세요.",
         "user": "사용자",
-        "project": "프로젝트"
+        "project": "프로젝트",
+        "collapse": "접기"
     },
     "autostartPrompt": {
         "title": "N.E.K.O를 시작 시 자동 실행할까요?",
@@ -2487,6 +2488,7 @@
         "weibo": "🌏 위보 (Weibo)",
         "twitter": "🐦 트위터/X (Twitter/X)",
         "reddit": "👽 레딧 (Reddit)",
+        "netease": "🎶 넷이즈 뮤직 (NetEase)",
         "saveConfig": "설정 저장",
         "encryptStorage": "로컬 파일에 안전하게 암호화 저장",
         "localMonitoring": "로컬 상태 모니터링",
@@ -2512,7 +2514,8 @@
             "kuaishou": "📌 <b>대상:</b> <b>kuaishou.com</b>에 접속하여 해당 쿠키를 가져오세요.",
             "weibo": "📌 <b>대상:</b> <b>weibo.com</b>에 접속하여 해당 쿠키를 가져오세요.",
             "twitter": "📌 <b>대상:</b> <b>x.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "reddit": "📌 <b>대상:</b> <b>reddit.com</b>에 접속하여 해당 쿠키를 가져오세요."
+            "reddit": "📌 <b>대상:</b> <b>reddit.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "netease": "📌 <b>대상:</b> <b>music.163.com</b>에 접속하여 해당 쿠키를 가져오세요."
         },
         "guide": {
             "title": "초보자를 위한 공통 가이드",
@@ -2594,6 +2597,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF 토큰"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "핵심 신원 증명 (필수)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "장치 식별자 (선택)"
             }
         },
         "status": {
@@ -2617,7 +2628,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "QR 로그인 성공! 쿠키가 자동으로 입력되었습니다. 설정 저장을 클릭하세요"
+            "successAlert": "QR 로그인 성공! 쿠키가 자동으로 입력되었습니다. 설정 저장을 클릭하세요",
+            "extractFailed": "⚠️ QR 로그인은 성공했지만 필드를 자동으로 추출하지 못했습니다. 수동으로 확인해 주세요."
         }
     },
     "music": {

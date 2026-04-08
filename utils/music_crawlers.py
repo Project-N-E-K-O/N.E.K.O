@@ -67,6 +67,23 @@ USER_AGENTS = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 OPR/108.0.0.0',
 ]
 
+# 针对高强度反爬平台的现代浏览器指纹 (Chromium 132+)
+CH_HEADERS_CHROME = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Sec-Ch-Ua': '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'cross-site',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+    'Connection': 'keep-alive'
+}
+
 # ==================================================
 # 去重与多样性管理
 # ==================================================
@@ -265,6 +282,7 @@ class BaseMusicCrawler:
 class NeteaseCrawler(BaseMusicCrawler):
     """
     网易云音乐爬虫，支持搜索并过滤 VIP/付费歌曲。
+    Cookie 支持热重载：每次搜索前检测凭证文件变动，自动同步最新登录态。
     """
     def __init__(self):
         super().__init__("网易云音乐")
@@ -272,12 +290,93 @@ class NeteaseCrawler(BaseMusicCrawler):
             'Referer': 'https://music.163.com/',
             'Content-Type': 'application/x-www-form-urlencoded'
         })
+        self._has_cookies = False
+        self._is_vip = False
+        self._vip_checked = False
+        self._cookie_file_mtime = 0.0  # 记录 Cookie 文件最后修改时间
+        self._load_cookies()
+
+    def _get_cookie_file_mtime(self) -> float:
+        """获取网易云 Cookie 文件的最后修改时间，不存在则返回 0"""
+        try:
+            from utils.cookies_login import COOKIE_FILES
+            cookie_path = COOKIE_FILES.get('netease')
+            if cookie_path and cookie_path.exists():
+                return cookie_path.stat().st_mtime
+        except Exception:
+            pass
+        return 0.0
+
+    def _load_cookies(self):
+        """动态加载本地配置的 Netease Cookie"""
+        try:
+            from utils.cookies_login import load_cookies_from_file
+            cookies = load_cookies_from_file('netease')
+            if cookies:
+                cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+                self.client.headers.update({'Cookie': cookie_str})
+                self._has_cookies = True
+                self._cookie_file_mtime = self._get_cookie_file_mtime()
+                logger.info(f"[{self.platform_name}] 成功自适应加载媒体凭证 (MUSIC_U)")
+            else:
+                # Cookie 文件被清空或删除，重置登录状态
+                if self._has_cookies:
+                    self.client.headers.pop('Cookie', None)
+                    self._has_cookies = False
+                    logger.info(f"[{self.platform_name}] 凭证已被清除，回退到未登录状态")
+                self._cookie_file_mtime = self._get_cookie_file_mtime()
+        except Exception as e:
+            logger.warning(f"[{self.platform_name}] 加载 Cookie 失败 (此异常不影响服务启动): {e}")
+
+    def _check_cookie_freshness(self):
+        """检测 Cookie 文件是否有变动，有则热重载并重置 VIP 缓存"""
+        current_mtime = self._get_cookie_file_mtime()
+        if current_mtime != self._cookie_file_mtime:
+            logger.info(f"[{self.platform_name}] 检测到凭证文件变动 (mtime: {self._cookie_file_mtime} → {current_mtime})，执行热重载")
+            self._load_cookies()
+            # 凭证变了，VIP 身份需要重新探测
+            self._is_vip = False
+            self._vip_checked = False
+
+    async def _check_vip_status(self):
+        """异步检查用户 VIP 状态（首次 search() 时懒触发）"""
+        if self._vip_checked:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    'https://music.163.com/api/vip/info',
+                    headers={
+                        'Referer': 'https://music.163.com/',
+                        'Cookie': self.client.headers.get('Cookie', ''),
+                        'User-Agent': self.client.headers.get('User-Agent', '')
+                    }
+                )
+                data = resp.json()
+                # vipType > 0 表示有 VIP 身份
+                self._is_vip = data.get('data', {}).get('vipType', 0) > 0
+                self._vip_checked = True
+                if self._is_vip:
+                    logger.info(f"[{self.platform_name}] 用户为 VIP 会员，已解锁完整曲库搜索")
+                else:
+                    logger.info(f"[{self.platform_name}] 用户为普通账号，已登录但无 VIP")
+        except Exception as e:
+            # 探测失败时不锁定状态，下次搜索会重试
+            logger.warning(f"[{self.platform_name}] VIP 状态检查失败 (下次搜索将重试): {e}")
 
     async def search(self, keyword: str, limit: int = 1) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
         if not keyword:
             logger.debug(f"[{self.platform_name}] 因关键词为空而跳过")
             return []
+
+        # 每次搜索前检测 Cookie 文件变动，确保搜索侧与播放侧状态一致
+        self._check_cookie_freshness()
+
+        # 首次搜索（或凭证变动后）懒检查 VIP 状态
+        if self._has_cookies and not self._vip_checked:
+            await self._check_vip_status()
+
 
         logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
         search_url = "https://music.163.com/api/search/get/web"
@@ -293,18 +392,20 @@ class NeteaseCrawler(BaseMusicCrawler):
                 return []
 
             songs = result["result"]["songs"]
-            found_songs = []
+            if not songs:
+                return []
 
-            # 优先选择免费或会员可播的歌曲
-            for song in songs:
-                # `fee` == 0 (免费), `fee` == 8 (会员免费)
-                if song.get("fee", 1) in [0, 8]:
-                    found_songs.append(song)
-
+            # 针对 VIP 用户开放全部权限，不进行 fee 过滤
+            if self._is_vip:
+                found_songs = songs
+                logger.info(f"[{self.platform_name}] VIP 会员身份，跳过 fee 过滤，保留完整搜索结果")
+            else:
+                found_songs = [song for song in songs if song.get("fee", 1) == 0]
+                if self._has_cookies:
+                    logger.info(f"[{self.platform_name}] 普通已登录用户，仅返回免费歌曲")
             if not found_songs:
                 return []
 
-            # 格式化输出
             final_results = []
             for song in found_songs[:limit]:
                 song_id = song.get("id")
@@ -315,8 +416,8 @@ class NeteaseCrawler(BaseMusicCrawler):
                 else:
                     artist_name = "未知"
                 cover_url = song.get("album", {}).get("picUrl", "")
-                # 使用外链地址，无需付费即可播放
-                audio_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
+                # 使用本地代理路由，支持 VIP 歌曲解析重定向
+                audio_url = f"/api/music/play/netease/{song_id}"
                 final_results.append(self._format_item(name=song_name, url=audio_url, artist=artist_name, cover=cover_url))
             
             return final_results
@@ -513,20 +614,24 @@ class MusopenCrawler(BaseMusicCrawler):
     Musopen 古典音乐爬虫，用于在无明确关键词时提供背景音乐。
     """
     def __init__(self):
+        # 针对 Musopen 的特殊反爬，需要 HTTP/2 + 特殊 Headers
         super().__init__("Musopen")
-        # --- 恢复豪华版浏览器伪装头，突破 403 盾 ---
-        self.client.headers.update({
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Referer': 'https://www.google.com/',
-            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'cross-site',
-            'Upgrade-Insecure-Requests': '1'
-        })
+        # 关闭父类创建的默认 client，避免孤儿资源泄漏
+        # （虽然全局单例影响极小，但保持代码卫生）
+        _old_client = self.client
+        self.client = httpx.AsyncClient(
+            headers=CH_HEADERS_CHROME,
+            timeout=15.0,
+            follow_redirects=True,
+            http2=True  # 开启 HTTP/2 绕过 Cloudflare 基础检测
+        )
+        # 在后台安全关闭旧 client（同步上下文中无法 await）
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_old_client.aclose())
+        except RuntimeError:
+            pass  # 没有 event loop 时旧 client 交由 GC 处理
 
     async def search(self, keyword: str = "", limit: int = 1) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
@@ -881,13 +986,13 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     if keyword: 
         # 场景 A: 用户指定了明确关键词 -> 开启"梯队降级"机制
         kw_lower = keyword.lower()
-        # 1. 【强古典词】补回 "古典" 与 "classical" 核心词，确保正确路由至 Musopen
+        # 1. 【强古典词】确保正确路由至 Musopen
         strong_classical = [
             "古典", "肖邦", "贝多芬", "莫扎特", "交响", "夜曲", "协奏曲", "奏鸣曲",
             "classical", "chopin", "beethoven", "mozart", "symphony", "nocturne", "concerto", "sonata",
-            "クラシック", "ショパン", "ベートーヴェン", "モーツァルト", "交響", "夜想曲",  # ← 补回 クラシック
-            "클래식", "쇼팽", "베토벤", "모차르트", "교향곡", "야상곡",                   # ← 补回 클래식
-            "классическая", "шопен", "бетховен", "моцарт", "симфония", "ноктюрн",       # ← 补回 классическая
+            "クラシック", "ショパン", "ベートーヴェン", "モーツァルト", "交響", "夜想曲",
+            "클래식", "쇼팽", "베토벤", "모차르트", "교향곡", "야상곡",
+            "классическая", "шопен", "бетховен", "моцарт", "симфония", "ноктюрн",
         ]
         
         # 2. 【乐器词】具有歧义，可能是古典也可能是现代
@@ -928,7 +1033,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         
         # --- 组建第一梯队（最优解竞速） ---
         
-        # 1. 【核心修复】古典乐意图判定：强古典词 OR (包含乐器词且非现代风格词)
+        # 1. 古典乐意图判定：强古典词 OR (包含乐器词且非现代风格词)
         is_classical = any(kw in kw_lower for kw in strong_classical) or \
                        (any(kw in kw_lower for kw in instruments) and not any(kw in kw_lower for kw in modern_styles))
         
@@ -936,7 +1041,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             logger.info(f"[智能调度] 识别到古典/纯正乐器意图，优先调度 Musopen: {keyword}")
             primary_tasks.append(all_crawlers['musopen'].search(keyword, limit))
         
-        # 2. 【补充修复】华语/流行路由：命中你定义的华语歌手或关键词
+        # 2. 华语/流行路由：命中华语歌手或关键词
         elif any(kw in kw_lower for kw in chinese_keywords):
             logger.info(f"[智能调度] 识别到华语检索意图，优先调度网易云: {keyword}")
             primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
@@ -987,10 +1092,12 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             logger.info("[智能调度] 第一梯队未命中，触发第二级兜底引擎...")
             fallback_tasks = []
             
-            # 【核心修复】不要在这里将关键词篡改为 "relax"
+            # 不要在这里将关键词篡改为 "relax"
             # 必须透传原始 keyword，这样搜不到才会真实返回空，让路由层去触发真正的随机逻辑
-            fallback_tasks.append(all_crawlers['netease'].search(keyword, limit))
+            # netease 不重试（cookies 失败重试也没意义），直接换其他平台兜底
             fallback_tasks.append(all_crawlers['fma'].search(keyword, limit))
+            fallback_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
+            fallback_tasks.append(all_crawlers['bandcamp'].search(keyword, limit))
             
             # 兜底梯队也使用竞速模式
             fallback_task_objs = [asyncio.create_task(coro) for coro in fallback_tasks]
@@ -1102,30 +1209,99 @@ def expand_style_keyword(keyword: str) -> List[str]:
     将风格关键词扩展为多样化的搜索词列表，避免搜索结果过于单一。
     
     例如: "lofi" -> ["lofi hip hop", "chill beats", "study music", "lofi"]
+    包含跨语言映射：输入中文风格词时自动补充对应英文词，反之亦然。
     """
     kw_lower = keyword.lower().strip()
     
-    style_expansions = {
-        'lofi': ['lofi hip hop', 'chill beats', 'study music', 'relaxing piano', 'ambient lofi'],
-        'chill': ['chill music', 'chill vibes', 'relaxing', 'downtempo', 'ambient chill'],
-        'relax': ['relaxing music', 'calm', 'peaceful', 'meditation', 'ambient'],
-        'electronic': ['electronic music', 'synth', 'ambient electronic', 'downtempo'],
-        'ambient': ['ambient music', 'atmospheric', 'soundscape', 'drone'],
-        'hiphop': ['hip hop beats', 'rap instrumental', 'trap beats', 'boom bap'],
-        'indie': ['indie folk', 'indie rock', 'indie pop', 'alternative'],
-        '电音': ['electronic', 'EDM', 'house music', 'trance'],
-        '独立': ['indie', 'alternative', 'underground'],
-        '环境音': ['ambient', 'nature sounds', 'white noise', 'meditation'],
+    # 跨语言核心词映射 (中文 <-> 英文)
+    lang_mapping = {
+        '钢琴': 'piano', '小提琴': 'violin', '大提琴': 'cello', '吉他': 'guitar',
+        '夜曲': 'nocturne', '交响': 'symphony', '协奏曲': 'concerto', '爵士': 'jazz',
+        '摇滚': 'rock', '民谣': 'folk', '说唱': 'rap', '蓝调': 'blues',
+        '动漫': 'anime', '二次元': 'anime', '电子': 'electronic',
     }
+    
+    style_expansions = {
+        # ---- 英文风格 ----
+        'lofi': ['lofi hip hop', 'chill beats', 'study music', 'relaxing piano', 'ambient lofi', 'city pop lofi'],
+        'chill': ['chill music', 'chill vibes', 'relaxing', 'downtempo', 'ambient chill', 'coffee shop music'],
+        'relax': ['relaxing music', 'calm', 'peaceful', 'meditation', 'ambient', 'sleep music'],
+        'electronic': ['electronic music', 'synthwave', 'techno', 'house music', 'downtempo', 'future bass'],
+        'ambient': ['ambient music', 'atmospheric', 'soundscape', 'drone', 'dark ambient'],
+        'hiphop': ['hip hop beats', 'rap instrumental', 'trap beats', 'boom bap', 'jazz hop'],
+        'indie': ['indie folk', 'indie rock', 'indie pop', 'shoegaze', 'alternative', 'dream pop'],
+        'jazz': ['jazz music', 'smooth jazz', 'bebop', 'swing music', 'jazz fusion', 'cool jazz', 'bossa nova'],
+        'blues': ['blues music', 'delta blues', 'chicago blues', 'blues rock', 'rhythm and blues'],
+        'rock': ['rock music', 'hard rock', 'alternative rock', 'blues rock', 'psychedelic rock', 'grunge'],
+        'metal': ['heavy metal', 'death metal', 'power metal', 'metalcore', 'doom metal', 'symphonic metal'],
+        'punk': ['punk rock', 'pop punk', 'post-punk', 'hardcore punk', 'emo'],
+        'folk': ['folk music', 'folk rock', 'indie folk', 'americana', 'acoustic folk'],
+        'soul': ['soul music', 'neo soul', 'motown', 'r&b', 'funk'],
+        'reggae': ['reggae music', 'dub', 'ska', 'dancehall', 'roots reggae'],
+        'country': ['country music', 'country rock', 'bluegrass', 'americana'],
+        'classical': ['classical music', 'orchestral', 'chamber music', 'baroque', 'romantic era'],
+        'epic': ['epic music', 'cinematic', 'orchestral trailer', 'powerful instrumental', 'film score'],
+        'ost': ['original soundtrack', 'movie music', 'film score', 'game soundtrack', 'anime ost'],
+        'anime': ['anime music', 'j-pop', 'anison', 'vocaloid', 'game soundtrack', 'nightcore'],
+        'vocaloid': ['vocaloid music', 'hatsune miku', 'vocaloid covers', 'utaite', 'anime music'],
+        'kpop': ['k-pop', 'korean pop', 'kpop dance', 'k-r&b', 'korean music'],
+        'jpop': ['j-pop', 'japanese pop', 'city pop', 'j-rock', 'anison'],
+        'study': ['study music', 'concentration', 'focus music', 'deep focus', 'classical for studying'],
+        'sleep': ['sleep music', 'white noise', 'delta waves', 'deep sleep ambient', 'rain sounds'],
+        'workout': ['workout music', 'gym motivation', 'high energy', 'power beats', 'running music'],
+        'piano': ['piano music', 'piano solo', 'piano covers', 'classical piano', 'romantic piano'],
+        'guitar': ['acoustic guitar', 'guitar solo', 'fingerstyle', 'classical guitar', 'guitar covers'],
+        # ---- 中文风格 ----
+        '电音': ['electronic', 'EDM', 'house music', 'trance', 'techno'],
+        '独立': ['indie', 'alternative', 'underground', 'indie pop'],
+        '环境音': ['ambient', 'nature sounds', 'white noise', 'meditation', 'rain sounds'],
+        '爵士': ['jazz', 'smooth jazz', 'bossa nova', 'swing music', 'jazz fusion'],
+        '蓝调': ['blues', 'delta blues', 'blues rock', 'r&b'],
+        '摇滚': ['rock', 'hard rock', 'alternative rock', 'grunge', 'indie rock'],
+        '金属': ['metal', 'heavy metal', 'power metal', 'metalcore'],
+        '朋克': ['punk rock', 'pop punk', 'post-punk', 'emo'],
+        '民谣': ['folk music', 'indie folk', 'acoustic', 'singer songwriter', '校园民谣'],
+        '说唱': ['rap', 'hip hop', 'trap', 'freestyle', 'boom bap'],
+        '古风': ['chinese traditional', 'guzheng', 'erhu', '古典音乐', 'traditional chinese'],
+        '二次元': ['anime music', 'anison', 'vocaloid', 'game music', 'acg'],
+        '动漫': ['anime ost', 'anime opening', 'j-pop', 'anison', 'vocaloid'],
+        '学习': ['study music', 'lofi study', 'concentration', 'focus playlist', 'piano study'],
+        '放松': ['relaxing music', 'calm', 'peaceful', 'chill', 'meditation music'],
+        '治愈': ['healing music', 'calming', 'peaceful piano', 'gentle', 'comfort music'],
+        '激情': ['energetic', 'power music', 'epic', 'workout music', 'high energy'],
+        '伤感': ['sad music', 'melancholy', 'emotional piano', 'heartbreak songs'],
+        '怀旧': ['nostalgic', 'retro music', 'oldies', '80s music', '90s hits'],
+        '流行': ['pop music', 'top hits', 'chart music', 'mainstream pop'],
+        '轻音乐': ['light music', 'easy listening', 'soft instrumental', 'new age'],
+        # ---- 日文风格 ----
+        'シティポップ': ['city pop', 'japanese city pop', '80s japanese', 'j-pop retro'],
+        'ボカロ': ['vocaloid', 'hatsune miku', 'vocaloid covers', 'anime music'],
+        'アニソン': ['anison', 'anime opening', 'anime ending', 'anime ost'],
+        # ---- 韩文风格 ----
+        '케이팝': ['k-pop', 'korean pop', 'k-r&b', 'korean music'],
+    }
+    
+    # 先收集语言互补词
+    lang_extras = []
+    for src, tgt in lang_mapping.items():
+        if src in kw_lower and tgt.lower() not in kw_lower:
+            lang_extras.append(tgt)
+        elif tgt.lower() in kw_lower and src not in kw_lower:
+            lang_extras.append(src)
     
     for style_key, expansions in style_expansions.items():
         if style_key in kw_lower:
             expansion_list = [kw for kw in expansions if kw.lower() != kw_lower]
             random.shuffle(expansion_list)
-            result = [keyword] + expansion_list
+            result = [keyword] + lang_extras + expansion_list
             return result
     
+    # 即使没命中风格词，也返回语言互补词
+    if lang_extras:
+        return [keyword] + lang_extras
+    
     return [keyword]
+
 
 def identify_best_music_resource(target_song: str, search_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """

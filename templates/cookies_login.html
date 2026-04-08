@@ -350,6 +350,52 @@
             color: white;
         }
     }
+        /* 二维码容器动画 */
+        #QRLogin {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            overflow: hidden;
+            max-height: 500px; /* 控制展开高度 */
+            opacity: 1;
+            margin-bottom: 20px;
+        }
+        #QRLogin.collapsed {
+            max-height: 0;
+            opacity: 0;
+            margin-bottom: 0;
+            padding: 0;
+        }
+
+        /* 二维码收起按钮 - 绿色主题 */
+        .qr-collapse-btn {
+            background: #dcfce7;
+            color: #166534;
+            border: 1px solid #bef26400;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            float: right;
+            margin-top: -5px;
+            box-shadow: 0 2px 4px rgba(22, 101, 52, 0.1);
+        }
+        .qr-collapse-btn:hover {
+            background: #bbf7d0;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 6px rgba(22, 101, 52, 0.15);
+        }
+        [data-theme="dark"] .qr-collapse-btn {
+            background: #065f46;
+            color: #ecfdf5;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+        [data-theme="dark"] .qr-collapse-btn:hover {
+            background: #047857;
+        }
     </style>
 </head>
 <body>
@@ -362,7 +408,8 @@
     <div class="dashboard-wrapper">
     <div class="dashboard">
         <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('bilibili', this)" data-i18n="cookiesLogin.bilibili">📺 Bilibili</button>
+            <button class="tab-btn active" onclick="switchTab('netease', this)" data-i18n="cookiesLogin.netease">🎶 网易云音乐</button>
+            <button class="tab-btn" onclick="switchTab('bilibili', this)" data-i18n="cookiesLogin.bilibili">📺 Bilibili</button>
             <button class="tab-btn" onclick="switchTab('douyin', this)" data-i18n="cookiesLogin.douyin">🎵 抖音</button>
             <button class="tab-btn" onclick="switchTab('kuaishou', this)" data-i18n="cookiesLogin.kuaishou">🧡 快手</button>
             <button class="tab-btn" onclick="switchTab('weibo', this)" data-i18n="cookiesLogin.weibo">🌏 微博</button>
@@ -420,6 +467,6 @@
     </div>
 
     </div>
-    <script src="/static/js/cookies_login.js"></script>
+    <script src="/static/js/cookies_login.js?v=2.2"></script>
 </body>
 </html>
