@@ -677,7 +677,7 @@ def _build_plugin_meta(
             email=author_data.get("email"),
         )
 
-    # 读取 keywords（正则表达式列表）和 short_description
+    # 读取 keywords (正则表达式列表) 和 short_description
     raw_keywords = pdata.get("keywords", [])
     keywords: list[str] = []
     if isinstance(raw_keywords, list):

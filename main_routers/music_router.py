@@ -1,7 +1,7 @@
 # 音乐路由
 
 from fastapi import APIRouter, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from utils.music_crawlers import fetch_music_content
 from utils.cookies_login import load_cookies_from_file
 from utils.logger_config import get_module_logger
@@ -16,7 +16,7 @@ logger = get_module_logger(__name__, "Music")
 #  source file on disk before import so the rest of the code works normally.
 # ---------------------------------------------------------------------------
 def _patch_pyncm_async() -> None:
-    import os, sys
+    import os, sys, tempfile
     for p in sys.path:
         target = os.path.join(p, "pyncm_async", "apis", "cloud.py")
         if not os.path.isfile(target):
@@ -32,8 +32,19 @@ def _patch_pyncm_async() -> None:
                     'objectKey.replace("/", "%2F")',
                     "objectKey.replace('/', '%2F')",
                 )
-                with open(target, "w", encoding="utf-8") as f:
-                    f.write(code)
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=os.path.dirname(target), prefix="cloud.py.", suffix=".tmp",
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(code)
+                    os.replace(tmp_path, target)
+                except BaseException:
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+                    raise
                 logger.info("[Music] Patched pyncm_async cloud.py for Python <3.12 compat")
             break
         except Exception as exc:
@@ -110,6 +121,9 @@ async def play_netease_music(song_id: str):
     网易云 VIP 音乐智能跳转路由：
     利用后端 MUSIC_U Cookie 获取真实高音质/鉴权直链，通过 307 重定向至前端播放。
     """
+    if not song_id.isdigit():
+        return JSONResponse(content={"success": False, "error": "invalid song_id"}, status_code=400)
+
     if not _PYNCM_AVAILABLE:
         fallback_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
         logger.warning("[音乐播放] pyncm_async 不可用，直接使用公开外链")
