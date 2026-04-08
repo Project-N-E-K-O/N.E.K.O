@@ -29,28 +29,42 @@ logger = get_module_logger(__name__, "Main")
 
 
 def _normalize_persistent_expression_group(mapping):
-    if not isinstance(mapping, dict):
-        return {"motions": {}, "expressions": {}}
+    def _normalize_persistent_files(value):
+        if isinstance(value, list):
+            normalized_files = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+            return normalized_files[-1:] if normalized_files else []
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        return []
 
+    if isinstance(mapping, (str, list)):
+        return {
+            "motions": {},
+            "expressions": {
+                "常驻": _normalize_persistent_files(mapping),
+            },
+        }
+    if not isinstance(mapping, dict):
+        return mapping
+
+    normalized_mapping = dict(mapping)
     motions = mapping.get('motions')
     expressions = mapping.get('expressions')
     if not isinstance(motions, dict):
         motions = {}
+    else:
+        motions = dict(motions)
     if not isinstance(expressions, dict):
         expressions = {}
-
-    persistent_files = expressions.get('常驻')
-    if isinstance(persistent_files, list):
-        normalized_files = [item.strip() for item in persistent_files if isinstance(item, str) and item.strip()]
-        expressions['常驻'] = normalized_files[-1:] if normalized_files else []
-    elif isinstance(persistent_files, str) and persistent_files.strip():
-        expressions['常驻'] = [persistent_files.strip()]
     else:
-        expressions['常驻'] = []
+        expressions = dict(expressions)
 
-    mapping['motions'] = motions
-    mapping['expressions'] = expressions
-    return mapping
+    motions.pop('常驻', None)
+    expressions['常驻'] = _normalize_persistent_files(expressions.get('常驻'))
+
+    normalized_mapping['motions'] = motions
+    normalized_mapping['expressions'] = expressions
+    return normalized_mapping
 
 
 def _normalize_model_path(path: str) -> str:
@@ -300,6 +314,9 @@ def get_emotion_mapping(model_name: str):
 
         # 优先使用 EmotionMapping；若不存在则从 FileReferences 推导
         emotion_mapping = config_data.get('EmotionMapping')
+        emotion_mapping = _normalize_persistent_expression_group(emotion_mapping)
+        if emotion_mapping and not isinstance(emotion_mapping, dict):
+            emotion_mapping = None
         if not emotion_mapping:
             derived_mapping = {"motions": {}, "expressions": {}}
             file_refs = config_data.get('FileReferences', {}) or {}
@@ -335,9 +352,7 @@ def get_emotion_mapping(model_name: str):
                     group = 'neutral'
                 derived_mapping["expressions"].setdefault(group, []).append(file_path)
 
-            emotion_mapping = derived_mapping
-        
-        emotion_mapping = _normalize_persistent_expression_group(emotion_mapping)
+            emotion_mapping = _normalize_persistent_expression_group(derived_mapping)
 
         return {"success": True, "config": emotion_mapping}
     except Exception as e:

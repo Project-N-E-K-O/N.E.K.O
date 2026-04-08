@@ -1697,6 +1697,9 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         clearTimeout(this._clickEffectRestoreTimer);
         this._clickEffectRestoreTimer = null;
     }
+    const clickEffectSuspendReason = window.isInTutorial
+        ? 'tutorial-click-expression'
+        : 'click-effect';
 
     // 教程模式：直接随机播放表情
     if (window.isInTutorial) {

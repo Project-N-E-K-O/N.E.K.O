@@ -109,7 +109,7 @@ def test_contains_negative_signal_keyword_gate() -> None:
 
 
 def test_skip_recent_ai_message_if_user_immediately_rejects_it() -> None:
-    mock_cm = _build_mock_config_manager("/tmp")
+    mock_cm = _build_mock_config_manager(tempfile.gettempdir())
     with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
          patch("utils.config_manager._config_manager", mock_cm):
         sys.modules.pop("memory_server", None)
@@ -128,7 +128,7 @@ def test_skip_recent_ai_message_if_user_immediately_rejects_it() -> None:
 
 
 def test_skip_recent_ai_message_not_filtered_by_tone_only_negative_signal() -> None:
-    mock_cm = _build_mock_config_manager("/tmp")
+    mock_cm = _build_mock_config_manager(tempfile.gettempdir())
     with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
          patch("utils.config_manager._config_manager", mock_cm):
         sys.modules.pop("memory_server", None)
@@ -144,8 +144,25 @@ def test_skip_recent_ai_message_not_filtered_by_tone_only_negative_signal() -> N
         assert 0 not in skip_indexes
 
 
+def test_skip_recent_ai_message_requires_same_topic_refusal() -> None:
+    mock_cm = _build_mock_config_manager(tempfile.gettempdir())
+    with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+         patch("utils.config_manager._config_manager", mock_cm):
+        sys.modules.pop("memory_server", None)
+        memory_server = importlib.import_module("memory_server")
+
+        brackets_pattern = memory_server.re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
+        messages = [
+            type("Msg", (), {"type": "ai", "content": "Let's talk about work tomorrow."})(),
+            type("Msg", (), {"type": "human", "content": "don't mention art anymore"})(),
+        ]
+
+        skip_indexes = memory_server._get_recent_prompt_skip_indexes(messages, [], brackets_pattern)
+        assert 0 not in skip_indexes
+
+
 def test_skip_recent_ai_message_matches_hard_topic_case_insensitively() -> None:
-    mock_cm = _build_mock_config_manager("/tmp")
+    mock_cm = _build_mock_config_manager(tempfile.gettempdir())
     with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
          patch("utils.config_manager._config_manager", mock_cm):
         sys.modules.pop("memory_server", None)
@@ -155,8 +172,19 @@ def test_skip_recent_ai_message_matches_hard_topic_case_insensitively() -> None:
         assert memory_server._should_skip_recent_message_for_prompt(message, ["work"], "Let's talk about Work tomorrow.") is True
 
 
+def test_skip_recent_ai_message_does_not_match_latin_substring_false_positive() -> None:
+    mock_cm = _build_mock_config_manager(tempfile.gettempdir())
+    with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+         patch("utils.config_manager._config_manager", mock_cm):
+        sys.modules.pop("memory_server", None)
+        memory_server = importlib.import_module("memory_server")
+
+        message = type("Msg", (), {"type": "ai", "content": "We can talk about party plans later."})()
+        assert memory_server._should_skip_recent_message_for_prompt(message, ["art"], "We can talk about party plans later.") is False
+
+
 def test_negative_review_runs_after_review_history_with_raw_messages() -> None:
-    mock_cm = _build_mock_config_manager("/tmp")
+    mock_cm = _build_mock_config_manager(tempfile.gettempdir())
     with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
          patch("utils.config_manager._config_manager", mock_cm):
         sys.modules.pop("memory_server", None)
@@ -181,7 +209,7 @@ def test_negative_review_runs_after_review_history_with_raw_messages() -> None:
 
 
 def test_negative_review_deduplicates_same_topic_in_one_round() -> None:
-    mock_cm = _build_mock_config_manager("/tmp")
+    mock_cm = _build_mock_config_manager(tempfile.gettempdir())
     with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
          patch("utils.config_manager._config_manager", mock_cm):
         sys.modules.pop("memory_server", None)
@@ -206,13 +234,36 @@ def test_negative_review_deduplicates_same_topic_in_one_round() -> None:
                 "response_instruction": "",
             }
 
-        with patch.object(memory_server, "_get_negative_signal_user_messages", return_value=["don't mention work"]), \
+        with patch.object(memory_server, "_get_negative_signal_user_messages", return_value=["this is annoying"]), \
              patch.object(memory_server, "_review_negative_preferences", side_effect=fake_review_negative_preferences), \
              patch.object(memory_server.persona_manager, "apply_negative_preference_review", side_effect=fake_apply):
             applied = asyncio.run(memory_server._review_and_apply_negative_preferences(reviewed, "测试猫娘"))
 
         assert applied == 1
         assert applied_calls == [("测试猫娘", "work", "avoid", "negative_review")]
+
+
+def test_negative_review_skips_topic_already_signaled_in_same_round() -> None:
+    mock_cm = _build_mock_config_manager(tempfile.gettempdir())
+    with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+         patch("utils.config_manager._config_manager", mock_cm):
+        sys.modules.pop("memory_server", None)
+        memory_server = importlib.import_module("memory_server")
+
+        reviewed = [
+            {"topic": "Work", "policy": "avoid", "confidence": 0.95},
+        ]
+
+        async def fake_review_negative_preferences(messages, name):
+            return reviewed
+
+        with patch.object(memory_server, "_get_negative_signal_user_messages", return_value=["don't mention work anymore"]), \
+             patch.object(memory_server, "_review_negative_preferences", side_effect=fake_review_negative_preferences), \
+             patch.object(memory_server.persona_manager, "apply_negative_preference_review") as apply_mock:
+            applied = asyncio.run(memory_server._review_and_apply_negative_preferences(reviewed, "测试猫娘"))
+
+        assert applied == 0
+        apply_mock.assert_not_called()
 
 
 def test_negative_signal_explicit_avoid_uses_referenced_topic() -> None:
@@ -334,6 +385,22 @@ def test_contains_negative_signal_avoids_ascii_substring_false_positive() -> Non
     from memory.persona import contains_negative_signal
 
     assert contains_negative_signal("whatever") is False
+
+
+def test_negative_signal_chinese_placeholder_topic_falls_back_to_tone_only() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            result = pm.register_negative_signal("测试猫娘", "不要这样子了")
+            assert result["matched"] is True
+            assert result["topic"] == ""
+            assert result["policy"] == "tone_only"
 
 
 def test_apply_negative_preference_review_persists_topic_guidance() -> None:

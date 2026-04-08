@@ -1873,6 +1873,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         window._currentExpressionPreviewToken = null;
     }
 
+    function nextExpressionPreviewToken() {
+        window._expressionPreviewTokenSeq = (window._expressionPreviewTokenSeq || 0) + 1;
+        return window._expressionPreviewTokenSeq;
+    }
+
     // 模型类型切换处理
     // subType: 当 type === 'live3d' 时，传入 'vrm' 或 'mmd' 以区分子类型
     async function switchModelDisplay(type, subType) {
@@ -5568,8 +5573,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             window._currentMotionPreviewId = null;
 
             // 创建预览标记，防止快速连续点击时并发 await 导致多个定时器共存
-            window._currentExpressionPreviewToken = (window._currentExpressionPreviewToken || 0) + 1;
-            const previewToken = window._currentExpressionPreviewToken;
+            const previewToken = nextExpressionPreviewToken();
+            window._currentExpressionPreviewToken = previewToken;
             previewSuspendReason = `preview-expression-${previewToken}`;
             let previewSuspendResumed = false;
             resumePreviewSuspend = (reapply = false) => {

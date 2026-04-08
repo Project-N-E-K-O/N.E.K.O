@@ -87,7 +87,8 @@ _TOPIC_SUFFIX_CLEANUPS = (
     " anymore", " any more",
 )
 _GENERIC_TOPIC_WORDS = {
-    "这个", "那个", "这件事", "这话题", "这个话题", "事情", "话题", "内容",
+    "这个", "那个", "这样", "那样", "这样子", "那样子", "这样的", "那样的",
+    "这件事", "这话题", "这个话题", "事情", "话题", "内容",
 }
 _GENERIC_LATIN_TOPIC_WORDS = {
     "it", "this", "that", "these", "those", "them",
@@ -189,9 +190,42 @@ def contains_negative_signal(text: str) -> bool:
     return _contains_negative_signal(text)
 
 
+def _normalize_topic_tokens(topic: str) -> set[str]:
+    return {
+        token
+        for token in re.split(r'[^a-z0-9]+', (topic or '').casefold())
+        if len(token) >= 2
+    }
+
+
+def _topics_match(left: str, right: str) -> bool:
+    left_clean = _clean_topic_candidate(left)
+    right_clean = _clean_topic_candidate(right)
+    if not left_clean or not right_clean:
+        return False
+    if left_clean == right_clean:
+        return True
+    if not _contains_cjk(left_clean) and not _contains_cjk(right_clean):
+        left_tokens = _normalize_topic_tokens(left_clean)
+        right_tokens = _normalize_topic_tokens(right_clean)
+        if left_tokens and right_tokens:
+            return left_tokens <= right_tokens or right_tokens <= left_tokens
+    return left_clean in right_clean or right_clean in left_clean
+
+
 def is_topic_refusal_signal(text: str, referenced_topic: str = "") -> bool:
     topic, explicit = _extract_negative_topic(text, referenced_topic=referenced_topic)
-    return bool(explicit and topic)
+    if not (explicit and topic):
+        return False
+    referenced = _extract_topic_from_reference_text(referenced_topic)
+    if referenced and not _topics_match(topic, referenced):
+        return False
+    return True
+
+
+def extract_negative_signal_topic(text: str, referenced_topic: str = "") -> str:
+    topic, _ = _extract_negative_topic(text, referenced_topic=referenced_topic)
+    return topic
 
 
 def _contains_cjk(text: str) -> bool:

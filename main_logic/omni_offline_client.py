@@ -145,6 +145,7 @@ class OmniOfflineClient:
 
     async def connect(self, instructions: str, native_audio=False) -> None:
         """Initialize the client with system instructions."""
+        self._temporary_system_messages.clear()
         self._instructions = instructions
         # Add system message to conversation history using langchain format
         self._conversation_history = [
@@ -723,6 +724,7 @@ class OmniOfflineClient:
     async def close(self) -> None:
         """Close the client and cleanup resources."""
         self._is_responding = False
+        self._temporary_system_messages.clear()
         self._conversation_history = []
         self._pending_images.clear()
         if self.llm:

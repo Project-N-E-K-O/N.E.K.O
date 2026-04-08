@@ -463,12 +463,22 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         suspendReason = 'temporary-expression'
     } = options || {};
 
+    let persistentSuspended = false;
+    const rollbackPersistentSuspend = async () => {
+        if (!persistentSuspended) return;
+        persistentSuspended = false;
+        this.resumePersistentExpressions(suspendReason);
+        try { await this.applyPersistentExpressionsNative(false); } catch (e) {}
+    };
+
     if (suspendPersistent) {
         this.suspendPersistentExpressions(suspendReason, { clearCurrent: true });
+        persistentSuspended = true;
     }
 
     // 如果指定了具体的表情文件，优先使用该文件
     let choiceFile = specifiedExpressionFile;
+    let playedExpression = false;
     
     if (!choiceFile) {
         // EmotionMapping.expressions 规范：{ emotion: ["expressions/xxx.exp3.json", ...] }
@@ -482,6 +492,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
 
         if (!expressionFiles || expressionFiles.length === 0) {
             console.log(`未找到情感 ${emotion} 对应的表情，将跳过表情播放`);
+            await rollbackPersistentSuspend();
             return;
         }
 
@@ -492,12 +503,16 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
 
         if (!expressionFiles || expressionFiles.length === 0) {
             console.log(`情感 ${emotion} 的表情文件均已标记失效，跳过表情播放`);
+            await rollbackPersistentSuspend();
             return;
         }
 
         choiceFile = this.getRandomElement(expressionFiles);
     }
-    if (!choiceFile) return;
+    if (!choiceFile) {
+        await rollbackPersistentSuspend();
+        return;
+    }
 
     // 将 basename（如 expression7.exp3.json）归一化回 FileReferences 中的真实路径（如 expressions/expression7.exp3.json）
     const resolvedRef = (typeof this.resolveExpressionReferenceByFile === 'function')
@@ -584,6 +599,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
                 const expression = await this.currentModel.expression(expressionName);
                 if (expression) {
                     console.log(`成功使用原生API播放expression: ${expressionName}`);
+                    playedExpression = true;
                     return; // 成功播放，直接返回
                 } else {
                     console.warn(`原生expression API未返回有效结果 (name: ${expressionName})，回退到手动参数设置`);
@@ -598,6 +614,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         if (expressionData.Parameters && expressionData.Parameters.length > 0) {
             // 使用 _installManualExpressionOverride 在每帧中持续应用参数，并带有淡入效果
             this._installManualExpressionOverride(expressionData.Parameters, 300);
+            playedExpression = true;
         }
         
         console.log(`手动设置表情（带淡入过渡）: ${loadedExpressionFile}`);
@@ -605,9 +622,16 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         console.error('播放表情失败:', error);
     }
 
+    if (!playedExpression) {
+        await rollbackPersistentSuspend();
+        return;
+    }
+
     // 重放常驻表情，确保不被覆盖
     // skipBackup=true 因为只是重新应用，不需要再次备份
-    try { await this.applyPersistentExpressionsNative(true); } catch (e) {}
+    if (!this.arePersistentExpressionsSuspended()) {
+        try { await this.applyPersistentExpressionsNative(true); } catch (e) {}
+    }
 };
 
 // 播放动作
@@ -1133,6 +1157,9 @@ Live2DManager.prototype.teardownPersistentExpressions = function(preserveDefinit
     if (!preserveDefinitions) {
         this.persistentExpressionNames = [];
         this.persistentExpressionParamsByName = {};
+        if (this._persistentExpressionSuspendReasons) {
+            this._persistentExpressionSuspendReasons.clear();
+        }
     }
     this._persistentParamsBackup = {};
 };

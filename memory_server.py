@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import ast
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -22,7 +23,7 @@ from config.prompts_memory import (
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
     get_negative_preference_review_prompt,
 )
-from memory.persona import contains_negative_signal, is_topic_refusal_signal
+from memory.persona import contains_negative_signal, is_topic_refusal_signal, extract_negative_signal_topic
 from utils.language_utils import get_global_language
 from utils.character_name import validate_character_name
 from utils.config_manager import get_config_manager
@@ -238,11 +239,35 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
 
 def _sanitize_llm_json(raw: str) -> str:
     s = str(raw or "").strip().replace("{{", "{").replace("}}", "}")
-    s = s.replace("True", "true").replace("False", "false").replace("None", "null")
     s = re.sub(r',\s*([}\]])', r'\1', s)
-    if '"' not in s:
-        s = s.replace("'", '"')
-    return s
+    if not s:
+        return "[]"
+
+    json_ready = s.replace("True", "true").replace("False", "false").replace("None", "null")
+    try:
+        json.loads(json_ready)
+        return json_ready
+    except json.JSONDecodeError:
+        pass
+
+    try:
+        parsed = ast.literal_eval(s)
+        return json.dumps(parsed, ensure_ascii=False)
+    except (ValueError, SyntaxError):
+        pass
+
+    normalized_quotes = re.sub(
+        r"'([^'\\]*(?:\\.[^'\\]*)*)'",
+        lambda match: json.dumps(match.group(1)),
+        s,
+    )
+    normalized_quotes = normalized_quotes.replace("True", "true").replace("False", "false").replace("None", "null")
+    try:
+        json.loads(normalized_quotes)
+        return normalized_quotes
+    except json.JSONDecodeError:
+        logger.warning(f"[MemoryServer] 无法清洗 LLM JSON，回退为空列表: {_truncate_log_text(s, 200)}")
+        return "[]"
 
 
 def _format_messages_for_review(messages: list, lanlan_name: str) -> str:
@@ -321,14 +346,45 @@ def _extract_message_text_for_prompt(message, brackets_pattern: re.Pattern[str])
     return "\n".join([text for text in texts if text]).strip()
 
 
+def _normalize_topic_key(topic: str) -> str:
+    return str(topic or '').strip().casefold()
+
+
+def _contains_cjk(text: str) -> bool:
+    return any(
+        '\u4e00' <= ch <= '\u9fff' or '\u3040' <= ch <= '\u30ff' or '\uac00' <= ch <= '\ud7af'
+        for ch in (text or "")
+    )
+
+
+def _topic_matches_cleaned_text(topic: str, cleaned_text: str) -> bool:
+    topic = str(topic or '').strip()
+    cleaned_cf = str(cleaned_text or '').casefold()
+    if not topic or not cleaned_cf:
+        return False
+    topic_cf = topic.casefold()
+    if re.search(r'[A-Za-z]', topic) and not _contains_cjk(topic):
+        tokens = [token for token in re.split(r'[^a-z0-9]+', topic_cf) if len(token) >= 2]
+        if not tokens:
+            return False
+        return all(
+            re.search(r'(?<![a-z0-9])' + re.escape(token) + r'(?![a-z0-9])', cleaned_cf)
+            for token in tokens
+        )
+    return topic_cf in cleaned_cf
+
+
 def _should_skip_recent_message_for_prompt(message, hard_topics: list[str], cleaned_text: str) -> bool:
     if not cleaned_text or not hard_topics:
         return False
     role = getattr(message, 'type', '')
     if role != 'ai':
         return False
-    cleaned_cf = cleaned_text.casefold()
-    return any(topic.casefold() in cleaned_cf for topic in hard_topics if isinstance(topic, str) and topic.strip())
+    return any(
+        _topic_matches_cleaned_text(topic, cleaned_text)
+        for topic in hard_topics
+        if isinstance(topic, str) and topic.strip()
+    )
 
 
 def _get_recent_prompt_skip_indexes(messages: list, hard_topics: list[str], brackets_pattern: re.Pattern[str]) -> set[int]:
@@ -419,11 +475,16 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
         f"[MemoryServer] {lanlan_name}: 负面偏好门控命中 {len(negative_user_msgs)} 条，用户原句="
         f"{_truncate_log_text(' | '.join(negative_user_msgs), 240)}"
     )
+    already_signaled_topics = {
+        _normalize_topic_key(extract_negative_signal_topic(text))
+        for text in negative_user_msgs
+        if extract_negative_signal_topic(text)
+    }
     reviewed = await _review_negative_preferences(messages, lanlan_name)
     deduped_candidates: dict[str, dict] = {}
     for item in reviewed[:3]:
         topic = str(item.get('topic', '')).strip()
-        normalized_topic = topic.casefold()
+        normalized_topic = _normalize_topic_key(topic)
         if not normalized_topic:
             continue
         policy = str(item.get('policy', '')).strip()
@@ -456,6 +517,7 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
         topic = item['topic']
         policy = item['policy']
         confidence = item['confidence']
+        normalized_topic = _normalize_topic_key(topic)
         if confidence < NEGATIVE_PREFERENCE_CONFIDENCE_THRESHOLD:
             logger.info(
                 f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={topic or '∅'} "
@@ -466,6 +528,12 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
             logger.info(
                 f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={topic or '∅'} "
                 f"policy={policy or '∅'} confidence={confidence:.2f} reason=invalid_policy"
+            )
+            continue
+        if normalized_topic in already_signaled_topics:
+            logger.info(
+                f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={topic or '∅'} "
+                f"policy={policy or '∅'} confidence={confidence:.2f} reason=already_signaled_this_round"
             )
             continue
         result = persona_manager.apply_negative_preference_review(
