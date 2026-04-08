@@ -538,7 +538,7 @@ DEFAULT_VOICE_STORAGE = {}
 # 默认API配置（供 utils.api_config_loader 作为回退选项使用）
 DEFAULT_CORE_API_PROFILES = {
     'free': {
-        'CORE_URL': "wss://lanlan.tech/core",
+        'CORE_URL': "wss://api.lanlan.tech/core",
         'CORE_MODEL': "free-model",
         'CORE_API_KEY': "free-access",
         'IS_FREE_VERSION': True,
@@ -567,7 +567,7 @@ DEFAULT_CORE_API_PROFILES = {
 
 DEFAULT_ASSIST_API_PROFILES = {
     'free': {
-        'OPENROUTER_URL': "https://lanlan.tech/text/v1",
+        'OPENROUTER_URL': "https://api.lanlan.tech/text/v1",
         'CONVERSATION_MODEL' : "free-model" ,
         'SUMMARY_MODEL': "free-model",
         'CORRECTION_MODEL': "free-model",

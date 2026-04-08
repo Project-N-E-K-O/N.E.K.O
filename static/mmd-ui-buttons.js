@@ -406,10 +406,25 @@ MMDManager.prototype._startUIUpdateLoop = function() {
         if (!mmdContainer.style.transition || mmdContainer.style.transition.indexOf('opacity') === -1) {
             mmdContainer.style.transition = 'opacity 0.3s ease';
         }
-        const shouldFade = forceFade !== undefined ? forceFade : (ctrlFadeActive || stationaryFadeActive);
+        let shouldFade = forceFade !== undefined ? forceFade : (ctrlFadeActive || stationaryFadeActive);
+        if (window.lockedHoverFadeEnabled === false) shouldFade = false;
         mmdContainer.style.opacity = shouldFade ? '0.12' : '1';
     };
     this._setMmdLockedHoverFade = applyFade;
+
+    // 监听锁定悬停淡化设置变更
+    const onLockedHoverFadeChanged = () => {
+        if (window.lockedHoverFadeEnabled === false) {
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
+        }
+    };
+    if (this._mmdLockedHoverFadeChangedListener) {
+        window.removeEventListener('neko-locked-hover-fade-changed', this._mmdLockedHoverFadeChangedListener);
+    }
+    this._mmdLockedHoverFadeChangedListener = onLockedHoverFadeChanged;
+    window.addEventListener('neko-locked-hover-fade-changed', onLockedHoverFadeChanged);
 
     // Ctrl 键跟踪
     const onKeyDown = (event) => {
