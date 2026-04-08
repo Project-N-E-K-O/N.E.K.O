@@ -2,8 +2,6 @@
 
 from fastapi import APIRouter, Query
 from fastapi.responses import RedirectResponse
-import pyncm_async
-from pyncm_async.apis.track import GetTrackAudio
 from utils.music_crawlers import fetch_music_content
 from utils.cookies_login import load_cookies_from_file
 from utils.logger_config import get_module_logger
@@ -11,6 +9,44 @@ from utils.logger_config import get_module_logger
 router = APIRouter()
 
 logger = get_module_logger(__name__, "Music")
+
+# ---------------------------------------------------------------------------
+#  pyncm_async compat patch — 1.8.2 uses Python 3.12+ f-string syntax in
+#  cloud.py which triggers SyntaxError on older interpreters.  We patch the
+#  source file on disk before import so the rest of the code works normally.
+# ---------------------------------------------------------------------------
+def _patch_pyncm_async() -> None:
+    import os, sys
+    for p in sys.path:
+        target = os.path.join(p, "pyncm_async", "apis", "cloud.py")
+        if not os.path.isfile(target):
+            continue
+        try:
+            with open(target, "r", encoding="utf-8") as f:
+                code = f.read()
+            if 'objectKey.replace("/", "%2F")' in code:
+                code = code.replace(
+                    'objectKey.replace("/", "%2F")',
+                    "objectKey.replace('/', '%2F')",
+                )
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(code)
+                logger.info("[Music] Patched pyncm_async cloud.py for Python <3.12 compat")
+            break
+        except Exception as exc:
+            logger.debug("[Music] Failed to patch pyncm_async: %s", exc)
+
+_patch_pyncm_async()
+
+try:
+    import pyncm_async
+    from pyncm_async.apis.track import GetTrackAudio
+    _PYNCM_AVAILABLE = True
+except Exception as _pyncm_err:
+    pyncm_async = None  # type: ignore[assignment]
+    GetTrackAudio = None  # type: ignore[assignment,misc]
+    _PYNCM_AVAILABLE = False
+    logger.warning("[Music] pyncm_async unavailable, netease VIP playback disabled: %s", _pyncm_err)
 
 @router.get("/api/music/search")
 async def search_music(
@@ -71,6 +107,11 @@ async def play_netease_music(song_id: str):
     网易云 VIP 音乐智能跳转路由：
     利用后端 MUSIC_U Cookie 获取真实高音质/鉴权直链，通过 307 重定向至前端播放。
     """
+    if not _PYNCM_AVAILABLE:
+        fallback_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
+        logger.warning(f"[音乐播放] pyncm_async 不可用，直接使用公开外链")
+        return RedirectResponse(url=fallback_url)
+
     try:
         # 加载 Cookie 并同步到 pyncm_async 会话
         cookies = load_cookies_from_file('netease')
@@ -79,19 +120,19 @@ async def play_netease_music(song_id: str):
             # 兼容性处理：pyncm_async 内部使用 httpx，直接注入 cookiejar
             for k, v in cookies.items():
                 session.client.cookies.set(k, v)
-        
+
         # 获取真实播放地址 (IDs 接受列表)
         # 默认获取 standard 标准音质，VIP 账户通常可获得更多 Token 授权
         res = await GetTrackAudio([int(song_id)])
-        
+
         if res and res.get('data') and len(res['data']) > 0:
             track_info = res['data'][0]
             real_url = track_info.get('url')
-            
+
             if real_url:
                 logger.info(f"[音乐播放] 成功解析歌曲 {song_id} 的 VIP/鉴权直链")
                 return RedirectResponse(url=real_url)
-                
+
     except Exception as e:
         logger.error(f"[音乐播放] 解析歌曲 {song_id} 真实地址时发生异常: {e}")
 
