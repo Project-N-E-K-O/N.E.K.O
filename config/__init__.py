@@ -35,9 +35,11 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "live2d_item_id",
     "item_id",
     "idleAnimation",
+    "idleAnimations",
     "mmd",
     "mmd_animation",
     "mmd_idle_animation",
+    "mmd_idle_animations",
     "touch_set",
 )
 
