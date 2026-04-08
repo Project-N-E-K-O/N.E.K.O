@@ -420,6 +420,10 @@ MMDManager.prototype._startUIUpdateLoop = function() {
             applyFade();
         }
     };
+    if (this._mmdLockedHoverFadeChangedListener) {
+        window.removeEventListener('neko-locked-hover-fade-changed', this._mmdLockedHoverFadeChangedListener);
+    }
+    this._mmdLockedHoverFadeChangedListener = onLockedHoverFadeChanged;
     window.addEventListener('neko-locked-hover-fade-changed', onLockedHoverFadeChanged);
 
     // Ctrl 键跟踪

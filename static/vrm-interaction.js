@@ -970,6 +970,10 @@ class VRMInteraction {
                 applyFade();
             }
         };
+        if (this._lockedHoverFadeChangedListener) {
+            window.removeEventListener('neko-locked-hover-fade-changed', this._lockedHoverFadeChangedListener);
+        }
+        this._lockedHoverFadeChangedListener = onLockedHoverFadeChanged;
         window.addEventListener('neko-locked-hover-fade-changed', onLockedHoverFadeChanged);
 
         // 初始化缓存
@@ -1386,6 +1390,11 @@ class VRMInteraction {
         if (this._vrmWindowBlurListener) {
             window.removeEventListener('blur', this._vrmWindowBlurListener);
             this._vrmWindowBlurListener = null;
+        }
+        // 清理锁定悬停淡化监听器
+        if (this._lockedHoverFadeChangedListener) {
+            window.removeEventListener('neko-locked-hover-fade-changed', this._lockedHoverFadeChangedListener);
+            this._lockedHoverFadeChangedListener = null;
         }
         // 清除变淡状态
         if (typeof this._setLockedHoverFade === 'function') {

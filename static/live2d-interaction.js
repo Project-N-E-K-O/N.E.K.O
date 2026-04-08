@@ -686,6 +686,10 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             applyFade();
         }
     };
+    if (this._lockedHoverFadeChangedListener) {
+        window.removeEventListener('neko-locked-hover-fade-changed', this._lockedHoverFadeChangedListener);
+    }
+    this._lockedHoverFadeChangedListener = onLockedHoverFadeChanged;
     window.addEventListener('neko-locked-hover-fade-changed', onLockedHoverFadeChanged);
 
     // 跟踪 Ctrl 键状态（作为备用，主要从事件中直接读取）
@@ -1515,6 +1519,12 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     if (this._windowBlurListener) {
         window.removeEventListener('blur', this._windowBlurListener);
         this._windowBlurListener = null;
+    }
+
+    // 清理锁定悬停淡化监听器
+    if (this._lockedHoverFadeChangedListener) {
+        window.removeEventListener('neko-locked-hover-fade-changed', this._lockedHoverFadeChangedListener);
+        this._lockedHoverFadeChangedListener = null;
     }
 
     // 清理静止淡化定时器
