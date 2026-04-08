@@ -8,6 +8,9 @@ from .toml_utils import load_toml, optional_string, require_string, require_tabl
 
 def load_plugin_source(plugin_dir: str | Path) -> PluginSource:
     plugin_dir = Path(plugin_dir).expanduser().resolve()
+    if not plugin_dir.is_dir():
+        raise FileNotFoundError(f"plugin directory not found: {plugin_dir}")
+
     plugin_toml_path = plugin_dir / "plugin.toml"
     if not plugin_toml_path.is_file():
         raise FileNotFoundError(f"plugin.toml not found: {plugin_toml_path}")
@@ -21,11 +24,12 @@ def load_plugin_source(plugin_dir: str | Path) -> PluginSource:
 
     pyproject_toml_path = plugin_dir / "pyproject.toml"
     pyproject_toml = load_toml(pyproject_toml_path) if pyproject_toml_path.is_file() else None
+    resolved_pyproject_path = pyproject_toml_path if pyproject_toml_path.is_file() else None
 
     return PluginSource(
         plugin_dir=plugin_dir,
         plugin_toml_path=plugin_toml_path,
-        pyproject_toml_path=pyproject_toml_path if pyproject_toml_path.is_file() else None,
+        pyproject_toml_path=resolved_pyproject_path,
         plugin_id=plugin_id,
         name=name,
         version=version,

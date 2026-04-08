@@ -4,15 +4,15 @@
 import { get, post } from './index'
 
 export type PluginCliConflictStrategy = 'rename' | 'fail'
+export type PluginCliPackMode = 'selected' | 'single' | 'bundle' | 'all'
 
 export interface PluginCliPackRequest {
+  mode: PluginCliPackMode
   plugin?: string
   plugins?: string[]
-  pack_all?: boolean
   out?: string
   target_dir?: string
   keep_staging?: boolean
-  bundle?: boolean
   bundle_id?: string
   package_name?: string
   package_description?: string

@@ -118,3 +118,37 @@ async def test_plugin_cli_list_packages_route_returns_target_packages(
         assert body["count"] == 1
         assert body["target_dir"] == str(tmp_path)
         assert body["packages"][0]["name"] == "route_pkg_demo.neko-plugin"
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_pack_bundle_route_uses_mode_payload(
+    plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _make_plugin_dir(tmp_path, plugin_id="route_bundle_one")
+    _make_plugin_dir(tmp_path, plugin_id="route_bundle_two")
+    target_dir = tmp_path / "target"
+
+    import plugin.server.application.plugin_cli.service as plugin_cli_service_module
+
+    monkeypatch.setattr(plugin_cli_service_module, "_RUNTIME_PLUGINS_ROOT", tmp_path)
+
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/plugin-cli/pack",
+            json={
+                "mode": "bundle",
+                "plugins": ["route_bundle_one", "route_bundle_two"],
+                "bundle_id": "route_bundle_demo",
+                "target_dir": str(target_dir),
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["packed_count"] == 1
+        assert body["packed"][0]["package_type"] == "bundle"
+        assert body["packed"][0]["plugin_ids"] == ["route_bundle_one", "route_bundle_two"]

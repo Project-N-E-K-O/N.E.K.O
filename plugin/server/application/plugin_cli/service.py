@@ -32,13 +32,12 @@ class PluginCliService:
     async def pack(
         self,
         *,
+        mode: str = "selected",
         plugin: str | None = None,
         plugins: list[str] | None = None,
-        pack_all: bool = False,
         out: str | None = None,
         target_dir: str | None = None,
         keep_staging: bool = False,
-        bundle: bool = False,
         bundle_id: str | None = None,
         package_name: str | None = None,
         package_description: str | None = None,
@@ -46,13 +45,12 @@ class PluginCliService:
     ) -> dict[str, object]:
         return await asyncio.to_thread(
             self._pack_sync,
+            mode=mode,
             plugin=plugin,
             plugins=plugins,
-            pack_all=pack_all,
             out=out,
             target_dir=target_dir,
             keep_staging=keep_staging,
-            bundle=bundle,
             bundle_id=bundle_id,
             package_name=package_name,
             package_description=package_description,
@@ -131,27 +129,26 @@ class PluginCliService:
     def _pack_sync(
         self,
         *,
+        mode: str,
         plugin: str | None,
         plugins: list[str] | None,
-        pack_all: bool,
         out: str | None,
         target_dir: str | None,
         keep_staging: bool,
-        bundle: bool,
         bundle_id: str | None,
         package_name: str | None,
         package_description: str | None,
         version: str | None,
     ) -> dict[str, object]:
         try:
-            plugin_dirs = self._resolve_plugin_dirs(plugin=plugin, plugins=plugins or [], pack_all=pack_all)
+            plugin_dirs = self._resolve_plugin_dirs(mode=mode, plugin=plugin, plugins=plugins or [])
             resolved_target_dir = Path(target_dir).expanduser().resolve() if target_dir else _TARGET_ROOT
             resolved_target_dir.mkdir(parents=True, exist_ok=True)
 
-            if out and not bundle and len(plugin_dirs) != 1:
+            if out and mode != "bundle" and len(plugin_dirs) != 1:
                 raise ValueError("'out' can only be used when packing a single plugin")
 
-            if bundle or len(plugin_dirs) > 1:
+            if mode == "bundle":
                 resolved_bundle_id = bundle_id or "__".join(sorted(item.name for item in plugin_dirs))
                 output_path = (
                     Path(out).expanduser().resolve()
@@ -257,8 +254,8 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="analyze") from exc
 
-    def _resolve_plugin_dirs(self, *, plugin: str | None, plugins: list[str], pack_all: bool) -> list[Path]:
-        if pack_all:
+    def _resolve_plugin_dirs(self, *, mode: str, plugin: str | None, plugins: list[str]) -> list[Path]:
+        if mode == "all":
             plugin_dirs = sorted(
                 path.parent.resolve()
                 for path in _RUNTIME_PLUGINS_ROOT.glob("*/plugin.toml")
@@ -268,11 +265,17 @@ class PluginCliService:
                 raise FileNotFoundError(f"No plugin.toml files found under {_RUNTIME_PLUGINS_ROOT}")
             return plugin_dirs
 
-        if plugin:
+        if mode == "single":
+            if not plugin:
+                raise ValueError("Please provide a plugin when mode=single")
             return [self._resolve_plugin_dir_candidate(plugin)]
-        if plugins:
+
+        if mode in {"selected", "bundle"}:
+            if not plugins:
+                raise ValueError(f"Please provide plugins when mode={mode}")
             return [self._resolve_plugin_dir_candidate(item) for item in plugins]
-        raise ValueError("Please provide one or more plugins or set pack_all=true")
+
+        raise ValueError("Unsupported pack mode")
 
     def _resolve_plugin_dir_candidate(self, raw: str) -> Path:
         candidate = Path(raw).expanduser()

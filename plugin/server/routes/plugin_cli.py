@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from plugin.logging_config import get_logger
 from plugin.server.application.plugin_cli import PluginCliService
@@ -15,17 +15,24 @@ service = PluginCliService()
 
 
 class PluginCliPackRequest(BaseModel):
+    mode: str = Field(default="selected", pattern="^(selected|single|bundle|all)$")
     plugin: str | None = None
     plugins: list[str] = Field(default_factory=list)
-    pack_all: bool = False
     out: str | None = None
     target_dir: str | None = None
     keep_staging: bool = False
-    bundle: bool = False
     bundle_id: str | None = None
     package_name: str | None = None
     package_description: str | None = None
     version: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_mode_payload(self) -> "PluginCliPackRequest":
+        if self.mode == "single" and not self.plugin:
+            raise ValueError("plugin is required when mode=single")
+        if self.mode in {"selected", "bundle"} and not self.plugins:
+            raise ValueError("plugins is required when mode=selected or mode=bundle")
+        return self
 
 
 class PluginCliPackageRequest(BaseModel):
@@ -67,13 +74,12 @@ async def plugin_cli_pack(
 ) -> dict[str, object]:
     try:
         return await service.pack(
+            mode=payload.mode,
             plugin=payload.plugin,
             plugins=payload.plugins,
-            pack_all=payload.pack_all,
             out=payload.out,
             target_dir=payload.target_dir,
             keep_staging=payload.keep_staging,
-            bundle=payload.bundle,
             bundle_id=payload.bundle_id,
             package_name=payload.package_name,
             package_description=payload.package_description,
