@@ -225,7 +225,13 @@ class JukeboxConfig:
         # 融合配置：用户配置优先，但保留软件自带配置
         merged_songs = {**builtin_songs, **user_config.get("songs", {})}
         merged_actions = {**builtin_actions, **user_config.get("actions", {})}
-        merged_bindings = {**builtin_bindings, **user_config.get("bindings", {})}
+
+        # 融合绑定关系：自带绑定 + 用户绑定（用户绑定优先）
+        # 先加载程序内自带的绑定（从用户文档或从软件自带配置）
+        user_builtin_bindings = user_config.get("builtinBindings", {})
+        merged_bindings = {**builtin_bindings, **user_builtin_bindings}
+        # 再合并用户绑定（覆盖自带绑定）
+        merged_bindings = {**merged_bindings, **user_config.get("bindings", {})}
         
         # 融合MD5索引
         user_md5_index = user_config.get("md5Index", {"songs": {}, "actions": {}})
@@ -293,6 +299,7 @@ class JukeboxConfig:
             "songs": user_songs,
             "actions": user_actions,
             "bindings": {},  # 保存所有涉及用户资源的绑定
+            "builtinBindings": {},  # 保存程序内自带的绑定关系
             "md5Index": {
                 "songs": {},
                 "actions": {}
@@ -300,19 +307,23 @@ class JukeboxConfig:
             "builtinOverrides": builtin_overrides  # 内置资源的覆盖设置
         }
 
-        # 保存绑定关系：只要绑定涉及用户资源就保存
-        # 包括：用户歌曲↔用户动画、自带歌曲↔用户动画、用户歌曲↔自带动画
+        # 保存绑定关系
         for song_id, actions in self.data.get("bindings", {}).items():
             is_user_song = song_id in user_songs
 
             for action_id, bind_data in actions.items():
                 is_user_action = action_id in user_actions
 
-                # 只保存至少一方是用户资源的绑定
                 if is_user_song or is_user_action:
+                    # 用户相关的绑定：保存到 bindings
                     if song_id not in user_data["bindings"]:
                         user_data["bindings"][song_id] = {}
                     user_data["bindings"][song_id][action_id] = bind_data
+                else:
+                    # 程序内自带的绑定：保存到 builtinBindings
+                    if song_id not in user_data["builtinBindings"]:
+                        user_data["builtinBindings"][song_id] = {}
+                    user_data["builtinBindings"][song_id][action_id] = bind_data
 
         # 过滤MD5索引：只保留用户资源的MD5
         # 歌曲MD5索引
@@ -937,8 +948,15 @@ async def export_config(
 
             action = jukebox_config.data["actions"][action_id]
 
-            # 跳过自带资源（不可导出）
+            # 处理自带资源：导出ID和MD5，但不打包文件
             if action.get("isBuiltin", False):
+                # 只导出必要信息（ID、MD5、名称等），不包含文件路径
+                export_data["actions"][action_id] = {
+                    "id": action_id,
+                    "name": action.get("name", ""),
+                    "fileMd5": action.get("fileMd5", ""),
+                    "isBuiltin": True  # 标记为内置资源
+                }
                 continue
 
             export_data["actions"][action_id] = action
@@ -984,10 +1002,10 @@ async def export_config(
             if not song_md5:
                 continue
 
-            # 导出该歌曲的所有绑定（只要动画存在且非内置）
+            # 导出该歌曲的所有绑定（包括内置动画的绑定）
             for action_id, binding_data in jukebox_config.data["bindings"][song_id].items():
                 action = jukebox_config.data["actions"].get(action_id)
-                if not action or action.get("isBuiltin", False):
+                if not action:
                     continue
 
                 action_md5 = action_id_to_md5.get(action_id, "")
@@ -1197,6 +1215,20 @@ async def import_config(file: UploadFile = File(...)):
         
         # 第二步：导入动画
         for action_id, action in import_data.get("actions", {}).items():
+            # 处理内置动作：在本地查找对应的内置动作
+            if action.get("isBuiltin", False):
+                file_md5 = action.get("fileMd5", "")
+                # 通过MD5在本地查找内置动作
+                local_action_id = jukebox_config.data["md5Index"]["actions"].get(file_md5)
+                if local_action_id:
+                    local_action = jukebox_config.data["actions"].get(local_action_id)
+                    if local_action and local_action.get("isBuiltin", False):
+                        # 找到本地对应的内置动作，记录映射
+                        id_mapping["actions"][action_id] = local_action_id
+                        stats["actionsMerged"] += 1
+                        logger.info(f"导入映射内置动作: {action_id} -> {local_action_id}")
+                continue
+
             # 验证路径安全
             try:
                 src_file = validate_extract_path(action["file"], extract_dir)
