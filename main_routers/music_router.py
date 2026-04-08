@@ -34,7 +34,7 @@ def _patch_pyncm_async() -> None:
                 logger.info("[Music] Patched pyncm_async cloud.py for Python <3.12 compat")
             break
         except Exception as exc:
-            logger.debug("[Music] Failed to patch pyncm_async: %s", exc)
+            logger.error("[Music] Failed to patch pyncm_async: %s", exc)
 
 _patch_pyncm_async()
 
@@ -46,7 +46,7 @@ except Exception as _pyncm_err:
     pyncm_async = None  # type: ignore[assignment]
     GetTrackAudio = None  # type: ignore[assignment,misc]
     _PYNCM_AVAILABLE = False
-    logger.warning("[Music] pyncm_async unavailable, netease VIP playback disabled: %s", _pyncm_err)
+    logger.error("[Music] pyncm_async unavailable, netease VIP playback disabled: %s", _pyncm_err)
 
 @router.get("/api/music/search")
 async def search_music(
