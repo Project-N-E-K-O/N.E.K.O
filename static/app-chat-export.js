@@ -15,6 +15,8 @@
 (function () {
     'use strict';
 
+    var MAX_EXPORT_SELECTION = 100;
+
     // ======================== State ========================
 
     var state = {
@@ -491,13 +493,27 @@
         });
     }
 
-    function loadImageElement(source) {
+    function loadImageElement(source, timeoutMs) {
+        if (timeoutMs === undefined) timeoutMs = 10000;
         return new Promise(function (resolve, reject) {
             var image = new Image();
+            var timer = null;
+            function cleanup() {
+                if (timer) { clearTimeout(timer); timer = null; }
+                image.onload = null;
+                image.onerror = null;
+            }
             image.crossOrigin = 'anonymous';
             image.decoding = 'async';
-            image.onload = function () { resolve(image); };
-            image.onerror = function () { reject(new Error('Failed to load image asset.')); };
+            image.onload = function () { cleanup(); resolve(image); };
+            image.onerror = function () { cleanup(); reject(new Error('Failed to load image asset.')); };
+            if (timeoutMs > 0) {
+                timer = setTimeout(function () {
+                    cleanup();
+                    image.src = '';
+                    reject(new Error('Image load timed out after ' + timeoutMs + 'ms.'));
+                }, timeoutMs);
+            }
             image.src = source;
         });
     }
@@ -1632,7 +1648,16 @@
         panel.addEventListener('click', function (e) { e.stopPropagation(); });
 
         selectAllButton.addEventListener('click', function () {
-            state.allMessages.forEach(function (message) { state.selectedIds.add(message.id); });
+            state.selectedIds.clear();
+            var limit = Math.min(state.allMessages.length, MAX_EXPORT_SELECTION);
+            for (var i = 0; i < limit; i++) {
+                state.selectedIds.add(state.allMessages[i].id);
+            }
+            if (state.allMessages.length > MAX_EXPORT_SELECTION) {
+                showToastMessage(translateText('chat.exportSelectionLimit',
+                    'Selection is limited to {{max}} messages.',
+                    { max: MAX_EXPORT_SELECTION }), 3000);
+            }
             renderSelectionList();
             schedulePreviewRender();
         });
@@ -1642,13 +1667,24 @@
             schedulePreviewRender();
         });
         selectInvertButton.addEventListener('click', function () {
+            var inverted = new Set();
             state.allMessages.forEach(function (message) {
-                if (state.selectedIds.has(message.id)) {
-                    state.selectedIds.delete(message.id);
-                } else {
-                    state.selectedIds.add(message.id);
+                if (!state.selectedIds.has(message.id)) {
+                    inverted.add(message.id);
                 }
             });
+            if (inverted.size > MAX_EXPORT_SELECTION) {
+                var trimmed = new Set();
+                var iter = inverted.values();
+                for (var i = 0; i < MAX_EXPORT_SELECTION; i++) {
+                    trimmed.add(iter.next().value);
+                }
+                inverted = trimmed;
+                showToastMessage(translateText('chat.exportSelectionLimit',
+                    'Selection is limited to {{max}} messages.',
+                    { max: MAX_EXPORT_SELECTION }), 3000);
+            }
+            state.selectedIds = inverted;
             renderSelectionList();
             schedulePreviewRender();
         });
@@ -1715,8 +1751,18 @@
             checkbox.className = 'chat-export-selection-checkbox';
             checkbox.checked = state.selectedIds.has(message.id);
             checkbox.addEventListener('change', function () {
-                if (checkbox.checked) state.selectedIds.add(message.id);
-                else state.selectedIds.delete(message.id);
+                if (checkbox.checked) {
+                    if (state.selectedIds.size >= MAX_EXPORT_SELECTION) {
+                        checkbox.checked = false;
+                        showToastMessage(translateText('chat.exportSelectionLimit',
+                            'Selection is limited to {{max}} messages.',
+                            { max: MAX_EXPORT_SELECTION }), 3000);
+                        return;
+                    }
+                    state.selectedIds.add(message.id);
+                } else {
+                    state.selectedIds.delete(message.id);
+                }
                 updateSummary();
                 schedulePreviewRender();
             });
@@ -2104,7 +2150,7 @@
         state.isPreparingPreview = true;
         try {
             state.allMessages = messages;
-            state.selectedIds = new Set(messages.map(function (message) { return message.id; }));
+            state.selectedIds = new Set();
             clearPreviewCache();
             await openPreviewModal();
         } catch (error) {
