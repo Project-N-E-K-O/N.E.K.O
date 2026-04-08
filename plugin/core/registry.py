@@ -562,8 +562,9 @@ def register_plugin(
             author=plugin.author,
             dependencies=plugin.dependencies,
             host_plugin_id=plugin.host_plugin_id,
+            passive=plugin.passive,
         )
-    
+
     with state.acquire_plugins_write_lock():
         plugin_dump = plugin.model_dump()
         if config_path is not None:
@@ -687,6 +688,7 @@ def _build_plugin_meta(
     short_desc = str(pdata.get("short_description", "") or "").strip()
     if len(short_desc) > 300:
         short_desc = short_desc[:300]
+    passive = bool(pdata.get("passive", False))
 
     return PluginMeta(
         id=pid,
@@ -695,6 +697,7 @@ def _build_plugin_meta(
         description=pdata.get("description", ""),
         short_description=short_desc,
         keywords=keywords,
+        passive=passive,
         version=pdata.get("version", "0.1.0"),
         sdk_version=sdk_supported_str or SDK_VERSION,
         sdk_recommended=sdk_recommended_str,

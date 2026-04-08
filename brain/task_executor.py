@@ -652,15 +652,21 @@ class DirectTaskExecutor:
             logger.debug("[UserPlugin] Failed to check plugins validity", exc_info=True)
             return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Invalid plugins")
 
-        # Normalize plugins to list of dicts
+        # Normalize plugins to list of dicts, skip passive plugins (they don't participate in analysis)
         plugin_list: list[dict] = []
+        skipped_passive = 0
         try:
             iterable = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
             for _, p in iterable:
                 if isinstance(p, dict):
+                    if p.get("passive"):
+                        skipped_passive += 1
+                        continue
                     plugin_list.append(p)
         except Exception:
             logger.debug("[UserPlugin] Failed to normalize plugins to list, continuing with empty list", exc_info=True)
+        if skipped_passive:
+            logger.debug("[UserPlugin] Skipped %d passive plugin(s)", skipped_passive)
 
         # Extract user intent for keyword / BM25 matching
         user_intent = self._extract_latest_user_intent(conversation)

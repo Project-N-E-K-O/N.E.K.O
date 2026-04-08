@@ -97,6 +97,7 @@ class PluginMeta(BaseModel):
     description: str = ""
     short_description: str = ""  # 简短描述（<300字符），用于 agent 两阶段插件筛选
     keywords: List[str] = Field(default_factory=list)  # 关键词正则表达式列表，用于快速匹配
+    passive: bool = False  # 被动插件（如弹幕监听、QQ 自动回复），不参与 agent 主动分派
     version: str = "0.1.0"
     sdk_version: str = SDK_VERSION
     sdk_recommended: Optional[str] = None
