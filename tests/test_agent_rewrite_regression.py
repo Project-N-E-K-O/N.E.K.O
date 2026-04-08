@@ -207,7 +207,7 @@ def test_is_agent_api_ready_allows_free_profile():
     manager.get_core_config = lambda: {"IS_FREE_VERSION": True}
     manager.get_model_api_config = lambda _model_type: {
         "model": "free-agent-model",
-        "base_url": "https://lanlan.tech/text/v1",
+        "base_url": "https://api.lanlan.tech/text/v1",
         "api_key": "free-access",
     }
 
