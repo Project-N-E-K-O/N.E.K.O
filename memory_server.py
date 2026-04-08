@@ -289,12 +289,70 @@ def _format_current_topic_guidance(lanlan_name: str) -> str:
         return "（读取失败，忽略）"
 
 
-def _should_review_negative_preferences(messages: list) -> bool:
-    """Cheap gate: only invoke the LLM reviewer when recent user text contains negative cues."""
-    user_msgs = _extract_user_messages(messages)
-    if not user_msgs:
+def _truncate_log_text(text: str, limit: int = 160) -> str:
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _get_hard_avoid_topics(lanlan_name: str) -> list[str]:
+    try:
+        persona = persona_manager.get_persona(lanlan_name)
+        guidance = persona.get('_topic_guidance', {}) if isinstance(persona, dict) else {}
+        return [
+            str(item.get('topic', '')).strip()
+            for item in guidance.get('hard_avoid', [])
+            if isinstance(item, dict) and str(item.get('topic', '')).strip()
+        ]
+    except Exception:
+        return []
+
+
+def _extract_message_text_for_prompt(message, brackets_pattern: re.Pattern[str]) -> str:
+    content = getattr(message, 'content', '')
+    if isinstance(content, str):
+        return brackets_pattern.sub('', content).strip()
+    texts = [
+        brackets_pattern.sub('', item.get('text', '')).strip()
+        for item in content
+        if isinstance(item, dict) and item.get('type') == 'text'
+    ]
+    return "\n".join([text for text in texts if text]).strip()
+
+
+def _should_skip_recent_message_for_prompt(message, hard_topics: list[str], cleaned_text: str) -> bool:
+    if not cleaned_text or not hard_topics:
         return False
-    return any(contains_negative_signal(text) for text in user_msgs)
+    role = getattr(message, 'type', '')
+    if role != 'ai':
+        return False
+    return any(topic in cleaned_text for topic in hard_topics)
+
+
+def _get_recent_prompt_skip_indexes(messages: list, hard_topics: list[str], brackets_pattern: re.Pattern[str]) -> set[int]:
+    """Skip assistant messages that either hit hard_avoid directly or were immediately rejected by the user."""
+    skip_indexes: set[int] = set()
+    for idx, message in enumerate(messages):
+        cleaned_text = _extract_message_text_for_prompt(message, brackets_pattern)
+        if _should_skip_recent_message_for_prompt(message, hard_topics, cleaned_text):
+            skip_indexes.add(idx)
+            continue
+        if getattr(message, 'type', '') != 'ai':
+            continue
+        if idx + 1 >= len(messages):
+            continue
+        next_message = messages[idx + 1]
+        if getattr(next_message, 'type', '') != 'human':
+            continue
+        next_text = _extract_message_text_for_prompt(next_message, brackets_pattern)
+        if contains_negative_signal(next_text):
+            skip_indexes.add(idx)
+    return skip_indexes
+
+
+def _get_negative_signal_user_messages(messages: list) -> list[str]:
+    return [text for text in _extract_user_messages(messages) if contains_negative_signal(text)]
 
 
 async def _review_negative_preferences(messages: list, lanlan_name: str) -> list[dict]:
@@ -304,11 +362,15 @@ async def _review_negative_preferences(messages: list, lanlan_name: str) -> list
 
     conversation_text = _format_messages_for_review(messages, lanlan_name)
     if not conversation_text:
+        logger.info(f"[MemoryServer] {lanlan_name}: 负面偏好审查跳过，原始消息为空")
         return []
 
     prompt = get_negative_preference_review_prompt(get_global_language())
     prompt = prompt.replace('{CONVERSATION}', conversation_text)
     prompt = prompt.replace('{CURRENT_GUIDANCE}', _format_current_topic_guidance(lanlan_name))
+    logger.info(
+        f"[MemoryServer] {lanlan_name}: 负面偏好送审，上下文预览={_truncate_log_text(conversation_text, 280)}"
+    )
 
     try:
         set_call_type("memory_negative_review")
@@ -334,7 +396,13 @@ async def _review_negative_preferences(messages: list, lanlan_name: str) -> list
         except json.JSONDecodeError:
             reviewed = json.loads(_sanitize_llm_json(raw))
         if not isinstance(reviewed, list):
+            logger.info(
+                f"[MemoryServer] {lanlan_name}: 负面偏好审查返回非列表，raw={_truncate_log_text(raw, 280)}"
+            )
             return []
+        logger.info(
+            f"[MemoryServer] {lanlan_name}: 负面偏好审查结果={_truncate_log_text(json.dumps(reviewed, ensure_ascii=False), 280)}"
+        )
         return [item for item in reviewed if isinstance(item, dict)]
     except Exception as e:
         logger.warning(f"[MemoryServer] 负面偏好后台审查失败: {e}")
@@ -342,8 +410,14 @@ async def _review_negative_preferences(messages: list, lanlan_name: str) -> list
 
 
 async def _review_and_apply_negative_preferences(messages: list, lanlan_name: str) -> int:
-    if not _should_review_negative_preferences(messages):
+    negative_user_msgs = _get_negative_signal_user_messages(messages)
+    if not negative_user_msgs:
+        logger.info(f"[MemoryServer] {lanlan_name}: 负面偏好门控未命中，跳过审查")
         return 0
+    logger.info(
+        f"[MemoryServer] {lanlan_name}: 负面偏好门控命中 {len(negative_user_msgs)} 条，用户原句="
+        f"{_truncate_log_text(' | '.join(negative_user_msgs), 240)}"
+    )
     reviewed = await _review_negative_preferences(messages, lanlan_name)
     applied = 0
     for item in reviewed[:3]:
@@ -354,8 +428,16 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
         except (TypeError, ValueError):
             confidence = 0.0
         if confidence < NEGATIVE_PREFERENCE_CONFIDENCE_THRESHOLD:
+            logger.info(
+                f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={topic or '∅'} "
+                f"policy={policy or '∅'} confidence={confidence:.2f} reason=low_confidence"
+            )
             continue
         if policy not in {'avoid', 'de_emphasize'}:
+            logger.info(
+                f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={topic or '∅'} "
+                f"policy={policy or '∅'} confidence={confidence:.2f} reason=invalid_policy"
+            )
             continue
         result = persona_manager.apply_negative_preference_review(
             lanlan_name,
@@ -368,6 +450,15 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
                 f"[MemoryServer] {lanlan_name}: 后台确认负面偏好 topic={result.get('topic')} "
                 f"policy={result.get('policy')} confidence={confidence:.2f}"
             )
+        else:
+            logger.info(
+                f"[MemoryServer] {lanlan_name}: 负面偏好候选未落库 topic={topic or '∅'} "
+                f"policy={policy or '∅'} confidence={confidence:.2f}"
+            )
+    if not reviewed:
+        logger.info(f"[MemoryServer] {lanlan_name}: 负面偏好审查未返回可用候选")
+    elif applied == 0:
+        logger.info(f"[MemoryServer] {lanlan_name}: 负面偏好审查完成，但没有候选通过落库条件")
     return applied
 
 
@@ -496,8 +587,8 @@ async def shutdown_event_handler():
     logger.info("Memory server已关闭")
 
 
-async def _run_review_in_background(lanlan_name: str):
-    """在后台运行review_history，支持取消"""
+async def _run_review_in_background(lanlan_name: str, review_messages: list | None = None):
+    """在后台运行 review_history，并在同阶段审查负面偏好。"""
     global correction_tasks, correction_cancel_flags
     
     # 获取该角色的取消标志
@@ -509,6 +600,9 @@ async def _run_review_in_background(lanlan_name: str):
     try:
         # 直接异步调用review_history方法
         await recent_history_manager.review_history(lanlan_name, cancel_event)
+        applied = await _review_and_apply_negative_preferences(review_messages or [], lanlan_name)
+        if applied:
+            logger.info(f"[MemoryServer] {lanlan_name}: 后台负面偏好审查应用 {applied} 条")
         logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
@@ -611,13 +705,6 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
 
     认知框架：Facts → Reflection(pending→confirmed→promoted) → Persona
     """
-    try:
-        applied = await _review_and_apply_negative_preferences(messages, lanlan_name)
-        if applied:
-            logger.info(f"[MemoryServer] {lanlan_name}: 后台负面偏好审查应用 {applied} 条")
-    except Exception as e:
-        logger.warning(f"[MemoryServer] 负面偏好审查失败: {e}")
-
     try:
         # 1. 事实提取
         await fact_store.extract_facts(messages, lanlan_name)
@@ -744,7 +831,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
                 pass
         
         # 启动新的review任务
-        task = asyncio.create_task(_run_review_in_background(lanlan_name))
+        task = asyncio.create_task(_run_review_in_background(lanlan_name, input_history))
         correction_tasks[lanlan_name] = task
         
         return {"status": "processed"}
@@ -788,7 +875,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
                 pass
         
         # 启动新的review任务
-        task = asyncio.create_task(_run_review_in_background(lanlan_name))
+        task = asyncio.create_task(_run_review_in_background(lanlan_name, input_history))
         correction_tasks[lanlan_name] = task
         
         return {"status": "processed"}
@@ -825,7 +912,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
                 await correction_tasks[lanlan_name]
             except asyncio.CancelledError:
                 pass
-        task = asyncio.create_task(_run_review_in_background(lanlan_name))
+        task = asyncio.create_task(_run_review_in_background(lanlan_name, input_history))
         correction_tasks[lanlan_name] = task
 
         return {"status": "settled"}
@@ -982,6 +1069,9 @@ async def new_dialog(lanlan_name: str):
         master_name, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
         name_mapping['ai'] = lanlan_name
         _lang = get_global_language()
+        hard_avoid_topics = _get_hard_avoid_topics(lanlan_name)
+        recent_messages = recent_history_manager.get_recent_history(lanlan_name)
+        skip_indexes = _get_recent_prompt_skip_indexes(recent_messages, hard_avoid_topics, brackets_pattern)
 
         # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
     # pending + confirmed 反思也注入上下文（分区标注）
@@ -1004,13 +1094,15 @@ async def new_dialog(lanlan_name: str):
             time=get_timestamp(),
         )
 
-        for i in recent_history_manager.get_recent_history(lanlan_name):
-            if isinstance(i.content, str):
-                cleaned_content = brackets_pattern.sub('', i.content).strip()
+        for idx, i in enumerate(recent_messages):
+            cleaned_content = _extract_message_text_for_prompt(i, brackets_pattern)
+            if idx in skip_indexes:
+                logger.info(
+                    f"[MemoryServer] {lanlan_name}: recent 上下文已过滤命中 hard_avoid 的 assistant 历史"
+                )
+                continue
+            if cleaned_content:
                 result += f"{name_mapping[i.type]} | {cleaned_content}\n"
-            else:
-                texts = [brackets_pattern.sub('', j['text']).strip() for j in i.content if j['type'] == 'text']
-                result += f"{name_mapping[i.type]} | " + "\n".join(texts) + "\n"
 
         # ── 距上次聊天间隔提示（放在最末尾，紧接 CONTEXT_SUMMARY_READY 之前） ──
         try:

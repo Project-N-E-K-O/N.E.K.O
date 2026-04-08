@@ -44,9 +44,13 @@ AUTO_CONFIRM_DAYS = 3                # pending reflection N 天无反对 → 自
 
 # ── 负面话题回避 ─────────────────────────────────────────────────
 TOPIC_HARD_AVOID_THRESHOLD = 2       # 同一话题命中 2 次后升级为长期不提
+_GENERIC_AVOID_SIGNAL_RE = re.compile(
+    r'(?:^|[，。！？!?、,\s])(?:不要|别)(?:再)?(?P<topic>[^，。！？!?]{2,24}?)(?:了|啦|呀|啊|吧|嘛|呢|哦|喔|$)'
+)
 
 _NEGATIVE_PATTERNS = (
     (re.compile(r'(?:别提|不要提|别再提|不要再提|不想聊|别聊|不要聊|不想提|别说|不要说)(?P<topic>.+?)(?:了|啦|呀|啊|吧|。|！|!|？|\?|,|，|$)'), True),
+    (_GENERIC_AVOID_SIGNAL_RE, True),
     (re.compile(r'(?:不喜欢|不爱吃|讨厌吃|不想吃)(?P<topic>.+?)(?:了|啦|呀|啊|吧|嘛|呢|。|！|!|？|\?|,|，|$)'), True),
     (re.compile(r'(?P<topic>.+?)(?:我|还是)?(?:不喜欢|不爱吃|讨厌吃|不想吃)(?:了|啦|呀|啊|吧|嘛|呢|。|！|!|？|\?|,|，|$)'), True),
     (re.compile(r'(?P<topic>.+?)(?:这个|这件事|这话题|这个话题)?(?:很烦|好烦|烦死了|烦透了|讨厌|恶心|让我难受|让我不舒服)(?:了|。|！|!|？|\?|,|，|$)'), False),
@@ -151,10 +155,13 @@ def _is_mentioned(fact_text: str, response_text: str) -> bool:
 
 
 def _contains_negative_signal(text: str) -> bool:
-    lowered = (text or "").strip().lower()
+    raw = (text or "").strip()
+    lowered = raw.lower()
     if not lowered:
         return False
-    return any(keyword in lowered for keyword in _NEGATIVE_KEYWORDS)
+    if any(keyword in lowered for keyword in _NEGATIVE_KEYWORDS):
+        return True
+    return _GENERIC_AVOID_SIGNAL_RE.search(raw) is not None
 
 
 def contains_negative_signal(text: str) -> bool:

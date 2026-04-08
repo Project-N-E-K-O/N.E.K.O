@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import asyncio
 import tempfile
+import importlib
+import sys
 from unittest.mock import MagicMock, patch
 
 
@@ -101,7 +104,52 @@ def test_contains_negative_signal_keyword_gate() -> None:
 
     assert contains_negative_signal("讲道理，你知道我不喜欢就别提及了嘛") is True
     assert contains_negative_signal("我不喜欢昆虫食品") is True
+    assert contains_negative_signal("你记住了，不要日本动漫") is True
     assert contains_negative_signal("今天吃什么好呀") is False
+
+
+def test_skip_recent_ai_message_if_user_immediately_rejects_it() -> None:
+    mock_cm = _build_mock_config_manager("/tmp")
+    with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+         patch("utils.config_manager._config_manager", mock_cm):
+        sys.modules.pop("memory_server", None)
+        memory_server = importlib.import_module("memory_server")
+
+        brackets_pattern = memory_server.re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
+        messages = [
+            type("Msg", (), {"type": "ai", "content": "[20260408 Wed 09:58]中餐、日料、意大利面都可以试试"})(),
+            type("Msg", (), {"type": "human", "content": "不是跟你说过我不喜欢日本菜么"})(),
+            type("Msg", (), {"type": "ai", "content": "[20260408 Wed 09:59]那意大利菜可以考虑"})(),
+        ]
+
+        skip_indexes = memory_server._get_recent_prompt_skip_indexes(messages, ["日本菜"], brackets_pattern)
+        assert 0 in skip_indexes
+        assert 2 not in skip_indexes
+
+
+def test_negative_review_runs_after_review_history_with_raw_messages() -> None:
+    mock_cm = _build_mock_config_manager("/tmp")
+    with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+         patch("utils.config_manager._config_manager", mock_cm):
+        sys.modules.pop("memory_server", None)
+        memory_server = importlib.import_module("memory_server")
+
+        events: list[tuple] = []
+        review_messages = [type("Msg", (), {"type": "human", "content": "不要日本动漫"})()]
+
+        async def fake_review_history(name, cancel_event):
+            events.append(("review_history", name, cancel_event.is_set()))
+
+        async def fake_review_negative_preferences(messages, name):
+            events.append(("negative_review", name, messages))
+            return 1
+
+        with patch.object(memory_server.recent_history_manager, "review_history", side_effect=fake_review_history), \
+             patch.object(memory_server, "_review_and_apply_negative_preferences", side_effect=fake_review_negative_preferences):
+            asyncio.run(memory_server._run_review_in_background("测试猫娘", review_messages))
+
+        assert events[0] == ("review_history", "测试猫娘", False)
+        assert events[1] == ("negative_review", "测试猫娘", review_messages)
 
 
 def test_negative_signal_explicit_avoid_uses_referenced_topic() -> None:
@@ -185,6 +233,22 @@ def test_negative_signal_direct_dislike_immediately_hard() -> None:
             guidance = persona["_topic_guidance"]
             assert guidance["soft_avoid"] == []
             assert guidance["hard_avoid"][0]["topic"] == "昆虫食品"
+
+
+def test_negative_signal_direct_generic_avoid_phrase() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            result = pm.register_negative_signal("测试猫娘", "不要日本动漫")
+            assert result["matched"] is True
+            assert result["topic"] == "日本动漫"
+            assert result["policy"] == "avoid"
 
 
 def test_apply_negative_preference_review_persists_topic_guidance() -> None:
