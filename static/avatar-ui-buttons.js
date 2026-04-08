@@ -771,6 +771,21 @@ const AvatarButtonMixin = {
                 this._physicsRestoreTimer = null;
             }
 
+            // 清理锁定淡化相关的键盘 / blur 监听器
+            if (this._mmdCtrlKeyDownListener) {
+                window.removeEventListener('keydown', this._mmdCtrlKeyDownListener);
+                this._mmdCtrlKeyDownListener = null;
+            }
+            if (this._mmdCtrlKeyUpListener) {
+                window.removeEventListener('keyup', this._mmdCtrlKeyUpListener);
+                this._mmdCtrlKeyUpListener = null;
+            }
+            if (this._mmdWindowBlurListener) {
+                window.removeEventListener('blur', this._mmdWindowBlurListener);
+                this._mmdWindowBlurListener = null;
+            }
+            this._setMmdLockedHoverFade = null;
+
             // 清理引用
             this._floatingButtons = null;
             this._floatingButtonsContainer = null;
