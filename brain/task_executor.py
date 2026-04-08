@@ -241,7 +241,7 @@ class DirectTaskExecutor:
                     request_params: dict = {
                         "model": model,
                         "messages": [
-                            {"role": "system", "content": "You are an agentic automation assessment agent. Generate a concise plugin summary under 300 characters in English."},
+                            {"role": "system", "content": "You are an agentic automation assessment agent, generate a concise plugin summary under 300 characters in English."},
                             {"role": "user", "content": f"Plugin: {pid}\nDescription: {desc}\n\nReturn ONLY the summary."},
                         ],
                         "temperature": 0,
