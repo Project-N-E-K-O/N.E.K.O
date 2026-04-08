@@ -109,10 +109,12 @@ LEGACY_FLAT_TO_RESERVED = {
     "vrm": ("avatar", "vrm", "model_path"),
     "vrm_animation": ("avatar", "vrm", "animation"),
     "idleAnimation": ("avatar", "vrm", "idle_animation"),
+    "idleAnimations": ("avatar", "vrm", "idle_animation"),
     "lighting": ("avatar", "vrm", "lighting"),
     "mmd": ("avatar", "mmd", "model_path"),
     "mmd_animation": ("avatar", "mmd", "animation"),
     "mmd_idle_animation": ("avatar", "mmd", "idle_animation"),
+    "mmd_idle_animations": ("avatar", "mmd", "idle_animation"),
 }
 
 # 从 Electron userData 目录读取端口覆盖配置（由前端端口设置窗口写入）

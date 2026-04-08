@@ -313,11 +313,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "vrm",
         "vrm_animation",
         "idleAnimation",
+        "idleAnimations",
         "lighting",
         "vrm_rotation",
         "mmd",
         "mmd_animation",
         "mmd_idle_animation",
+        "mmd_idle_animations",
     ):
         if legacy_key in catgirl_data:
             catgirl_data.pop(legacy_key, None)
