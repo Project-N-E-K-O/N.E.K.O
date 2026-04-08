@@ -200,7 +200,7 @@ def _quote_desktop_entry_exec_argument(value: str) -> str:
 
     for char in value:
         if char == "\\":
-            escaped.append("\\\\\\\\")
+            escaped.append("\\\\")
         elif char in {'"', "`", "$"}:
             escaped.append("\\" + char)
         else:

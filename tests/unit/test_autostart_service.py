@@ -128,7 +128,7 @@ def test_quote_posix_command_uses_desktop_entry_exec_escaping():
         '/usr/bin/neko '
         '"hello world" '
         + '"quote\\"tick\\`dollar\\$slash'
-        + ("\\" * 4)
+        + ("\\\\" * 1)
         + '" '
         '"50%% done" '
         '%f '
@@ -190,6 +190,7 @@ def test_enable_autostart_writes_linux_desktop_entry_to_xdg_config_home(tmp_path
 def test_enable_autostart_writes_macos_launch_agent_with_logs_and_environment(tmp_path, monkeypatch):
     _patch_home(monkeypatch, tmp_path)
     monkeypatch.setattr(autostart_service.sys, "platform", "darwin")
+    monkeypatch.setattr(autostart_service, "_MAC_LAUNCHCTL_EXECUTABLE", "/bin/launchctl")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setenv("TMPDIR", "/tmp/neko")
     monkeypatch.setenv("LANG", "en_US.UTF-8")
@@ -211,11 +212,11 @@ def test_enable_autostart_writes_macos_launch_agent_with_logs_and_environment(tm
 
     def fake_run(args, capture_output, text, check):
         launchctl_calls.append(list(args))
-        if args[:2] == ["launchctl", "bootout"]:
+        if args[:2] == ["/bin/launchctl", "bootout"]:
             return subprocess.CompletedProcess(args, 0, "", "")
-        if args[:2] == ["launchctl", "bootstrap"]:
+        if args[:2] == ["/bin/launchctl", "bootstrap"]:
             return subprocess.CompletedProcess(args, 0, "", "")
-        if args[:2] == ["launchctl", "print"]:
+        if args[:2] == ["/bin/launchctl", "print"]:
             print_calls["count"] += 1
             return subprocess.CompletedProcess(
                 args,
@@ -235,7 +236,7 @@ def test_enable_autostart_writes_macos_launch_agent_with_logs_and_environment(tm
     assert result["configured"] is True
     assert result["loaded"] is True
     assert plist_path.exists()
-    assert ["launchctl", "bootstrap", f"gui/{autostart_service.os.getuid()}", str(plist_path)] in launchctl_calls
+    assert ["/bin/launchctl", "bootstrap", f"gui/{autostart_service.os.getuid()}", str(plist_path)] in launchctl_calls
     assert print_calls["count"] >= 1
 
     payload = plistlib.loads(plist_path.read_bytes())
@@ -264,6 +265,7 @@ def test_enable_autostart_writes_macos_launch_agent_with_logs_and_environment(tm
 def test_macos_status_requires_launchctl_loaded_service(tmp_path, monkeypatch):
     _patch_home(monkeypatch, tmp_path)
     monkeypatch.setattr(autostart_service.sys, "platform", "darwin")
+    monkeypatch.setattr(autostart_service, "_MAC_LAUNCHCTL_EXECUTABLE", "/bin/launchctl")
     monkeypatch.setattr(autostart_service, "_get_launch_command", lambda: ["/usr/bin/neko"])
 
     plist_path = tmp_path / "Library" / "LaunchAgents" / "com.project-neko.autostart.plist"
@@ -271,7 +273,7 @@ def test_macos_status_requires_launchctl_loaded_service(tmp_path, monkeypatch):
     plist_path.write_text("<plist />", encoding="utf-8")
 
     def fake_run(args, capture_output, text, check):
-        if args[:2] == ["launchctl", "print"]:
+        if args[:2] == ["/bin/launchctl", "print"]:
             return subprocess.CompletedProcess(args, 113, "", "service not found")
         raise AssertionError(f"Unexpected subprocess call: {args!r}")
 
@@ -365,6 +367,7 @@ def test_linux_status_and_disable_respect_xdg_config_home(tmp_path, monkeypatch)
 def test_disable_autostart_boots_out_macos_launch_agent(tmp_path, monkeypatch):
     _patch_home(monkeypatch, tmp_path)
     monkeypatch.setattr(autostart_service.sys, "platform", "darwin")
+    monkeypatch.setattr(autostart_service, "_MAC_LAUNCHCTL_EXECUTABLE", "/bin/launchctl")
     monkeypatch.setattr(autostart_service, "_get_launch_command", lambda: ["/usr/bin/neko"])
 
     plist_path = tmp_path / "Library" / "LaunchAgents" / "com.project-neko.autostart.plist"
@@ -375,9 +378,9 @@ def test_disable_autostart_boots_out_macos_launch_agent(tmp_path, monkeypatch):
 
     def fake_run(args, capture_output, text, check):
         launchctl_calls.append(list(args))
-        if args[:2] == ["launchctl", "bootout"]:
+        if args[:2] == ["/bin/launchctl", "bootout"]:
             return subprocess.CompletedProcess(args, 0, "", "")
-        if args[:2] == ["launchctl", "print"]:
+        if args[:2] == ["/bin/launchctl", "print"]:
             return subprocess.CompletedProcess(args, 113, "", "service not found")
         raise AssertionError(f"Unexpected subprocess call: {args!r}")
 
@@ -391,7 +394,7 @@ def test_disable_autostart_boots_out_macos_launch_agent(tmp_path, monkeypatch):
     assert result["loaded"] is False
     assert result["enabled"] is False
     assert not plist_path.exists()
-    assert any(call[:2] == ["launchctl", "bootout"] for call in launchctl_calls)
+    assert any(call[:2] == ["/bin/launchctl", "bootout"] for call in launchctl_calls)
 
 
 @pytest.mark.unit
