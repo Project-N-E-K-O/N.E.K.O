@@ -712,45 +712,45 @@ class DirectTaskExecutor:
 
         # ── Two-stage decision ──────────────────────────────────
         if len(plugins_desc) > 4000:
-            # Stage 1: coarse filter
-            logger.info(
-                "[UserPlugin] Stage 1 triggered: plugins_desc=%d chars, %d plugins",
-                len(plugins_desc), len(plugin_list),
-            )
+            try:
+                # Stage 1: coarse filter (fail-open — falls back to full list on error)
+                logger.info(
+                    "[UserPlugin] Stage 1 triggered: plugins_desc=%d chars, %d plugins",
+                    len(plugins_desc), len(plugin_list),
+                )
 
-            # BM25 + keyword filter
-            bm25_filtered, _ = stage1_filter(
-                user_intent or conversation,
-                plugin_list,
-                bm25_top_k=10,
-            )
-            bm25_ids = {p.get("id") for p in bm25_filtered if isinstance(p, dict)}
+                # BM25 + keyword filter
+                bm25_filtered, _ = stage1_filter(
+                    user_intent or conversation,
+                    plugin_list,
+                    bm25_top_k=10,
+                )
+                bm25_ids = {p.get("id") for p in bm25_filtered if isinstance(p, dict)}
 
-            # LLM coarse screen (parallel with BM25 — but BM25 is instant so sequential is fine)
-            llm_ids = await self._stage1_llm_coarse_screen(user_intent or conversation, plugin_list, lang=lang)
-            llm_id_set = set(llm_ids)
+                # LLM coarse screen
+                llm_ids = await self._stage1_llm_coarse_screen(user_intent or conversation, plugin_list, lang=lang)
+                llm_id_set = set(llm_ids)
 
-            # Union: BM25 + LLM + keyword hits
-            selected_ids = bm25_ids | llm_id_set | set(keyword_hit_ids)
+                # Union: BM25 + LLM + keyword hits
+                selected_ids = bm25_ids | llm_id_set | set(keyword_hit_ids)
 
-            if not selected_ids:
-                # Stage 1 未选出任何插件 — 回退到完整列表进入 Stage 2，
-                # 避免因 BM25/LLM 全部 miss 导致误判
-                logger.info("[UserPlugin] Stage 1: no plugins selected, falling back to full list for stage 2")
-                stage2_plugins = plugin_list
-            else:
-                # Filter to selected plugins and rebuild description
-                stage2_plugins = [p for p in plugin_list if p.get("id") in selected_ids]
-                lines = self._build_plugin_desc_lines(stage2_plugins)
-                plugins_desc = "\n".join(lines) if lines else "No plugins available."
+                if not selected_ids:
+                    logger.info("[UserPlugin] Stage 1: no plugins selected, falling back to full list for stage 2")
+                    stage2_plugins = plugin_list
+                else:
+                    stage2_plugins = [p for p in plugin_list if p.get("id") in selected_ids]
+                    lines = self._build_plugin_desc_lines(stage2_plugins)
+                    plugins_desc = "\n".join(lines) if lines else "No plugins available."
 
-            logger.info(
-                "[UserPlugin] Stage 1 result: %d/%d plugins → stage 2 (bm25=%d, llm=%d, kw=%d)",
-                len(stage2_plugins), len(plugin_list),
-                len(bm25_ids), len(llm_id_set), len(keyword_hit_ids),
-            )
-            # 后续校验用 stage2 子集，不接受全量列表中但未进入 stage2 的插件
-            plugins = stage2_plugins
+                logger.info(
+                    "[UserPlugin] Stage 1 result: %d/%d plugins -> stage 2 (bm25=%d, llm=%d, kw=%d)",
+                    len(stage2_plugins), len(plugin_list),
+                    len(bm25_ids), len(llm_id_set), len(keyword_hit_ids),
+                )
+                plugins = stage2_plugins
+            except Exception as stage1_err:
+                logger.warning("[UserPlugin] Stage 1 failed, falling back to full list: %s", stage1_err)
+                plugins = plugin_list
         else:
             logger.debug("[UserPlugin] Skipping stage 1: plugins_desc=%d chars <= 4000", len(plugins_desc))
             plugins = plugin_list
@@ -888,6 +888,11 @@ class DirectTaskExecutor:
                 except Exception:
                     valid_entries_map = {}
 
+                # Normalize numeric plugin_id (LLM may return int instead of str)
+                if isinstance(d_pid, int):
+                    d_pid = str(d_pid)
+                    decision["plugin_id"] = d_pid
+
                 if d_has and d_can:
                     correction_hint = None
                     if not d_pid:
@@ -918,12 +923,19 @@ class DirectTaskExecutor:
                             decision2 = json.loads(t2)
                             logger.info("[UserPlugin Assessment] Retry response parsed: %s", {k: decision2.get(k) for k in ("has_task", "can_execute", "plugin_id", "entry_id")})
                             decision = decision2
+                            d_pid = decision.get("plugin_id")
+                            if isinstance(d_pid, int):
+                                d_pid = str(d_pid)
+                                decision["plugin_id"] = d_pid
                             d_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
                         except Exception as e_retry:
                             logger.warning("[UserPlugin Assessment] Retry failed: %s", e_retry)
 
                 # Final validation: reject if plugin_id/entry_id still invalid after retry
                 final_pid = decision.get("plugin_id")
+                if isinstance(final_pid, int):
+                    final_pid = str(final_pid)
+                    decision["plugin_id"] = final_pid
                 final_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
                 final_has = decision.get("has_task", False)
                 final_can = decision.get("can_execute", False)
