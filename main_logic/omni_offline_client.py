@@ -86,7 +86,7 @@ class OmniOfflineClient:
         self.handle_connection_error = on_connection_error
         self.on_status_message = on_status_message
         self.on_response_done = on_response_done
-        self.on_proactive_done: Optional[Callable[[], Awaitable[None]]] = None
+        self.on_proactive_done: Optional[Callable[[bool], Awaitable[None]]] = None
         self.on_repetition_detected = on_repetition_detected
         self.on_response_discarded = on_response_discarded
         
@@ -593,7 +593,7 @@ class OmniOfflineClient:
         It is **not** persisted to _conversation_history.  Only the AI's
         natural-language response (AIMessage) is kept in history.
 
-        Calls on_proactive_done() when finished — a lightweight callback that only
+        Calls on_proactive_done(commit) when finished — a lightweight callback that only
         flushes TTS and sends turn_end to the frontend, WITHOUT triggering hot-swap
         or analyze_request logic.  Falls back to on_response_done() if
         on_proactive_done is not set.
@@ -690,9 +690,11 @@ class OmniOfflineClient:
                 self._conversation_history.append(AIMessage(content=assistant_message))
             # Use lightweight proactive-done callback (TTS flush + turn_end only),
             # falling back to full on_response_done for backward compatibility.
-            done_cb = getattr(self, "on_proactive_done", None) or self.on_response_done
-            if done_cb:
-                await done_cb()
+            proactive_done_cb = getattr(self, "on_proactive_done", None)
+            if proactive_done_cb:
+                await proactive_done_cb(bool(assistant_message))
+            elif self.on_response_done:
+                await self.on_response_done()
 
         return bool(assistant_message)
 

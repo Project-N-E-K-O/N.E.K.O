@@ -501,3 +501,22 @@ def test_negative_signal_english_topic_detection() -> None:
             guidance = persona["_topic_guidance"]
             assert guidance["soft_avoid"] == []
             assert guidance["hard_avoid"][0]["topic"] == "work"
+
+
+def test_topics_match_preserves_temporal_variant_for_latin_topics() -> None:
+    from memory.persona import _topics_match
+
+    assert _topics_match("work", "work tomorrow") is True
+
+
+def test_topics_match_avoids_partial_latin_false_positive() -> None:
+    from memory.persona import _topics_match
+
+    assert _topics_match("art", "martial arts") is False
+
+
+def test_negative_preference_prompt_normalizes_full_locale_code() -> None:
+    from config.prompts_memory import get_negative_preference_review_prompt
+
+    assert get_negative_preference_review_prompt("zh-CN") == get_negative_preference_review_prompt("zh")
+    assert get_negative_preference_review_prompt("ja-JP") == get_negative_preference_review_prompt("ja")

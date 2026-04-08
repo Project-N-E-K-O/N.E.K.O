@@ -979,6 +979,7 @@ Return only a JSON array in this format:
 
 
 def get_negative_preference_review_prompt(lang: str = 'zh') -> str:
+    lang = (lang or 'zh').strip().split('-', 1)[0].split('_', 1)[0].lower() or 'zh'
     return _loc(NEGATIVE_PREFERENCE_REVIEW_PROMPT, lang)
 
 

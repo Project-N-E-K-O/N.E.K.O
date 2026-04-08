@@ -393,7 +393,7 @@ class LLMSessionManager:
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
-    async def handle_proactive_complete(self):
+    async def handle_proactive_complete(self, commit: bool = True):
         """Lightweight completion for proactive (agent callback) replies.
 
         Only flushes TTS and sends turn_end to the frontend so that the
@@ -401,6 +401,7 @@ class LLMSessionManager:
         analyze_request, or agent-callback re-delivery — those belong
         exclusively to user-initiated conversation turns.
         """
+        await self._finalize_or_discard_current_assistant_turn(commit=commit)
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             try:
                 self.tts_request_queue.put((None, None))
@@ -638,6 +639,9 @@ class LLMSessionManager:
 
         if isinstance(self.session, OmniOfflineClient):
             self.session.queue_temporary_system_message(instruction)
+            if self.pending_session or self.background_preparation_task or self.pending_session_warmed_up_event:
+                await self._cleanup_pending_session_resources()
+                await self._reset_preparation_state(clear_main_cache=False)
             return
 
         if not isinstance(self.session, OmniRealtimeClient):
@@ -2084,51 +2088,56 @@ class LLMSessionManager:
             if not self.session or not hasattr(self.session, '_conversation_history'):
                 return False
 
-        # Record in conversation history so the LLM remembers it said this
-        from utils.llm_client import AIMessage as _AIMsg
-        self.session._conversation_history.append(_AIMsg(content=text))
+        delivered = False
+        try:
+            # Record in conversation history so the LLM remembers it said this
+            from utils.llm_client import AIMessage as _AIMsg
+            self.session._conversation_history.append(_AIMsg(content=text))
 
-        # Fresh speech_id for TTS / lipsync
-        async with self.lock:
-            self.current_speech_id = str(uuid4())
+            # Fresh speech_id for TTS / lipsync
+            async with self.lock:
+                self.current_speech_id = str(uuid4())
 
-        output_start_time = time.time()
+            output_start_time = time.time()
 
-        # Deliver in small chunks to allow mid-delivery interruption and smooth TTS
-        chunks = [text[i:i + 10] for i in range(0, len(text), 10)]
-        for i, chunk in enumerate(chunks):
-            # Abort if the user started speaking mid-delivery
-            if (
-                self.last_user_activity_time is not None
-                and self.last_user_activity_time > output_start_time
-            ):
-                logger.info("[%s] deliver_text_proactively: user active mid-delivery, aborting", self.lanlan_name)
-                await self.handle_new_message()
-                return False
-            await self.handle_text_data(chunk, is_first_chunk=(i == 0))
-            await asyncio.sleep(0.15)
+            # Deliver in small chunks to allow mid-delivery interruption and smooth TTS
+            chunks = [text[i:i + 10] for i in range(0, len(text), 10)]
+            for i, chunk in enumerate(chunks):
+                # Abort if the user started speaking mid-delivery
+                if (
+                    self.last_user_activity_time is not None
+                    and self.last_user_activity_time > output_start_time
+                ):
+                    logger.info("[%s] deliver_text_proactively: user active mid-delivery, aborting", self.lanlan_name)
+                    await self.handle_new_message()
+                    return False
+                await self.handle_text_data(chunk, is_first_chunk=(i == 0))
+                await asyncio.sleep(0.15)
 
-        # TTS end signal
-        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+            # TTS end signal
+            if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+                try:
+                    self.tts_request_queue.put((None, None))
+                except Exception:
+                    pass
+
+            # Turn-end (mirrors proactive_chat — does NOT trigger hot-swap)
+            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
             try:
-                self.tts_request_queue.put((None, None))
+                if (
+                    self.websocket
+                    and hasattr(self.websocket, 'client_state')
+                    and self.websocket.client_state == self.websocket.client_state.CONNECTED
+                ):
+                    await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
             except Exception:
                 pass
 
-        # Turn-end (mirrors proactive_chat — does NOT trigger hot-swap)
-        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-        try:
-            if (
-                self.websocket
-                and hasattr(self.websocket, 'client_state')
-                and self.websocket.client_state == self.websocket.client_state.CONNECTED
-            ):
-                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
-        except Exception:
-            pass
-
-        logger.info("[%s] Proactive task result delivered: %.40s…", self.lanlan_name, text)
-        return True
+            delivered = True
+            logger.info("[%s] Proactive task result delivered: %.40s…", self.lanlan_name, text)
+            return True
+        finally:
+            await self._finalize_or_discard_current_assistant_turn(commit=delivered)
 
     # ------------------------------------------------------------------
     # Voice-chat proactive audio nudge (dedicated path)
@@ -2254,27 +2263,32 @@ class LLMSessionManager:
 
     async def finish_proactive_delivery(self, full_text: str):
         """流式完成后收尾：一次性投递完整文本 + 记录历史 + TTS/turn end 信号。"""
-        async with self._proactive_write_lock:
-            await self.send_lanlan_response(full_text, is_first_chunk=True)
+        delivered = False
+        try:
+            async with self._proactive_write_lock:
+                await self.send_lanlan_response(full_text, is_first_chunk=True)
 
-            from utils.llm_client import AIMessage as _AIMsg
-            if self.session and hasattr(self.session, '_conversation_history'):
-                self.session._conversation_history.append(_AIMsg(content=full_text))
+                from utils.llm_client import AIMessage as _AIMsg
+                if self.session and hasattr(self.session, '_conversation_history'):
+                    self.session._conversation_history.append(_AIMsg(content=full_text))
 
-            if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+                if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+                    try:
+                        self.tts_request_queue.put((None, None))
+                    except Exception:
+                        pass
+
+                self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
                 try:
-                    self.tts_request_queue.put((None, None))
+                    if (self.websocket
+                            and hasattr(self.websocket, 'client_state')
+                            and self.websocket.client_state == self.websocket.client_state.CONNECTED):
+                        await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
                 except Exception:
                     pass
-
-            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-            try:
-                if (self.websocket
-                        and hasattr(self.websocket, 'client_state')
-                        and self.websocket.client_state == self.websocket.client_state.CONNECTED):
-                    await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
-            except Exception:
-                pass
+                delivered = True
+        finally:
+            await self._finalize_or_discard_current_assistant_turn(commit=delivered)
         logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
 
     async def trigger_agent_callbacks(self) -> None:

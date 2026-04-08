@@ -119,6 +119,11 @@ _REFERENCE_LISTLIKE_SEPARATORS = ("、", "，", ",", "；", ";", "/", "／")
 _META_AVOID_TOPIC_RE = re.compile(
     r'^(?:就|再|也)?(?:别提|别提及|不要提|不要提及|别说|不要说|别聊|不要聊|不想聊|不想提|提及|提起)$'
 )
+_LATIN_TOPIC_MATCH_THRESHOLD = 0.66
+_LATIN_TOPIC_TOKEN_STOPWORDS = {
+    "a", "an", "about", "again", "anymore", "later", "now", "please",
+    "the", "today", "tomorrow", "tonight",
+}
 
 # Split on any CJK/Latin punctuation, symbols, whitespace
 _SPLIT_RE = re.compile(r'[，。、！？；：\u201c\u201d\u2018\u2019（）()\[\]{}<>《》【】\s,.!?;:\-\u2014\u2026\xb7\u3000]+')
@@ -191,11 +196,19 @@ def contains_negative_signal(text: str) -> bool:
 
 
 def _normalize_topic_tokens(topic: str) -> set[str]:
-    return {
-        token
-        for token in re.split(r'[^a-z0-9]+', (topic or '').casefold())
-        if len(token) >= 2
-    }
+    tokens: set[str] = set()
+    for raw_token in re.split(r'[^a-z0-9]+', (topic or '').casefold()):
+        token = raw_token.strip()
+        if len(token) < 2:
+            continue
+        if token in _LATIN_TOPIC_TOKEN_STOPWORDS:
+            continue
+        if len(token) > 3 and token.endswith('s'):
+            token = token[:-1]
+        if len(token) < 2 or token in _LATIN_TOPIC_TOKEN_STOPWORDS:
+            continue
+        tokens.add(token)
+    return tokens
 
 
 def _topics_match(left: str, right: str) -> bool:
@@ -209,10 +222,11 @@ def _topics_match(left: str, right: str) -> bool:
         left_tokens = _normalize_topic_tokens(left_clean)
         right_tokens = _normalize_topic_tokens(right_clean)
         if left_tokens and right_tokens:
-            # _topics_match 对纯拉丁 topic 允许 left_tokens/right_tokens 的子集匹配。
-            # 这意味着 "work" 与 "work tomorrow"、"insect food" 与 "insect foods"
-            # 会被视为同一主题，代价是更宽松，但能更稳定地覆盖大小写、复数和轻微扩写变体。
-            return left_tokens <= right_tokens or right_tokens <= left_tokens
+            overlap = left_tokens & right_tokens
+            overlap_ratio = len(overlap) / max(len(left_tokens), len(right_tokens))
+            if overlap_ratio >= _LATIN_TOPIC_MATCH_THRESHOLD:
+                return True
+            return False
     return left_clean in right_clean or right_clean in left_clean
 
 
