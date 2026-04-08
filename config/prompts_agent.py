@@ -430,8 +430,6 @@ USER_PLUGIN_COARSE_SCREEN_PROMPT = {
 
 用户请求：{user_text}
 
-======以上为插件粗筛上下文======
-
 指令：返回一个 JSON 数组，包含所有可能相关的插件ID。如果没有相关插件，返回空数组 []。
 只返回 JSON 数组，不要其他内容。""",
 
@@ -441,8 +439,6 @@ Available plugins (id: brief description):
 {plugin_summaries}
 
 User request: {user_text}
-
-======Above is the plugin coarse screening context======
 
 Instructions: Return a JSON array of all possibly relevant plugin IDs. If none are relevant, return [].
 Return ONLY the JSON array, nothing else.""",
@@ -454,8 +450,6 @@ Return ONLY the JSON array, nothing else.""",
 
 ユーザーリクエスト：{user_text}
 
-======以上がプラグイン粗選別コンテキストです======
-
 指示：関連する可能性のあるすべてのプラグインIDを含むJSON配列を返してください。該当なしの場合は空配列 [] を返してください。
 JSON配列のみ返してください。""",
 
@@ -466,8 +460,6 @@ JSON配列のみ返してください。""",
 
 사용자 요청: {user_text}
 
-======이상이 플러그인 粗선별 컨텍스트입니다======
-
 지침: 관련 가능성이 있는 모든 플러그인 ID를 포함하는 JSON 배열을 반환하세요. 해당 없으면 빈 배열 []을 반환하세요.
 JSON 배열만 반환하세요.""",
 
@@ -477,8 +469,6 @@ JSON 배열만 반환하세요.""",
 {plugin_summaries}
 
 Запрос пользователя: {user_text}
-
-======Выше контекст грубого отбора плагинов======
 
 Инструкции: Верните JSON-массив всех возможно релевантных ID плагинов. Если нет релевантных, верните [].
 Верните ТОЛЬКО JSON-массив, ничего больше.""",
