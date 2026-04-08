@@ -84,8 +84,9 @@ def validate_extract_path(file_path: str, extract_dir: Path) -> Path:
         raise HTTPException(400, f"非法路径: {file_path}")
     
     # 确保路径在预期的子目录内（songs/ 或 actions/）
-    relative_str = str(target_path.relative_to(extract_dir_resolved))
-    if not (relative_str.startswith("songs/") or relative_str.startswith("actions/")):
+    # 使用 parts 而不是字符串比较，避免 Windows/Linux 路径分隔符差异
+    relative_path = target_path.relative_to(extract_dir_resolved)
+    if not relative_path.parts or relative_path.parts[0] not in {"songs", "actions"}:
         raise HTTPException(400, f"路径必须在 songs/ 或 actions/ 目录下: {file_path}")
     
     return target_path
@@ -262,27 +263,30 @@ class JukeboxConfig:
         builtin_song_ids = {k for k, v in all_songs.items() if v.get("isBuiltin", False)}
         builtin_action_ids = {k for k, v in all_actions.items() if v.get("isBuiltin", False)}
 
-        # 收集内置资源的覆盖设置（可见性、默认动画）
+        # 收集内置资源的覆盖设置（可见性、默认动画、名称、歌手等）
         builtin_overrides = {
             "songs": {},
             "actions": {}
         }
         for song_id in builtin_song_ids:
             song = all_songs[song_id]
-            # 保存可见性和默认动画的覆盖
+            # 保存用户可能修改的字段
             overrides = {}
-            if "visible" in song:
-                overrides["visible"] = song["visible"]
-            if "defaultAction" in song:
-                overrides["defaultAction"] = song["defaultAction"]
+            for field in ["visible", "defaultAction", "name", "artist"]:
+                if field in song:
+                    overrides[field] = song[field]
             if overrides:
                 builtin_overrides["songs"][song_id] = overrides
 
         for action_id in builtin_action_ids:
             action = all_actions[action_id]
-            # 保存可见性的覆盖
-            if "visible" in action:
-                builtin_overrides["actions"][action_id] = {"visible": action["visible"]}
+            # 保存用户可能修改的字段
+            overrides = {}
+            for field in ["visible", "name"]:
+                if field in action:
+                    overrides[field] = action[field]
+            if overrides:
+                builtin_overrides["actions"][action_id] = overrides
 
         user_data = {
             "version": self.data.get("version", "1.0"),
@@ -311,15 +315,15 @@ class JukeboxConfig:
                     user_data["bindings"][song_id][action_id] = bind_data
 
         # 过滤MD5索引：只保留用户资源的MD5
-        for md5_key, md5_map in self.data.get("md5Index", {}).items():
-            filtered_map = {}
-            for k, v in md5_map.items():
-                # 检查是否是用户资源（非内置）
-                is_builtin_song = v in all_songs and all_songs[v].get("isBuiltin", False)
-                is_builtin_action = v in all_actions and all_actions[v].get("isBuiltin", False)
-                if not is_builtin_song and not is_builtin_action:
-                    filtered_map[k] = v
-            user_data["md5Index"][md5_key] = filtered_map
+        # 歌曲MD5索引
+        for md5_key, song_id in self.data.get("md5Index", {}).get("songs", {}).items():
+            if song_id in all_songs and not all_songs[song_id].get("isBuiltin", False):
+                user_data["md5Index"]["songs"][md5_key] = song_id
+
+        # 动画MD5索引
+        for md5_key, action_id in self.data.get("md5Index", {}).get("actions", {}).items():
+            if action_id in all_actions and not all_actions[action_id].get("isBuiltin", False):
+                user_data["md5Index"]["actions"][md5_key] = action_id
 
         atomic_write_json(self.config_file, user_data)
     
@@ -864,12 +868,13 @@ async def export_config(
     selected_songs = json.loads(songIds) if songIds else None
     selected_actions = json.loads(actionIds) if actionIds else None
 
-    # 创建临时目录
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-        export_dir = temp_path / "jukebox_export"
-        export_dir.mkdir()
+    # 创建临时目录（使用手动管理，避免 TemporaryDirectory 在函数返回时清理）
+    temp_dir = tempfile.mkdtemp()
+    temp_path = Path(temp_dir)
+    export_dir = temp_path / "jukebox_export"
+    export_dir.mkdir()
 
+    try:
         # 准备导出数据
         export_data = {
             "version": jukebox_config.data["version"],
@@ -958,6 +963,10 @@ async def export_config(
         # - "导出全部(忽略隐藏)"：只导出被非隐藏歌曲使用的绑定
         # - "导出全部(含隐藏)" 或 "导出选中"：导出被导出歌曲使用的绑定
         for song_id in jukebox_config.data.get("bindings", {}):
+            # 选中导出时，只导出被选中歌曲的绑定
+            if selected_songs is not None and song_id not in song_ids_to_export:
+                continue
+
             # 检查歌曲是否应该包含在绑定导出中
             song = jukebox_config.data["songs"].get(song_id)
             if not song:
@@ -1003,11 +1012,17 @@ async def export_config(
                     zf.write(file_path, file_path.relative_to(export_dir))
 
         # 使用流式响应，避免一次性读取大文件到内存
+        # 使用 BackgroundTask 在响应完成后清理临时目录
         return StreamingResponse(
             file_iterator(zip_path),
             media_type="application/zip",
-            headers={"Content-Disposition": "attachment; filename=jukebox_export.zip"}
+            headers={"Content-Disposition": "attachment; filename=jukebox_export.zip"},
+            background=BackgroundTask(cleanup_temp_path, str(temp_dir))
         )
+    except Exception:
+        # 发生异常时清理临时目录
+        cleanup_temp_path(str(temp_dir))
+        raise
 
 
 @router.get("/file/{file_path:path}")
@@ -1124,7 +1139,13 @@ async def import_config(file: UploadFile = File(...)):
             "actionsMerged": 0,
             "bindingsAdded": 0
         }
-        
+
+        # 建立导入ID到本地ID的映射（用于处理 defaultAction）
+        id_mapping = {
+            "songs": {},  # old_song_id -> new_song_id
+            "actions": {}  # old_action_id -> new_action_id
+        }
+
         # 第一步：导入歌曲
         for song_id, song in import_data.get("songs", {}).items():
             # 验证路径安全
@@ -1141,9 +1162,11 @@ async def import_config(file: UploadFile = File(...)):
                     song["audioMd5"] = file_md5
 
             existing_id = jukebox_config.data["md5Index"]["songs"].get(file_md5) if file_md5 else None
-            
+
             if existing_id:
                 stats["songsMerged"] += 1
+                # 记录ID映射（用于 defaultAction 处理）
+                id_mapping["songs"][song_id] = existing_id
             else:
                 if src_audio.exists():
                     original_filename = Path(song["audio"]).name
@@ -1168,6 +1191,9 @@ async def import_config(file: UploadFile = File(...)):
                     jukebox_config.data["songs"][new_id] = song
                     jukebox_config.data["md5Index"]["songs"][file_md5] = new_id
                     stats["songsAdded"] += 1
+
+                    # 记录ID映射（用于 defaultAction 处理）
+                    id_mapping["songs"][song_id] = new_id
         
         # 第二步：导入动画
         for action_id, action in import_data.get("actions", {}).items():
@@ -1188,6 +1214,8 @@ async def import_config(file: UploadFile = File(...)):
 
             if existing_id:
                 stats["actionsMerged"] += 1
+                # 记录ID映射（用于 defaultAction 处理）
+                id_mapping["actions"][action_id] = existing_id
             else:
                 if src_file.exists():
                     original_filename = Path(action["file"]).name
@@ -1212,6 +1240,9 @@ async def import_config(file: UploadFile = File(...)):
                     jukebox_config.data["actions"][new_id] = action
                     jukebox_config.data["md5Index"]["actions"][file_md5] = new_id
                     stats["actionsAdded"] += 1
+
+                    # 记录ID映射（用于 defaultAction 处理）
+                    id_mapping["actions"][action_id] = new_id
         
         # 第三步：导入MD5级别的绑定，转换为ID级别存储
         # 导入格式: bindings[songMd5][actionMd5] = {"offset": 0}
@@ -1251,7 +1282,35 @@ async def import_config(file: UploadFile = File(...)):
                         if current_default not in jukebox_config.data["actions"]:
                             song["defaultAction"] = action_id
                             logger.info(f"导入设置默认动画: {song_id} -> {action_id} (原默认动画不存在)")
-        
+
+        # 第四步：处理 defaultAction 的映射
+        # 使用导入时的ID映射，将旧 defaultAction 映射到新 ID
+        for old_song_id, song in import_data.get("songs", {}).items():
+            old_default_action = song.get("defaultAction", "")
+            if not old_default_action:
+                continue
+
+            # 获取本地歌曲ID
+            local_song_id = id_mapping["songs"].get(old_song_id)
+            if not local_song_id:
+                continue
+
+            # 获取本地动画ID
+            local_action_id = id_mapping["actions"].get(old_default_action)
+            if not local_action_id:
+                continue
+
+            # 检查绑定是否存在（确保 defaultAction 有效）
+            local_song = jukebox_config.data["songs"].get(local_song_id)
+            if not local_song:
+                continue
+
+            # 检查动画是否绑定到歌曲
+            bindings = jukebox_config.data["bindings"].get(local_song_id, {})
+            if local_action_id in bindings:
+                local_song["defaultAction"] = local_action_id
+                logger.info(f"导入映射默认动画: {local_song_id} -> {local_action_id}")
+
         jukebox_config.save()
         
         logger.info(f"导入完成: {stats}")
@@ -1261,9 +1320,11 @@ async def import_config(file: UploadFile = File(...)):
 @router.post("/pack-folder")
 async def pack_folder(files: List[UploadFile] = File(...)):
     """将文件夹中的文件打包成 ZIP"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
+    # 创建临时目录（使用手动管理，避免 TemporaryDirectory 在函数返回时清理）
+    temp_dir = tempfile.mkdtemp()
+    temp_path = Path(temp_dir)
 
+    try:
         # 保存所有文件到临时目录
         for file in files:
             # 检查文件大小
@@ -1287,8 +1348,14 @@ async def pack_folder(files: List[UploadFile] = File(...)):
                     zf.write(file_path, arcname)
 
         # 使用流式响应，避免一次性读取大文件到内存
+        # 使用 BackgroundTask 在响应完成后清理临时目录
         return StreamingResponse(
             file_iterator(zip_path),
             media_type="application/zip",
-            headers={"Content-Disposition": "attachment; filename=packed.zip"}
+            headers={"Content-Disposition": "attachment; filename=packed.zip"},
+            background=BackgroundTask(cleanup_temp_path, str(temp_dir))
         )
+    except Exception:
+        # 发生异常时清理临时目录
+        cleanup_temp_path(str(temp_dir))
+        raise
