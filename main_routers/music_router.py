@@ -39,11 +39,11 @@ def _patch_pyncm_async() -> None:
                     with os.fdopen(fd, "w", encoding="utf-8") as f:
                         f.write(code)
                     os.replace(tmp_path, target)
-                except BaseException:
+                except Exception:
                     try:
                         os.remove(tmp_path)
-                    except OSError:
-                        pass
+                    except OSError as cleanup_exc:
+                        logger.debug("[Music] Failed to remove temp file %s: %s", tmp_path, cleanup_exc)
                     raise
                 logger.info("[Music] Patched pyncm_async cloud.py for Python <3.12 compat")
             break
