@@ -1347,6 +1347,42 @@ def test_authoritative_autostart_enabled_heartbeat_does_not_double_count_complet
 
 
 @pytest.mark.unit
+def test_authoritative_autostart_enabled_heartbeat_migrates_enabled_provider_from_backend_to_desktop(tmp_path):
+    config = DummyConfig(tmp_path)
+    state = load_autostart_prompt_state(config)
+    state["autostart_enabled"] = True
+    state["enabled_at"] = 2_000
+    state["enabled_provider"] = "backend"
+    state["completed_at"] = 2_000
+    state["status"] = "completed"
+    state["started_via_prompt"] = True
+    state["funnel_counts"]["completed"] = 1
+    save_autostart_prompt_state(state, config)
+
+    response = process_autostart_prompt_heartbeat(
+        {
+            "foreground_ms_delta": 0,
+            "autostart_enabled": True,
+            "autostart_status_authoritative": True,
+            "autostart_provider": "neko-pc",
+        },
+        config_manager=config,
+        now_ms=5_000,
+    )
+
+    assert response["should_prompt"] is False
+    assert response["prompt_reason"] == "autostart_enabled"
+
+    updated_state = load_autostart_prompt_state(config)
+    assert updated_state["autostart_enabled"] is True
+    assert updated_state["enabled_at"] == 2_000
+    assert updated_state["enabled_provider"] == "neko-pc"
+    assert updated_state["completed_at"] == 2_000
+    assert updated_state["status"] == "completed"
+    assert updated_state["funnel_counts"]["completed"] == 1
+
+
+@pytest.mark.unit
 def test_autostart_accept_without_enable_confirmation_enters_retryable_error(tmp_path):
     config = DummyConfig(tmp_path)
     runtime_config = load_autostart_prompt_runtime_config(config)

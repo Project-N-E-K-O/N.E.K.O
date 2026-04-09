@@ -4,6 +4,8 @@
     const DESKTOP_PROVIDER_NAME = 'neko-pc';
     const BACKEND_PROVIDER_NAME = 'backend';
     const AUTOSTART_CSRF_HEADER_NAME = 'X-CSRF-Token';
+    const AUTOSTART_STATUS_EVENT_NAME = 'neko:autostart-provider-status';
+    const DESKTOP_STATUS_EVENT_NAME = 'neko:autostart-status-changed';
 
     function getNavigatorPlatform() {
         if (navigator.userAgentData && navigator.userAgentData.platform) {
@@ -13,60 +15,6 @@
             return String(navigator.platform);
         }
         return 'unknown';
-    }
-
-    async function parseJsonResponse(response) {
-        if (!response || response.status === 204) {
-            return null;
-        }
-
-        const contentType = response.headers.get('content-type') || '';
-        if (!contentType.toLowerCase().includes('application/json')) {
-            return null;
-        }
-
-        try {
-            return await response.json();
-        } catch (_) {
-            return null;
-        }
-    }
-
-    function buildRequestError(response, payload) {
-        const error = new Error(
-            payload && typeof payload.error === 'string' && payload.error
-                ? payload.error
-                : ('HTTP ' + response.status)
-        );
-        error.status = response.status;
-        if (payload && typeof payload === 'object') {
-            Object.assign(error, payload);
-            error.payload = payload;
-        }
-        return error;
-    }
-
-    function requestJson(url, options) {
-        const requestOptions = options || {};
-        const hasJsonBody = Object.prototype.hasOwnProperty.call(requestOptions, 'json');
-        const headers = Object.assign({}, requestOptions.headers);
-        if (hasJsonBody && !headers['Content-Type']) {
-            headers['Content-Type'] = 'application/json';
-        }
-
-        return fetch(url, {
-            method: requestOptions.method || 'GET',
-            headers: headers,
-            body: hasJsonBody ? JSON.stringify(requestOptions.json || {}) : requestOptions.body,
-            keepalive: !!requestOptions.keepalive,
-            cache: requestOptions.cache,
-        }).then(async function (response) {
-            const payload = await parseJsonResponse(response);
-            if (!response.ok) {
-                throw buildRequestError(response, payload);
-            }
-            return payload;
-        });
     }
 
     function waitForPageConfig() {
@@ -110,6 +58,8 @@
     window.nekoAutostartSecurity = mutationSecurityApi;
     window.nekoLocalMutationSecurity = mutationSecurityApi;
 
+    let lastKnownStatus = null;
+
     // Desktop shells can inject window.nekoAutostart with getStatus/enable/disable methods.
     function getDesktopBridge() {
         const bridge = window.nekoAutostart;
@@ -143,13 +93,40 @@
         return normalized;
     }
 
+    function emitStatusChanged(status, source) {
+        lastKnownStatus = status && typeof status === 'object'
+            ? Object.assign({}, status)
+            : null;
+
+        try {
+            window.dispatchEvent(new CustomEvent(AUTOSTART_STATUS_EVENT_NAME, {
+                detail: {
+                    status: lastKnownStatus,
+                    source: source || '',
+                },
+            }));
+        } catch (_) {
+            // Ignore dispatch failures in non-browser contexts.
+        }
+
+        return lastKnownStatus;
+    }
+
+    function rememberStatus(status, source) {
+        return emitStatusChanged(status, source);
+    }
+
+    function getCachedStatus() {
+        return lastKnownStatus ? Object.assign({}, lastKnownStatus) : null;
+    }
+
     function getBackendDefaults() {
         return {
             ok: true,
             supported: false,
             enabled: false,
             provider: BACKEND_PROVIDER_NAME,
-            mechanism: 'backend-api',
+            mechanism: 'backend-disabled',
             platform: getNavigatorPlatform(),
             authoritative: true,
         };
@@ -167,79 +144,81 @@
         };
     }
 
+    function buildBackendUnsupportedResult(overrides) {
+        return normalizeResult(Object.assign({
+            ok: true,
+            supported: false,
+            enabled: false,
+            manageable: false,
+            provider: BACKEND_PROVIDER_NAME,
+            mechanism: 'backend-disabled',
+            authoritative: true,
+            platform: getNavigatorPlatform(),
+            reason: 'backend_autostart_removed',
+        }, overrides || {}), getBackendDefaults());
+    }
+
     function getBackendStatus() {
-        return requestJson('/api/system/autostart/status', {
-            cache: 'no-store',
-        }).then(function (result) {
-            return normalizeResult(result, getBackendDefaults());
-        });
+        return Promise.resolve(buildBackendUnsupportedResult());
     }
 
     function enableBackendAutostart() {
-        return getAutostartMutationHeaders().then(function (headers) {
-            return requestJson('/api/system/autostart/enable', {
-                method: 'POST',
-                headers: headers,
-                json: {},
-            });
-        }).then(function (result) {
-            return normalizeResult(result, getBackendDefaults());
-        });
+        return Promise.resolve(buildBackendUnsupportedResult({
+            ok: false,
+            error_code: 'launch_command_unavailable',
+            error: 'Autostart launch command is unavailable',
+        }));
     }
 
     function disableBackendAutostart() {
-        return getAutostartMutationHeaders().then(function (headers) {
-            return requestJson('/api/system/autostart/disable', {
-                method: 'POST',
-                headers: headers,
-                json: {},
+        return Promise.resolve(buildBackendUnsupportedResult());
+    }
+
+    function isAvailable() {
+        return true;
+    }
+
+    function callProviderAction(actionName, backendAction) {
+        const bridge = getDesktopBridge();
+        if (!bridge) {
+            return backendAction().then(function (result) {
+                return rememberStatus(result, 'backend:' + actionName);
             });
+        }
+
+        if (typeof bridge[actionName] !== 'function') {
+            return Promise.reject(new Error('autostart_' + actionName + '_not_supported'));
+        }
+
+        return Promise.resolve().then(function () {
+            return bridge[actionName]();
         }).then(function (result) {
-            return normalizeResult(result, getBackendDefaults());
+            return rememberStatus(normalizeResult(result, getDesktopDefaults()), 'desktop:' + actionName);
         });
     }
 
     function getStatus() {
-        const bridge = getDesktopBridge();
-        if (!bridge) {
-            return getBackendStatus();
-        }
-
-        return Promise.resolve().then(function () {
-            return bridge.getStatus();
-        }).then(function (result) {
-            return normalizeResult(result, getDesktopDefaults());
-        });
+        return callProviderAction('getStatus', getBackendStatus);
     }
 
     function enable() {
-        const bridge = getDesktopBridge();
-        if (!bridge) {
-            return enableBackendAutostart();
-        }
-
-        return Promise.resolve().then(function () {
-            return bridge.enable();
-        }).then(function (result) {
-            return normalizeResult(result, getDesktopDefaults());
-        });
+        return callProviderAction('enable', enableBackendAutostart);
     }
 
     function disable() {
-        const bridge = getDesktopBridge();
-        if (!bridge) {
-            return disableBackendAutostart();
-        }
-        if (typeof bridge.disable !== 'function') {
-            return Promise.reject(new Error('autostart_disable_not_supported'));
-        }
-
-        return Promise.resolve().then(function () {
-            return bridge.disable();
-        }).then(function (result) {
-            return normalizeResult(result, getDesktopDefaults());
-        });
+        return callProviderAction('disable', disableBackendAutostart);
     }
+
+    window.addEventListener(DESKTOP_STATUS_EVENT_NAME, function (event) {
+        const detail = event && event.detail;
+        if (!detail || typeof detail !== 'object') {
+            return;
+        }
+        rememberStatus(
+            normalizeResult(detail, detail.provider === DESKTOP_PROVIDER_NAME ? getDesktopDefaults() : getBackendDefaults()),
+            'desktop:event'
+        );
+    });
 
     const existingProvider = window.nekoAutostartProvider;
     if (
@@ -247,12 +226,29 @@
         && typeof existingProvider.getStatus === 'function'
         && typeof existingProvider.enable === 'function'
     ) {
+        if (typeof existingProvider.isAvailable !== 'function') {
+            existingProvider.isAvailable = isAvailable;
+        }
+        if (typeof existingProvider.getCachedStatus !== 'function') {
+            existingProvider.getCachedStatus = getCachedStatus;
+        }
+        if (!existingProvider.events || typeof existingProvider.events !== 'object') {
+            existingProvider.events = {};
+        }
+        if (!existingProvider.events.STATUS_CHANGED) {
+            existingProvider.events.STATUS_CHANGED = AUTOSTART_STATUS_EVENT_NAME;
+        }
         return;
     }
 
     window.nekoAutostartProvider = {
+        isAvailable: isAvailable,
         getStatus: getStatus,
         enable: enable,
         disable: disable,
+        getCachedStatus: getCachedStatus,
+        events: {
+            STATUS_CHANGED: AUTOSTART_STATUS_EVENT_NAME,
+        },
     };
 })();

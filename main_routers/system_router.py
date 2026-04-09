@@ -88,7 +88,6 @@ from utils.tutorial_prompt_state import (
     record_tutorial_started,
     record_tutorial_completed,
 )
-from utils.autostart_service import get_autostart_status, enable_autostart, disable_autostart
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
@@ -741,69 +740,6 @@ async def post_autostart_prompt_decision(request: Request):
         return record_autostart_prompt_decision(payload, config_manager=get_config_manager())
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
-
-
-@router.get("/system/autostart/status")
-async def get_system_autostart_status():
-    """返回当前平台是否支持以及是否已开启开机自启动。"""
-    try:
-        return get_autostart_status()
-    except Exception as exc:
-        logger.exception("Failed to read autostart status: %s", exc)
-        return _build_public_error_response(
-            error_code="status_failed",
-            status_code=500,
-            defaults={"supported": False, "enabled": False},
-        )
-
-
-@router.post("/system/autostart/enable")
-async def post_system_autostart_enable(request: Request):
-    """为当前用户启用 N.E.K.O 开机自启动。"""
-    validation_error = _validate_local_mutation_request(
-        request,
-        error_defaults={"enabled": False},
-    )
-    if validation_error is not None:
-        return validation_error
-
-    result = enable_autostart()
-    if result.get("ok"):
-        return result
-
-    error_code = result.get("error_code") or "enable_failed"
-    status_code = 400 if result.get("error_code") in {
-        "unsupported_platform",
-        "launch_command_unavailable",
-    } else 500
-    return _build_public_error_response(
-        error_code=error_code,
-        status_code=status_code,
-        result=result,
-    )
-
-
-@router.post("/system/autostart/disable")
-async def post_system_autostart_disable(request: Request):
-    """为当前用户关闭 N.E.K.O 开机自启动。"""
-    validation_error = _validate_local_mutation_request(
-        request,
-        error_defaults={"enabled": False},
-    )
-    if validation_error is not None:
-        return validation_error
-
-    result = disable_autostart()
-    if result.get("ok"):
-        return result
-
-    error_code = result.get("error_code") or "disable_failed"
-    status_code = 400 if result.get("error_code") == "unsupported_platform" else 500
-    return _build_public_error_response(
-        error_code=error_code,
-        status_code=status_code,
-        result=result,
-    )
 
 
 @router.post("/tutorial-prompt/tutorial-started")

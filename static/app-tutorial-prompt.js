@@ -4,6 +4,7 @@
     const HEARTBEAT_INTERVAL_MS = 15000;
     const FAST_HEARTBEAT_DELAY_MS = 1200;
     const AUTOSTART_STATUS_MAX_AGE_MS = HEARTBEAT_INTERVAL_MS;
+    const AUTOSTART_PROVIDER_STATUS_EVENT_NAME = 'neko:autostart-provider-status';
     const TUTORIAL_START_WAIT_TIMEOUT_MS = 15000;
     const FLOW_LOG_PREFIX_FALLBACK = '[AutostartPromptFlow]';
 
@@ -255,13 +256,25 @@
     function getAutostartProvider() {
         const provider = window.nekoAutostartProvider;
         if (
-            provider
-            && typeof provider.getStatus === 'function'
-            && typeof provider.enable === 'function'
+            !provider
+            || typeof provider.getStatus !== 'function'
+            || typeof provider.enable !== 'function'
         ) {
-            return provider;
+            return null;
         }
-        return null;
+        if (typeof provider.isAvailable === 'function' && provider.isAvailable() !== true) {
+            return null;
+        }
+        return provider;
+    }
+
+    function getCachedAutostartStatus() {
+        const provider = getAutostartProvider();
+        if (!provider || typeof provider.getCachedStatus !== 'function') {
+            return null;
+        }
+        const cachedStatus = provider.getCachedStatus();
+        return cachedStatus && typeof cachedStatus === 'object' ? cachedStatus : null;
     }
 
     function getTutorialManager() {
@@ -386,12 +399,49 @@
     }
 
     function applyAutostartCapabilityState(response) {
+        const previous = buildAutostartCapabilitySnapshot();
         state.autostartStatusLoaded = true;
         state.autostartSupported = response && response.supported !== false;
         state.autostartEnabled = !!(response && response.enabled);
         state.autostartStatusAuthoritative = !!(response && response.authoritative);
         state.autostartProvider = response && response.provider ? String(response.provider) : '';
         state.autostartStatusUpdatedAt = Date.now();
+        return previous.supported !== state.autostartSupported
+            || previous.enabled !== state.autostartEnabled
+            || previous.authoritative !== state.autostartStatusAuthoritative
+            || previous.provider !== state.autostartProvider;
+    }
+
+    function handleAutostartProviderStatusChanged(event) {
+        const detail = event && event.detail;
+        const response = detail && typeof detail === 'object' && detail.status
+            ? detail.status
+            : detail;
+        if (!response || typeof response !== 'object') {
+            return;
+        }
+
+        const changed = applyAutostartCapabilityState(response);
+        if (!changed) {
+            return;
+        }
+
+        const source = detail && detail.source ? detail.source : 'provider-event';
+        logFlow('autostart-provider-status-sync', {
+            source: source,
+            supported: state.autostartSupported,
+            enabled: state.autostartEnabled,
+            authoritative: state.autostartStatusAuthoritative,
+            provider: state.autostartProvider,
+        });
+
+        if (
+            state.initialized
+            && source !== 'desktop:getStatus'
+            && source !== 'backend:getStatus'
+        ) {
+            scheduleFastHeartbeat();
+        }
     }
 
     async function loadInitialAutostartState() {
@@ -1279,6 +1329,7 @@
             void syncTutorialCompleted(event && event.detail ? event.detail : {});
         });
 
+        window.addEventListener(AUTOSTART_PROVIDER_STATUS_EVENT_NAME, handleAutostartProviderStatusChanged);
         window.addEventListener('beforeunload', syncForegroundWindow);
     }
 
@@ -1288,6 +1339,11 @@
         state.initialized = true;
         syncForegroundWindow();
         bindEvents();
+
+        const cachedAutostartStatus = getCachedAutostartStatus();
+        if (cachedAutostartStatus) {
+            applyAutostartCapabilityState(cachedAutostartStatus);
+        }
 
         state.heartbeatTimer = setInterval(function () {
             flushHeartbeats();
