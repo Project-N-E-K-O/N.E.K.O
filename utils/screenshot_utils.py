@@ -9,8 +9,7 @@ from utils.token_tracker import set_call_type
 import asyncio
 from io import BytesIO
 from PIL import Image
-from openai import AsyncOpenAI
-from config import get_extra_body
+from utils.llm_client import create_chat_llm
 
 logger = get_module_logger(__name__)
 
@@ -160,43 +159,41 @@ async def analyze_image_with_vision_model(
             user_text = "请描述这张图片的内容。"
 
         set_call_type("vision")
-        async with AsyncOpenAI(
-            api_key=vision_api_key,
+        llm = create_chat_llm(
+            model=vision_model,
             base_url=vision_base_url or None,
+            api_key=vision_api_key,
             max_retries=0,
-        ) as client:
-            response = await client.chat.completions.create(
-                model=vision_model,
-                messages = [
+            max_completion_tokens=max_tokens,
+            temperature=0,
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": system_content
+            },
+            {
+                "role": "user",
+                "content": [
                     {
-                        "role": "system",
-                        "content": system_content
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_b64}"
+                        }
                     },
                     {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image_b64}"
-                                }
-                            },
-                            {
-                                "type": "text",
-                                "text": user_text
-                            }
-                        ]
+                        "type": "text",
+                        "text": user_text
                     }
-                ],
-                max_completion_tokens=max_tokens,
-                extra_body=get_extra_body(vision_model) or None
-            )
+                ]
+            }
+        ]
+        async with llm:
+            result = await llm.ainvoke(messages)
 
-        if response and response.choices and len(response.choices) > 0:
-            description = response.choices[0].message.content
-            if description and description.strip():
-                logger.info("✅ Image analysis complete")
-                return description.strip()
+        if result and result.content and result.content.strip():
+            logger.info("✅ Image analysis complete")
+            return result.content.strip()
 
         logger.warning("Vision model returned empty result")
         return None

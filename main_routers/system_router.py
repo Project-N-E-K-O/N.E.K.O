@@ -23,7 +23,6 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
-from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
 import httpx
@@ -31,7 +30,7 @@ from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from config import get_extra_body, MEMORY_SERVER_PORT
+from config import MEMORY_SERVER_PORT
 from config.prompts_sys import _loc
 from config.prompts_emotion import get_outward_emotion_analysis_prompt
 from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
@@ -1387,29 +1386,23 @@ async def emotion_analysis(request: Request):
             }
         ]
 
-        # 异步调用模型
-        request_params = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.3,
-            # Gemini 模型可能返回 markdown 格式，需要更多 token
-            "max_completion_tokens": 40
-        }
-        
-        # 只有在需要时才添加 extra_body
-        extra_body = get_extra_body(model)
-        if extra_body:
-            request_params["extra_body"] = extra_body
-        
         from utils.token_tracker import set_call_type
         set_call_type("emotion")
-        
-        # 使用异步上下文管理器确保 client 正确关闭
-        async with AsyncOpenAI(api_key=api_key, base_url=emotion_base_url) as client:
-            response = await client.chat.completions.create(**request_params)
+
+        # 异步调用模型（使用统一工厂，自动处理 extra_body / provider 兼容）
+        llm = create_chat_llm(
+            model,
+            emotion_base_url,
+            api_key,
+            temperature=0.3,
+            # Gemini 模型可能返回 markdown 格式，需要更多 token
+            max_completion_tokens=40,
+        )
+        async with llm:
+            result = await llm.ainvoke(messages)
 
         # 解析响应
-        result_text = response.choices[0].message.content.strip()
+        result_text = result.content.strip()
 
         # 处理 markdown 代码块格式（Gemini 可能返回 ```json {...} ``` 格式）
         # 首先尝试使用正则表达式提取第一个代码块
