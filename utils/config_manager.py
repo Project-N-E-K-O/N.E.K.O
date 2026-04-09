@@ -244,7 +244,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "vrm",
         "idle_animation",
         default=None,
-        legacy_keys=("idleAnimation",),
+        legacy_keys=("idleAnimation", "idleAnimations"),
     )
     if idle_animation is not None:
         # 向前兼容: 旧版存的是 string, 迁移为 list; 空值保留 []
@@ -293,7 +293,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "mmd",
         "idle_animation",
         default=None,
-        legacy_keys=("mmd_idle_animation",),
+        legacy_keys=("mmd_idle_animation", "mmd_idle_animations"),
     )
     if mmd_idle_animation is not None:
         # 向前兼容: 旧版存的是 string, 迁移为 list; 空值保留 []
@@ -313,11 +313,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "vrm",
         "vrm_animation",
         "idleAnimation",
+        "idleAnimations",
         "lighting",
         "vrm_rotation",
         "mmd",
         "mmd_animation",
         "mmd_idle_animation",
+        "mmd_idle_animations",
     ):
         if legacy_key in catgirl_data:
             catgirl_data.pop(legacy_key, None)
