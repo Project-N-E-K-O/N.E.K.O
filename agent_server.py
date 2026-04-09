@@ -1881,7 +1881,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 channel="browser_use",
                                 task_id=bu_task_id,
                                 success=False,
-                                summary=f'你的任务"{result.task_description}"已取消',
+                                summary=_rp_phrase('bu_cancelled', _rp_lang(None), desc=result.task_description or ''),
                                 error_message=cancel_msg,
                             )
                         except Exception as emit_err:
@@ -2053,7 +2053,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 await _emit_task_result(
                                     lanlan_name, channel="openfang", task_id=of_task_id,
                                     success=False,
-                                    summary=f'虚拟机任务 "{result.task_description}" 已取消',
+                                    summary=_rp_phrase('of_cancelled', _rp_lang(None), desc=result.task_description or ''),
                                     error_message=cancel_msg,
                                 )
                             except Exception:
