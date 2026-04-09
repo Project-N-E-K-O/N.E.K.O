@@ -754,7 +754,11 @@ _DEDUP_RECENT_TASK_WINDOW: float = 120.0
 
 
 def _collect_recent_task_descriptions(lanlan_name: Optional[str] = None) -> list[tuple[str, str]]:
-    """Return (task_id, description) for recently completed/failed/cancelled tasks from _task_tracker."""
+    """Return (task_id, description) for recently completed tasks from _task_tracker.
+
+    Only includes successfully completed tasks — failed tasks are excluded so
+    that users can immediately retry after transient errors.
+    """
     key = _normalize_lanlan_key(lanlan_name)
     records = _task_tracker._records.get(key)
     if not records:
@@ -764,7 +768,7 @@ def _collect_recent_task_descriptions(lanlan_name: Optional[str] = None) -> list
     for r in records:
         if now - r["ts"] > _DEDUP_RECENT_TASK_WINDOW:
             continue
-        if r.get("kind") in ("completed", "failed"):
+        if r.get("kind") == "completed":
             desc = r.get("desc", "")
             tid = r.get("task_id", "")
             if desc:
