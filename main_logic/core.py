@@ -227,7 +227,7 @@ class LLMSessionManager:
         self._agent_delivery_in_progress: bool = False
         # Flag: when True, the next turn_end from handle_response_complete should
         # be sent as 'turn end agent_callback' to prevent re-analysis.
-        # Set by _trigger_immediate_preparation_for_extra (callback-triggered hot-swap).
+        # Set by _perform_final_swap_sequence after successful callback injection.
         self._next_turn_is_agent_callback: bool = False
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
         self._proactive_write_lock = asyncio.Lock()
