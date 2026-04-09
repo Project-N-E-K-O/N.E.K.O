@@ -66,6 +66,83 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "unit: unit tests")
     config.addinivalue_line("markers", "frontend: frontend integration tests")
 
+    # Auto-install Playwright browsers if not already present.
+    # This runs once per pytest session, before any test collection.
+    _ensure_playwright_browsers_installed()
+
+
+def _ensure_playwright_browsers_installed():
+    """Check if Playwright Chromium browser is installed; install it if missing."""
+    import subprocess
+    import shutil
+
+    # Quick check: see if the playwright CLI can locate the chromium executable.
+    # `playwright install --dry-run` is not available, so we probe by trying to
+    # import playwright and inspect the expected browser path.
+    try:
+        from playwright._impl._driver import compute_driver_executable
+        driver_executable = compute_driver_executable()
+        result = subprocess.run(
+            [str(driver_executable), "install", "--dry-run"],
+            capture_output=True, text=True, timeout=30,
+        )
+        # --dry-run may not be supported; fall through to the file-existence check
+    except Exception:
+        pass
+
+    # More reliable check: see if the chromium executable actually exists
+    # by looking at the path Playwright would use.
+    needs_install = False
+    try:
+        from playwright._impl._driver import compute_driver_executable
+        import json as _json
+        driver_executable = compute_driver_executable()
+        # Ask Playwright for its browser info via the CLI
+        result = subprocess.run(
+            [str(driver_executable), "install", "chromium", "--dry-run"],
+            capture_output=True, text=True, timeout=30,
+        )
+        # If the command itself fails, we need to install
+        if result.returncode != 0:
+            needs_install = True
+    except Exception:
+        # If we can't determine the state, try the direct file check
+        needs_install = True
+
+    if not needs_install:
+        # Double-check: try to find the actual browser binary
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from playwright.sync_api import sync_playwright; "
+                 "p = sync_playwright().start(); "
+                 "b = p.chromium.launch(headless=True); "
+                 "b.close(); p.stop()"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0 and "Executable doesn't exist" in result.stderr:
+                needs_install = True
+        except Exception:
+            needs_install = True
+
+    if needs_install:
+        logger.info("Playwright browsers not found. Installing chromium with dependencies...")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
+                check=True, timeout=300,
+            )
+            logger.info("Playwright chromium installed successfully.")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to install Playwright browsers: {e}")
+            raise RuntimeError(
+                "Could not auto-install Playwright browsers. "
+                "Please run: python -m playwright install chromium --with-deps"
+            ) from e
+        except subprocess.TimeoutExpired:
+            logger.error("Playwright browser installation timed out after 300s.")
+            raise
+
 def pytest_collection_modifyitems(config, items):
     if not config.getoption("--run-manual", default=False):
         skip_manual = pytest.mark.skip(reason="needs --run-manual to run")
