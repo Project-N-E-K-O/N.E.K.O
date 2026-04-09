@@ -91,6 +91,8 @@ class Modules:
     analyze_lock: Optional[asyncio.Lock] = None
     # Per-lanlan fingerprint of latest user-turn payload already consumed by analyzer
     last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
+    # Per-lanlan timestamp of last task dispatch — used for post-dispatch cooldown
+    last_task_dispatch_ts: ClassVar[Dict[str, float]] = {}
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
@@ -119,6 +121,9 @@ _task_registry_last_cleanup: float = 0.0
 # ---------------------------------------------------------------------------
 TASK_TRACKER_MAX_RECORDS: int = 50  # 最多保留的记录数
 TASK_TRACKER_TTL: float = 600.0     # 记录保留时长（秒）
+# Cooldown (seconds) after dispatching a task before allowing new analysis for same lanlan.
+# Prevents the rapid cycle: task dispatch → cancel → callback → re-analysis → dispatch.
+POST_DISPATCH_ANALYZE_COOLDOWN: float = 30.0
 
 
 class AgentTaskTracker:
@@ -165,6 +170,8 @@ class AgentTaskTracker:
             "task_id": task_id,
         })
         self._trim(records)
+        # Update post-dispatch cooldown timestamp
+        Modules.last_task_dispatch_ts[key] = time.time()
 
     def record_completed(
         self,
@@ -747,12 +754,39 @@ def _collect_existing_task_descriptions(lanlan_name: Optional[str] = None) -> li
     return items
 
 
+# Cooldown window (seconds) for recently completed/cancelled tasks to be
+# included in dedup candidates.  This prevents the analyzer from immediately
+# re-dispatching a semantically identical task right after one finishes.
+_DEDUP_RECENT_TASK_WINDOW: float = 120.0
+
+
+def _collect_recent_task_descriptions(lanlan_name: Optional[str] = None) -> list[tuple[str, str]]:
+    """Return (task_id, description) for recently completed/failed/cancelled tasks from _task_tracker."""
+    key = _normalize_lanlan_key(lanlan_name)
+    records = _task_tracker._records.get(key)
+    if not records:
+        return []
+    now = time.time()
+    items: list[tuple[str, str]] = []
+    for r in records:
+        if now - r["ts"] > _DEDUP_RECENT_TASK_WINDOW:
+            continue
+        if r.get("kind") in ("completed", "failed"):
+            desc = r.get("desc", "")
+            tid = r.get("task_id", "")
+            if desc:
+                items.append((tid, desc))
+    return items
+
+
 async def _is_duplicate_task(query: str, lanlan_name: Optional[str] = None) -> tuple[bool, Optional[str]]:
-    """Use LLM to judge if query duplicates any existing queued/running task."""
+    """Use LLM to judge if query duplicates any queued/running OR recently completed task."""
     try:
         if not Modules.deduper:
             return False, None
         candidates = _collect_existing_task_descriptions(lanlan_name)
+        # Also include recently completed/cancelled tasks to prevent re-dispatch loops
+        candidates.extend(_collect_recent_task_descriptions(lanlan_name))
         res = await Modules.deduper.judge(query, candidates)
         return bool(res.get("duplicate")), res.get("matched_id")
     except Exception as e:
@@ -980,6 +1014,16 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         if isinstance(messages, list) and messages:
             # Consume only new user turn. Assistant turn_end without new user input should be ignored.
             lanlan_key = _normalize_lanlan_key(lanlan_name)
+            # Post-dispatch cooldown: skip analysis if a task was recently dispatched
+            # for this lanlan.  This prevents the rapid re-analysis loop where a
+            # cancelled/completed task's callback triggers another analysis cycle.
+            last_dispatch = Modules.last_task_dispatch_ts.get(lanlan_key, 0.0)
+            if last_dispatch and (time.time() - last_dispatch) < POST_DISPATCH_ANALYZE_COOLDOWN:
+                logger.info(
+                    "[AgentAnalyze] skip analyze: post-dispatch cooldown (%.1fs ago, trigger=%s lanlan=%s)",
+                    time.time() - last_dispatch, event.get("trigger"), lanlan_name,
+                )
+                return
             fp = _build_user_turn_fingerprint(messages)
             if fp is None:
                 logger.info("[AgentAnalyze] skip analyze: no user message found (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
@@ -1113,33 +1157,38 @@ async def _run_computer_use_task(
         except Exception as e:
             logger.debug("[ComputerUse] emit task_update(terminal) failed: task_id=%s error=%s", task_id, e)
 
-        # Emit structured task_result
-        try:
-            _lang = _rp_lang(None)
-            _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
-            params = info.get("params") or {}
-            desc = params.get("query") or params.get("instruction") or ""
-            if cu_detail and desc:
-                summary = _rp_phrase('cu_task_done', _lang, desc=desc, status=_done, detail=cu_detail)
-            elif cu_detail:
-                summary = _rp_phrase('cu_task_done_no_desc', _lang, status=_done, detail=cu_detail)
-            elif desc:
-                summary = _rp_phrase('cu_task_desc_only', _lang, desc=desc, status=_done)
-            else:
-                summary = _rp_phrase('cu_done', _lang) if success else _rp_phrase('cu_fail', _lang)
-            task_obj = asyncio.create_task(_emit_task_result(
-                lanlan_name,
-                channel="computer_use",
-                task_id=task_id,
-                success=success,
-                summary=summary,
-                detail=cu_detail if success else "",
-                error_message=cu_detail if not success else "",
-            ))
-            Modules._background_tasks.add(task_obj)
-            task_obj.add_done_callback(Modules._background_tasks.discard)
-        except Exception as e:
-            logger.debug("[ComputerUse] emit task_result failed: task_id=%s error=%s", task_id, e)
+        # Emit structured task_result — skip for cancelled tasks to prevent
+        # the callback → re-analysis → new task → cancel loop.
+        # Cancelled tasks are system-initiated (session change), not user-visible failures.
+        if info["status"] != "cancelled":
+            try:
+                _lang = _rp_lang(None)
+                _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
+                params = info.get("params") or {}
+                desc = params.get("query") or params.get("instruction") or ""
+                if cu_detail and desc:
+                    summary = _rp_phrase('cu_task_done', _lang, desc=desc, status=_done, detail=cu_detail)
+                elif cu_detail:
+                    summary = _rp_phrase('cu_task_done_no_desc', _lang, status=_done, detail=cu_detail)
+                elif desc:
+                    summary = _rp_phrase('cu_task_desc_only', _lang, desc=desc, status=_done)
+                else:
+                    summary = _rp_phrase('cu_done', _lang) if success else _rp_phrase('cu_fail', _lang)
+                task_obj = asyncio.create_task(_emit_task_result(
+                    lanlan_name,
+                    channel="computer_use",
+                    task_id=task_id,
+                    success=success,
+                    summary=summary,
+                    detail=cu_detail if success else "",
+                    error_message=cu_detail if not success else "",
+                ))
+                Modules._background_tasks.add(task_obj)
+                task_obj.add_done_callback(Modules._background_tasks.discard)
+            except Exception as e:
+                logger.debug("[ComputerUse] emit task_result failed: task_id=%s error=%s", task_id, e)
+        else:
+            logger.info("[ComputerUse] Skipping task_result for cancelled task %s (prevents re-analysis loop)", task_id)
 
 async def _computer_use_scheduler_loop():
     """Ensure only one computer-use task runs at a time by scheduling queued tasks."""
@@ -1511,17 +1560,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             desc=f"{plugin_id}.{entry_id}: {result.task_description or ''}",
                             detail=cancel_msg[:200], success=False,
                         )
-                        try:
-                            await _emit_task_result(
-                                lanlan_name,
-                                channel="user_plugin",
-                                task_id=str(result.task_id or ""),
-                                success=False,
-                                summary=_rp_phrase('plugin_cancelled', _rp_lang(None)),
-                                error_message=cancel_msg,
-                            )
-                        except Exception as emit_err:
-                            logger.debug("[TaskExecutor] emit task_result(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
+                        # Skip task_result for cancelled tasks to prevent re-analysis loop
+                        logger.info("[TaskExecutor] Skipping task_result for cancelled user_plugin task %s", result.task_id)
                         try:
                             await _emit_main_event(
                                 "task_update", lanlan_name,
@@ -1694,17 +1734,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             desc=result.task_description or instruction or "",
                             detail=cancel_msg[:200], success=False,
                         )
-                        try:
-                            await _emit_task_result(
-                                lanlan_name,
-                                channel="openclaw",
-                                task_id=str(result.task_id or ""),
-                                success=False,
-                                summary=_rp_phrase('openclaw_cancelled', _rp_lang(None)),
-                                error_message=cancel_msg,
-                            )
-                        except Exception:
-                            pass
+                        # Skip task_result for cancelled tasks to prevent re-analysis loop
+                        logger.info("[OpenClaw] Skipping task_result for cancelled task %s", result.task_id)
                         try:
                             await _emit_main_event(
                                 "task_update",
@@ -2033,15 +2064,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 lanlan_name, task_id=of_task_id, method="openfang",
                                 desc=result.task_description or "", detail=cancel_msg[:200], success=False,
                             )
-                            try:
-                                await _emit_task_result(
-                                    lanlan_name, channel="openfang", task_id=of_task_id,
-                                    success=False,
-                                    summary=f'虚拟机任务 "{result.task_description}" 已取消',
-                                    error_message=cancel_msg,
-                                )
-                            except Exception:
-                                logger.debug("[OpenFang] emit_task_result(cancelled) failed: task_id=%s", of_task_id, exc_info=True)
+                            # Skip task_result for cancelled tasks to prevent re-analysis loop
+                            logger.info("[OpenFang] Skipping task_result for cancelled task %s", of_task_id)
                             try:
                                 await _emit_main_event(
                                     "task_update", lanlan_name,

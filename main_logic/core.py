@@ -225,6 +225,10 @@ class LLMSessionManager:
         self.pending_agent_callbacks: list[dict] = []
         # 防止 trigger_agent_callbacks 重入
         self._agent_delivery_in_progress: bool = False
+        # Flag: when True, the next turn_end from handle_response_complete should
+        # be sent as 'turn end agent_callback' to prevent re-analysis.
+        # Set by _trigger_immediate_preparation_for_extra (callback-triggered hot-swap).
+        self._next_turn_is_agent_callback: bool = False
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
         self._proactive_write_lock = asyncio.Lock()
         # 由前端控制的Agent相关开关
@@ -418,12 +422,21 @@ class LLMSessionManager:
                 self.tts_request_queue.put((None, None))
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
-        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-        
+
+        # If this turn was an agent-callback hot-swap delivery, send
+        # 'turn end agent_callback' so cross_server skips re-analysis.
+        if self._next_turn_is_agent_callback:
+            self._next_turn_is_agent_callback = False
+            turn_end_signal = 'turn end agent_callback'
+            logger.info("📨 Response complete (agent callback hot-swap delivery)")
+        else:
+            turn_end_signal = 'turn end'
+        self.sync_message_queue.put({'type': 'system', 'data': turn_end_signal})
+
         # 直接向前端发送turn end消息
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
+                await self.websocket.send_json({'type': 'system', 'data': turn_end_signal})
         except Exception as e:
             logger.error(f"💥 WS Send Turn End Error: {e}")
 
@@ -1891,6 +1904,10 @@ class LLMSessionManager:
                 self.summary_triggered_time = datetime.now()
                 self.message_cache_for_new_session = []
                 self.initial_cache_snapshot_len = 0
+                # Mark that this hot-swap is for agent callback delivery, so the
+                # resulting turn_end will be sent as 'turn end agent_callback'
+                # to prevent cross_server from triggering re-analysis.
+                self._next_turn_is_agent_callback = True
                 # 立即启动后台预热，不等待10秒
                 self.pending_session_warmed_up_event = asyncio.Event()
                 if not self.background_preparation_task or self.background_preparation_task.done():
