@@ -2685,7 +2685,8 @@
         "playError": "音樂播放載入失敗",
         "loadError": "音樂播放器載入失敗",
         "autoplayBlocked": "瀏覽器限制了自動播放，請點擊播放按鈕",
-        "ended": "已結束"
+        "ended": "已結束",
+        "nowPlayingCard": "🎵 正在播放"
     },
     "Jukebox": {
         "title": "點歌台",

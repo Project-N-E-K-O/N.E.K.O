@@ -6,7 +6,6 @@ type MessageListProps = {
   messages: ChatMessage[];
   emptyText?: string;
   ariaLabel?: string;
-  streamingStatusLabel?: string;
   failedStatusLabel?: string;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
@@ -28,7 +27,6 @@ export default function MessageList({
   messages,
   emptyText = '聊天内容接入后会显示在这里。',
   ariaLabel = 'Chat messages',
-  streamingStatusLabel = '生成中',
   failedStatusLabel = '发送失败',
   onAction,
 }: MessageListProps) {
@@ -96,7 +94,6 @@ export default function MessageList({
           key={message.id}
           message={message}
           isGroupedWithPrevious={shouldGroupWithPrevious(message, messages[index - 1])}
-          streamingStatusLabel={streamingStatusLabel}
           failedStatusLabel={failedStatusLabel}
           onAction={onAction}
         />
