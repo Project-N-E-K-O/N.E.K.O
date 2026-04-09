@@ -1642,6 +1642,7 @@
             "mouseTracking": "マウス追跡",
             "fullscreenTracking": "フルスクリーン追跡",
             "localTracking": "ローカル追跡",
+            "lockedHoverFade": "ロック時ホバー透過",
             "textGuardMaxLength": "返信文字数制限",
             "unlimited": "無制限",
             "characters": "文字",
