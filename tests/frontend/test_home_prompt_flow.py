@@ -255,6 +255,140 @@ def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
 
 
 @pytest.mark.frontend
+def test_tutorial_prompt_prefers_window_t_over_safe_t(
+    mock_page: Page,
+):
+    project_root = Path(__file__).resolve().parents[2]
+
+    mock_page.set_content("<!doctype html><html><body></body></html>")
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.t = function(key, fallback) {
+                return typeof fallback === 'string' ? fallback : key;
+            };
+            window.safeT = function(key) {
+                return key;
+            };
+            window.showStatusToast = function() {};
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async function() {
+                    return { 'X-CSRF-Token': 'test-token' };
+                },
+            };
+            window.nekoAutostartProvider = {
+                getStatus: async function() {
+                    return {
+                        ok: true,
+                        supported: false,
+                        enabled: false,
+                        authoritative: false,
+                        provider: 'backend',
+                    };
+                },
+            };
+            window.universalTutorialManager = {
+                currentPage: 'home',
+                isTutorialRunning: false,
+                hasSeenTutorial: function() {
+                    return false;
+                },
+                logPromptFlow: function() {},
+                requestTutorialStart: async function() {
+                    return false;
+                },
+            };
+
+            const jsonResponse = function(body) {
+                return new Response(JSON.stringify(body), {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                });
+            };
+
+            window.fetch = async function(url) {
+                const requestUrl = String(url);
+
+                if (requestUrl === '/api/tutorial-prompt/state') {
+                    return jsonResponse({
+                        state: {
+                            status: 'observing',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: false,
+                            home_tutorial_completed: false,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                    return jsonResponse({
+                        ok: true,
+                        should_prompt: true,
+                        prompt_reason: 'idle_timeout',
+                        prompt_token: 'tutorial-token',
+                        state: {
+                            status: 'observing',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: false,
+                            home_tutorial_completed: false,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/tutorial-prompt/shown') {
+                    return jsonResponse({
+                        ok: true,
+                        already_acknowledged: false,
+                        state: {
+                            status: 'prompted',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: false,
+                            home_tutorial_completed: false,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/autostart-prompt/state') {
+                    return jsonResponse({
+                        state: {
+                            status: 'observing',
+                            never_remind: false,
+                            deferred_until: 0,
+                            autostart_enabled: false,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                    return jsonResponse({
+                        ok: true,
+                        should_prompt: false,
+                        prompt_reason: 'provider_unsupported',
+                        state: {
+                            status: 'observing',
+                            never_remind: false,
+                            deferred_until: 0,
+                            autostart_enabled: false,
+                        },
+                    });
+                }
+
+                throw new Error('Unexpected request: ' + requestUrl);
+            };
+        }
+        """
+    )
+
+    mock_page.add_script_tag(path=str(project_root / "static" / "common_dialogs.js"))
+    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
+    mock_page.evaluate("() => window.appTutorialPrompt.init()")
+
+    expect(mock_page.locator(".modal-title")).to_have_text("要不要开始主页新手引导？", timeout=5000)
+
+
+@pytest.mark.frontend
 def test_tutorial_started_event_retries_failed_sync_on_heartbeat(
     mock_page: Page,
 ):
@@ -737,6 +871,139 @@ def test_autostart_provider_enable_syncs_prompt_heartbeat_state(
         """,
         timeout=5000,
     )
+
+
+@pytest.mark.frontend
+def test_autostart_heartbeat_preserves_last_known_enabled_state_on_status_pull_failure(
+    mock_page: Page,
+):
+    project_root = Path(__file__).resolve().parents[2]
+
+    mock_page.set_content("<!doctype html><html><body></body></html>")
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.safeT = function(key, fallback) {
+                return typeof fallback === 'string' ? fallback : key;
+            };
+            window.showStatusToast = function() {};
+            window.__autostartHeartbeatBodies = [];
+            window.nekoAutostart = {
+                getStatus: async function() {
+                    throw new Error('temporary_status_failure');
+                },
+                enable: async function() {
+                    throw new Error('enable should not be called');
+                },
+                disable: async function() {
+                    throw new Error('disable should not be called');
+                },
+            };
+            window.universalTutorialManager = {
+                currentPage: 'home',
+                isTutorialRunning: false,
+                hasSeenTutorial: function() {
+                    return true;
+                },
+                logPromptFlow: function() {},
+                requestTutorialStart: async function() {
+                    return false;
+                },
+            };
+
+            const jsonResponse = function(body) {
+                return new Response(JSON.stringify(body), {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                });
+            };
+
+            window.fetch = async function(url, options) {
+                const requestUrl = String(url);
+                const requestOptions = options || {};
+                let body = null;
+                if (typeof requestOptions.body === 'string' && requestOptions.body) {
+                    body = JSON.parse(requestOptions.body);
+                }
+
+                if (requestUrl === '/api/tutorial-prompt/state') {
+                    return jsonResponse({
+                        state: {
+                            status: 'completed',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: true,
+                            home_tutorial_completed: true,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                    return jsonResponse({
+                        ok: true,
+                        should_prompt: false,
+                        state: {
+                            status: 'completed',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: true,
+                            home_tutorial_completed: true,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/autostart-prompt/state') {
+                    return jsonResponse({
+                        state: {
+                            status: 'completed',
+                            never_remind: false,
+                            deferred_until: 0,
+                            autostart_enabled: true,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                    window.__autostartHeartbeatBodies.push(body);
+                    return jsonResponse({
+                        ok: true,
+                        should_prompt: false,
+                        state: {
+                            status: body && body.autostart_enabled ? 'completed' : 'observing',
+                            never_remind: false,
+                            deferred_until: 0,
+                            autostart_enabled: !!(body && body.autostart_enabled),
+                        },
+                    });
+                }
+
+                throw new Error('Unexpected request: ' + requestUrl);
+            };
+        }
+        """
+    )
+
+    mock_page.add_script_tag(path=str(project_root / "static" / "app-autostart-provider.js"))
+    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
+    mock_page.evaluate("() => window.appTutorialPrompt.init()")
+
+    mock_page.wait_for_function(
+        """
+        () => window.__autostartHeartbeatBodies.some(function (body) {
+            return !!(body && body.autostart_enabled === true);
+        })
+        """,
+        timeout=5000,
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => window.__autostartHeartbeatBodies.slice()
+        """
+    )
+
+    assert len(result) >= 1
+    assert result[0]["autostart_enabled"] is True
 
 
 @pytest.mark.frontend

@@ -85,8 +85,13 @@
     }
 
     function translate(key, fallback) {
-        if (typeof window.safeT === 'function') {
-            return window.safeT(key, fallback);
+        if (typeof window.t === 'function') {
+            try {
+                const translated = window.t(key, fallback);
+                if (typeof translated === 'string') {
+                    return translated;
+                }
+            } catch (_) {}
         }
         return typeof fallback === 'string' ? fallback : key;
     }
@@ -686,7 +691,7 @@
         } catch (_) {
             return {
                 supported: state.autostartSupported,
-                enabled: false,
+                enabled: state.autostartEnabled,
                 authoritative: false,
                 provider: state.autostartProvider,
                 requiresApproval: state.autostartRequiresApproval,
