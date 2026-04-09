@@ -1596,6 +1596,7 @@
         "modelType": {
             "live2d": "Live2D",
             "vrm": "VRM",
+            "live3d": "VRM",
             "mmd": "MMD",
             "unknown": "알 수 없는 모델"
         },

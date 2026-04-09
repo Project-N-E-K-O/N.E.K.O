@@ -1,5 +1,4 @@
 import pytest
-import re
 from playwright.sync_api import Page, expect
 
 @pytest.mark.frontend
@@ -21,7 +20,7 @@ def test_chara_manager_load(mock_page: Page, running_server: str):
     mock_page.goto(url)
     
     # Wait for title
-    expect(mock_page).to_have_title(re.compile(r"角色管理"))
+    expect(mock_page).to_have_title("角色管理 - Project N.E.K.O.")
     
     # Wait for character list container
     mock_page.wait_for_selector("#catgirl-list")
@@ -127,4 +126,3 @@ def test_add_catgirl(mock_page: Page, running_server: str):
         mock_page.screenshot(path="frontend_failure_generic.png")
         print("Page content on failure:", mock_page.content()[:1000])
         raise
-

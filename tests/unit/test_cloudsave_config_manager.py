@@ -174,3 +174,68 @@ def test_save_user_preferences_writes_runtime_root_even_when_project_fallback_ex
     assert runtime_preferences_path.is_file()
     assert json.loads(runtime_preferences_path.read_text(encoding="utf-8"))[0]["model_path"] == "/runtime.model3.json"
     assert json.loads(project_preferences_path.read_text(encoding="utf-8"))[0]["model_path"] == "/legacy.model3.json"
+
+
+@pytest.mark.unit
+def test_load_root_state_reraises_corrupt_json_even_with_default_value(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.root_state_path.parent.mkdir(parents=True, exist_ok=True)
+    cm.root_state_path.write_text("{not-valid-json", encoding="utf-8")
+
+    with pytest.raises(json.JSONDecodeError):
+        cm.load_root_state()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("save_call", "target_name"),
+    (
+        (lambda cm: cm.save_characters({"猫娘": {}, "主人": {}, "当前猫娘": ""}), "characters.json"),
+        (lambda cm: cm.save_json_config("core_config.json", {"coreApi": "demo"}), "core_config.json"),
+        (lambda cm: cm.save_workshop_config({"default_workshop_folder": "/tmp/workshop"}), "workshop_config.json"),
+    ),
+)
+def test_config_save_entrypoints_check_write_fence_before_ensuring_config_dir(tmp_path, save_call, target_name):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    maintenance_error = MaintenanceModeError("maintenance_readonly", operation="save", target=target_name)
+
+    with patch("utils.cloudsave_runtime.assert_cloudsave_writable", side_effect=maintenance_error), patch.object(
+        cm,
+        "ensure_config_directory",
+        side_effect=AssertionError("ensure_config_directory should not run before the write fence"),
+    ):
+        with pytest.raises(MaintenanceModeError):
+            save_call(cm)
+
+
+@pytest.mark.unit
+def test_preferences_save_entrypoints_check_write_fence_before_ensuring_config_dir(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils import preferences as preferences_module
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    maintenance_error = MaintenanceModeError("maintenance_readonly", operation="save", target="user_preferences.json")
+
+    with patch("utils.config_manager._config_manager", cm), patch.object(
+        preferences_module,
+        "_config_manager",
+        cm,
+    ), patch.object(
+        preferences_module,
+        "assert_cloudsave_writable",
+        side_effect=maintenance_error,
+    ), patch.object(
+        cm,
+        "ensure_config_directory",
+        side_effect=AssertionError("ensure_config_directory should not run before the write fence"),
+    ):
+        with pytest.raises(MaintenanceModeError):
+            preferences_module.save_user_preferences(
+                [{"model_path": "/runtime.model3.json", "position": {"x": 2}, "scale": {"x": 2}}]
+            )
+        with pytest.raises(MaintenanceModeError):
+            preferences_module.save_global_conversation_settings({"focusModeEnabled": True})

@@ -371,9 +371,11 @@ async def post_cloudsave_character_download(name: str, request: Request):
         if not reload_ok:
             raise RuntimeError(reload_error or "reload failed")
     except Exception as exc:
+        rollback_attempted = False
         rollback_error = ""
         try:
             if backup_path:
+                rollback_attempted = True
                 restore_cloudsave_operation_backup(config_manager, backup_path)
                 initialize_character_data = get_initialize_character_data()
                 await initialize_character_data()
@@ -386,7 +388,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
             status_code=500,
             character_name=name,
             extra={
-                "rolled_back": rollback_error == "",
+                "rolled_back": rollback_attempted and rollback_error == "",
                 "rollback_error": rollback_error,
             },
         )

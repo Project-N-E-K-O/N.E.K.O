@@ -29,6 +29,10 @@
             key: 'cloudsave.modelType.vrm',
             fallback: 'VRM',
         },
+        live3d: {
+            key: 'cloudsave.modelType.live3d',
+            fallback: 'VRM',
+        },
         mmd: {
             key: 'cloudsave.modelType.mmd',
             fallback: 'MMD',
@@ -262,6 +266,17 @@
         return String(value).padStart(2, '0');
     }
 
+    function getPreferredLocale() {
+        const currentUiLanguage = getCurrentUiLanguage();
+        if (currentUiLanguage) {
+            return currentUiLanguage;
+        }
+        if (typeof navigator !== 'undefined' && typeof navigator.language === 'string' && navigator.language.trim()) {
+            return navigator.language.trim();
+        }
+        return 'en-US';
+    }
+
     function formatUtcTimestamp(utcValue) {
         const normalizedValue = String(utcValue || '').trim();
         if (!normalizedValue) {
@@ -273,15 +288,27 @@
             return normalizedValue;
         }
 
-        return [
-            date.getFullYear(),
-            padDatePart(date.getMonth() + 1),
-            padDatePart(date.getDate()),
-        ].join('-') + ' ' + [
-            padDatePart(date.getHours()),
-            padDatePart(date.getMinutes()),
-            padDatePart(date.getSeconds()),
-        ].join(':');
+        try {
+            return new Intl.DateTimeFormat(getPreferredLocale(), {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+            }).format(date);
+        } catch (error) {
+            console.warn('Failed to localize UTC timestamp:', error);
+            return [
+                date.getFullYear(),
+                padDatePart(date.getMonth() + 1),
+                padDatePart(date.getDate()),
+            ].join('-') + ' ' + [
+                padDatePart(date.getHours()),
+                padDatePart(date.getMinutes()),
+                padDatePart(date.getSeconds()),
+            ].join(':');
+        }
     }
 
     function isProviderAvailable(summary = state.summary) {

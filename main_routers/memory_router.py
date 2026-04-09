@@ -453,6 +453,8 @@ async def update_review_config(request: Request):
         
         logger.info(f"记忆整理配置已更新: enabled={enabled}")
         return {"success": True, "enabled": enabled}
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.error(f"更新记忆整理配置失败: {e}")
         return {"success": False, "error": str(e)}

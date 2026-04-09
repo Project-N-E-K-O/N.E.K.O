@@ -2,6 +2,7 @@ import importlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -210,6 +211,111 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_persist_failure():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        websocket = AsyncMock()
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={
+                    "旧角色": SimpleNamespace(is_active=False, websocket=websocket, session=None),
+                },
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            characters_router_module = importlib.import_module("main_routers.characters_router")
+
+            fake_response = type(
+                "Resp",
+                (),
+                {"status_code": 200, "json": lambda self: {"status": "success"}},
+            )()
+            fake_client = AsyncMock()
+            fake_client.__aenter__.return_value = fake_client
+            fake_client.__aexit__.return_value = False
+            fake_client.post.return_value = fake_response
+
+            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+                add_result = await characters_router_module.add_catgirl(
+                    _DummyRequest({"档案名": "旧角色"})
+                )
+            assert add_result["success"] is True
+
+            characters = cm.load_characters()
+            characters["当前猫娘"] = "旧角色"
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            old_memory_dir = Path(cm.memory_dir) / "旧角色"
+            old_memory_dir.mkdir(parents=True, exist_ok=True)
+            (old_memory_dir / "recent.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "speaker": "旧角色",
+                            "data": {"content": "旧角色说：你好"},
+                        }
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            original_save_characters = cm.save_characters
+
+            def _fail_primary_save(data, character_json_path=None, *, bypass_write_fence=False):
+                if not bypass_write_fence and "新角色" in (data.get("猫娘") or {}):
+                    raise OSError("disk full")
+                return original_save_characters(
+                    data,
+                    character_json_path=character_json_path,
+                    bypass_write_fence=bypass_write_fence,
+                )
+
+            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client), patch.object(
+                cm,
+                "save_characters",
+                side_effect=_fail_primary_save,
+            ):
+                rename_result = await characters_router_module.rename_catgirl(
+                    "旧角色",
+                    _DummyRequest({"new_name": "新角色"}),
+                )
+
+            assert rename_result.status_code == 500
+            payload = json.loads(rename_result.body.decode("utf-8"))
+            assert payload["success"] is False
+            assert "disk full" in payload["error"]
+
+            current_characters = cm.load_characters()
+            assert "旧角色" in current_characters.get("猫娘", {})
+            assert "新角色" not in current_characters.get("猫娘", {})
+            assert current_characters["当前猫娘"] == "旧角色"
+            assert old_memory_dir.exists()
+            assert not (Path(cm.memory_dir) / "新角色").exists()
+
+            restored_recent_payload = json.loads((old_memory_dir / "recent.json").read_text(encoding="utf-8"))
+            assert restored_recent_payload[0]["speaker"] == "旧角色"
+            websocket.send_text.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
@@ -366,6 +472,106 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("card_payload", "expected_model_field", "expected_model_ref", "expected_display_name"),
+    (
+        (
+            {
+                "档案名": "工坊VRM角色",
+                "昵称": "来自创意工坊 VRM",
+                "model_type": "vrm",
+                "vrm": "/workshop/3671939765/avatar/BlueCat.vrm",
+            },
+            "vrm",
+            "/workshop/3671939765/avatar/BlueCat.vrm",
+            "BlueCat",
+        ),
+        (
+            {
+                "档案名": "工坊MMD角色",
+                "昵称": "来自创意工坊 MMD",
+                "model_type": "mmd",
+                "mmd": "/workshop/3671939765/miku/Miku.pmx",
+            },
+            "mmd",
+            "/workshop/3671939765/miku/Miku.pmx",
+            "Miku",
+        ),
+    ),
+)
+async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_metadata(
+    card_payload,
+    expected_model_field,
+    expected_model_ref,
+    expected_display_name,
+):
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            workshop_router_module = importlib.import_module("main_routers.workshop_router")
+
+            installed_folder = Path(td) / "mock_workshop_live3d_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps(card_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "3671939765",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards()
+
+        assert sync_result["added"] == 1
+
+        from utils.config_manager import get_reserved
+
+        current_characters = cm.load_characters()
+        payload = current_characters.get("猫娘", {}).get(card_payload["档案名"])
+        assert isinstance(payload, dict)
+        assert get_reserved(payload, "avatar", "asset_source", default="") == "steam_workshop"
+        assert get_reserved(payload, "avatar", "asset_source_id", default="") == "3671939765"
+        assert get_reserved(payload, "avatar", "model_type", default="") == "live3d"
+        assert get_reserved(payload, "avatar", expected_model_field, "model_path", default="") == expected_model_ref
+        assert get_reserved(payload, "character_origin", "source", default="") == "steam_workshop"
+        assert get_reserved(payload, "character_origin", "source_id", default="") == "3671939765"
+        assert get_reserved(payload, "character_origin", "display_name", default="") == expected_display_name
+        assert get_reserved(payload, "character_origin", "model_ref", default="") == expected_model_ref
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
@@ -420,6 +626,133 @@ async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
             assert "time_indexed.db is locked" in payload["error"]
             assert payload["memory_server_released"] is True
             assert "删除失败角色" in cm.load_characters().get("猫娘", {})
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failure_occurs():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            characters_router_module = importlib.import_module("main_routers.characters_router")
+
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})["删除回滚角色"] = {"昵称": "删除回滚角色"}
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            memory_dir = Path(cm.memory_dir) / "删除回滚角色"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            (memory_dir / "recent.json").write_text(
+                json.dumps([{"speaker": "删除回滚角色", "content": "你好"}], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            fake_response = type(
+                "Resp",
+                (),
+                {"status_code": 200, "json": lambda self: {"status": "success"}},
+            )()
+            fake_client = AsyncMock()
+            fake_client.__aenter__.return_value = fake_client
+            fake_client.__aexit__.return_value = False
+            fake_client.post.return_value = fake_response
+
+            original_save_characters = cm.save_characters
+
+            def _fail_primary_save(data, character_json_path=None, *, bypass_write_fence=False):
+                if not bypass_write_fence and "删除回滚角色" not in (data.get("猫娘") or {}):
+                    raise OSError("disk full")
+                return original_save_characters(
+                    data,
+                    character_json_path=character_json_path,
+                    bypass_write_fence=bypass_write_fence,
+                )
+
+            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client), patch.object(
+                cm,
+                "save_characters",
+                side_effect=_fail_primary_save,
+            ):
+                delete_result = await characters_router_module.delete_catgirl("删除回滚角色")
+
+            assert delete_result.status_code == 500
+            payload = json.loads(delete_result.body.decode("utf-8"))
+            assert payload["success"] is False
+            assert "disk full" in payload["error"]
+            assert payload["memory_server_released"] is True
+            assert "删除回滚角色" in cm.load_characters().get("猫娘", {})
+            assert (memory_dir / "recent.json").is_file()
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert not any(entry.get("character_name") == "删除回滚角色" for entry in tombstones)
+
+
+@pytest.mark.unit
+def test_rewrite_recent_file_character_name_does_not_rewrite_role_fields(tmp_path):
+    from utils.character_memory import rewrite_recent_file_character_name
+
+    recent_path = tmp_path / "recent.json"
+    recent_path.write_text(
+        json.dumps(
+            [
+                {
+                    "role": "旧角色",
+                    "speaker": "旧角色",
+                    "data": {
+                        "role": "旧角色",
+                        "speaker": "旧角色",
+                        "content": "旧角色说：你好",
+                    },
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    assert rewrite_recent_file_character_name(recent_path, "旧角色", "新角色") is True
+
+    payload = json.loads(recent_path.read_text(encoding="utf-8"))
+    assert payload[0]["role"] == "旧角色"
+    assert payload[0]["speaker"] == "新角色"
+    assert payload[0]["data"]["role"] == "旧角色"
+    assert payload[0]["data"]["speaker"] == "新角色"
+    assert payload[0]["data"]["content"].startswith("新角色说：")
+
+
+@pytest.mark.unit
+def test_move_path_raises_when_target_file_exists(tmp_path):
+    from utils.character_memory import _move_path
+
+    source_path = tmp_path / "source.json"
+    target_path = tmp_path / "target.json"
+    source_path.write_text("source", encoding="utf-8")
+    target_path.write_text("target", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        _move_path(source_path, target_path)
+
+    assert source_path.is_file()
+    assert target_path.is_file()
 
 
 @pytest.mark.unit

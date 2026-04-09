@@ -248,6 +248,25 @@ def test_cloudsave_popup_url_carries_current_ui_language():
 
 
 @pytest.mark.unit
+def test_cloudsave_manager_formats_timestamps_with_locale_aware_intl_formatter():
+    script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+
+    assert "function getPreferredLocale()" in script
+    assert "new Intl.DateTimeFormat(getPreferredLocale()" in script
+    assert "return normalizedValue;" in script
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_supports_live3d_model_type_alias_in_all_locales():
+    script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+    assert "cloudsave.modelType.live3d" in script
+
+    for locale_name in sorted(path.name for path in LOCALE_DIR.glob("*.json")):
+        payload = json.loads((LOCALE_DIR / locale_name).read_text(encoding="utf-8"))
+        assert _get_nested_value(payload, "cloudsave.modelType.live3d") == "VRM"
+
+
+@pytest.mark.unit
 def test_i18n_script_supports_explicit_popup_language_query():
     script = I18N_JS.read_text(encoding="utf-8")
 

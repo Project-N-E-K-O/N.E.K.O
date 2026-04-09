@@ -329,6 +329,8 @@ async def save_preferences(request: Request):
         else:
             return {"success": False, "error": "保存失败"}
             
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         return {"success": False, "error": str(e)}
 

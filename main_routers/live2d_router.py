@@ -174,9 +174,17 @@ def _dedupe_live2d_models_for_display(models: list[dict]) -> list[dict]:
     ]
 
 
-def _upsert_model(models: list, model_name: str, item_id: str, path: str, source: str = 'steam_workshop') -> None:
+def _upsert_model(
+    models: list,
+    model_name: str,
+    item_id: str,
+    path: str,
+    source: str = 'steam_workshop',
+    *,
+    merge_by_name: bool = True,
+) -> None:
     """
-    Update existing model with item_id if found, otherwise append new model.
+    Update an existing model by name, or append a distinct entry when requested.
     
     Args:
         models: List of model dictionaries to update
@@ -184,19 +192,31 @@ def _upsert_model(models: list, model_name: str, item_id: str, path: str, source
         item_id: Steam workshop item ID
         path: Model path URL
         source: Model source (default: 'steam_workshop')
+        merge_by_name: When False, preserve same-name variants as separate entries
     """
-    existing_model = next((m for m in models if m['name'] == model_name), None)
-    if existing_model:
-        if not existing_model.get('item_id'):
-            existing_model['item_id'] = item_id
-            existing_model['source'] = source
-    else:
-        models.append({
-            'name': model_name,
-            'path': path,
-            'source': source,
-            'item_id': item_id
-        })
+    if merge_by_name:
+        existing_model = next((m for m in models if m['name'] == model_name), None)
+        if existing_model:
+            if not existing_model.get('item_id'):
+                existing_model['item_id'] = item_id
+                existing_model['source'] = source
+            return
+
+    display_name = model_name
+    existing_names = [str(model.get('name') or '') for model in models if isinstance(model, dict)]
+    if existing_names.count(model_name) >= 1:
+        disambiguator = str(source or "").strip() or "variant"
+        if item_id:
+            disambiguator = f"{disambiguator} {item_id}"
+        display_name = f"{display_name} ({disambiguator})"
+
+    models.append({
+        'name': model_name,
+        'display_name': display_name,
+        'path': path,
+        'source': source,
+        'item_id': item_id
+    })
 
 
 def _locate_model_config(model_dir: str):
@@ -260,7 +280,13 @@ async def get_live2d_models(simple: bool = False):
                                 model_name = os.path.splitext(os.path.splitext(filename)[0])[0]
                                 path_value = _normalize_model_path(f'/workshop/{item_id}/{filename}')
                                 logger.debug(f"添加模型路径: {path_value!r}, item_id类型: {type(item_id)}, filename类型: {type(filename)}")
-                                _upsert_model(models, model_name, item_id, path_value)
+                                _upsert_model(
+                                    models,
+                                    model_name,
+                                    item_id,
+                                    path_value,
+                                    merge_by_name=False,
+                                )
                             
                         # 检查安装目录下的子目录
                         for subdir in os.listdir(installed_folder):
@@ -271,7 +297,13 @@ async def get_live2d_models(simple: bool = False):
                                 if os.path.exists(json_file):
                                     path_value = _normalize_model_path(f'/workshop/{item_id}/{model_name}/{model_name}.model3.json')
                                     logger.debug(f"添加子目录模型路径: {path_value!r}, item_id类型: {type(item_id)}, model_name类型: {type(model_name)}")
-                                    _upsert_model(models, model_name, item_id, path_value)
+                                    _upsert_model(
+                                        models,
+                                        model_name,
+                                        item_id,
+                                        path_value,
+                                        merge_by_name=False,
+                                    )
         except Exception as e:
             logger.error(f"获取创意工坊模型时出错: {e}")
 
@@ -1492,4 +1524,3 @@ def get_user_models():
     except Exception as e:
         logger.error(f"获取用户模型列表失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
-

@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import unquote
 
 import pytest
@@ -139,3 +139,58 @@ def test_dedupe_live2d_models_for_display_hides_workshop_export_shadow_when_real
     assert len(models) == 1
     assert models[0]["name"] == "白毛宝宝_workshop_real"
     assert "/workshop/3671922309/白毛宝宝/白毛宝宝.model3.json" in unquote(models[0]["path"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_live2d_models_keeps_workshop_entry_when_same_name_payload_differs(tmp_path):
+    cm = _make_cfa_config_manager(tmp_path)
+
+    local_model_dir = cm.readable_live2d_dir / "shared_model"
+    workshop_root = tmp_path / "workshop"
+    workshop_item_dir = workshop_root / "123456"
+    _write_model(local_model_dir, "shared_model.model3.json", {"Version": 3, "FileReferences": {"Moc": "local.moc3"}})
+    _write_model(workshop_item_dir, "shared_model.model3.json", {"Version": 3, "FileReferences": {"Moc": "workshop.moc3"}})
+
+    import main_routers.live2d_router as live2d_router_module
+
+    with patch.object(
+        live2d_router_module,
+        "find_models",
+        return_value=[
+            {
+                "name": "shared_model",
+                "display_name": "shared_model",
+                "path": "/user_live2d/shared_model/shared_model.model3.json",
+                "source": "documents",
+            }
+        ],
+    ), patch.object(
+        live2d_router_module,
+        "get_subscribed_workshop_items",
+        AsyncMock(
+            return_value={
+                "success": True,
+                "items": [
+                    {
+                        "publishedFileId": "123456",
+                        "installedFolder": str(workshop_item_dir),
+                    }
+                ],
+            }
+        ),
+    ), patch(
+        "main_routers.live2d_router.get_config_manager",
+        return_value=cm,
+    ), patch(
+        "main_routers.live2d_router.get_workshop_path",
+        return_value=str(workshop_root),
+    ):
+        models = await live2d_router_module.get_live2d_models(simple=False)
+
+    assert len(models) == 2
+    assert sum(1 for model in models if model["name"] == "shared_model") == 2
+    assert any(model.get("display_name") == "shared_model" for model in models)
+    assert any(model.get("display_name") == "shared_model (steam_workshop 123456)" for model in models)
+    assert any(model.get("source") == "documents" for model in models)
+    assert any(model.get("item_id") == "123456" for model in models)

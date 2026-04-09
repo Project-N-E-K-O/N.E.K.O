@@ -58,9 +58,9 @@ def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
         bool: 保存成功返回True，失败返回False
     """
     try:
+        assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
         # 确保配置目录存在
         _config_manager.ensure_config_directory()
-        assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
         # 更新路径（可能已迁移）
         global PREFERENCES_FILE
         PREFERENCES_FILE = _get_preferences_write_path()
@@ -330,9 +330,9 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
         bool: 保存成功返回True，失败返回False
     """
     try:
+        assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
         # 确保配置目录存在，并使用最新路径（与 save_user_preferences 保持一致）
         _config_manager.ensure_config_directory()
-        assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
         global PREFERENCES_FILE
         PREFERENCES_FILE = _get_preferences_write_path()
 

@@ -17,8 +17,10 @@ import copy
 import base64
 import hashlib
 import struct
+import tempfile
 import zlib
 from datetime import datetime, timezone
+from pathlib import Path
 from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse, Response
 import httpx
@@ -30,6 +32,7 @@ from .workshop_router import _ugc_sync_lock
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.character_memory import (
     delete_character_memory_storage,
+    list_character_memory_paths,
     rename_character_memory_storage,
 )
 from utils.config_manager import get_reserved, set_reserved, flatten_reserved
@@ -52,7 +55,7 @@ from utils.frontend_utils import find_models, find_model_directory, is_user_impo
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
 from utils.url_utils import encode_url_path
-from utils.cloudsave_runtime import assert_cloudsave_writable
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL, CHARACTER_RESERVED_FIELDS
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
@@ -219,6 +222,127 @@ async def release_memory_server_character(character_name: str, *, reason: str = 
             reason,
         )
     return False
+
+
+def _snapshot_existing_paths(targets: list[Path], backup_root: Path):
+    records = []
+    seen: set[str] = set()
+
+    for index, target_path in enumerate(sorted(targets, key=lambda item: (len(item.parts), str(item)))):
+        normalized_path = str(target_path)
+        if normalized_path in seen:
+            continue
+        seen.add(normalized_path)
+
+        backup_path = None
+        if target_path.exists():
+            backup_path = backup_root / f"{index:02d}" / target_path.name
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            if target_path.is_dir():
+                shutil.copytree(target_path, backup_path, dirs_exist_ok=True)
+            else:
+                shutil.copy2(target_path, backup_path)
+
+        records.append({
+            "target": target_path,
+            "backup": backup_path,
+        })
+
+    return records
+
+
+def _create_character_operation_backup_dir(config_manager, prefix: str):
+    backup_root = Path(getattr(config_manager, "app_docs_dir", "")) / ".rollback_tmp"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    return tempfile.TemporaryDirectory(prefix=prefix, dir=str(backup_root))
+
+
+def _restore_snapshot_paths(records) -> None:
+    for record in sorted(records, key=lambda item: len(item["target"].parts), reverse=True):
+        target_path = record["target"]
+        backup_path = record.get("backup")
+
+        if target_path.exists():
+            if target_path.is_dir():
+                shutil.rmtree(target_path)
+            else:
+                target_path.unlink()
+
+        if backup_path is None or not backup_path.exists():
+            continue
+
+        if backup_path.is_dir():
+            shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
+        else:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(backup_path, target_path)
+
+
+def _build_character_tombstones_state(config_manager, character_name: str) -> dict:
+    cloud_state = config_manager.load_cloudsave_local_state()
+    sequence_number = max(1, int(cloud_state.get("next_sequence_number") or 1))
+    tombstone_state = config_manager.load_character_tombstones_state()
+    normalized_entries = {}
+    for entry in tombstone_state.get("tombstones") or []:
+        if not isinstance(entry, dict):
+            continue
+        existing_name = str(entry.get("character_name") or "").strip()
+        if not existing_name:
+            continue
+        normalized_entries[existing_name] = entry
+
+    normalized_entries[character_name] = {
+        "character_name": character_name,
+        "deleted_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "sequence_number": sequence_number,
+    }
+    return {
+        "version": config_manager.CHARACTER_TOMBSTONES_STATE_VERSION,
+        "tombstones": [
+            normalized_entries[existing_name]
+            for existing_name in sorted(normalized_entries)
+        ],
+    }
+
+
+async def _rollback_character_operation(
+    config_manager,
+    *,
+    characters_snapshot: dict,
+    memory_snapshot_records,
+    tombstone_snapshot: dict | None = None,
+    reason: str,
+) -> str:
+    rollback_errors: list[str] = []
+
+    try:
+        _restore_snapshot_paths(memory_snapshot_records)
+    except Exception as exc:
+        rollback_errors.append(f"memory restore failed: {exc}")
+
+    try:
+        config_manager.save_characters(characters_snapshot, bypass_write_fence=True)
+    except Exception as exc:
+        rollback_errors.append(f"characters restore failed: {exc}")
+
+    if tombstone_snapshot is not None:
+        try:
+            config_manager.save_character_tombstones_state(tombstone_snapshot)
+        except Exception as exc:
+            rollback_errors.append(f"tombstones restore failed: {exc}")
+
+    try:
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+    except Exception as exc:
+        rollback_errors.append(f"initialize_character_data failed: {exc}")
+
+    try:
+        await notify_memory_server_reload(reason=reason)
+    except Exception as exc:
+        rollback_errors.append(f"notify_memory_server_reload failed: {exc}")
+
+    return "; ".join(rollback_errors)
 
 
 @router.get('')
@@ -1198,9 +1322,11 @@ async def rename_catgirl(old_name: str, request: Request):
     if new_name in characters['猫娘']:
         return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
     
-    # 如果当前猫娘是被重命名的猫娘，需要先保存WebSocket连接并发送通知
-    # 必须在 initialize_character_data() 之前发送，因为那个函数会删除旧的 session_manager 条目
+    # 如果当前猫娘是被重命名的猫娘，先缓存 WebSocket，
+    # 只有在持久化和重载全部成功后才发送通知，避免前端先切换到未提交状态。
     is_current_catgirl = characters.get('当前猫娘') == old_name
+    rename_notification_ws = None
+    rename_notification_message = None
     
     # 检查当前角色是否有活跃的语音session
     if is_current_catgirl and old_name in session_manager:
@@ -1215,22 +1341,14 @@ async def rename_catgirl(old_name: str, request: Request):
                     'success': False, 
                     'error': '语音状态下无法修改角色名称，请先停止语音对话后再修改'
                 }, status_code=400)
-    if is_current_catgirl:
-        logger.info(f"开始通知WebSocket客户端：猫娘从 {old_name} 重命名为 {new_name}")
-        message = json.dumps({
-            "type": "catgirl_switched",
-            "new_catgirl": new_name,
-            "old_catgirl": old_name
-        })
-        # 在 initialize_character_data() 之前发送消息，因为之后旧的 session_manager 会被删除
-        if old_name in session_manager:
-            ws = session_manager[old_name].websocket
-            if ws:
-                try:
-                    await ws.send_text(message)
-                    logger.info(f"已向 {old_name} 发送重命名通知")
-                except Exception as e:
-                    logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
+    if is_current_catgirl and old_name in session_manager:
+        rename_notification_ws = session_manager[old_name].websocket
+        if rename_notification_ws:
+            rename_notification_message = json.dumps({
+                "type": "catgirl_switched",
+                "new_catgirl": new_name,
+                "old_catgirl": old_name
+            })
     
     assert_cloudsave_writable(
         _config_manager,
@@ -1243,21 +1361,51 @@ async def rename_catgirl(old_name: str, request: Request):
         reason=f"角色重命名前释放 SQLite 句柄: {old_name} -> {new_name}",
     )
 
-    rename_character_memory_storage(_config_manager, old_name, new_name)
+    characters_snapshot = copy.deepcopy(characters)
+    memory_targets = list_character_memory_paths(_config_manager, old_name)
+    memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
+    memory_targets.append(Path(_config_manager.memory_dir) / new_name)
 
-    # 重命名角色真源
-    characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
-    # 如果当前猫娘是被重命名的猫娘，也需要更新
-    if is_current_catgirl:
-        characters['当前猫娘'] = new_name
-    _config_manager.save_characters(characters)
-    # 自动重新加载配置
-    initialize_character_data = get_initialize_character_data()
-    await initialize_character_data()
+    with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
+        memory_snapshot_records = _snapshot_existing_paths(memory_targets, Path(temp_dir))
+        try:
+            rename_character_memory_storage(_config_manager, old_name, new_name)
 
-    memory_server_reloaded = await notify_memory_server_reload(
-        reason=f"角色重命名: {old_name} -> {new_name}",
-    )
+            # 重命名角色真源
+            characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
+            # 如果当前猫娘是被重命名的猫娘，也需要更新
+            if is_current_catgirl:
+                characters['当前猫娘'] = new_name
+            _config_manager.save_characters(characters)
+
+            # 自动重新加载配置
+            initialize_character_data = get_initialize_character_data()
+            await initialize_character_data()
+
+            memory_server_reloaded = await notify_memory_server_reload(
+                reason=f"角色重命名: {old_name} -> {new_name}",
+            )
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            rollback_error = await _rollback_character_operation(
+                _config_manager,
+                characters_snapshot=characters_snapshot,
+                memory_snapshot_records=memory_snapshot_records,
+                reason=f"角色重命名回滚: {old_name} -> {new_name}",
+            )
+            logger.exception("重命名角色失败，已尝试回滚: %s -> %s", old_name, new_name)
+            error_message = f"重命名角色失败: {exc}"
+            if rollback_error:
+                error_message = f"{error_message}; 回滚失败: {rollback_error}"
+            return JSONResponse({"success": False, "error": error_message}, status_code=500)
+
+    if rename_notification_ws and rename_notification_message:
+        try:
+            await rename_notification_ws.send_text(rename_notification_message)
+            logger.info(f"已向 {old_name} 发送重命名通知")
+        except Exception as e:
+            logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
 
     return {
         "success": True,
@@ -1678,57 +1826,52 @@ async def delete_catgirl(name: str):
         reason=f"角色删除前释放 SQLite 句柄: {name}",
     )
 
-    # 删除对应的记忆文件
-    try:
-        removed_memory_paths = delete_character_memory_storage(_config_manager, name)
-        for entry_path in removed_memory_paths:
-            logger.info(f"已删除: {entry_path}")
-    except Exception as e:
-        logger.error(f"删除记忆文件时出错: {e}")
-        return JSONResponse(
-            {
-                "success": False,
-                "error": f"删除角色记忆文件失败: {e}",
-                "memory_server_released": released_memory_handle,
-            },
-            status_code=500,
-        )
+    characters_snapshot = copy.deepcopy(characters)
+    memory_targets = list_character_memory_paths(_config_manager, name)
 
-    try:
-        cloud_state = _config_manager.load_cloudsave_local_state()
-        sequence_number = max(1, int(cloud_state.get("next_sequence_number") or 1))
-        tombstone_state = _config_manager.load_character_tombstones_state()
-        normalized_entries = {}
-        for entry in tombstone_state.get("tombstones") or []:
-            if not isinstance(entry, dict):
-                continue
-            character_name = str(entry.get("character_name") or "").strip()
-            if not character_name:
-                continue
-            normalized_entries[character_name] = entry
-        normalized_entries[name] = {
-            "character_name": name,
-            "deleted_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "sequence_number": sequence_number,
-        }
-        _config_manager.save_character_tombstones_state(
-            {
-                "version": _config_manager.CHARACTER_TOMBSTONES_STATE_VERSION,
-                "tombstones": [
-                    normalized_entries[character_name]
-                    for character_name in sorted(normalized_entries)
-                ],
-            }
-        )
-    except Exception as e:
-        logger.warning(f"写入角色 tombstone 失败 {name}: {e}")
-    
-    # 删除角色配置
-    del characters['猫娘'][name]
-    _config_manager.save_characters(characters)
-    initialize_character_data = get_initialize_character_data()
-    await initialize_character_data()
-    memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
+    with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
+        memory_snapshot_records = _snapshot_existing_paths(memory_targets, Path(temp_dir))
+        tombstone_snapshot = None
+        try:
+            tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
+
+            removed_memory_paths = delete_character_memory_storage(_config_manager, name)
+            for entry_path in removed_memory_paths:
+                logger.info(f"已删除: {entry_path}")
+
+            _config_manager.save_character_tombstones_state(
+                _build_character_tombstones_state(_config_manager, name)
+            )
+
+            # 删除角色配置
+            del characters['猫娘'][name]
+            _config_manager.save_characters(characters)
+            initialize_character_data = get_initialize_character_data()
+            await initialize_character_data()
+            memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            rollback_error = await _rollback_character_operation(
+                _config_manager,
+                characters_snapshot=characters_snapshot,
+                memory_snapshot_records=memory_snapshot_records,
+                tombstone_snapshot=tombstone_snapshot,
+                reason=f"删除角色回滚: {name}",
+            )
+            logger.exception("删除角色失败，已尝试回滚: %s", name)
+            error_message = f"删除角色失败: {exc}"
+            if rollback_error:
+                error_message = f"{error_message}; 回滚失败: {rollback_error}"
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": error_message,
+                    "memory_server_released": released_memory_handle,
+                },
+                status_code=500,
+            )
+
     return {"success": True, "memory_server_reloaded": memory_server_reloaded}
 
 @router.post('/clear_voice_ids')

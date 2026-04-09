@@ -709,3 +709,58 @@ async def test_cloudsave_router_download_reload_failure_rolls_back():
             assert failed_payload["rolled_back"] is True
             assert target_cm.load_characters() == original_characters
             assert (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8") == original_recent
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_download_does_not_report_rollback_when_no_backup_was_attempted():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            with patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+                return_value={
+                    "detail": {"item": {"character_name": "云端角色"}},
+                    "backup_path": "",
+                },
+            ), patch.object(
+                cloudsave_router_module,
+                "_reload_after_character_download",
+                AsyncMock(return_value=(False, "forced reload failure")),
+            ), patch.object(
+                cloudsave_router_module,
+                "restore_cloudsave_operation_backup",
+            ) as restore_backup_mock:
+                failed = await cloudsave_router_module.post_cloudsave_character_download(
+                    "云端角色",
+                    _DummyRequest({"overwrite": False, "backup_before_overwrite": True}),
+                )
+
+        failed_payload = json.loads(failed.body)
+        assert failed.status_code == 500
+        assert failed_payload["code"] == "LOCAL_RELOAD_FAILED_ROLLED_BACK"
+        assert failed_payload["rolled_back"] is False
+        assert failed_payload["rollback_error"] == ""
+        restore_backup_mock.assert_not_called()

@@ -954,9 +954,7 @@ class ConfigManager:
                 return deepcopy(default_value)
             raise
         except Exception as e:
-            print(f"Error loading JSON file {path}: {e}", file=sys.stderr)
-            if default_value is not None:
-                return deepcopy(default_value)
+            logger.error("加载 JSON 文件失败: path=%s error=%s", path, e)
             raise
 
     def _save_json_file(self, path, data):
@@ -1239,13 +1237,13 @@ class ConfigManager:
         if character_json_path is None:
             character_json_path = str(self.get_runtime_config_path('characters.json'))
 
-        # 确保config目录存在
-        self.ensure_config_directory()
-
         if not bypass_write_fence:
             from utils.cloudsave_runtime import assert_cloudsave_writable
 
             assert_cloudsave_writable(self, operation="save", target="characters.json")
+
+        # 确保config目录存在
+        self.ensure_config_directory()
 
         atomic_write_json(character_json_path, data, ensure_ascii=False, indent=2)
 
@@ -2290,15 +2288,15 @@ class ConfigManager:
             filename: 配置文件名
             data: 要保存的数据
         """
-        # 确保目录存在
-        self.ensure_config_directory()
-        
-        config_path = self.config_dir / filename
-
         if not bypass_write_fence:
             from utils.cloudsave_runtime import assert_cloudsave_writable
 
             assert_cloudsave_writable(self, operation="save", target=filename)
+
+        # 确保目录存在
+        self.ensure_config_directory()
+        
+        config_path = self.config_dir / filename
         
         try:
             atomic_write_json(config_path, data, ensure_ascii=False, indent=2)
@@ -2499,9 +2497,10 @@ class ConfigManager:
         try:
             from utils.cloudsave_runtime import assert_cloudsave_writable
 
+            assert_cloudsave_writable(self, operation="save", target="workshop_config.json")
+
             # 确保配置目录存在
             self.ensure_config_directory()
-            assert_cloudsave_writable(self, operation="save", target="workshop_config.json")
             
             # 保存配置
             atomic_write_json(config_path, config_data, indent=4, ensure_ascii=False)

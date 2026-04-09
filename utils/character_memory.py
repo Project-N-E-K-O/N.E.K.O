@@ -26,6 +26,8 @@ LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES = (
     "semantic_memory_{name}",
 )
 
+MESSAGE_NAME_FIELDS = ("speaker", "author", "name", "character")
+
 
 def iter_character_memory_roots(config_manager) -> list[Path]:
     roots: list[Path] = []
@@ -51,20 +53,34 @@ def get_runtime_character_memory_dir(config_manager, character_name: str) -> Pat
     return Path(config_manager.memory_dir) / character_name
 
 
-def character_memory_exists(config_manager, character_name: str) -> bool:
+def list_character_memory_paths(config_manager, character_name: str) -> list[Path]:
+    paths: list[Path] = []
+    seen: set[str] = set()
+
+    entry_names = [character_name]
+    entry_names.extend(
+        pattern.format(name=character_name)
+        for pattern in LEGACY_CHARACTER_MEMORY_FILE_MAP
+    )
+    entry_names.extend(
+        pattern.format(name=character_name)
+        for pattern in LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES
+    )
+
     for base_dir in iter_character_memory_roots(config_manager):
-        if (base_dir / character_name).exists():
-            return True
+        for entry_name in entry_names:
+            entry_path = base_dir / entry_name
+            normalized_path = str(entry_path)
+            if not entry_path.exists() or normalized_path in seen:
+                continue
+            seen.add(normalized_path)
+            paths.append(entry_path)
 
-        for pattern in LEGACY_CHARACTER_MEMORY_FILE_MAP:
-            if (base_dir / pattern.format(name=character_name)).exists():
-                return True
+    return paths
 
-        for pattern in LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES:
-            if (base_dir / pattern.format(name=character_name)).exists():
-                return True
 
-    return False
+def character_memory_exists(config_manager, character_name: str) -> bool:
+    return bool(list_character_memory_paths(config_manager, character_name))
 
 
 def _move_path(source_path: Path, target_path: Path) -> bool:
@@ -76,8 +92,10 @@ def _move_path(source_path: Path, target_path: Path) -> bool:
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists():
-        source_path.unlink()
-        return True
+        raise FileExistsError(
+            f"Refusing to overwrite existing memory file while moving "
+            f"{source_path} -> {target_path}"
+        )
 
     shutil.move(str(source_path), str(target_path))
     return True
@@ -106,9 +124,8 @@ def _merge_directories(source_dir: Path, target_dir: Path) -> bool:
 
 def _rewrite_recent_message_character_name(item: dict[str, Any], old_name: str, new_name: str) -> bool:
     changed = False
-    name_fields = ("speaker", "author", "name", "character", "role")
 
-    for field in name_fields:
+    for field in MESSAGE_NAME_FIELDS:
         value = item.get(field)
         if isinstance(value, str) and value == old_name:
             item[field] = new_name
@@ -116,7 +133,7 @@ def _rewrite_recent_message_character_name(item: dict[str, Any], old_name: str, 
 
     nested_data = item.get("data")
     if isinstance(nested_data, dict):
-        for field in name_fields:
+        for field in MESSAGE_NAME_FIELDS:
             value = nested_data.get(field)
             if isinstance(value, str) and value == old_name:
                 nested_data[field] = new_name
@@ -198,27 +215,11 @@ def rename_character_memory_storage(config_manager, old_name: str, new_name: str
 
 def delete_character_memory_storage(config_manager, character_name: str) -> list[Path]:
     removed_paths: list[Path] = []
-
-    delete_patterns = [character_name]
-    delete_patterns.extend(
-        pattern.format(name=character_name)
-        for pattern in LEGACY_CHARACTER_MEMORY_FILE_MAP
-    )
-    delete_patterns.extend(
-        pattern.format(name=character_name)
-        for pattern in LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES
-    )
-
-    for base_dir in iter_character_memory_roots(config_manager):
-        for entry_name in delete_patterns:
-            entry_path = base_dir / entry_name
-            if not entry_path.exists():
-                continue
-
-            if entry_path.is_dir():
-                shutil.rmtree(entry_path)
-            else:
-                entry_path.unlink()
-            removed_paths.append(entry_path)
+    for entry_path in list_character_memory_paths(config_manager, character_name):
+        if entry_path.is_dir():
+            shutil.rmtree(entry_path)
+        else:
+            entry_path.unlink()
+        removed_paths.append(entry_path)
 
     return removed_paths

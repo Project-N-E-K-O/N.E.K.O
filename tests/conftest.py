@@ -238,14 +238,22 @@ def mock_memory_server():
     @app.get("/new_dialog/{character}")
     def get_memory(character: str):
         return PlainTextResponse(f"Mock memory context for {character}.")
-        
-    import socket
+
+    import httpx
+
+    def _is_memory_server_ready(timeout_seconds: float = 1.0) -> bool:
+        try:
+            with httpx.Client(timeout=timeout_seconds, proxy=None, trust_env=False) as client:
+                response = client.get("http://127.0.0.1:48912/new_dialog/healthcheck")
+            return response.status_code == 200
+        except (httpx.HTTPError, OSError):
+            return False
 
     try:
-        with socket.create_connection(("127.0.0.1", 48912), timeout=1):
+        if _is_memory_server_ready():
             yield
             return
-    except (OSError, ConnectionRefusedError):
+    except Exception:
         pass
 
     config = uvicorn.Config(app, host="127.0.0.1", port=48912, log_level="error")
@@ -259,12 +267,9 @@ def mock_memory_server():
     
     start_time = time.time()
     while time.time() - start_time < 10:
-        try:
-            with socket.create_connection(("127.0.0.1", 48912), timeout=1):
-                break
-        except (OSError, ConnectionRefusedError):
-            time.sleep(0.5)
-            continue
+        if _is_memory_server_ready():
+            break
+        time.sleep(0.5)
     else:
         raise RuntimeError("Mock memory server failed to start on 48912")
         
