@@ -777,6 +777,8 @@
         "keyAutoFilledFromKeyBook": "APIキーブックから自動入力されます。キーブックで設定してください。",
         "goToKeyBook": "キーブックへ",
         "providerLabel": "プロバイダー",
+        "providerSelectPlaceholder": "プロバイダーを選択",
+        "noOptionsAvailable": "利用可能な項目はありません",
         "customModelProviderFollowCore": "コアAPIに従う",
         "customModelProviderFollowAssist": "アシストAPIに従う",
         "customModelProviderCustom": "カスタム",

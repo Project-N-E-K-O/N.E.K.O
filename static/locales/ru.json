@@ -777,6 +777,8 @@
         "keyAutoFilledFromKeyBook": "Ключ автозаполнен из книги API ключей. Настройте его там.",
         "goToKeyBook": "Перейти к книге ключей",
         "providerLabel": "Провайдер",
+        "providerSelectPlaceholder": "Выберите провайдера",
+        "noOptionsAvailable": "Нет доступных вариантов",
         "customModelProviderFollowCore": "Следовать за основным API",
         "customModelProviderFollowAssist": "Следовать за вспомогательным API",
         "customModelProviderCustom": "Пользовательский",

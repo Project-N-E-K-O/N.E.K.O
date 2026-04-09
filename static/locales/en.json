@@ -777,6 +777,8 @@
         "keyAutoFilledFromKeyBook": "Key auto-filled from API Key Book. Configure it there.",
         "goToKeyBook": "Go to Key Book",
         "providerLabel": "Provider",
+        "providerSelectPlaceholder": "Select a provider",
+        "noOptionsAvailable": "No options available",
         "customModelProviderFollowCore": "Follow Core API",
         "customModelProviderFollowAssist": "Follow Assist API",
         "customModelProviderCustom": "Custom",

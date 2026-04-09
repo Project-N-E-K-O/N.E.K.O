@@ -254,17 +254,18 @@ function waitForOptions(select, targetValue, { maxAttempts = 20, interval = 50, 
 let providerDropdownHandlersBound = false;
 
 function getProviderDropdownPlaceholder(select) {
-    if (!select) return '请选择服务商';
+    const fallbackText = window.t ? window.t('api.providerSelectPlaceholder') : '请选择服务商';
+    if (!select) return fallbackText;
 
     const label = select.id ? document.querySelector(`label[for="${select.id}"]`) : null;
     const labelText = label ? label.querySelector('span')?.textContent?.trim() : '';
-    return labelText || '请选择服务商';
+    return labelText || fallbackText;
 }
 
 function closeProviderSelectDropdown(wrapper) {
     if (!wrapper) return;
 
-    wrapper.classList.remove('open', 'menu-upward');
+    wrapper.classList.remove('open');
 
     const trigger = wrapper.querySelector('.api-provider-dropdown-trigger');
     if (trigger) {
@@ -280,12 +281,6 @@ function closeAllProviderSelectDropdowns(exceptWrapper = null) {
     });
 }
 
-function positionProviderSelectDropdown(wrapper) {
-    if (!wrapper) return;
-
-    wrapper.classList.remove('menu-upward');
-}
-
 function openProviderSelectDropdown(wrapper) {
     if (!wrapper || wrapper.classList.contains('disabled')) return;
 
@@ -296,8 +291,6 @@ function openProviderSelectDropdown(wrapper) {
     if (trigger) {
         trigger.setAttribute('aria-expanded', 'true');
     }
-
-    requestAnimationFrame(() => positionProviderSelectDropdown(wrapper));
 }
 
 function buildProviderSelectDropdownMenu(select) {
@@ -314,7 +307,7 @@ function buildProviderSelectDropdownMenu(select) {
     if (options.length === 0) {
         const emptyState = document.createElement('div');
         emptyState.className = 'api-provider-dropdown-empty';
-        emptyState.textContent = '暂无可选项';
+        emptyState.textContent = window.t ? window.t('api.noOptionsAvailable') : '暂无可选项';
         menuScroll.appendChild(emptyState);
         return;
     }

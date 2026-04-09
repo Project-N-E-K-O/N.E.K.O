@@ -966,6 +966,17 @@ html #chat-container {
   box-shadow: 0 16px 32px rgba(0, 0, 0, 0.24);
 }
 
+[data-theme="dark"] .api-provider-dropdown-trigger:focus-visible {
+  outline: none;
+  border-color: #5fb7ea;
+  box-shadow: 0 0 0 3px rgba(74, 163, 223, 0.22);
+}
+
+[data-theme="dark"] .api-provider-dropdown-trigger:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
+}
+
 [data-theme="dark"] .api-provider-dropdown-current.placeholder {
   color: #6f98b0;
 }
@@ -985,6 +996,23 @@ html #chat-container {
   background: rgba(37, 37, 37, 0.98);
   border-color: #3a5a6e;
   box-shadow: 0 18px 36px rgba(0, 0, 0, 0.32);
+}
+
+[data-theme="dark"] .api-provider-dropdown-menu-scroll {
+  scrollbar-color: rgba(74, 163, 223, 0.48) transparent;
+}
+
+[data-theme="dark"] .api-provider-dropdown-menu-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+[data-theme="dark"] .api-provider-dropdown-menu-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+[data-theme="dark"] .api-provider-dropdown-menu-scroll::-webkit-scrollbar-thumb {
+  background: rgba(74, 163, 223, 0.48);
+  border-radius: 999px;
 }
 
 [data-theme="dark"] .api-provider-dropdown-option,
