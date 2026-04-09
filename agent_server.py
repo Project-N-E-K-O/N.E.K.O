@@ -175,12 +175,19 @@ class AgentTaskTracker:
         desc: str,
         detail: str = "",
         success: bool = True,
+        cancelled: bool = False,
     ) -> None:
         key = _normalize_lanlan_key(lanlan_name)
         records = self._ensure_key(key)
+        if cancelled:
+            kind = "cancelled"
+        elif success:
+            kind = "completed"
+        else:
+            kind = "failed"
         records.append({
             "ts": time.time(),
-            "kind": "completed" if success else "failed",
+            "kind": kind,
             "method": method,
             "desc": desc,
             "detail": detail[:300] if detail else "",
@@ -240,6 +247,8 @@ class AgentTaskTracker:
                 line = f"[COMPLETED] method={method} | {desc}"
                 if detail:
                     line += f" | result: {detail}"
+            elif kind == "cancelled":
+                line = f"[CANCELLED] method={method} | {desc} | DO NOT retry this task unless user explicitly requests again"
             else:
                 line = f"[FAILED] method={method} | {desc}"
                 if detail:
@@ -747,43 +756,13 @@ def _collect_existing_task_descriptions(lanlan_name: Optional[str] = None) -> li
     return items
 
 
-# Cooldown window (seconds) for recently completed/cancelled tasks to be
-# included in dedup candidates.  This prevents the analyzer from immediately
-# re-dispatching a semantically identical task right after one finishes.
-_DEDUP_RECENT_TASK_WINDOW: float = 120.0
-
-
-def _collect_recent_task_descriptions(lanlan_name: Optional[str] = None) -> list[tuple[str, str]]:
-    """Return (task_id, description) for recently completed tasks from _task_tracker.
-
-    Only includes successfully completed tasks — failed tasks are excluded so
-    that users can immediately retry after transient errors.
-    """
-    key = _normalize_lanlan_key(lanlan_name)
-    records = _task_tracker._records.get(key)
-    if not records:
-        return []
-    now = time.time()
-    items: list[tuple[str, str]] = []
-    for r in records:
-        if now - r["ts"] > _DEDUP_RECENT_TASK_WINDOW:
-            continue
-        if r.get("kind") == "completed":
-            desc = r.get("desc", "")
-            tid = r.get("task_id", "")
-            if desc:
-                items.append((tid, desc))
-    return items
-
 
 async def _is_duplicate_task(query: str, lanlan_name: Optional[str] = None) -> tuple[bool, Optional[str]]:
-    """Use LLM to judge if query duplicates any queued/running OR recently completed task."""
+    """Use LLM to judge if query duplicates any existing queued/running task."""
     try:
         if not Modules.deduper:
             return False, None
         candidates = _collect_existing_task_descriptions(lanlan_name)
-        # Also include recently completed/cancelled tasks to prevent re-dispatch loops
-        candidates.extend(_collect_recent_task_descriptions(lanlan_name))
         res = await Modules.deduper.judge(query, candidates)
         return bool(res.get("duplicate")), res.get("matched_id")
     except Exception as e:
@@ -1126,6 +1105,7 @@ async def _run_computer_use_task(
             desc=instruction or "",
             detail=cu_detail[:200] if cu_detail else "",
             success=success and info["status"] != "cancelled",
+            cancelled=(info["status"] == "cancelled"),
         )
         # 失败时将解析后的 cu_detail 写入 info["error"]（仅在非异常路径下补全）
         if not success and not info.get("error") and cu_detail:
@@ -1149,15 +1129,16 @@ async def _run_computer_use_task(
         except Exception as e:
             logger.debug("[ComputerUse] emit task_update(terminal) failed: task_id=%s error=%s", task_id, e)
 
-        # Emit structured task_result — skip for cancelled tasks to prevent
-        # the callback → re-analysis → new task → cancel loop.
-        # Cancelled tasks are system-initiated (session change), not user-visible failures.
-        if info["status"] != "cancelled":
-            try:
-                _lang = _rp_lang(None)
+        # Emit structured task_result
+        try:
+            _lang = _rp_lang(None)
+            params = info.get("params") or {}
+            desc = params.get("query") or params.get("instruction") or ""
+            if info["status"] == "cancelled":
+                # Cancelled tasks: tell the LLM not to retry unless user asks again
+                summary = f'Your task "{desc}" was cancelled. Do not retry unless user explicitly asks again.' if desc else 'Task was cancelled. Do not retry unless user explicitly asks again.'
+            else:
                 _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
-                params = info.get("params") or {}
-                desc = params.get("query") or params.get("instruction") or ""
                 if cu_detail and desc:
                     summary = _rp_phrase('cu_task_done', _lang, desc=desc, status=_done, detail=cu_detail)
                 elif cu_detail:
@@ -1166,21 +1147,19 @@ async def _run_computer_use_task(
                     summary = _rp_phrase('cu_task_desc_only', _lang, desc=desc, status=_done)
                 else:
                     summary = _rp_phrase('cu_done', _lang) if success else _rp_phrase('cu_fail', _lang)
-                task_obj = asyncio.create_task(_emit_task_result(
-                    lanlan_name,
-                    channel="computer_use",
-                    task_id=task_id,
-                    success=success,
-                    summary=summary,
-                    detail=cu_detail if success else "",
-                    error_message=cu_detail if not success else "",
-                ))
-                Modules._background_tasks.add(task_obj)
-                task_obj.add_done_callback(Modules._background_tasks.discard)
-            except Exception as e:
-                logger.debug("[ComputerUse] emit task_result failed: task_id=%s error=%s", task_id, e)
-        else:
-            logger.info("[ComputerUse] Skipping task_result for cancelled task %s (prevents re-analysis loop)", task_id)
+            task_obj = asyncio.create_task(_emit_task_result(
+                lanlan_name,
+                channel="computer_use",
+                task_id=task_id,
+                success=success,
+                summary=summary,
+                detail=cu_detail if success else "",
+                error_message=cu_detail if not success else "",
+            ))
+            Modules._background_tasks.add(task_obj)
+            task_obj.add_done_callback(Modules._background_tasks.discard)
+        except Exception as e:
+            logger.debug("[ComputerUse] emit task_result failed: task_id=%s error=%s", task_id, e)
 
 async def _computer_use_scheduler_loop():
     """Ensure only one computer-use task runs at a time by scheduling queued tasks."""
@@ -1550,10 +1529,20 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="user_plugin",
                             desc=f"{plugin_id}.{entry_id}: {result.task_description or ''}",
-                            detail=cancel_msg[:200], success=False,
+                            detail=cancel_msg[:200], success=False, cancelled=True,
                         )
-                        # Skip task_result for cancelled tasks to prevent re-analysis loop
-                        logger.info("[TaskExecutor] Skipping task_result for cancelled user_plugin task %s", result.task_id)
+                        try:
+                            _cancel_desc = result.task_description or f"{plugin_id}.{entry_id}"
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="user_plugin",
+                                task_id=str(result.task_id or ""),
+                                success=False,
+                                summary=f'Your task "{_cancel_desc}" was cancelled. Do not retry unless user explicitly asks again.',
+                                error_message=cancel_msg,
+                            )
+                        except Exception as emit_err:
+                            logger.debug("[TaskExecutor] emit task_result(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
                         try:
                             await _emit_main_event(
                                 "task_update", lanlan_name,
@@ -1724,10 +1713,20 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="openclaw",
                             desc=result.task_description or instruction or "",
-                            detail=cancel_msg[:200], success=False,
+                            detail=cancel_msg[:200], success=False, cancelled=True,
                         )
-                        # Skip task_result for cancelled tasks to prevent re-analysis loop
-                        logger.info("[OpenClaw] Skipping task_result for cancelled task %s", result.task_id)
+                        try:
+                            _cancel_desc = result.task_description or instruction or ""
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="openclaw",
+                                task_id=str(result.task_id or ""),
+                                success=False,
+                                summary=f'Your task "{_cancel_desc}" was cancelled. Do not retry unless user explicitly asks again.' if _cancel_desc else 'Task was cancelled. Do not retry unless user explicitly asks again.',
+                                error_message=cancel_msg,
+                            )
+                        except Exception:
+                            pass
                         try:
                             await _emit_main_event(
                                 "task_update",
@@ -1880,10 +1879,20 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         bu_session.complete_task(cancel_msg, success=False)
                         _task_tracker.record_completed(
                             lanlan_name, task_id=bu_task_id, method="browser_use",
-                            desc=result.task_description or "", detail=cancel_msg[:200], success=False,
+                            desc=result.task_description or "", detail=cancel_msg[:200], success=False, cancelled=True,
                         )
-                        # Skip task_result for cancelled tasks to prevent re-analysis loop
-                        logger.info("[BrowserUse] Skipping task_result for cancelled task %s (prevents re-analysis loop)", bu_task_id)
+                        try:
+                            _cancel_desc = result.task_description or ""
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="browser_use",
+                                task_id=bu_task_id,
+                                success=False,
+                                summary=f'Your task "{_cancel_desc}" was cancelled. Do not retry unless user explicitly asks again.' if _cancel_desc else 'Task was cancelled. Do not retry unless user explicitly asks again.',
+                                error_message=cancel_msg,
+                            )
+                        except Exception as emit_err:
+                            logger.debug("[BrowserUse] emit task_result(cancelled) failed: task_id=%s error=%s", bu_task_id, emit_err)
                         try:
                             await _emit_main_event(
                                 "task_update", lanlan_name,
@@ -2045,10 +2054,18 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             of_session.complete_task(cancel_msg, success=False)
                             _task_tracker.record_completed(
                                 lanlan_name, task_id=of_task_id, method="openfang",
-                                desc=result.task_description or "", detail=cancel_msg[:200], success=False,
+                                desc=result.task_description or "", detail=cancel_msg[:200], success=False, cancelled=True,
                             )
-                            # Skip task_result for cancelled tasks to prevent re-analysis loop
-                            logger.info("[OpenFang] Skipping task_result for cancelled task %s", of_task_id)
+                            try:
+                                _cancel_desc = result.task_description or ""
+                                await _emit_task_result(
+                                    lanlan_name, channel="openfang", task_id=of_task_id,
+                                    success=False,
+                                    summary=f'Your task "{_cancel_desc}" was cancelled. Do not retry unless user explicitly asks again.' if _cancel_desc else 'Task was cancelled. Do not retry unless user explicitly asks again.',
+                                    error_message=cancel_msg,
+                                )
+                            except Exception:
+                                logger.debug("[OpenFang] emit_task_result(cancelled) failed: task_id=%s", of_task_id, exc_info=True)
                             try:
                                 await _emit_main_event(
                                     "task_update", lanlan_name,

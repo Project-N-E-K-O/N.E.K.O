@@ -225,10 +225,6 @@ class LLMSessionManager:
         self.pending_agent_callbacks: list[dict] = []
         # 防止 trigger_agent_callbacks 重入
         self._agent_delivery_in_progress: bool = False
-        # Flag: when True, the next turn_end from handle_response_complete should
-        # be sent as 'turn end agent_callback' to prevent re-analysis.
-        # Set by _perform_final_swap_sequence after successful callback injection.
-        self._next_turn_is_agent_callback: bool = False
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
         self._proactive_write_lock = asyncio.Lock()
         # 由前端控制的Agent相关开关
@@ -423,21 +419,12 @@ class LLMSessionManager:
                 self.tts_request_queue.put((None, None))
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
-
-        # If this turn was an agent-callback hot-swap delivery, send
-        # 'turn end agent_callback' so cross_server skips re-analysis.
-        if self._next_turn_is_agent_callback:
-            self._next_turn_is_agent_callback = False
-            turn_end_signal = 'turn end agent_callback'
-            logger.info("📨 Response complete (agent callback hot-swap delivery)")
-        else:
-            turn_end_signal = 'turn end'
-        self.sync_message_queue.put({'type': 'system', 'data': turn_end_signal})
+        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
 
         # 直接向前端发送turn end消息
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                await self.websocket.send_json({'type': 'system', 'data': turn_end_signal})
+                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
         except Exception as e:
             logger.error(f"💥 WS Send Turn End Error: {e}")
 
@@ -1906,10 +1893,6 @@ class LLMSessionManager:
                 self.summary_triggered_time = datetime.now()
                 self.message_cache_for_new_session = []
                 self.initial_cache_snapshot_len = 0
-                # NOTE: _next_turn_is_agent_callback is set AFTER successful
-                # callback injection in _perform_final_swap_sequence, not here.
-                # Setting it here would risk a normal turn consuming the flag
-                # if the hot-swap prep fails or a normal response completes first.
                 # 立即启动后台预热，不等待10秒
                 self.pending_session_warmed_up_event = asyncio.Event()
                 if not self.background_preparation_task or self.background_preparation_task.done():
@@ -2349,9 +2332,6 @@ class LLMSessionManager:
                 self.pending_extra_replies.clear()
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=False)
-                    # Callback injection succeeded — mark the next turn_end as
-                    # agent_callback so cross_server skips re-analysis.
-                    self._next_turn_is_agent_callback = True
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
                     # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
