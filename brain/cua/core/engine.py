@@ -2,13 +2,12 @@ import os
 
 import backoff
 from utils.token_tracker import set_call_type
+from utils.llm_client import create_chat_llm
 from anthropic import Anthropic
 from openai import (
     AzureOpenAI,
     APIConnectionError,
     APIError,
-    AzureOpenAI,
-    OpenAI,
     RateLimitError,
 )
 
@@ -47,16 +46,16 @@ class LMMEngineOpenAI(LMMEngine):
                 "An API Key needs to be provided in either the api_key parameter or as an environment variable named OPENAI_API_KEY"
             )
         set_call_type("agent_cua")
-        organization = self.organization or os.getenv("OPENAI_ORG_ID")
         if not self.llm_client:
-            if not self.base_url:
-                self.llm_client = OpenAI(api_key=api_key, organization=organization)
-            else:
-                self.llm_client = OpenAI(
-                    base_url=self.base_url, api_key=api_key, organization=organization
-                )
+            self.llm_client = create_chat_llm(
+                model=self.model,
+                base_url=self.base_url,
+                api_key=api_key,
+                temperature=temperature,
+                max_retries=0,
+            )
         return (
-            self.llm_client.chat.completions.create(
+            self.llm_client._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 max_completion_tokens=max_new_tokens if max_new_tokens else 4096,
@@ -183,11 +182,17 @@ class LMMEngineGemini(LMMEngine):
                 "An endpoint URL needs to be provided in either the endpoint_url parameter or as an environment variable named GEMINI_ENDPOINT_URL"
             )
         if not self.llm_client:
-            self.llm_client = OpenAI(base_url=base_url, api_key=api_key)
+            self.llm_client = create_chat_llm(
+                model=self.model,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=temperature,
+                max_retries=0,
+            )
         # Use the temperature passed to generate, otherwise use the instance's temperature, otherwise default to 0.0
         temp = self.temperature if temperature is None else temperature
         return (
-            self.llm_client.chat.completions.create(
+            self.llm_client._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 max_tokens=max_new_tokens if max_new_tokens else 4096,
@@ -232,11 +237,17 @@ class LMMEngineOpenRouter(LMMEngine):
                 "An endpoint URL needs to be provided in either the endpoint_url parameter or as an environment variable named OPEN_ROUTER_ENDPOINT_URL"
             )
         if not self.llm_client:
-            self.llm_client = OpenAI(base_url=base_url, api_key=api_key)
+            self.llm_client = create_chat_llm(
+                model=self.model,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=temperature,
+                max_retries=0,
+            )
         # Use self.temperature if set, otherwise use the temperature argument
         temp = self.temperature if self.temperature is not None else temperature
         return (
-            self.llm_client.chat.completions.create(
+            self.llm_client._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 max_tokens=max_new_tokens if max_new_tokens else 4096,
@@ -351,11 +362,17 @@ class LMMEnginevLLM(LMMEngine):
                 "An endpoint URL needs to be provided in either the endpoint_url parameter or as an environment variable named vLLM_ENDPOINT_URL"
             )
         if not self.llm_client:
-            self.llm_client = OpenAI(base_url=base_url, api_key=api_key)
+            self.llm_client = create_chat_llm(
+                model=self.model,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=temperature,
+                max_retries=0,
+            )
         # Use self.temperature if set, otherwise use the temperature argument
         set_call_type("agent_cua")
         temp = self.temperature if self.temperature is not None else temperature
-        completion = self.llm_client.chat.completions.create(
+        completion = self.llm_client._client.chat.completions.create(
             model=self.model,
             messages=messages,
             max_tokens=max_new_tokens if max_new_tokens else 4096,
@@ -388,9 +405,15 @@ class LMMEngineHuggingFace(LMMEngine):
                 "HuggingFace endpoint must be provided as base_url parameter or as an environment variable named HF_ENDPOINT_URL."
             )
         if not self.llm_client:
-            self.llm_client = OpenAI(base_url=base_url, api_key=api_key)
+            self.llm_client = create_chat_llm(
+                model="tgi",
+                base_url=base_url,
+                api_key=api_key,
+                temperature=temperature,
+                max_retries=0,
+            )
         return (
-            self.llm_client.chat.completions.create(
+            self.llm_client._client.chat.completions.create(
                 model="tgi",
                 messages=messages,
                 max_tokens=max_new_tokens if max_new_tokens else 4096,
@@ -428,12 +451,15 @@ class LMMEngineParasail(LMMEngine):
                 "Parasail endpoint must be provided as base_url parameter or as an environment variable named PARASAIL_ENDPOINT_URL"
             )
         if not self.llm_client:
-            self.llm_client = OpenAI(
+            self.llm_client = create_chat_llm(
+                model=self.model,
                 base_url=base_url if base_url else "https://api.parasail.io/v1",
                 api_key=api_key,
+                temperature=temperature,
+                max_retries=0,
             )
         return (
-            self.llm_client.chat.completions.create(
+            self.llm_client._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 max_tokens=max_new_tokens if max_new_tokens else 4096,
