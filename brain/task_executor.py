@@ -1058,6 +1058,21 @@ class DirectTaskExecutor:
             except Exception as e:
                 logger.warning("[TaskExecutor] Failed to check CoPaw: %s", e)
 
+        # ── openclaw 独立执行路径：无需 LLM 评估，直接路由 ──────
+        if openclaw_enabled and not copaw_available:
+            user_intent = self._extract_latest_user_intent(conversation)
+            if user_intent:
+                logger.info("[TaskExecutor] Routing openclaw as independent execution method")
+                return TaskResult(
+                    task_id=task_id,
+                    has_task=True,
+                    task_description=user_intent,
+                    execution_method="openclaw",
+                    success=False,
+                    tool_args={"instruction": f"[系统指令] {user_intent}"},
+                    reason="openclaw independent routing",
+                )
+
         # ── 并行执行：plugin 单独 + 统一渠道评估 ──────────────
         parallel_tasks: List[tuple] = []   # [(key, coro), ...]
 
@@ -1145,7 +1160,7 @@ class DirectTaskExecutor:
 
                 tool_args = None
                 if method == "openclaw":
-                    tool_args = {"instruction": user_intent}
+                    tool_args = {"instruction": f"[系统指令] {user_intent}"}
 
                 return TaskResult(
                     task_id=task_id,
