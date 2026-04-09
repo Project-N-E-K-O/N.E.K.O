@@ -123,13 +123,13 @@ def _install_prompt_test_hooks(page: Page) -> None:
                 document.addEventListener('DOMContentLoaded', startObserver, { once: true });
             }
 
-            window.nekoAutostartProvider = {
+            window.nekoAutostart = {
                 getStatus: async () => ({
                     ok: true,
                     supported: true,
                     enabled: false,
                     authoritative: true,
-                    provider: 'e2e-test',
+                    provider: 'neko-pc',
                     mechanism: 'browser-e2e',
                     platform: 'macos',
                 }),
@@ -138,7 +138,7 @@ def _install_prompt_test_hooks(page: Page) -> None:
                     supported: true,
                     enabled: true,
                     authoritative: true,
-                    provider: 'e2e-test',
+                    provider: 'neko-pc',
                     mechanism: 'browser-e2e',
                     platform: 'macos',
                 }),
@@ -147,7 +147,7 @@ def _install_prompt_test_hooks(page: Page) -> None:
                     supported: true,
                     enabled: false,
                     authoritative: true,
-                    provider: 'e2e-test',
+                    provider: 'neko-pc',
                     mechanism: 'browser-e2e',
                     platform: 'macos',
                 }),

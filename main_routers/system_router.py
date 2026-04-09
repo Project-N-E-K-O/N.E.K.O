@@ -85,6 +85,17 @@ from utils.tutorial_prompt_state import (
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
 
+
+async def _read_json_object(request: Request) -> dict[str, object]:
+    """Read a JSON request body and normalize non-object payloads to {}."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return {}
+
+    return payload if isinstance(payload, dict) else {}
+
+
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 _EMOTION_LABEL_ALIASES = {
     "happy": "happy",
@@ -518,7 +529,7 @@ async def ack_pending_notices(request: Request):
     """前端展示完通知后调用，仅删除 cursor 以内的通知（游标确认，避免 TOCTOU）。"""
     from main_logic.core import drain_prominent_notices
     try:
-        body = await request.json()
+        body = await _read_json_object(request)
         cursor = int(body.get("cursor", 0))
     except Exception:
         cursor = 0
@@ -535,20 +546,14 @@ async def get_tutorial_prompt_state():
 @router.post("/tutorial-prompt/heartbeat")
 async def post_tutorial_prompt_heartbeat(request: Request):
     """记录主页空闲与互动状态，并判断是否需要提示新手引导。"""
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
     return process_tutorial_prompt_heartbeat(payload, config_manager=get_config_manager())
 
 
 @router.post("/tutorial-prompt/shown")
 async def post_tutorial_prompt_shown(request: Request):
     """记录新手引导提示已实际展示给用户。"""
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_tutorial_prompt_shown(payload, config_manager=get_config_manager())
@@ -559,10 +564,7 @@ async def post_tutorial_prompt_shown(request: Request):
 @router.post("/tutorial-prompt/decision")
 async def post_tutorial_prompt_decision(request: Request):
     """记录用户对新手引导提示的选择。"""
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_tutorial_prompt_decision(payload, config_manager=get_config_manager())
@@ -579,20 +581,14 @@ async def get_autostart_prompt_state():
 @router.post("/autostart-prompt/heartbeat")
 async def post_autostart_prompt_heartbeat(request: Request):
     """记录主页空闲与互动状态，并判断是否需要提示开机自启动。"""
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
     return process_autostart_prompt_heartbeat(payload, config_manager=get_config_manager())
 
 
 @router.post("/autostart-prompt/shown")
 async def post_autostart_prompt_shown(request: Request):
     """记录开机自启动提示已实际展示给用户。"""
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_autostart_prompt_shown(payload, config_manager=get_config_manager())
@@ -603,10 +599,7 @@ async def post_autostart_prompt_shown(request: Request):
 @router.post("/autostart-prompt/decision")
 async def post_autostart_prompt_decision(request: Request):
     """记录用户对开机自启动提示的选择。"""
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_autostart_prompt_decision(payload, config_manager=get_config_manager())
@@ -617,10 +610,7 @@ async def post_autostart_prompt_decision(request: Request):
 @router.post("/tutorial-prompt/tutorial-started")
 async def post_tutorial_started(request: Request):
     """记录主页新手引导已实际开始。"""
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_tutorial_started(payload, config_manager=get_config_manager())
@@ -631,10 +621,7 @@ async def post_tutorial_started(request: Request):
 @router.post("/tutorial-prompt/tutorial-completed")
 async def post_tutorial_completed(request: Request):
     """记录主页新手引导已完成。"""
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_tutorial_completed(payload, config_manager=get_config_manager())

@@ -10,11 +10,16 @@ import os
 import io
 import signal
 
-# 强制 UTF-8 编码
-if sys.platform == 'win32':
+
+def _configure_stdio_utf8() -> None:
+    """Normalize stdio encoding when running the launcher on Windows."""
+    if sys.platform != 'win32':
+        return
+
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-    
+
+
 # 处理 PyInstaller 和 Nuitka 打包后的路径
 if getattr(sys, 'frozen', False):
     # 运行在打包后的环境
@@ -64,12 +69,6 @@ def _maybe_reexec_into_project_venv(project_dir: str) -> None:
     print(f"[Launcher] 当前解释器不是项目虚拟环境，正在切换到: {candidate}")
     os.execv(target_executable, [target_executable] + sys.argv)
 
-
-_maybe_reexec_into_project_venv(bundle_dir)
-
-sys.path.insert(0, bundle_dir)
-os.chdir(bundle_dir)
-
 import subprocess
 import socket
 import time
@@ -113,23 +112,10 @@ def _configure_multiprocessing_executable(project_dir: str) -> None:
         print(f"[Launcher] Warning: failed to pin multiprocessing executable: {exc}", flush=True)
 
 
-_configure_multiprocessing_executable(bundle_dir)
-
 # 本次 launcher 启动的唯一标识
-LAUNCH_ID = uuid.uuid4().hex
-# 实例 ID：若父进程已设置则复用，否则生成新值，确保所有子进程共享同一实例标识
-INSTANCE_ID = os.environ.get("NEKO_INSTANCE_ID") or uuid.uuid4().hex
-os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
-
-# 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
-# httpx 优先读小写 no_proxy，因此大小写都需要设置
-# 使用精确 token 匹配，防止 "127.0.0.1" in "127.0.0.10" 这类子串误判
-for _key in ("NO_PROXY", "no_proxy"):
-    _no_proxy_raw = os.environ.get(_key, "")
-    _tokens = set(map(str.strip, filter(None, _no_proxy_raw.split(","))))
-    for _host in ("127.0.0.1", "localhost"):
-        _tokens.add(_host)
-    os.environ[_key] = ",".join(_tokens)
+LAUNCH_ID = ""
+# 实例 ID：在显式启动路径中初始化，确保导入模块时不改动进程环境
+INSTANCE_ID = ""
 
 JOB_HANDLE = None
 _cleanup_lock = threading.Lock()
@@ -239,7 +225,39 @@ def _install_logging_brace_compat() -> None:
     logging._neko_brace_compat_installed = True
 
 
-_install_logging_brace_compat()
+def _initialize_launcher_context() -> None:
+    """Populate per-launch ids and env only during explicit launcher startup."""
+    global LAUNCH_ID, INSTANCE_ID
+
+    if not LAUNCH_ID:
+        LAUNCH_ID = uuid.uuid4().hex
+
+    if not INSTANCE_ID:
+        INSTANCE_ID = os.environ.get("NEKO_INSTANCE_ID") or uuid.uuid4().hex
+        os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
+        _sync_runtime_config_globals()
+
+    # 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
+    # httpx 优先读小写 no_proxy，因此大小写都需要设置
+    # 使用精确 token 匹配，防止 "127.0.0.1" in "127.0.0.10" 这类子串误判
+    for _key in ("NO_PROXY", "no_proxy"):
+        _no_proxy_raw = os.environ.get(_key, "")
+        _tokens = set(map(str.strip, filter(None, _no_proxy_raw.split(","))))
+        for _host in ("127.0.0.1", "localhost"):
+            _tokens.add(_host)
+        os.environ[_key] = ",".join(_tokens)
+
+
+def _bootstrap_launcher_runtime(project_dir: str) -> None:
+    """Run launcher bootstrap only from the explicit startup path."""
+    _configure_stdio_utf8()
+    _maybe_reexec_into_project_venv(project_dir)
+    if project_dir not in sys.path:
+        sys.path.insert(0, project_dir)
+    os.chdir(project_dir)
+    _configure_multiprocessing_executable(project_dir)
+    _install_logging_brace_compat()
+    _initialize_launcher_context()
 
 
 def _show_error_dialog(message: str):
@@ -1448,5 +1466,11 @@ def main():
         print("再见！\n", flush=True)
     return 0
 
+
+def start_launcher() -> int:
+    """Launcher entrypoint with explicit runtime bootstrap."""
+    _bootstrap_launcher_runtime(bundle_dir)
+    return main()
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(start_launcher())

@@ -283,6 +283,56 @@ runScenario()
 
 
 @pytest.mark.unit
+def test_show_confirm_implicit_dismiss_returns_false():
+    result = _run_common_dialogs_node_scenario(
+        """
+    const state = {
+      resolved: [],
+      overlayCountAfterOutside: null,
+      overlayCountAfterEscape: null,
+    };
+
+    window.showConfirm('Dismiss by outside click', 'Confirm').then((value) => {
+      state.resolved.push({ name: 'outside', value });
+    });
+
+    await wait(10);
+    const firstOverlay = document.querySelectorAll('.modal-overlay')[0];
+    firstOverlay.dispatchEvent({ type: 'click', target: firstOverlay });
+    await wait(250);
+    state.overlayCountAfterOutside = overlayCount();
+
+    window.showConfirm('Dismiss by escape', 'Confirm').then((value) => {
+      state.resolved.push({ name: 'escape', value });
+    });
+
+    await wait(10);
+    document.dispatchEvent({ type: 'keydown', key: 'Escape' });
+    await wait(250);
+    state.overlayCountAfterEscape = overlayCount();
+
+    assert.deepStrictEqual(state.resolved, [
+      { name: 'outside', value: false },
+      { name: 'escape', value: false },
+    ]);
+    assert.strictEqual(state.overlayCountAfterOutside, 0);
+    assert.strictEqual(state.overlayCountAfterEscape, 0);
+
+    return state;
+        """
+    )
+
+    assert result == {
+        "resolved": [
+            {"name": "outside", "value": False},
+            {"name": "escape", "value": False},
+        ],
+        "overlayCountAfterOutside": 0,
+        "overlayCountAfterEscape": 0,
+    }
+
+
+@pytest.mark.unit
 def test_show_decision_prompt_blocks_implicit_dismiss_by_default():
     result = _run_common_dialogs_node_scenario(
         """

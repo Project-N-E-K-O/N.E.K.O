@@ -174,8 +174,8 @@ def _signal_sync_connectors_shutdown(*, log: bool = True) -> None:
     for k in list(sync_shutdown_event):
         try:
             sync_shutdown_event[k].set()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"设置同步关闭事件失败: {k}: {e}", exc_info=True)
 
 
 def join_sync_connector_threads(timeout: float = 3.0) -> list[str]:

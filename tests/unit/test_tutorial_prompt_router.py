@@ -175,7 +175,7 @@ def test_never_route_persists_never_remind_state(tutorial_prompt_client):
 
 
 @pytest.mark.unit
-def test_accept_started_route_persists_started_state(tutorial_prompt_client):
+def test_prompt_tutorial_started_route_persists_started_state_after_accept_decision(tutorial_prompt_client):
     client, config = tutorial_prompt_client
     heartbeat = client.post("/api/tutorial-prompt/heartbeat", json={
         "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
@@ -183,12 +183,22 @@ def test_accept_started_route_persists_started_state(tutorial_prompt_client):
 
     decision = client.post("/api/tutorial-prompt/decision", json={
         "decision": "accept",
-        "result": "started",
+        "result": "accepted",
         "prompt_token": heartbeat["prompt_token"],
     })
 
     assert decision.status_code == 200
-    assert decision.json()["state"]["status"] == "started"
+    assert decision.json()["state"]["started_at"] == 0
+    assert decision.json()["state"]["started_via_prompt"] is True
+
+    started = client.post("/api/tutorial-prompt/tutorial-started", json={
+        "page": "home",
+        "source": "idle_prompt",
+        "prompt_token": heartbeat["prompt_token"],
+    })
+
+    assert started.status_code == 200
+    assert started.json()["state"]["status"] == "started"
 
     state = load_tutorial_prompt_state(config)
     assert state["started_at"] > 0

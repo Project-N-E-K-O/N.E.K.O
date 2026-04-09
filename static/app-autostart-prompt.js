@@ -29,6 +29,7 @@
         requestInFlight: false,
         pendingHeartbeatAfterFlight: false,
         promptOpen: false,
+        lastPromptTokenSeen: null,
         pendingForegroundMs: 0,
         foregroundStartedAt: null,
         pendingWeakHomeInteractions: 0,
@@ -431,6 +432,9 @@
         if (!promptToken) {
             return false;
         }
+        if (promptToken === state.lastPromptTokenSeen) {
+            return false;
+        }
         try {
             await ensureAutostartStatusFresh({
                 source: 'prompt-check',
@@ -447,6 +451,7 @@
 
     async function showPrompt(promptToken) {
         state.promptOpen = true;
+        state.lastPromptTokenSeen = promptToken;
         logFlow('prompt-open', { token: shortPromptToken(promptToken) });
         try {
             const decision = await window.showDecisionPrompt({

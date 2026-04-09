@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_CHROME_PATH = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 _RUNTIME_TEST_PORTS: dict[str, int] = {}
+_RUNTIME_TEST_PORT_RETRY_LIMIT = 10
 
 # Map camelCase keys in api_keys.json to UPPER_SNAKE_CASE env vars expected by ConfigManager
 KEY_MAPPING = {
@@ -103,8 +104,10 @@ def _set_runtime_test_port(port_name: str, port_value: int) -> None:
 
     try:
         import config as config_module
-    except Exception:
-        return
+    except (ModuleNotFoundError, ImportError) as exc:
+        if getattr(exc, "name", None) == "config":
+            return
+        raise
 
     setattr(config_module, port_name, port_value)
 
@@ -128,6 +131,29 @@ def _initialize_runtime_test_ports() -> None:
 
     for port_name in ("MEMORY_SERVER_PORT", "MAIN_SERVER_PORT"):
         port_value = _resolve_runtime_test_port(port_name)
+        if port_value in _RUNTIME_TEST_PORTS.values():
+            logger.warning(
+                "Resolved duplicate runtime test port %s=%s; selecting a new port",
+                port_name,
+                port_value,
+            )
+            for attempt in range(1, _RUNTIME_TEST_PORT_RETRY_LIMIT + 1):
+                fallback_port = _find_free_local_port()
+                if fallback_port not in _RUNTIME_TEST_PORTS.values():
+                    port_value = fallback_port
+                    break
+                logger.warning(
+                    "Duplicate fallback runtime test port %s=%s on attempt %s/%s",
+                    port_name,
+                    fallback_port,
+                    attempt,
+                    _RUNTIME_TEST_PORT_RETRY_LIMIT,
+                )
+            else:
+                raise RuntimeError(
+                    f"Unable to allocate unique runtime test port for {port_name} "
+                    f"after {_RUNTIME_TEST_PORT_RETRY_LIMIT} attempts"
+                )
         _RUNTIME_TEST_PORTS[port_name] = port_value
         _set_runtime_test_port(port_name, port_value)
 

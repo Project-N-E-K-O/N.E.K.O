@@ -9,6 +9,7 @@
 
     const _decisionPromptQueue = [];
     let _decisionPromptActive = false;
+    const NO_IMPLICIT_CLOSE = Symbol('NO_IMPLICIT_CLOSE');
 
     function safeT(key, fallback) {
         if (typeof window.safeT === 'function') {
@@ -221,7 +222,9 @@
             let settled = false;
             const dismissValue = Object.prototype.hasOwnProperty.call(modalConfig, 'dismissValue')
                 ? modalConfig.dismissValue
-                : (modalConfig.type === 'prompt' ? null : false);
+                : (modalConfig.type === 'prompt'
+                    ? null
+                    : (modalConfig.type === 'decision' ? NO_IMPLICIT_CLOSE : false));
 
             // 创建遮罩层
             const overlay = document.createElement('div');
@@ -346,7 +349,7 @@
             }
 
             function dismissIfAllowed() {
-                if (dismissValue === false) {
+                if (dismissValue === NO_IMPLICIT_CLOSE) {
                     return;
                 }
                 finish(dismissValue);

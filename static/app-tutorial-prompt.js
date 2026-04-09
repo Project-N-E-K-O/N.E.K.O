@@ -563,6 +563,9 @@
         if (!promptToken) {
             return false;
         }
+        if (promptToken === state.lastPromptTokenSeen) {
+            return false;
+        }
         if (isHomeTutorialSeen() || hasPromptBlockingInteractionPending()) {
             return false;
         }

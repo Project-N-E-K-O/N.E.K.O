@@ -295,7 +295,7 @@ def test_prompt_requires_foreground_threshold_after_first_prompt_is_deferred(tmp
 
 
 @pytest.mark.unit
-def test_accept_started_marks_state_started(tmp_path):
+def test_tutorial_started_event_marks_state_started_after_accept_decision(tmp_path):
     config = DummyConfig(tmp_path)
     heartbeat = process_tutorial_prompt_heartbeat(
         {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
@@ -306,21 +306,34 @@ def test_accept_started_marks_state_started(tmp_path):
     decision = record_tutorial_prompt_decision(
         {
             "decision": "accept",
-            "result": "started",
+            "result": "accepted",
             "prompt_token": heartbeat["prompt_token"],
         },
         config_manager=config,
         now_ms=5_000,
     )
 
-    assert decision["state"]["status"] == "started"
-    assert decision["state"]["started_at"] == 5_000
+    assert decision["state"]["started_at"] == 0
+    assert decision["state"]["started_via_prompt"] is True
     assert decision["state"]["shown_count"] == 1
+
+    started = record_tutorial_started(
+        {
+            "page": "home",
+            "source": "idle_prompt",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+        config_manager=config,
+        now_ms=6_000,
+    )
+
+    assert started["state"]["status"] == "started"
+    assert started["state"]["started_at"] == 6_000
 
     follow_up = process_tutorial_prompt_heartbeat(
         {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
         config_manager=config,
-        now_ms=6_000,
+        now_ms=7_000,
     )
 
     assert follow_up["should_prompt"] is False
@@ -328,7 +341,7 @@ def test_accept_started_marks_state_started(tmp_path):
 
 
 @pytest.mark.unit
-def test_accept_accepted_marks_started_as_fallback(tmp_path):
+def test_accept_accepted_preserves_prompt_attribution_until_started_event(tmp_path):
     config = DummyConfig(tmp_path)
     heartbeat = process_tutorial_prompt_heartbeat(
         {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
@@ -347,11 +360,30 @@ def test_accept_accepted_marks_started_as_fallback(tmp_path):
     )
 
     assert decision["state"]["accepted_at"] == 1_500
-    assert decision["state"]["started_at"] == 1_500
+    assert decision["state"]["started_at"] == 0
 
     state = load_tutorial_prompt_state(config)
     assert state["accepted_at"] == 1_500
-    assert state["started_at"] == 1_500
+    assert state["started_at"] == 0
+    assert state["started_via_prompt"] is True
+    assert state["funnel_counts"]["accept"] == 1
+    assert state["funnel_counts"]["started"] == 0
+
+    started = record_tutorial_started(
+        {
+            "page": "home",
+            "source": "idle_prompt",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    assert started["state"]["started_at"] == 2_000
+
+    state = load_tutorial_prompt_state(config)
+    assert state["accepted_at"] == 1_500
+    assert state["started_at"] == 2_000
     assert state["started_via_prompt"] is True
     assert state["funnel_counts"]["accept"] == 1
     assert state["funnel_counts"]["started"] == 1
@@ -637,17 +669,30 @@ def test_funnel_counts_track_accept_start_and_completion(tmp_path):
     )
     assert shown["state"]["funnel_counts"]["shown"] == 1
 
-    started = record_tutorial_prompt_decision(
+    accepted = record_tutorial_prompt_decision(
         {
             "decision": "accept",
-            "result": "started",
+            "result": "accepted",
             "prompt_token": heartbeat["prompt_token"],
         },
         config_manager=config,
         now_ms=2_000,
     )
-    assert started["state"]["funnel_counts"]["accept"] == 1
-    assert started["state"]["funnel_counts"]["started"] == 1
+    assert accepted["state"]["funnel_counts"]["accept"] == 1
+    assert accepted["state"]["funnel_counts"]["started"] == 0
+
+    started = record_tutorial_started(
+        {
+            "page": "home",
+            "source": "idle_prompt",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+        config_manager=config,
+        now_ms=2_500,
+    )
+    state = load_tutorial_prompt_state(config)
+    assert state["funnel_counts"]["accept"] == 1
+    assert state["funnel_counts"]["started"] == 1
 
     completed = process_tutorial_prompt_heartbeat(
         {"home_tutorial_completed": True},
