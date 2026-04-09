@@ -1229,6 +1229,9 @@ async def import_config(file: UploadFile = File(...)):
                     if song.get("name") == original_stem:
                         song["name"] = Path(target_filename).stem
 
+                    # 清除旧 defaultAction（引用导入包的 action ID，本地无效）
+                    # Step 3/4 会根据绑定关系重新设置
+                    song.pop("defaultAction", None)
                     jukebox_config.data["songs"][new_id] = song
                     jukebox_config.data["md5Index"]["songs"][file_md5] = new_id
                     stats["songsAdded"] += 1
