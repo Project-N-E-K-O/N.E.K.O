@@ -440,7 +440,7 @@
         if (timeCurrent) timeCurrent.textContent = '00:00';
 
         // --- 2b. 向 React 聊天窗口推送音乐卡片消息 ---
-        if (isFirstRender) {
+        {
             const host = window.reactChatWindowHost;
             if (host && typeof host.appendMessage === 'function') {
                 let assistantName = '';
