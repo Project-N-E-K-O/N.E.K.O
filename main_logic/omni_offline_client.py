@@ -118,10 +118,6 @@ class OmniOfflineClient:
         self.master_name = master_name
         self._prefix_buffer_size = max(len(lanlan_name), len(master_name)) + 3 if (lanlan_name or master_name) else 0
 
-        # Rate-limit 播报节流：首次播报后 10s 内不再重复通知前端
-        self._last_rate_limit_broadcast: float = 0.0
-        self._rate_limit_broadcast_cooldown: float = 10.0
-
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡
 
     def update_max_response_length(self, max_length: int) -> None:
@@ -487,7 +483,6 @@ class OmniOfflineClient:
                             
                 except (APIConnectionError, InternalServerError, RateLimitError) as e:
                     error_type = type(e).__name__
-                    is_rate_limit = isinstance(e, RateLimitError)
                     is_internal_error = isinstance(e, InternalServerError)
                     logger.info(f"ℹ️ 捕获到 {error_type} 错误")
                     if attempt < max_retries - 1:
