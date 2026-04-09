@@ -1,6 +1,140 @@
-import pytest
-from playwright.sync_api import Page, expect
 from pathlib import Path
+
+import pytest
+
+
+playwright_sync_api = pytest.importorskip("playwright.sync_api")
+Page = playwright_sync_api.Page
+expect = playwright_sync_api.expect
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PAGE_BOOTSTRAP_TEMPLATE = """
+() => {
+    window.safeT = function(key, fallback) {
+        return typeof fallback === 'string' ? fallback : key;
+    };
+    window.showStatusToast = function() {};
+    window.nekoLocalMutationSecurity = {
+        getMutationHeaders: async function() {
+            return { 'X-CSRF-Token': 'test-token' };
+        },
+    };
+    window.nekoAutostartProvider = {
+        getStatus: async function() {
+            return {
+                ok: true,
+                supported: false,
+                enabled: false,
+                authoritative: false,
+                provider: 'backend',
+            };
+        },
+        enable: async function() {
+            throw new Error('enable not configured');
+        },
+        disable: async function() {
+            throw new Error('disable not configured');
+        },
+        getCachedStatus: function() {
+            return null;
+        },
+    };
+    window.universalTutorialManager = {
+        currentPage: 'home',
+        isTutorialRunning: false,
+        hasSeenTutorial: function() {
+            return false;
+        },
+        logPromptFlow: function() {},
+        requestTutorialStart: async function() {
+            return false;
+        },
+    };
+
+    const jsonResponse = function(body, status) {
+        return new Response(JSON.stringify(body), {
+            status: status || 200,
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        });
+    };
+
+__SETUP_JS__
+
+    window.fetch = async function(url, options) {
+        const requestUrl = String(url);
+        const requestOptions = options || {};
+        const method = String(requestOptions.method || 'GET').toUpperCase();
+        const headers = requestOptions.headers || {};
+        let body = null;
+        if (typeof requestOptions.body === 'string' && requestOptions.body) {
+            body = JSON.parse(requestOptions.body);
+        }
+
+__FETCH_JS__
+
+        throw new Error('Unexpected request: ' + method + ' ' + requestUrl);
+    };
+}
+"""
+
+
+def _bootstrap_page(
+    mock_page: Page,
+    *,
+    setup_js: str = "",
+    fetch_js: str = "",
+    script_names: tuple[str, ...] = (),
+    init_js: str | None = None,
+) -> None:
+    mock_page.set_content("<!doctype html><html><body></body></html>")
+    mock_page.evaluate(
+        _PAGE_BOOTSTRAP_TEMPLATE
+        .replace("__SETUP_JS__", setup_js.strip())
+        .replace("__FETCH_JS__", fetch_js.strip())
+    )
+    for script_name in script_names:
+        mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / script_name))
+    if init_js:
+        mock_page.evaluate(init_js)
+
+
+def _bootstrap_tutorial_prompt_page(
+    mock_page: Page,
+    *,
+    setup_js: str = "",
+    fetch_js: str = "",
+    include_common_dialogs: bool = False,
+    include_autostart_provider: bool = False,
+) -> None:
+    script_names = []
+    if include_common_dialogs:
+        script_names.append("common_dialogs.js")
+    if include_autostart_provider:
+        script_names.append("app-autostart-provider.js")
+    script_names.append("app-tutorial-prompt.js")
+    _bootstrap_page(
+        mock_page,
+        setup_js=setup_js,
+        fetch_js=fetch_js,
+        script_names=tuple(script_names),
+        init_js="() => window.appTutorialPrompt.init()",
+    )
+
+
+def _bootstrap_autostart_provider_page(
+    mock_page: Page,
+    *,
+    setup_js: str = "",
+    fetch_js: str = "",
+) -> None:
+    _bootstrap_page(
+        mock_page,
+        setup_js=setup_js,
+        fetch_js=fetch_js,
+        script_names=("app-autostart-provider.js",),
+    )
 
 
 def _has_playwright_browser() -> bool:
@@ -32,23 +166,11 @@ def mock_memory_server():
 def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.safeT = function(key, fallback) {
-                return typeof fallback === 'string' ? fallback : key;
-            };
-            window.showStatusToast = function() {};
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_common_dialogs=True,
+        setup_js="""
             window.__requestLog = [];
-            window.nekoLocalMutationSecurity = {
-                getMutationHeaders: async function() {
-                    return { 'X-CSRF-Token': 'test-token' };
-                },
-            };
             window.nekoAutostartProvider = {
                 getStatus: async function() {
                     return {
@@ -87,151 +209,127 @@ def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
                     return true;
                 },
             };
+        """,
+        fetch_js="""
+            window.__requestLog.push({
+                url: requestUrl,
+                method: method,
+                body: body,
+            });
 
-            const jsonResponse = function(body) {
-                return new Response(JSON.stringify(body), {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'application/json',
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
                     },
                 });
-            };
-
-            window.fetch = async function(url, options) {
-                const requestUrl = String(url);
-                const requestOptions = options || {};
-                const method = String(requestOptions.method || 'GET').toUpperCase();
-                let body = null;
-                if (typeof requestOptions.body === 'string' && requestOptions.body) {
-                    body = JSON.parse(requestOptions.body);
-                }
-                window.__requestLog.push({
-                    url: requestUrl,
-                    method: method,
-                    body: body,
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'idle_timeout',
+                    prompt_token: 'tutorial-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
+                    },
                 });
-
-                if (requestUrl === '/api/tutorial-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: false,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: true,
-                        prompt_reason: 'idle_timeout',
-                        prompt_token: 'tutorial-token',
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: false,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/shown') {
-                    return jsonResponse({
-                        ok: true,
-                        already_acknowledged: false,
-                        state: {
-                            status: 'prompted',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: false,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/decision') {
-                    return jsonResponse({
-                        ok: true,
-                        state: {
-                            status: body && body.result === 'started' ? 'started' : 'prompted',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: body && body.result === 'started',
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/tutorial-started') {
-                    return jsonResponse({
-                        ok: true,
-                        tutorial_run_token: 'tutorial-run-token',
-                        state: {
-                            status: 'started',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: true,
-                        prompt_reason: 'usage_timeout',
-                        prompt_token: 'autostart-token',
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/shown') {
-                    return jsonResponse({
-                        ok: true,
-                        already_acknowledged: false,
-                        state: {
-                            status: 'prompted',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/decision') {
-                    return jsonResponse({
-                        ok: true,
-                        state: {
-                            status: 'deferred',
-                            never_remind: false,
-                            deferred_until: Date.now() + 60000,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-
-                throw new Error('Unexpected request: ' + method + ' ' + requestUrl);
-            };
-        }
-        """
+            }
+            if (requestUrl === '/api/tutorial-prompt/shown') {
+                return jsonResponse({
+                    ok: true,
+                    already_acknowledged: false,
+                    state: {
+                        status: 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/decision') {
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        status: body && body.result === 'started' ? 'started' : 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: body && body.result === 'started',
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/tutorial-started') {
+                return jsonResponse({
+                    ok: true,
+                    tutorial_run_token: 'tutorial-run-token',
+                    state: {
+                        status: 'started',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'usage_timeout',
+                    prompt_token: 'autostart-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/shown') {
+                return jsonResponse({
+                    ok: true,
+                    already_acknowledged: false,
+                    state: {
+                        status: 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/decision') {
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        status: 'deferred',
+                        never_remind: false,
+                        deferred_until: Date.now() + 60000,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "common_dialogs.js"))
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
-    mock_page.evaluate("() => window.appTutorialPrompt.init()")
 
     tutorial_title = mock_page.locator(".modal-title")
     expect(tutorial_title).to_have_text("要不要开始主页新手引导？", timeout=5000)
@@ -258,24 +356,15 @@ def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
 def test_tutorial_prompt_prefers_window_t_over_safe_t(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-
-    mock_page.evaluate(
-        """
-        () => {
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_common_dialogs=True,
+        setup_js="""
             window.t = function(key, fallback) {
                 return typeof fallback === 'string' ? fallback : key;
             };
             window.safeT = function(key) {
                 return key;
-            };
-            window.showStatusToast = function() {};
-            window.nekoLocalMutationSecurity = {
-                getMutationHeaders: async function() {
-                    return { 'X-CSRF-Token': 'test-token' };
-                },
             };
             window.nekoAutostartProvider = {
                 getStatus: async function() {
@@ -299,91 +388,72 @@ def test_tutorial_prompt_prefers_window_t_over_safe_t(
                     return false;
                 },
             };
-
-            const jsonResponse = function(body) {
-                return new Response(JSON.stringify(body), {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'application/json',
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
                     },
                 });
-            };
-
-            window.fetch = async function(url) {
-                const requestUrl = String(url);
-
-                if (requestUrl === '/api/tutorial-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: false,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: true,
-                        prompt_reason: 'idle_timeout',
-                        prompt_token: 'tutorial-token',
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: false,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/shown') {
-                    return jsonResponse({
-                        ok: true,
-                        already_acknowledged: false,
-                        state: {
-                            status: 'prompted',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: false,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        prompt_reason: 'provider_unsupported',
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-
-                throw new Error('Unexpected request: ' + requestUrl);
-            };
-        }
-        """
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'idle_timeout',
+                    prompt_token: 'tutorial-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/shown') {
+                return jsonResponse({
+                    ok: true,
+                    already_acknowledged: false,
+                    state: {
+                        status: 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    prompt_reason: 'provider_unsupported',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "common_dialogs.js"))
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
-    mock_page.evaluate("() => window.appTutorialPrompt.init()")
 
     expect(mock_page.locator(".modal-title")).to_have_text("要不要开始主页新手引导？", timeout=5000)
 
@@ -392,25 +462,12 @@ def test_tutorial_prompt_prefers_window_t_over_safe_t(
 def test_tutorial_started_event_retries_failed_sync_on_heartbeat(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.safeT = function(key, fallback) {
-                return typeof fallback === 'string' ? fallback : key;
-            };
-            window.showStatusToast = function() {};
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        setup_js="""
             window.__tutorialStartedBodies = [];
             window.__tutorialCompletedBodies = [];
             window.__tutorialHeartbeatBodies = [];
-            window.nekoLocalMutationSecurity = {
-                getMutationHeaders: async function() {
-                    return { 'X-CSRF-Token': 'test-token' };
-                },
-            };
             window.nekoAutostartProvider = {
                 getStatus: async function() {
                     return {
@@ -433,101 +490,78 @@ def test_tutorial_started_event_retries_failed_sync_on_heartbeat(
                     return false;
                 },
             };
-
-            const jsonResponse = function(body, status) {
-                return new Response(JSON.stringify(body), {
-                    status: status || 200,
-                    headers: {
-                        'Content-Type': 'application/json',
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
                     },
                 });
-            };
-
-            window.fetch = async function(url, options) {
-                const requestUrl = String(url);
-                const requestOptions = options || {};
-                let body = null;
-                if (typeof requestOptions.body === 'string' && requestOptions.body) {
-                    body = JSON.parse(requestOptions.body);
-                }
-
-                if (requestUrl === '/api/tutorial-prompt/state') {
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                window.__tutorialHeartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'started',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/tutorial-started') {
+                window.__tutorialStartedBodies.push(body);
+                if (window.__tutorialStartedBodies.length === 1) {
                     return jsonResponse({
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
+                        ok: false,
+                        error: 'temporary_failure',
+                    }, 500);
                 }
-                if (requestUrl === '/api/autostart-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                    window.__tutorialHeartbeatBodies.push(body);
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: 'started',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/tutorial-started') {
-                    window.__tutorialStartedBodies.push(body);
-                    if (window.__tutorialStartedBodies.length === 1) {
-                        return jsonResponse({
-                            ok: false,
-                            error: 'temporary_failure',
-                        }, 500);
-                    }
-                    return jsonResponse({
-                        ok: true,
-                        tutorial_run_token: 'tutorial-run-token',
-                        state: {
-                            status: 'started',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/tutorial-completed') {
-                    window.__tutorialCompletedBodies.push(body);
-                    return jsonResponse({
-                        ok: true,
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
-                }
-
-                throw new Error('Unexpected request: ' + requestUrl);
-            };
-        }
-        """
+                return jsonResponse({
+                    ok: true,
+                    tutorial_run_token: 'tutorial-run-token',
+                    state: {
+                        status: 'started',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/tutorial-completed') {
+                window.__tutorialCompletedBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
-    mock_page.evaluate("() => window.appTutorialPrompt.init()")
 
     mock_page.wait_for_function(
         "() => window.__tutorialHeartbeatBodies.length > 0",
@@ -592,23 +626,10 @@ def test_tutorial_started_event_retries_failed_sync_on_heartbeat(
 def test_tutorial_heartbeat_does_not_report_completed_while_tutorial_is_running(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.safeT = function(key, fallback) {
-                return typeof fallback === 'string' ? fallback : key;
-            };
-            window.showStatusToast = function() {};
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        setup_js="""
             window.__tutorialHeartbeatBodies = [];
-            window.nekoLocalMutationSecurity = {
-                getMutationHeaders: async function() {
-                    return { 'X-CSRF-Token': 'test-token' };
-                },
-            };
             window.nekoAutostartProvider = {
                 getStatus: async function() {
                     return {
@@ -631,68 +652,45 @@ def test_tutorial_heartbeat_does_not_report_completed_while_tutorial_is_running(
                     return false;
                 },
             };
-
-            const jsonResponse = function(body) {
-                return new Response(JSON.stringify(body), {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'application/json',
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'started',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: false,
                     },
                 });
-            };
-
-            window.fetch = async function(url, options) {
-                const requestUrl = String(url);
-                const requestOptions = options || {};
-                let body = null;
-                if (typeof requestOptions.body === 'string' && requestOptions.body) {
-                    body = JSON.parse(requestOptions.body);
-                }
-
-                if (requestUrl === '/api/tutorial-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'started',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                    window.__tutorialHeartbeatBodies.push(body);
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: 'started',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-
-                throw new Error('Unexpected request: ' + requestUrl);
-            };
-        }
-        """
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                window.__tutorialHeartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'started',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
-    mock_page.evaluate("() => window.appTutorialPrompt.init()")
 
     mock_page.wait_for_function(
         "() => window.__tutorialHeartbeatBodies.length === 1",
@@ -713,17 +711,10 @@ def test_tutorial_heartbeat_does_not_report_completed_while_tutorial_is_running(
 def test_autostart_provider_enable_syncs_prompt_heartbeat_state(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.safeT = function(key, fallback) {
-                return typeof fallback === 'string' ? fallback : key;
-            };
-            window.showStatusToast = function() {};
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_autostart_provider=True,
+        setup_js="""
             window.__requestLog = [];
             window.__autostartHeartbeatBodies = [];
             window.nekoAutostart = {
@@ -772,87 +763,63 @@ def test_autostart_provider_enable_syncs_prompt_heartbeat_state(
                     return false;
                 },
             };
+        """,
+        fetch_js="""
+            window.__requestLog.push({
+                url: requestUrl,
+                method: method,
+                body: body,
+            });
 
-            const jsonResponse = function(body) {
-                return new Response(JSON.stringify(body), {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'application/json',
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
                     },
                 });
-            };
-
-            window.fetch = async function(url, options) {
-                const requestUrl = String(url);
-                const requestOptions = options || {};
-                const method = String(requestOptions.method || 'GET').toUpperCase();
-                let body = null;
-                if (typeof requestOptions.body === 'string' && requestOptions.body) {
-                    body = JSON.parse(requestOptions.body);
-                }
-                window.__requestLog.push({
-                    url: requestUrl,
-                    method: method,
-                    body: body,
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
+                    },
                 });
-
-                if (requestUrl === '/api/tutorial-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: false,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: false,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                    window.__autostartHeartbeatBodies.push(body);
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: body && body.autostart_enabled ? 'completed' : 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: !!(body && body.autostart_enabled),
-                        },
-                    });
-                }
-
-                throw new Error('Unexpected request: ' + method + ' ' + requestUrl);
-            };
-        }
-        """
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                window.__autostartHeartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: body && body.autostart_enabled ? 'completed' : 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: !!(body && body.autostart_enabled),
+                    },
+                });
+            }
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-autostart-provider.js"))
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
-    mock_page.evaluate("() => window.appTutorialPrompt.init()")
 
     mock_page.wait_for_function("() => window.__autostartHeartbeatBodies.length > 0")
 
@@ -877,17 +844,10 @@ def test_autostart_provider_enable_syncs_prompt_heartbeat_state(
 def test_autostart_heartbeat_preserves_last_known_enabled_state_on_status_pull_failure(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.safeT = function(key, fallback) {
-                return typeof fallback === 'string' ? fallback : key;
-            };
-            window.showStatusToast = function() {};
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_autostart_provider=True,
+        setup_js="""
             window.__autostartHeartbeatBodies = [];
             window.nekoAutostart = {
                 getStatus: async function() {
@@ -911,81 +871,57 @@ def test_autostart_heartbeat_preserves_last_known_enabled_state_on_status_pull_f
                     return false;
                 },
             };
-
-            const jsonResponse = function(body) {
-                return new Response(JSON.stringify(body), {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'application/json',
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
                     },
                 });
-            };
-
-            window.fetch = async function(url, options) {
-                const requestUrl = String(url);
-                const requestOptions = options || {};
-                let body = null;
-                if (typeof requestOptions.body === 'string' && requestOptions.body) {
-                    body = JSON.parse(requestOptions.body);
-                }
-
-                if (requestUrl === '/api/tutorial-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: true,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                    window.__autostartHeartbeatBodies.push(body);
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: body && body.autostart_enabled ? 'completed' : 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: !!(body && body.autostart_enabled),
-                        },
-                    });
-                }
-
-                throw new Error('Unexpected request: ' + requestUrl);
-            };
-        }
-        """
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                window.__autostartHeartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: body && body.autostart_enabled ? 'completed' : 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: !!(body && body.autostart_enabled),
+                    },
+                });
+            }
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-autostart-provider.js"))
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
-    mock_page.evaluate("() => window.appTutorialPrompt.init()")
 
     mock_page.wait_for_function(
         """
@@ -1010,17 +946,10 @@ def test_autostart_heartbeat_preserves_last_known_enabled_state_on_status_pull_f
 def test_desktop_autostart_status_event_syncs_prompt_heartbeat_state(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.safeT = function(key, fallback) {
-                return typeof fallback === 'string' ? fallback : key;
-            };
-            window.showStatusToast = function() {};
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_autostart_provider=True,
+        setup_js="""
             window.__autostartHeartbeatBodies = [];
             window.nekoAutostart = {
                 getStatus: async function() {
@@ -1068,81 +997,57 @@ def test_desktop_autostart_status_event_syncs_prompt_heartbeat_state(
                     return false;
                 },
             };
-
-            const jsonResponse = function(body) {
-                return new Response(JSON.stringify(body), {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'application/json',
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
                     },
                 });
-            };
-
-            window.fetch = async function(url, options) {
-                const requestUrl = String(url);
-                const requestOptions = options || {};
-                let body = null;
-                if (typeof requestOptions.body === 'string' && requestOptions.body) {
-                    body = JSON.parse(requestOptions.body);
-                }
-
-                if (requestUrl === '/api/tutorial-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: false,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: false,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                    window.__autostartHeartbeatBodies.push(body);
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: body && body.autostart_enabled ? 'completed' : 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: !!(body && body.autostart_enabled),
-                        },
-                    });
-                }
-
-                throw new Error('Unexpected request: ' + requestUrl);
-            };
-        }
-        """
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                window.__autostartHeartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: body && body.autostart_enabled ? 'completed' : 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: !!(body && body.autostart_enabled),
+                    },
+                });
+            }
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-autostart-provider.js"))
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
-    mock_page.evaluate("() => window.appTutorialPrompt.init()")
 
     mock_page.wait_for_function("() => window.__autostartHeartbeatBodies.length > 0")
 
@@ -1183,17 +1088,10 @@ def test_desktop_autostart_status_event_syncs_prompt_heartbeat_state(
 def test_desktop_autostart_status_event_preserves_pending_flags_for_heartbeat(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.safeT = function(key, fallback) {
-                return typeof fallback === 'string' ? fallback : key;
-            };
-            window.showStatusToast = function() {};
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_autostart_provider=True,
+        setup_js="""
             window.__autostartHeartbeatBodies = [];
             window.nekoAutostart = {
                 getStatus: async function() {
@@ -1241,81 +1139,57 @@ def test_desktop_autostart_status_event_preserves_pending_flags_for_heartbeat(
                     return false;
                 },
             };
-
-            const jsonResponse = function(body) {
-                return new Response(JSON.stringify(body), {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'application/json',
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
                     },
                 });
-            };
-
-            window.fetch = async function(url, options) {
-                const requestUrl = String(url);
-                const requestOptions = options || {};
-                let body = null;
-                if (typeof requestOptions.body === 'string' && requestOptions.body) {
-                    body = JSON.parse(requestOptions.body);
-                }
-
-                if (requestUrl === '/api/tutorial-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                    window.__autostartHeartbeatBodies.push(body);
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-
-                throw new Error('Unexpected request: ' + requestUrl);
-            };
-        }
-        """
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                window.__autostartHeartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-autostart-provider.js"))
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
-    mock_page.evaluate("() => window.appTutorialPrompt.init()")
 
     mock_page.wait_for_function("() => window.__autostartHeartbeatBodies.length > 0")
 
@@ -1392,22 +1266,17 @@ def test_desktop_autostart_status_event_preserves_pending_flags_for_heartbeat(
 def test_autostart_provider_reports_unsupported_status_when_desktop_bridge_missing(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-    mock_page.evaluate(
-        """
-        () => {
+    _bootstrap_autostart_provider_page(
+        mock_page,
+        setup_js="""
             window.__requestLog = [];
-            window.fetch = async function(url) {
-                window.__requestLog.push(String(url));
-                throw new Error('backend autostart API should not be called when desktop bridge is missing');
-            };
-        }
-        """
+        """,
+        fetch_js="""
+            window.__requestLog.push(requestUrl);
+            throw new Error('backend autostart API should not be called when desktop bridge is missing');
+        """,
     )
 
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-autostart-provider.js"))
     result = mock_page.evaluate(
         """
         async () => {
@@ -1448,12 +1317,9 @@ def test_autostart_provider_reports_unsupported_status_when_desktop_bridge_missi
 def test_autostart_provider_prefers_desktop_bridge_over_backend_fallback(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-    mock_page.evaluate(
-        """
-        () => {
+    _bootstrap_autostart_provider_page(
+        mock_page,
+        setup_js="""
             window.__requestLog = [];
             window.nekoAutostart = {
                 getStatus: async function() {
@@ -1490,15 +1356,13 @@ def test_autostart_provider_prefers_desktop_bridge_over_backend_fallback(
                     };
                 },
             };
-            window.fetch = async function(url) {
-                window.__requestLog.push(String(url));
-                throw new Error('backend fallback should not be called when desktop bridge exists');
-            };
-        }
-        """
+        """,
+        fetch_js="""
+            window.__requestLog.push(requestUrl);
+            throw new Error('backend fallback should not be called when desktop bridge exists');
+        """,
     )
 
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-autostart-provider.js"))
     result = mock_page.evaluate(
         """
         async () => {
@@ -1529,12 +1393,9 @@ def test_autostart_provider_prefers_desktop_bridge_over_backend_fallback(
 def test_autostart_provider_desktop_status_event_uses_desktop_defaults_without_provider(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-    mock_page.evaluate(
-        """
-        () => {
+    _bootstrap_autostart_provider_page(
+        mock_page,
+        setup_js="""
             window.nekoAutostart = {
                 getStatus: async function() {
                     return {
@@ -1570,11 +1431,8 @@ def test_autostart_provider_desktop_status_event_uses_desktop_defaults_without_p
                     };
                 },
             };
-        }
-        """
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-autostart-provider.js"))
     result = mock_page.evaluate(
         """
         async () => {
@@ -1603,16 +1461,10 @@ def test_autostart_provider_desktop_status_event_uses_desktop_defaults_without_p
 def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-    mock_page.evaluate(
-        """
-        () => {
-            window.safeT = function(key, fallback) {
-                return typeof fallback === 'string' ? fallback : key;
-            };
-            window.showStatusToast = function() {};
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_autostart_provider=True,
+        setup_js="""
             window.pageConfigReady = Promise.resolve({
                 success: true,
                 autostart_csrf_token: 'stale-token',
@@ -1632,117 +1484,92 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
                     return false;
                 },
             };
+        """,
+        fetch_js="""
+            const csrfToken = headers['X-CSRF-Token'] || headers['x-csrf-token'] || '';
 
-            const jsonResponse = function(body, status) {
-                return new Response(JSON.stringify(body), {
-                    status: status || 200,
-                    headers: {
-                        'Content-Type': 'application/json',
+            if (method !== 'GET' && method !== 'HEAD') {
+                window.__mutationTokens.push(csrfToken);
+            }
+
+            if (requestUrl === '/api/config/page_config') {
+                window.__pageConfigFetchCount += 1;
+                return jsonResponse({
+                    success: true,
+                    lanlan_name: 'LanLan',
+                    master_name: '',
+                    master_profile_name: '',
+                    master_nickname: '',
+                    master_display_name: '',
+                    autostart_csrf_token: 'fresh-token',
+                    model_path: '',
+                    model_type: 'live2d',
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
                     },
                 });
-            };
-
-            window.fetch = async function(url, options) {
-                const requestUrl = String(url);
-                const requestOptions = options || {};
-                const method = String(requestOptions.method || 'GET').toUpperCase();
-                const headers = requestOptions.headers || {};
-                const csrfToken = headers['X-CSRF-Token'] || headers['x-csrf-token'] || '';
-                let body = null;
-                if (typeof requestOptions.body === 'string' && requestOptions.body) {
-                    body = JSON.parse(requestOptions.body);
-                }
-
-                if (method !== 'GET' && method !== 'HEAD') {
-                    window.__mutationTokens.push(csrfToken);
-                }
-
-                if (requestUrl === '/api/config/page_config') {
-                    window.__pageConfigFetchCount += 1;
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                if (csrfToken !== 'fresh-token') {
                     return jsonResponse({
-                        success: true,
-                        lanlan_name: 'LanLan',
-                        master_name: '',
-                        master_profile_name: '',
-                        master_nickname: '',
-                        master_display_name: '',
-                        autostart_csrf_token: 'fresh-token',
-                        model_path: '',
-                        model_type: 'live2d',
-                    });
+                        ok: false,
+                        error_code: 'csrf_validation_failed',
+                        error: 'Request could not be verified',
+                    }, 403);
                 }
-                if (requestUrl === '/api/tutorial-prompt/state') {
+                window.__tutorialHeartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                if (csrfToken !== 'fresh-token') {
                     return jsonResponse({
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
+                        ok: false,
+                        error_code: 'csrf_validation_failed',
+                        error: 'Request could not be verified',
+                    }, 403);
                 }
-                if (requestUrl === '/api/autostart-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                    if (csrfToken !== 'fresh-token') {
-                        return jsonResponse({
-                            ok: false,
-                            error_code: 'csrf_validation_failed',
-                            error: 'Request could not be verified',
-                        }, 403);
-                    }
-                    window.__tutorialHeartbeatBodies.push(body);
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                    if (csrfToken !== 'fresh-token') {
-                        return jsonResponse({
-                            ok: false,
-                            error_code: 'csrf_validation_failed',
-                            error: 'Request could not be verified',
-                        }, 403);
-                    }
-                    window.__autostartHeartbeatBodies.push(body);
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-
-                throw new Error('Unexpected request: ' + method + ' ' + requestUrl);
-            };
-        }
-        """
+                window.__autostartHeartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-autostart-provider.js"))
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
-    mock_page.evaluate("() => window.appTutorialPrompt.init()")
 
     mock_page.wait_for_function(
         """
@@ -1783,25 +1610,15 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
 def test_autostart_prompt_acceptance_tracks_pending_system_approval_without_failure(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-    mock_page.evaluate(
-        """
-        () => {
-            window.safeT = function(key, fallback) {
-                return typeof fallback === 'string' ? fallback : key;
-            };
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_common_dialogs=True,
+        setup_js="""
             window.__toastMessages = [];
             window.showStatusToast = function(message) {
                 window.__toastMessages.push(String(message));
             };
             window.__autostartDecisionBodies = [];
-            window.nekoLocalMutationSecurity = {
-                getMutationHeaders: async function() {
-                    return { 'X-CSRF-Token': 'test-token' };
-                },
-            };
             window.nekoAutostartProvider = {
                 getStatus: async function() {
                     return {
@@ -1835,106 +1652,82 @@ def test_autostart_prompt_acceptance_tracks_pending_system_approval_without_fail
                     return false;
                 },
             };
-
-            const jsonResponse = function(body, status) {
-                return new Response(JSON.stringify(body), {
-                    status: status || 200,
-                    headers: {
-                        'Content-Type': 'application/json',
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
                     },
                 });
-            };
-
-            window.fetch = async function(url, options) {
-                const requestUrl = String(url);
-                const requestOptions = options || {};
-                let body = null;
-                if (typeof requestOptions.body === 'string' && requestOptions.body) {
-                    body = JSON.parse(requestOptions.body);
-                }
-
-                if (requestUrl === '/api/tutorial-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: true,
-                        prompt_reason: 'usage_timeout',
-                        prompt_token: 'autostart-token',
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/shown') {
-                    return jsonResponse({
-                        ok: true,
-                        already_acknowledged: false,
-                        state: {
-                            status: 'prompted',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/decision') {
-                    window.__autostartDecisionBodies.push(body);
-                    return jsonResponse({
-                        ok: true,
-                        state: {
-                            status: 'started',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-
-                throw new Error('Unexpected request: ' + requestUrl);
-            };
-        }
-        """
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'usage_timeout',
+                    prompt_token: 'autostart-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/shown') {
+                return jsonResponse({
+                    ok: true,
+                    already_acknowledged: false,
+                    state: {
+                        status: 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/decision') {
+                window.__autostartDecisionBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        status: 'started',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "common_dialogs.js"))
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
-    mock_page.evaluate("() => window.appTutorialPrompt.init()")
 
     expect(mock_page.locator(".modal-title")).to_have_text(
         "要不要让 N.E.K.O 开机自动启动？",
@@ -1967,16 +1760,9 @@ def test_autostart_prompt_acceptance_tracks_pending_system_approval_without_fail
 def test_autostart_prompt_stays_suppressed_when_provider_reports_blocked_status(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-    mock_page.evaluate(
-        """
-        () => {
-            window.safeT = function(key, fallback) {
-                return typeof fallback === 'string' ? fallback : key;
-            };
-            window.showStatusToast = function() {};
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        setup_js="""
             window.__promptCalls = [];
             window.__requestLog = [];
             window.__autostartStatusCalls = 0;
@@ -2012,77 +1798,60 @@ def test_autostart_prompt_stays_suppressed_when_provider_reports_blocked_status(
                     return false;
                 },
             };
+        """,
+        fetch_js="""
+            window.__requestLog.push(requestUrl);
 
-            const jsonResponse = function(body) {
-                return new Response(JSON.stringify(body), {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'application/json',
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
                     },
                 });
-            };
-
-            window.fetch = async function(url, options) {
-                const requestUrl = String(url);
-                window.__requestLog.push(requestUrl);
-
-                if (requestUrl === '/api/tutorial-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: true,
-                        prompt_reason: 'usage_timeout',
-                        prompt_token: 'autostart-token',
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-
-                throw new Error('Unexpected request: ' + requestUrl);
-            };
-        }
-        """
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'usage_timeout',
+                    prompt_token: 'autostart-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
-    mock_page.evaluate("() => window.appTutorialPrompt.init()")
 
     mock_page.wait_for_function(
         """
@@ -2113,24 +1882,12 @@ def test_autostart_prompt_stays_suppressed_when_provider_reports_blocked_status(
 def test_autostart_decision_failure_retries_without_reopening_prompt(
     mock_page: Page,
 ):
-    project_root = Path(__file__).resolve().parents[2]
-
-    mock_page.set_content("<!doctype html><html><body></body></html>")
-    mock_page.evaluate(
-        """
-        () => {
-            window.safeT = function(key, fallback) {
-                return typeof fallback === 'string' ? fallback : key;
-            };
-            window.showStatusToast = function() {};
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        setup_js="""
             window.__promptTitles = [];
             window.__autostartDecisionBodies = [];
             window.__autostartHeartbeatBodies = [];
-            window.nekoLocalMutationSecurity = {
-                getMutationHeaders: async function() {
-                    return { 'X-CSRF-Token': 'test-token' };
-                },
-            };
             window.showDecisionPrompt = async function(options) {
                 window.__promptTitles.push(String(options && options.title || ''));
                 if (options && typeof options.onShown === 'function') {
@@ -2163,112 +1920,89 @@ def test_autostart_decision_failure_retries_without_reopening_prompt(
                     return false;
                 },
             };
-
-            const jsonResponse = function(body, status) {
-                return new Response(JSON.stringify(body), {
-                    status: status || 200,
-                    headers: {
-                        'Content-Type': 'application/json',
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
                     },
                 });
-            };
-
-            window.fetch = async function(url, options) {
-                const requestUrl = String(url);
-                const requestOptions = options || {};
-                let body = null;
-                if (typeof requestOptions.body === 'string' && requestOptions.body) {
-                    body = JSON.parse(requestOptions.body);
-                }
-
-                if (requestUrl === '/api/tutorial-prompt/state') {
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                window.__autostartHeartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'usage_timeout',
+                    prompt_token: 'autostart-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/shown') {
+                return jsonResponse({
+                    ok: true,
+                    already_acknowledged: false,
+                    state: {
+                        status: 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/decision') {
+                window.__autostartDecisionBodies.push(body);
+                if (window.__autostartDecisionBodies.length === 1) {
                     return jsonResponse({
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
+                        ok: false,
+                        error: 'temporary_failure',
+                    }, 500);
                 }
-                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/state') {
-                    return jsonResponse({
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                    window.__autostartHeartbeatBodies.push(body);
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: true,
-                        prompt_reason: 'usage_timeout',
-                        prompt_token: 'autostart-token',
-                        state: {
-                            status: 'observing',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/shown') {
-                    return jsonResponse({
-                        ok: true,
-                        already_acknowledged: false,
-                        state: {
-                            status: 'prompted',
-                            never_remind: false,
-                            deferred_until: 0,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-                if (requestUrl === '/api/autostart-prompt/decision') {
-                    window.__autostartDecisionBodies.push(body);
-                    if (window.__autostartDecisionBodies.length === 1) {
-                        return jsonResponse({
-                            ok: false,
-                            error: 'temporary_failure',
-                        }, 500);
-                    }
-                    return jsonResponse({
-                        ok: true,
-                        state: {
-                            status: 'deferred',
-                            never_remind: false,
-                            deferred_until: Date.now() + 60000,
-                            autostart_enabled: false,
-                        },
-                    });
-                }
-
-                throw new Error('Unexpected request: ' + requestUrl);
-            };
-        }
-        """
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        status: 'deferred',
+                        never_remind: false,
+                        deferred_until: Date.now() + 60000,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
     )
-
-    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
-    mock_page.evaluate("() => window.appTutorialPrompt.init()")
 
     mock_page.wait_for_function(
         """

@@ -7,6 +7,12 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCALES_DIR = REPO_ROOT / "static" / "locales"
 REQUIRED_KEYS = (
+    "autostartPrompt.title",
+    "autostartPrompt.message",
+    "autostartPrompt.note",
+    "autostartPrompt.startNow",
+    "autostartPrompt.later",
+    "autostartPrompt.never",
     "autostartPrompt.requiresApproval",
     "tutorialPrompt.title",
     "tutorialPrompt.message",
