@@ -171,7 +171,6 @@
                 ? getI18nText('chat.takePhotoAriaLabel', '拍照')
                 : getI18nText('chat.screenshotAriaLabel', '截图'),
             removeAttachmentButtonAriaLabel: getI18nText('chat.removePendingImage', '移除图片'),
-            streamingStatusLabel: getI18nText('chat.messageStreaming', '生成中'),
             failedStatusLabel: getI18nText('chat.messageFailed', '发送失败'),
             inputHint: getI18nText('chat.reactWindowInputHint', 'Enter 发送，Shift + Enter 换行')
         };
