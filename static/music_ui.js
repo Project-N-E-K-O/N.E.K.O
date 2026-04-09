@@ -411,6 +411,18 @@
             `;
         } else {
             musicBar.classList.remove('fading-out');
+
+            // Relocate musicBar if a new mount target has appeared
+            let newMountTarget = document.getElementById('music-player-mount');
+            let newInsertBeforeEl = null;
+            if (!newMountTarget) {
+                newMountTarget = document.getElementById(MUSIC_CONFIG.dom.containerId);
+                newInsertBeforeEl = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
+            }
+            if (newMountTarget && musicBar.parentNode !== newMountTarget) {
+                if (newInsertBeforeEl) newMountTarget.insertBefore(musicBar, newInsertBeforeEl);
+                else newMountTarget.appendChild(musicBar);
+            }
         }
 
         // --- 2. 原地更新 UI 文本/封面 (始终执行) ---
@@ -467,7 +479,7 @@
                         url: trackInfo.url || '#',
                         title: trackInfo.name || '未知曲目',
                         description: trackInfo.artist || '未知艺术家',
-                        siteName: '🎵 Now Playing',
+                        siteName: (window.t && window.t('music.nowPlayingCard')) || '🎵 Now Playing',
                         thumbnailUrl: hasCover ? trackInfo.cover : undefined
                     }],
                     status: 'sent'
