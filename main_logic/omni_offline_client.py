@@ -493,19 +493,7 @@ class OmniOfflineClient:
                     if attempt < max_retries - 1:
                         wait_time = retry_delays[attempt]
                         logger.warning(f"OmniOfflineClient: LLM调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
-                        if self.on_status_message:
-                            now = time.monotonic()
-                            if is_rate_limit:
-                                # Rate limit: 10s 内只播报一次，避免刷屏
-                                if now - self._last_rate_limit_broadcast >= self._rate_limit_broadcast_cooldown:
-                                    await self.on_status_message(json.dumps({"code": "LLM_RETRY", "details": {"error_type": error_type, "attempt": attempt + 1, "max_retries": max_retries}}))
-                                    self._last_rate_limit_broadcast = now
-                            elif is_internal_error:
-                                # InternalServerError: 甩锅给上游，只提示一次
-                                if attempt == 0:
-                                    await self.on_status_message(json.dumps({"code": "LLM_UPSTREAM_ERROR"}))
-                            else:
-                                await self.on_status_message(json.dumps({"code": "LLM_RETRY", "details": {"error_type": error_type, "attempt": attempt + 1, "max_retries": max_retries}}))
+                        # 前3次重试不通知前端，仅在最终失败时发送
                         await asyncio.sleep(wait_time)
                         continue
                     else:
