@@ -2464,7 +2464,7 @@ class ConfigManager:
                     logger.debug(f"成功加载workshop配置: {config}")
                     return config
             else:
-                # 配置不存在时进行一次带锁初始化，避免并发/密集调用下重复创建默认配置
+                # 配置不存在时直接返回默认值，避免只读查询链路隐式写入配置文件。
                 with self._workshop_config_lock:
                     if os.path.exists(config_path):
                         with open(config_path, 'r', encoding='utf-8') as f:
@@ -2476,8 +2476,7 @@ class ConfigManager:
                         "default_workshop_folder": str(self.workshop_dir),
                         "auto_create_folder": True
                     }
-                    self.save_workshop_config(default_config)
-                    logger.info(f"创建默认workshop配置: {default_config}")
+                    logger.debug(f"workshop配置不存在，返回默认配置: {default_config}")
                     return default_config
         except Exception as e:
             error_msg = f"加载workshop配置失败: {e}"

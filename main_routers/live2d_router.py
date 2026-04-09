@@ -13,6 +13,10 @@ Handles Live2D model-related endpoints including:
 import os
 import json
 import pathlib
+import hashlib
+from copy import deepcopy
+from pathlib import Path
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Request, File, UploadFile
 from fastapi.responses import JSONResponse
@@ -23,6 +27,7 @@ from utils.file_utils import atomic_write_json
 from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
 from utils.logger_config import get_module_logger
 from utils.url_utils import encode_url_path
+from utils.workshop_utils import get_workshop_path
 
 router = APIRouter(prefix="/api/live2d", tags=["live2d"])
 logger = get_module_logger(__name__, "Main")
@@ -31,6 +36,142 @@ logger = get_module_logger(__name__, "Main")
 def _normalize_model_path(path: str) -> str:
     """Strip any surrounding quotes, then encode a model URL path."""
     return encode_url_path(path.strip('"'))
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _resolve_model_url_to_file_path(path: str, config_manager) -> Path | None:
+    normalized_path = str(path or "").strip().replace("\\", "/")
+    if not normalized_path:
+        return None
+
+    decoded_path = unquote(normalized_path)
+    parts = [part for part in decoded_path.split("/") if part]
+    if not parts:
+        return None
+
+    if parts[0] == "user_live2d":
+        local_root = getattr(config_manager, "readable_live2d_dir", None) or getattr(config_manager, "live2d_dir", None)
+        return Path(local_root) / Path(*parts[1:]) if local_root and len(parts) > 1 else None
+    if parts[0] == "user_live2d_local":
+        local_root = getattr(config_manager, "live2d_dir", None)
+        return Path(local_root) / Path(*parts[1:]) if local_root and len(parts) > 1 else None
+    if parts[0] == "static":
+        return Path("static") / Path(*parts[1:]) if len(parts) > 1 else None
+    if parts[0] == "workshop":
+        workshop_root = get_workshop_path()
+        return Path(workshop_root) / Path(*parts[1:]) if workshop_root and len(parts) > 1 else None
+    return None
+
+
+def _extract_local_shadow_key(path: str) -> str:
+    decoded_path = unquote(str(path or "").strip().replace("\\", "/"))
+    parts = [part for part in decoded_path.split("/") if part]
+    if len(parts) < 3 or parts[0] not in {"user_live2d", "user_live2d_local"}:
+        return ""
+    return "/".join(parts[1:])
+
+
+def _extract_workshop_shadow_key(path: str) -> tuple[str, bool]:
+    decoded_path = unquote(str(path or "").strip().replace("\\", "/"))
+    parts = [part for part in decoded_path.split("/") if part]
+    if len(parts) < 3 or parts[0] != "workshop":
+        return "", False
+    if parts[1] == "WorkshopExport":
+        if len(parts) < 5:
+            return "", True
+        return "/".join(parts[3:]), True
+    return "/".join(parts[2:]), False
+
+
+def _dedupe_live2d_models_for_display(models: list[dict]) -> list[dict]:
+    config_manager = get_config_manager()
+    normalized_entries: list[dict] = []
+    seen_exact_paths: set[str] = set()
+    local_groups: dict[tuple[str, str], list[int]] = {}
+    workshop_actual_groups: dict[tuple[str, str], list[int]] = {}
+    workshop_export_groups: dict[tuple[str, str], list[int]] = {}
+
+    for index, model in enumerate(models or []):
+        if not isinstance(model, dict):
+            continue
+
+        normalized_model = deepcopy(model)
+        raw_path = str(normalized_model.get("path") or "").strip()
+        normalized_path = _normalize_model_path(raw_path) if raw_path else ""
+        if normalized_path and normalized_path in seen_exact_paths:
+            continue
+        if normalized_path:
+            seen_exact_paths.add(normalized_path)
+            normalized_model["path"] = normalized_path
+
+        file_path = _resolve_model_url_to_file_path(normalized_path or raw_path, config_manager)
+        fingerprint = ""
+        if file_path is not None and file_path.is_file():
+            try:
+                fingerprint = _sha256_file(file_path)
+            except Exception:
+                fingerprint = ""
+
+        local_shadow_key = _extract_local_shadow_key(normalized_path or raw_path)
+        workshop_shadow_key, is_workshop_export = _extract_workshop_shadow_key(normalized_path or raw_path)
+
+        normalized_entries.append(
+            {
+                "model": normalized_model,
+                "local_shadow_key": local_shadow_key,
+                "workshop_shadow_key": workshop_shadow_key,
+                "is_workshop_export": is_workshop_export,
+                "fingerprint": fingerprint,
+                "source_priority": 0 if local_shadow_key and str(normalized_model.get("source") or "") == "documents" else 1,
+            }
+        )
+        entry_index = len(normalized_entries) - 1
+
+        if local_shadow_key and fingerprint:
+            local_groups.setdefault((local_shadow_key, fingerprint), []).append(entry_index)
+        if workshop_shadow_key and fingerprint:
+            target_groups = workshop_export_groups if is_workshop_export else workshop_actual_groups
+            target_groups.setdefault((workshop_shadow_key, fingerprint), []).append(entry_index)
+
+    filtered_indexes = set(range(len(normalized_entries)))
+
+    for group_indexes in local_groups.values():
+        if len(group_indexes) <= 1:
+            continue
+        best_index = min(
+            group_indexes,
+            key=lambda idx: (
+                normalized_entries[idx]["source_priority"],
+                idx,
+            ),
+        )
+        for group_index in group_indexes:
+            if group_index != best_index:
+                filtered_indexes.discard(group_index)
+
+    for shadow_group_key, export_indexes in workshop_export_groups.items():
+        actual_indexes = workshop_actual_groups.get(shadow_group_key) or []
+        if actual_indexes:
+            for export_index in export_indexes:
+                filtered_indexes.discard(export_index)
+            continue
+        if len(export_indexes) <= 1:
+            continue
+        for export_index in export_indexes[1:]:
+            filtered_indexes.discard(export_index)
+
+    return [
+        normalized_entries[index]["model"]
+        for index in range(len(normalized_entries))
+        if index in filtered_indexes
+    ]
 
 
 def _upsert_model(models: list, model_name: str, item_id: str, path: str, source: str = 'steam_workshop') -> None:
@@ -133,6 +274,8 @@ async def get_live2d_models(simple: bool = False):
                                     _upsert_model(models, model_name, item_id, path_value)
         except Exception as e:
             logger.error(f"获取创意工坊模型时出错: {e}")
+
+        models = _dedupe_live2d_models_for_display(models)
         
         if simple:
             # 只返回模型名称列表
@@ -1349,5 +1492,4 @@ def get_user_models():
     except Exception as e:
         logger.error(f"获取用户模型列表失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
-
 

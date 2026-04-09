@@ -731,6 +731,7 @@ from main_routers import ( # noqa
     mmd_router,
     workshop_router,
     memory_router,
+    cloudsave_router,
     pages_router,
     websocket_router,
     agent_router,
@@ -792,6 +793,7 @@ app.include_router(vrm_router)
 app.include_router(mmd_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
+app.include_router(cloudsave_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
 app.include_router(websocket_router)
 app.include_router(agent_router)

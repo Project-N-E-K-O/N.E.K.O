@@ -2936,6 +2936,73 @@ function openVoiceClone(lanlanName) {
     }
 }
 
+function getPreferredCloudsaveCharacterName() {
+    if (typeof window._currentCatgirl === 'string' && window._currentCatgirl.trim()) {
+        return window._currentCatgirl.trim();
+    }
+    return '';
+}
+
+function getCurrentUiLanguage() {
+    if (window.i18n && typeof window.i18n.language === 'string' && window.i18n.language.trim()) {
+        return window.i18n.language.trim();
+    }
+
+    const savedLanguage = localStorage.getItem('i18nextLng');
+    if (typeof savedLanguage === 'string' && savedLanguage.trim()) {
+        return savedLanguage.trim();
+    }
+
+    return '';
+}
+
+function buildCloudsaveManagerUrl() {
+    const preferredCharacterName = getPreferredCloudsaveCharacterName();
+    const currentUiLanguage = getCurrentUiLanguage();
+    const query = new URLSearchParams();
+
+    if (preferredCharacterName) {
+        query.set('lanlan_name', preferredCharacterName);
+    }
+    if (currentUiLanguage) {
+        query.set('ui_lang', currentUiLanguage);
+    }
+
+    const queryString = query.toString();
+    return queryString ? '/cloudsave_manager?' + queryString : '/cloudsave_manager';
+}
+
+function openCloudsaveManager() {
+    const url = buildCloudsaveManagerUrl();
+    const windowName = 'neko_cloudsave_manager';
+    const width = 1180;
+    const height = 860;
+    const left = Math.max(0, Math.floor((screen.width - width) / 2));
+    const top = Math.max(0, Math.floor((screen.height - height) / 2));
+    const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+
+    const existingWindow = window._openedWindows && window._openedWindows[windowName];
+    if (existingWindow && !existingWindow.closed) {
+        try {
+            const targetUrl = new URL(url, window.location.origin).toString();
+            if (existingWindow.location.href !== targetUrl) {
+                existingWindow.location.href = targetUrl;
+            }
+            existingWindow.focus();
+            return;
+        } catch (error) {
+            console.warn('更新云存档管理窗口地址失败:', error);
+        }
+    }
+
+    const openedWindow = typeof window.openOrFocusWindow === 'function'
+        ? window.openOrFocusWindow(url, windowName, features)
+        : window.open(url, windowName, features);
+
+    if (!openedWindow) {
+        window.location.href = url;
+    }
+}
 
 
 // 解除声音注册
@@ -3188,6 +3255,11 @@ function setupPageEventListeners() {
         addCatgirlBtn.addEventListener('click', function () {
             showCatgirlForm(null);
         });
+    }
+
+    const openCloudsaveManagerBtn = document.getElementById('open-cloudsave-manager-btn');
+    if (openCloudsaveManagerBtn) {
+        openCloudsaveManagerBtn.addEventListener('click', openCloudsaveManager);
     }
 
     // 导入角色卡按钮

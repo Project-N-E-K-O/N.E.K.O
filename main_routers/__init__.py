@@ -12,6 +12,7 @@ from .vrm_router import router as vrm_router
 from .mmd_router import router as mmd_router
 from .workshop_router import router as workshop_router
 from .memory_router import router as memory_router
+from .cloudsave_router import router as cloudsave_router
 from .pages_router import router as pages_router
 from .websocket_router import router as websocket_router
 from .agent_router import router as agent_router
@@ -25,6 +26,7 @@ __all__ = [
     'mmd_router',
     'workshop_router',
     'memory_router',
+    'cloudsave_router',
     'pages_router',
     'websocket_router',
     'agent_router',

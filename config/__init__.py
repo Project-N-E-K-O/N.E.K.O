@@ -68,6 +68,12 @@ def get_character_reserved_fields() -> tuple[str, ...]:
 RESERVED_FIELD_SCHEMA = {
     "voice_id": str,
     "system_prompt": str,
+    "character_origin": {
+        "source": str,
+        "source_id": str,
+        "display_name": str,
+        "model_ref": str,
+    },
     "avatar": {
         "model_type": str,
         "asset_source": str,

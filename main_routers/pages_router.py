@@ -105,6 +105,12 @@ async def steam_workshop_manager_page(request: Request, lanlan_name: str = ""):
     return templates.TemplateResponse("templates/steam_workshop_manager.html", {"request": request, "lanlan_name": lanlan_name})
 
 
+@router.get('/cloudsave_manager', response_class=HTMLResponse)
+async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
+    templates = get_templates()
+    return templates.TemplateResponse("templates/cloudsave_manager.html", {"request": request, "lanlan_name": lanlan_name})
+
+
 @router.get('/memory_browser', response_class=HTMLResponse)
 async def memory_browser(request: Request):
     templates = get_templates()

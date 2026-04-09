@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -15,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from config import DEFAULT_CONFIG_DATA
+from config import CHARACTER_RESERVED_FIELDS, DEFAULT_CONFIG_DATA
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.file_utils import atomic_write_json
 
@@ -45,6 +46,29 @@ SENSITIVE_TOKENS = (
     "token",
     "sk-",
 )
+SENSITIVE_KEY_NAMES = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "authorization",
+        "cookie",
+        "cookies",
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "session_token",
+        "auth_token",
+        "bearer_token",
+        "sessionid",
+        "session_id",
+    }
+)
+SENSITIVE_VALUE_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9._-]{12,}\b"),
+    re.compile(r"\bbearer\s+[A-Za-z0-9._-]{12,}\b", re.IGNORECASE),
+    re.compile(r"\b(?:api[_\-\s]*key|authorization|cookie|token)\s*[:=]\s*[^\s]{8,}\b", re.IGNORECASE),
+)
 
 GLOBAL_CONVERSATION_KEY = "__global_conversation__"
 MANAGED_MEMORY_FILENAMES = (
@@ -55,10 +79,12 @@ MANAGED_MEMORY_FILENAMES = (
     "persona.json",
     "persona_corrections.json",
     "reflections.json",
+    "reflections_archive.json",
     "surfaced.json",
     "time_indexed.db",
 )
 MANAGED_CLOUDSAVE_PREFIXES = (
+    "characters/",
     "catalog/",
     "profiles/",
     "bindings/",
@@ -120,8 +146,25 @@ class MaintenanceModeError(RuntimeError):
         super().__init__(detail)
 
 
+class CloudsaveOperationError(RuntimeError):
+    """Raised when a single-character cloudsave operation cannot proceed safely."""
+
+    def __init__(self, code: str, message: str, *, character_name: str = ""):
+        self.code = str(code or "CLOUDSAVE_OPERATION_FAILED")
+        self.character_name = str(character_name or "")
+        super().__init__(message)
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def is_cloudsave_provider_available(config_manager) -> bool:
+    """Centralize provider availability so future remote probes only need one hook."""
+    override = getattr(config_manager, "cloudsave_provider_available", None)
+    if override is None:
+        return True
+    return bool(override)
 
 
 def build_default_cloudsave_manifest(*, client_id: str = "") -> dict[str, Any]:
@@ -1131,8 +1174,6 @@ def _derive_binding_asset_source(*, model_ref: str, stored_asset_source: str, as
     if normalized_source in {"manual_external", "external"}:
         return "manual_external"
     if normalized_source in {"local_imported", "local"}:
-        if normalized_ref.startswith("/static/") or (normalized_ref and not normalized_ref.startswith("/")):
-            return "builtin"
         return "local_imported"
     if normalized_ref.startswith(("http://", "https://")):
         return "manual_external"
@@ -1170,6 +1211,347 @@ def _derive_binding_asset_display_name(model_ref: str) -> str:
     return parts[-1] if parts else normalized_ref
 
 
+def _collect_binding_live2d_roots(config_manager) -> list[Path]:
+    roots: list[Path] = []
+    seen_roots: set[str] = set()
+    for candidate in (
+        getattr(config_manager, "readable_live2d_dir", None),
+        getattr(config_manager, "live2d_dir", None),
+    ):
+        if not candidate:
+            continue
+        normalized_root = os.path.normcase(os.path.normpath(str(candidate)))
+        if normalized_root in seen_roots:
+            continue
+        seen_roots.add(normalized_root)
+        roots.append(Path(candidate))
+    return roots
+
+
+def _collect_binding_workshop_roots(config_manager) -> list[Path]:
+    roots: list[Path] = []
+    seen_roots: set[str] = set()
+
+    get_workshop_path = getattr(config_manager, "get_workshop_path", None)
+    if callable(get_workshop_path):
+        try:
+            configured_workshop_root = get_workshop_path()
+        except Exception:
+            configured_workshop_root = ""
+        if configured_workshop_root:
+            normalized_root = os.path.normcase(os.path.normpath(str(configured_workshop_root)))
+            if normalized_root not in seen_roots:
+                seen_roots.add(normalized_root)
+                roots.append(Path(configured_workshop_root))
+
+    fallback_workshop_root = getattr(config_manager, "workshop_dir", None)
+    if fallback_workshop_root:
+        normalized_root = os.path.normcase(os.path.normpath(str(fallback_workshop_root)))
+        if normalized_root not in seen_roots:
+            seen_roots.add(normalized_root)
+            roots.append(Path(fallback_workshop_root))
+
+    return roots
+
+
+def _normalize_workshop_character_model_ref(model_type: str, payload: dict[str, Any]) -> str:
+    normalized_type = str(model_type or "").strip().lower()
+    if normalized_type != "live2d":
+        return ""
+
+    live2d_name = str(payload.get("live2d") or "").strip().replace("\\", "/")
+    if not live2d_name:
+        return ""
+    if live2d_name.endswith(".model3.json") or "/" in live2d_name:
+        return live2d_name
+    return f"{live2d_name}/{live2d_name}.model3.json"
+
+
+def _build_character_origin_match_payload(payload: Any) -> dict[str, Any]:
+    normalized_payload = _normalize_catgirl_payload(payload)
+    if normalized_payload is None:
+        return {}
+
+    skip_keys = {"档案名", *CHARACTER_RESERVED_FIELDS}
+    comparable_payload: dict[str, Any] = {}
+    for key, value in normalized_payload.items():
+        if key in skip_keys or value is None:
+            continue
+        comparable_payload[key] = deepcopy(value)
+    return comparable_payload
+
+
+def _build_character_origin_profile_fingerprint(payload: Any) -> str:
+    comparable_payload = _build_character_origin_match_payload(payload)
+    if not comparable_payload:
+        return ""
+
+    fingerprint_payload = {
+        "schema_version": 1,
+        "character_payload": comparable_payload,
+    }
+    return "sha256:" + _sha256_bytes(_json_canonical_dumps(fingerprint_payload).encode("utf-8"))
+
+
+def _collect_workshop_character_origin_candidates(config_manager) -> dict[str, list[dict[str, Any]]]:
+    candidates_by_name: dict[str, list[dict[str, Any]]] = {}
+    seen_entries: set[tuple[str, str, str, str, str]] = set()
+
+    for workshop_root in _collect_binding_workshop_roots(config_manager):
+        if not workshop_root.is_dir():
+            continue
+        try:
+            item_roots = sorted(child for child in workshop_root.iterdir() if child.is_dir())
+        except Exception:
+            continue
+
+        for item_root in item_roots:
+            item_id = str(item_root.name or "").strip()
+            if not item_id:
+                continue
+            try:
+                chara_paths = sorted(path for path in item_root.rglob("*.chara.json") if path.is_file())
+            except Exception:
+                continue
+
+            for chara_path in chara_paths:
+                payload = _load_json_if_exists(chara_path)
+                if not isinstance(payload, dict):
+                    continue
+
+                character_name = str(payload.get("档案名") or payload.get("name") or "").strip()
+                if not character_name:
+                    continue
+
+                model_type = str(payload.get("model_type") or "live2d").strip().lower() or "live2d"
+                model_ref = _normalize_workshop_character_model_ref(model_type, payload)
+                origin_profile_fingerprint = _build_character_origin_profile_fingerprint(payload)
+                dedupe_key = (character_name, item_id, model_type, model_ref, origin_profile_fingerprint)
+                if dedupe_key in seen_entries:
+                    continue
+                seen_entries.add(dedupe_key)
+
+                candidates_by_name.setdefault(character_name, []).append(
+                    {
+                        "character_name": character_name,
+                        "origin_source": "steam_workshop",
+                        "origin_source_id": item_id,
+                        "model_type": model_type,
+                        "origin_model_ref": model_ref,
+                        "origin_display_name": _derive_binding_asset_display_name(model_ref),
+                        "origin_profile_fingerprint": origin_profile_fingerprint,
+                    }
+                )
+
+    return candidates_by_name
+
+
+def _select_workshop_character_origin_candidate(
+    candidates: list[dict[str, Any]],
+    *,
+    model_type: str,
+    origin_source_id_hint: str = "",
+    origin_model_ref_hint: str = "",
+    origin_profile_fingerprint_hint: str = "",
+) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+
+    selected_pool = [
+        candidate
+        for candidate in candidates
+        if not candidate.get("model_type") or str(candidate.get("model_type") or "") == str(model_type or "")
+    ] or list(candidates)
+
+    origin_source_id_hint = str(origin_source_id_hint or "").strip()
+    if origin_source_id_hint:
+        id_matches = [
+            candidate
+            for candidate in selected_pool
+            if str(candidate.get("origin_source_id") or "").strip() == origin_source_id_hint
+        ]
+        if len(id_matches) == 1:
+            return deepcopy(id_matches[0])
+        if id_matches:
+            selected_pool = id_matches
+
+    origin_model_ref_hint = str(origin_model_ref_hint or "").strip().replace("\\", "/")
+    if origin_model_ref_hint:
+        exact_ref_matches = [
+            candidate
+            for candidate in selected_pool
+            if str(candidate.get("origin_model_ref") or "").strip().replace("\\", "/") == origin_model_ref_hint
+        ]
+        if len(exact_ref_matches) == 1:
+            return deepcopy(exact_ref_matches[0])
+        if exact_ref_matches:
+            selected_pool = exact_ref_matches
+
+    origin_profile_fingerprint_hint = str(origin_profile_fingerprint_hint or "").strip()
+    if origin_profile_fingerprint_hint:
+        fingerprint_matches = [
+            candidate
+            for candidate in selected_pool
+            if str(candidate.get("origin_profile_fingerprint") or "").strip() == origin_profile_fingerprint_hint
+        ]
+        if len(fingerprint_matches) == 1:
+            return deepcopy(fingerprint_matches[0])
+
+    return None
+
+
+def _derive_character_origin_metadata(
+    config_manager,
+    *,
+    character_name: str,
+    character_payload: dict[str, Any],
+    model_type: str,
+    workshop_origin_index: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, str]:
+    from utils.config_manager import get_reserved
+
+    origin_source = ""
+    origin_source_id = ""
+    origin_model_ref = ""
+    origin_display_name = ""
+
+    origin_source = str(get_reserved(character_payload, "character_origin", "source", default="") or "").strip()
+    origin_source_id = str(get_reserved(character_payload, "character_origin", "source_id", default="") or "").strip()
+    origin_model_ref = str(get_reserved(character_payload, "character_origin", "model_ref", default="") or "").strip().replace("\\", "/")
+    origin_display_name = str(get_reserved(character_payload, "character_origin", "display_name", default="") or "").strip()
+    origin_profile_fingerprint = _build_character_origin_profile_fingerprint(character_payload)
+
+    candidates = (workshop_origin_index or {}).get(character_name) or []
+    selected_candidate = _select_workshop_character_origin_candidate(
+        candidates,
+        model_type=model_type,
+        origin_source_id_hint=origin_source_id,
+        origin_model_ref_hint=origin_model_ref,
+        origin_profile_fingerprint_hint=origin_profile_fingerprint,
+    )
+    if selected_candidate is not None:
+        if not origin_source:
+            origin_source = str(selected_candidate.get("origin_source") or "")
+        if not origin_source_id:
+            origin_source_id = str(selected_candidate.get("origin_source_id") or "")
+        if not origin_model_ref:
+            origin_model_ref = str(selected_candidate.get("origin_model_ref") or "")
+        if not origin_display_name:
+            origin_display_name = str(selected_candidate.get("origin_display_name") or "")
+
+    return {
+        "origin_source": origin_source,
+        "origin_source_id": origin_source_id,
+        "origin_model_ref": origin_model_ref,
+        "origin_display_name": origin_display_name,
+    }
+
+
+def _build_live2d_model_ref_hints(model_ref: str) -> tuple[str, str, str, str]:
+    normalized_ref = str(model_ref or "").strip().replace("\\", "/")
+    normalized_suffix = normalized_ref.lstrip("/")
+    if normalized_ref.startswith("/workshop/"):
+        parts = [part for part in normalized_ref.split("/") if part]
+        if len(parts) >= 3:
+            normalized_suffix = "/".join(parts[2:])
+
+    relative_parent = ""
+    if normalized_suffix:
+        relative_parent = Path(normalized_suffix).parent.as_posix()
+        if relative_parent == ".":
+            relative_parent = ""
+
+    expected_filename = Path(normalized_ref).name if normalized_ref else ""
+    expected_folder_name = ""
+    expected_model_name = ""
+    if normalized_ref.endswith(".model3.json"):
+        parts = [part for part in normalized_ref.split("/") if part]
+        if len(parts) >= 2:
+            expected_folder_name = parts[-2]
+        expected_model_name = Path(expected_filename).stem.replace(".model3", "")
+    elif normalized_ref:
+        expected_model_name = Path(normalized_ref).stem
+
+    return normalized_suffix, relative_parent, expected_filename, expected_folder_name or expected_model_name
+
+
+def _rank_live2d_model3_path(
+    candidate_path: Path,
+    *,
+    candidate_root: Path,
+    normalized_suffix: str,
+    relative_parent: str,
+    expected_filename: str,
+    expected_folder_name: str,
+) -> tuple[int, int, str, Path]:
+    try:
+        relative_path = candidate_path.relative_to(candidate_root).as_posix()
+    except Exception:
+        relative_path = candidate_path.name
+
+    expected_model_name = Path(expected_filename).stem.replace(".model3", "") if expected_filename else ""
+    candidate_model_name = candidate_path.stem.replace(".model3", "")
+
+    score = 0
+    if normalized_suffix and relative_path == normalized_suffix:
+        score += 100
+    elif normalized_suffix and relative_path.endswith(normalized_suffix):
+        score += 80
+    if relative_parent and relative_path.startswith(f"{relative_parent}/"):
+        score += 20
+    if expected_filename and candidate_path.name == expected_filename:
+        score += 40
+    if expected_folder_name and candidate_path.parent.name == expected_folder_name:
+        score += 20
+    if expected_model_name and candidate_model_name == expected_model_name:
+        score += 10
+
+    return (score, -len(relative_path.split("/")), relative_path, candidate_path)
+
+
+def _is_path_within(candidate_path: Path, base_path: Path) -> bool:
+    try:
+        candidate_real = os.path.normcase(os.path.realpath(str(candidate_path)))
+        base_real = os.path.normcase(os.path.realpath(str(base_path)))
+        return os.path.commonpath([candidate_real, base_real]) == base_real
+    except Exception:
+        return False
+
+
+def _infer_binding_source_from_resolved_path(
+    config_manager,
+    *,
+    resolved_path: Path | None,
+    asset_source: str,
+    asset_source_id: str,
+) -> tuple[str, str]:
+    if resolved_path is None or not resolved_path.is_file():
+        return asset_source, asset_source_id
+
+    for workshop_root in _collect_binding_workshop_roots(config_manager):
+        if not _is_path_within(resolved_path, workshop_root):
+            continue
+        inferred_source_id = str(asset_source_id or "").strip()
+        if not inferred_source_id:
+            try:
+                relative_parts = resolved_path.relative_to(workshop_root).parts
+            except Exception:
+                relative_parts = ()
+            if relative_parts:
+                inferred_source_id = str(relative_parts[0])
+        return "steam_workshop", inferred_source_id
+
+    for live2d_root in _collect_binding_live2d_roots(config_manager):
+        if _is_path_within(resolved_path, live2d_root):
+            return "local_imported", ""
+
+    static_root = Path(config_manager.project_root) / "static"
+    if _is_path_within(resolved_path, static_root):
+        return "builtin", ""
+
+    return asset_source, asset_source_id
+
+
 def _resolve_binding_file_path(
     config_manager,
     *,
@@ -1183,7 +1565,117 @@ def _resolve_binding_file_path(
         return None
 
     candidates: list[Path] = []
+    live2d_roots = _collect_binding_live2d_roots(config_manager)
     readable_live2d_dir = getattr(config_manager, "readable_live2d_dir", None)
+    workshop_roots = _collect_binding_workshop_roots(config_manager)
+
+    def _resolve_workshop_live2d_fallback() -> Path | None:
+        if model_type != "live2d" or asset_source != "steam_workshop" or not asset_source_id:
+            return None
+
+        normalized_suffix, relative_parent, expected_filename, expected_folder_name = _build_live2d_model_ref_hints(normalized_ref)
+
+        ranked_candidates: list[tuple[int, int, str, Path]] = []
+        for workshop_root in workshop_roots:
+            item_root = workshop_root / asset_source_id
+            if not item_root.is_dir():
+                continue
+            try:
+                discovered_files = sorted(path for path in item_root.rglob("*.model3.json") if path.is_file())
+            except Exception:
+                continue
+
+            for discovered_path in discovered_files:
+                try:
+                    relative_path = discovered_path.relative_to(item_root).as_posix()
+                except Exception:
+                    relative_path = discovered_path.name
+
+                ranked_candidates.append(
+                    _rank_live2d_model3_path(
+                        discovered_path,
+                        candidate_root=item_root,
+                        normalized_suffix=normalized_suffix,
+                        relative_parent=relative_parent,
+                        expected_filename=expected_filename,
+                        expected_folder_name=expected_folder_name,
+                    )
+                )
+
+        if not ranked_candidates:
+            return None
+
+        ranked_candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
+        return ranked_candidates[0][3]
+
+    def _resolve_local_live2d_fallback() -> Path | None:
+        if model_type != "live2d" or normalized_ref.startswith("/"):
+            return None
+
+        normalized_suffix, relative_parent, expected_filename, expected_folder_name = _build_live2d_model_ref_hints(normalized_ref)
+        ranked_candidates: list[tuple[int, int, str, Path]] = []
+
+        def _append_candidates(search_root: Path, candidate_base: Path) -> None:
+            if not candidate_base.is_dir():
+                return
+            try:
+                discovered_files = sorted(path for path in candidate_base.rglob("*.model3.json") if path.is_file())
+            except Exception:
+                return
+            for discovered_path in discovered_files:
+                ranked_candidates.append(
+                    _rank_live2d_model3_path(
+                        discovered_path,
+                        candidate_root=search_root,
+                        normalized_suffix=normalized_suffix,
+                        relative_parent=relative_parent,
+                        expected_filename=expected_filename,
+                        expected_folder_name=expected_folder_name,
+                    )
+                )
+
+        for live2d_root in live2d_roots:
+            candidate_dirs: list[Path] = []
+            if relative_parent:
+                candidate_dirs.append(live2d_root / relative_parent)
+            if expected_folder_name:
+                candidate_dirs.append(live2d_root / expected_folder_name)
+
+            seen_candidate_dirs: set[str] = set()
+            for candidate_dir in candidate_dirs:
+                normalized_dir = os.path.normcase(os.path.normpath(str(candidate_dir)))
+                if normalized_dir in seen_candidate_dirs:
+                    continue
+                seen_candidate_dirs.add(normalized_dir)
+                _append_candidates(live2d_root, candidate_dir)
+
+        for workshop_root in workshop_roots:
+            try:
+                item_roots = sorted(child for child in workshop_root.iterdir() if child.is_dir())
+            except Exception:
+                continue
+            for item_root in item_roots:
+                candidate_dirs: list[Path] = []
+                if relative_parent:
+                    candidate_dirs.append(item_root / relative_parent)
+                if expected_folder_name:
+                    candidate_dirs.append(item_root / expected_folder_name)
+                if not candidate_dirs:
+                    candidate_dirs.append(item_root)
+
+                seen_candidate_dirs: set[str] = set()
+                for candidate_dir in candidate_dirs:
+                    normalized_dir = os.path.normcase(os.path.normpath(str(candidate_dir)))
+                    if normalized_dir in seen_candidate_dirs:
+                        continue
+                    seen_candidate_dirs.add(normalized_dir)
+                    _append_candidates(item_root, candidate_dir)
+
+        if not ranked_candidates:
+            return None
+
+        ranked_candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
+        return ranked_candidates[0][3]
 
     if model_type == "live2d":
         if normalized_ref.startswith("/user_live2d/"):
@@ -1194,11 +1686,14 @@ def _resolve_binding_file_path(
         elif normalized_ref.startswith("/user_live2d_local/"):
             candidates.append(Path(config_manager.live2d_dir) / normalized_ref[len("/user_live2d_local/"):])
         elif normalized_ref.startswith("/workshop/"):
-            candidates.append(Path(config_manager.workshop_dir) / "/".join(normalized_ref.split("/")[2:]))
+            relative_workshop_path = "/".join(normalized_ref.split("/")[2:])
+            for workshop_root in workshop_roots:
+                candidates.append(workshop_root / relative_workshop_path)
         else:
             if asset_source == "steam_workshop" and asset_source_id:
-                candidates.append(Path(config_manager.workshop_dir) / asset_source_id / normalized_ref)
-                candidates.append(Path(config_manager.workshop_dir) / asset_source_id / Path(normalized_ref).name)
+                for workshop_root in workshop_roots:
+                    candidates.append(workshop_root / asset_source_id / normalized_ref)
+                    candidates.append(workshop_root / asset_source_id / Path(normalized_ref).name)
             if asset_source == "local_imported":
                 if readable_live2d_dir is not None:
                     candidates.append(Path(readable_live2d_dir) / normalized_ref)
@@ -1210,18 +1705,29 @@ def _resolve_binding_file_path(
         elif normalized_ref.startswith("/static/vrm/"):
             candidates.append(Path(config_manager.project_root) / "static" / "vrm" / normalized_ref[len("/static/vrm/"):])
         elif normalized_ref.startswith("/workshop/"):
-            candidates.append(Path(config_manager.workshop_dir) / "/".join(normalized_ref.split("/")[2:]))
+            relative_workshop_path = "/".join(normalized_ref.split("/")[2:])
+            for workshop_root in workshop_roots:
+                candidates.append(workshop_root / relative_workshop_path)
     elif model_type == "mmd":
         if normalized_ref.startswith("/user_mmd/"):
             candidates.append(Path(config_manager.mmd_dir) / normalized_ref[len("/user_mmd/"):])
         elif normalized_ref.startswith("/static/mmd/"):
             candidates.append(Path(config_manager.project_root) / "static" / "mmd" / normalized_ref[len("/static/mmd/"):])
         elif normalized_ref.startswith("/workshop/"):
-            candidates.append(Path(config_manager.workshop_dir) / "/".join(normalized_ref.split("/")[2:]))
+            relative_workshop_path = "/".join(normalized_ref.split("/")[2:])
+            for workshop_root in workshop_roots:
+                candidates.append(workshop_root / relative_workshop_path)
 
     for candidate in candidates:
         if candidate.is_file():
             return candidate
+
+    fallback_candidate = _resolve_workshop_live2d_fallback()
+    if fallback_candidate is not None and fallback_candidate.is_file():
+        return fallback_candidate
+    fallback_candidate = _resolve_local_live2d_fallback()
+    if fallback_candidate is not None and fallback_candidate.is_file():
+        return fallback_candidate
     return None
 
 
@@ -1255,7 +1761,13 @@ def _derive_binding_experience_overrides(character_payload: dict[str, Any]) -> d
     }
 
 
-def _derive_character_binding_summary(config_manager, character_name: str, character_payload: dict[str, Any]) -> dict[str, Any]:
+def _derive_character_binding_summary(
+    config_manager,
+    character_name: str,
+    character_payload: dict[str, Any],
+    *,
+    workshop_origin_index: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
     from utils.config_manager import get_reserved
 
     binding_model_type, model_ref = _derive_binding_model_reference(character_payload)
@@ -1280,10 +1792,23 @@ def _derive_character_binding_summary(config_manager, character_name: str, chara
         asset_source=asset_source,
         asset_source_id=asset_source_id,
     )
+    asset_source, asset_source_id = _infer_binding_source_from_resolved_path(
+        config_manager,
+        resolved_path=resolved_path,
+        asset_source=asset_source,
+        asset_source_id=asset_source_id,
+    )
     asset_state = _derive_binding_asset_state(
         resolved_path=resolved_path,
         asset_source=asset_source,
         model_ref=model_ref,
+    )
+    origin_payload = _derive_character_origin_metadata(
+        config_manager,
+        character_name=character_name,
+        character_payload=character_payload,
+        model_type=binding_model_type,
+        workshop_origin_index=workshop_origin_index,
     )
     asset_fingerprint = _sha256_file(resolved_path) if resolved_path is not None else ""
 
@@ -1300,6 +1825,10 @@ def _derive_character_binding_summary(config_manager, character_name: str, chara
         "asset_display_name": _derive_binding_asset_display_name(model_ref),
         "asset_fingerprint": asset_fingerprint,
         "asset_state": asset_state,
+        "origin_source": str(origin_payload.get("origin_source") or ""),
+        "origin_source_id": str(origin_payload.get("origin_source_id") or ""),
+        "origin_model_ref": str(origin_payload.get("origin_model_ref") or ""),
+        "origin_display_name": str(origin_payload.get("origin_display_name") or ""),
         "fallback_model_ref": fallback_model_ref,
         "last_verified_at": _utc_now_iso() if resolved_path is not None else "",
         "experience_overrides": _derive_binding_experience_overrides(character_payload),
@@ -1328,6 +1857,10 @@ def _build_catalog_index_payload(
                 "asset_source": binding_payloads.get(name, {}).get("asset_source", ""),
                 "asset_source_id": binding_payloads.get(name, {}).get("asset_source_id", ""),
                 "asset_state": binding_payloads.get(name, {}).get("asset_state", ""),
+                "origin_source": binding_payloads.get(name, {}).get("origin_source", ""),
+                "origin_source_id": binding_payloads.get(name, {}).get("origin_source_id", ""),
+                "origin_model_ref": binding_payloads.get(name, {}).get("origin_model_ref", ""),
+                "origin_display_name": binding_payloads.get(name, {}).get("origin_display_name", ""),
                 "asset_display_name": binding_payloads.get(name, {}).get("asset_display_name", ""),
                 "asset_fingerprint": binding_payloads.get(name, {}).get("asset_fingerprint", ""),
                 "display_name": str((catgirls_payload.get(name) or {}).get("档案名") or name),
@@ -1389,6 +1922,993 @@ def _build_catalog_current_character_payload(*, current_character_name: str, exp
     }
 
 
+def _iso_from_timestamp(timestamp: float | None) -> str:
+    if timestamp is None:
+        return ""
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _max_mtime_iso(paths: list[Path]) -> str:
+    latest_timestamp: float | None = None
+    for path in paths:
+        try:
+            timestamp = path.stat().st_mtime
+        except OSError:
+            continue
+        if latest_timestamp is None or timestamp > latest_timestamp:
+            latest_timestamp = timestamp
+    return _iso_from_timestamp(latest_timestamp)
+
+
+def _memory_file_hashes_from_root(root_dir: Path) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for filename in MANAGED_MEMORY_FILENAMES:
+        path = root_dir / filename
+        if path.is_file():
+            hashes[filename] = _compute_managed_memory_file_hash(path)
+    return hashes
+
+
+def _compute_managed_memory_file_hash(path: Path) -> str:
+    if path.name != "time_indexed.db" or not _looks_like_sqlite_database(path):
+        return _sha256_file(path)
+
+    temp_root = Path(tempfile.mkdtemp(prefix="cloudsave-hash-"))
+    shadow_copy_path = temp_root / path.name
+    try:
+        _run_sqlite_shadow_copy(path, shadow_copy_path)
+        return _sha256_file(shadow_copy_path)
+    except sqlite3.DatabaseError as exc:
+        logger.warning(
+            "Falling back to direct SQLite file hash for %s after shadow-copy failure: %s",
+            path,
+            exc,
+        )
+        return _sha256_file(path)
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def _stable_binding_payload_for_fingerprint(binding_payload: Any) -> dict[str, Any]:
+    if not isinstance(binding_payload, dict):
+        return {}
+    stable_keys = (
+        "character_name",
+        "model_type",
+        "asset_source",
+        "asset_source_id",
+        "model_ref",
+        "asset_display_name",
+        "fallback_model_ref",
+        "experience_overrides",
+    )
+    return {
+        key: deepcopy(binding_payload.get(key))
+        for key in stable_keys
+        if key in binding_payload
+    }
+
+
+def _build_character_payload_fingerprint(
+    *,
+    character_name: str,
+    character_payload: Any,
+    binding_payload: Any,
+    memory_hashes: dict[str, str],
+) -> str:
+    fingerprint_payload = {
+        "schema_version": 1,
+        "character_name": str(character_name or ""),
+        "character_payload": deepcopy(character_payload) if isinstance(character_payload, dict) else {},
+        "binding_payload": _stable_binding_payload_for_fingerprint(binding_payload),
+        "memory_files": dict(sorted((memory_hashes or {}).items())),
+    }
+    return "sha256:" + _sha256_bytes(_json_canonical_dumps(fingerprint_payload).encode("utf-8"))
+
+
+def _build_character_summary_warnings(*, asset_state: str, warning_scope: str) -> list[str]:
+    warnings: list[str] = []
+    if asset_state in {"import_required", "downloadable", "missing"}:
+        if warning_scope == "local":
+            warnings.append("local_resource_missing_on_this_device")
+        elif warning_scope == "cloud":
+            warnings.append("cloud_resource_may_be_missing_after_download")
+    return warnings
+
+
+def _build_character_meta_payload(
+    *,
+    character_name: str,
+    binding_payload: dict[str, Any],
+    payload_fingerprint: str,
+    sequence_number: int,
+    exported_at: str,
+    client_id: str,
+    device_id: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "character_name": character_name,
+        "payload_fingerprint": payload_fingerprint,
+        "updated_at_utc": exported_at,
+        "sequence_number": int(sequence_number),
+        "source_client_id": str(client_id or ""),
+        "source_device_id": str(device_id or ""),
+        "asset_state": str(binding_payload.get("asset_state") or ""),
+        "asset_source": str(binding_payload.get("asset_source") or ""),
+        "asset_source_id": str(binding_payload.get("asset_source_id") or ""),
+        "origin_source": str(binding_payload.get("origin_source") or ""),
+        "origin_source_id": str(binding_payload.get("origin_source_id") or ""),
+        "origin_model_ref": str(binding_payload.get("origin_model_ref") or ""),
+        "origin_display_name": str(binding_payload.get("origin_display_name") or ""),
+    }
+
+
+def _stage_single_character_cloudsave_entries(
+    config_manager,
+    stage_root: Path,
+    *,
+    character_name: str,
+    character_payload: dict[str, Any],
+    binding_payload: dict[str, Any],
+    sequence_number: int,
+    exported_at: str,
+    client_id: str,
+    device_id: str,
+) -> tuple[dict[str, Path], dict[str, Any]]:
+    staged_entries: dict[str, Path] = {}
+    object_root = f"characters/{character_name}"
+
+    memory_root = Path(config_manager.memory_dir) / character_name
+    memory_hashes: dict[str, str] = {}
+    for filename in MANAGED_MEMORY_FILENAMES:
+        source_path = memory_root / filename
+        if not source_path.is_file():
+            continue
+        relative_path = f"{object_root}/memory/{filename}"
+        staged_path = _stage_memory_file(stage_root, relative_path, source_path)
+        staged_entries[relative_path] = staged_path
+        memory_hashes[filename] = _sha256_file(staged_path)
+
+    payload_fingerprint = _build_character_payload_fingerprint(
+        character_name=character_name,
+        character_payload=character_payload,
+        binding_payload=binding_payload,
+        memory_hashes=memory_hashes,
+    )
+    meta_payload = _build_character_meta_payload(
+        character_name=character_name,
+        binding_payload=binding_payload,
+        payload_fingerprint=payload_fingerprint,
+        sequence_number=sequence_number,
+        exported_at=exported_at,
+        client_id=client_id,
+        device_id=device_id,
+    )
+
+    staged_entries[f"{object_root}/profile.json"] = _stage_json_file(
+        stage_root,
+        f"{object_root}/profile.json",
+        character_payload,
+    )
+    staged_entries[f"{object_root}/binding.json"] = _stage_json_file(
+        stage_root,
+        f"{object_root}/binding.json",
+        binding_payload,
+    )
+    staged_entries[f"{object_root}/meta.json"] = _stage_json_file(
+        stage_root,
+        f"{object_root}/meta.json",
+        meta_payload,
+    )
+    return staged_entries, meta_payload
+
+
+def _build_local_character_snapshot(
+    config_manager,
+    *,
+    character_name: str,
+    character_payload: dict[str, Any],
+    characters_config_path: Path,
+    workshop_origin_index: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    binding_payload = _derive_character_binding_summary(
+        config_manager,
+        character_name,
+        character_payload,
+        workshop_origin_index=workshop_origin_index,
+    )
+    memory_root = Path(config_manager.memory_dir) / character_name
+    memory_hashes = _memory_file_hashes_from_root(memory_root)
+    updated_paths = [characters_config_path]
+    updated_paths.extend(memory_root / filename for filename in memory_hashes)
+    return {
+        "character_name": character_name,
+        "display_name": str(character_payload.get("档案名") or character_name),
+        "model_type": str(binding_payload.get("model_type") or ""),
+        "asset_source": str(binding_payload.get("asset_source") or ""),
+        "asset_source_id": str(binding_payload.get("asset_source_id") or ""),
+        "asset_state": str(binding_payload.get("asset_state") or ""),
+        "origin_source": str(binding_payload.get("origin_source") or ""),
+        "origin_source_id": str(binding_payload.get("origin_source_id") or ""),
+        "origin_model_ref": str(binding_payload.get("origin_model_ref") or ""),
+        "origin_display_name": str(binding_payload.get("origin_display_name") or ""),
+        "updated_at_utc": _max_mtime_iso(updated_paths),
+        "fingerprint": _build_character_payload_fingerprint(
+            character_name=character_name,
+            character_payload=character_payload,
+            binding_payload=binding_payload,
+            memory_hashes=memory_hashes,
+        ),
+        "warnings": _build_character_summary_warnings(
+            asset_state=str(binding_payload.get("asset_state") or ""),
+            warning_scope="local",
+        ),
+    }
+
+
+def _collect_cloudsave_catalog_entries(config_manager) -> dict[str, dict[str, Any]]:
+    payload = _load_json_if_exists(config_manager.cloudsave_catalog_dir / "catgirls_index.json")
+    if not isinstance(payload, dict):
+        return {}
+    entries: dict[str, dict[str, Any]] = {}
+    for entry in payload.get("characters") or []:
+        if not isinstance(entry, dict):
+            continue
+        character_name = str(entry.get("character_name") or "").strip()
+        if not character_name:
+            continue
+        entries[character_name] = entry
+    return entries
+
+
+def _load_cloudsave_tombstone_names(config_manager) -> set[str]:
+    tombstones_payload = _load_json_if_exists(config_manager.cloudsave_catalog_dir / "character_tombstones.json")
+    tombstones_state = _normalize_tombstones_state(tombstones_payload)
+    return {
+        entry["character_name"]
+        for entry in tombstones_state.get("tombstones") or []
+        if isinstance(entry, dict) and entry.get("character_name")
+    }
+
+
+def _load_cloudsave_sharded_character_unit(config_manager, character_name: str) -> dict[str, Any] | None:
+    object_dir = config_manager.cloudsave_dir / "characters" / character_name
+    profile_path = object_dir / "profile.json"
+    if not profile_path.is_file():
+        return None
+
+    profile_payload = _load_json_if_exists(profile_path)
+    if not isinstance(profile_payload, dict):
+        raise ValueError(f"cloudsave shard profile is invalid for {character_name}")
+
+    binding_payload = _load_json_if_exists(object_dir / "binding.json")
+    if binding_payload is not None and not isinstance(binding_payload, dict):
+        raise ValueError(f"cloudsave shard binding is invalid for {character_name}")
+
+    meta_payload = _load_json_if_exists(object_dir / "meta.json")
+    if meta_payload is not None and not isinstance(meta_payload, dict):
+        raise ValueError(f"cloudsave shard meta is invalid for {character_name}")
+
+    memory_files: dict[str, Path] = {}
+    memory_dir = object_dir / "memory"
+    if memory_dir.is_dir():
+        for filename in MANAGED_MEMORY_FILENAMES:
+            source_path = memory_dir / filename
+            if source_path.is_file():
+                memory_files[filename] = source_path
+
+    return {
+        "character_name": character_name,
+        "profile": profile_payload,
+        "binding": binding_payload or {},
+        "meta": meta_payload or {},
+        "memory_files": memory_files,
+    }
+
+
+def _collect_cloudsave_meta_payloads(config_manager) -> dict[str, dict[str, Any]]:
+    meta_payloads: dict[str, dict[str, Any]] = {}
+    sharded_root = config_manager.cloudsave_dir / "characters"
+    if not sharded_root.is_dir():
+        return meta_payloads
+    for child in sorted(sharded_root.iterdir()):
+        if not child.is_dir():
+            continue
+        payload = _load_json_if_exists(child / "meta.json")
+        if isinstance(payload, dict):
+            meta_payloads[child.name] = payload
+    return meta_payloads
+
+
+def _collect_cloudsave_binding_payloads(config_manager) -> dict[str, dict[str, Any]]:
+    binding_payloads: dict[str, dict[str, Any]] = {}
+    sharded_root = config_manager.cloudsave_dir / "characters"
+    if sharded_root.is_dir():
+        for child in sorted(sharded_root.iterdir()):
+            if not child.is_dir():
+                continue
+            payload = _load_json_if_exists(child / "binding.json")
+            if isinstance(payload, dict):
+                binding_payloads[child.name] = payload
+    bindings_dir = config_manager.cloudsave_bindings_dir
+    if not bindings_dir.is_dir():
+        bindings_dir = None
+    if bindings_dir is not None:
+        for path in sorted(bindings_dir.glob("*.json")):
+            payload = _load_json_if_exists(path)
+            if not isinstance(payload, dict):
+                continue
+            character_name = str(payload.get("character_name") or path.stem).strip()
+            if not character_name or character_name in binding_payloads:
+                continue
+            binding_payloads[character_name] = payload
+    return binding_payloads
+
+
+def _collect_cloudsave_memory_hashes(config_manager, character_name: str) -> tuple[dict[str, str], list[Path]]:
+    sharded_memory_root = config_manager.cloudsave_dir / "characters" / character_name / "memory"
+    sharded_hashes = _memory_file_hashes_from_root(sharded_memory_root)
+    if sharded_hashes:
+        return sharded_hashes, [sharded_memory_root / filename for filename in sharded_hashes]
+
+    legacy_memory_root = config_manager.cloudsave_memory_dir / character_name
+    legacy_hashes = _memory_file_hashes_from_root(legacy_memory_root)
+    return legacy_hashes, [legacy_memory_root / filename for filename in legacy_hashes]
+
+
+def _load_cloudsave_character_unit(config_manager, character_name: str) -> dict[str, Any] | None:
+    tombstone_names = _load_cloudsave_tombstone_names(config_manager)
+    if character_name in tombstone_names:
+        return None
+
+    sharded_unit = _load_cloudsave_sharded_character_unit(config_manager, character_name)
+    if sharded_unit is not None:
+        return sharded_unit
+
+    characters_payload = _load_json_if_exists(config_manager.cloudsave_profiles_dir / "characters.json")
+    if not isinstance(characters_payload, dict):
+        return None
+    character_payload = (characters_payload.get("猫娘") or {}).get(character_name)
+    if not isinstance(character_payload, dict):
+        return None
+
+    binding_payload = _load_json_if_exists(config_manager.cloudsave_bindings_dir / f"{character_name}.json")
+    if binding_payload is not None and not isinstance(binding_payload, dict):
+        raise ValueError(f"cloudsave binding payload is invalid for {character_name}")
+
+    memory_files: dict[str, Path] = {}
+    memory_dir = config_manager.cloudsave_memory_dir / character_name
+    for filename in MANAGED_MEMORY_FILENAMES:
+        source_path = memory_dir / filename
+        if source_path.is_file():
+            memory_files[filename] = source_path
+
+    detail = build_cloudsave_character_detail(config_manager, character_name)
+    return {
+        "character_name": character_name,
+        "profile": character_payload,
+        "binding": binding_payload or {},
+        "meta": {
+            "schema_version": 1,
+            "character_name": character_name,
+            "payload_fingerprint": str((((detail or {}).get("cloud_summary") or {}).get("fingerprint")) or ""),
+            "updated_at_utc": str((((detail or {}).get("cloud_summary") or {}).get("updated_at_utc")) or ""),
+            "sequence_number": 0,
+            "source_client_id": "",
+            "source_device_id": "",
+            "asset_state": str((((detail or {}).get("cloud_summary") or {}).get("asset_state")) or ""),
+            "asset_source": str((((detail or {}).get("cloud_summary") or {}).get("asset_source")) or ""),
+            "asset_source_id": str((((detail or {}).get("cloud_summary") or {}).get("asset_source_id")) or ""),
+            "origin_source": str((((detail or {}).get("cloud_summary") or {}).get("origin_source")) or ""),
+            "origin_source_id": str((((detail or {}).get("cloud_summary") or {}).get("origin_source_id")) or ""),
+            "origin_model_ref": str((((detail or {}).get("cloud_summary") or {}).get("origin_model_ref")) or ""),
+            "origin_display_name": str((((detail or {}).get("cloud_summary") or {}).get("origin_display_name")) or ""),
+        },
+        "memory_files": memory_files,
+    }
+
+
+def _build_cloud_character_snapshot(
+    config_manager,
+    *,
+    character_name: str,
+    character_payload: dict[str, Any],
+    binding_payloads: dict[str, dict[str, Any]],
+    meta_payloads: dict[str, dict[str, Any]],
+    manifest_exported_at: str,
+    catalog_entries: dict[str, dict[str, Any]],
+    workshop_origin_index: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    binding_payload = deepcopy(binding_payloads.get(character_name) or {})
+    meta_payload = deepcopy(meta_payloads.get(character_name) or {})
+    memory_hashes, memory_paths = _collect_cloudsave_memory_hashes(config_manager, character_name)
+    object_dir = config_manager.cloudsave_dir / "characters" / character_name
+    payload_paths = [
+        object_dir / "profile.json",
+        object_dir / "binding.json",
+        object_dir / "meta.json",
+        config_manager.cloudsave_profiles_dir / "characters.json",
+        config_manager.cloudsave_bindings_dir / f"{character_name}.json",
+    ]
+    payload_paths.extend(memory_paths)
+    catalog_entry = catalog_entries.get(character_name) or {}
+    asset_state = str(
+        binding_payload.get("asset_state")
+        or catalog_entry.get("asset_state")
+        or meta_payload.get("asset_state")
+        or ""
+    )
+    default_origin_payload = _derive_character_origin_metadata(
+        config_manager,
+        character_name=character_name,
+        character_payload=character_payload,
+        model_type=str(binding_payload.get("model_type") or catalog_entry.get("model_type") or ""),
+        workshop_origin_index=workshop_origin_index,
+    )
+    updated_at_utc = str(
+        meta_payload.get("updated_at_utc")
+        or _max_mtime_iso(payload_paths)
+        or manifest_exported_at
+    )
+    return {
+        "character_name": character_name,
+        "display_name": str(character_payload.get("档案名") or catalog_entry.get("display_name") or character_name),
+        "model_type": str(
+            binding_payload.get("model_type")
+            or catalog_entry.get("model_type")
+            or ""
+        ),
+        "asset_source": str(
+            binding_payload.get("asset_source")
+            or catalog_entry.get("asset_source")
+            or meta_payload.get("asset_source")
+            or ""
+        ),
+        "asset_source_id": str(
+            binding_payload.get("asset_source_id")
+            or catalog_entry.get("asset_source_id")
+            or meta_payload.get("asset_source_id")
+            or ""
+        ),
+        "asset_state": asset_state,
+        "origin_source": str(
+            binding_payload.get("origin_source")
+            or catalog_entry.get("origin_source")
+            or meta_payload.get("origin_source")
+            or default_origin_payload.get("origin_source")
+            or ""
+        ),
+        "origin_source_id": str(
+            binding_payload.get("origin_source_id")
+            or catalog_entry.get("origin_source_id")
+            or meta_payload.get("origin_source_id")
+            or default_origin_payload.get("origin_source_id")
+            or ""
+        ),
+        "origin_model_ref": str(
+            binding_payload.get("origin_model_ref")
+            or catalog_entry.get("origin_model_ref")
+            or meta_payload.get("origin_model_ref")
+            or default_origin_payload.get("origin_model_ref")
+            or ""
+        ),
+        "origin_display_name": str(
+            binding_payload.get("origin_display_name")
+            or catalog_entry.get("origin_display_name")
+            or meta_payload.get("origin_display_name")
+            or default_origin_payload.get("origin_display_name")
+            or ""
+        ),
+        "updated_at_utc": updated_at_utc,
+        "fingerprint": _build_character_payload_fingerprint(
+            character_name=character_name,
+            character_payload=character_payload,
+            binding_payload=binding_payload,
+            memory_hashes=memory_hashes,
+        ),
+        "warnings": _build_character_summary_warnings(
+            asset_state=asset_state,
+            warning_scope="cloud",
+        ),
+    }
+
+
+def _load_cloudsave_character_payloads(config_manager) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    tombstone_names = _load_cloudsave_tombstone_names(config_manager)
+    cloud_characters: dict[str, dict[str, Any]] = {}
+
+    characters_payload = _load_json_if_exists(config_manager.cloudsave_profiles_dir / "characters.json")
+    if isinstance(characters_payload, dict):
+        for character_name, character_payload in (characters_payload.get("猫娘") or {}).items():
+            if character_name in tombstone_names or not isinstance(character_payload, dict):
+                continue
+            cloud_characters[character_name] = character_payload
+
+    sharded_root = config_manager.cloudsave_dir / "characters"
+    if sharded_root.is_dir():
+        for child in sorted(sharded_root.iterdir()):
+            if not child.is_dir():
+                continue
+            payload = _load_json_if_exists(child / "profile.json")
+            if child.name in tombstone_names or not isinstance(payload, dict):
+                continue
+            # Prefer per-character shards when both formats are present.
+            cloud_characters[child.name] = payload
+
+    return cloud_characters, tombstone_names
+
+
+def _merge_character_summary_item(
+    *,
+    character_name: str,
+    local_summary: dict[str, Any] | None,
+    cloud_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    local_exists = local_summary is not None
+    cloud_exists = cloud_summary is not None
+
+    local_fingerprint = str((local_summary or {}).get("fingerprint") or "")
+    cloud_fingerprint = str((cloud_summary or {}).get("fingerprint") or "")
+    relation_state = "local_only"
+    if local_exists and cloud_exists:
+        relation_state = "matched" if local_fingerprint and local_fingerprint == cloud_fingerprint else "diverged"
+    elif cloud_exists:
+        relation_state = "cloud_only"
+
+    available_actions: list[str] = []
+    if relation_state == "local_only":
+        available_actions = ["upload"]
+    elif relation_state == "cloud_only":
+        available_actions = ["download"]
+    elif relation_state == "diverged":
+        available_actions = ["upload", "download"]
+
+    # Warning text is phrased for the current device, so when a local character exists
+    # we should trust the local asset check and avoid leaking cloud-side warning state.
+    warnings_source = local_summary if local_exists else cloud_summary
+    warnings = list((warnings_source or {}).get("warnings") or [])
+
+    deduped_warnings: list[str] = []
+    for warning in warnings:
+        if warning not in deduped_warnings:
+            deduped_warnings.append(warning)
+
+    primary_summary = local_summary or cloud_summary or {}
+    return {
+        "character_name": character_name,
+        "display_name": str(primary_summary.get("display_name") or character_name),
+        "relation_state": relation_state,
+        "local_exists": local_exists,
+        "cloud_exists": cloud_exists,
+        "model_type": str(primary_summary.get("model_type") or ""),
+        "asset_source": str(primary_summary.get("asset_source") or ""),
+        "asset_source_id": str(primary_summary.get("asset_source_id") or ""),
+        "local_asset_source": str((local_summary or {}).get("asset_source") or ""),
+        "local_asset_source_id": str((local_summary or {}).get("asset_source_id") or ""),
+        "cloud_asset_source": str((cloud_summary or {}).get("asset_source") or ""),
+        "cloud_asset_source_id": str((cloud_summary or {}).get("asset_source_id") or ""),
+        "local_origin_source": str((local_summary or {}).get("origin_source") or ""),
+        "local_origin_source_id": str((local_summary or {}).get("origin_source_id") or ""),
+        "local_origin_display_name": str((local_summary or {}).get("origin_display_name") or ""),
+        "cloud_origin_source": str((cloud_summary or {}).get("origin_source") or ""),
+        "cloud_origin_source_id": str((cloud_summary or {}).get("origin_source_id") or ""),
+        "cloud_origin_display_name": str((cloud_summary or {}).get("origin_display_name") or ""),
+        "local_asset_state": str((local_summary or {}).get("asset_state") or ""),
+        "cloud_asset_state": str((cloud_summary or {}).get("asset_state") or ""),
+        "local_updated_at_utc": str((local_summary or {}).get("updated_at_utc") or ""),
+        "cloud_updated_at_utc": str((cloud_summary or {}).get("updated_at_utc") or ""),
+        "local_fingerprint": local_fingerprint,
+        "cloud_fingerprint": cloud_fingerprint,
+        "available_actions": available_actions,
+        "warnings": deduped_warnings,
+    }
+
+
+def _build_cloudsave_summary_state(
+    config_manager,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    bootstrap_local_cloudsave_environment(config_manager)
+
+    characters_payload = config_manager.load_characters()
+    local_character_map = characters_payload.get("猫娘") or {}
+    current_character_name = str(characters_payload.get("当前猫娘") or "")
+    characters_config_path = Path(config_manager.get_runtime_config_path("characters.json"))
+    workshop_origin_index = _collect_workshop_character_origin_candidates(config_manager)
+    local_summaries = {
+        character_name: _build_local_character_snapshot(
+            config_manager,
+            character_name=character_name,
+            character_payload=character_payload,
+            characters_config_path=characters_config_path,
+            workshop_origin_index=workshop_origin_index,
+        )
+        for character_name, character_payload in sorted(local_character_map.items())
+        if isinstance(character_payload, dict)
+    }
+
+    provider_available = is_cloudsave_provider_available(config_manager)
+    cloud_summaries: dict[str, dict[str, Any]] = {}
+    if provider_available:
+        manifest = load_cloudsave_manifest(config_manager)
+        cloud_character_map, _tombstone_names = _load_cloudsave_character_payloads(config_manager)
+        catalog_entries = _collect_cloudsave_catalog_entries(config_manager)
+        binding_payloads = _collect_cloudsave_binding_payloads(config_manager)
+        meta_payloads = _collect_cloudsave_meta_payloads(config_manager)
+        cloud_summaries = {
+            character_name: _build_cloud_character_snapshot(
+                config_manager,
+                character_name=character_name,
+                character_payload=character_payload,
+                binding_payloads=binding_payloads,
+                meta_payloads=meta_payloads,
+                manifest_exported_at=str(manifest.get("exported_at_utc") or ""),
+                catalog_entries=catalog_entries,
+                workshop_origin_index=workshop_origin_index,
+            )
+            for character_name, character_payload in sorted(cloud_character_map.items())
+        }
+
+    all_names = sorted(set(local_summaries) | set(cloud_summaries))
+    items = [
+        _merge_character_summary_item(
+            character_name=character_name,
+            local_summary=local_summaries.get(character_name),
+            cloud_summary=cloud_summaries.get(character_name),
+        )
+        for character_name in all_names
+    ]
+    summary = {
+        "success": True,
+        "provider_available": provider_available,
+        "current_character_name": current_character_name,
+        "items": items,
+    }
+    return summary, local_summaries, cloud_summaries
+
+
+def build_cloudsave_summary(config_manager) -> dict[str, Any]:
+    summary, _local_summaries, _cloud_summaries = _build_cloudsave_summary_state(config_manager)
+    return summary
+
+
+def build_cloudsave_character_detail(config_manager, character_name: str) -> dict[str, Any] | None:
+    summary, local_summaries, cloud_summaries = _build_cloudsave_summary_state(config_manager)
+    for item in summary.get("items") or []:
+        if item.get("character_name") == character_name:
+            return {
+                "success": True,
+                "provider_available": bool(summary.get("provider_available", True)),
+                "current_character_name": str(summary.get("current_character_name") or ""),
+                "item": item,
+                "local_summary": deepcopy(local_summaries.get(character_name)),
+                "cloud_summary": deepcopy(cloud_summaries.get(character_name)),
+            }
+    return None
+
+
+def _assert_single_character_name_safe(character_name: str, *, context: str) -> None:
+    audit_result = audit_cloudsave_character_names([character_name])
+    try:
+        _raise_for_name_audit(audit_result, context=context)
+    except ValueError as exc:
+        raise CloudsaveOperationError(
+            "NAME_AUDIT_FAILED",
+            str(exc),
+            character_name=character_name,
+        ) from exc
+
+
+def export_cloudsave_character_unit(config_manager, character_name: str, *, overwrite: bool = False) -> dict[str, Any]:
+    bootstrap_local_cloudsave_environment(config_manager)
+    _assert_single_character_name_safe(character_name, context="single_character_upload")
+
+    with cloud_apply_fence(
+        config_manager,
+        mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
+        reason=f"single_character_upload:{character_name}",
+    ):
+        characters_payload = config_manager.load_characters()
+        character_payload = (characters_payload.get("猫娘") or {}).get(character_name)
+        if not isinstance(character_payload, dict):
+            raise CloudsaveOperationError(
+                "LOCAL_CHARACTER_NOT_FOUND",
+                f"local character not found: {character_name}",
+                character_name=character_name,
+            )
+
+        existing_cloud_unit = _load_cloudsave_character_unit(config_manager, character_name)
+        if existing_cloud_unit is not None and not overwrite:
+            raise CloudsaveOperationError(
+                "CLOUD_CHARACTER_EXISTS",
+                f"cloud character already exists: {character_name}",
+                character_name=character_name,
+            )
+
+        stage_root = _create_staging_workspace(config_manager, "single-export")
+        cloud_state = config_manager.load_cloudsave_local_state()
+        sequence_number = max(1, int(cloud_state.get("next_sequence_number") or 1))
+        exported_at = _utc_now_iso()
+        manifest = ensure_cloudsave_manifest(config_manager)
+        workshop_origin_index = _collect_workshop_character_origin_candidates(config_manager)
+        binding_payload = _derive_character_binding_summary(
+            config_manager,
+            character_name,
+            character_payload,
+            workshop_origin_index=workshop_origin_index,
+        )
+        local_summary = _build_local_character_snapshot(
+            config_manager,
+            character_name=character_name,
+            character_payload=character_payload,
+            characters_config_path=Path(config_manager.get_runtime_config_path("characters.json")),
+            workshop_origin_index=workshop_origin_index,
+        )
+
+        staged_entries: dict[str, Path] = {}
+        existing_cloud_character_map, _tombstone_names = _load_cloudsave_character_payloads(config_manager)
+        cloud_profiles_payload = _load_json_if_exists(config_manager.cloudsave_profiles_dir / "characters.json")
+        if not isinstance(cloud_profiles_payload, dict):
+            cloud_profiles_payload = {}
+        cloud_profiles_payload = deepcopy(cloud_profiles_payload)
+        merged_cloud_character_map = deepcopy(existing_cloud_character_map)
+        merged_cloud_character_map[character_name] = deepcopy(character_payload)
+        cloud_profiles_payload["猫娘"] = {
+            name: deepcopy(payload)
+            for name, payload in sorted(merged_cloud_character_map.items())
+        }
+        staged_entries["profiles/characters.json"] = _stage_json_file(
+            stage_root,
+            "profiles/characters.json",
+            cloud_profiles_payload,
+        )
+
+        staged_entries[f"bindings/{character_name}.json"] = _stage_json_file(
+            stage_root,
+            f"bindings/{character_name}.json",
+            binding_payload,
+        )
+
+        character_memory_dir = Path(config_manager.memory_dir) / character_name
+        staged_memory_relative_paths: set[str] = set()
+        for filename in MANAGED_MEMORY_FILENAMES:
+            source_path = character_memory_dir / filename
+            if not source_path.is_file():
+                continue
+            relative_path = f"memory/{character_name}/{filename}"
+            staged_entries[relative_path] = _stage_memory_file(stage_root, relative_path, source_path)
+            staged_memory_relative_paths.add(relative_path)
+
+        single_character_entries, meta_payload = _stage_single_character_cloudsave_entries(
+            config_manager,
+            stage_root,
+            character_name=character_name,
+            character_payload=character_payload,
+            binding_payload=binding_payload,
+            sequence_number=sequence_number,
+            exported_at=exported_at,
+            client_id=str(cloud_state.get("client_id", "")),
+            device_id=str(manifest.get("device_id", "")),
+        )
+        staged_entries.update(single_character_entries)
+
+        merged_binding_payloads = _collect_cloudsave_binding_payloads(config_manager)
+        merged_binding_payloads[character_name] = deepcopy(binding_payload)
+        updated_catalog_payload = _build_catalog_index_payload(
+            character_names=sorted(merged_cloud_character_map),
+            characters_payload=cloud_profiles_payload,
+            binding_payloads=merged_binding_payloads,
+            sequence_number=sequence_number,
+            exported_at=exported_at,
+        )
+        staged_entries["catalog/catgirls_index.json"] = _stage_json_file(
+            stage_root,
+            "catalog/catgirls_index.json",
+            updated_catalog_payload,
+        )
+
+        updated_tombstones_payload = _remove_tombstone_from_catalog_payload(
+            _load_json_if_exists(config_manager.cloudsave_catalog_dir / "character_tombstones.json"),
+            character_name=character_name,
+            sequence_number=sequence_number,
+            exported_at=exported_at,
+        )
+        staged_entries["catalog/character_tombstones.json"] = _stage_json_file(
+            stage_root,
+            "catalog/character_tombstones.json",
+            updated_tombstones_payload,
+        )
+
+        upload_tag = exported_at.replace(":", "").replace(".", "")
+        backup_root = config_manager.cloudsave_backups_dir / f"character-upload-{upload_tag}" / character_name
+
+        existing_cloud_memory_root = config_manager.cloudsave_memory_dir / character_name
+        existing_cloud_character_root = config_manager.cloudsave_dir / "characters" / character_name
+        delete_targets: set[Path] = set()
+        for base_dir in (existing_cloud_memory_root, existing_cloud_character_root / "memory"):
+            if not base_dir.is_dir():
+                continue
+            for child in base_dir.iterdir():
+                if not child.is_file():
+                    continue
+                if base_dir == existing_cloud_memory_root:
+                    relative_path = f"memory/{character_name}/{child.name}"
+                else:
+                    relative_path = f"characters/{character_name}/memory/{child.name}"
+                if relative_path not in staged_entries:
+                    delete_targets.add(child)
+
+        mutation_targets = {
+            config_manager.cloudsave_profiles_dir / "characters.json",
+            config_manager.cloudsave_bindings_dir / f"{character_name}.json",
+            config_manager.cloudsave_catalog_dir / "catgirls_index.json",
+            config_manager.cloudsave_catalog_dir / "character_tombstones.json",
+            config_manager.cloudsave_dir / "characters" / character_name,
+            config_manager.cloudsave_memory_dir / character_name,
+            config_manager.cloudsave_manifest_path,
+            config_manager.cloudsave_local_state_path,
+        }
+        backup_records = _snapshot_existing_targets(
+            config_manager,
+            backup_root,
+            mutation_targets | delete_targets,
+        )
+
+        try:
+            for relative_path, staged_path in staged_entries.items():
+                _atomic_copy_file(staged_path, config_manager.cloudsave_dir / relative_path)
+
+            for target_path in sorted(delete_targets):
+                if target_path.exists():
+                    target_path.unlink()
+                    _cleanup_empty_parent_dirs(target_path, config_manager.cloudsave_dir)
+
+            manifest = _rebuild_cloudsave_manifest_from_disk(
+                config_manager,
+                sequence_number=sequence_number,
+                exported_at=exported_at,
+                client_id=str(cloud_state.get("client_id", "")),
+            )
+            cloud_state["next_sequence_number"] = sequence_number + 1
+            cloud_state["last_successful_export_at"] = exported_at
+            config_manager.save_cloudsave_local_state(cloud_state)
+        except Exception:
+            _restore_backup_records(backup_records)
+            raise
+
+        detail = build_cloudsave_character_detail(config_manager, character_name)
+        return {
+            "character_name": character_name,
+            "sequence_number": sequence_number,
+            "meta": meta_payload,
+            "manifest": manifest,
+            "local_summary": local_summary,
+            "detail": detail,
+        }
+
+
+def import_cloudsave_character_unit(
+    config_manager,
+    character_name: str,
+    *,
+    overwrite: bool = False,
+    backup_before_overwrite: bool = True,
+) -> dict[str, Any]:
+    bootstrap_local_cloudsave_environment(config_manager)
+    _assert_single_character_name_safe(character_name, context="single_character_download")
+
+    with cloud_apply_fence(
+        config_manager,
+        mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
+        reason=f"single_character_download:{character_name}",
+    ):
+        cloud_unit = _load_cloudsave_character_unit(config_manager, character_name)
+        if cloud_unit is None:
+            raise CloudsaveOperationError(
+                "CLOUD_CHARACTER_NOT_FOUND",
+                f"cloud character not found: {character_name}",
+                character_name=character_name,
+            )
+
+        runtime_characters = config_manager.load_characters()
+        local_exists = character_name in (runtime_characters.get("猫娘") or {})
+        if local_exists and not overwrite:
+            raise CloudsaveOperationError(
+                "LOCAL_CHARACTER_EXISTS",
+                f"local character already exists: {character_name}",
+                character_name=character_name,
+            )
+
+        stage_root = _create_staging_workspace(config_manager, "single-import")
+        apply_time = _utc_now_iso()
+        updated_characters = deepcopy(runtime_characters)
+        updated_characters.setdefault("猫娘", {})
+        updated_characters["猫娘"][character_name] = deepcopy(cloud_unit["profile"])
+        current_character_name = str(updated_characters.get("当前猫娘") or "")
+        if not current_character_name:
+            updated_characters["当前猫娘"] = character_name
+        characters_stage_path = _stage_json_file(
+            stage_root,
+            "__runtime__/profiles/characters.json",
+            updated_characters,
+        )
+
+        updated_tombstones_state = _remove_tombstone_from_state_payload(
+            config_manager.load_character_tombstones_state(),
+            character_name=character_name,
+        )
+        tombstones_stage_path = _stage_json_file(
+            stage_root,
+            "__runtime__/state/character_tombstones.json",
+            updated_tombstones_state,
+        )
+
+        cloud_state = config_manager.load_cloudsave_local_state()
+        cloud_state["last_successful_import_at"] = apply_time
+        cloud_state_stage_path = _stage_json_file(
+            stage_root,
+            "__runtime__/state/cloudsave_local_state.json",
+            cloud_state,
+        )
+
+        runtime_targets: dict[Path, Path] = {
+            Path(config_manager.get_runtime_config_path("characters.json")): characters_stage_path,
+            config_manager.character_tombstones_state_path: tombstones_stage_path,
+            config_manager.cloudsave_local_state_path: cloud_state_stage_path,
+        }
+        expected_memory_filenames: set[str] = set()
+        for filename, source_path in (cloud_unit.get("memory_files") or {}).items():
+            target_stage_path = _stage_file_copy(
+                stage_root,
+                f"__runtime__/memory/{character_name}/{filename}",
+                source_path,
+            )
+            runtime_targets[Path(config_manager.memory_dir) / character_name / filename] = target_stage_path
+            expected_memory_filenames.add(filename)
+
+        delete_file_targets: set[Path] = set()
+        target_memory_dir = Path(config_manager.memory_dir) / character_name
+        for filename in MANAGED_MEMORY_FILENAMES:
+            if filename in expected_memory_filenames:
+                continue
+            candidate = target_memory_dir / filename
+            if candidate.exists():
+                delete_file_targets.add(candidate)
+
+        backup_root = config_manager.cloudsave_backups_dir / f"character-download-{apply_time.replace(':', '').replace('.', '')}" / character_name
+        backup_targets = set(runtime_targets) | delete_file_targets
+        if backup_before_overwrite or not local_exists:
+            backup_targets.add(target_memory_dir)
+        backup_records = _snapshot_existing_targets(config_manager, backup_root, backup_targets)
+        _write_operation_backup_metadata(
+            config_manager,
+            backup_root,
+            operation="character_download",
+            character_name=character_name,
+            backup_records=backup_records,
+        )
+
+        try:
+            for target_path, staged_path in runtime_targets.items():
+                _apply_runtime_file(staged_path, target_path)
+
+            for target_path in sorted(delete_file_targets):
+                if target_path.exists():
+                    target_path.unlink()
+                    _cleanup_empty_parent_dirs(target_path, Path(config_manager.memory_dir))
+        except Exception:
+            _restore_backup_records(backup_records)
+            raise
+
+        detail = build_cloudsave_character_detail(config_manager, character_name)
+        return {
+            "character_name": character_name,
+            "applied_at_utc": apply_time,
+            "detail": detail,
+            "backup_path": str(backup_root),
+        }
+
+
 def _collect_memory_stage_entries(config_manager, stage_root: Path, character_names: list[str]) -> dict[str, Path]:
     staged_entries: dict[str, Path] = {}
     for character_name in sorted(character_names):
@@ -1404,6 +2924,211 @@ def _collect_memory_stage_entries(config_manager, stage_root: Path, character_na
 
 def _build_backup_path(config_manager, backup_root: Path, target_path: Path) -> Path:
     return backup_root / target_path.relative_to(config_manager.app_docs_dir)
+
+
+def _snapshot_existing_targets(config_manager, backup_root: Path, targets: set[Path]) -> list[dict[str, Any]]:
+    backup_records: list[dict[str, Any]] = []
+    for target_path in sorted(targets, key=lambda path: (len(path.parts), str(path))):
+        record = {
+            "target": target_path,
+            "backup": None,
+            "is_dir": target_path.is_dir(),
+        }
+        if target_path.exists():
+            backup_path = _build_backup_path(config_manager, backup_root, target_path)
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            if target_path.is_dir():
+                shutil.copytree(target_path, backup_path, dirs_exist_ok=True)
+            else:
+                shutil.copy2(target_path, backup_path)
+            record["backup"] = backup_path
+        backup_records.append(record)
+    return backup_records
+
+
+def _restore_backup_records(backup_records: list[dict[str, Any]]) -> None:
+    for record in sorted(backup_records, key=lambda item: len(item["target"].parts), reverse=True):
+        target_path = record["target"]
+        if target_path.exists():
+            if target_path.is_dir():
+                shutil.rmtree(target_path, ignore_errors=True)
+            else:
+                target_path.unlink()
+        backup_path = record.get("backup")
+        if backup_path is None or not backup_path.exists():
+            continue
+        if record.get("is_dir"):
+            shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
+        else:
+            _apply_runtime_file(backup_path, target_path)
+
+
+def _write_operation_backup_metadata(
+    config_manager,
+    backup_root: Path,
+    *,
+    operation: str,
+    character_name: str,
+    backup_records: list[dict[str, Any]],
+) -> Path:
+    payload = {
+        "schema_version": 1,
+        "operation": operation,
+        "character_name": character_name,
+        "targets": [
+            {
+                "relative_path": str(record["target"].relative_to(config_manager.app_docs_dir)).replace("\\", "/"),
+                "had_backup": record.get("backup") is not None,
+                "is_dir": bool(record.get("is_dir", False)),
+            }
+            for record in backup_records
+        ],
+    }
+    metadata_path = backup_root / "_operation.json"
+    atomic_write_json(metadata_path, payload, ensure_ascii=False, indent=2)
+    return metadata_path
+
+
+def restore_cloudsave_operation_backup(config_manager, backup_root: str | Path) -> None:
+    backup_root_path = Path(backup_root)
+    metadata = _load_json_if_exists(backup_root_path / "_operation.json")
+    if not isinstance(metadata, dict):
+        raise FileNotFoundError(f"cloudsave backup metadata missing: {backup_root_path}")
+
+    backup_records: list[dict[str, Any]] = []
+    for target in metadata.get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        relative_path = str(target.get("relative_path") or "").strip().replace("\\", "/")
+        if not relative_path:
+            continue
+        runtime_target = Path(config_manager.app_docs_dir) / relative_path
+        backup_path = backup_root_path / relative_path
+        backup_records.append(
+            {
+                "target": runtime_target,
+                "backup": backup_path if bool(target.get("had_backup")) and backup_path.exists() else None,
+                "is_dir": bool(target.get("is_dir", False)),
+            }
+        )
+    _restore_backup_records(backup_records)
+
+
+def _rebuild_cloudsave_manifest_from_disk(
+    config_manager,
+    *,
+    sequence_number: int,
+    exported_at: str,
+    client_id: str,
+) -> dict[str, Any]:
+    manifest = ensure_cloudsave_manifest(config_manager)
+    files = {
+        relative_path: {
+            "sha256": _sha256_file(config_manager.cloudsave_dir / relative_path),
+            "size": (config_manager.cloudsave_dir / relative_path).stat().st_size,
+        }
+        for relative_path in sorted(_list_existing_cloudsave_files(config_manager))
+    }
+    manifest.update(
+        {
+            "schema_version": 1,
+            "min_reader_schema_version": 1,
+            "min_app_version": "",
+            "client_id": str(client_id or manifest.get("client_id", "")),
+            "device_id": str(manifest.get("device_id", "")),
+            "sequence_number": int(sequence_number),
+            "exported_at_utc": exported_at,
+            "files": files,
+        }
+    )
+    manifest["fingerprint"] = _build_manifest_fingerprint(
+        client_id=str(manifest.get("client_id", "")),
+        sequence_number=int(manifest.get("sequence_number") or 0),
+        files=files,
+    )
+    save_cloudsave_manifest(config_manager, manifest)
+    return manifest
+
+
+def _default_catalog_index_payload() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "sequence_number": 0,
+        "exported_at_utc": "",
+        "characters": [],
+    }
+
+
+def _default_tombstones_catalog_payload() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "sequence_number": 0,
+        "exported_at_utc": "",
+        "tombstones": [],
+    }
+
+
+def _upsert_catalog_character_entry(
+    catalog_payload: Any,
+    *,
+    character_entry: dict[str, Any],
+    sequence_number: int,
+    exported_at: str,
+) -> dict[str, Any]:
+    payload = deepcopy(catalog_payload) if isinstance(catalog_payload, dict) else _default_catalog_index_payload()
+    entries_by_name: dict[str, dict[str, Any]] = {}
+    for entry in payload.get("characters") or []:
+        if not isinstance(entry, dict):
+            continue
+        existing_name = str(entry.get("character_name") or "").strip()
+        if existing_name:
+            entries_by_name[existing_name] = deepcopy(entry)
+    entry_name = str(character_entry.get("character_name") or "").strip()
+    if entry_name:
+        entries_by_name[entry_name] = deepcopy(character_entry)
+    payload["schema_version"] = 1
+    payload["sequence_number"] = int(sequence_number)
+    payload["exported_at_utc"] = exported_at
+    payload["characters"] = [entries_by_name[name] for name in sorted(entries_by_name)]
+    return payload
+
+
+def _remove_tombstone_from_catalog_payload(
+    tombstones_payload: Any,
+    *,
+    character_name: str,
+    sequence_number: int,
+    exported_at: str,
+) -> dict[str, Any]:
+    payload = deepcopy(tombstones_payload) if isinstance(tombstones_payload, dict) else _default_tombstones_catalog_payload()
+    tombstones_state = _normalize_tombstones_state(payload)
+    filtered_tombstones = [
+        entry
+        for entry in tombstones_state.get("tombstones") or []
+        if str(entry.get("character_name") or "") != character_name
+    ]
+    return {
+        "schema_version": 1,
+        "sequence_number": int(sequence_number),
+        "exported_at_utc": exported_at,
+        "tombstones": filtered_tombstones,
+    }
+
+
+def _remove_tombstone_from_state_payload(
+    tombstones_payload: Any,
+    *,
+    character_name: str,
+) -> dict[str, Any]:
+    tombstones_state = _normalize_tombstones_state(tombstones_payload)
+    return {
+        "version": 1,
+        "tombstones": [
+            entry
+            for entry in tombstones_state.get("tombstones") or []
+            if str(entry.get("character_name") or "") != character_name
+        ],
+    }
 
 
 def export_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
@@ -1440,8 +3165,14 @@ def export_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
         _raise_for_name_audit(name_audit, context="export")
         character_names = live_character_names
         current_character_name = str(characters_payload.get("当前猫娘") or "")
+        workshop_origin_index = _collect_workshop_character_origin_candidates(config_manager)
         binding_payloads = {
-            name: _derive_character_binding_summary(config_manager, name, (characters_payload.get("猫娘") or {}).get(name, {}))
+            name: _derive_character_binding_summary(
+                config_manager,
+                name,
+                (characters_payload.get("猫娘") or {}).get(name, {}),
+                workshop_origin_index=workshop_origin_index,
+            )
             for name in character_names
         }
 
@@ -1486,12 +3217,26 @@ def export_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
                 ),
             ),
         }
+        manifest = ensure_cloudsave_manifest(config_manager)
+        manifest_device_id = str(manifest.get("device_id", ""))
         for name, binding_payload in binding_payloads.items():
             staged_entries[f"bindings/{name}.json"] = _stage_json_file(
                 stage_root,
                 f"bindings/{name}.json",
                 binding_payload,
             )
+            single_character_entries, _meta_payload = _stage_single_character_cloudsave_entries(
+                config_manager,
+                stage_root,
+                character_name=name,
+                character_payload=(characters_payload.get("猫娘") or {}).get(name, {}),
+                binding_payload=binding_payload,
+                sequence_number=sequence_number,
+                exported_at=exported_at,
+                client_id=str(cloud_state.get("client_id", "")),
+                device_id=manifest_device_id,
+            )
+            staged_entries.update(single_character_entries)
         staged_entries.update(_collect_memory_stage_entries(config_manager, stage_root, character_names))
 
         files = {
@@ -1502,7 +3247,6 @@ def export_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
             for relative_path, staged_path in sorted(staged_entries.items())
         }
 
-        manifest = ensure_cloudsave_manifest(config_manager)
         manifest.update(
             {
                 "schema_version": 1,
@@ -1908,8 +3652,9 @@ def scan_for_sensitive_values(payload: Any, *, path: str = "$") -> list[str]:
     if isinstance(payload, dict):
         for key, value in payload.items():
             key_str = str(key)
-            key_lower = key_str.lower()
-            if any(token in key_lower for token in SENSITIVE_TOKENS):
+            normalized_key = re.sub(r"[\s\-]+", "_", key_str.strip().lower())
+            normalized_key = re.sub(r"_+", "_", normalized_key).strip("_")
+            if normalized_key in SENSITIVE_KEY_NAMES:
                 findings.append(f"{path}.{key_str}")
             findings.extend(scan_for_sensitive_values(value, path=f"{path}.{key_str}"))
         return findings
@@ -1920,8 +3665,8 @@ def scan_for_sensitive_values(payload: Any, *, path: str = "$") -> list[str]:
         return findings
 
     if isinstance(payload, str):
-        value_lower = payload.lower()
-        if any(token in value_lower for token in SENSITIVE_TOKENS):
+        value = payload.strip()
+        if any(pattern.search(value) for pattern in SENSITIVE_VALUE_PATTERNS):
             findings.append(path)
     return findings
 

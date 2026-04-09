@@ -709,7 +709,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {item_id}")
             else:
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
-                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'local')
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'local_imported')
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model}")
         
         # 保存配置

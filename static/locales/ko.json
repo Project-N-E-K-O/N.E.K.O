@@ -1374,6 +1374,7 @@
         "detailDescriptionPlaceholder": "자세한 설명을 입력하세요.",
         "catgirlProfile": "NEKO 프로필: 고급 설정에는 Live2D 모델, 음성 ID 등이 포함됩니다.",
         "addCatgirl": "NEKO 추가",
+        "openCloudsaveManager": "클라우드 저장 관리",
         "switchCatgirl": "NEKO 전환",
         "deleteCatgirl": "NEKO 삭제",
         "hideCatgirl": "이 NEKO 숨기기",
@@ -1560,6 +1561,238 @@
         "return": "복귀",
         "micMute": "마이크 음소거",
         "micUnmute": "음소거 해제"
+    },
+    "cloudsave": {
+        "pageTitle": "클라우드 저장 관리 - Project N.E.K.O.",
+        "headerTitle": "클라우드 저장 관리",
+        "subtitle": "한 캐릭터씩 업로드/다운로드할 수 있으며, 전역 설정은 자동으로 덮어쓰지 않습니다.",
+        "refresh": "새로고침",
+        "backToCharacterManager": "캐릭터 관리로 돌아가기",
+        "loadingSummary": "클라우드 저장 요약을 불러오는 중...",
+        "emptyState": "표시할 수 있는 캐릭터 요약이 없습니다.",
+        "providerAvailable": "클라우드 저장을 사용할 수 있습니다. 캐릭터 단위로 수동 업로드/다운로드가 가능합니다.",
+        "providerUnavailable": "클라우드 저장 제공자를 현재 사용할 수 없습니다. 이 페이지에는 로컬 요약만 표시됩니다.",
+        "currentCharacter": "현재 로컬 캐릭터: {{name}}",
+        "noCurrentCharacter": "현재 로컬 캐릭터: 설정되지 않음",
+        "nameConflictNotice": {
+            "title": "동명이인 주의",
+            "bodyStorage": "클라우드 저장은 캐릭터 이름을 하나의 캐릭터 슬롯으로 사용합니다. Steam 창작마당 출신인지 직접 만든 캐릭터인지만으로 자동 분리되지 않습니다.",
+            "bodyImpact": "출처가 다른 두 캐릭터의 이름이 같으면 업로드와 다운로드가 둘을 같은 클라우드 캐릭터로 처리하여 캐릭터 설정, 메모리 디렉터리, 클라우드 기록이 서로 덮어써질 수 있습니다.",
+            "bodyAction": "동기화 전에 캐릭터 이름이 고유한지 확인하세요. 같은 캐릭터가 아니라면 업로드나 다운로드 전에 이름을 바꾸세요."
+        },
+        "group": {
+            "count": "{{count}}개",
+            "workshopTitle": "창작마당 관련 캐릭터",
+            "workshopDescription": "이 섹션에는 로컬 또는 클라우드 어느 한쪽이라도 Steam 창작마당 리소스와 연결된 캐릭터를 모아 보여줍니다.",
+            "otherTitle": "내 캐릭터",
+            "otherDescription": "이 섹션에는 로컬 가져오기, 내장 리소스, 또는 기타 비창작마당 소스를 사용하는 캐릭터를 보여줍니다."
+        },
+        "resourceRecoveryTitle": "리소스 복구 안내",
+        "metaNoValue": "없음",
+        "warning": {
+            "local_resource_missing_on_this_device": "이 장치에서는 이미 로컬 리소스가 부족합니다. 위 리소스 출처 안내에 따라 복구하세요.",
+            "cloud_resource_may_be_missing_after_download": "다운로드 후에도 리소스가 부족할 수 있습니다. 필요하면 기록된 출처에 따라 수동으로 복구하세요."
+        },
+        "modelType": {
+            "live2d": "Live2D",
+            "vrm": "VRM",
+            "mmd": "MMD",
+            "unknown": "알 수 없는 모델"
+        },
+        "assetSource": {
+            "notRecorded": "기록 없음",
+            "steamWorkshop": "Steam 창작마당",
+            "localImported": "로컬로 가져온 모델",
+            "manualExternal": "외부 모델 참조",
+            "builtin": "내장 리소스"
+        },
+        "relationState": {
+            "local_only": "로컬에만 존재",
+            "cloud_only": "클라우드에만 존재",
+            "matched": "로컬과 클라우드가 일치",
+            "diverged": "로컬과 클라우드가 다름",
+            "unknown": "알 수 없는 상태"
+        },
+        "assetState": {
+            "notRecorded": "기록 없음",
+            "ready": "바로 사용 가능",
+            "import_required": "수동 가져오기 필요",
+            "downloadable": "리소스가 없습니다. 창작마당 복구 상태를 확인하세요.",
+            "missing": "설정만 복구되었고 리소스는 부족합니다."
+        },
+        "workshopStatus": {
+            "notConfirmed": "확인되지 않음",
+            "installed_and_subscribed": "설치됨 및 구독 중",
+            "installed_but_unsubscribed": "로컬 캐시는 있으나 구독 해제됨",
+            "subscribed_not_installed": "구독 중, 다운로드 대기",
+            "available_needs_resubscribe": "항목은 접근 가능하지만 재구독 필요",
+            "unavailable": "항목을 사용할 수 없음",
+            "steam_unavailable": "Steam을 사용할 수 없어 확인 불가",
+            "unknown": "상태 미확인"
+        },
+        "badge": {
+            "local": "로컬: {{value}}",
+            "cloud": "클라우드: {{value}}"
+        },
+        "scopePrefix": {
+            "localReady": "로컬 리소스를 아직 사용할 수 있음",
+            "cloudReady": "이 장치에 해당 창작마당 리소스가 이미 있음",
+            "localMissing": "로컬 리소스 부족",
+            "cloudAfterDownload": "클라우드 다운로드 후"
+        },
+        "guidance": {
+            "workshopReadyResubscribe": {
+                "title": "{{prefix}} 상태지만 현재는 유효한 구독 상태가 아닙니다",
+                "bodyLocal": "이 장치에서는 현재 로컬 창작마당 리소스를 아직 사용할 수 있습니다. 하지만 나중에 로컬 캐시가 사라지면 보통 다시 구독해야 모델을 복구할 수 있습니다.",
+                "bodyCloud": "이 장치에는 해당 창작마당 리소스가 이미 있습니다. 하지만 나중에 로컬 캐시가 사라지면 보통 다시 구독해야 모델을 복구할 수 있습니다."
+            },
+            "workshopReadyUnavailable": {
+                "title": "{{prefix}} 상태지만 원래 창작마당 항목이 삭제되었거나 비공개일 수 있습니다",
+                "body": "이 장치에 리소스가 남아 있으므로 지금은 사용할 수 있습니다. 하지만 나중에 캐시가 사라지면 창작마당으로 자동 복구하는 것이 어려워지며, 직접 백업하거나 수동으로 가져와야 합니다."
+            },
+            "workshopInstalled": {
+                "title": "{{prefix}}: 이 장치에 유효한 창작마당 리소스가 있습니다",
+                "bodyLocal": "창작마당 항목은 이 장치에 설치되어 있고 아직 구독 중이지만, 연결된 모델 파일을 찾지 못했습니다. 폴더 구조 변경, 업데이트 미완료 또는 재동기화가 필요할 수 있습니다.",
+                "bodyCloud": "창작마당 항목은 이 장치에 설치되어 있고 아직 구독 중입니다. 캐릭터 데이터를 다운로드한 뒤에는 일반적으로 기존 복구 경로로 모델을 복구할 수 있습니다. 실패하면 재동기화가 필요할 수 있습니다."
+            },
+            "workshopCacheOnly": {
+                "title": "{{prefix}}: 오래된 캐시만 남아 있고 구독은 해제되었을 수 있습니다",
+                "bodyLocal": "이 장치는 더 이상 구독 상태가 아니며 현재 연결된 파일도 찾지 못했습니다. 오래된 캐시도 사용할 수 없다면 보통 다시 구독하거나 모델을 수동으로 가져와야 합니다.",
+                "bodyCloud": "이 장치는 더 이상 구독 상태가 아닙니다. 캐릭터 데이터를 다운로드한 뒤 오래된 캐시로 복구되지 않는다면 보통 다시 구독하거나 모델을 수동으로 가져와야 합니다."
+            },
+            "workshopSubscribed": {
+                "title": "{{prefix}}: 이 장치는 아직 창작마당 항목을 구독 중입니다",
+                "bodyLocal": "이 장치는 아직 창작마당 항목을 구독 중입니다. Steam 다운로드가 완료되면 일반적으로 복구할 수 있습니다. 오래 기다려도 복구되지 않으면 구조 변경이나 재동기화가 필요할 수 있습니다.",
+                "bodyCloud": "이 장치는 아직 창작마당 항목을 구독 중입니다. 캐릭터 데이터를 다운로드한 후 Steam 다운로드가 완료되면 일반적으로 모델을 복구할 수 있습니다."
+            },
+            "workshopResubscribe": {
+                "title": "{{prefix}}: 창작마당을 다시 구독해야 합니다",
+                "bodyLocal": "이 캐릭터는 원래 창작마당 리소스를 사용했지만, 이 장치에서는 이미 구독이 해제되었습니다. 항목이 아직 접근 가능하다면 먼저 다시 구독한 뒤 모델 복구를 시도하세요.",
+                "bodyCloud": "이 클라우드 캐릭터는 원래 창작마당 리소스를 사용했지만, 이 장치에서는 구독 중이 아닙니다. 다운로드 후 먼저 다시 구독한 뒤 모델 복구를 시도하세요."
+            },
+            "workshopUnavailable": {
+                "title": "{{prefix}}: 이 창작마당 항목에는 현재 접근할 수 없습니다",
+                "bodyLocal": "이 캐릭터는 원래 창작마당 리소스를 사용했지만, 해당 항목은 삭제되었거나 비공개이거나 현재 접근할 수 없습니다. 이 장치에서는 자동 복구가 불가능하므로 수동 백업이나 다시 가져오기가 필요합니다.",
+                "bodyCloud": "이 클라우드 캐릭터는 원래 창작마당 리소스를 사용했지만, 해당 항목은 삭제되었거나 비공개이거나 현재 접근할 수 없습니다. 다운로드 후에도 창작마당으로 자동 복구하는 것은 일반적으로 불가능합니다."
+            },
+            "workshopSteamUnavailable": {
+                "title": "{{prefix}}: 지금은 창작마당 복구 가능 여부를 확인할 수 없습니다",
+                "body": "Steam을 사용할 수 없거나 로그인되지 않았거나 Steamworks가 초기화되지 않았습니다. Steam이 복구된 뒤 항목을 다시 다운로드할 수 있는지 확인하세요."
+            },
+            "workshopUnknown": {
+                "title": "{{prefix}}: 창작마당 복구 상태가 확인되지 않았습니다",
+                "body": "현재 상태를 아직 확인할 수 없습니다. 창작마당 페이지에서 구독 상태와 항목 가용성을 확인하세요."
+            },
+            "localManualImport": {
+                "title": "로컬 리소스: 모델을 수동으로 가져와야 합니다",
+                "body": "이 장치에는 이 캐릭터가 사용하는 로컬 가져오기 또는 외부 모델이 없습니다. 모델 파일을 수동으로 가져오거나 옮겨 주세요."
+            },
+            "cloudManualImport": {
+                "title": "클라우드 다운로드 후: 모델을 수동으로 가져와야 합니다",
+                "body": "이 클라우드 캐릭터는 로컬로 가져온 모델 또는 외부 모델에 의존합니다. 이 장치에 다운로드한 뒤 해당 모델 파일을 수동으로 가져오거나 옮겨 주세요."
+            },
+            "localManualSource": {
+                "title": "이 캐릭터는 현재 로컬 또는 수동 모델을 사용합니다",
+                "body": "클라우드 저장은 캐릭터 데이터만 동기화합니다. 현재 사용 중인 로컬 가져오기 또는 외부 모델 파일 자체는 포함되지 않으므로, 다른 장치에서는 직접 준비해야 합니다."
+            },
+            "localModifiedModel": {
+                "title": "수동으로 모델을 바꿨다면 주의하세요",
+                "body": "원래 창작마당에서 복구 가능하던 모델을 교체했다면 지금은 수동 가져오기 모델로 처리됩니다. 업로드 후에도 다른 장치에서는 모델 파일을 직접 다시 준비해야 합니다."
+            },
+            "cloudManualSource": {
+                "title": "이 클라우드 캐릭터에는 현재 로컬 또는 수동 모델이 기록되어 있습니다",
+                "body": "이 클라우드 캐릭터를 다운로드해도 복원되는 것은 캐릭터 데이터뿐입니다. 기록된 로컬 가져오기 또는 외부 모델 파일은 포함되지 않으므로, 이 장치에서도 직접 준비해야 합니다."
+            },
+            "localWorkshopOrigin": {
+                "title": "이 캐릭터는 원래 Steam 창작마당에서 온 역할입니다",
+                "body": "이 캐릭터에 대응하는 Steam 창작마당 원본 출처는 아직 확인되지만, 현재 연결된 모델은 Steam 창작마당 경로가 아니라 이 장치의 로컬 또는 수동 모델입니다. 클라우드 저장은 캐릭터 데이터만 동기화하며 현재 모델 파일은 업로드하지 않습니다. 다른 장치에서도 지금의 모습을 유지하려면 모델을 수동으로 준비해야 합니다. Steam 창작마당 자동 복구로 돌아가려면 위에 표시된 Steam 창작마당 항목으로 다시 전환하세요."
+            },
+            "cloudWorkshopOrigin": {
+                "title": "이 클라우드 캐릭터는 원래 Steam 창작마당에서 온 역할입니다",
+                "body": "이 클라우드 캐릭터는 Steam 창작마당 캐릭터에서 업로드되었지만, 현재 기록된 모델은 Steam 창작마당 경로가 아니라 로컬 또는 수동 모델입니다. 다운로드해도 복원되는 것은 캐릭터 데이터뿐입니다. 다른 장치에서도 지금의 모습을 유지하려면 모델 파일을 수동으로 준비하고, 위에 표시된 Steam 창작마당 출처 상태도 함께 확인하세요."
+            },
+            "sourceDiverged": {
+                "title": "로컬 모델 출처가 클라우드 기록과 달라졌습니다",
+                "body": "로컬에서는 수동으로 가져온 모델 또는 외부 모델을 사용하고 있지만, 클라우드 기록은 아직 Steam 창작마당을 가리킵니다. 다시 업로드하면 클라우드 쪽도 캐릭터 데이터만 동기화되고 모델 파일은 포함되지 않습니다."
+            }
+        },
+        "hint": {
+            "uploadResubscribe": "\n이 로컬 캐릭터는 아직 창작마당 리소스를 사용하지만, 이 장치는 더 이상 유효한 구독 상태가 아닙니다. 다른 장치에서 다운로드한 뒤 모델을 복구하려면 다시 구독해야 할 수 있습니다.",
+            "uploadUnavailable": "\n이 로컬 캐릭터는 아직 창작마당 리소스를 사용하지만, 원래 항목에는 현재 접근할 수 없습니다. 다른 장치에서 다운로드한 뒤에는 창작마당으로 자동 복구하기 어려울 수 있습니다.",
+            "uploadUnconfirmed": "\n이 로컬 캐릭터는 창작마당 리소스에서 왔지만, 다른 장치에서도 창작마당으로 모델을 복구할 수 있는지는 지금 확인할 수 없습니다.",
+            "uploadOriginResubscribe": "\n이 캐릭터는 원래 창작마당에서 왔지만, 현재 연결된 모델은 이미 로컬 또는 수동 모델로 바뀌었습니다. 다른 장치에서 현재 외형을 유지하려면 이 모델 파일을 직접 준비해야 하며, 나중에 원래 창작마당 소스로 되돌리려면 다시 구독해야 할 수도 있습니다.",
+            "uploadOriginUnavailable": "\n이 캐릭터는 원래 창작마당에서 왔지만, 원래 항목에 더 이상 접근할 수 없고 현재 연결된 모델도 이미 로컬 또는 수동 모델로 바뀌었습니다. 다른 장치에서 현재 외형을 유지하려면 이 모델 파일을 직접 준비해야 하며, 창작마당으로 원래 소스를 자동 복구하는 것도 일반적으로 더 이상 불가능합니다.",
+            "uploadOriginUnconfirmed": "\n이 캐릭터는 원래 창작마당에서 왔지만, 현재 연결된 모델은 이미 로컬 또는 수동 모델로 바뀌었습니다. 다른 장치에서 현재 외형을 유지하려면 이 모델 파일을 직접 준비해야 하며, 원래 창작마당 항목을 아직 복구할 수 있는지도 지금은 확인할 수 없습니다.",
+            "downloadResubscribe": "\n이 클라우드 캐릭터는 원래 창작마당 리소스를 사용했지만, 이 장치는 유효한 구독 상태가 아닙니다. 다운로드 후 모델을 복구하려면 먼저 다시 구독해야 할 수 있습니다.",
+            "downloadUnavailable": "\n이 클라우드 캐릭터는 원래 창작마당 리소스를 사용했지만, 해당 항목에는 현재 접근할 수 없습니다. 다운로드 후에도 창작마당으로 자동 복구하는 것은 일반적으로 불가능합니다.",
+            "downloadUnconfirmed": "\n이 클라우드 캐릭터는 원래 창작마당 리소스를 사용했지만, 해당 항목이 아직 복구 가능한지는 지금 확인할 수 없습니다.",
+            "downloadOriginResubscribe": "\n이 클라우드 캐릭터는 원래 창작마당에서 왔지만, 기록된 연결 모델은 이미 로컬 또는 수동 모델로 바뀌었습니다. 다운로드 후에도 현재 모델 파일을 직접 준비해야 하며, 나중에 원래 창작마당 소스로 되돌리려면 다시 구독해야 할 수도 있습니다.",
+            "downloadOriginUnavailable": "\n이 클라우드 캐릭터는 원래 창작마당에서 왔지만, 원래 항목에 더 이상 접근할 수 없고 기록된 연결 모델도 이미 로컬 또는 수동 모델로 바뀌었습니다. 다운로드 후에도 현재 모델 파일을 직접 준비해야 하며, 창작마당으로 원래 소스를 자동 복구하는 것도 일반적으로 더 이상 불가능합니다.",
+            "downloadOriginUnconfirmed": "\n이 클라우드 캐릭터는 원래 창작마당에서 왔지만, 기록된 연결 모델은 이미 로컬 또는 수동 모델로 바뀌었습니다. 다운로드 후에도 현재 모델 파일을 직접 준비해야 하며, 원래 창작마당 항목을 아직 복구할 수 있는지도 지금은 확인할 수 없습니다."
+        },
+        "confirm": {
+            "uploadOverwrite": "같은 이름의 클라우드 캐릭터 데이터를 덮어씁니다. 로컬 캐릭터는 변경되지 않으며 모델 파일 본체도 업로드되지 않습니다.",
+            "uploadNew": "이 로컬 캐릭터를 클라우드에 업로드합니다. 모델 파일 본체는 포함되지 않습니다.",
+            "uploadManualAsset": "\n이 로컬 캐릭터는 수동으로 가져온 모델 또는 외부 모델을 사용합니다. 다른 장치에서 이 캐릭터를 다운로드해도 동일한 모델 파일을 직접 준비해야 합니다.",
+            "uploadFinal": "\n업로드를 계속하시겠습니까?",
+            "downloadOverwrite": "같은 이름의 로컬 캐릭터 설정과 메모리 디렉터리를 덮어씁니다. 모델 리소스는 자동으로 다운로드되지 않으며 먼저 로컬 백업을 만듭니다.",
+            "downloadNew": "이 클라우드 캐릭터를 로컬로 다운로드합니다. 모델 리소스는 자동으로 다운로드되지 않으며 먼저 로컬 백업을 만듭니다.",
+            "downloadManualAsset": "\n이 클라우드 캐릭터는 수동으로 가져온 모델 또는 외부 모델에 의존합니다. 이 장치에 파일이 없다면 다운로드 후에도 수동으로 가져오거나 옮겨야 합니다.",
+            "downloadFinal": "\n다운로드를 계속하시겠습니까?"
+        },
+        "dialog": {
+            "providerUnavailable": "클라우드 저장 제공자를 현재 사용할 수 없습니다. 나중에 다시 시도해 주세요.",
+            "uploadTitle": "클라우드 저장 업로드",
+            "downloadTitle": "클라우드 저장 다운로드",
+            "uploadSuccess": "업로드가 완료되었습니다.",
+            "downloadSuccess": "다운로드가 완료되었습니다.",
+            "operationFailed": "작업 실패: {{message}}",
+            "rollbackApplied": "\n로컬 데이터가 작업 전 상태로 자동 롤백되었습니다.",
+            "loadFailed": "클라우드 저장 요약을 불러오지 못했습니다: {{message}}",
+            "stateChanged": "클라우드 저장 상태가 변경되었습니다. 새로고침된 요약을 확인한 뒤 다시 시도해 주세요."
+        },
+        "action": {
+            "expandDetails": "세부 정보 펼치기",
+            "collapseDetails": "세부 정보 숨기기",
+            "uploadDisabledByProvider": "업로드 불가",
+            "uploadOverwrite": "업로드 후 클라우드 덮어쓰기",
+            "uploadNew": "클라우드에 업로드",
+            "uploadUnavailable": "업로드 불가",
+            "downloadDisabledByProvider": "다운로드 불가",
+            "downloadOverwrite": "다운로드 후 로컬 덮어쓰기",
+            "downloadNew": "로컬에 다운로드",
+            "downloadUnavailable": "다운로드 불가"
+        },
+        "meta": {
+            "groupLocal": "로컬 상태",
+            "groupCloud": "클라우드 상태",
+            "localAssetState": "로컬 리소스 상태",
+            "localAssetSource": "로컬 리소스 출처",
+            "localWorkshopStatus": "로컬 현재 상태",
+            "localCharacterOrigin": "로컬 캐릭터 출처",
+            "localOriginWorkshopStatus": "로컬 캐릭터 출처와 현재 상태",
+            "cloudAssetState": "클라우드 리소스 상태",
+            "cloudAssetSource": "클라우드 리소스 출처",
+            "cloudWorkshopStatus": "클라우드 현재 상태",
+            "cloudCharacterOrigin": "클라우드 캐릭터 출처",
+            "cloudOriginWorkshopStatus": "클라우드 캐릭터 출처와 현재 상태",
+            "localUpdatedAt": "로컬 업데이트 시각",
+            "cloudUpdatedAt": "클라우드 업데이트 시각"
+        },
+        "error": {
+            "providerUnavailable": "클라우드 저장 제공자를 현재 사용할 수 없습니다.",
+            "activeSessionBlocked": "이 캐릭터에는 활성 세션이 있습니다. 다운로드 전에 세션을 중지하세요.",
+            "memoryServerReleaseFailed": "덮어쓰기 전에 로컬 메모리 핸들을 해제하지 못했습니다. 나중에 다시 시도해 주세요.",
+            "localCharacterNotFound": "로컬 캐릭터를 찾을 수 없습니다.",
+            "cloudCharacterNotFound": "클라우드 캐릭터를 찾을 수 없습니다.",
+            "localCharacterExists": "같은 이름의 로컬 캐릭터가 이미 존재합니다.",
+            "cloudCharacterExists": "같은 이름의 클라우드 캐릭터가 이미 존재합니다.",
+            "writeFenceActive": "클라우드 저장 유지보수 보호가 활성화되어 있습니다. 나중에 다시 시도해 주세요.",
+            "nameAuditFailed": "캐릭터 이름이 클라우드 저장 검증 규칙을 통과하지 못했습니다.",
+            "uploadFailed": "업로드 실패: {{message}}",
+            "downloadFailed": "다운로드 실패: {{message}}",
+            "localReloadFailedRolledBack": "다운로드는 적용되었지만 로컬 다시 불러오기에 실패했습니다."
+        }
     },
     "settings": {
         "menu": {

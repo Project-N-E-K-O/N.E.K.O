@@ -289,6 +289,83 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_sync_workshop_character_cards_persists_character_origin_metadata():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            workshop_router_module = importlib.import_module("main_routers.workshop_router")
+
+            installed_folder = Path(td) / "mock_workshop_origin_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps(
+                    {
+                        "档案名": "工坊同步角色",
+                        "昵称": "来自创意工坊",
+                        "model_type": "live2d",
+                        "live2d": "Blue cat",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "3671939765",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards()
+
+        assert sync_result["added"] == 1
+
+        from utils.config_manager import get_reserved
+
+        current_characters = cm.load_characters()
+        payload = current_characters.get("猫娘", {}).get("工坊同步角色")
+        assert isinstance(payload, dict)
+        assert payload["昵称"] == "来自创意工坊"
+        assert get_reserved(payload, "avatar", "asset_source", default="") == "steam_workshop"
+        assert get_reserved(payload, "avatar", "asset_source_id", default="") == "3671939765"
+        assert get_reserved(payload, "avatar", "live2d", "model_path", default="") == "Blue cat/Blue cat.model3.json"
+        assert get_reserved(payload, "character_origin", "source", default="") == "steam_workshop"
+        assert get_reserved(payload, "character_origin", "source_id", default="") == "3671939765"
+        assert get_reserved(payload, "character_origin", "display_name", default="") == "Blue cat"
+        assert get_reserved(payload, "character_origin", "model_ref", default="") == "Blue cat/Blue cat.model3.json"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))

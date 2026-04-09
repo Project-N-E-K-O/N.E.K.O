@@ -1,0 +1,406 @@
+body {
+    margin: 0;
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    background:
+        radial-gradient(circle at top left, rgba(64, 197, 241, 0.12), transparent 28%),
+        linear-gradient(180deg, #f7fbff 0%, #eef4f8 100%);
+    color: #1f2b38;
+}
+
+.cloudsave-page {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 32px 20px 48px;
+}
+
+.cloudsave-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.cloudsave-header h1 {
+    margin: 0 0 8px;
+    font-size: 2rem;
+}
+
+.cloudsave-header p {
+    margin: 0;
+    color: #556575;
+}
+
+.cloudsave-header-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.btn {
+    border: none;
+    border-radius: 999px;
+    padding: 10px 18px;
+    background: #40c5f1;
+    color: #fff;
+    cursor: pointer;
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.btn.secondary {
+    background: #dce8ef;
+    color: #1f2b38;
+}
+
+.btn.danger {
+    background: #ea5b5b;
+}
+
+.btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.cloudsave-status-card,
+.cloudsave-item {
+    background: rgba(255, 255, 255, 0.86);
+    border: 1px solid rgba(64, 197, 241, 0.12);
+    border-radius: 20px;
+    box-shadow: 0 14px 40px rgba(25, 66, 107, 0.08);
+}
+
+.cloudsave-status-card {
+    padding: 18px 20px;
+    margin-bottom: 20px;
+}
+
+.cloudsave-name-note {
+    margin-bottom: 20px;
+    padding: 16px 18px;
+    border-radius: 18px;
+    background: rgba(255, 244, 221, 0.92);
+    border: 1px solid rgba(232, 169, 66, 0.26);
+    box-shadow: 0 12px 30px rgba(161, 108, 17, 0.08);
+}
+
+.cloudsave-name-note-title {
+    margin-bottom: 8px;
+    font-size: 0.96rem;
+    font-weight: 700;
+    color: #8b5a00;
+}
+
+.cloudsave-name-note-body {
+    margin: 0;
+    color: #7a5a1f;
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+.cloudsave-name-note-body + .cloudsave-name-note-body {
+    margin-top: 6px;
+}
+
+.cloudsave-list {
+    display: grid;
+    gap: 16px;
+}
+
+.cloudsave-group {
+    display: grid;
+    gap: 14px;
+    padding: 18px 20px 20px;
+    border-radius: 24px;
+    background: rgba(255, 255, 255, 0.58);
+    border: 1px solid rgba(64, 197, 241, 0.12);
+}
+
+.cloudsave-group.workshop {
+    background:
+        linear-gradient(180deg, rgba(232, 248, 255, 0.92) 0%, rgba(255, 255, 255, 0.72) 100%);
+    border-color: rgba(64, 197, 241, 0.2);
+}
+
+.cloudsave-group.other {
+    background:
+        linear-gradient(180deg, rgba(247, 250, 252, 0.95) 0%, rgba(255, 255, 255, 0.78) 100%);
+    border-color: rgba(148, 163, 184, 0.18);
+}
+
+.cloudsave-group-header {
+    display: grid;
+    gap: 8px;
+}
+
+.cloudsave-group-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.cloudsave-group-title {
+    margin: 0;
+    font-size: 1.05rem;
+    color: #23384d;
+}
+
+.cloudsave-group-count {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(31, 43, 56, 0.06);
+    color: #536577;
+    font-size: 0.82rem;
+    font-weight: 600;
+}
+
+.cloudsave-group-subtitle {
+    margin: 0;
+    color: #607284;
+    font-size: 0.9rem;
+    line-height: 1.55;
+}
+
+.cloudsave-group-list {
+    display: grid;
+    gap: 16px;
+}
+
+.cloudsave-item {
+    padding: 18px 20px;
+}
+
+.cloudsave-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.cloudsave-item-main {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+}
+
+.cloudsave-item-expand {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.cloudsave-item-expand:hover {
+    background: rgba(64, 197, 241, 0.12);
+}
+
+.cloudsave-item-expand-icon {
+    width: 24px;
+    height: 24px;
+    user-select: none;
+    transition: transform 0.2s ease;
+    transform: rotate(-90deg);
+}
+
+.cloudsave-item-expand.open .cloudsave-item-expand-icon {
+    transform: rotate(0deg);
+}
+
+.cloudsave-item-title {
+    margin: 0;
+    font-size: 1.12rem;
+}
+
+.cloudsave-item-subtitle {
+    margin: 4px 0 0;
+    color: #677786;
+    font-size: 0.92rem;
+}
+
+.cloudsave-badges,
+.cloudsave-item-actions,
+.cloudsave-warning-list,
+.cloudsave-meta-grid,
+.cloudsave-guidance-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.cloudsave-item-details {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(64, 197, 241, 0.12);
+}
+
+.cloudsave-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    background: #eaf8fd;
+    color: #0f6e89;
+}
+
+.cloudsave-meta-sections {
+    margin: 14px 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+}
+
+.cloudsave-meta-section {
+    padding: 12px;
+    border-radius: 16px;
+    border: 1px solid rgba(64, 197, 241, 0.12);
+}
+
+.cloudsave-meta-section.local {
+    background: linear-gradient(180deg, rgba(234, 248, 253, 0.9) 0%, rgba(255, 255, 255, 0.9) 100%);
+}
+
+.cloudsave-meta-section.cloud {
+    background: linear-gradient(180deg, rgba(255, 247, 236, 0.92) 0%, rgba(255, 255, 255, 0.9) 100%);
+    border-color: rgba(232, 169, 66, 0.16);
+}
+
+.cloudsave-meta-section-title {
+    margin-bottom: 10px;
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: #415363;
+}
+
+.cloudsave-meta-grid {
+    margin: 0;
+    display: grid;
+    gap: 8px;
+}
+
+.cloudsave-meta {
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: #f5f8fb;
+}
+
+.cloudsave-meta-label {
+    display: block;
+    font-size: 0.78rem;
+    color: #718293;
+    margin-bottom: 4px;
+}
+
+.cloudsave-meta-value {
+    font-size: 0.92rem;
+    word-break: break-word;
+}
+
+.cloudsave-warning-list {
+    margin-top: 10px;
+}
+
+.cloudsave-warning {
+    padding: 8px 10px;
+    border-radius: 12px;
+    background: #fff4dd;
+    color: #8b5a00;
+    font-size: 0.88rem;
+}
+
+.cloudsave-section-title {
+    margin-top: 14px;
+    margin-bottom: 8px;
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: #415363;
+}
+
+.cloudsave-guidance-list {
+    margin-bottom: 14px;
+}
+
+.cloudsave-guidance {
+    flex: 1 1 240px;
+    min-width: 220px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid transparent;
+}
+
+.cloudsave-guidance.info {
+    background: #edf8ff;
+    border-color: rgba(64, 197, 241, 0.22);
+    color: #0f6e89;
+}
+
+.cloudsave-guidance.caution {
+    background: #fff6e6;
+    border-color: rgba(232, 169, 66, 0.26);
+    color: #8b5a00;
+}
+
+.cloudsave-guidance.strong {
+    background: #fff1ef;
+    border-color: rgba(234, 91, 91, 0.22);
+    color: #9d2f2f;
+}
+
+.cloudsave-guidance-title {
+    font-size: 0.9rem;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+.cloudsave-guidance-body {
+    font-size: 0.88rem;
+    line-height: 1.55;
+}
+
+.cloudsave-empty {
+    padding: 28px;
+    text-align: center;
+    color: #677786;
+    background: rgba(255, 255, 255, 0.76);
+    border-radius: 18px;
+}
+
+@media (max-width: 768px) {
+    .cloudsave-header {
+        flex-direction: column;
+    }
+
+    .cloudsave-group {
+        padding: 16px;
+    }
+
+    .cloudsave-item-header {
+        flex-direction: column;
+    }
+
+    .cloudsave-item-main {
+        width: 100%;
+    }
+
+    .cloudsave-group-title-row {
+        align-items: flex-start;
+    }
+
+    .cloudsave-meta-sections {
+        grid-template-columns: 1fr;
+    }
+}

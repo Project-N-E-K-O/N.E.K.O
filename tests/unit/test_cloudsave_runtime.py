@@ -78,6 +78,29 @@ def _write_runtime_state(cm, *, character_name="小满"):
     return characters
 
 
+def _add_runtime_character(cm, character_name: str, *, recent_text: str) -> None:
+    from utils.config_manager import set_reserved
+
+    characters = cm.load_characters()
+    template_payload = copy.deepcopy(next(iter(characters["猫娘"].values())))
+    template_payload["档案名"] = character_name
+    set_reserved(template_payload, "avatar", "model_type", "live2d")
+    set_reserved(template_payload, "avatar", "asset_source", "steam_workshop")
+    set_reserved(template_payload, "avatar", "asset_source_id", "123456")
+    set_reserved(template_payload, "avatar", "live2d", "model_path", "example/example.model3.json")
+    characters["猫娘"][character_name] = template_payload
+    cm.save_characters(characters, bypass_write_fence=True)
+
+    character_memory_dir = Path(cm.memory_dir) / character_name
+    character_memory_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        character_memory_dir / "recent.json",
+        [{"role": "user", "content": recent_text}],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 @pytest.mark.unit
 def test_bootstrap_creates_manifest_and_legacy_state(tmp_path):
     cm = _make_config_manager(tmp_path)
@@ -567,6 +590,985 @@ def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
 
 
 @pytest.mark.unit
+def test_cloudsave_summary_marks_exported_character_as_matched(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import (
+        build_cloudsave_character_detail,
+        build_cloudsave_summary,
+        export_local_cloudsave_snapshot,
+    )
+
+    _write_runtime_state(cm, character_name="小满")
+    export_local_cloudsave_snapshot(cm)
+
+    summary = build_cloudsave_summary(cm)
+
+    assert summary["success"] is True
+    assert summary["provider_available"] is True
+    assert summary["current_character_name"] == "小满"
+    assert len(summary["items"]) == 1
+    assert summary["items"][0]["character_name"] == "小满"
+    assert summary["items"][0]["relation_state"] == "matched"
+    assert summary["items"][0]["available_actions"] == []
+
+    detail = build_cloudsave_character_detail(cm, "小满")
+    assert detail is not None
+    assert detail["item"]["relation_state"] == "matched"
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_marks_exported_character_as_matched_with_live_sqlite_memory_db(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary, export_cloudsave_character_unit
+
+    _write_runtime_state(cm, character_name="小满")
+    db_path = Path(cm.memory_dir) / "小满" / "time_indexed.db"
+    db_path.unlink(missing_ok=True)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        conn.execute("CREATE TABLE memory_events (id INTEGER PRIMARY KEY, content TEXT)")
+        conn.execute("INSERT INTO memory_events (content) VALUES (?)", ("first",))
+        conn.commit()
+        conn.execute("INSERT INTO memory_events (content) VALUES (?)", ("second",))
+        conn.commit()
+
+        export_cloudsave_character_unit(cm, "小满")
+        summary = build_cloudsave_summary(cm)
+    finally:
+        conn.close()
+
+    assert summary["items"][0]["character_name"] == "小满"
+    assert summary["items"][0]["relation_state"] == "matched"
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_returns_empty_items_without_characters(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary
+
+    cm.save_characters({"猫娘": {}, "主人": {}, "当前猫娘": ""}, bypass_write_fence=True)
+    summary = build_cloudsave_summary(cm)
+
+    assert summary["success"] is True
+    assert summary["provider_available"] is True
+    assert summary["current_character_name"] == ""
+    assert summary["items"] == []
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_classifies_local_cloud_and_diverged_states(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils.cloudsave_runtime import build_cloudsave_summary, export_local_cloudsave_snapshot
+
+    _write_runtime_state(source_cm, character_name="共同角色")
+    _add_runtime_character(source_cm, "云端独有", recent_text="cloud-only-memory")
+    export_local_cloudsave_snapshot(source_cm)
+
+    _write_runtime_state(target_cm, character_name="共同角色")
+    common_recent_path = Path(target_cm.memory_dir) / "共同角色" / "recent.json"
+    atomic_write_json(
+        common_recent_path,
+        [{"role": "user", "content": "target-diverged-memory"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    _add_runtime_character(target_cm, "本地独有", recent_text="local-only-memory")
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    summary = build_cloudsave_summary(target_cm)
+    items_by_name = {item["character_name"]: item for item in summary["items"]}
+
+    assert items_by_name["共同角色"]["relation_state"] == "diverged"
+    assert items_by_name["共同角色"]["available_actions"] == ["upload", "download"]
+    assert items_by_name["本地独有"]["relation_state"] == "local_only"
+    assert items_by_name["本地独有"]["available_actions"] == ["upload"]
+    assert items_by_name["云端独有"]["relation_state"] == "cloud_only"
+    assert items_by_name["云端独有"]["available_actions"] == ["download"]
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_merges_legacy_and_sharded_cloud_characters(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary, export_cloudsave_character_unit
+
+    _write_runtime_state(cm, character_name="新角色")
+    legacy_payload = copy.deepcopy(cm.load_characters()["猫娘"]["新角色"])
+    legacy_payload["档案名"] = "旧角色"
+    atomic_write_json(
+        cm.cloudsave_profiles_dir / "characters.json",
+        {"猫娘": {"旧角色": legacy_payload}},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    export_cloudsave_character_unit(cm, "新角色")
+
+    summary = build_cloudsave_summary(cm)
+    items_by_name = {item["character_name"]: item for item in summary["items"]}
+
+    assert items_by_name["旧角色"]["relation_state"] == "cloud_only"
+    assert items_by_name["旧角色"]["cloud_exists"] is True
+    assert items_by_name["新角色"]["relation_state"] == "matched"
+    assert items_by_name["新角色"]["cloud_exists"] is True
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_prefers_sharded_binding_payload_over_stale_legacy_binding(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary, export_cloudsave_character_unit
+
+    _write_runtime_state(cm, character_name="小满")
+    export_cloudsave_character_unit(cm, "小满")
+
+    stale_binding_path = cm.cloudsave_bindings_dir / "小满.json"
+    stale_binding_payload = json.loads(stale_binding_path.read_text(encoding="utf-8"))
+    stale_binding_payload["model_ref"] = "stale/stale.model3.json"
+    stale_binding_payload["asset_source"] = "local_imported"
+    stale_binding_payload["asset_source_id"] = ""
+    atomic_write_json(stale_binding_path, stale_binding_payload, ensure_ascii=False, indent=2)
+
+    summary = build_cloudsave_summary(cm)
+
+    assert summary["items"][0]["character_name"] == "小满"
+    assert summary["items"][0]["relation_state"] == "matched"
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_prefers_sharded_memory_over_stale_legacy_memory(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary, export_cloudsave_character_unit
+
+    _write_runtime_state(cm, character_name="小满")
+    export_cloudsave_character_unit(cm, "小满")
+
+    stale_recent_path = cm.cloudsave_memory_dir / "小满" / "recent.json"
+    atomic_write_json(
+        stale_recent_path,
+        [{"role": "user", "content": "stale-legacy-memory"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    summary = build_cloudsave_summary(cm)
+
+    assert summary["items"][0]["character_name"] == "小满"
+    assert summary["items"][0]["relation_state"] == "matched"
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_uses_configured_workshop_root_for_local_asset_resolution(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary
+
+    _write_runtime_state(cm, character_name="小满")
+
+    default_workshop_model_dir = Path(cm.workshop_dir) / "123456" / "example"
+    shutil.rmtree(default_workshop_model_dir.parent, ignore_errors=True)
+
+    custom_workshop_root = tmp_path / "external_workshop_root"
+    custom_workshop_model_dir = custom_workshop_root / "123456" / "example"
+    custom_workshop_model_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        custom_workshop_model_dir / "example.model3.json",
+        {"Version": 3},
+        ensure_ascii=False,
+        indent=2,
+    )
+    cm.save_workshop_path(str(custom_workshop_root))
+
+    summary = build_cloudsave_summary(cm)
+    item = summary["items"][0]
+
+    assert item["local_asset_state"] == "ready"
+    assert item["warnings"] == []
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_resolves_workshop_model_from_item_scan_when_stored_path_is_stale(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary
+    from utils.config_manager import set_reserved
+
+    _write_runtime_state(cm, character_name="Tian")
+
+    characters = cm.load_characters()
+    set_reserved(characters["猫娘"]["Tian"], "avatar", "model_type", "live2d")
+    set_reserved(characters["猫娘"]["Tian"], "avatar", "asset_source", "steam_workshop")
+    set_reserved(characters["猫娘"]["Tian"], "avatar", "asset_source_id", "123456")
+    set_reserved(characters["猫娘"]["Tian"], "avatar", "live2d", "model_path", "legacy/legacy.model3.json")
+    cm.save_characters(characters, bypass_write_fence=True)
+
+    legacy_item_root = Path(cm.workshop_dir) / "123456"
+    shutil.rmtree(legacy_item_root, ignore_errors=True)
+    actual_model_dir = legacy_item_root / "current-layout" / "tian"
+    actual_model_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        actual_model_dir / "tian.model3.json",
+        {"Version": 3},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    summary = build_cloudsave_summary(cm)
+    item = summary["items"][0]
+
+    assert item["character_name"] == "Tian"
+    assert item["local_asset_state"] == "ready"
+    assert item["warnings"] == []
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_resolves_stale_local_live2d_filename_from_existing_folder(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary
+    from utils.config_manager import set_reserved
+
+    _write_runtime_state(cm, character_name="水水")
+
+    characters = cm.load_characters()
+    set_reserved(characters["猫娘"]["水水"], "avatar", "model_type", "live2d")
+    set_reserved(characters["猫娘"]["水水"], "avatar", "asset_source", "local")
+    set_reserved(characters["猫娘"]["水水"], "avatar", "asset_source_id", "")
+    set_reserved(characters["猫娘"]["水水"], "avatar", "live2d", "model_path", "yui-export/yui-export.model3.json")
+    cm.save_characters(characters, bypass_write_fence=True)
+
+    actual_model_dir = Path(cm.live2d_dir) / "yui-export"
+    actual_model_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        actual_model_dir / "0313YUI03.model3.json",
+        {"Version": 3},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    summary = build_cloudsave_summary(cm)
+    item = summary["items"][0]
+
+    assert item["character_name"] == "水水"
+    assert item["local_asset_state"] == "ready"
+    assert item["local_asset_source"] == "local_imported"
+    assert item["local_asset_source_id"] == ""
+    assert item["warnings"] == []
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_infers_workshop_source_from_resolved_workshop_file_when_metadata_is_stale(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary
+    from utils.config_manager import set_reserved
+
+    _write_runtime_state(cm, character_name="工坊角色")
+
+    characters = cm.load_characters()
+    set_reserved(characters["猫娘"]["工坊角色"], "avatar", "model_type", "live2d")
+    set_reserved(characters["猫娘"]["工坊角色"], "avatar", "asset_source", "local")
+    set_reserved(characters["猫娘"]["工坊角色"], "avatar", "asset_source_id", "")
+    set_reserved(characters["猫娘"]["工坊角色"], "avatar", "live2d", "model_path", "Blue cat/Blue cat.model3.json")
+    cm.save_characters(characters, bypass_write_fence=True)
+
+    workshop_model_dir = Path(cm.workshop_dir) / "3671939765" / "Blue cat"
+    workshop_model_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        workshop_model_dir / "Blue cat 2.model3.json",
+        {"Version": 3},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    summary = build_cloudsave_summary(cm)
+    item = summary["items"][0]
+
+    assert item["character_name"] == "工坊角色"
+    assert item["local_asset_state"] == "ready"
+    assert item["local_asset_source"] == "steam_workshop"
+    assert item["local_asset_source_id"] == "3671939765"
+    assert item["warnings"] == []
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_preserves_explicit_workshop_role_origin_even_when_current_model_is_local(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary
+    from utils.config_manager import set_reserved
+
+    _write_runtime_state(cm, character_name="水水")
+
+    characters = cm.load_characters()
+    set_reserved(characters["猫娘"]["水水"], "avatar", "model_type", "live2d")
+    set_reserved(characters["猫娘"]["水水"], "avatar", "asset_source", "local")
+    set_reserved(characters["猫娘"]["水水"], "avatar", "asset_source_id", "")
+    set_reserved(characters["猫娘"]["水水"], "avatar", "live2d", "model_path", "猫娘-YUI-洛丽塔-导出03/猫娘-YUI-洛丽塔-导出03.model3.json")
+    set_reserved(characters["猫娘"]["水水"], "character_origin", "source", "steam_workshop")
+    set_reserved(characters["猫娘"]["水水"], "character_origin", "source_id", "3671939765")
+    set_reserved(characters["猫娘"]["水水"], "character_origin", "display_name", "Blue cat")
+    set_reserved(
+        characters["猫娘"]["水水"],
+        "character_origin",
+        "model_ref",
+        "Blue cat/Blue cat.model3.json",
+    )
+    cm.save_characters(characters, bypass_write_fence=True)
+
+    local_model_dir = Path(cm.live2d_dir) / "猫娘-YUI-洛丽塔-导出03"
+    local_model_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        local_model_dir / "0313YUI03.model3.json",
+        {"Version": 3},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    summary = build_cloudsave_summary(cm)
+    item = summary["items"][0]
+
+    assert item["character_name"] == "水水"
+    assert item["local_asset_state"] == "ready"
+    assert item["local_asset_source"] == "local_imported"
+    assert item["local_asset_source_id"] == ""
+    assert item["local_origin_source"] == "steam_workshop"
+    assert item["local_origin_source_id"] == "3671939765"
+    assert item["local_origin_display_name"] == "Blue cat"
+    assert item["warnings"] == []
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_backfills_workshop_role_origin_only_when_profile_payload_matches(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary
+    from utils.config_manager import set_reserved
+
+    characters = cm.get_default_characters()
+    characters["猫娘"] = {
+        "工坊旧角色": {
+            "昵称": "海盐",
+            "口头禅": "今天也要加油",
+        }
+    }
+    characters["当前猫娘"] = "工坊旧角色"
+    set_reserved(characters["猫娘"]["工坊旧角色"], "avatar", "model_type", "live2d")
+    set_reserved(characters["猫娘"]["工坊旧角色"], "avatar", "asset_source", "local")
+    set_reserved(characters["猫娘"]["工坊旧角色"], "avatar", "asset_source_id", "")
+    set_reserved(characters["猫娘"]["工坊旧角色"], "avatar", "live2d", "model_path", "manual/manual.model3.json")
+    cm.save_characters(characters, bypass_write_fence=True)
+
+    local_model_dir = Path(cm.live2d_dir) / "manual"
+    local_model_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        local_model_dir / "manual.model3.json",
+        {"Version": 3},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    workshop_item_root = Path(cm.workshop_dir) / "3671939765"
+    workshop_item_root.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        workshop_item_root / "工坊旧角色.chara.json",
+        {
+            "档案名": "工坊旧角色",
+            "昵称": "海盐",
+            "口头禅": "今天也要加油",
+            "model_type": "live2d",
+            "live2d": "Blue cat",
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    summary = build_cloudsave_summary(cm)
+    item = summary["items"][0]
+
+    assert item["local_asset_source"] == "local_imported"
+    assert item["local_origin_source"] == "steam_workshop"
+    assert item["local_origin_source_id"] == "3671939765"
+    assert item["local_origin_display_name"] == "Blue cat"
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_does_not_backfill_workshop_role_origin_from_name_only_match(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary
+    from utils.config_manager import set_reserved
+
+    _write_runtime_state(cm, character_name="水水")
+
+    characters = cm.load_characters()
+    characters["猫娘"]["水水"]["昵称"] = "本地创建"
+    set_reserved(characters["猫娘"]["水水"], "avatar", "model_type", "live2d")
+    set_reserved(characters["猫娘"]["水水"], "avatar", "asset_source", "local")
+    set_reserved(characters["猫娘"]["水水"], "avatar", "asset_source_id", "")
+    set_reserved(characters["猫娘"]["水水"], "avatar", "live2d", "model_path", "猫娘-YUI-洛丽塔-导出03/猫娘-YUI-洛丽塔-导出03.model3.json")
+    cm.save_characters(characters, bypass_write_fence=True)
+
+    local_model_dir = Path(cm.live2d_dir) / "猫娘-YUI-洛丽塔-导出03"
+    local_model_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        local_model_dir / "0313YUI03.model3.json",
+        {"Version": 3},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    workshop_item_root = Path(cm.workshop_dir) / "3671939765"
+    workshop_item_root.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        workshop_item_root / "水水.chara.json",
+        {
+            "档案名": "水水",
+            "昵称": "来自工坊",
+            "model_type": "live2d",
+            "live2d": "Blue cat",
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    summary = build_cloudsave_summary(cm)
+    item = summary["items"][0]
+
+    assert item["local_asset_state"] == "ready"
+    assert item["local_asset_source"] == "local_imported"
+    assert item["local_origin_source"] == ""
+    assert item["local_origin_source_id"] == ""
+    assert item["local_origin_display_name"] == ""
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_does_not_treat_workshop_model_binding_as_workshop_role_origin(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary
+
+    _write_runtime_state(cm, character_name="普通角色")
+
+    summary = build_cloudsave_summary(cm)
+    item = summary["items"][0]
+
+    assert item["local_asset_state"] == "ready"
+    assert item["local_asset_source"] == "steam_workshop"
+    assert item["local_asset_source_id"] == "123456"
+    assert item["local_origin_source"] == ""
+    assert item["local_origin_source_id"] == ""
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_keeps_missing_relative_local_model_as_local_imported(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary, export_cloudsave_character_unit
+    from utils.config_manager import set_reserved
+
+    _write_runtime_state(cm, character_name="缺资源本地导入")
+
+    characters = cm.load_characters()
+    set_reserved(characters["猫娘"]["缺资源本地导入"], "avatar", "model_type", "live2d")
+    set_reserved(characters["猫娘"]["缺资源本地导入"], "avatar", "asset_source", "local")
+    set_reserved(characters["猫娘"]["缺资源本地导入"], "avatar", "asset_source_id", "")
+    set_reserved(
+        characters["猫娘"]["缺资源本地导入"],
+        "avatar",
+        "live2d",
+        "model_path",
+        "missing-local/missing-local.model3.json",
+    )
+    cm.save_characters(characters, bypass_write_fence=True)
+
+    summary = build_cloudsave_summary(cm)
+    item = summary["items"][0]
+    assert item["local_asset_source"] == "local_imported"
+    assert item["local_asset_state"] == "import_required"
+    assert item["warnings"] == ["local_resource_missing_on_this_device"]
+
+    export_cloudsave_character_unit(cm, "缺资源本地导入")
+    binding_payload = json.loads(
+        (cm.cloudsave_dir / "characters" / "缺资源本地导入" / "binding.json").read_text(encoding="utf-8")
+    )
+    assert binding_payload["asset_source"] == "local_imported"
+    assert binding_payload["asset_state"] == "import_required"
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_prefers_local_warnings_for_existing_character(tmp_path):
+    from utils import cloudsave_runtime
+
+    local_summary = {
+        "character_name": "Tian",
+        "display_name": "Tian",
+        "model_type": "live2d",
+        "asset_source": "steam_workshop",
+        "asset_source_id": "123456",
+        "asset_state": "ready",
+        "updated_at_utc": "2026-04-09T00:00:00Z",
+        "fingerprint": "sha256:local",
+        "warnings": [],
+    }
+    cloud_summary = {
+        "character_name": "Tian",
+        "display_name": "Tian",
+        "model_type": "live2d",
+        "asset_source": "steam_workshop",
+        "asset_source_id": "123456",
+        "asset_state": "downloadable",
+        "updated_at_utc": "2026-04-09T00:00:00Z",
+        "fingerprint": "sha256:cloud",
+        "warnings": ["cloud_resource_may_be_missing_after_download"],
+    }
+
+    item = cloudsave_runtime._merge_character_summary_item(
+        character_name="Tian",
+        local_summary=local_summary,
+        cloud_summary=cloud_summary,
+    )
+
+    assert item["relation_state"] == "diverged"
+    assert item["warnings"] == []
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_keeps_cloud_warning_for_cloud_only_character(tmp_path):
+    from utils import cloudsave_runtime
+
+    cloud_summary = {
+        "character_name": "云端角色",
+        "display_name": "云端角色",
+        "model_type": "live2d",
+        "asset_source": "steam_workshop",
+        "asset_source_id": "123456",
+        "asset_state": "downloadable",
+        "updated_at_utc": "2026-04-09T00:00:00Z",
+        "fingerprint": "sha256:cloud",
+        "warnings": ["cloud_resource_may_be_missing_after_download"],
+    }
+
+    item = cloudsave_runtime._merge_character_summary_item(
+        character_name="云端角色",
+        local_summary=None,
+        cloud_summary=cloud_summary,
+    )
+
+    assert item["relation_state"] == "cloud_only"
+    assert item["warnings"] == ["cloud_resource_may_be_missing_after_download"]
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_keeps_local_warning_for_local_existing_character(tmp_path):
+    from utils import cloudsave_runtime
+
+    local_summary = {
+        "character_name": "本地角色",
+        "display_name": "本地角色",
+        "model_type": "live2d",
+        "asset_source": "local_imported",
+        "asset_source_id": "",
+        "asset_state": "import_required",
+        "updated_at_utc": "2026-04-09T00:00:00Z",
+        "fingerprint": "sha256:local",
+        "warnings": ["local_resource_missing_on_this_device"],
+    }
+
+    item = cloudsave_runtime._merge_character_summary_item(
+        character_name="本地角色",
+        local_summary=local_summary,
+        cloud_summary=None,
+    )
+
+    assert item["relation_state"] == "local_only"
+    assert item["warnings"] == ["local_resource_missing_on_this_device"]
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_preserves_separate_local_and_cloud_asset_sources(tmp_path):
+    from utils import cloudsave_runtime
+
+    local_summary = {
+        "character_name": "共享角色",
+        "display_name": "共享角色",
+        "model_type": "live2d",
+        "asset_source": "local_imported",
+        "asset_source_id": "",
+        "asset_state": "ready",
+        "updated_at_utc": "2026-04-09T00:00:00Z",
+        "fingerprint": "sha256:local",
+        "warnings": [],
+    }
+    cloud_summary = {
+        "character_name": "共享角色",
+        "display_name": "共享角色",
+        "model_type": "live2d",
+        "asset_source": "steam_workshop",
+        "asset_source_id": "123456",
+        "asset_state": "downloadable",
+        "updated_at_utc": "2026-04-09T01:00:00Z",
+        "fingerprint": "sha256:cloud",
+        "warnings": ["cloud_resource_may_be_missing_after_download"],
+    }
+
+    item = cloudsave_runtime._merge_character_summary_item(
+        character_name="共享角色",
+        local_summary=local_summary,
+        cloud_summary=cloud_summary,
+    )
+
+    assert item["asset_source"] == "local_imported"
+    assert item["local_asset_source"] == "local_imported"
+    assert item["local_asset_source_id"] == ""
+    assert item["cloud_asset_source"] == "steam_workshop"
+    assert item["cloud_asset_source_id"] == "123456"
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_uses_single_character_meta_updated_at(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary, export_cloudsave_character_unit
+
+    _write_runtime_state(cm, character_name="角色A")
+    _add_runtime_character(cm, "角色B", recent_text="b-memory")
+
+    export_cloudsave_character_unit(cm, "角色A")
+    export_cloudsave_character_unit(cm, "角色B")
+
+    expected_times = {
+        "角色A": "2026-04-08T10:00:00Z",
+        "角色B": "2026-04-09T11:30:00Z",
+    }
+    for character_name, updated_at in expected_times.items():
+        meta_path = cm.cloudsave_dir / "characters" / character_name / "meta.json"
+        meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta_payload["updated_at_utc"] = updated_at
+        atomic_write_json(meta_path, meta_payload, ensure_ascii=False, indent=2)
+
+    summary = build_cloudsave_summary(cm)
+    items_by_name = {item["character_name"]: item for item in summary["items"]}
+
+    assert items_by_name["角色A"]["cloud_updated_at_utc"] == expected_times["角色A"]
+    assert items_by_name["角色B"]["cloud_updated_at_utc"] == expected_times["角色B"]
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_hides_cloud_entries_when_provider_is_unavailable(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary, export_local_cloudsave_snapshot
+
+    _write_runtime_state(cm, character_name="小满")
+    export_local_cloudsave_snapshot(cm)
+    cm.cloudsave_provider_available = False
+
+    summary = build_cloudsave_summary(cm)
+
+    assert summary["provider_available"] is False
+    assert len(summary["items"]) == 1
+    assert summary["items"][0]["character_name"] == "小满"
+    assert summary["items"][0]["relation_state"] == "local_only"
+    assert summary["items"][0]["cloud_exists"] is False
+
+
+@pytest.mark.unit
+def test_export_snapshot_emits_single_character_shards_and_meta(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot
+
+    _write_runtime_state(cm, character_name="小满")
+    export_local_cloudsave_snapshot(cm)
+
+    assert (cm.cloudsave_dir / "characters" / "小满" / "profile.json").is_file()
+    assert (cm.cloudsave_dir / "characters" / "小满" / "binding.json").is_file()
+    assert (cm.cloudsave_dir / "characters" / "小满" / "memory" / "recent.json").is_file()
+    meta_payload = json.loads((cm.cloudsave_dir / "characters" / "小满" / "meta.json").read_text(encoding="utf-8"))
+    assert meta_payload["character_name"] == "小满"
+    assert meta_payload["payload_fingerprint"].startswith("sha256:")
+
+
+@pytest.mark.unit
+def test_export_cloudsave_character_unit_updates_only_single_character_scope(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import export_cloudsave_character_unit
+
+    _write_runtime_state(cm, character_name="小满")
+
+    result = export_cloudsave_character_unit(cm, "小满")
+
+    assert result["character_name"] == "小满"
+    assert result["detail"]["item"]["relation_state"] == "matched"
+    assert (cm.cloudsave_dir / "profiles" / "characters.json").is_file()
+    assert (cm.cloudsave_dir / "bindings" / "小满.json").is_file()
+    assert (cm.cloudsave_dir / "memory" / "小满" / "recent.json").is_file()
+    assert (cm.cloudsave_dir / "characters" / "小满" / "meta.json").is_file()
+    assert not (cm.cloudsave_dir / "profiles" / "conversation_settings.json").exists()
+    assert not (cm.cloudsave_dir / "catalog" / "current_character.json").exists()
+
+    manifest_payload = json.loads(cm.cloudsave_manifest_path.read_text(encoding="utf-8"))
+    assert "characters/小满/profile.json" in manifest_payload["files"]
+    assert "profiles/characters.json" in manifest_payload["files"]
+
+
+@pytest.mark.unit
+def test_single_character_upload_rebuilds_legacy_mirrors_from_sharded_cloud_union(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils.cloudsave_runtime import export_cloudsave_character_unit, import_local_cloudsave_snapshot
+
+    _write_runtime_state(source_cm, character_name="角色A")
+    _add_runtime_character(source_cm, "角色B", recent_text="b-memory")
+
+    export_cloudsave_character_unit(source_cm, "角色A")
+    export_cloudsave_character_unit(source_cm, "角色B")
+
+    role_a_profile = json.loads(
+        (source_cm.cloudsave_dir / "characters" / "角色A" / "profile.json").read_text(encoding="utf-8")
+    )
+    atomic_write_json(
+        source_cm.cloudsave_profiles_dir / "characters.json",
+        {"猫娘": {"角色A": role_a_profile}},
+        ensure_ascii=False,
+        indent=2,
+    )
+    atomic_write_json(
+        source_cm.cloudsave_catalog_dir / "catgirls_index.json",
+        {
+            "schema_version": 1,
+            "sequence_number": 1,
+            "exported_at_utc": "2026-04-09T00:00:00Z",
+            "characters": [{"character_name": "角色A"}],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    export_cloudsave_character_unit(source_cm, "角色A", overwrite=True)
+
+    repaired_profiles = json.loads((source_cm.cloudsave_profiles_dir / "characters.json").read_text(encoding="utf-8"))
+    repaired_catalog = json.loads((source_cm.cloudsave_catalog_dir / "catgirls_index.json").read_text(encoding="utf-8"))
+    assert set((repaired_profiles.get("猫娘") or {}).keys()) == {"角色A", "角色B"}
+    assert {entry.get("character_name") for entry in repaired_catalog.get("characters") or []} == {"角色A", "角色B"}
+
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    result = import_local_cloudsave_snapshot(target_cm)
+
+    assert result["applied_character_count"] == 2
+    assert set((target_cm.load_characters().get("猫娘") or {}).keys()) == {"角色A", "角色B"}
+
+
+@pytest.mark.unit
+def test_load_cloudsave_character_unit_respects_tombstones_for_sharded_characters(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import _load_cloudsave_character_unit, export_cloudsave_character_unit
+
+    _write_runtime_state(cm, character_name="小满")
+    export_cloudsave_character_unit(cm, "小满")
+    atomic_write_json(
+        cm.cloudsave_catalog_dir / "character_tombstones.json",
+        {
+            "schema_version": 1,
+            "sequence_number": 3,
+            "exported_at_utc": "2026-04-09T00:00:00Z",
+            "tombstones": [
+                {
+                    "character_name": "小满",
+                    "deleted_at": "2026-04-09T00:00:00Z",
+                    "sequence_number": 3,
+                }
+            ],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    assert _load_cloudsave_character_unit(cm, "小满") is None
+
+
+@pytest.mark.unit
+def test_import_cloudsave_character_unit_restores_only_target_character_and_preserves_globals(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils.cloudsave_runtime import export_cloudsave_character_unit, import_cloudsave_character_unit
+
+    _write_runtime_state(source_cm, character_name="云端角色")
+    export_cloudsave_character_unit(source_cm, "云端角色")
+
+    _write_runtime_state(target_cm, character_name="本地角色")
+    target_characters = target_cm.load_characters()
+    target_characters["当前猫娘"] = "本地角色"
+    target_cm.save_characters(target_characters, bypass_write_fence=True)
+    target_cm.save_character_tombstones_state(
+        {
+            "version": target_cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+            "tombstones": [
+                {
+                    "character_name": "云端角色",
+                    "deleted_at": "2026-04-08T00:00:00Z",
+                    "sequence_number": 7,
+                }
+            ],
+        }
+    )
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    import_result = import_cloudsave_character_unit(target_cm, "云端角色")
+
+    assert import_result["character_name"] == "云端角色"
+    imported_characters = target_cm.load_characters()
+    assert "本地角色" in imported_characters["猫娘"]
+    assert "云端角色" in imported_characters["猫娘"]
+    assert imported_characters["当前猫娘"] == "本地角色"
+    assert (Path(target_cm.memory_dir) / "云端角色" / "recent.json").is_file()
+    restored_tombstones = target_cm.load_character_tombstones_state()
+    assert restored_tombstones["tombstones"] == []
+
+
+@pytest.mark.unit
+def test_single_character_cloudsave_operations_preserve_reflections_archive(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils.cloudsave_runtime import export_cloudsave_character_unit, import_cloudsave_character_unit
+
+    _write_runtime_state(source_cm, character_name="云端角色")
+    archive_payload = [{"id": "reflection-1", "text": "历史观察"}]
+    atomic_write_json(
+        Path(source_cm.memory_dir) / "云端角色" / "reflections_archive.json",
+        archive_payload,
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    export_cloudsave_character_unit(source_cm, "云端角色")
+    assert (source_cm.cloudsave_dir / "characters" / "云端角色" / "memory" / "reflections_archive.json").is_file()
+
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    import_cloudsave_character_unit(target_cm, "云端角色")
+
+    restored_archive = json.loads(
+        (Path(target_cm.memory_dir) / "云端角色" / "reflections_archive.json").read_text(encoding="utf-8")
+    )
+    assert restored_archive == archive_payload
+
+
+@pytest.mark.unit
+def test_single_character_cloudsave_operations_raise_conflict_errors(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils.cloudsave_runtime import CloudsaveOperationError, export_cloudsave_character_unit, import_cloudsave_character_unit
+
+    _write_runtime_state(source_cm, character_name="小满")
+    export_cloudsave_character_unit(source_cm, "小满")
+    with pytest.raises(CloudsaveOperationError, match="cloud character already exists") as upload_exc:
+        export_cloudsave_character_unit(source_cm, "小满", overwrite=False)
+    assert upload_exc.value.code == "CLOUD_CHARACTER_EXISTS"
+
+    _write_runtime_state(target_cm, character_name="小满")
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    with pytest.raises(CloudsaveOperationError, match="local character already exists") as download_exc:
+        import_cloudsave_character_unit(target_cm, "小满", overwrite=False)
+    assert download_exc.value.code == "LOCAL_CHARACTER_EXISTS"
+
+
+@pytest.mark.unit
+def test_import_cloudsave_character_unit_rolls_back_on_apply_failure(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils import cloudsave_runtime
+
+    _write_runtime_state(source_cm, character_name="云端角色")
+    cloudsave_runtime.export_cloudsave_character_unit(source_cm, "云端角色")
+
+    _write_runtime_state(target_cm, character_name="本地角色")
+    original_characters = target_cm.load_characters()
+    original_recent = (Path(target_cm.memory_dir) / "本地角色" / "recent.json").read_text(encoding="utf-8")
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    original_apply_runtime_file = cloudsave_runtime._apply_runtime_file
+
+    def _failing_apply_runtime_file(source_path, target_path):
+        if str(target_path).endswith("character_tombstones.json"):
+            raise RuntimeError("single import apply failed")
+        return original_apply_runtime_file(source_path, target_path)
+
+    with patch.object(cloudsave_runtime, "_apply_runtime_file", side_effect=_failing_apply_runtime_file):
+        with pytest.raises(RuntimeError, match="single import apply failed"):
+            cloudsave_runtime.import_cloudsave_character_unit(target_cm, "云端角色")
+
+    assert target_cm.load_characters() == original_characters
+    assert (Path(target_cm.memory_dir) / "本地角色" / "recent.json").read_text(encoding="utf-8") == original_recent
+    assert not (Path(target_cm.memory_dir) / "云端角色").exists()
+
+
+@pytest.mark.unit
+def test_restore_cloudsave_operation_backup_restores_previous_character_state(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+        restore_cloudsave_operation_backup,
+    )
+
+    _write_runtime_state(source_cm, character_name="小满")
+    source_characters = source_cm.load_characters()
+    source_characters["猫娘"]["小满"]["喜欢的食物"] = "鱼干"
+    source_cm.save_characters(source_characters, bypass_write_fence=True)
+    atomic_write_json(
+        Path(source_cm.memory_dir) / "小满" / "recent.json",
+        [{"role": "assistant", "content": "来自云端"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    export_cloudsave_character_unit(source_cm, "小满")
+
+    _write_runtime_state(target_cm, character_name="小满")
+    target_characters = target_cm.load_characters()
+    target_characters["猫娘"]["小满"]["喜欢的食物"] = "罐头"
+    target_cm.save_characters(target_characters, bypass_write_fence=True)
+    original_characters = target_cm.load_characters()
+    atomic_write_json(
+        Path(target_cm.memory_dir) / "小满" / "recent.json",
+        [{"role": "assistant", "content": "来自本地"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    original_recent = (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8")
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    import_result = import_cloudsave_character_unit(target_cm, "小满", overwrite=True)
+
+    assert target_cm.load_characters()["猫娘"]["小满"]["喜欢的食物"] == "鱼干"
+    assert (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8") != original_recent
+
+    restore_cloudsave_operation_backup(target_cm, import_result["backup_path"])
+
+    assert target_cm.load_characters() == original_characters
+    assert (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8") == original_recent
+
+
+@pytest.mark.unit
 def test_export_creates_valid_sqlite_shadow_copy_for_time_indexed_db(tmp_path):
     cm = _make_config_manager(tmp_path)
 
@@ -809,6 +1811,63 @@ def test_export_rejects_casefold_name_conflicts(tmp_path):
 
     with pytest.raises(ValueError, match="character name audit failed"):
         export_local_cloudsave_snapshot(cm)
+
+
+@pytest.mark.unit
+def test_export_allows_normal_words_that_only_contain_sensitive_substrings(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot
+    from utils.config_manager import set_reserved
+
+    characters = cm.get_default_characters()
+    payload = characters["猫娘"][next(iter(characters["猫娘"]))]
+    payload["喜欢的食物"] = "cookies"
+    characters["猫娘"] = {"普通角色": payload}
+    characters["当前猫娘"] = "普通角色"
+    set_reserved(characters["猫娘"]["普通角色"], "avatar", "model_type", "live2d")
+    set_reserved(characters["猫娘"]["普通角色"], "avatar", "asset_source", "local")
+    set_reserved(characters["猫娘"]["普通角色"], "avatar", "asset_source_id", "")
+    set_reserved(characters["猫娘"]["普通角色"], "avatar", "live2d", "model_path", "demo/demo.model3.json")
+    cm.save_characters(characters, bypass_write_fence=True)
+
+    local_model_dir = Path(cm.live2d_dir) / "demo"
+    local_model_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        local_model_dir / "demo.model3.json",
+        {"Version": 3},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    result = export_local_cloudsave_snapshot(cm)
+    assert result["manifest"]["sequence_number"] >= 1
+
+
+@pytest.mark.unit
+def test_scan_for_sensitive_values_detects_secret_like_strings_without_flagging_plain_words():
+    from utils.cloudsave_runtime import scan_for_sensitive_values
+
+    assert scan_for_sensitive_values({"喜欢的食物": "cookies"}, path="profiles.characters") == []
+    assert scan_for_sensitive_values({"note": "Authorization: Bearer abcdefghijklmnop"}, path="profiles.characters") == [
+        "profiles.characters.note"
+    ]
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_does_not_persist_default_workshop_config_when_missing(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import build_cloudsave_summary
+
+    _write_runtime_state(cm, character_name="小满")
+    workshop_config_path = Path(cm.get_runtime_config_path("workshop_config.json"))
+    if workshop_config_path.exists():
+        workshop_config_path.unlink()
+
+    summary = build_cloudsave_summary(cm)
+    assert summary["success"] is True
+    assert not workshop_config_path.exists()
 
 
 @pytest.mark.unit

@@ -72,6 +72,18 @@ def _load_deleted_character_names(config_mgr) -> set[str]:
     return deleted_names
 
 
+def _derive_workshop_origin_display_name(raw_model_name: str, fallback_name: str) -> str:
+    normalized_name = str(raw_model_name or "").strip().replace("\\", "/")
+    if not normalized_name:
+        return str(fallback_name or "").strip()
+    if normalized_name.endswith(".model3.json"):
+        normalized_name = normalized_name.rsplit("/", 1)[-1]
+        normalized_name = normalized_name[:-len(".model3.json")]
+    elif "/" in normalized_name:
+        normalized_name = normalized_name.rsplit("/", 1)[-1]
+    return normalized_name or str(fallback_name or "").strip()
+
+
 def _is_item_cache_valid(item_id: int) -> bool:
     """检查单个 UGC 缓存条目是否在有效期内"""
     entry = _ugc_details_cache.get(item_id)
@@ -2921,18 +2933,40 @@ async def sync_workshop_character_cards() -> dict:
                             # 工坊角色首次导入时强制清空 voice_id（当前工坊 voice_id 尚未适配）。
                             # 仅影响新增角色；已存在角色会在上面的分支直接跳过。
                             set_reserved(catgirl_data, 'voice_id', '')
-                            
-                            # 如果角色卡有 live2d 字段，同时保存到 _reserved.avatar.asset_source_id
-                            # COMPAT(v1->v2): 旧字段 live2d_item_id 已迁移，不再写回平铺 key。
+
+                            # 角色来源与当前绑定资源来源分离保存：
+                            # - character_origin 表示该角色最初来自哪个 Workshop 物品
+                            # - avatar.asset_source 表示当前实际绑定的模型来源
                             legacy_live2d_name = str(chara_data.get('live2d', '') or '').strip()
-                            if legacy_live2d_name and item_id:
-                                set_reserved(catgirl_data, 'avatar', 'asset_source_id', str(item_id))
-                                set_reserved(catgirl_data, 'avatar', 'asset_source', 'steam_workshop')
-                                set_reserved(catgirl_data, 'avatar', 'model_type', 'live2d')
+                            live2d_model_path = ''
+                            if legacy_live2d_name:
                                 if '/' in legacy_live2d_name or legacy_live2d_name.endswith('.model3.json'):
                                     live2d_model_path = legacy_live2d_name
                                 else:
                                     live2d_model_path = f'{legacy_live2d_name}/{legacy_live2d_name}.model3.json'
+
+                            if item_id:
+                                set_reserved(catgirl_data, 'character_origin', 'source', 'steam_workshop')
+                                set_reserved(catgirl_data, 'character_origin', 'source_id', str(item_id))
+                                set_reserved(
+                                    catgirl_data,
+                                    'character_origin',
+                                    'display_name',
+                                    _derive_workshop_origin_display_name(legacy_live2d_name, chara_name),
+                                )
+                                set_reserved(
+                                    catgirl_data,
+                                    'character_origin',
+                                    'model_ref',
+                                    live2d_model_path,
+                                )
+
+                            # 如果角色卡有 live2d 字段，同时保存当前 avatar 绑定信息
+                            # COMPAT(v1->v2): 旧字段 live2d_item_id 已迁移，不再写回平铺 key。
+                            if legacy_live2d_name and item_id:
+                                set_reserved(catgirl_data, 'avatar', 'asset_source_id', str(item_id))
+                                set_reserved(catgirl_data, 'avatar', 'asset_source', 'steam_workshop')
+                                set_reserved(catgirl_data, 'avatar', 'model_type', 'live2d')
                                 set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', live2d_model_path)
                             
                             characters['猫娘'][chara_name] = catgirl_data
