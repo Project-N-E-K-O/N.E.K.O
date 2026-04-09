@@ -106,6 +106,9 @@ def test_contains_negative_signal_keyword_gate() -> None:
     assert contains_negative_signal("讲道理，你知道我不喜欢就别提及了嘛") is True
     assert contains_negative_signal("我不喜欢昆虫食品") is True
     assert contains_negative_signal("你记住了，不要日本动漫") is True
+    assert contains_negative_signal("this sucks") is True
+    assert contains_negative_signal("that feature is horrible") is True
+    assert contains_negative_signal("I am so frustratingly tired") is False
     assert contains_negative_signal("今天吃什么好呀") is False
 
 
@@ -501,6 +504,38 @@ def test_negative_signal_english_topic_detection() -> None:
             guidance = persona["_topic_guidance"]
             assert guidance["soft_avoid"] == []
             assert guidance["hard_avoid"][0]["topic"] == "work"
+
+
+def test_negative_signal_english_topic_detection_with_new_negative_adjectives() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            result = pm.register_negative_signal("测试猫娘", "Work is horrible")
+            assert result["matched"] is True
+            assert result["topic"] == "work"
+            assert result["policy"] == "de_emphasize"
+
+
+def test_negative_signal_english_tone_only_for_non_topic_complaint() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            result = pm.register_negative_signal("测试猫娘", "This sucks")
+            assert result["matched"] is True
+            assert result["topic"] == ""
+            assert result["policy"] == "tone_only"
 
 
 def test_topics_match_preserves_temporal_variant_for_latin_topics() -> None:

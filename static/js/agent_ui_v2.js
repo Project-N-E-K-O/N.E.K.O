@@ -19,6 +19,8 @@
         busyTimer: null,
         openclawReady: null,
         openclawReason: '',
+        openfangReady: null,
+        openfangReason: '',
     };
     
     // 暴露状态供 app.js 等外部脚本使用乐观更新检测
@@ -115,6 +117,32 @@
             state.openclawReady = null;
             state.openclawReason = String(e && e.message ? e.message : e || '');
             if (state.snapshot) render('openclaw-refresh-error');
+            return false;
+        }
+    }
+
+    async function refreshOpenFangAvailability() {
+        try {
+            const r = await fetch('/api/agent/openfang/availability');
+            if (!r.ok) {
+                state.openfangReady = null;
+                state.openfangReason = `status ${r.status}`;
+                if (state.snapshot) render('openfang-refresh-error');
+                return false;
+            }
+            const payload = await r.json();
+            state.openfangReady = !!payload.ready;
+            if (Array.isArray(payload.reasons)) {
+                state.openfangReason = String(payload.reasons[0] || '');
+            } else {
+                state.openfangReason = String(payload.reason || '');
+            }
+            if (state.snapshot) render('openfang-refresh');
+            return state.openfangReady;
+        } catch (e) {
+            state.openfangReady = null;
+            state.openfangReason = String(e && e.message ? e.message : e || '');
+            if (state.snapshot) render('openfang-refresh-error');
             return false;
         }
     }
@@ -299,6 +327,33 @@
             sync(openclaw);
         }
 
+        if (openfang.length) {
+            const ready = typeof state.openfangReady === 'boolean'
+                ? state.openfangReady
+                : capabilityReady(snap, 'openfang_enabled');
+            const reason = state.openfangReason || capabilityReason(snap, 'openfang_enabled');
+            const disabledByPending = state.pending.has('openfang_enabled');
+            const canUse = effectiveAnalyzerEnabled && ready && !disabledByPending;
+            const openfangName = window.t ? window.t('settings.toggles.openfang') : '虚拟机';
+            const optimisticVal = Object.prototype.hasOwnProperty.call(state.optimistic, 'openfang_enabled')
+                ? !!state.optimistic['openfang_enabled']
+                : !!flags['openfang_enabled'];
+            openfang.forEach(cb => {
+                cb.checked = disabledByPending ? false : (optimisticVal && canUse);
+                cb.disabled = !!state.globalBusy || disabledByPending || !effectiveAnalyzerEnabled || !ready;
+                if (disabledByPending) {
+                    cb.title = window.t ? window.t('settings.toggles.checking') : '切换中...';
+                } else if (canUse) {
+                    cb.title = openfangName;
+                } else if (!effectiveAnalyzerEnabled) {
+                    cb.title = window.t ? window.t('settings.toggles.masterRequired', { name: openfangName }) : '请先开启Agent总开关';
+                } else {
+                    cb.title = reason || (window.t ? window.t('settings.toggles.unavailable', { name: openfangName }) : `${openfangName}不可用`);
+                }
+            });
+            sync(openfang);
+        }
+
         const anyPending = Object.values(snap.capabilities || {}).some(
             c => c && typeof c.reason === 'string' && c.reason.includes('PENDING')
         );
@@ -426,7 +481,50 @@
         bindFlag(keyboard, 'computer_use_enabled');
         bindFlag(browser, 'browser_use_enabled');
         bindFlag(userPlugin, 'user_plugin_enabled');
-        bindFlag(openfang, 'openfang_enabled');
+        openfang.forEach(cb => {
+            cb.addEventListener('change', async (e) => {
+                if (state.suppressChange) { clearProcessing(openfang); return; }
+                const value = !!e.target.checked;
+                const openfangName = window.t ? window.t('settings.toggles.openfang') : '虚拟机';
+                if (value) {
+                    const ready = await refreshOpenFangAvailability();
+                    if (!ready) {
+                        state.suppressChange = true;
+                        openfang.forEach(c => { c.checked = false; });
+                        state.suppressChange = false;
+                        sync(openfang);
+                        clearProcessing(openfang);
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(window.t ? window.t('settings.toggles.unavailable', { name: openfangName }) : `${openfangName}不可用`, 2500);
+                        }
+                        return;
+                    }
+                }
+                state.pending.add('openfang_enabled');
+                state.optimistic['openfang_enabled'] = value;
+                setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...');
+                render('command');
+                try {
+                    await sendCommand('set_flag', { key: 'openfang_enabled', value });
+                    await fetchSnapshot().catch(() => {});
+                } catch (err) {
+                    state.pending.delete('openfang_enabled');
+                    state.optimistic = {};
+                    setGlobalBusy(false);
+                    fetchSnapshot().catch(() => {});
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(`${openfangName}切换失败: ${err.message}`, 2500);
+                    }
+                    return;
+                } finally {
+                    clearProcessing(openfang);
+                }
+                state.pending.delete('openfang_enabled');
+                state.optimistic = {};
+                setGlobalBusy(false);
+                render('command');
+            });
+        });
 
         openclaw.forEach(cb => {
             cb.addEventListener('change', async (e) => {
@@ -476,6 +574,7 @@
         window.addEventListener('live2d-agent-popup-opening', async () => {
             state.popupOpen = true;
             render('popup');
+            refreshOpenFangAvailability().catch(() => {});
             refreshOpenClawAvailability().catch(() => {});
             if (!state.snapshot) {
                 await fetchSnapshot().catch(() => render('popup'));

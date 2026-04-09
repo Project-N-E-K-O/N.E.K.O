@@ -143,6 +143,19 @@ class OmniOfflineClient:
                 return len(variant)
         return 0
 
+    def queue_temporary_system_message(self, instruction: str) -> None:
+        """Queue a one-turn system message for the next text generation call."""
+        instruction = (instruction or "").strip()
+        if not instruction:
+            return
+        self._temporary_system_messages.append(SystemMessage(content=instruction))
+
+    def _consume_temporary_system_messages(self) -> list[SystemMessage]:
+        """Return and clear one-turn system messages queued for the next turn."""
+        temporary_messages = list(self._temporary_system_messages)
+        self._temporary_system_messages.clear()
+        return temporary_messages
+
     async def connect(self, instructions: str, native_audio=False) -> None:
         """Initialize the client with system instructions."""
         self._temporary_system_messages.clear()

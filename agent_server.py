@@ -3010,7 +3010,17 @@ async def openfang_availability():
     """检查 OpenFang 可用性。"""
     if not Modules.openfang:
         return {"enabled": False, "ready": False, "reason": "adapter 未加载"}
-    return Modules.openfang.is_available()
+    ok = await asyncio.to_thread(Modules.openfang.check_connectivity)
+    status = Modules.openfang.is_available()
+    reasons = status.get("reasons", []) if isinstance(status, dict) else []
+    _set_capability("openfang", ok, reasons[0] if reasons else "")
+    if not ok and Modules.agent_flags.get("openfang_enabled"):
+        Modules.agent_flags["openfang_enabled"] = False
+        Modules.notification = json.dumps({
+            "code": "AGENT_OPENFANG_CAPABILITY_LOST",
+            "details": {"reason_code": reasons[0] if reasons else "OPENFANG_DAEMON_UNREACHABLE"},
+        })
+    return status
 
 
 @app.get("/openclaw/availability")
