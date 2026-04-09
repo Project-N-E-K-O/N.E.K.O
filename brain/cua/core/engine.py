@@ -62,6 +62,7 @@ class LMMEngineOpenAI(LMMEngine):
                 temperature=(
                     temperature if self.temperature is None else self.temperature
                 ),
+                extra_body=self.llm_client.extra_body or None,
                 **kwargs,
             )
             .choices[0]
@@ -197,6 +198,7 @@ class LMMEngineGemini(LMMEngine):
                 messages=messages,
                 max_tokens=max_new_tokens if max_new_tokens else 4096,
                 temperature=temp,
+                extra_body=self.llm_client.extra_body or None,
                 **kwargs,
             )
             .choices[0]
@@ -252,6 +254,7 @@ class LMMEngineOpenRouter(LMMEngine):
                 messages=messages,
                 max_tokens=max_new_tokens if max_new_tokens else 4096,
                 temperature=temp,
+                extra_body=self.llm_client.extra_body or None,
                 **kwargs,
             )
             .choices[0]
@@ -372,13 +375,14 @@ class LMMEnginevLLM(LMMEngine):
         # Use self.temperature if set, otherwise use the temperature argument
         set_call_type("agent_cua")
         temp = self.temperature if self.temperature is not None else temperature
+        merged_extra = {**(self.llm_client.extra_body or {}), "repetition_penalty": repetition_penalty}
         completion = self.llm_client._client.chat.completions.create(
             model=self.model,
             messages=messages,
             max_tokens=max_new_tokens if max_new_tokens else 4096,
             temperature=temp,
             top_p=top_p,
-            extra_body={"repetition_penalty": repetition_penalty},
+            extra_body=merged_extra or None,
         )
         return completion.choices[0].message.content
 
@@ -418,6 +422,7 @@ class LMMEngineHuggingFace(LMMEngine):
                 messages=messages,
                 max_tokens=max_new_tokens if max_new_tokens else 4096,
                 temperature=temperature,
+                extra_body=self.llm_client.extra_body or None,
                 **kwargs,
             )
             .choices[0]
@@ -464,6 +469,7 @@ class LMMEngineParasail(LMMEngine):
                 messages=messages,
                 max_tokens=max_new_tokens if max_new_tokens else 4096,
                 temperature=temperature,
+                extra_body=self.llm_client.extra_body or None,
                 **kwargs,
             )
             .choices[0]

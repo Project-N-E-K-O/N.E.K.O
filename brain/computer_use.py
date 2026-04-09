@@ -472,6 +472,7 @@ class ComputerUseAdapter:
 
         # LLM
         self._llm_client: Optional[ChatOpenAI] = None
+        self._llm_client_sig: Optional[tuple] = None
         self._config_manager = get_config_manager()
         self._agent_model_cfg = self._config_manager.get_model_api_config("agent")
 
@@ -541,11 +542,8 @@ class ComputerUseAdapter:
         last_exc: Exception | None = None
         for attempt in range(_retries + 1):
             try:
-                if (
-                    self._llm_client is None
-                    or getattr(self._llm_client._client, "_base_url", None)
-                    and str(self._llm_client._client._base_url).rstrip("/") != base_url.rstrip("/")
-                ):
+                current_sig = (base_url.rstrip("/"), api_key, model)
+                if self._llm_client is None or self._llm_client_sig != current_sig:
                     self._llm_client = create_chat_llm(
                         model=model,
                         base_url=base_url,
@@ -554,6 +552,7 @@ class ComputerUseAdapter:
                         max_retries=0,
                         temperature=0,
                     )
+                    self._llm_client_sig = current_sig
                 extra = get_agent_extra_body(model) or {}
                 set_call_type("agent_cua")
                 resp = self._llm_client._client.chat.completions.create(
