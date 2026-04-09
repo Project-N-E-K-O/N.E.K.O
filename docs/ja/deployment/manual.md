@@ -6,6 +6,7 @@
 
 - Python 3.11（厳密に -- 3.12 以降は不可）
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) パッケージマネージャー
+- Node.js（>=20.19）
 - Git
 
 ## インストール
@@ -14,6 +15,15 @@
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 uv sync
+```
+
+## フロントエンドのビルド
+
+プロジェクトには `frontend/` 配下に2つのフロントエンドプロジェクトがあり、実行前にビルドが必要です：
+
+```bash
+cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+cd frontend/plugin-manager && npm install && npm run build && cd ../..
 ```
 
 ## 起動

@@ -37,6 +37,9 @@ class PluginMeta:
     version: str = DEFAULT_PLUGIN_VERSION
     sdk_version: str = SDK_VERSION
     description: str = ""
+    short_description: str = ""  # 简短描述（<300字符），用于 agent 两阶段插件筛选
+    keywords: list[str] = field(default_factory=list)  # 关键词正则表达式列表
+    passive: bool = False  # 被动插件，不参与 agent 主动分派
     sdk_recommended: str | None = None
     sdk_supported: str | None = None
     sdk_untested: str | None = None

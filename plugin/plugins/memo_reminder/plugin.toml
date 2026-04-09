@@ -1,6 +1,8 @@
 [plugin]
 name = "备忘提醒"
 description = "定时备忘录/闹钟插件，在指定时间提醒主人。支持一次性提醒和重复提醒。"
+short_description = "Schedule reminders/alarms at specified times. Supports one-time, daily, weekly, hourly, and custom intervals."
+keywords = ["提醒", "remind", "闹钟", "alarm", "备忘", "memo", "定时", "timer", "schedule", "倒计时", "リマインダー", "アラーム", "タイマー", "알림", "알람", "타이머", "напоминани", "будильник", "таймер"]
 version = "0.1.0"
 id = "memo_reminder"
 entry = "plugin.plugins.memo_reminder:MemoReminderPlugin"

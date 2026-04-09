@@ -152,8 +152,11 @@
         .device-item {
             padding: 8px 0;
             border-bottom: 1px solid #f0f0f0;
+        }
+        .device-item-top {
             display: flex;
             justify-content: space-between;
+            align-items: center;
         }
         .device-name {
             font-weight: 500;
@@ -167,6 +170,31 @@
         }
         .device-status.offline {
             color: #ff3b30;
+        }
+        .alias-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 4px;
+        }
+        .alias-row label {
+            font-size: 0.75rem;
+            color: #8e8e93;
+            margin: 0;
+            white-space: nowrap;
+        }
+        .alias-row input {
+            flex: 1;
+            padding: 4px 8px;
+            border: 1px solid #d9d9df;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            max-width: 200px;
+        }
+        .alias-row button {
+            padding: 4px 10px;
+            font-size: 0.75rem;
+            border-radius: 8px;
         }
         .flex-between {
             display: flex;
@@ -216,21 +244,6 @@
                 <img id="qrImage" alt="二维码" />
                 <p class="info-text">请使用米家APP扫描二维码</p>
             </div>
-        </div>
-
-        <!-- 密码登录区 -->
-        <div class="card">
-            <h3>🔐 密码登录</h3>
-            <p class="info-text">使用米家账号密码登录（仅在安全网络下使用）</p>
-            <div class="form-group">
-                <label>账号（手机号/邮箱）</label>
-                <input type="text" id="username" placeholder="请输入米家账号">
-            </div>
-            <div class="form-group">
-                <label>密码</label>
-                <input type="password" id="password" placeholder="请输入密码">
-            </div>
-            <button id="pwdLoginBtn">登录</button>
         </div>
 
         <!-- 状态与操作区 -->
@@ -332,13 +345,21 @@
                 const devicesRes = await callPlugin('list_devices', { home_id: home.id });
                 if (devicesRes && devicesRes.devices) {
                     const devices = devicesRes.devices;
-                    let html = '<p><strong>📱 设备列表：</strong></p>';
+                    let html = '<p><strong>📱 设备列表（可设置别名方便控制）：</strong></p>';
                     devices.forEach(dev => {
                         const statusClass = dev.is_online ? 'online' : 'offline';
                         const statusText = dev.is_online ? '在线' : '离线';
+                        const alias = escapeHtml(dev.alias || '');
                         html += `<div class="device-item">
-                                    <span class="device-name">${escapeHtml(dev.name)}</span>
-                                    <span class="device-status ${statusClass}">${statusText}</span>
+                                    <div class="device-item-top">
+                                        <span class="device-name">${escapeHtml(dev.name)}</span>
+                                        <span class="device-status ${statusClass}">${statusText}</span>
+                                    </div>
+                                    <div class="alias-row">
+                                        <label>别名：</label>
+                                        <input type="text" id="alias-${dev.did}" value="${alias}" placeholder="多个别名用逗号分隔">
+                                        <button onclick="saveAlias('${dev.did}')">保存</button>
+                                    </div>
                                 </div>`;
                     });
                     document.getElementById('deviceList').innerHTML = html;
@@ -436,32 +457,15 @@
         }
     }
 
-    // 密码登录
-    async function pwdLogin() {
-        const username = document.getElementById('username').value.trim();
-        const password = document.getElementById('password').value;
-        if (!username || !password) {
-            showMessage('请填写账号和密码', 'warning');
-            return;
-        }
-        const btn = document.getElementById('pwdLoginBtn');
-        btn.disabled = true;
-        btn.textContent = '登录中...';
+    // 保存设备别名
+    async function saveAlias(did) {
+        const input = document.getElementById('alias-' + did);
+        const alias = input.value.trim();
         try {
-            const result = await callPlugin('login_by_password', { username, password });
-            if (result.success) {
-                showMessage(`✅ 登录成功！用户ID: ${result.user_id}`, 'success');
-                document.getElementById('username').value = '';
-                document.getElementById('password').value = '';
-                await loadStatus();
-            } else {
-                showMessage(`登录失败：${result.message || '未知错误'}`, 'error');
-            }
+            await callPlugin('set_device_alias', { did, alias });
+            showMessage(alias ? `✅ 别名已保存为：${alias}` : '✅ 别名已清除', 'success');
         } catch (err) {
-            showMessage(`登录失败：${err.message}`, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.textContent = '登录';
+            showMessage(`保存失败：${err.message}`, 'error');
         }
     }
 
@@ -482,7 +486,6 @@
     document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('qrLoginBtn').addEventListener('click', startQrLogin);
         document.getElementById('cancelPollBtn').addEventListener('click', stopPolling);
-        document.getElementById('pwdLoginBtn').addEventListener('click', pwdLogin);
         document.getElementById('logoutBtn').addEventListener('click', logout);
         document.getElementById('refreshStatusBtn').addEventListener('click', loadStatus);
         loadStatus();

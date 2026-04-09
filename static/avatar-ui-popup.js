@@ -897,7 +897,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
     container.style.gap = '8px';
-    container.style.width = '168px';
+    container.style.width = '200px';
     container.style.minWidth = '0';
     container.style.padding = '10px 14px';
 
@@ -1002,10 +1002,11 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     fpsRow.appendChild(fpsValue);
     container.appendChild(fpsRow);
 
-    // 鼠标跟踪切换
+    // ── 鼠标跟踪 + 全屏/局部跟踪（同一行） ──
     const trackingRow = document.createElement('div');
-    Object.assign(trackingRow.style, { display: 'flex', alignItems: 'center', gap: '8px', width: '100%', marginTop: '4px' });
+    Object.assign(trackingRow.style, { display: 'flex', alignItems: 'center', gap: '6px', width: '100%', marginTop: '4px' });
 
+    // 鼠标跟踪复选框
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.id = `${prefix}-mouse-tracking-toggle`;
@@ -1018,59 +1019,55 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const updateRowStyle = () => {
         const isChecked = checkbox.checked;
         updateIndicatorStyle(isChecked);
-        trackingRow.setAttribute('aria-checked', String(isChecked));
     };
     checkbox.updateStyle = updateRowStyle;
     updateRowStyle();
-
     checkbox.addEventListener('change', updateRowStyle);
 
     const label = document.createElement('span');
     label.textContent = window.t ? window.t('settings.toggles.mouseTracking') : '跟踪鼠标';
     label.setAttribute('data-i18n', 'settings.toggles.mouseTracking');
-    Object.assign(label.style, { userSelect: 'none', fontSize: '12px', flex: '1' });
+    Object.assign(label.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
 
-    trackingRow.appendChild(checkbox);
-    trackingRow.appendChild(indicator);
-    trackingRow.appendChild(label);
-    Object.assign(trackingRow.style, { cursor: 'pointer' });
+    // 鼠标跟踪点击区域（左半部分）
+    const trackingClickArea = document.createElement('div');
+    Object.assign(trackingClickArea.style, { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' });
+    trackingClickArea.appendChild(checkbox);
+    trackingClickArea.appendChild(indicator);
+    trackingClickArea.appendChild(label);
 
-    // 鼠标跟踪切换事件处理
     const handleTrackingChange = () => {
         const enabled = !checkbox.checked;
         checkbox.checked = enabled;
         updateRowStyle();
         updateTrackingModeToggleState();
+        trackingClickArea.setAttribute('aria-checked', String(enabled));
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
         if (typeof manager._onMouseTrackingToggle === 'function') {
             manager._onMouseTrackingToggle(enabled);
         }
     };
 
-    trackingRow.addEventListener('click', (e) => {
+    trackingClickArea.addEventListener('click', (e) => {
         e.stopPropagation();
         handleTrackingChange();
-        trackingRow.setAttribute('aria-checked', String(checkbox.checked));
     });
-
-    trackingRow.setAttribute('role', 'switch');
-    trackingRow.setAttribute('aria-checked', String(checkbox.checked));
-    trackingRow.tabIndex = 0;
-    trackingRow.addEventListener('keydown', (e) => {
+    trackingClickArea.setAttribute('role', 'switch');
+    trackingClickArea.setAttribute('aria-checked', String(checkbox.checked));
+    trackingClickArea.tabIndex = 0;
+    trackingClickArea.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             e.stopPropagation();
             handleTrackingChange();
-            trackingRow.setAttribute('aria-checked', String(checkbox.checked));
         }
     });
 
-    container.appendChild(trackingRow);
+    // 弹性间距
+    const spacer = document.createElement('div');
+    spacer.style.flex = '1';
 
-    // Live2D 全屏跟踪 / VRM/MMD 局部跟踪切换
-    const trackingModeToggle = document.createElement('div');
-    Object.assign(trackingModeToggle.style, { display: 'flex', alignItems: 'center', gap: '8px', width: '100%', marginTop: '4px' });
-
+    // 全屏/局部跟踪复选框（右半部分）
     const modeCheckbox = document.createElement('input');
     modeCheckbox.type = 'checkbox';
     modeCheckbox.style.display = 'none';
@@ -1078,43 +1075,28 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const { indicator: modeIndicator, updateStyle: updateModeIndicatorStyle } = manager._createCheckIndicator();
     Object.assign(modeIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
 
-    // 鼠标跟踪切换时更新跟踪模式按钮状态
     const updateTrackingModeToggleState = () => {
         const isEnabled = checkbox.checked;
-        trackingModeToggle.style.opacity = isEnabled ? '1' : '0.4';
-        trackingModeToggle.style.pointerEvents = isEnabled ? 'auto' : 'none';
-        trackingModeToggle.tabIndex = isEnabled ? 0 : -1;
-        if (!isEnabled) {
-            trackingModeToggle.setAttribute('aria-disabled', 'true');
-        } else {
-            trackingModeToggle.removeAttribute('aria-disabled');
-        }
+        modeClickArea.style.opacity = isEnabled ? '1' : '0.4';
+        modeClickArea.style.pointerEvents = isEnabled ? 'auto' : 'none';
+        modeClickArea.tabIndex = isEnabled ? 0 : -1;
     };
 
     const updateModeRowStyle = () => {
         updateModeIndicatorStyle(modeCheckbox.checked);
-        trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
     };
 
-    // 根据模型类型设置复选框状态（从 window 变量读取，保持同类型模型切换时状态不变）
     const getTrackingModeState = () => {
         if (prefix === 'live2d') {
             return window.live2dFullscreenTrackingEnabled === true;
         } else if (prefix === 'vrm' || prefix === 'mmd') {
-            // VRM 和 MMD 共用同一个局部跟踪设置
             return window.humanoidLocalTrackingEnabled === true;
         }
         return false;
     };
     modeCheckbox.checked = getTrackingModeState();
-
     modeCheckbox.updateStyle = updateModeRowStyle;
     updateModeRowStyle();
-
-    // 初始化跟踪模式按钮状态（根据鼠标跟踪按钮的状态）
-    updateTrackingModeToggleState();
-
-    checkbox.addEventListener('change', updateModeRowStyle);
 
     const modeLabel = document.createElement('span');
     if (prefix === 'live2d') {
@@ -1124,20 +1106,23 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         modeLabel.textContent = window.t ? window.t('settings.toggles.localTracking') : '局部跟踪';
         modeLabel.setAttribute('data-i18n', 'settings.toggles.localTracking');
     }
-    Object.assign(modeLabel.style, { userSelect: 'none', fontSize: '12px', flex: '1' });
+    Object.assign(modeLabel.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
 
-    trackingModeToggle.appendChild(modeCheckbox);
-    trackingModeToggle.appendChild(modeIndicator);
-    trackingModeToggle.appendChild(modeLabel);
-    Object.assign(trackingModeToggle.style, { cursor: 'pointer' });
+    const modeClickArea = document.createElement('div');
+    Object.assign(modeClickArea.style, { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' });
+    modeClickArea.appendChild(modeCheckbox);
+    modeClickArea.appendChild(modeIndicator);
+    modeClickArea.appendChild(modeLabel);
+
+    // 初始化跟踪模式按钮状态
+    updateTrackingModeToggleState();
 
     const handleModeChange = () => {
-        if (checkbox.checked !== true) {
-            return;
-        }
+        if (checkbox.checked !== true) return;
         const enabled = !modeCheckbox.checked;
         modeCheckbox.checked = enabled;
         updateModeRowStyle();
+        modeClickArea.setAttribute('aria-checked', String(enabled));
 
         if (prefix === 'live2d') {
             window.live2dFullscreenTrackingEnabled = enabled;
@@ -1153,31 +1138,85 @@ function createAnimationSettingsSidePanel(manager, prefix) {
             }
         }
 
-        if (typeof window.saveNEKOSettings === 'function') {
-            window.saveNEKOSettings();
-        }
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
     };
 
-    trackingModeToggle.addEventListener('click', (e) => {
+    modeClickArea.addEventListener('click', (e) => {
         e.stopPropagation();
         handleModeChange();
-        trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
     });
-
-    trackingModeToggle.setAttribute('role', 'switch');
-    trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
-    trackingModeToggle.addEventListener('keydown', (e) => {
+    modeClickArea.setAttribute('role', 'switch');
+    modeClickArea.setAttribute('aria-checked', String(modeCheckbox.checked));
+    modeClickArea.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             e.stopPropagation();
-            if (checkbox.checked === true) {
-                handleModeChange();
-                trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
-            }
+            if (checkbox.checked === true) handleModeChange();
         }
     });
 
-    container.appendChild(trackingModeToggle);
+    trackingRow.appendChild(trackingClickArea);
+    trackingRow.appendChild(spacer);
+    trackingRow.appendChild(modeClickArea);
+    container.appendChild(trackingRow);
+
+    // ── 取消隐藏（锁定悬停淡化）开关 ──
+    const hoverFadeRow = document.createElement('div');
+    Object.assign(hoverFadeRow.style, { display: 'flex', alignItems: 'center', gap: '6px', width: '100%', marginTop: '4px' });
+
+    const hoverFadeCheckbox = document.createElement('input');
+    hoverFadeCheckbox.type = 'checkbox';
+    hoverFadeCheckbox.style.display = 'none';
+    hoverFadeCheckbox.checked = window.lockedHoverFadeEnabled !== false; // 默认开启
+
+    const { indicator: hoverFadeIndicator, updateStyle: updateHoverFadeIndicatorStyle } = manager._createCheckIndicator();
+    Object.assign(hoverFadeIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
+
+    const updateHoverFadeRowStyle = () => {
+        updateHoverFadeIndicatorStyle(hoverFadeCheckbox.checked);
+        hoverFadeRow.setAttribute('aria-checked', String(hoverFadeCheckbox.checked));
+    };
+    hoverFadeCheckbox.updateStyle = updateHoverFadeRowStyle;
+    updateHoverFadeRowStyle();
+
+    const hoverFadeLabel = document.createElement('span');
+    hoverFadeLabel.textContent = window.t ? window.t('settings.toggles.lockedHoverFade') : '锁定悬停淡化';
+    hoverFadeLabel.setAttribute('data-i18n', 'settings.toggles.lockedHoverFade');
+    Object.assign(hoverFadeLabel.style, { userSelect: 'none', fontSize: '12px', flex: '1' });
+
+    hoverFadeRow.appendChild(hoverFadeCheckbox);
+    hoverFadeRow.appendChild(hoverFadeIndicator);
+    hoverFadeRow.appendChild(hoverFadeLabel);
+    Object.assign(hoverFadeRow.style, { cursor: 'pointer' });
+
+    const handleHoverFadeChange = () => {
+        const enabled = !hoverFadeCheckbox.checked;
+        hoverFadeCheckbox.checked = enabled;
+        window.lockedHoverFadeEnabled = enabled;
+        updateHoverFadeRowStyle();
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        // 如果关闭，立即移除当前的淡化效果
+        if (!enabled) {
+            window.dispatchEvent(new CustomEvent('neko-locked-hover-fade-changed', { detail: { enabled } }));
+        }
+    };
+
+    hoverFadeRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleHoverFadeChange();
+    });
+    hoverFadeRow.setAttribute('role', 'switch');
+    hoverFadeRow.setAttribute('aria-checked', String(hoverFadeCheckbox.checked));
+    hoverFadeRow.tabIndex = 0;
+    hoverFadeRow.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            handleHoverFadeChange();
+        }
+    });
+
+    container.appendChild(hoverFadeRow);
 
     document.body.appendChild(container);
     return container;
