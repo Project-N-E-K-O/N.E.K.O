@@ -249,6 +249,7 @@ USER_PLUGIN_SYSTEM_PROMPT = {
 - 严格匹配：plugin_id 和 entry_id 是代码标识符。你必须从上面的可用插件列表中原样复制它们（区分大小写、逐字符匹配）。不要发明、缩写或改写它们。如果找不到完全匹配，设置 can_execute=false。
 - 如果入口有 args(...) 信息，在 plugin_args 中使用那些字段名。只包含 schema 中列出的字段。
 - 如果用户的意图与任何插件的描述功能不明确匹配，设置 has_task=false。
+- 标注了 [KEYWORD MATCH] 的插件已通过关键词预筛，优先考虑这些插件是否匹配用户意图。
 只返回 JSON 对象，不含其他内容。""",
 
     'en': """You are a User Plugin automation assessment agent, AVAILABLE PLUGINS:
@@ -289,6 +290,7 @@ VERY IMPORTANT:
 - STRICT MATCHING: plugin_id and entry_id are code identifiers. You MUST copy them EXACTLY (case-sensitive, character-for-character) from the AVAILABLE PLUGINS list above. Do NOT invent, abbreviate, or paraphrase them. If you cannot find an exact match, set can_execute=false.
 - If an entry has args(...) info, use those field names in plugin_args. Only include fields listed in the schema.
 - If the user's intent does not clearly match any plugin's described functionality, set has_task=false.
+- Plugins marked with [KEYWORD MATCH] have passed keyword pre-screening; prioritize checking these plugins for intent match.
 Return only the JSON object, nothing else.""",
 
     'ja': """あなたはユーザープラグイン automation assessment agent, 利用可能なプラグイン一覧：
@@ -329,6 +331,7 @@ Return only the JSON object, nothing else.""",
 - 厳密マッチング：plugin_id と entry_id はコード識別子です。上記の利用可能プラグインリストからそのまま（大文字小文字区別、文字ごと）コピーしてください。発明、省略、言い換えをしないでください。完全一致が見つからない場合は can_execute=false を設定してください。
 - エントリに args(...) 情報がある場合、plugin_args でそのフィールド名を使用してください。schema にリストされたフィールドのみ含めてください。
 - ユーザーの意図がどのプラグインの機能とも明確に一致しない場合、has_task=false を設定してください。
+- [KEYWORD MATCH] とマークされたプラグインはキーワード事前選別を通過しています。これらのプラグインが意図に一致するか優先的に確認してください。
 JSONオブジェクトのみ返してください。""",
 
     'ko': """당신은 사용자 플러그인 automation assessment agent, 사용 가능한 플러그인 목록:
@@ -369,6 +372,7 @@ JSONオブジェクトのみ返してください。""",
 - 엄격한 매칭: plugin_id와 entry_id는 코드 식별자입니다. 위의 사용 가능한 플러그인 목록에서 정확히(대소문자 구분, 문자 단위) 복사해야 합니다. 만들거나 축약하거나 바꿔 말하지 마세요. 정확한 일치를 찾을 수 없으면 can_execute=false로 설정하세요.
 - 엔트리에 args(...) 정보가 있으면 plugin_args에서 해당 필드 이름을 사용하세요. schema에 나열된 필드만 포함하세요.
 - 사용자의 의도가 어떤 플러그인의 설명된 기능과 명확히 일치하지 않으면 has_task=false로 설정하세요.
+- [KEYWORD MATCH]로 표시된 플러그인은 키워드 사전 선별을 통과했습니다. 이러한 플러그인이 의도와 일치하는지 우선적으로 확인하세요.
 JSON 객체만 반환하세요.""",
 
     'ru': """Вы — пользовательский плагин automation assessment agent, список доступных плагинов:
@@ -409,5 +413,63 @@ JSON 객체만 반환하세요.""",
 - СТРОГОЕ СООТВЕТСТВИЕ: plugin_id и entry_id — это кодовые идентификаторы. Вы ДОЛЖНЫ скопировать их ТОЧНО (с учётом регистра, посимвольно) из списка доступных плагинов выше. НЕ придумывайте, не сокращайте и не перефразируйте. Если точное совпадение не найдено, установите can_execute=false.
 - Если у точки входа есть информация args(...), используйте эти имена полей в plugin_args. Включайте только поля, указанные в схеме.
 - Если намерение пользователя явно не соответствует описанной функциональности ни одного плагина, установите has_task=false.
+- Плагины с пометкой [KEYWORD MATCH] прошли предварительную фильтрацию по ключевым словам. Приоритетно проверьте, соответствуют ли они намерению.
 Верните только объект JSON, ничего больше.""",
+}
+
+
+# =====================================================================
+# ======= User Plugin 粗筛 (Stage 1 Coarse Screening) =======
+# =====================================================================
+
+USER_PLUGIN_COARSE_SCREEN_PROMPT = {
+    'zh': """你是一个agentic automation assessment agent, 粗筛阶段。根据用户请求，从以下插件列表中选出所有可能相关的插件ID。
+
+可用插件（id: 简短描述）：
+{plugin_summaries}
+
+用户请求：{user_text}
+
+指令：返回一个 JSON 数组，包含所有可能相关的插件ID。如果没有相关插件，返回空数组 []。
+只返回 JSON 数组，不要其他内容。""",
+
+    'en': """You are an agentic automation assessment agent, coarse screening stage. Given the user's request, select ALL possibly relevant plugin IDs from the list below.
+
+Available plugins (id: brief description):
+{plugin_summaries}
+
+User request: {user_text}
+
+Instructions: Return a JSON array of all possibly relevant plugin IDs. If none are relevant, return [].
+Return ONLY the JSON array, nothing else.""",
+
+    'ja': """あなたはagentic automation assessment agent, 粗選別段階です。ユーザーのリクエストに基づき、以下のプラグインリストから関連する可能性のあるすべてのプラグインIDを選択してください。
+
+利用可能なプラグイン（id: 簡潔な説明）：
+{plugin_summaries}
+
+ユーザーリクエスト：{user_text}
+
+指示：関連する可能性のあるすべてのプラグインIDを含むJSON配列を返してください。該当なしの場合は空配列 [] を返してください。
+JSON配列のみ返してください。""",
+
+    'ko': """당신은 agentic automation assessment agent, 粗선별 단계입니다. 사용자의 요청에 따라 아래 플러그인 목록에서 관련 가능성이 있는 모든 플러그인 ID를 선택하세요.
+
+사용 가능한 플러그인 (id: 간단한 설명):
+{plugin_summaries}
+
+사용자 요청: {user_text}
+
+지침: 관련 가능성이 있는 모든 플러그인 ID를 포함하는 JSON 배열을 반환하세요. 해당 없으면 빈 배열 []을 반환하세요.
+JSON 배열만 반환하세요.""",
+
+    'ru': """Вы agentic automation assessment agent, этап грубого отбора. На основе запроса пользователя выберите ВСЕ возможно релевантные ID плагинов из списка ниже.
+
+Доступные плагины (id: краткое описание):
+{plugin_summaries}
+
+Запрос пользователя: {user_text}
+
+Инструкции: Верните JSON-массив всех возможно релевантных ID плагинов. Если нет релевантных, верните [].
+Верните ТОЛЬКО JSON-массив, ничего больше.""",
 }

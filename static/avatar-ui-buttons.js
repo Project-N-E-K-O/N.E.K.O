@@ -784,6 +784,10 @@ const AvatarButtonMixin = {
                 window.removeEventListener('blur', this._mmdWindowBlurListener);
                 this._mmdWindowBlurListener = null;
             }
+            if (this._mmdLockedHoverFadeChangedListener) {
+                window.removeEventListener('neko-locked-hover-fade-changed', this._mmdLockedHoverFadeChangedListener);
+                this._mmdLockedHoverFadeChangedListener = null;
+            }
             this._setMmdLockedHoverFade = null;
 
             // 清理引用

@@ -1325,7 +1325,7 @@ requires-dist = [
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pyautogui" },
     { name = "pygetwindow", marker = "sys_platform == 'win32'" },
-    { name = "pyncm-async", specifier = "==1.8.2" },
+    { name = "pyncm-async", specifier = "==1.8.1" },
     { name = "pyobjc", marker = "sys_platform == 'darwin'" },
     { name = "pyrnnoise", specifier = ">=0.4.3" },
     { name = "pytesseract" },
@@ -1803,14 +1803,14 @@ sdist = { url = "https://files.pythonhosted.org/packages/7d/ff/4c6f31a4f08979f12
 
 [[package]]
 name = "pyncm-async"
-version = "1.8.2"
+version = "1.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/52/14/8892c8bef54293eaf13c3ff95685a097d8a48272ce07b8600138f5c24d3e/pyncm_async-1.8.2.tar.gz", hash = "sha256:3ea9914f3fbcd4a76ef1d34a4681cff3733507b54caa9aa79f1d04f0e8cd27a7", size = 42045, upload-time = "2025-10-24T08:34:04.522Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/ed/18433cc83c09cb434cf2f3019dbceb6a3a38d20bde95912a98f6e9da5caa/pyncm_async-1.8.1.tar.gz", hash = "sha256:9b767ebb44bc0beb3dcc9fb96cb42aae1fbaf0c945c4c2b5b7e14d62f2c4b8a4", size = 41133, upload-time = "2025-10-18T08:48:59.764Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4f/76/ab75311b491c83d4066820eba5275b44980718f25d6392cb54404db20d07/pyncm_async-1.8.2-py3-none-any.whl", hash = "sha256:65645bb88a3c2c91eff2ac747914dc2b58c037c8e03ef55550c1f4552ae5f64b", size = 47569, upload-time = "2025-10-24T08:34:03.342Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/b4/5a6d7ba67cc202267f71ea0285120f863ada03aa980df480ab58e3a18ef6/pyncm_async-1.8.1-py3-none-any.whl", hash = "sha256:f0a5247c743ed4dae009d9a8ff330bd5a9f2a0e4800c5cbef459450d095d66c0", size = 46933, upload-time = "2025-10-18T08:48:58.65Z" },
 ]
 
 [[package]]
