@@ -479,7 +479,7 @@
         "RESPONSE_INVALID": "AIの回答が要件を満たしていないため、出力を破棄しました",
         "NO_USER_MESSAGE": "⚠️ 会話履歴にユーザーメッセージがないため、応答を生成できません",
         "LLM_RETRY": "⚠️ LLM {{error_type}}、リトライ中（{{attempt}}/{{max_retries}}）...",
-        "LLM_UPSTREAM_ERROR": "⚠️ 申し訳ありません、上流AIプロバイダーの内部エラーが発生しました。自動リトライ中...",
+        "LLM_UPSTREAM_ERROR": "⚠️ 申し訳ありませんにゃ、上流AIプロバイダーの内部エラーが発生しました。自動リトライ中...",
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM接続失敗（{{error_type}}）、{{max_retries}}回リトライ済み: {{error}}",
         "TEXT_GEN_ERROR": "💥 テキスト生成エラー: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLMから応答がありませんでした。API接続と設定を確認してください。",

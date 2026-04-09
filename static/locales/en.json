@@ -479,7 +479,7 @@
         "RESPONSE_INVALID": "AI response did not meet requirements, output discarded",
         "NO_USER_MESSAGE": "⚠️ No user message in conversation history, cannot generate response",
         "LLM_RETRY": "⚠️ LLM {{error_type}}, retrying ({{attempt}}/{{max_retries}})...",
-        "LLM_UPSTREAM_ERROR": "⚠️ Sorry, upstream AI provider internal error, retrying automatically...",
+        "LLM_UPSTREAM_ERROR": "⚠️ Sorry Nya~, upstream AI provider internal error, retrying automatically...",
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM connection failed ({{error_type}}), exhausted {{max_retries}} retries: {{error}}",
         "TEXT_GEN_ERROR": "💥 Text generation error: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM returned no response. Please check your API connection and configuration.",
