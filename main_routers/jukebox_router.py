@@ -876,8 +876,16 @@ async def export_config(
     jukebox_config = JukeboxConfig(config_mgr)
 
     # 解析 ID 列表
-    selected_songs = json.loads(songIds) if songIds else None
-    selected_actions = json.loads(actionIds) if actionIds else None
+    try:
+        selected_songs = json.loads(songIds) if songIds else None
+        selected_actions = json.loads(actionIds) if actionIds else None
+    except json.JSONDecodeError as err:
+        raise HTTPException(400, f"导出参数格式错误: {err.msg}") from err
+
+    if selected_songs is not None and not isinstance(selected_songs, list):
+        raise HTTPException(400, "songIds 必须是 JSON 数组")
+    if selected_actions is not None and not isinstance(selected_actions, list):
+        raise HTTPException(400, "actionIds 必须是 JSON 数组")
 
     # 创建临时目录（使用手动管理，避免 TemporaryDirectory 在函数返回时清理）
     temp_dir = tempfile.mkdtemp()
@@ -1095,9 +1103,11 @@ async def get_file(file_path: str):
         '.mp3': 'audio/mpeg',
         '.wav': 'audio/wav',
         '.ogg': 'audio/ogg',
+        '.flac': 'audio/flac',
         '.vmd': 'application/octet-stream',
         '.bvh': 'application/octet-stream',
-        '.fbx': 'application/octet-stream'
+        '.fbx': 'application/octet-stream',
+        '.vrma': 'application/octet-stream'
     }
     media_type = media_types.get(ext, 'application/octet-stream')
     
@@ -1107,8 +1117,6 @@ async def get_file(file_path: str):
 @router.post("/import")
 async def import_config(file: UploadFile = File(...)):
     """导入配置（MD5级别绑定）"""
-    # 注意：使用配置中已有的 MD5 值，不再重新计算
-    # 如果有不一样的地方 虽然不知道为什么导入的文件和本身 MD5 不一样,但是既然存在修改那一定是有他的道理的.jpeg
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
 
@@ -1126,14 +1134,25 @@ async def import_config(file: UploadFile = File(...)):
         extract_dir.mkdir()
 
         # 安全解压 zip 文件（防止 Zip Slip 攻击）
-        with zipfile.ZipFile(zip_path, "r") as zf:
+        try:
+            zf = zipfile.ZipFile(zip_path, "r")
+        except zipfile.BadZipFile as err:
+            raise HTTPException(400, "导入文件不是有效的 ZIP 压缩包") from err
+
+        with zf:
+            # 检查解压总大小，防止 zip bomb
+            total_uncompressed = sum(info.file_size for info in zf.infolist())
+            max_uncompressed = MAX_ZIP_SIZE
+            if total_uncompressed > max_uncompressed:
+                raise HTTPException(400, f"解压后总大小超出限制 ({total_uncompressed} > {max_uncompressed})")
+
             for member in zf.namelist():
                 # 检查路径是否安全
                 member_path = (extract_dir / member).resolve()
                 try:
                     member_path.relative_to(extract_dir.resolve())
-                except ValueError:
-                    raise HTTPException(400, f"导入包包含非法路径: {member}")
+                except ValueError as err:
+                    raise HTTPException(400, f"导入包包含非法路径: {member}") from err
 
                 # 安全解压
                 if member.endswith('/'):
@@ -1147,8 +1166,11 @@ async def import_config(file: UploadFile = File(...)):
         if not config_path.exists():
             raise HTTPException(400, "导入包中缺少 config.json")
         
-        with open(config_path, "r", encoding="utf-8") as f:
-            import_data = json.load(f)
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                import_data = json.load(f)
+        except json.JSONDecodeError as err:
+            raise HTTPException(400, "config.json 不是有效的 JSON") from err
         
         stats = {
             "songsAdded": 0,
@@ -1173,11 +1195,12 @@ async def import_config(file: UploadFile = File(...)):
                 logger.warning(f"跳过非法路径的歌曲: {song_id}, 路径: {song['audio']}, 错误: {e.detail}")
                 continue
 
-            file_md5 = song.get("audioMd5", "")
-            if not file_md5:
-                if src_audio.exists():
-                    file_md5 = calculate_md5(src_audio)
-                    song["audioMd5"] = file_md5
+            # 始终从实际文件计算 MD5，不信任配置中的值
+            if src_audio.exists():
+                file_md5 = calculate_md5(src_audio)
+                song["audioMd5"] = file_md5
+            else:
+                file_md5 = song.get("audioMd5", "")
 
             existing_id = jukebox_config.data["md5Index"]["songs"].get(file_md5) if file_md5 else None
 
@@ -1236,11 +1259,12 @@ async def import_config(file: UploadFile = File(...)):
                 logger.warning(f"跳过非法路径的动画: {action_id}, 路径: {action['file']}, 错误: {e.detail}")
                 continue
 
-            file_md5 = action.get("fileMd5", "")
-            if not file_md5:
-                if src_file.exists():
-                    file_md5 = calculate_md5(src_file)
-                    action["fileMd5"] = file_md5
+            # 始终从实际文件计算 MD5，不信任配置中的值
+            if src_file.exists():
+                file_md5 = calculate_md5(src_file)
+                action["fileMd5"] = file_md5
+            else:
+                file_md5 = action.get("fileMd5", "")
 
             existing_id = jukebox_config.data["md5Index"]["actions"].get(file_md5) if file_md5 else None
 
@@ -1362,11 +1386,16 @@ async def pack_folder(files: List[UploadFile] = File(...)):
             # 检查文件大小
             check_file_size(file, MAX_FILE_SIZE)
 
-            # 安全检查：防止路径遍历
-            safe_name = Path(file.filename).name
-            if safe_name != file.filename:
+            # 安全检查：允许相对路径但防止路径遍历
+            relative_path = Path(file.filename)
+            if relative_path.is_absolute() or any(part in {"", ".", ".."} for part in relative_path.parts):
                 raise HTTPException(400, f"文件名包含非法路径: {file.filename}")
-            file_path = temp_path / safe_name
+
+            file_path = (temp_path / relative_path).resolve()
+            try:
+                file_path.relative_to(temp_path.resolve())
+            except ValueError as err:
+                raise HTTPException(400, f"文件名包含非法路径: {file.filename}") from err
             file_path.parent.mkdir(parents=True, exist_ok=True)
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(file.file, f)

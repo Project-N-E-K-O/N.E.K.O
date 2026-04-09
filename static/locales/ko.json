@@ -2750,7 +2750,9 @@
         "exportAllIgnoreHidden": "모두 낼볂내기(숨김 제외)",
         "exportAllIncludeHidden": "모두 낼볂내기(숨김 포함)",
         "exportSelected": "선택 항목 낼볂내기",
-        "dragZipHint": "ZIP 파일이나 폴터를 여기로 끌어와 가져오기",
+        "dragZipHint": "ZIP 파일이나 폴더를 여기로 끌어와 가져오기",
+        "unifiedDropHint": "노래, 애니메이션 또는 가져오기 패키지를 여기로 끌어오기",
+        "clickToAdd": "클릭하여 추가",
         "dragMp3Hint": "MP3 파일을 여기로 끌어와 노래 추가",
         "dragVmdHint": "VMD 파일을 여기로 끌어와 애니메이션 추가",
         "showHiddenSongs": "숨김 노래 표시",
@@ -2817,8 +2819,8 @@
         "importBindingsAdded": "{{count}}개 바인딩 추가",
         "noChanges": "변경 없음",
         "noImportFilesFound": "가져올 파일을 찾을 수 없습니다",
-        "missingConfigJson": "폴터에 config.json 파일이 없습니다",
-        "folderImportFailed": "폴터 가져오기 실패"
+        "missingConfigJson": "폴더에 config.json 파일이 없습니다",
+        "folderImportFailed": "폴더 가져오기 실패"
     },
     "notice": {
         "voiceMigration": {
