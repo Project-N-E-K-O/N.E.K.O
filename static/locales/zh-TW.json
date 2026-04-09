@@ -1642,6 +1642,7 @@
             "mouseTracking": "跟蹤滑鼠",
             "fullscreenTracking": "全屏跟蹤",
             "localTracking": "局部跟蹤",
+            "lockedHoverFade": "鎖定懸停淡化",
             "textGuardMaxLength": "回覆字數限制",
             "unlimited": "無限制",
             "characters": "字",

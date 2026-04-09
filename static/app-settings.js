@@ -193,6 +193,9 @@
         const currentHumanoidLocalTracking = typeof window.humanoidLocalTrackingEnabled !== 'undefined'
             ? window.humanoidLocalTrackingEnabled
             : false;
+        const currentLockedHoverFade = typeof window.lockedHoverFadeEnabled !== 'undefined'
+            ? window.lockedHoverFadeEnabled
+            : true;
 
         // 读取字幕设置（从 S 读取，因为 subtitle.js 会写入 S）
         const currentSubtitleEnabled = typeof S.subtitleEnabled !== 'undefined' ? S.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true');
@@ -218,6 +221,7 @@
             mouseTrackingEnabled: currentMouseTracking,
             live2dFullscreenTrackingEnabled: currentLive2dFullscreenTracking,
             humanoidLocalTrackingEnabled: currentHumanoidLocalTracking,
+            lockedHoverFadeEnabled: currentLockedHoverFade,
             subtitleEnabled: currentSubtitleEnabled,
             userLanguage: currentUserLanguage
         };
@@ -352,6 +356,15 @@
                     window.humanoidLocalTrackingEnabled = settings.humanoidLocalTrackingEnabled === 'true';
                 }
 
+                // 锁定悬停淡化设置
+                if (typeof settings.lockedHoverFadeEnabled === 'boolean') {
+                    window.lockedHoverFadeEnabled = settings.lockedHoverFadeEnabled;
+                } else if (typeof settings.lockedHoverFadeEnabled === 'string') {
+                    window.lockedHoverFadeEnabled = settings.lockedHoverFadeEnabled === 'true';
+                } else {
+                    window.lockedHoverFadeEnabled = true;
+                }
+
                 // 同步到运行中的实例
                 if (typeof window.live2dManager !== 'undefined' && window.live2dManager && typeof window.live2dManager.setFullscreenTrackingEnabled === 'function') {
                     window.live2dManager.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
@@ -395,6 +408,7 @@
                 window.mouseTrackingEnabled = true;
                 window.live2dFullscreenTrackingEnabled = false;
                 window.humanoidLocalTrackingEnabled = false;
+                window.lockedHoverFadeEnabled = true;
 
                 // 持久化首次启动设置，避免每次重新检测
                 saveSettings();
@@ -409,6 +423,7 @@
             window.mouseTrackingEnabled = true;
             window.live2dFullscreenTrackingEnabled = false;
             window.humanoidLocalTrackingEnabled = false;
+            window.lockedHoverFadeEnabled = true;
         }
 
         // 以下逻辑不依赖本地 JSON 解析结果，始终执行

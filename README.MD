@@ -447,23 +447,27 @@ curl -k https://localhost:48912
 
 > 完整的开发者文档请访问 [project-neko.online](https://project-neko.online)
 
-**环境要求**：Python 3.11（不支持其他版本）、[uv](https://docs.astral.sh/uv/) 包管理器
+**环境要求**：Python 3.11（不支持其他版本）、[uv](https://docs.astral.sh/uv/) 包管理器、Node.js（>=20.19）
 
 ```bash
 # 1. 克隆项目
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
-# 2. 安装依赖
+# 2. 安装 Python 依赖
 uv sync
 
-# 3. 启动服务（至少需要 main_server 和 memory_server）
+# 3. 构建前端项目（首次运行或前端代码变更后需要）
+cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+cd frontend/plugin-manager && npm install && npm run build && cd ../..
+
+# 4. 启动服务（至少需要 main_server 和 memory_server）
 uv run python memory_server.py
 uv run python main_server.py
 # 可选：启动 Agent 服务
 uv run python agent_server.py
 
-# 4. 访问 http://localhost:48911 配置 API Key 并开始使用
+# 5. 访问 http://localhost:48911 配置 API Key 并开始使用
 ```
 
 开发者建议加入企鹅群 1022939659 交流。

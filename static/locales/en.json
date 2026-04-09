@@ -1642,6 +1642,7 @@
             "mouseTracking": "Mouse Tracking",
             "fullscreenTracking": "Fullscreen Tracking",
             "localTracking": "Local Tracking",
+            "lockedHoverFade": "Locked Hover Fade",
             "textGuardMaxLength": "Response Length Limit",
             "unlimited": "Unlimited",
             "characters": " chars",

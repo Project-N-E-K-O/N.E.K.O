@@ -1642,6 +1642,7 @@
             "mouseTracking": "마우스 추적",
             "fullscreenTracking": "전체 화면 추적",
             "localTracking": "로컬 추적",
+            "lockedHoverFade": "잠금 호버 페이드",
             "textGuardMaxLength": "응답 글자 수 제한",
             "unlimited": "무제한",
             "characters": "자",

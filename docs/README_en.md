@@ -390,23 +390,27 @@ After container startup:
 
 > Full developer documentation at [project-neko.online](https://project-neko.online)
 
-**Requirements**: Python 3.11 (other versions not supported), [uv](https://docs.astral.sh/uv/) package manager
+**Requirements**: Python 3.11 (other versions not supported), [uv](https://docs.astral.sh/uv/) package manager, Node.js (>=20.19)
 
 ```bash
 # 1. Clone the project
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
-# 2. Install dependencies
+# 2. Install Python dependencies
 uv sync
 
-# 3. Start services (main_server and memory_server required at minimum)
+# 3. Build frontend projects (required on first run or after frontend changes)
+cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+cd frontend/plugin-manager && npm install && npm run build && cd ../..
+
+# 4. Start services (main_server and memory_server required at minimum)
 uv run python memory_server.py
 uv run python main_server.py
 # Optional: start Agent service
 uv run python agent_server.py
 
-# 4. Visit http://localhost:48911 to configure API Key and start using
+# 5. Visit http://localhost:48911 to configure API Key and start using
 ```
 
 Developers are encouraged to join QQ group 1022939659.
