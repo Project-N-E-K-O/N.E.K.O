@@ -1642,6 +1642,7 @@
             "mouseTracking": "Отслеживание мыши",
             "fullscreenTracking": "Полноэкранное отслеживание",
             "localTracking": "Локальное отслеживание",
+            "lockedHoverFade": "Затухание при наведении (заблокировано)",
             "textGuardMaxLength": "Ограничение длины ответа",
             "unlimited": "Без ограничений",
             "characters": " символов",

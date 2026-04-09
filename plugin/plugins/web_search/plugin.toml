@@ -1,6 +1,8 @@
 [plugin]
 name = "网络搜索"
 description = "联网搜索。自动根据用户 IP 选择搜索引擎（国内百度/海外DuckDuckGo），无需 API Key。"
+short_description = "Web search via Baidu (CN) or DuckDuckGo (intl). Returns search results or AI-summarized answers."
+keywords = ["搜索", "search", "百度", "duckduckgo", "搜一", "查[一找]", "google", "검색", "찾아", "検索", "調べ", "探し", "поиск", "искать", "найти"]
 version = "0.1.0"
 id = "web_search"
 entry = "plugin.plugins.web_search:WebSearchPlugin"
