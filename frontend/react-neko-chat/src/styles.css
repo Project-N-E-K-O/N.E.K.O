@@ -831,3 +831,281 @@ textarea {
     grid-template-columns: 1fr;
   }
 }
+
+/* ===================================================================
+   暗色模式
+   使用 [data-theme="dark"] 属性选择器，与 N.E.K.O.-PC 保持一致
+   =================================================================== */
+
+/* --- 全局 --- */
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: rgba(200, 210, 230, 0.18);
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(200, 210, 230, 0.32);
+}
+
+[data-theme="dark"] ::selection {
+  background: rgba(68, 183, 254, 0.4);
+}
+
+/* --- 窗口容器 --- */
+[data-theme="dark"] .chat-window {
+  background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
+}
+
+[data-theme="dark"] .window-topbar {
+  background: rgba(35, 35, 50, 0.9);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .window-title {
+  color: #e8eaed;
+}
+
+[data-theme="dark"] .icon-button {
+  color: #aab0bc;
+}
+
+[data-theme="dark"] .icon-button:hover,
+[data-theme="dark"] .tool-button:hover {
+  background: rgba(200, 210, 230, 0.12);
+}
+
+[data-theme="dark"] .chat-body {
+  background: #1c1c2e;
+}
+
+/* --- 消息列表 --- */
+[data-theme="dark"] .message-empty-state {
+  color: #9aa0ac;
+  background: rgba(80, 90, 110, 0.2);
+}
+
+/* --- 消息气泡 --- */
+[data-theme="dark"] .message-bubble-assistant {
+  background: #2d2d3c;
+  color: #e8eaed;
+}
+
+[data-theme="dark"] .message-bubble-user {
+  background: linear-gradient(135deg, #1a3a6e 0%, #264a8a 100%);
+  color: #d8e6ff;
+}
+
+[data-theme="dark"] .message-bubble-tool {
+  background: linear-gradient(180deg, #232330, #1e1e2a);
+  color: #b8bcc4;
+}
+
+[data-theme="dark"] .message-bubble-system {
+  background: rgba(80, 90, 110, 0.2);
+  color: #9aa0ac;
+}
+
+/* --- 消息元信息 --- */
+[data-theme="dark"] .message-meta {
+  color: #9aa0ac;
+}
+
+[data-theme="dark"] .message-author {
+  color: #b8bcc4;
+}
+
+/* --- 头像 --- */
+[data-theme="dark"] .avatar-user {
+  color: #d0dae8;
+  background: linear-gradient(135deg, #2a3a5a 0%, #344a6e 100%);
+}
+
+/* --- Markdown 标题 --- */
+[data-theme="dark"] .message-block-markdown h1,
+[data-theme="dark"] .message-block-markdown h2,
+[data-theme="dark"] .message-block-markdown h3,
+[data-theme="dark"] .message-block-markdown h4,
+[data-theme="dark"] .message-block-markdown h5,
+[data-theme="dark"] .message-block-markdown h6 {
+  color: #c8d0e0;
+}
+
+/* --- Markdown 引用 --- */
+[data-theme="dark"] .message-block-markdown blockquote {
+  border-left-color: rgba(100, 140, 200, 0.3);
+  color: #9aa0ac;
+}
+
+/* --- Markdown 链接 --- */
+[data-theme="dark"] .message-block-markdown a {
+  color: #6fa8ff;
+}
+
+/* --- 行内代码 --- */
+[data-theme="dark"] .message-markdown-inline-code,
+[data-theme="dark"] .message-block-markdown :not(pre) > code {
+  background: rgba(100, 120, 160, 0.18);
+  color: #c0cce0;
+}
+
+/* --- 代码块 --- */
+[data-theme="dark"] .message-code-block {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(25, 25, 38, 0.98), rgba(20, 20, 32, 0.98));
+}
+
+[data-theme="dark"] .message-code-language {
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+  color: #9aa0ac;
+}
+
+[data-theme="dark"] .message-markdown-pre {
+  color: #c0cce0;
+}
+
+/* --- 表格 --- */
+[data-theme="dark"] .message-block-markdown th,
+[data-theme="dark"] .message-block-markdown td {
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .message-block-markdown th {
+  color: #c0cce0;
+  background: rgba(40, 40, 55, 0.9);
+}
+
+/* --- 分隔线 --- */
+[data-theme="dark"] .message-block-markdown hr {
+  border-top-color: rgba(255, 255, 255, 0.1);
+}
+
+/* --- 链接卡片 --- */
+[data-theme="dark"] .message-block-link {
+  background: rgba(35, 35, 48, 0.8);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .message-link-title {
+  color: #c8d0e0;
+}
+
+[data-theme="dark"] .message-link-description {
+  color: #9aa0ac;
+}
+
+[data-theme="dark"] .message-link-url {
+  color: #6fa8ff;
+}
+
+/* --- 图片块 --- */
+[data-theme="dark"] .message-block-image {
+  background: rgba(40, 44, 60, 0.7);
+}
+
+/* --- 状态块 --- */
+[data-theme="dark"] .message-block-status.tone-info {
+  color: #6fa8ff;
+  background: rgba(68, 130, 230, 0.15);
+}
+
+[data-theme="dark"] .message-block-status.tone-success {
+  color: #5ec790;
+  background: rgba(48, 161, 100, 0.15);
+}
+
+[data-theme="dark"] .message-block-status.tone-warning {
+  color: #e8b44a;
+  background: rgba(235, 168, 52, 0.15);
+}
+
+[data-theme="dark"] .message-block-status.tone-error {
+  color: #e07070;
+  background: rgba(223, 91, 91, 0.15);
+}
+
+/* --- 操作按钮 --- */
+[data-theme="dark"] .message-action-button.variant-secondary {
+  color: #b8c4d8;
+  background: rgba(100, 120, 160, 0.18);
+}
+
+[data-theme="dark"] .message-action-button.variant-danger {
+  color: #e07070;
+  background: rgba(223, 91, 91, 0.15);
+}
+
+/* --- 消息发送状态 --- */
+[data-theme="dark"] .message-delivery {
+  color: #6fa8ff;
+  background: rgba(68, 130, 230, 0.15);
+}
+
+[data-theme="dark"] .message-delivery-failed {
+  color: #e07070;
+  background: rgba(223, 91, 91, 0.15);
+}
+
+/* --- 系统芯片 --- */
+[data-theme="dark"] .system-chip {
+  color: #9aa0ac;
+  background: rgba(80, 90, 110, 0.2);
+}
+
+[data-theme="dark"] .system-chip-time {
+  color: #7a8494;
+}
+
+/* --- 输入区域 --- */
+[data-theme="dark"] .composer-panel {
+  border-top-color: rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(30, 30, 42, 0.96), rgba(26, 26, 38, 1));
+}
+
+[data-theme="dark"] .composer-attachment-card {
+  border-color: #444;
+  background: #2a2a3a;
+}
+
+[data-theme="dark"] .composer-tool-chip {
+  background: rgba(40, 40, 55, 0.9);
+  border-color: #44b7fe;
+  color: #6fc7ff;
+}
+
+[data-theme="dark"] .composer-tool-chip:hover {
+  background: rgba(68, 183, 254, 0.12);
+  border-color: #6fc7ff;
+  color: #8ed4ff;
+}
+
+[data-theme="dark"] .composer-input-shell {
+  background: #2a2a3c;
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 4px 14px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"] .composer-input-shell:focus-within {
+  border-color: rgba(64, 197, 241, 0.4);
+  background: #30304a;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 0 3px rgba(64, 197, 241, 0.1),
+    0 8px 18px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .composer-input {
+  color: #e8eaed;
+}
+
+[data-theme="dark"] .composer-input::placeholder {
+  color: #9aa0ac;
+}
+
+[data-theme="dark"] .send-button {
+  background: #3a9ee0;
+}
+
+[data-theme="dark"] .send-button:hover {
+  background: #2a8fd0;
+}
