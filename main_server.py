@@ -729,6 +729,7 @@ from main_routers import ( # noqa
     live2d_router,
     vrm_router,
     mmd_router,
+    jukebox_router,
     workshop_router,
     memory_router,
     cloudsave_router,
@@ -791,6 +792,7 @@ app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
 app.include_router(mmd_router)
+app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
 app.include_router(cloudsave_router)

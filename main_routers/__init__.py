@@ -10,6 +10,7 @@ from .characters_router import router as characters_router
 from .live2d_router import router as live2d_router
 from .vrm_router import router as vrm_router
 from .mmd_router import router as mmd_router
+from .jukebox_router import router as jukebox_router
 from .workshop_router import router as workshop_router
 from .memory_router import router as memory_router
 from .cloudsave_router import router as cloudsave_router
@@ -24,6 +25,7 @@ __all__ = [
     'live2d_router',
     'vrm_router',
     'mmd_router',
+    'jukebox_router',
     'workshop_router',
     'memory_router',
     'cloudsave_router',
