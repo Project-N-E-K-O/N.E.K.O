@@ -48,6 +48,8 @@ from config.prompts_proactive import (
     SCREEN_SECTION_HEADER, SCREEN_SECTION_FOOTER,
     SCREEN_WINDOW_TITLE, SCREEN_IMG_HINT,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
+    MUSIC_SECTION_HEADER, MUSIC_SECTION_FOOTER,
+    MEME_SECTION_HEADER, MEME_SECTION_FOOTER,
     PROACTIVE_SOURCE_LABELS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
@@ -3204,7 +3206,9 @@ async def proactive_chat(request: Request):
         # 如果正在放歌或处于冷却期，强行屏蔽音乐素材推荐，避免 AI 误触
         if music_topic and not is_playing_music and not music_cooldown:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
-            music_section = f"======音乐推荐素材======\n{music_topic}\n======音乐素材结束======"
+            msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
+            msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
+            music_section = f"{msh}\n{music_topic}\n{msf}"
         elif is_playing_music or music_cooldown:
             reason = "正在播放音乐" if is_playing_music else "音乐冷却期"
             print(f"[{lanlan_name}] {reason}，已屏蔽音乐推荐素材（仅保留 playing_hint）")
@@ -3218,7 +3222,9 @@ async def proactive_chat(request: Request):
                 meme_topic = topic
                 break
         if meme_topic:
-            meme_section = f"======表情包素材======\n{meme_topic}\n======表情包素材结束======"
+            meh = _loc(MEME_SECTION_HEADER, proactive_lang)
+            mef = _loc(MEME_SECTION_FOOTER, proactive_lang)
+            meme_section = f"{meh}\n{meme_topic}\n{mef}"
         
         source_instruction, output_format_section = get_proactive_format_sections(
             has_screen=bool(screen_section),
