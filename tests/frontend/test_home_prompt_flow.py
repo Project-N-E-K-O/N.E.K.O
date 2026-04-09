@@ -455,6 +455,127 @@ def test_tutorial_started_event_retries_failed_sync_on_heartbeat(
 
 
 @pytest.mark.frontend
+def test_tutorial_heartbeat_does_not_report_completed_while_tutorial_is_running(
+    mock_page: Page,
+):
+    project_root = Path(__file__).resolve().parents[2]
+
+    mock_page.set_content("<!doctype html><html><body></body></html>")
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.safeT = function(key, fallback) {
+                return typeof fallback === 'string' ? fallback : key;
+            };
+            window.showStatusToast = function() {};
+            window.__tutorialHeartbeatBodies = [];
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async function() {
+                    return { 'X-CSRF-Token': 'test-token' };
+                },
+            };
+            window.nekoAutostartProvider = {
+                getStatus: async function() {
+                    return {
+                        ok: true,
+                        supported: false,
+                        enabled: false,
+                        authoritative: false,
+                        provider: 'backend',
+                    };
+                },
+            };
+            window.universalTutorialManager = {
+                currentPage: 'home',
+                isTutorialRunning: true,
+                hasSeenTutorial: function() {
+                    return true;
+                },
+                logPromptFlow: function() {},
+                requestTutorialStart: async function() {
+                    return false;
+                },
+            };
+
+            const jsonResponse = function(body) {
+                return new Response(JSON.stringify(body), {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                });
+            };
+
+            window.fetch = async function(url, options) {
+                const requestUrl = String(url);
+                const requestOptions = options || {};
+                let body = null;
+                if (typeof requestOptions.body === 'string' && requestOptions.body) {
+                    body = JSON.parse(requestOptions.body);
+                }
+
+                if (requestUrl === '/api/tutorial-prompt/state') {
+                    return jsonResponse({
+                        state: {
+                            status: 'started',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: true,
+                            home_tutorial_completed: false,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/autostart-prompt/state') {
+                    return jsonResponse({
+                        state: {
+                            status: 'observing',
+                            never_remind: false,
+                            deferred_until: 0,
+                            autostart_enabled: false,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                    window.__tutorialHeartbeatBodies.push(body);
+                    return jsonResponse({
+                        ok: true,
+                        should_prompt: false,
+                        state: {
+                            status: 'started',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: true,
+                            home_tutorial_completed: false,
+                        },
+                    });
+                }
+
+                throw new Error('Unexpected request: ' + requestUrl);
+            };
+        }
+        """
+    )
+
+    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
+    mock_page.evaluate("() => window.appTutorialPrompt.init()")
+
+    mock_page.wait_for_function(
+        "() => window.__tutorialHeartbeatBodies.length === 1",
+        timeout=5000,
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => window.__tutorialHeartbeatBodies[0]
+        """
+    )
+
+    assert result["manual_home_tutorial_viewed"] is True
+    assert result["home_tutorial_completed"] is False
+
+
+@pytest.mark.frontend
 def test_autostart_provider_enable_syncs_prompt_heartbeat_state(
     mock_page: Page,
 ):

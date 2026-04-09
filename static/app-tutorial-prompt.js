@@ -1462,13 +1462,14 @@
             tutorialState.pendingVoiceSessions = 0;
 
             const localTutorialSeen = currentHomeTutorialSeenLocally();
+            const localTutorialCompleted = localTutorialSeen && !isHomeTutorialRunning();
             const payload = {
                 foreground_ms_delta: deltas.foregroundDelta,
                 home_interactions_delta: deltas.homeInteractionsDelta,
                 chat_turns_delta: deltas.chatTurnsDelta,
                 voice_sessions_delta: deltas.voiceSessionsDelta,
                 manual_home_tutorial_viewed: localTutorialSeen,
-                home_tutorial_completed: localTutorialSeen,
+                home_tutorial_completed: localTutorialCompleted,
             };
 
             const data = await requestMutationJson('/api/tutorial-prompt/heartbeat', {
@@ -1487,6 +1488,7 @@
                 reason: data && data.prompt_reason,
                 token: shortPromptToken(data && data.prompt_token),
                 localTutorialSeen: localTutorialSeen,
+                localTutorialCompleted: localTutorialCompleted,
             });
 
             if (data && data.should_prompt) {
