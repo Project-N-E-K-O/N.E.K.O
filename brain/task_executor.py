@@ -8,9 +8,10 @@ import re
 import asyncio
 from typing import Dict, Any, List, Optional, Callable, Awaitable
 from dataclasses import dataclass
-from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLimitError
+from openai import APIConnectionError, InternalServerError, RateLimitError
 import httpx
-from config import get_extra_body, USER_PLUGIN_SERVER_PORT
+from config import USER_PLUGIN_SERVER_PORT
+from utils.llm_client import create_chat_llm, ChatOpenAI
 from config.prompts_agent import (
     UNIFIED_CHANNEL_SYSTEM_PROMPT,
     CHANNEL_DESC_COPAW,
@@ -192,9 +193,9 @@ class DirectTaskExecutor:
         self.plugin_list = []
         self.user_plugin_enabled_default = False
         self._external_plugin_provider: Optional[Callable[[bool], Awaitable[List[Dict[str, Any]]]]] = None
-        # AsyncOpenAI client 缓存：配置不变时复用同一实例，避免反复创建连接池
-        self._cached_client: Optional[AsyncOpenAI] = None
-        self._cached_client_key: tuple = ()
+        # ChatOpenAI instance cache: keyed by (api_key, base_url, model, temperature, max_completion_tokens)
+        self._cached_llms: dict[tuple, ChatOpenAI] = {}
+        self._cached_llm_config_key: tuple = ()  # tracks (api_key, base_url, model) to detect config changes
         self._cleanup_tasks: set = set()  # 持有关闭任务的强引用，防止 GC 回收
         # plugin_id -> (full_description, generated_short_description)
         self._short_desc_cache: dict[str, tuple[str, str]] = {}
@@ -228,8 +229,7 @@ class DirectTaskExecutor:
 
         logger.info("[Agent] Generating short_description for %d plugin(s)", len(to_generate))
         try:
-            client = self._get_client()
-            model = self._get_model()
+            llm = self._get_llm(temperature=0, max_completion_tokens=150)
             for p in to_generate:
                 quota_error = self._check_agent_quota("task_executor.ensure_short_desc")
                 if quota_error:
@@ -238,20 +238,12 @@ class DirectTaskExecutor:
                 pid = p.get("id", "unknown")
                 try:
                     desc = str(p.get("description", "") or "").strip()
-                    request_params: dict = {
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": "You are an agentic automation assessment agent, generate a concise plugin summary under 300 characters in English."},
-                            {"role": "user", "content": f"Plugin: {pid}\nDescription: {desc}\n\nReturn ONLY the summary."},
-                        ],
-                        "temperature": 0,
-                        "max_completion_tokens": 150,
-                    }
-                    extra_body = get_extra_body(model)
-                    if extra_body:
-                        request_params["extra_body"] = extra_body
-                    resp = await client.chat.completions.create(**request_params)
-                    text = (resp.choices[0].message.content or "").strip()
+                    messages = [
+                        {"role": "system", "content": "You are an agentic automation assessment agent, generate a concise plugin summary under 300 characters in English."},
+                        {"role": "user", "content": f"Plugin: {pid}\nDescription: {desc}\n\nReturn ONLY the summary."},
+                    ]
+                    resp = await llm.ainvoke(messages)
+                    text = (resp.content or "").strip()
                     if text and len(text) <= 300:
                         p["short_description"] = text
                         self._short_desc_cache[pid] = (desc, text)
@@ -303,34 +295,53 @@ class DirectTaskExecutor:
         return self.plugin_list
 
 
-    def _get_client(self):
-        """动态获取 OpenAI 客户端（配置不变时复用同一实例，避免连接池泄漏）"""
+    def _get_llm(self, *, temperature: float = 0, max_completion_tokens: int | None = None) -> ChatOpenAI:
+        """Return a cached ChatOpenAI instance via create_chat_llm.
+
+        Instances are cached by (api_key, base_url, model, temperature,
+        max_completion_tokens).  When the provider config (api_key / base_url /
+        model) changes, all cached instances are closed and recreated.
+        """
         set_call_type("agent")
         api_config = self._config_manager.get_model_api_config('summary')
-        key = (api_config['api_key'], api_config['base_url'])
+        config_key = (api_config['api_key'], api_config['base_url'], api_config['model'])
 
-        if self._cached_client_key != key:
-            # 配置变更，关闭旧 client 并创建新实例
-            if self._cached_client is not None:
-                old_client = self._cached_client
-                self._close_client_async(old_client)
-            self._cached_client = AsyncOpenAI(
-                api_key=api_config['api_key'],
+        # If provider config changed, close all cached instances
+        if self._cached_llm_config_key != config_key:
+            self._close_all_llms()
+            self._cached_llm_config_key = config_key
+
+        instance_key = (*config_key, temperature, max_completion_tokens)
+        if instance_key not in self._cached_llms:
+            llm = create_chat_llm(
+                model=api_config['model'],
                 base_url=api_config['base_url'],
+                api_key=api_config['api_key'],
+                temperature=temperature,
+                max_completion_tokens=max_completion_tokens,
                 max_retries=0,
             )
-            self._cached_client_key = key
-            logger.debug(f"[Agent] Created new AsyncOpenAI client for {api_config['base_url']}")
+            self._cached_llms[instance_key] = llm
+            logger.debug(
+                "[Agent] Created new ChatOpenAI (model=%s, base_url=%s, temp=%s, max_tokens=%s)",
+                api_config['model'], api_config['base_url'], temperature, max_completion_tokens,
+            )
 
-        return self._cached_client
+        return self._cached_llms[instance_key]
 
-    def _close_client_async(self, client: AsyncOpenAI):
-        """异步关闭旧 client，持有 Task 强引用防止 GC 回收导致泄漏"""
+    def _close_all_llms(self) -> None:
+        """Close all cached ChatOpenAI instances asynchronously."""
+        for llm in self._cached_llms.values():
+            self._close_llm_async(llm)
+        self._cached_llms.clear()
+
+    def _close_llm_async(self, llm: ChatOpenAI) -> None:
+        """Asynchronously close a ChatOpenAI instance, preventing GC from dropping the task."""
         async def _do_close():
             try:
-                await client.close()
+                await llm.aclose()
             except Exception as e:
-                logger.warning(f"[Agent] Failed to close old AsyncOpenAI client: {e}")
+                logger.warning("[Agent] Failed to close old ChatOpenAI instance: %s", e)
             finally:
                 self._cleanup_tasks.discard(task)
 
@@ -338,13 +349,7 @@ class DirectTaskExecutor:
             task = asyncio.ensure_future(_do_close())
             self._cleanup_tasks.add(task)
         except RuntimeError:
-            # 没有运行中的事件循环，同步场景下忽略
-            logger.debug("[Agent] No running event loop, skipping async client close")
-    
-    def _get_model(self):
-        """获取模型名称"""
-        api_config = self._config_manager.get_model_api_config('summary')
-        return api_config['model']
+            logger.debug("[Agent] No running event loop, skipping async LLM close")
 
     def _check_agent_quota(self, source: str) -> Optional[str]:
         """免费版 Agent 模型每日 300 次本地限流。"""
@@ -471,29 +476,19 @@ class DirectTaskExecutor:
 
         for attempt in range(max_retries):
             try:
-                client = self._get_client()
-                model = self._get_model()
+                llm = self._get_llm(temperature=0, max_completion_tokens=600)
 
-                request_params = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": 0,
-                    "max_completion_tokens": 600,
-                }
-
-                extra_body = get_extra_body(model)
-                if extra_body:
-                    request_params["extra_body"] = extra_body
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
 
                 quota_error = self._check_agent_quota("task_executor.assess_unified")
                 if quota_error:
                     return UnifiedChannelDecision()
 
-                response = await client.chat.completions.create(**request_params)
-                text = (response.choices[0].message.content or "").strip()
+                response = await llm.ainvoke(messages)
+                text = (response.content or "").strip()
 
                 logger.debug("[UnifiedAssessment] Raw response: %s", text[:500])
 
@@ -628,27 +623,18 @@ class DirectTaskExecutor:
         )
 
         try:
-            client = self._get_client()
-            model = self._get_model()
-            request_params = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_text},
-                ],
-                "temperature": 0,
-                "max_completion_tokens": 300,
-            }
-            extra_body = get_extra_body(model)
-            if extra_body:
-                request_params["extra_body"] = extra_body
+            llm = self._get_llm(temperature=0, max_completion_tokens=300)
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ]
 
             quota_error = self._check_agent_quota("task_executor.coarse_screen")
             if quota_error:
                 return []
 
-            response = await client.chat.completions.create(**request_params)
-            text = (response.choices[0].message.content or "").strip()
+            response = await llm.ainvoke(messages)
+            text = (response.content or "").strip()
             if text.startswith("```"):
                 text = text.replace("```json", "").replace("```", "").strip()
             ids = json.loads(text)
@@ -771,22 +757,12 @@ class DirectTaskExecutor:
         
         for attempt in range(max_retries):
             try:
-                client = self._get_client()
-                model = self._get_model()
-                
-                request_params = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": 0,
-                    "max_completion_tokens": 500
-                }
-                
-                extra_body = get_extra_body(model)
-                if extra_body:
-                    request_params["extra_body"] = extra_body
+                llm = self._get_llm(temperature=0, max_completion_tokens=500)
+
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
 
                 quota_error = self._check_agent_quota("task_executor.assess_user_plugin")
                 if quota_error:
@@ -798,12 +774,8 @@ class DirectTaskExecutor:
                         plugin_args=None,
                         reason=quota_error,
                     )
-                response = await client.chat.completions.create(**request_params)
-                # Capture raw response and log prompts/response at INFO so it's visible in runtime logs
-                try:
-                    raw_text = response.choices[0].message.content
-                except Exception:
-                    raw_text = None
+                response = await llm.ainvoke(messages)
+                raw_text = response.content
                 # Log the prompts we sent (truncated) and the raw response (truncated) at INFO level
                 try:
                     prompt_dump = (system_prompt + "\n\n" + user_prompt)[:2000]
@@ -911,11 +883,11 @@ class DirectTaskExecutor:
                         logger.info("[UserPlugin Assessment] Invalid decision, retrying with hint: %s", correction_hint)
                         up_retry_done = True
                         # Append correction as assistant+user follow-up to guide the LLM
-                        request_params["messages"].append({"role": "assistant", "content": text})
-                        request_params["messages"].append({"role": "user", "content": f"CORRECTION: {correction_hint}. Please fix your response and return a valid JSON."})
+                        messages.append({"role": "assistant", "content": text})
+                        messages.append({"role": "user", "content": f"CORRECTION: {correction_hint}. Please fix your response and return a valid JSON."})
                         try:
-                            response2 = await client.chat.completions.create(**request_params)
-                            raw2 = response2.choices[0].message.content
+                            response2 = await llm.ainvoke(messages)
+                            raw2 = response2.content
                             t2 = raw2.strip() if isinstance(raw2, str) else ""
                             if t2.startswith("```"):
                                 t2 = t2.replace("```json", "").replace("```", "").strip()
