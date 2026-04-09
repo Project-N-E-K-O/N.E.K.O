@@ -255,6 +255,206 @@ def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
 
 
 @pytest.mark.frontend
+def test_tutorial_started_event_retries_failed_sync_on_heartbeat(
+    mock_page: Page,
+):
+    project_root = Path(__file__).resolve().parents[2]
+
+    mock_page.set_content("<!doctype html><html><body></body></html>")
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.safeT = function(key, fallback) {
+                return typeof fallback === 'string' ? fallback : key;
+            };
+            window.showStatusToast = function() {};
+            window.__tutorialStartedBodies = [];
+            window.__tutorialCompletedBodies = [];
+            window.__tutorialHeartbeatBodies = [];
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async function() {
+                    return { 'X-CSRF-Token': 'test-token' };
+                },
+            };
+            window.nekoAutostartProvider = {
+                getStatus: async function() {
+                    return {
+                        ok: true,
+                        supported: false,
+                        enabled: false,
+                        authoritative: false,
+                        provider: 'backend',
+                    };
+                },
+            };
+            window.universalTutorialManager = {
+                currentPage: 'home',
+                isTutorialRunning: true,
+                hasSeenTutorial: function() {
+                    return true;
+                },
+                logPromptFlow: function() {},
+                requestTutorialStart: async function() {
+                    return false;
+                },
+            };
+
+            const jsonResponse = function(body, status) {
+                return new Response(JSON.stringify(body), {
+                    status: status || 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                });
+            };
+
+            window.fetch = async function(url, options) {
+                const requestUrl = String(url);
+                const requestOptions = options || {};
+                let body = null;
+                if (typeof requestOptions.body === 'string' && requestOptions.body) {
+                    body = JSON.parse(requestOptions.body);
+                }
+
+                if (requestUrl === '/api/tutorial-prompt/state') {
+                    return jsonResponse({
+                        state: {
+                            status: 'completed',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: true,
+                            home_tutorial_completed: true,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/autostart-prompt/state') {
+                    return jsonResponse({
+                        state: {
+                            status: 'observing',
+                            never_remind: false,
+                            deferred_until: 0,
+                            autostart_enabled: false,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                    window.__tutorialHeartbeatBodies.push(body);
+                    return jsonResponse({
+                        ok: true,
+                        should_prompt: false,
+                        state: {
+                            status: 'started',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: true,
+                            home_tutorial_completed: false,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/tutorial-prompt/tutorial-started') {
+                    window.__tutorialStartedBodies.push(body);
+                    if (window.__tutorialStartedBodies.length === 1) {
+                        return jsonResponse({
+                            ok: false,
+                            error: 'temporary_failure',
+                        }, 500);
+                    }
+                    return jsonResponse({
+                        ok: true,
+                        tutorial_run_token: 'tutorial-run-token',
+                        state: {
+                            status: 'started',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: true,
+                            home_tutorial_completed: false,
+                        },
+                    });
+                }
+                if (requestUrl === '/api/tutorial-prompt/tutorial-completed') {
+                    window.__tutorialCompletedBodies.push(body);
+                    return jsonResponse({
+                        ok: true,
+                        state: {
+                            status: 'completed',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: true,
+                            home_tutorial_completed: true,
+                        },
+                    });
+                }
+
+                throw new Error('Unexpected request: ' + requestUrl);
+            };
+        }
+        """
+    )
+
+    mock_page.add_script_tag(path=str(project_root / "static" / "app-tutorial-prompt.js"))
+    mock_page.evaluate("() => window.appTutorialPrompt.init()")
+
+    mock_page.wait_for_function(
+        "() => window.__tutorialHeartbeatBodies.length > 0",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
+                detail: {
+                    page: 'home',
+                    source: 'manual',
+                },
+            }));
+        }
+        """
+    )
+
+    mock_page.wait_for_function(
+        "() => window.__tutorialStartedBodies.length === 2",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+                detail: {
+                    page: 'home',
+                    source: 'manual',
+                },
+            }));
+        }
+        """
+    )
+
+    mock_page.wait_for_function(
+        "() => window.__tutorialCompletedBodies.length === 1",
+        timeout=5000,
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => ({
+            tutorialStartedBodies: window.__tutorialStartedBodies.slice(),
+            tutorialCompletedBodies: window.__tutorialCompletedBodies.slice(),
+            tutorialHeartbeatBodies: window.__tutorialHeartbeatBodies.slice(),
+        })
+        """
+    )
+
+    assert len(result["tutorialStartedBodies"]) == 2
+    assert result["tutorialStartedBodies"][0]["source"] == "manual"
+    assert result["tutorialStartedBodies"][1]["source"] == "manual"
+    assert len(result["tutorialCompletedBodies"]) == 1
+    assert result["tutorialCompletedBodies"][0]["tutorial_run_token"] == "tutorial-run-token"
+    assert len(result["tutorialHeartbeatBodies"]) >= 2
+
+
+@pytest.mark.frontend
 def test_autostart_provider_enable_syncs_prompt_heartbeat_state(
     mock_page: Page,
 ):

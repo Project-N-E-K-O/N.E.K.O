@@ -70,6 +70,22 @@ VALID_TUTORIAL_EVENT_SOURCES = {
 }
 
 TUTORIAL_PROMPT_FUNNEL_KEYS = PROMPT_FUNNEL_KEYS
+TUTORIAL_PROMPT_SNAPSHOT_EXTRA_FIELDS = (
+    "home_tutorial_completed",
+    "manual_home_tutorial_viewed",
+    "manual_home_tutorial_viewed_at",
+    "user_cohort",
+    "cohort_decided_at",
+    "cohort_reason",
+    "active_tutorial_run_token",
+    "active_tutorial_run_source",
+    "active_tutorial_run_started_at",
+)
+TUTORIAL_PROMPT_PUBLIC_EXTRA_FIELDS = tuple(
+    field
+    for field in TUTORIAL_PROMPT_SNAPSHOT_EXTRA_FIELDS
+    if not field.startswith("active_tutorial_run_")
+)
 
 DEFAULT_TUTORIAL_PROMPT_STATE = {
     **deepcopy(DEFAULT_PROMPT_FLOW_STATE),
@@ -89,10 +105,19 @@ _STATE_LOCK = threading.RLock()
 
 
 def _normalize_state(raw_state: Any) -> dict[str, Any]:
+    raw_state = raw_state if isinstance(raw_state, dict) else {}
+
     def _normalize_extra(state: dict[str, Any]) -> None:
         state["home_tutorial_completed"] = bool(state.get("home_tutorial_completed"))
         state["manual_home_tutorial_viewed"] = bool(state.get("manual_home_tutorial_viewed"))
         state["manual_home_tutorial_viewed_at"] = _clamp_int(state.get("manual_home_tutorial_viewed_at"))
+
+        if state["completed_at"] <= 0:
+            state["completed_at"] = _clamp_int(raw_state.get("completed_timestamp"))
+
+        legacy_completed_status = _clean_str(raw_state.get("completed_status"), limit=32).lower()
+        if not state["home_tutorial_completed"] and (state["completed_at"] > 0 or legacy_completed_status):
+            state["home_tutorial_completed"] = True
 
         cohort = _clean_str(state.get("user_cohort"), limit=32).lower()
         state["user_cohort"] = cohort if cohort in VALID_USER_COHORTS else "unknown"
@@ -175,7 +200,24 @@ def _looks_like_tutorial_prompt_state(raw_state: dict[str, Any]) -> bool:
         return prompt_kind == TUTORIAL_PROMPT_STATE_KIND
 
     # 仅在确实看到 tutorial 专属痕迹时才迁移旧文件，避免把 autostart 状态误导入 tutorial。
+    has_autostart_markers = any((
+        "autostart_enabled" in raw_state,
+        _clamp_int(raw_state.get("enabled_at")) > 0,
+        bool(_clean_str(raw_state.get("enabled_provider"), limit=64)),
+    ))
+    has_legacy_completion_markers = any((
+        bool(raw_state.get("home_tutorial_completed")),
+        bool(_clean_str(raw_state.get("completed_status"), limit=32)) and not has_autostart_markers,
+        (
+            (
+                _clamp_int(raw_state.get("completed_at")) > 0
+                or _clamp_int(raw_state.get("completed_timestamp")) > 0
+            )
+            and not has_autostart_markers
+        ),
+    ))
     return any((
+        has_legacy_completion_markers,
         bool(raw_state.get("manual_home_tutorial_viewed")),
         _clamp_int(raw_state.get("manual_home_tutorial_viewed_at")) > 0,
         _clamp_int(raw_state.get("cohort_decided_at")) > 0,
@@ -215,23 +257,17 @@ def build_tutorial_prompt_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_state(state)
     return build_prompt_flow_snapshot(
         normalized,
-        extra_fields=(
-            "home_tutorial_completed",
-            "manual_home_tutorial_viewed",
-            "manual_home_tutorial_viewed_at",
-            "user_cohort",
-            "cohort_decided_at",
-            "cohort_reason",
-            "active_tutorial_run_token",
-            "active_tutorial_run_source",
-            "active_tutorial_run_started_at",
-        ),
+        extra_fields=TUTORIAL_PROMPT_SNAPSHOT_EXTRA_FIELDS,
     )
 
 
 def build_public_tutorial_prompt_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_state(state)
-    return build_public_prompt_flow_snapshot(normalized)
+    snapshot = build_public_prompt_flow_snapshot(normalized)
+    for field in TUTORIAL_PROMPT_PUBLIC_EXTRA_FIELDS:
+        value = normalized.get(field)
+        snapshot[field] = deepcopy(value) if isinstance(value, (dict, list)) else value
+    return snapshot
 
 
 def _normalize_tutorial_event_payload(payload: dict[str, Any] | None) -> tuple[str, str, str]:

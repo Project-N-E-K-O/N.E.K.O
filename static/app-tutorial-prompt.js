@@ -45,6 +45,7 @@
         deferredUntil: 0,
         manualHomeTutorialViewed: false,
         homeTutorialCompleted: false,
+        pendingTutorialStartedPayload: null,
         promptDrivenTutorialToken: '',
         activeTutorialRunToken: '',
         activeTutorialRunSource: 'manual',
@@ -301,24 +302,54 @@
         return Object.assign({}, payload);
     }
 
+    function getPendingPayload(flowState, propertyName) {
+        if (!flowState || !propertyName) {
+            return null;
+        }
+        return clonePayload(flowState[propertyName]);
+    }
+
+    function rememberPendingPayload(flowState, propertyName, payload) {
+        if (!flowState || !propertyName) {
+            return;
+        }
+        flowState[propertyName] = clonePayload(payload);
+    }
+
+    function clearPendingPayload(flowState, propertyName) {
+        if (!flowState || !propertyName || !flowState[propertyName]) {
+            return false;
+        }
+        flowState[propertyName] = null;
+        return true;
+    }
+
     function getPendingDecisionPayload(flowState) {
-        return clonePayload(flowState && flowState.pendingDecisionPayload);
+        return getPendingPayload(flowState, 'pendingDecisionPayload');
     }
 
     function rememberPendingDecision(flowState, payload) {
-        flowState.pendingDecisionPayload = clonePayload(payload);
+        rememberPendingPayload(flowState, 'pendingDecisionPayload', payload);
     }
 
     function clearPendingDecision(flowState) {
-        if (!flowState || !flowState.pendingDecisionPayload) {
-            return false;
-        }
-        flowState.pendingDecisionPayload = null;
-        return true;
+        return clearPendingPayload(flowState, 'pendingDecisionPayload');
     }
 
     function hasPendingDecision(flowState) {
         return !!getPendingDecisionPayload(flowState);
+    }
+
+    function getPendingTutorialStartedPayload() {
+        return getPendingPayload(tutorialState, 'pendingTutorialStartedPayload');
+    }
+
+    function rememberPendingTutorialStartedPayload(payload) {
+        rememberPendingPayload(tutorialState, 'pendingTutorialStartedPayload', payload);
+    }
+
+    function clearPendingTutorialStartedPayload() {
+        return clearPendingPayload(tutorialState, 'pendingTutorialStartedPayload');
     }
 
     function shouldRetryPersistDecision(error) {
@@ -1165,37 +1196,82 @@
         return payload;
     }
 
+    async function persistTutorialStartedPayload(payload, options) {
+        const tutorialPayload = clonePayload(payload);
+        if (!tutorialPayload) {
+            return '';
+        }
+
+        const requestOptions = options || {};
+        try {
+            const response = await requestMutationJson('/api/tutorial-prompt/tutorial-started', {
+                method: 'POST',
+                json: tutorialPayload,
+            });
+            clearPendingTutorialStartedPayload();
+            if (response && response.state) {
+                applyTutorialServerState(response.state, 'tutorial-started');
+            }
+            tutorialState.activeTutorialRunToken = response && response.tutorial_run_token
+                ? String(response.tutorial_run_token)
+                : '';
+            tutorialState.activeTutorialRunSource = tutorialPayload.source;
+            if (tutorialPayload.source === 'idle_prompt') {
+                tutorialState.promptDrivenTutorialToken = '';
+            }
+            logFlow('tutorial-started-sync', {
+                source: tutorialPayload.source,
+                tutorialRunToken: shortPromptToken(tutorialState.activeTutorialRunToken),
+                promptToken: shortPromptToken(tutorialPayload.prompt_token),
+            });
+            if (requestOptions.scheduleHeartbeat !== false) {
+                scheduleFastHeartbeat();
+            }
+            return tutorialState.activeTutorialRunToken;
+        } catch (error) {
+            rememberPendingTutorialStartedPayload(tutorialPayload);
+            console.warn('[TutorialPrompt] failed to persist tutorial start:', error);
+            scheduleFastHeartbeat();
+            return '';
+        }
+    }
+
+    async function flushPendingTutorialStarted() {
+        const pendingPayload = getPendingTutorialStartedPayload();
+        if (!pendingPayload) {
+            return '';
+        }
+        return persistTutorialStartedPayload(pendingPayload, {
+            scheduleHeartbeat: false,
+        });
+    }
+
     async function syncTutorialStarted(detail) {
         if (!detail || detail.page !== 'home') {
             return '';
         }
 
         const payload = buildTutorialEventPayload(detail);
-        const response = await requestMutationJson('/api/tutorial-prompt/tutorial-started', {
-            method: 'POST',
-            json: payload,
-        });
-        if (response && response.state) {
-            applyTutorialServerState(response.state, 'tutorial-started');
+        if (!payload) {
+            return '';
         }
-        tutorialState.activeTutorialRunToken = response && response.tutorial_run_token
-            ? String(response.tutorial_run_token)
-            : '';
-        tutorialState.activeTutorialRunSource = payload.source;
-        if (payload.source === 'idle_prompt') {
-            tutorialState.promptDrivenTutorialToken = '';
-        }
-        logFlow('tutorial-started-sync', {
-            source: payload.source,
-            tutorialRunToken: shortPromptToken(tutorialState.activeTutorialRunToken),
-            promptToken: shortPromptToken(payload.prompt_token),
-        });
-        scheduleFastHeartbeat();
-        return tutorialState.activeTutorialRunToken;
+        return persistTutorialStartedPayload(payload);
     }
 
     async function ensureTutorialRunToken(source) {
         const normalizedSource = normalizeTutorialSource(source);
+        const pendingStartedPayload = getPendingTutorialStartedPayload();
+        if (
+            pendingStartedPayload
+            && pendingStartedPayload.source === normalizedSource
+        ) {
+            const pendingTutorialRunToken = await flushPendingTutorialStarted();
+            if (pendingTutorialRunToken) {
+                return pendingTutorialRunToken;
+            }
+            return '';
+        }
+
         if (
             tutorialState.activeTutorialRunToken
             && tutorialState.activeTutorialRunSource === normalizedSource
@@ -1374,6 +1450,7 @@
         };
 
         try {
+            await flushPendingTutorialStarted();
             await flushPendingTutorialDecision();
             deltas.foregroundDelta = consumeForegroundDelta(tutorialState);
             deltas.homeInteractionsDelta = tutorialState.pendingWeakHomeInteractions;

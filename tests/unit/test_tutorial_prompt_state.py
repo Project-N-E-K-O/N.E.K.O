@@ -719,6 +719,32 @@ def test_legacy_autostart_state_is_ignored_for_new_tutorial_prompt(tmp_path):
 
 
 @pytest.mark.unit
+def test_legacy_completed_only_tutorial_state_is_migrated(tmp_path):
+    config = DummyConfig(tmp_path)
+    legacy_state_path = config.config_dir / "autostart_prompt.json"
+    legacy_state_path.write_text(json.dumps({
+        "schema_version": 1,
+        "completed_timestamp": 4_321,
+        "completed_status": "completed",
+    }), encoding="utf-8")
+
+    state = load_tutorial_prompt_state(config)
+
+    assert state["home_tutorial_completed"] is True
+    assert state["completed_at"] == 4_321
+    assert state["status"] == "completed"
+
+    tutorial_state_path = config.config_dir / "tutorial_prompt.json"
+    assert tutorial_state_path.exists()
+
+    persisted = json.loads(tutorial_state_path.read_text(encoding="utf-8"))
+    assert persisted["prompt_kind"] == "tutorial_prompt"
+    assert persisted["home_tutorial_completed"] is True
+    assert persisted["completed_at"] == 4_321
+    assert persisted["status"] == "completed"
+
+
+@pytest.mark.unit
 def test_corrupted_legacy_autostart_state_does_not_break_tutorial_state_load(tmp_path):
     config = DummyConfig(tmp_path)
     legacy_state_path = config.config_dir / "autostart_prompt.json"
@@ -729,6 +755,24 @@ def test_corrupted_legacy_autostart_state_does_not_break_tutorial_state_load(tmp
     assert state["status"] == "observing"
     assert state["shown_count"] == 0
     assert state["home_tutorial_completed"] is False
+
+
+@pytest.mark.unit
+def test_legacy_autostart_state_with_completed_status_does_not_pollute_tutorial_state(tmp_path):
+    config = DummyConfig(tmp_path)
+    legacy_state_path = config.config_dir / "autostart_prompt.json"
+    legacy_state_path.write_text(json.dumps({
+        "autostart_enabled": True,
+        "enabled_at": 8_000,
+        "completed_status": "completed",
+    }), encoding="utf-8")
+
+    state = load_tutorial_prompt_state(config)
+
+    assert state["status"] == "observing"
+    assert state["home_tutorial_completed"] is False
+    assert state["completed_at"] == 0
+    assert not (config.config_dir / "tutorial_prompt.json").exists()
 
 
 @pytest.mark.unit
@@ -847,22 +891,43 @@ def test_tutorial_decision_is_idempotent_for_repeated_token(tmp_path):
 @pytest.mark.unit
 def test_public_state_response_hides_internal_prompt_tokens(tmp_path):
     config = DummyConfig(tmp_path)
-    heartbeat = process_tutorial_prompt_heartbeat(
-        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
-        config_manager=config,
-        now_ms=1_000,
+    save_tutorial_prompt_state(
+        {
+            "status": "completed",
+            "shown_count": 1,
+            "manual_home_tutorial_viewed": True,
+            "manual_home_tutorial_viewed_at": 1_500,
+            "home_tutorial_completed": True,
+            "user_cohort": "existing",
+            "cohort_decided_at": 1_200,
+            "cohort_reason": "memory_history",
+            "active_prompt_token": "prompt-token",
+            "active_prompt_issued_at": 1_000,
+            "last_acknowledged_prompt_token": "ack-token",
+            "active_tutorial_run_token": "run-token",
+            "active_tutorial_run_source": "manual",
+            "active_tutorial_run_started_at": 1_500,
+        },
+        config,
     )
-
-    assert heartbeat["prompt_token"]
 
     response = get_tutorial_prompt_state_response(config_manager=config)
     state = response["state"]
 
-    assert state["status"] == "observing"
-    assert state["shown_count"] == 0
+    assert state["status"] == "completed"
+    assert state["shown_count"] == 1
+    assert state["manual_home_tutorial_viewed"] is True
+    assert state["manual_home_tutorial_viewed_at"] == 1_500
+    assert state["home_tutorial_completed"] is True
+    assert state["user_cohort"] == "existing"
+    assert state["cohort_decided_at"] == 1_200
+    assert state["cohort_reason"] == "memory_history"
     assert "active_prompt_token" not in state
     assert "active_prompt_issued_at" not in state
     assert "last_acknowledged_prompt_token" not in state
+    assert "active_tutorial_run_token" not in state
+    assert "active_tutorial_run_source" not in state
+    assert "active_tutorial_run_started_at" not in state
 
 
 @pytest.mark.unit
