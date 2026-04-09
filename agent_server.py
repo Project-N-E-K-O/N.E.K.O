@@ -1132,21 +1132,17 @@ async def _run_computer_use_task(
         # Emit structured task_result
         try:
             _lang = _rp_lang(None)
+            _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
             params = info.get("params") or {}
             desc = params.get("query") or params.get("instruction") or ""
-            if info["status"] == "cancelled":
-                # Cancelled tasks: tell the LLM not to retry unless user asks again
-                summary = f'Your task "{desc}" was cancelled. Do not retry unless user explicitly asks again.' if desc else 'Task was cancelled. Do not retry unless user explicitly asks again.'
+            if cu_detail and desc:
+                summary = _rp_phrase('cu_task_done', _lang, desc=desc, status=_done, detail=cu_detail)
+            elif cu_detail:
+                summary = _rp_phrase('cu_task_done_no_desc', _lang, status=_done, detail=cu_detail)
+            elif desc:
+                summary = _rp_phrase('cu_task_desc_only', _lang, desc=desc, status=_done)
             else:
-                _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
-                if cu_detail and desc:
-                    summary = _rp_phrase('cu_task_done', _lang, desc=desc, status=_done, detail=cu_detail)
-                elif cu_detail:
-                    summary = _rp_phrase('cu_task_done_no_desc', _lang, status=_done, detail=cu_detail)
-                elif desc:
-                    summary = _rp_phrase('cu_task_desc_only', _lang, desc=desc, status=_done)
-                else:
-                    summary = _rp_phrase('cu_done', _lang) if success else _rp_phrase('cu_fail', _lang)
+                summary = _rp_phrase('cu_done', _lang) if success else _rp_phrase('cu_fail', _lang)
             task_obj = asyncio.create_task(_emit_task_result(
                 lanlan_name,
                 channel="computer_use",
@@ -1532,13 +1528,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             detail=cancel_msg[:200], success=False, cancelled=True,
                         )
                         try:
-                            _cancel_desc = result.task_description or f"{plugin_id}.{entry_id}"
                             await _emit_task_result(
                                 lanlan_name,
                                 channel="user_plugin",
                                 task_id=str(result.task_id or ""),
                                 success=False,
-                                summary=f'Your task "{_cancel_desc}" was cancelled. Do not retry unless user explicitly asks again.',
+                                summary=_rp_phrase('plugin_cancelled', _rp_lang(None)),
                                 error_message=cancel_msg,
                             )
                         except Exception as emit_err:
@@ -1716,13 +1711,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             detail=cancel_msg[:200], success=False, cancelled=True,
                         )
                         try:
-                            _cancel_desc = result.task_description or instruction or ""
                             await _emit_task_result(
                                 lanlan_name,
                                 channel="openclaw",
                                 task_id=str(result.task_id or ""),
                                 success=False,
-                                summary=f'Your task "{_cancel_desc}" was cancelled. Do not retry unless user explicitly asks again.' if _cancel_desc else 'Task was cancelled. Do not retry unless user explicitly asks again.',
+                                summary=_rp_phrase('openclaw_cancelled', _rp_lang(None)),
                                 error_message=cancel_msg,
                             )
                         except Exception:
@@ -1882,13 +1876,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             desc=result.task_description or "", detail=cancel_msg[:200], success=False, cancelled=True,
                         )
                         try:
-                            _cancel_desc = result.task_description or ""
                             await _emit_task_result(
                                 lanlan_name,
                                 channel="browser_use",
                                 task_id=bu_task_id,
                                 success=False,
-                                summary=f'Your task "{_cancel_desc}" was cancelled. Do not retry unless user explicitly asks again.' if _cancel_desc else 'Task was cancelled. Do not retry unless user explicitly asks again.',
+                                summary=f'你的任务"{result.task_description}"已取消',
                                 error_message=cancel_msg,
                             )
                         except Exception as emit_err:
@@ -2057,11 +2050,10 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 desc=result.task_description or "", detail=cancel_msg[:200], success=False, cancelled=True,
                             )
                             try:
-                                _cancel_desc = result.task_description or ""
                                 await _emit_task_result(
                                     lanlan_name, channel="openfang", task_id=of_task_id,
                                     success=False,
-                                    summary=f'Your task "{_cancel_desc}" was cancelled. Do not retry unless user explicitly asks again.' if _cancel_desc else 'Task was cancelled. Do not retry unless user explicitly asks again.',
+                                    summary=f'虚拟机任务 "{result.task_description}" 已取消',
                                     error_message=cancel_msg,
                                 )
                             except Exception:
