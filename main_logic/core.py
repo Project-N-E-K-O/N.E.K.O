@@ -1904,10 +1904,10 @@ class LLMSessionManager:
                 self.summary_triggered_time = datetime.now()
                 self.message_cache_for_new_session = []
                 self.initial_cache_snapshot_len = 0
-                # Mark that this hot-swap is for agent callback delivery, so the
-                # resulting turn_end will be sent as 'turn end agent_callback'
-                # to prevent cross_server from triggering re-analysis.
-                self._next_turn_is_agent_callback = True
+                # NOTE: _next_turn_is_agent_callback is set AFTER successful
+                # callback injection in _execute_final_swap_sequence, not here.
+                # Setting it here would risk a normal turn consuming the flag
+                # if the hot-swap prep fails or a normal response completes first.
                 # 立即启动后台预热，不等待10秒
                 self.pending_session_warmed_up_event = asyncio.Event()
                 if not self.background_preparation_task or self.background_preparation_task.done():
@@ -2347,6 +2347,9 @@ class LLMSessionManager:
                 self.pending_extra_replies.clear()
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=False)
+                    # Callback injection succeeded — mark the next turn_end as
+                    # agent_callback so cross_server skips re-analysis.
+                    self._next_turn_is_agent_callback = True
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
                     # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")

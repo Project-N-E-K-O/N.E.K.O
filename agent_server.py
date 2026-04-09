@@ -1014,16 +1014,6 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         if isinstance(messages, list) and messages:
             # Consume only new user turn. Assistant turn_end without new user input should be ignored.
             lanlan_key = _normalize_lanlan_key(lanlan_name)
-            # Post-dispatch cooldown: skip analysis if a task was recently dispatched
-            # for this lanlan.  This prevents the rapid re-analysis loop where a
-            # cancelled/completed task's callback triggers another analysis cycle.
-            last_dispatch = Modules.last_task_dispatch_ts.get(lanlan_key, 0.0)
-            if last_dispatch and (time.time() - last_dispatch) < POST_DISPATCH_ANALYZE_COOLDOWN:
-                logger.info(
-                    "[AgentAnalyze] skip analyze: post-dispatch cooldown (%.1fs ago, trigger=%s lanlan=%s)",
-                    time.time() - last_dispatch, event.get("trigger"), lanlan_name,
-                )
-                return
             fp = _build_user_turn_fingerprint(messages)
             if fp is None:
                 logger.info("[AgentAnalyze] skip analyze: no user message found (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
@@ -1031,6 +1021,11 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             if Modules.last_user_turn_fingerprint.get(lanlan_key) == fp:
                 logger.info("[AgentAnalyze] skip analyze: no new user turn (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
                 return
+            # Fingerprint changed → genuinely new user content; always allow.
+            # Re-dispatch prevention is handled by:
+            # - _is_duplicate_task() checking recently completed tasks
+            # - Cancelled tasks not emitting task_result callbacks
+            # - Voice-mode hot-swap sending 'turn end agent_callback'
             Modules.last_user_turn_fingerprint[lanlan_key] = fp
             conversation_id = event.get("conversation_id")
             task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id))
