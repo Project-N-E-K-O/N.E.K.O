@@ -856,7 +856,7 @@
         "apiUrl": "API URL",
         "apiKey": "APIキー",
         "modelId": "モデルID",
-        "agentApiConfigTitle": "Agent API 設定",
+        "agentApiConfigTitle": "Agent API 設定（視覚機能対応が必要）",
         "providerPlaceholder": "例: openai, azure, local",
         "apiUrlPlaceholder": "例: https://api.openai.com/v1",
         "modelIdPlaceholder": "例: gpt-5.1-chat-latest",

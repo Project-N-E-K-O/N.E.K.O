@@ -856,7 +856,7 @@
         "apiUrl": "URL API",
         "apiKey": "API Key",
         "modelId": "ID модели",
-        "agentApiConfigTitle": "Конфигурация API Агента",
+        "agentApiConfigTitle": "Конфигурация API Агента (нужна поддержка зрения)",
         "providerPlaceholder": "например, openai, azure, local",
         "apiUrlPlaceholder": "например, https://api.openai.com/v1",
         "modelIdPlaceholder": "например, gpt-5.1-chat-latest, qwen-flash",

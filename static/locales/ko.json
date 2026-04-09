@@ -856,7 +856,7 @@
         "apiUrl": "API URL",
         "apiKey": "API 키",
         "modelId": "모델 ID",
-        "agentApiConfigTitle": "에이전트 API 설정",
+        "agentApiConfigTitle": "에이전트 API 설정(시각 기능 지원 필요)",
         "providerPlaceholder": "예: openai, azure, 로컬",
         "apiUrlPlaceholder": "예: https://api.openai.com/v1",
         "modelIdPlaceholder": "예: gpt-5.1-chat-latest, qwen-flash",

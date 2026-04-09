@@ -856,7 +856,7 @@
         "apiUrl": "API URL",
         "apiKey": "API Key",
         "modelId": "Model ID",
-        "agentApiConfigTitle": "Agent API Config",
+        "agentApiConfigTitle": "Agent API Config (Vision-capable required)",
         "providerPlaceholder": "e.g., openai, azure, local",
         "apiUrlPlaceholder": "e.g., https://api.openai.com/v1",
         "modelIdPlaceholder": "e.g., gpt-5.1-chat-latest, qwen-flash",
