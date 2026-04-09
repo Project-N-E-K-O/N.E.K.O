@@ -21,6 +21,7 @@
     var dragState = null;
     var resizeState = null;
     var minimized = false;
+    var savedShellSize = null;
 
     var state = {
         viewProps: null,
@@ -672,7 +673,39 @@
         if (!shell) return;
 
         minimized = !!nextMinimized;
+
+        if (minimized) {
+            // 保存当前的内联尺寸（restoreSize/updateResize 设置的），
+            // 并清除它们，让 .is-minimized 的 CSS 规则生效（220x56）。
+            // 内联样式的优先级高于类选择器，所以必须先 removeProperty。
+            savedShellSize = {
+                width: shell.style.width,
+                height: shell.style.height
+            };
+            shell.style.removeProperty('width');
+            shell.style.removeProperty('height');
+        } else if (savedShellSize) {
+            // 恢复用户之前调整的尺寸
+            if (savedShellSize.width) {
+                shell.style.width = savedShellSize.width;
+            }
+            if (savedShellSize.height) {
+                shell.style.height = savedShellSize.height;
+            }
+            savedShellSize = null;
+        }
+
         shell.classList.toggle('is-minimized', minimized);
+
+        // 折叠/展开后，盒子尺寸变化可能导致它溢出视窗 —— 重新夹取位置
+        // 在下一帧执行，等待 CSS 应用新尺寸后再读取 boundingRect
+        requestAnimationFrame(function () {
+            var rect = shell.getBoundingClientRect();
+            var clamped = clampPosition(rect.left, rect.top);
+            if (clamped.left !== rect.left || clamped.top !== rect.top) {
+                applyPosition(clamped.left, clamped.top);
+            }
+        });
 
         var button = getMinimizeButton();
         var icon = getMinimizeIcon();
