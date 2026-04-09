@@ -71,10 +71,16 @@ def pytest_configure(config):
 
 
 def _ensure_playwright_browsers():
-    """Try to install Playwright chromium if missing. Never blocks the session."""
+    """Try to install Playwright chromium if missing. Never blocks the session.
+
+    When the default Playwright CDN (cdn.playwright.dev) is unreachable or
+    returns an error (e.g. 403), we fall back to Google's public
+    Chrome-for-Testing storage bucket as an alternative download mirror by
+    setting ``PLAYWRIGHT_DOWNLOAD_HOST``.
+    """
     import subprocess
 
-    # Probe: can we launch chromium?
+    # ── 1. Probe: can we already launch chromium? ──────────────────────
     try:
         probe = subprocess.run(
             [sys.executable, "-c",
@@ -84,22 +90,53 @@ def _ensure_playwright_browsers():
             capture_output=True, text=True, timeout=30,
         )
         if probe.returncode == 0:
-            return
+            return  # Already installed – nothing to do.
     except Exception:
         pass
 
+    # ── 2. Attempt installation ────────────────────────────────────────
     logger.info("Playwright chromium not found, attempting install...")
-    for cmd in (
-        [sys.executable, "-m", "playwright", "install", "chromium"],
+
+    # Google's public bucket mirrors the same paths that Playwright expects
+    # under cdn.playwright.dev.  We use it as a fallback when the default
+    # CDN is blocked or unavailable (common in CI / sandboxed environments).
+    _FALLBACK_MIRROR = "https://storage.googleapis.com/chrome-for-testing-public"
+
+    install_commands = [
         [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
-    ):
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode == 0:
-                logger.info("Playwright chromium installed successfully.")
-                return
-        except Exception:
-            continue
+        [sys.executable, "-m", "playwright", "install", "chromium"],
+    ]
+
+    # Try each command twice: first with the default CDN, then with the
+    # Google mirror.  We iterate (default-env, mirror-env) x (commands).
+    env_variants = [
+        None,           # default environment (Playwright's own CDN)
+        {"PLAYWRIGHT_DOWNLOAD_HOST": _FALLBACK_MIRROR},
+    ]
+
+    for extra_env in env_variants:
+        for cmd in install_commands:
+            try:
+                run_env = os.environ.copy()
+                if extra_env:
+                    run_env.update(extra_env)
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True,
+                    timeout=300, env=run_env,
+                )
+                if result.returncode == 0:
+                    logger.info("Playwright chromium installed successfully.")
+                    return
+                else:
+                    logger.debug(
+                        "Install attempt failed (rc=%d): %s\nstderr: %s",
+                        result.returncode, " ".join(cmd), result.stderr[-500:] if result.stderr else "",
+                    )
+            except subprocess.TimeoutExpired:
+                logger.warning("Playwright install timed out for command: %s", " ".join(cmd))
+            except Exception as exc:
+                logger.debug("Playwright install error: %s", exc)
+
     logger.warning(
         "Could not auto-install Playwright browsers. "
         "Frontend/e2e tests will likely fail. "
