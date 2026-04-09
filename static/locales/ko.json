@@ -2790,6 +2790,7 @@
         "selectedSongs": "{{count}}개 노래 선택됨",
         "selectedActions": "{{count}}개 애니메이션 선택됨",
         "selectedSeparator": ", ",
+        "selectedInfo": "{{songCount}}개 노래, {{actionCount}}개 애니메이션 선택됨",
         "missing": "누락",
         "unknownError": "알 수 없는 오류",
         "calibration": "애니메이션 보정",
