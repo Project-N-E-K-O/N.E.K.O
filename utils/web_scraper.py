@@ -14,7 +14,7 @@ from typing import Dict, List, Any, Optional, Union
 from urllib.parse import quote
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
-from utils.llm_client import SystemMessage, HumanMessage, ChatOpenAI, create_chat_llm
+from utils.llm_client import SystemMessage, HumanMessage, ChatOpenAI
 from config.providers import get_extra_body
 from bs4 import BeautifulSoup
 import os

@@ -84,15 +84,15 @@ def _ensure_playwright_browsers():
     try:
         probe = subprocess.run(
             [sys.executable, "-c",
-             "from playwright.sync_api import sync_playwright;"
-             "p=sync_playwright().start(); b=p.chromium.launch(headless=True);"
-             "b.close(); p.stop()"],
+             ("from playwright.sync_api import sync_playwright;"
+              "p=sync_playwright().start(); b=p.chromium.launch(headless=True);"
+              "b.close(); p.stop()")],
             capture_output=True, text=True, timeout=30,
         )
         if probe.returncode == 0:
             return  # Already installed – nothing to do.
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Playwright probe failed, will attempt install: %s", exc)
 
     # ── 2. Attempt installation ────────────────────────────────────────
     logger.info("Playwright chromium not found, attempting install...")
