@@ -20,8 +20,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 
-from fastapi import APIRouter, BackgroundTask, File, Form, UploadFile, HTTPException
+from fastapi import APIRouter, File, Form, UploadFile, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from .shared_state import get_config_manager
 from utils.file_utils import atomic_write_json

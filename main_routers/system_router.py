@@ -81,13 +81,11 @@ from utils.tutorial_prompt_state import (
     record_tutorial_started,
     record_tutorial_completed,
 )
-from utils.autostart_service import get_autostart_status, enable_autostart, disable_autostart
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
-
 _EMOTION_LABEL_ALIASES = {
     "happy": "happy",
     "happiness": "happy",
@@ -614,50 +612,6 @@ async def post_autostart_prompt_decision(request: Request):
         return record_autostart_prompt_decision(payload, config_manager=get_config_manager())
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
-
-
-@router.get("/system/autostart/status")
-async def get_system_autostart_status():
-    """返回当前平台是否支持以及是否已开启开机自启动。"""
-    try:
-        return get_autostart_status()
-    except Exception as exc:
-        logger.exception("Failed to read autostart status: %s", exc)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "ok": False,
-                "supported": False,
-                "enabled": False,
-                "error": str(exc),
-                "error_code": "status_failed",
-            },
-        )
-
-
-@router.post("/system/autostart/enable")
-async def post_system_autostart_enable():
-    """为当前用户启用 N.E.K.O 开机自启动。"""
-    result = enable_autostart()
-    if result.get("ok"):
-        return result
-
-    status_code = 400 if result.get("error_code") in {
-        "unsupported_platform",
-        "launch_command_unavailable",
-    } else 500
-    return JSONResponse(status_code=status_code, content=result)
-
-
-@router.post("/system/autostart/disable")
-async def post_system_autostart_disable():
-    """为当前用户关闭 N.E.K.O 开机自启动。"""
-    result = disable_autostart()
-    if result.get("ok"):
-        return result
-
-    status_code = 400 if result.get("error_code") == "unsupported_platform" else 500
-    return JSONResponse(status_code=status_code, content=result)
 
 
 @router.post("/tutorial-prompt/tutorial-started")

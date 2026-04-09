@@ -2,7 +2,8 @@
     'use strict';
 
     const DESKTOP_PROVIDER_NAME = 'neko-pc';
-    const BACKEND_PROVIDER_NAME = 'backend';
+    const UNSUPPORTED_MECHANISM = 'desktop-bridge-unavailable';
+    const AUTOSTART_NOT_SUPPORTED_ERROR = 'autostart_not_supported';
 
     function getNavigatorPlatform() {
         if (navigator.userAgentData && navigator.userAgentData.platform) {
@@ -12,28 +13,6 @@
             return String(navigator.platform);
         }
         return 'unknown';
-    }
-
-    function requestJson(url, options) {
-        const requestOptions = options || {};
-        const hasJsonBody = Object.prototype.hasOwnProperty.call(requestOptions, 'json');
-        const headers = Object.assign({}, requestOptions.headers);
-        if (hasJsonBody && !headers['Content-Type']) {
-            headers['Content-Type'] = 'application/json';
-        }
-
-        return fetch(url, {
-            method: requestOptions.method || 'GET',
-            headers: headers,
-            body: hasJsonBody ? JSON.stringify(requestOptions.json || {}) : requestOptions.body,
-            keepalive: !!requestOptions.keepalive,
-            cache: requestOptions.cache,
-        }).then(function (response) {
-            if (!response.ok) {
-                throw new Error('HTTP ' + response.status);
-            }
-            return response.json();
-        });
     }
 
     // Desktop shells can inject window.nekoAutostart with getStatus/enable/disable methods.
@@ -69,18 +48,6 @@
         return normalized;
     }
 
-    function getBackendDefaults() {
-        return {
-            ok: true,
-            supported: false,
-            enabled: false,
-            provider: BACKEND_PROVIDER_NAME,
-            mechanism: 'backend-api',
-            platform: getNavigatorPlatform(),
-            authoritative: true,
-        };
-    }
-
     function getDesktopDefaults() {
         return {
             ok: true,
@@ -93,36 +60,22 @@
         };
     }
 
-    function getBackendStatus() {
-        return requestJson('/api/system/autostart/status', {
-            cache: 'no-store',
-        }).then(function (result) {
-            return normalizeResult(result, getBackendDefaults());
-        });
-    }
-
-    function enableBackendAutostart() {
-        return requestJson('/api/system/autostart/enable', {
-            method: 'POST',
-            json: {},
-        }).then(function (result) {
-            return normalizeResult(result, getBackendDefaults());
-        });
-    }
-
-    function disableBackendAutostart() {
-        return requestJson('/api/system/autostart/disable', {
-            method: 'POST',
-            json: {},
-        }).then(function (result) {
-            return normalizeResult(result, getBackendDefaults());
-        });
+    function buildUnsupportedDesktopResult(overrides) {
+        return normalizeResult(Object.assign({
+            ok: true,
+            supported: false,
+            enabled: false,
+            authoritative: true,
+            provider: DESKTOP_PROVIDER_NAME,
+            mechanism: UNSUPPORTED_MECHANISM,
+            platform: getNavigatorPlatform(),
+        }, overrides || {}), getDesktopDefaults());
     }
 
     function getStatus() {
         const bridge = getDesktopBridge();
         if (!bridge) {
-            return getBackendStatus();
+            return Promise.resolve(buildUnsupportedDesktopResult());
         }
 
         return Promise.resolve().then(function () {
@@ -135,7 +88,11 @@
     function enable() {
         const bridge = getDesktopBridge();
         if (!bridge) {
-            return enableBackendAutostart();
+            return Promise.resolve(buildUnsupportedDesktopResult({
+                ok: false,
+                error: AUTOSTART_NOT_SUPPORTED_ERROR,
+                error_code: AUTOSTART_NOT_SUPPORTED_ERROR,
+            }));
         }
 
         return Promise.resolve().then(function () {
@@ -148,7 +105,11 @@
     function disable() {
         const bridge = getDesktopBridge();
         if (!bridge) {
-            return disableBackendAutostart();
+            return Promise.resolve(buildUnsupportedDesktopResult({
+                ok: false,
+                error: AUTOSTART_NOT_SUPPORTED_ERROR,
+                error_code: AUTOSTART_NOT_SUPPORTED_ERROR,
+            }));
         }
         if (typeof bridge.disable !== 'function') {
             return Promise.reject(new Error('autostart_disable_not_supported'));
