@@ -1905,7 +1905,7 @@ class LLMSessionManager:
                 self.message_cache_for_new_session = []
                 self.initial_cache_snapshot_len = 0
                 # NOTE: _next_turn_is_agent_callback is set AFTER successful
-                # callback injection in _execute_final_swap_sequence, not here.
+                # callback injection in _perform_final_swap_sequence, not here.
                 # Setting it here would risk a normal turn consuming the flag
                 # if the hot-swap prep fails or a normal response completes first.
                 # 立即启动后台预热，不等待10秒

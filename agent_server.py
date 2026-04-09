@@ -91,8 +91,6 @@ class Modules:
     analyze_lock: Optional[asyncio.Lock] = None
     # Per-lanlan fingerprint of latest user-turn payload already consumed by analyzer
     last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
-    # Per-lanlan timestamp of last task dispatch — used for post-dispatch cooldown
-    last_task_dispatch_ts: ClassVar[Dict[str, float]] = {}
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
@@ -121,9 +119,6 @@ _task_registry_last_cleanup: float = 0.0
 # ---------------------------------------------------------------------------
 TASK_TRACKER_MAX_RECORDS: int = 50  # 最多保留的记录数
 TASK_TRACKER_TTL: float = 600.0     # 记录保留时长（秒）
-# Cooldown (seconds) after dispatching a task before allowing new analysis for same lanlan.
-# Prevents the rapid cycle: task dispatch → cancel → callback → re-analysis → dispatch.
-POST_DISPATCH_ANALYZE_COOLDOWN: float = 30.0
 
 
 class AgentTaskTracker:
@@ -170,8 +165,6 @@ class AgentTaskTracker:
             "task_id": task_id,
         })
         self._trim(records)
-        # Update post-dispatch cooldown timestamp
-        Modules.last_task_dispatch_ts[key] = time.time()
 
     def record_completed(
         self,
@@ -1885,17 +1878,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             lanlan_name, task_id=bu_task_id, method="browser_use",
                             desc=result.task_description or "", detail=cancel_msg[:200], success=False,
                         )
-                        try:
-                            await _emit_task_result(
-                                lanlan_name,
-                                channel="browser_use",
-                                task_id=bu_task_id,
-                                success=False,
-                                summary=f'你的任务"{result.task_description}"已取消',
-                                error_message=cancel_msg,
-                            )
-                        except Exception as emit_err:
-                            logger.debug("[BrowserUse] emit task_result(cancelled) failed: task_id=%s error=%s", bu_task_id, emit_err)
+                        # Skip task_result for cancelled tasks to prevent re-analysis loop
+                        logger.info("[BrowserUse] Skipping task_result for cancelled task %s (prevents re-analysis loop)", bu_task_id)
                         try:
                             await _emit_main_event(
                                 "task_update", lanlan_name,
