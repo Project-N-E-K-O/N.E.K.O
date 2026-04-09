@@ -722,6 +722,7 @@ from main_routers import ( # noqa
     live2d_router,
     vrm_router,
     mmd_router,
+    jukebox_router,
     workshop_router,
     memory_router,
     pages_router,
@@ -783,6 +784,7 @@ app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
 app.include_router(mmd_router)
+app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
