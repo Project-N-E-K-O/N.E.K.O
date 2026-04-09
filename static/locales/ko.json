@@ -38,7 +38,8 @@
         "startNow": "자동 실행 켜기",
         "later": "나중에",
         "never": "다시 묻지 않기",
-        "enableFailed": "지금은 시작 시 자동 실행을 켤 수 없습니다. 잠시 후 다시 시도해 주세요."
+        "enableFailed": "지금은 시작 시 자동 실행을 켤 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        "requiresApproval": "먼저 시스템 설정에서 자동 실행을 승인해야 합니다. 승인 후 적용됩니다."
     },
     "characterProfile": {
         "gender": "성별",

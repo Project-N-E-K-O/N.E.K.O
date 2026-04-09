@@ -569,6 +569,27 @@ def test_autostart_heartbeat_route_requires_csrf_headers(tutorial_prompt_client)
 
 
 @pytest.mark.unit
+def test_autostart_heartbeat_accepts_normalized_allowed_origins(tutorial_prompt_client, monkeypatch):
+    client, _config = tutorial_prompt_client
+    monkeypatch.setattr(
+        system_router_module,
+        "AUTOSTART_ALLOWED_ORIGINS",
+        ("HTTPS://LOCALHOST:48911/settings/", "", None),
+    )
+
+    response = client.post(
+        "/api/autostart-prompt/heartbeat",
+        headers=_autostart_mutation_headers(origin="https://localhost:48911"),
+        json={
+            "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
+@pytest.mark.unit
 def test_autostart_decision_route_persists_completed_state(tutorial_prompt_client):
     client, config = tutorial_prompt_client
     heartbeat = client.post(
@@ -600,6 +621,38 @@ def test_autostart_decision_route_persists_completed_state(tutorial_prompt_clien
 
 
 @pytest.mark.unit
+def test_autostart_decision_route_treats_pending_approval_as_started(tutorial_prompt_client):
+    client, config = tutorial_prompt_client
+    heartbeat = client.post(
+        "/api/autostart-prompt/heartbeat",
+        headers=_autostart_mutation_headers(),
+        json={
+            "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+        },
+    ).json()
+
+    response = client.post(
+        "/api/autostart-prompt/decision",
+        headers=_autostart_mutation_headers(),
+        json={
+            "decision": "accept",
+            "result": "approval_pending",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["state"]["status"] == "started"
+    assert response.json()["state"]["autostart_enabled"] is False
+
+    state = load_autostart_prompt_state(config)
+    assert state["started_at"] > 0
+    assert state["started_via_prompt"] is True
+    assert state["autostart_enabled"] is False
+    assert state["funnel_counts"]["failed"] == 0
+
+
+@pytest.mark.unit
 def test_autostart_state_route_reports_autostart_mode(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
 
@@ -609,4 +662,3 @@ def test_autostart_state_route_reports_autostart_mode(tutorial_prompt_client):
     assert response.json()["ok"] is True
     assert response.json()["prompt_mode"] == "autostart"
     assert response.json()["state"]["autostart_enabled"] is False
-

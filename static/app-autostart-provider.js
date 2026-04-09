@@ -6,6 +6,13 @@
     const AUTOSTART_CSRF_HEADER_NAME = 'X-CSRF-Token';
     const AUTOSTART_STATUS_EVENT_NAME = 'neko:autostart-provider-status';
     const DESKTOP_STATUS_EVENT_NAME = 'neko:autostart-status-changed';
+    const PAGE_CONFIG_PATH = '/api/config/page_config';
+    const RESERVED_PATH_PREFIXES = ['focus', 'api', 'static', 'templates'];
+
+    let cachedPageConfig = null;
+    let hasLoadedPageConfig = false;
+    let pageConfigLoadRequest = null;
+    let pageConfigRefreshRequest = null;
 
     function getNavigatorPlatform() {
         if (navigator.userAgentData && navigator.userAgentData.platform) {
@@ -17,31 +24,140 @@
         return 'unknown';
     }
 
-    function waitForPageConfig() {
-        if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
-            return window.pageConfigReady.catch(function () {
-                return null;
-            });
-        }
-        return Promise.resolve(null);
+    function rememberPageConfig(pageConfig) {
+        cachedPageConfig = pageConfig && typeof pageConfig === 'object' ? pageConfig : null;
+        hasLoadedPageConfig = true;
+        return cachedPageConfig;
     }
 
-    function getAutostartCsrfToken() {
-        return waitForPageConfig().then(function (pageConfig) {
+    function getPageConfigLanlanName() {
+        try {
+            const urlParams = new URLSearchParams(window.location.search);
+            const lanlanName = urlParams.get('lanlan_name');
+            if (lanlanName) {
+                return lanlanName;
+            }
+        } catch (_) {
+            // Ignore malformed URLs and fall back to cached config below.
+        }
+
+        if (
+            window.lanlan_config
+            && typeof window.lanlan_config === 'object'
+            && typeof window.lanlan_config.lanlan_name === 'string'
+            && window.lanlan_config.lanlan_name
+        ) {
+            return window.lanlan_config.lanlan_name;
+        }
+
+        try {
+            const pathParts = window.location.pathname.split('/').filter(Boolean);
+            if (pathParts.length > 0 && RESERVED_PATH_PREFIXES.indexOf(pathParts[0]) === -1) {
+                return decodeURIComponent(pathParts[0]);
+            }
+        } catch (_) {
+            // Ignore invalid path decoding and fall back to root page_config.
+        }
+
+        return '';
+    }
+
+    function buildPageConfigUrl() {
+        const lanlanName = getPageConfigLanlanName();
+        if (!lanlanName) {
+            return PAGE_CONFIG_PATH;
+        }
+        return PAGE_CONFIG_PATH + '?lanlan_name=' + encodeURIComponent(lanlanName);
+    }
+
+    function waitForPageConfig(options) {
+        const requestOptions = options || {};
+        if (requestOptions.forceRefresh) {
+            return refreshPageConfig();
+        }
+
+        if (hasLoadedPageConfig) {
+            return Promise.resolve(cachedPageConfig);
+        }
+        if (pageConfigLoadRequest) {
+            return pageConfigLoadRequest;
+        }
+
+        if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
+            let request = null;
+            request = Promise.resolve(window.pageConfigReady).then(function (pageConfig) {
+                return rememberPageConfig(pageConfig);
+            }).catch(function () {
+                return rememberPageConfig(null);
+            }).finally(function () {
+                if (pageConfigLoadRequest === request) {
+                    pageConfigLoadRequest = null;
+                }
+            });
+            pageConfigLoadRequest = request;
+            return request;
+        }
+        hasLoadedPageConfig = true;
+        return Promise.resolve(cachedPageConfig);
+    }
+
+    function refreshPageConfig() {
+        if (pageConfigRefreshRequest) {
+            return pageConfigRefreshRequest;
+        }
+
+        let request = null;
+        request = fetch(buildPageConfigUrl(), {
+            cache: 'no-store',
+        }).then(function (response) {
+            if (!response || !response.ok) {
+                return null;
+            }
+            return response.json().catch(function () {
+                return null;
+            });
+        }).then(function (pageConfig) {
             if (
                 pageConfig
                 && typeof pageConfig === 'object'
-                && typeof pageConfig.autostart_csrf_token === 'string'
-                && pageConfig.autostart_csrf_token
+                && pageConfig.success === true
             ) {
-                return pageConfig.autostart_csrf_token;
+                return rememberPageConfig(pageConfig);
             }
-            return '';
+            return rememberPageConfig(null);
+        }).catch(function () {
+            return rememberPageConfig(null);
+        }).finally(function () {
+            if (pageConfigRefreshRequest === request) {
+                pageConfigRefreshRequest = null;
+            }
+        });
+
+        window.pageConfigReady = request;
+        pageConfigRefreshRequest = request;
+        return request;
+    }
+
+    function getAutostartCsrfTokenValue(pageConfig) {
+        if (
+            pageConfig
+            && typeof pageConfig === 'object'
+            && typeof pageConfig.autostart_csrf_token === 'string'
+            && pageConfig.autostart_csrf_token
+        ) {
+            return pageConfig.autostart_csrf_token;
+        }
+        return '';
+    }
+
+    function getAutostartCsrfToken(options) {
+        return waitForPageConfig(options).then(function (pageConfig) {
+            return getAutostartCsrfTokenValue(pageConfig);
         });
     }
 
-    function getAutostartMutationHeaders() {
-        return getAutostartCsrfToken().then(function (csrfToken) {
+    function getAutostartMutationHeaders(options) {
+        return getAutostartCsrfToken(options).then(function (csrfToken) {
             if (!csrfToken) {
                 return {};
             }
@@ -51,9 +167,23 @@
         });
     }
 
+    function refreshAutostartMutationHeaders() {
+        return getAutostartMutationHeaders({ forceRefresh: true });
+    }
+
+    function shouldRetryMutationRequest(error) {
+        return !!(
+            error
+            && Number(error.status) === 403
+            && error.error_code === 'csrf_validation_failed'
+        );
+    }
+
     const mutationSecurityApi = {
         getCsrfToken: getAutostartCsrfToken,
         getMutationHeaders: getAutostartMutationHeaders,
+        refreshMutationHeaders: refreshAutostartMutationHeaders,
+        shouldRetryRequest: shouldRetryMutationRequest,
     };
     window.nekoAutostartSecurity = mutationSecurityApi;
     window.nekoLocalMutationSecurity = mutationSecurityApi;
@@ -215,7 +345,7 @@
             return;
         }
         rememberStatus(
-            normalizeResult(detail, detail.provider === DESKTOP_PROVIDER_NAME ? getDesktopDefaults() : getBackendDefaults()),
+            normalizeResult(detail, getDesktopDefaults()),
             'desktop:event'
         );
     });

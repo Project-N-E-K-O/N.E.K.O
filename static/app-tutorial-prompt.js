@@ -12,6 +12,7 @@
         return {
             requestInFlight: false,
             pendingHeartbeatAfterFlight: false,
+            pendingDecisionPayload: null,
             pendingForegroundMs: 0,
             pendingWeakHomeInteractions: 0,
             pendingChatTurns: 0,
@@ -34,6 +35,8 @@
         autostartStatusRequestInFlight: null,
         autostartStatusAuthoritative: false,
         autostartProvider: '',
+        autostartRequiresApproval: false,
+        autostartServiceNotFound: false,
         autostartStatusUpdatedAt: 0,
     });
     const tutorialState = Object.assign(createMetricFlowState(), {
@@ -145,17 +148,63 @@
         return payload;
     }
 
-    async function getMutationHeaders() {
+    function getMutationSecurity() {
         const security = window.nekoLocalMutationSecurity || window.nekoAutostartSecurity;
+        if (!security || typeof security !== 'object') {
+            return null;
+        }
+        return security;
+    }
+
+    async function getMutationHeaders(options) {
+        const security = getMutationSecurity();
         if (!security || typeof security.getMutationHeaders !== 'function') {
             return {};
         }
+        const requestOptions = options || {};
 
         try {
-            const headers = await security.getMutationHeaders();
+            const headers = await security.getMutationHeaders(requestOptions);
             return headers && typeof headers === 'object' ? headers : {};
         } catch (_) {
             return {};
+        }
+    }
+
+    async function refreshMutationHeaders() {
+        const security = getMutationSecurity();
+        if (!security) {
+            return {};
+        }
+        if (typeof security.refreshMutationHeaders === 'function') {
+            try {
+                const headers = await security.refreshMutationHeaders();
+                return headers && typeof headers === 'object' ? headers : {};
+            } catch (_) {
+                return {};
+            }
+        }
+        return getMutationHeaders({ forceRefresh: true });
+    }
+
+    async function buildMutationRequestHeaders(requestOptions, securityOptions) {
+        return Object.assign(
+            {},
+            requestOptions && requestOptions.headers ? requestOptions.headers : {},
+            await getMutationHeaders(securityOptions),
+        );
+    }
+
+    function shouldRetryMutationRequest(error) {
+        const security = getMutationSecurity();
+        if (!security || typeof security.shouldRetryRequest !== 'function') {
+            return false;
+        }
+
+        try {
+            return security.shouldRetryRequest(error) === true;
+        } catch (_) {
+            return false;
         }
     }
 
@@ -166,12 +215,20 @@
             return requestJson(url, requestOptions);
         }
 
-        const headers = Object.assign(
-            {},
-            await getMutationHeaders(),
-            requestOptions.headers || {},
-        );
-        return requestJson(url, Object.assign({}, requestOptions, { headers: headers }));
+        let headers = await buildMutationRequestHeaders(requestOptions);
+        try {
+            return await requestJson(url, Object.assign({}, requestOptions, { headers: headers }));
+        } catch (error) {
+            if (!shouldRetryMutationRequest(error)) {
+                throw error;
+            }
+            headers = Object.assign(
+                {},
+                requestOptions && requestOptions.headers ? requestOptions.headers : {},
+                await refreshMutationHeaders(),
+            );
+            return requestJson(url, Object.assign({}, requestOptions, { headers: headers }));
+        }
     }
 
     function isAnyPromptOpen() {
@@ -237,13 +294,63 @@
         flowState.pendingVoiceSessions += deltas.voiceSessionsDelta;
     }
 
+    function clonePayload(payload) {
+        if (!payload || typeof payload !== 'object') {
+            return null;
+        }
+        return Object.assign({}, payload);
+    }
+
+    function getPendingDecisionPayload(flowState) {
+        return clonePayload(flowState && flowState.pendingDecisionPayload);
+    }
+
+    function rememberPendingDecision(flowState, payload) {
+        flowState.pendingDecisionPayload = clonePayload(payload);
+    }
+
+    function clearPendingDecision(flowState) {
+        if (!flowState || !flowState.pendingDecisionPayload) {
+            return false;
+        }
+        flowState.pendingDecisionPayload = null;
+        return true;
+    }
+
+    function hasPendingDecision(flowState) {
+        return !!getPendingDecisionPayload(flowState);
+    }
+
+    function shouldRetryPersistDecision(error) {
+        const status = Number(error && error.status);
+        if (!Number.isFinite(status) || status <= 0) {
+            return true;
+        }
+        return status === 403 || status === 408 || status === 429 || status >= 500;
+    }
+
     function buildAutostartCapabilitySnapshot() {
         return {
             supported: state.autostartSupported,
             enabled: state.autostartEnabled,
             authoritative: state.autostartStatusAuthoritative,
             provider: state.autostartProvider,
+            requiresApproval: state.autostartRequiresApproval,
+            serviceNotFound: state.autostartServiceNotFound,
         };
+    }
+
+    function isAutostartCapabilityBlocked(snapshot) {
+        const capability = snapshot && typeof snapshot === 'object'
+            ? snapshot
+            : buildAutostartCapabilitySnapshot();
+        return !!(
+            capability
+            && (
+                capability.requiresApproval === true
+                || capability.serviceNotFound === true
+            )
+        );
     }
 
     function isAutostartStatusFresh(maxAgeMs) {
@@ -405,11 +512,15 @@
         state.autostartEnabled = !!(response && response.enabled);
         state.autostartStatusAuthoritative = !!(response && response.authoritative);
         state.autostartProvider = response && response.provider ? String(response.provider) : '';
+        state.autostartRequiresApproval = !!(response && response.requires_approval);
+        state.autostartServiceNotFound = !!(response && response.service_not_found);
         state.autostartStatusUpdatedAt = Date.now();
         return previous.supported !== state.autostartSupported
             || previous.enabled !== state.autostartEnabled
             || previous.authoritative !== state.autostartStatusAuthoritative
-            || previous.provider !== state.autostartProvider;
+            || previous.provider !== state.autostartProvider
+            || previous.requiresApproval !== state.autostartRequiresApproval
+            || previous.serviceNotFound !== state.autostartServiceNotFound;
     }
 
     function handleAutostartProviderStatusChanged(event) {
@@ -433,6 +544,8 @@
             enabled: state.autostartEnabled,
             authoritative: state.autostartStatusAuthoritative,
             provider: state.autostartProvider,
+            requiresApproval: state.autostartRequiresApproval,
+            serviceNotFound: state.autostartServiceNotFound,
         });
 
         if (
@@ -536,6 +649,8 @@
                 enabled: !!(response && response.enabled),
                 authoritative: !!(response && response.authoritative),
                 provider: response && response.provider ? String(response.provider) : state.autostartProvider,
+                requiresApproval: !!(response && response.requires_approval),
+                serviceNotFound: !!(response && response.service_not_found),
             };
         } catch (_) {
             return {
@@ -543,6 +658,8 @@
                 enabled: false,
                 authoritative: false,
                 provider: state.autostartProvider,
+                requiresApproval: state.autostartRequiresApproval,
+                serviceNotFound: state.autostartServiceNotFound,
             };
         }
     }
@@ -565,6 +682,78 @@
         return response;
     }
 
+    function isAutostartApprovalPending(result) {
+        return !!(
+            result
+            && typeof result === 'object'
+            && (
+                result.requires_approval === true
+                || result.error_code === 'autostart_requires_approval'
+            )
+        );
+    }
+
+    function buildAutostartEnableError(result) {
+        if (result instanceof Error) {
+            return result;
+        }
+
+        const error = new Error(
+            result && typeof result.error === 'string' && result.error
+                ? result.error
+                : 'autostart_enable_failed'
+        );
+        if (result && typeof result === 'object') {
+            Object.assign(error, result);
+        }
+        return error;
+    }
+
+    function resolveAutostartAcceptanceOutcome(result) {
+        if (result && result.enabled === true) {
+            return {
+                result: 'enabled',
+                provider: result.provider,
+                toastKey: '',
+                toastFallback: '',
+                toastDurationMs: 0,
+                scheduleFastHeartbeat: true,
+            };
+        }
+
+        if (isAutostartApprovalPending(result)) {
+            return {
+                result: 'approval_pending',
+                provider: result.provider,
+                toastKey: 'autostartPrompt.requiresApproval',
+                toastFallback: '需要先在系统设置里批准开机自启动，批准后会自动生效',
+                toastDurationMs: 4500,
+                scheduleFastHeartbeat: true,
+            };
+        }
+
+        return null;
+    }
+
+    async function applyAutostartAcceptanceOutcome(promptToken, outcome) {
+        await postAutostartDecision({
+            decision: 'accept',
+            result: outcome.result,
+            autostart_provider: outcome.provider,
+            prompt_token: promptToken,
+        });
+
+        if (outcome.scheduleFastHeartbeat) {
+            scheduleFastHeartbeat();
+        }
+        if (outcome.toastKey && typeof window.showStatusToast === 'function') {
+            window.showStatusToast(
+                translate(outcome.toastKey, outcome.toastFallback),
+                outcome.toastDurationMs || 3500
+            );
+        }
+    }
+
     function scheduleFastHeartbeat() {
         if (!state.initialized) return;
         if (state.fastHeartbeatTimer) return;
@@ -580,9 +769,12 @@
     }
 
     function isAutostartPromptSuppressedLocally() {
-        return state.autostartEnabled
+        const capability = buildAutostartCapabilitySnapshot();
+        return capability.enabled
+            || isAutostartCapabilityBlocked(capability)
             || state.neverRemind
-            || state.deferredUntil > Date.now();
+            || state.deferredUntil > Date.now()
+            || hasPendingDecision(state);
     }
 
     function isHomeTutorialRunning() {
@@ -599,6 +791,7 @@
             || tutorialState.manualHomeTutorialViewed
             || tutorialState.neverRemind
             || tutorialState.deferredUntil > Date.now()
+            || hasPendingDecision(tutorialState)
             || currentHomeTutorialSeenLocally()
             || isHomeTutorialRunning();
     }
@@ -652,24 +845,97 @@
         scheduleFastHeartbeat();
     }
 
-    async function postAutostartDecision(payload) {
+    async function persistPromptDecision(options) {
+        const payload = clonePayload(options && options.payload);
+        const flowState = options && options.flowState;
+        if (!payload || !flowState) {
+            return null;
+        }
+
         try {
-            const response = await requestMutationJson('/api/autostart-prompt/decision', {
+            const response = await requestMutationJson(options.url, {
                 method: 'POST',
                 json: payload,
             });
-            if (response && response.state) {
-                applyAutostartServerState(response.state, 'decision');
+            clearPendingDecision(flowState);
+            if (response && response.state && typeof options.applyServerState === 'function') {
+                options.applyServerState(response.state, 'decision');
             }
-            logFlow('autostart-decision', {
-                decision: payload && payload.decision,
-                result: payload && payload.result,
-                token: shortPromptToken(payload && payload.prompt_token),
+            logFlow(options.logStep, {
+                decision: payload.decision || null,
+                result: payload.result || null,
+                token: shortPromptToken(payload.prompt_token),
                 status: response && response.state ? response.state.status : null,
             });
+            return response;
         } catch (error) {
-            console.warn('[AutostartPrompt] failed to persist decision:', error);
+            const shouldRetry = shouldRetryPersistDecision(error);
+            if (shouldRetry) {
+                rememberPendingDecision(flowState, payload);
+            } else {
+                clearPendingDecision(flowState);
+            }
+            console.warn(options.warningPrefix + ' failed to persist decision:', error);
+            if (options.scheduleRetry !== false && shouldRetry) {
+                scheduleFastHeartbeat();
+            }
+            return null;
         }
+    }
+
+    async function flushPendingPromptDecision(options) {
+        const pendingPayload = getPendingDecisionPayload(options && options.flowState);
+        if (!pendingPayload) {
+            return null;
+        }
+        return persistPromptDecision(Object.assign({}, options, {
+            payload: pendingPayload,
+            scheduleRetry: false,
+        }));
+    }
+
+    async function postAutostartDecision(payload, options) {
+        return persistPromptDecision({
+            flowState: state,
+            url: '/api/autostart-prompt/decision',
+            payload: payload,
+            applyServerState: applyAutostartServerState,
+            logStep: 'autostart-decision',
+            warningPrefix: '[AutostartPrompt]',
+            scheduleRetry: !(options && options.scheduleRetry === false),
+        });
+    }
+
+    async function flushPendingAutostartDecision() {
+        return flushPendingPromptDecision({
+            flowState: state,
+            url: '/api/autostart-prompt/decision',
+            applyServerState: applyAutostartServerState,
+            logStep: 'autostart-decision',
+            warningPrefix: '[AutostartPrompt]',
+        });
+    }
+
+    async function postTutorialDecision(payload, options) {
+        return persistPromptDecision({
+            flowState: tutorialState,
+            url: '/api/tutorial-prompt/decision',
+            payload: payload,
+            applyServerState: applyTutorialServerState,
+            logStep: 'tutorial-decision',
+            warningPrefix: '[TutorialPrompt]',
+            scheduleRetry: !(options && options.scheduleRetry === false),
+        });
+    }
+
+    async function flushPendingTutorialDecision() {
+        return flushPendingPromptDecision({
+            flowState: tutorialState,
+            url: '/api/tutorial-prompt/decision',
+            applyServerState: applyTutorialServerState,
+            logStep: 'tutorial-decision',
+            warningPrefix: '[TutorialPrompt]',
+        });
     }
 
     async function postAutostartShownAck(promptToken) {
@@ -694,21 +960,17 @@
     async function handleAutostartPromptAcceptance(promptToken) {
         try {
             const response = await enableAutostart();
-            if (!response || response.enabled !== true) {
-                throw new Error(
-                    response && response.error
-                        ? response.error
-                        : 'autostart_enable_failed'
-                );
+            const outcome = resolveAutostartAcceptanceOutcome(response);
+            if (!outcome) {
+                throw buildAutostartEnableError(response);
             }
-            await postAutostartDecision({
-                decision: 'accept',
-                result: 'enabled',
-                autostart_provider: response && response.provider,
-                prompt_token: promptToken,
-            });
-            scheduleFastHeartbeat();
+            await applyAutostartAcceptanceOutcome(promptToken, outcome);
         } catch (error) {
+            const outcome = resolveAutostartAcceptanceOutcome(error);
+            if (outcome) {
+                await applyAutostartAcceptanceOutcome(promptToken, outcome);
+                return;
+            }
             const message = error && error.message ? error.message : String(error);
             console.warn('[AutostartPrompt] failed to enable autostart:', error);
             await postAutostartDecision({
@@ -803,26 +1065,6 @@
             }
         } finally {
             state.promptOpen = false;
-        }
-    }
-
-    async function postTutorialDecision(payload) {
-        try {
-            const response = await requestMutationJson('/api/tutorial-prompt/decision', {
-                method: 'POST',
-                json: payload,
-            });
-            if (response && response.state) {
-                applyTutorialServerState(response.state, 'decision');
-            }
-            logFlow('tutorial-decision', {
-                decision: payload && payload.decision,
-                result: payload && payload.result,
-                token: shortPromptToken(payload && payload.prompt_token),
-                status: response && response.state ? response.state.status : null,
-            });
-        } catch (error) {
-            console.warn('[TutorialPrompt] failed to persist decision:', error);
         }
     }
 
@@ -1132,6 +1374,7 @@
         };
 
         try {
+            await flushPendingTutorialDecision();
             deltas.foregroundDelta = consumeForegroundDelta(tutorialState);
             deltas.homeInteractionsDelta = tutorialState.pendingWeakHomeInteractions;
             deltas.chatTurnsDelta = tutorialState.pendingChatTurns;
@@ -1204,6 +1447,7 @@
         };
 
         try {
+            await flushPendingAutostartDecision();
             const autostartStatus = await getAutostartStatusForHeartbeat();
             if (
                 !autostartStatus.authoritative
@@ -1231,6 +1475,8 @@
                 autostart_supported: autostartStatus.supported,
                 autostart_status_authoritative: autostartStatus.authoritative,
                 autostart_provider: autostartStatus.provider,
+                autostart_requires_approval: autostartStatus.requiresApproval,
+                autostart_service_not_found: autostartStatus.serviceNotFound,
             };
 
             const data = await requestMutationJson('/api/autostart-prompt/heartbeat', {
@@ -1251,6 +1497,8 @@
                 autostartEnabled: state.autostartEnabled,
                 provider: autostartStatus.provider || null,
                 authoritative: autostartStatus.authoritative,
+                requiresApproval: autostartStatus.requiresApproval,
+                serviceNotFound: autostartStatus.serviceNotFound,
             });
 
             if (data && data.should_prompt) {

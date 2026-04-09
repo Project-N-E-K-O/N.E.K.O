@@ -702,7 +702,7 @@ def record_tutorial_prompt_decision(
                 token_changed = True
             if not accepted_before:
                 token_changed |= _increment_funnel_count(state, "accept")
-            if result in {"", "accepted", "started", "tutorial_started"}:
+            if result and result in {"accepted", "started", "tutorial_started"}:
                 started_before = state["started_at"] > 0
                 if not state["started_via_prompt"]:
                     state["started_via_prompt"] = True
@@ -711,7 +711,7 @@ def record_tutorial_prompt_decision(
                 if not started_before:
                     token_changed |= _increment_funnel_count(state, "started")
             else:
-                state["started_via_prompt"] = False
+                token_changed |= _clear_started_via_prompt_state(state)
                 state["status"] = "error"
                 state["deferred_until"] = now_ms + runtime_config["failure_cooldown_ms"]
                 state["last_error"] = error or "tutorial_start_failed"

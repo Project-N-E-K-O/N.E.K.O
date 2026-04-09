@@ -38,7 +38,8 @@
         "startNow": "開啟自啟動",
         "later": "稍後再說",
         "never": "不再提示",
-        "enableFailed": "暫時無法開啟開機自啟動，請稍後再試"
+        "enableFailed": "暫時無法開啟開機自啟動，請稍後再試",
+        "requiresApproval": "需要先在系統設定裡核准開機自啟動，核准後會自動生效"
     },
     "characterProfile": {
         "gender": "性別",

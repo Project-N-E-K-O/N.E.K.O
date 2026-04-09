@@ -38,7 +38,8 @@
         "startNow": "开启自启动",
         "later": "稍后再说",
         "never": "不再提示",
-        "enableFailed": "暂时无法开启开机自启动，请稍后再试"
+        "enableFailed": "暂时无法开启开机自启动，请稍后再试",
+        "requiresApproval": "需要先在系统设置里批准开机自启动，批准后会自动生效"
     },
     "characterProfile": {
         "gender": "性别",

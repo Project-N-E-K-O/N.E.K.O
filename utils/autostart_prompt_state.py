@@ -256,6 +256,37 @@ def _apply_autostart_enabled_completion(
     return changed
 
 
+def _apply_autostart_pending_state(
+    state: dict[str, Any],
+    *,
+    now_ms_value: int,
+    preserve_prompt_attribution: bool,
+) -> bool:
+    changed = False
+    if preserve_prompt_attribution and not state["started_via_prompt"]:
+        state["started_via_prompt"] = True
+        changed = True
+    changed |= apply_started_state(state, now_ms_value)
+    return changed
+
+
+def _apply_autostart_accept_started(
+    state: dict[str, Any],
+    *,
+    now_ms_value: int,
+) -> bool:
+    changed = False
+    started_before = state["started_at"] > 0
+    changed |= _apply_autostart_pending_state(
+        state,
+        now_ms_value=now_ms_value,
+        preserve_prompt_attribution=True,
+    )
+    if not started_before:
+        changed |= increment_funnel_count(state, "started")
+    return changed
+
+
 def _apply_autostart_accept_failure(
     state: dict[str, Any],
     *,
@@ -281,6 +312,19 @@ def _apply_autostart_accept_failure(
         state["last_error"] = error_code
         changed = True
     changed |= increment_funnel_count(state, "failed")
+    return changed
+
+
+def _clear_stale_autostart_started_state(state: dict[str, Any]) -> bool:
+    changed = False
+    if state["started_at"] > 0:
+        state["started_at"] = 0
+        changed = True
+    changed |= clear_started_via_prompt_state(state)
+    if state["status"] == "started":
+        state["status"] = "observing"
+        changed = True
+    changed |= clear_active_prompt_token(state)
     return changed
 
 
@@ -313,6 +357,53 @@ def _clear_stale_autostart_enabled_state(
         changed = True
 
     return changed
+
+
+def _sync_authoritative_autostart_status(
+    state: dict[str, Any],
+    *,
+    now_ms_value: int,
+    autostart_enabled: bool,
+    autostart_requires_approval: bool,
+    autostart_provider: str,
+) -> bool:
+    changed = False
+    if autostart_enabled:
+        changed |= _apply_autostart_enabled_completion(
+            state,
+            enabled_at=now_ms_value,
+            provider=autostart_provider,
+        )
+        return changed
+
+    changed |= _clear_stale_autostart_enabled_state(
+        state,
+        current_provider=autostart_provider,
+    )
+    if autostart_requires_approval:
+        changed |= _apply_autostart_pending_state(
+            state,
+            now_ms_value=now_ms_value,
+            preserve_prompt_attribution=bool(state["started_via_prompt"]),
+        )
+    else:
+        changed |= _clear_stale_autostart_started_state(state)
+    return changed
+
+
+def _get_authoritative_autostart_prompt_block_reason(
+    *,
+    autostart_enabled: bool,
+    autostart_supported: bool,
+    autostart_service_not_found: bool,
+) -> str:
+    if autostart_enabled:
+        return ""
+    if autostart_service_not_found:
+        return "autostart_service_not_found"
+    if not autostart_supported:
+        return "autostart_unsupported"
+    return ""
 
 
 def process_autostart_prompt_heartbeat(
@@ -352,6 +443,8 @@ def process_autostart_prompt_heartbeat(
     else:
         autostart_supported = bool(autostart_supported)
     autostart_status_authoritative = bool(payload.get("autostart_status_authoritative"))
+    autostart_requires_approval = bool(payload.get("autostart_requires_approval"))
+    autostart_service_not_found = bool(payload.get("autostart_service_not_found"))
     autostart_provider = clean_str(
         payload.get("autostart_provider") or payload.get("provider"),
         limit=64,
@@ -378,17 +471,13 @@ def process_autostart_prompt_heartbeat(
             state["voice_sessions"] += voice_sessions_delta
             changed = True
         if autostart_status_authoritative:
-            if autostart_enabled:
-                changed |= _apply_autostart_enabled_completion(
-                    state,
-                    enabled_at=now_ms_value,
-                    provider=autostart_provider,
-                )
-            else:
-                changed |= _clear_stale_autostart_enabled_state(
-                    state,
-                    current_provider=autostart_provider,
-                )
+            changed |= _sync_authoritative_autostart_status(
+                state,
+                now_ms_value=now_ms_value,
+                autostart_enabled=autostart_enabled,
+                autostart_requires_approval=autostart_requires_approval,
+                autostart_provider=autostart_provider,
+            )
         elif autostart_enabled and not state["autostart_enabled"]:
             changed |= _apply_autostart_enabled_completion(
                 state,
@@ -396,9 +485,17 @@ def process_autostart_prompt_heartbeat(
                 provider=autostart_provider,
             )
 
-        if autostart_status_authoritative and not autostart_supported and not autostart_enabled:
+        authoritative_prompt_block_reason = ""
+        if autostart_status_authoritative:
+            authoritative_prompt_block_reason = _get_authoritative_autostart_prompt_block_reason(
+                autostart_enabled=autostart_enabled,
+                autostart_supported=autostart_supported,
+                autostart_service_not_found=autostart_service_not_found,
+            )
+
+        if authoritative_prompt_block_reason:
             should_prompt = False
-            prompt_reason = "autostart_unsupported"
+            prompt_reason = authoritative_prompt_block_reason
         else:
             should_prompt, prompt_reason = _compute_autostart_prompt_eligibility(
                 state,
@@ -512,8 +609,6 @@ def record_autostart_prompt_decision(
             changed |= increment_funnel_count(state, "later")
         else:
             accepted_before = state["accepted_at"] > 0
-            started_before = state["started_at"] > 0
-
             if state["accepted_at"] <= 0:
                 state["accepted_at"] = now_ms_value
                 changed = True
@@ -521,16 +616,19 @@ def record_autostart_prompt_decision(
                 changed |= increment_funnel_count(state, "accept")
 
             if result in {"enabled", "autostart_enabled"}:
-                if not state["started_via_prompt"]:
-                    state["started_via_prompt"] = True
-                    changed = True
-                changed |= apply_started_state(state, now_ms_value)
-                if not started_before:
-                    changed |= increment_funnel_count(state, "started")
+                changed |= _apply_autostart_accept_started(
+                    state,
+                    now_ms_value=now_ms_value,
+                )
                 changed |= _apply_autostart_enabled_completion(
                     state,
                     enabled_at=now_ms_value,
                     provider=autostart_provider,
+                )
+            elif result in {"approval_pending", "requires_approval"} or error == "autostart_requires_approval":
+                changed |= _apply_autostart_accept_started(
+                    state,
+                    now_ms_value=now_ms_value,
                 )
             elif result in {"", "accepted"}:
                 changed |= _apply_autostart_accept_failure(

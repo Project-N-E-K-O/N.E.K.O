@@ -146,9 +146,10 @@ def _get_request_origin(request: Request) -> str:
 
 def _get_allowed_local_origins(request: Request) -> set[str]:
     allowed_origins = {
-        origin
+        normalized_origin
         for origin in AUTOSTART_ALLOWED_ORIGINS
-        if isinstance(origin, str) and origin
+        if isinstance(origin, str)
+        if (normalized_origin := _normalize_origin_value(origin))
     }
     request_origin = _normalize_origin_value(str(request.base_url))
     if request_origin:

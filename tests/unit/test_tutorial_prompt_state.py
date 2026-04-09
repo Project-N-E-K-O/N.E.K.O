@@ -291,6 +291,36 @@ def test_accept_accepted_marks_started_as_fallback(tmp_path):
 
 
 @pytest.mark.unit
+def test_accept_without_result_does_not_mark_started(tmp_path):
+    config = DummyConfig(tmp_path)
+    runtime_config = load_tutorial_prompt_runtime_config(config)
+    heartbeat = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    decision = record_tutorial_prompt_decision(
+        {
+            "decision": "accept",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+        config_manager=config,
+        now_ms=1_500,
+    )
+
+    assert decision["state"]["accepted_at"] == 1_500
+    assert decision["state"]["started_at"] == 0
+    assert decision["state"]["started_via_prompt"] is False
+    assert decision["state"]["status"] == "error"
+    assert decision["state"]["deferred_until"] == 1_500 + runtime_config["failure_cooldown_ms"]
+    assert decision["state"]["last_error"] == "tutorial_start_failed"
+    assert decision["state"]["funnel_counts"]["accept"] == 1
+    assert decision["state"]["funnel_counts"]["started"] == 0
+    assert decision["state"]["funnel_counts"]["failed"] == 1
+
+
+@pytest.mark.unit
 def test_accept_decision_requires_prompt_token(tmp_path):
     config = DummyConfig(tmp_path)
     process_tutorial_prompt_heartbeat(
@@ -1307,6 +1337,236 @@ def test_autostart_accept_enabled_result_is_treated_as_success(tmp_path):
 
 
 @pytest.mark.unit
+def test_autostart_accept_requires_approval_is_tracked_as_started(tmp_path):
+    config = DummyConfig(tmp_path)
+    heartbeat = process_autostart_prompt_heartbeat(
+        {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    decision = record_autostart_prompt_decision(
+        {
+            "decision": "accept",
+            "result": "approval_pending",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    assert decision["state"]["status"] == "started"
+    assert decision["state"]["accepted_at"] == 2_000
+    assert decision["state"]["started_at"] == 2_000
+    assert decision["state"]["started_via_prompt"] is True
+    assert decision["state"]["autostart_enabled"] is False
+    assert decision["state"]["deferred_until"] == 0
+    assert decision["state"]["last_error"] == ""
+    assert decision["state"]["funnel_counts"]["accept"] == 1
+    assert decision["state"]["funnel_counts"]["started"] == 1
+    assert decision["state"]["funnel_counts"]["failed"] == 0
+
+    blocked = process_autostart_prompt_heartbeat(
+        {"foreground_ms_delta": 0},
+        config_manager=config,
+        now_ms=3_000,
+    )
+    assert blocked["should_prompt"] is False
+    assert blocked["prompt_reason"] == "autostart_pending"
+
+
+@pytest.mark.unit
+def test_authoritative_requires_approval_heartbeat_rebuilds_pending_state(tmp_path):
+    config = DummyConfig(tmp_path)
+
+    response = process_autostart_prompt_heartbeat(
+        {
+            "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+            "autostart_enabled": False,
+            "autostart_status_authoritative": True,
+            "autostart_requires_approval": True,
+            "autostart_provider": "neko-pc",
+        },
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    assert response["should_prompt"] is False
+    assert response["prompt_reason"] == "autostart_pending"
+
+    state = load_autostart_prompt_state(config)
+    assert state["status"] == "started"
+    assert state["started_at"] == 2_000
+    assert state["started_via_prompt"] is False
+    assert state["autostart_enabled"] is False
+    assert state["funnel_counts"]["started"] == 0
+
+
+@pytest.mark.unit
+def test_authoritative_non_pending_heartbeat_clears_stale_started_state(tmp_path):
+    config = DummyConfig(tmp_path)
+
+    process_autostart_prompt_heartbeat(
+        {
+            "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+            "autostart_enabled": False,
+            "autostart_status_authoritative": True,
+            "autostart_requires_approval": True,
+            "autostart_provider": "neko-pc",
+        },
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    cleared = process_autostart_prompt_heartbeat(
+        {
+            "foreground_ms_delta": 0,
+            "autostart_enabled": False,
+            "autostart_status_authoritative": True,
+            "autostart_requires_approval": False,
+            "autostart_provider": "neko-pc",
+        },
+        config_manager=config,
+        now_ms=3_000,
+    )
+
+    assert cleared["should_prompt"] is True
+    assert cleared["prompt_reason"] == "usage_timeout"
+
+    state = load_autostart_prompt_state(config)
+    assert state["status"] == "observing"
+    assert state["started_at"] == 0
+    assert state["started_via_prompt"] is False
+    assert state["autostart_enabled"] is False
+
+
+@pytest.mark.unit
+def test_authoritative_non_pending_heartbeat_preserves_failure_cooldown(tmp_path):
+    config = DummyConfig(tmp_path)
+
+    heartbeat = process_autostart_prompt_heartbeat(
+        {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    record_autostart_prompt_decision(
+        {
+            "decision": "accept",
+            "result": "failed",
+            "error": "autostart_enable_failed",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    blocked = process_autostart_prompt_heartbeat(
+        {
+            "foreground_ms_delta": 0,
+            "autostart_enabled": False,
+            "autostart_status_authoritative": True,
+            "autostart_requires_approval": False,
+            "autostart_provider": "neko-pc",
+        },
+        config_manager=config,
+        now_ms=3_000,
+    )
+
+    assert blocked["should_prompt"] is False
+    assert blocked["prompt_reason"] == "cooldown_active"
+
+    state = load_autostart_prompt_state(config)
+    assert state["status"] == "error"
+    assert state["deferred_until"] > 3_000
+    assert state["last_error"] == "autostart_enable_failed"
+
+
+@pytest.mark.unit
+def test_authoritative_pending_after_failed_accept_does_not_restore_prompt_attribution(tmp_path):
+    config = DummyConfig(tmp_path)
+
+    heartbeat = process_autostart_prompt_heartbeat(
+        {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    record_autostart_prompt_decision(
+        {
+            "decision": "accept",
+            "result": "failed",
+            "error": "autostart_enable_failed",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    pending = process_autostart_prompt_heartbeat(
+        {
+            "foreground_ms_delta": 0,
+            "autostart_enabled": False,
+            "autostart_status_authoritative": True,
+            "autostart_requires_approval": True,
+            "autostart_provider": "neko-pc",
+        },
+        config_manager=config,
+        now_ms=3_000,
+    )
+
+    assert pending["should_prompt"] is False
+    assert pending["prompt_reason"] == "autostart_pending"
+    assert pending["state"]["started_via_prompt"] is False
+
+    completed = process_autostart_prompt_heartbeat(
+        {
+            "foreground_ms_delta": 0,
+            "autostart_enabled": True,
+            "autostart_status_authoritative": True,
+            "autostart_provider": "neko-pc",
+        },
+        config_manager=config,
+        now_ms=4_000,
+    )
+
+    assert completed["should_prompt"] is False
+    assert completed["prompt_reason"] == "autostart_enabled"
+    assert completed["state"]["started_via_prompt"] is False
+    assert completed["state"]["funnel_counts"]["completed"] == 0
+
+    state = load_autostart_prompt_state(config)
+    assert state["status"] == "completed"
+    assert state["started_via_prompt"] is False
+    assert state["funnel_counts"]["completed"] == 0
+
+
+@pytest.mark.unit
+def test_authoritative_service_not_found_heartbeat_suppresses_prompt(tmp_path):
+    config = DummyConfig(tmp_path)
+
+    blocked = process_autostart_prompt_heartbeat(
+        {
+            "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+            "autostart_enabled": False,
+            "autostart_supported": True,
+            "autostart_status_authoritative": True,
+            "autostart_service_not_found": True,
+            "autostart_provider": "neko-pc",
+        },
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    assert blocked["should_prompt"] is False
+    assert blocked["prompt_reason"] == "autostart_service_not_found"
+
+    state = load_autostart_prompt_state(config)
+    assert state["status"] == "observing"
+    assert state["autostart_enabled"] is False
+
+
+@pytest.mark.unit
 def test_authoritative_autostart_enabled_heartbeat_does_not_double_count_completion(tmp_path):
     config = DummyConfig(tmp_path)
     heartbeat = process_autostart_prompt_heartbeat(
@@ -1464,10 +1724,29 @@ def test_autostart_non_accept_decisions_clear_stale_prompt_attribution(tmp_path,
 
     assert decision_response["state"]["started_via_prompt"] is False
 
-    completed = process_autostart_prompt_heartbeat(
-        {"foreground_ms_delta": 0, "autostart_enabled": True},
+    pending = process_autostart_prompt_heartbeat(
+        {
+            "foreground_ms_delta": 0,
+            "autostart_enabled": False,
+            "autostart_status_authoritative": True,
+            "autostart_requires_approval": True,
+            "autostart_provider": "neko-pc",
+        },
         config_manager=config,
-        now_ms=4_000 + runtime_config["later_cooldown_ms"],
+        now_ms=4_000 + runtime_config["failure_cooldown_ms"],
+    )
+
+    assert pending["state"]["started_via_prompt"] is False
+
+    completed = process_autostart_prompt_heartbeat(
+        {
+            "foreground_ms_delta": 0,
+            "autostart_enabled": True,
+            "autostart_status_authoritative": True,
+            "autostart_provider": "neko-pc",
+        },
+        config_manager=config,
+        now_ms=5_000 + runtime_config["later_cooldown_ms"],
     )
 
     assert completed["state"]["status"] == "completed"

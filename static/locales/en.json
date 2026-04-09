@@ -38,7 +38,8 @@
         "startNow": "Enable auto launch",
         "later": "Maybe later",
         "never": "Don't remind me",
-        "enableFailed": "Auto launch couldn't be enabled right now. Please try again later."
+        "enableFailed": "Auto launch couldn't be enabled right now. Please try again later.",
+        "requiresApproval": "Approve auto launch in your system settings first. It will take effect after approval."
     },
     "characterProfile": {
         "gender": "Gender",
