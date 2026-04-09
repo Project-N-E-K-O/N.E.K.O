@@ -194,14 +194,14 @@ _TELEMETRY_TIMEOUT = 10  # 秒
 
 def _get_app_version_from_changelog() -> str:
     """从 config/changelog/ 目录中读取最高版本号作为当前 app 版本。"""
+    changelog_dir = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "config", "changelog"
+    )
+    if not os.path.isdir(changelog_dir):
+        return "unknown"
+    best_ver: tuple[int, ...] = (0,)
+    best_stem = "unknown"
     try:
-        changelog_dir = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "config", "changelog"
-        )
-        if not os.path.isdir(changelog_dir):
-            return "unknown"
-        best_ver: tuple[int, ...] = (0,)
-        best_stem = "unknown"
         for fname in os.listdir(changelog_dir):
             if not fname.endswith(".md"):
                 continue
@@ -214,7 +214,8 @@ def _get_app_version_from_changelog() -> str:
                 best_ver = ver
                 best_stem = stem
         return best_stem
-    except Exception:
+    except OSError as e:
+        logger.debug(f"Token tracker: failed to read changelog dir: {e}")
         return "unknown"
 
 

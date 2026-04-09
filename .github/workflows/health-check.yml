@@ -26,7 +26,7 @@ jobs:
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
             if [ -n "$HAS_CHOICES" ]; then
               echo "healthy=true" >> "$GITHUB_OUTPUT"
             else
@@ -51,7 +51,7 @@ jobs:
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
             if [ -n "$HAS_CHOICES" ]; then
               echo "healthy=true" >> "$GITHUB_OUTPUT"
             else
@@ -76,7 +76,7 @@ jobs:
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
             if [ -n "$HAS_CHOICES" ]; then
               echo "healthy=true" >> "$GITHUB_OUTPUT"
             else
@@ -101,7 +101,7 @@ jobs:
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
             if [ -n "$HAS_CHOICES" ]; then
               echo "healthy=true" >> "$GITHUB_OUTPUT"
             else
