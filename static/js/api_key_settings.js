@@ -16,6 +16,29 @@ let _assistApiProviders = {};
 let _coreApiProviders = {};
 // 所有模型类型
 const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
+// 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
+let _loadedGptSovitsState = 'none';
+// 上方普通 TTS 配置是否被用户在本页改动过
+let _ttsConfigDirty = false;
+
+function markTtsConfigDirty() {
+    if (_isLoadingSavedConfig) return;
+    _ttsConfigDirty = true;
+}
+
+function looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId = '', ttsModelApiKey = '') {
+    const normalizedUrl = (ttsModelUrl || '').trim();
+    if (!/^https?:\/\//i.test(normalizedUrl)) return false;
+    if ((ttsModelId || '').trim() || (ttsModelApiKey || '').trim()) return false;
+
+    const lowerUrl = normalizedUrl.replace(/\/+$/, '').toLowerCase();
+    return lowerUrl === 'http://127.0.0.1:9881'
+        || lowerUrl === 'http://localhost:9881'
+        || lowerUrl.startsWith('http://127.0.0.1:')
+        || lowerUrl.startsWith('http://localhost:')
+        || lowerUrl.startsWith('https://127.0.0.1:')
+        || lowerUrl.startsWith('https://localhost:');
+}
 
 /**
  * 遮蔽 API Key：只显示前6位和后6位，中间用 *** 替代。
@@ -920,6 +943,7 @@ async function loadCurrentApiKey() {
     const coreApiSelect = document.getElementById('coreApiSelect');
     const assistApiSelect = document.getElementById('assistApiSelect');
     const assistApiKeyInput = document.getElementById('assistApiKeyInput');
+    _ttsConfigDirty = false;
 
     if (apiKeyInput) {
         apiKeyInput.value = '';
@@ -1087,8 +1111,14 @@ async function loadCurrentApiKey() {
             setInputValue('ttsModelApiKey', data.ttsModelApiKey);
             setInputValue('ttsVoiceId', data.ttsVoiceId);
 
-            // 加载 GPT-SoVITS 配置（从 ttsModelUrl 和 ttsVoiceId 解析）
-            loadGptSovitsConfig(data.ttsModelUrl, data.ttsVoiceId);
+            // 加载 GPT-SoVITS 配置（优先使用显式启用状态，兼容旧配置）
+            loadGptSovitsConfig(
+                data.ttsModelUrl,
+                data.ttsVoiceId,
+                data.ttsModelId,
+                data.ttsModelApiKey,
+                data.gptsovitsEnabled,
+            );
 
             // 加载MCPR_TOKEN
             setInputValue('mcpTokenInput', data.mcpToken);
@@ -1148,11 +1178,10 @@ let pendingApiKey = null;
 // ==================== GPT-SoVITS v3 配置相关函数 ====================
 
 /**
- * 从 ttsModelUrl 和 ttsVoiceId 解析并加载 GPT-SoVITS v3 配置
- * v3 voice_id 格式: "voice_id" 或 "voice_id|高级参数JSON"
- * 特殊格式：__gptsovits_disabled__|url|voiceId 表示禁用但保存了配置
+ * 从保存的 TTS 字段解析并加载 GPT-SoVITS v3 配置
+ * 优先使用显式 gptsovitsEnabled，旧配置再做有限兼容判断
  */
-function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
+function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '', ttsModelApiKey = '', gptsovitsEnabled = null) {
     // 检查是否是禁用但保存了配置的情况
     let isDisabledWithConfig = false;
     let savedUrl = '';
@@ -1165,19 +1194,24 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
         if (parts.length >= 2) savedVoiceId = parts[1];
     }
 
-    // 检查是否是 GPT-SoVITS 配置（HTTP URL）
-    const isGptSovits = ttsModelUrl && (ttsModelUrl.startsWith('http://') || ttsModelUrl.startsWith('https://'));
+    const hasExplicitEnabledFlag = typeof gptsovitsEnabled === 'boolean';
+    const isLegacyEnabled = !hasExplicitEnabledFlag
+        && !isDisabledWithConfig
+        && looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId, ttsModelApiKey);
+    const isEnabled = !isDisabledWithConfig && (hasExplicitEnabledFlag ? gptsovitsEnabled : isLegacyEnabled);
+
+    _loadedGptSovitsState = isDisabledWithConfig ? 'disabled' : (isEnabled ? 'enabled' : 'none');
 
     // 设置启用开关状态
     const enabledCheckbox = document.getElementById('gptsovitsEnabled');
     if (enabledCheckbox) {
-        enabledCheckbox.checked = isGptSovits && !isDisabledWithConfig;
+        enabledCheckbox.checked = isEnabled;
     }
     toggleGptSovitsConfig();
 
     // 确定要加载的配置
-    const urlToLoad = isGptSovits ? ttsModelUrl : (isDisabledWithConfig ? savedUrl : '');
-    const voiceIdToLoad = isGptSovits ? ttsVoiceId : (isDisabledWithConfig ? savedVoiceId : '');
+    const urlToLoad = isDisabledWithConfig ? savedUrl : (isEnabled ? ttsModelUrl : '');
+    const voiceIdToLoad = isDisabledWithConfig ? savedVoiceId : (isEnabled ? ttsVoiceId : '');
 
     if (urlToLoad || voiceIdToLoad) {
         const apiUrlEl = document.getElementById('gptsovitsApiUrl');
@@ -1191,7 +1225,7 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
 
         // 自动获取语音列表（如果有 URL 且非禁用状态）
         const autoUrl = urlToLoad || document.getElementById('gptsovitsApiUrl')?.value.trim();
-        if (autoUrl && !isDisabledWithConfig) {
+        if (autoUrl && isEnabled) {
             fetchGptSovitsVoices(true);
         }
     }
@@ -1466,6 +1500,15 @@ document.addEventListener('DOMContentLoaded', function () {
         enableCustomApi.addEventListener('change', toggleCustomApi);
     }
 
+    ['ttsModelProvider', 'ttsModelUrl', 'ttsModelId', 'ttsModelApiKey', 'ttsVoiceId'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('change', markTtsConfigDirty);
+        if (el.tagName !== 'SELECT') {
+            el.addEventListener('input', markTtsConfigDirty);
+        }
+    });
+
     // 拦截所有 target="_blank" 的外部链接，使用系统默认浏览器打开
     document.querySelectorAll('a[target="_blank"]').forEach(function (link) {
         link.addEventListener('click', function (e) {
@@ -1604,13 +1647,11 @@ async function save_button_down(e) {
     if (gptsovitsEnabled && gptsovitsConfigForSave) {
         ttsModelUrl = gptsovitsConfigForSave.url;
         ttsVoiceId = gptsovitsConfigForSave.voiceId;
-    } else if (!gptsovitsEnabled) {
-        if (ttsModelUrl && (ttsModelUrl.startsWith('http://') || ttsModelUrl.startsWith('https://'))) {
-            if (gptsovitsConfigForSave) {
-                ttsVoiceId = `__gptsovits_disabled__|${gptsovitsConfigForSave.url}|${gptsovitsConfigForSave.voiceId}`;
-            }
-            ttsModelUrl = '';
+    } else if (!gptsovitsEnabled && _loadedGptSovitsState !== 'none' && !_ttsConfigDirty) {
+        if (gptsovitsConfigForSave) {
+            ttsVoiceId = `__gptsovits_disabled__|${gptsovitsConfigForSave.url}|${gptsovitsConfigForSave.voiceId}`;
         }
+        ttsModelUrl = '';
     }
 
     const mcpToken = getVal('mcpTokenInput');
@@ -1653,7 +1694,7 @@ async function save_button_down(e) {
         agentModelUrl, agentModelId, agentModelApiKey,
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
-        mcpToken, enableCustomApi,
+        mcpToken, enableCustomApi, gptsovitsEnabled,
         ...modelProviders
     };
 

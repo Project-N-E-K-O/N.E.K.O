@@ -151,12 +151,20 @@ async def analyze_image_with_vision_model(
         else:
             logger.info(f"🖼️ Using VISION_MODEL ({vision_model}) to analyze image")
 
+        from config.prompts_sys import (
+            _loc, VISION_WATERMARK,
+            VISION_SYSTEM_WITH_TITLE, VISION_SYSTEM_NO_TITLE,
+            VISION_USER_WITH_TITLE, VISION_USER_NO_TITLE,
+        )
+        from utils.language_utils import get_global_language
+        lang = get_global_language()
+
         if window_title:
-            system_content = "你是一个图像描述助手。请根据用户的屏幕截图和当前窗口标题，简洁描述用户正在做什么、屏幕上的主要内容和关键细节和你觉得有趣的地方。不超过250字。"
-            user_text = f"当前活跃窗口标题：{window_title}\n请描述截图内容。"
+            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_WITH_TITLE, lang)
+            user_text = _loc(VISION_USER_WITH_TITLE, lang).format(window_title=window_title)
         else:
-            system_content = "你是一个图像描述助手, 请简洁地描述图片中的主要内容、关键细节和你觉得有趣的地方。你的回答不能超过250字。"
-            user_text = "请描述这张图片的内容。"
+            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_NO_TITLE, lang)
+            user_text = _loc(VISION_USER_NO_TITLE, lang)
 
         set_call_type("vision")
         llm = create_chat_llm(
