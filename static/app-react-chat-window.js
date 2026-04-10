@@ -1127,6 +1127,8 @@
             if (closeButton && closeButton.contains(event.target)) return;
             var minimizeButton = $('reactChatWindowMinimizeButton');
             if (minimizeButton && minimizeButton.contains(event.target)) return;
+            var avatarHeaderBtn = $('avatarPreviewHeaderButton');
+            if (avatarHeaderBtn && avatarHeaderBtn.contains(event.target)) return;
             startDrag(event.clientX, event.clientY);
             event.preventDefault();
         });
@@ -1136,6 +1138,8 @@
             if (closeButton && closeButton.contains(event.target)) return;
             var minimizeButton = $('reactChatWindowMinimizeButton');
             if (minimizeButton && minimizeButton.contains(event.target)) return;
+            var avatarHeaderBtn = $('avatarPreviewHeaderButton');
+            if (avatarHeaderBtn && avatarHeaderBtn.contains(event.target)) return;
             if (!event.touches || event.touches.length === 0) return;
             startDrag(event.touches[0].clientX, event.touches[0].clientY);
         }, { passive: true });
@@ -1327,6 +1331,7 @@
         var closeButton = $('reactChatWindowCloseButton');
         var minimizeButton = getMinimizeButton();
         var backdrop = $('react-chat-window-backdrop');
+        var avatarHeaderButton = $('avatarPreviewHeaderButton');
 
         ensureViewProps();
 
@@ -1340,6 +1345,16 @@
             minimizeButton.addEventListener('click', function (event) {
                 event.stopPropagation();
                 toggleMinimized();
+            });
+        }
+        if (avatarHeaderButton) {
+            avatarHeaderButton.addEventListener('click', function (event) {
+                event.stopPropagation();
+                // Notify external listeners/analytics/extensions first
+                dispatchHostEvent('avatar-generator-click', {});
+                // Always use direct capture — the legacy avatarPreviewButton opens
+                // the old-chat preview card which is hidden behind the React overlay.
+                captureAvatarDirect();
             });
         }
         if (backdrop) {
