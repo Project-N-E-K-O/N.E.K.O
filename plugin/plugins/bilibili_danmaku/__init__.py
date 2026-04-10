@@ -1052,7 +1052,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             }
             conn_state["state_desc"] = state_map.get(conn_state.get("state", ""), conn_state.get("state", ""))
         else:
-            conn_state = {"state": "disconnected", "server": "", "viewer_count": 0, "state_desc": "🔴 未初始化"}
+            conn_state = {"state": "disconnected", "server": "", "viewer_count": 0, "room_id": self._room_id, "state_desc": "🔴 未初始化"}
 
         lines = [
             "📡 B站弹幕插件状态",
