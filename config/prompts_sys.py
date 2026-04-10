@@ -356,13 +356,13 @@ MEMORY_MEMO_EMPTY = {
 }
 
 # ---------- 搜索关键词生成 prompt ----------
-# china_region 时使用 'zh'（百度），否则按 get_global_language() 选择
+# prompt 与搜索引擎无关；china_region 时使用 'zh'，否则按 get_global_language() 选择
 SEARCH_KEYWORD_SYSTEM = {
-    'zh': '你是搜索关键词生成助手。根据用户提供的窗口标题，输出 3 个适合百度搜索的多样化关键词。\n\n要求：\n1. 生成 3 个不同角度的搜索关键词\n2. 关键词应简洁，控制在 2-8 个字\n3. 关键词应尽量覆盖不同方面\n4. 只输出 3 行关键词，不要添加序号、标点、解释或其他内容',
-    'en': 'You generate search keywords from a window title.\n\nRequirements:\n1. Generate 3 diverse keywords for Google search from different angles\n2. Each keyword should be concise, about 2-6 words\n3. Keep the keywords diverse\n4. Output exactly 3 lines, one keyword per line, without numbers, punctuation, explanations, or any extra text',
-    'ja': 'ウィンドウタイトルから検索キーワードを生成してください。\n\n要件：\n1. 異なる角度から Google 検索用のキーワードを 3 つ生成\n2. 各キーワードは簡潔に、2〜6 語程度\n3. キーワードは多様性を持たせる\n4. 3 行のみ出力し、番号・句読点・説明等は一切不要',
-    'ko': '창 제목에서 검색 키워드를 생성하세요.\n\n요구사항:\n1. 서로 다른 관점에서 Google 검색용 키워드 3개 생성\n2. 각 키워드는 간결하게, 2~6 단어 정도\n3. 키워드는 다양하게\n4. 정확히 3줄만 출력하고 번호, 구두점, 설명 등은 추가하지 마세요',
-    'ru': 'Сгенерируйте ключевые слова для поиска на основе заголовка окна.\n\nТребования:\n1. Сгенерируйте 3 разнообразных ключевых слова для поиска Google с разных сторон\n2. Каждое ключевое слово — кратко, около 2-6 слов\n3. Ключевые слова должны быть разнообразными\n4. Выведите ровно 3 строки, по одному ключевому слову, без номеров, пунктуации и пояснений',
+    'zh': '你是搜索关键词生成助手。根据用户提供的窗口标题，输出 3 个适合搜索的多样化关键词。\n\n要求：\n1. 生成 3 个不同角度的搜索关键词\n2. 关键词应简洁，控制在 2-8 个字\n3. 关键词应尽量覆盖不同方面\n4. 只输出 3 行关键词，不要添加序号、标点、解释或其他内容',
+    'en': 'You generate search keywords from a window title.\n\nRequirements:\n1. Generate 3 diverse search keywords from different angles\n2. Each keyword should be concise, about 2-6 words\n3. Keep the keywords diverse\n4. Output exactly 3 lines, one keyword per line, without numbers, punctuation, explanations, or any extra text',
+    'ja': 'ウィンドウタイトルから検索キーワードを生成してください。\n\n要件：\n1. 異なる角度から検索用のキーワードを 3 つ生成\n2. 各キーワードは簡潔に、2〜6 語程度\n3. キーワードは多様性を持たせる\n4. 3 行のみ出力し、番号・句読点・説明等は一切不要',
+    'ko': '창 제목에서 검색 키워드를 생성하세요.\n\n요구사항:\n1. 서로 다른 관점에서 검색 키워드 3개 생성\n2. 각 키워드는 간결하게, 2~6 단어 정도\n3. 키워드는 다양하게\n4. 정확히 3줄만 출력하고 번호, 구두점, 설명 등은 추가하지 마세요',
+    'ru': 'Сгенерируйте ключевые слова для поиска на основе заголовка окна.\n\nТребования:\n1. Сгенерируйте 3 разнообразных ключевых слова для поиска с разных сторон\n2. Каждое ключевое слово — кратко, около 2-6 слов\n3. Ключевые слова должны быть разнообразными\n4. Выведите ровно 3 строки, по одному ключевому слову, без номеров, пунктуации и пояснений',
 }
 
 SEARCH_KEYWORD_USER = {
