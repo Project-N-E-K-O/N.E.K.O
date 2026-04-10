@@ -140,6 +140,14 @@ async def get_agenthud_page(request: Request):
     return templates.TemplateResponse("templates/agenthud.html", {"request": request})
 
 
+@router.get("/toast", response_class=HTMLResponse)
+async def get_toast_page(request: Request):
+    """Toast 通知独立窗口页面（Electron 加载）"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/toast.html", {"request": request})
+
+
+
 @router.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
     # lanlan_name 将从 URL 中提取，前端会通过 API 获取配置
