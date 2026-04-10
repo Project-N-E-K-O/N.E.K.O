@@ -54,9 +54,10 @@
         const host = window.reactChatWindowHost;
         if (!host || typeof host.updateMessage !== 'function' || !musicCardMessageId) return;
 
-        let prefix = '🎵';
-        let text = (window.t && window.t('music.playing')) || '播放中';
-        if (state === 'paused') { prefix = '⏸'; text = (window.t && window.t('music.paused')) || '已暂停'; }
+        let prefix = '❓';
+        let text = (window.t && window.t('music.unknownState')) || '未知状态';
+        if (state === 'playing') { prefix = '🎵'; text = (window.t && window.t('music.playing')) || '播放中'; }
+        else if (state === 'paused') { prefix = '⏸'; text = (window.t && window.t('music.paused')) || '已暂停'; }
         else if (state === 'ended') { prefix = '✅'; text = (window.t && window.t('music.ended')) || '已播完'; }
         else if (state === 'error') { prefix = '❌'; text = (window.t && window.t('music.playError')) || '播放失败'; }
         else { prefix = '❓'; text = (window.t && window.t('music.unknownState')) || '未知状态'; }
@@ -598,7 +599,7 @@
                     autoDestroyTimer = setTimeout(() => {
                         if (latestMusicRequestToken === tokenAtEvent) destroyMusicPlayer(true, true, true);
                     }, MUSIC_CONFIG.timeouts.ended);
-                    updateMusicCard('ended', null);
+                    updateMusicCard('ended', currentPlayingTrack);
                 });
                 boundPlayer.on('error', (err) => {
                     if (boundPlayer._destroying) return;
