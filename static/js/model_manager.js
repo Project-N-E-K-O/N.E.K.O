@@ -6871,14 +6871,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 加载已配置的常驻表情
     async function loadPersistentExpressions() {
         const persistentList = document.getElementById('persistent-list');
-        if (!currentModelInfo) {
+        const modelName = currentModelInfo && currentModelInfo.name;
+        if (!modelName) {
             persistentList.style.display = 'none';
             return;
         }
 
         try {
             // 使用 RequestHelper 确保统一的错误处理和超时
-            const data = await RequestHelper.fetchJson(`/api/live2d/emotion_mapping/${encodeURIComponent(currentModelInfo.name)}`);
+            const data = await RequestHelper.fetchJson(`/api/live2d/emotion_mapping/${encodeURIComponent(modelName)}`);
+            if (!currentModelInfo || currentModelInfo.name !== modelName) return;
 
             if (data && data.success && data.config && data.config.expressions && data.config.expressions['常驻']) {
                 const persistentExpressions = data.config.expressions['常驻'];
@@ -6908,6 +6910,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         } catch (e) {
             console.error('加载常驻表情失败:', e);
+            if (!currentModelInfo || currentModelInfo.name !== modelName) return;
             persistentList.style.display = 'none';
         }
     }
@@ -6916,7 +6919,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const persistentSelect = document.getElementById('persistent-expression-select');
     persistentSelect.addEventListener('change', async () => {
         const selectedFile = persistentSelect.value;
-        if (!selectedFile || !currentModelInfo) return;
+        const modelName = currentModelInfo && currentModelInfo.name;
+        if (!selectedFile || !modelName) return;
 
         // 防止重复操作
         if (persistentSelect.disabled) return;
@@ -6924,7 +6928,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         try {
             // 获取当前配置（使用 RequestHelper 确保统一的错误处理和超时）
-            const data = await RequestHelper.fetchJson(`/api/live2d/emotion_mapping/${encodeURIComponent(currentModelInfo.name)}`);
+            const data = await RequestHelper.fetchJson(`/api/live2d/emotion_mapping/${encodeURIComponent(modelName)}`);
+            if (!currentModelInfo || currentModelInfo.name !== modelName) return;
 
             const currentConfig = data && data.success ? (data.config || { motions: {}, expressions: {} }) : { motions: {}, expressions: {} };
 
@@ -6957,13 +6962,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 保存配置（使用 RequestHelper 确保统一的错误处理和超时）
             const saveData = await RequestHelper.fetchJson(
-                `/api/live2d/emotion_mapping/${encodeURIComponent(currentModelInfo.name)}`,
+                `/api/live2d/emotion_mapping/${encodeURIComponent(modelName)}`,
                 {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(currentConfig)
                 }
             );
+            if (!currentModelInfo || currentModelInfo.name !== modelName) return;
             if (saveData.success) {
                 if (previousPersistentExpression) {
                     showStatus(t('live2d.updatedPersistentExpression', '已更新常驻表情'), 2000);
@@ -6987,6 +6993,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         } catch (e) {
             console.error('添加常驻表情失败:', e);
+            if (!currentModelInfo || currentModelInfo.name !== modelName) return;
             showStatus(t('live2d.persistentExpressionAddFailed', '添加常驻表情失败'), 2000);
             persistentSelect.value = '';
         } finally {
@@ -6996,11 +7003,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 删除常驻表情
     window.removePersistentExpression = async function (file) {
-        if (!currentModelInfo) return;
+        const modelName = currentModelInfo && currentModelInfo.name;
+        if (!modelName) return;
 
         try {
             // 使用 RequestHelper 确保统一的错误处理和超时
-            const data = await RequestHelper.fetchJson(`/api/live2d/emotion_mapping/${encodeURIComponent(currentModelInfo.name)}`);
+            const data = await RequestHelper.fetchJson(`/api/live2d/emotion_mapping/${encodeURIComponent(modelName)}`);
+            if (!currentModelInfo || currentModelInfo.name !== modelName) return;
 
             const currentConfig = data && data.success ? (data.config || { motions: {}, expressions: {} }) : { motions: {}, expressions: {} };
 
@@ -7016,13 +7025,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     // 使用 RequestHelper 确保统一的错误处理和超时
                     const saveData = await RequestHelper.fetchJson(
-                        `/api/live2d/emotion_mapping/${encodeURIComponent(currentModelInfo.name)}`,
+                        `/api/live2d/emotion_mapping/${encodeURIComponent(modelName)}`,
                         {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(currentConfig)
                         }
                     );
+                    if (!currentModelInfo || currentModelInfo.name !== modelName) return;
                     if (saveData.success) {
                         showStatus(t('live2d.persistentExpressionRemoved', '常驻表情已删除'), 2000);
                         await loadPersistentExpressions();
@@ -7042,6 +7052,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         } catch (e) {
             console.error('删除常驻表情失败:', e);
+            if (!currentModelInfo || currentModelInfo.name !== modelName) return;
             showStatus(t('live2d.persistentExpressionRemoveFailed', '删除常驻表情失败'), 2000);
         }
     };

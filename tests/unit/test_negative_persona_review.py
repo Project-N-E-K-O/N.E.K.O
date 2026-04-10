@@ -37,22 +37,35 @@ def _import_memory_server_with_tempdir():
         mock_cm = _build_mock_config_manager(tmpdir)
         with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
              patch("utils.config_manager._config_manager", mock_cm):
+            original_memory_package = sys.modules.get("memory")
             original_module = sys.modules.get("memory_server")
+            original_persona_module = sys.modules.get("memory.persona")
             sys.modules.pop("memory_server", None)
+            sys.modules.pop("memory.persona", None)
+            sys.modules.pop("memory", None)
+
+            def _restore_modules():
+                if original_persona_module is None:
+                    sys.modules.pop("memory.persona", None)
+                else:
+                    sys.modules["memory.persona"] = original_persona_module
+                if original_memory_package is None:
+                    sys.modules.pop("memory", None)
+                else:
+                    sys.modules["memory"] = original_memory_package
+                if original_module is None:
+                    sys.modules.pop("memory_server", None)
+                else:
+                    sys.modules["memory_server"] = original_module
+
             try:
                 memory_server = importlib.import_module("memory_server")
                 yield memory_server, mock_cm
             except Exception:
-                if original_module is None:
-                    sys.modules.pop("memory_server", None)
-                else:
-                    sys.modules["memory_server"] = original_module
+                _restore_modules()
                 raise
             finally:
-                if original_module is None:
-                    sys.modules.pop("memory_server", None)
-                else:
-                    sys.modules["memory_server"] = original_module
+                _restore_modules()
 
 
 def test_negative_signal_first_soft_then_hard() -> None:

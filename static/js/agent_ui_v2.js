@@ -21,6 +21,7 @@
         openclawReason: '',
         openfangProbeReady: null,
         openfangProbeReason: '',
+        openfangProbeSeq: 0,
     };
     
     // 暴露状态供 app.js 等外部脚本使用乐观更新检测
@@ -122,8 +123,11 @@
     }
 
     async function refreshOpenFangAvailability() {
+        const probeSeq = (state.openfangProbeSeq || 0) + 1;
+        state.openfangProbeSeq = probeSeq;
         try {
             const r = await fetch('/api/agent/openfang/availability');
+            if (state.openfangProbeSeq !== probeSeq) return false;
             if (!r.ok) {
                 state.openfangProbeReady = false;
                 state.openfangProbeReason = `status ${r.status}`;
@@ -131,6 +135,7 @@
                 return false;
             }
             const payload = await r.json();
+            if (state.openfangProbeSeq !== probeSeq) return false;
             state.openfangProbeReady = !!payload.ready;
             if (Array.isArray(payload.reasons)) {
                 state.openfangProbeReason = String(payload.reasons[0] || '');
@@ -140,6 +145,7 @@
             if (state.snapshot) render('openfang-refresh');
             return state.openfangProbeReady;
         } catch (e) {
+            if (state.openfangProbeSeq !== probeSeq) return false;
             state.openfangProbeReady = false;
             state.openfangProbeReason = String(e && e.message ? e.message : e || '');
             if (state.snapshot) render('openfang-refresh-error');
@@ -195,8 +201,10 @@
 
         state.snapshot = snapshot;
         if (Number.isFinite(rev)) state.revision = rev;
-        state.openfangProbeReady = null;
-        state.openfangProbeReason = '';
+        if (!state.popupOpen) {
+            state.openfangProbeReady = null;
+            state.openfangProbeReason = '';
+        }
         window._agentStatusSnapshot = snapshot;
         if (snapshot.notification && typeof window.showStatusToast === 'function') {
             const msg = window.translateStatusMessage ? window.translateStatusMessage(snapshot.notification) : snapshot.notification;
@@ -583,14 +591,16 @@
         window.addEventListener('live2d-agent-popup-opening', async () => {
             state.popupOpen = true;
             render('popup');
-            refreshOpenFangAvailability().catch(() => {});
-            refreshOpenClawAvailability().catch(() => {});
             if (!state.snapshot) {
                 await fetchSnapshot().catch(() => render('popup'));
+                refreshOpenFangAvailability().catch(() => {});
+                refreshOpenClawAvailability().catch(() => {});
                 return;
             }
             // Open popup without waiting, then refresh in background.
-            fetchSnapshot().catch(() => { });
+            await fetchSnapshot().catch(() => { });
+            refreshOpenFangAvailability().catch(() => {});
+            refreshOpenClawAvailability().catch(() => {});
         });
         window.addEventListener('live2d-agent-popup-closed', () => {
             state.popupOpen = false;

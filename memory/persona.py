@@ -297,14 +297,19 @@ def _clean_topic_candidate(text: str) -> str:
     changed = True
     while changed and topic:
         changed = False
+        topic_cf = topic.casefold()
         for prefix in _TOPIC_PREFIX_CLEANUPS:
-            if topic.startswith(prefix) and len(topic) > len(prefix):
+            prefix_cf = prefix.casefold()
+            if topic_cf.startswith(prefix_cf) and len(topic) > len(prefix):
                 topic = topic[len(prefix):].strip()
                 changed = True
+                topic_cf = topic.casefold()
         for suffix in _TOPIC_SUFFIX_CLEANUPS:
-            if topic.endswith(suffix) and len(topic) > len(suffix):
+            suffix_cf = suffix.casefold()
+            if topic_cf.endswith(suffix_cf) and len(topic) > len(suffix):
                 topic = topic[:-len(suffix)].strip()
                 changed = True
+                topic_cf = topic.casefold()
     topic = re.sub(r'^(?:关于|聊|提|说|讲)+', '', topic).strip()
     topic = re.sub(r'(?:一下|一下子)$', '', topic).strip()
     topic = re.sub(r'(?:真的|现在|最近)$', '', topic).strip()

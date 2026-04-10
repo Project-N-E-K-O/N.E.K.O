@@ -333,10 +333,12 @@ class OmniOfflineClient:
         
         # Callback for user input
         if self.on_input_transcript:
-            await self.on_input_transcript(text.strip())
-            callback_temporary_messages = self._consume_temporary_system_messages()
-            if callback_temporary_messages:
-                temporary_messages.extend(callback_temporary_messages)
+            try:
+                await self.on_input_transcript(text.strip())
+            finally:
+                callback_temporary_messages = self._consume_temporary_system_messages()
+                if callback_temporary_messages:
+                    temporary_messages.extend(callback_temporary_messages)
         
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3
@@ -547,6 +549,15 @@ class OmniOfflineClient:
                     else:
                         error_msg = f"💥 LLM连接失败（{error_type}），已重试{max_retries}次: {e}"
                         logger.error(error_msg)
+                        if first_chunk_sent:
+                            await self._notify_response_discarded(
+                                f"retryable_stream_error:{error_type}",
+                                attempt + 1,
+                                max_retries,
+                                True,
+                                None,
+                            )
+                            assistant_message = ""
                         if self.on_status_message:
                             if is_internal_error:
                                 await self.on_status_message(json.dumps({"code": "LLM_UPSTREAM_ERROR"}))

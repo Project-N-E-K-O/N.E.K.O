@@ -127,6 +127,16 @@ def _coerce_mapping_group_files(files, group_name: str, mapping_name: str):
     return []
 
 
+def _sanitize_mapping_file_path(file_path):
+    if not isinstance(file_path, str):
+        return None
+    normalized = file_path.replace('\\', '/')
+    p = pathlib.PurePosixPath(normalized)
+    if p.is_absolute() or ".." in p.parts:
+        return None
+    return str(p)
+
+
 def _normalize_model_path(path: str) -> str:
     """Strip any surrounding quotes, then encode a model URL path."""
     return encode_url_path(path.strip('"'))
@@ -480,13 +490,9 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 continue
             items = []
             for file_path in _coerce_mapping_group_files(files, group_name, 'motions'):
-                if not isinstance(file_path, str):
+                normalized = _sanitize_mapping_file_path(file_path)
+                if not normalized:
                     continue
-                normalized = file_path.replace('\\', '/')
-                p = pathlib.PurePosixPath(normalized)
-                if p.is_absolute() or ".." in p.parts:
-                    continue
-                normalized = str(p)
 
                 items.append({"File": normalized})
             motions_output[group_name] = items
@@ -511,13 +517,9 @@ async def update_emotion_mapping(model_name: str, request: Request):
         new_expressions = []
         for emotion, files in expressions_input.items():
             for file_path in _coerce_mapping_group_files(files, emotion, 'expressions'):
-                if not isinstance(file_path, str):
+                normalized = _sanitize_mapping_file_path(file_path)
+                if not normalized:
                     continue
-                normalized = file_path.replace('\\', '/')
-                p = pathlib.PurePosixPath(normalized)
-                if p.is_absolute() or ".." in p.parts:
-                    continue
-                normalized = str(p)
 
                 base = os.path.basename(normalized)
                 base_no_ext = base.replace('.exp3.json', '')
@@ -527,7 +529,34 @@ async def update_emotion_mapping(model_name: str, request: Request):
         file_refs['Expressions'] = preserved_expressions + new_expressions
 
         # 同时保留一份 EmotionMapping（供管理器读取与向后兼容）
-        config_data['EmotionMapping'] = data
+        sanitized_expressions = {}
+        sanitized_motions = {}
+        for emotion, items in motions_output.items():
+            sanitized_motions[emotion] = [
+                item.get("File") for item in items
+                if isinstance(item, dict) and item.get("File")
+            ]
+        for item in new_expressions:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("Name") or "")
+            file_path = str(item.get("File") or "")
+            if not name or not file_path or "_" not in name:
+                continue
+            emotion = name.split("_", 1)[0]
+            sanitized_expressions.setdefault(emotion, []).append(file_path)
+        resident_files = []
+        for file_path in _coerce_mapping_group_files((data.get('expressions') or {}).get('常驻'), '常驻', 'expressions'):
+            normalized = _sanitize_mapping_file_path(file_path)
+            if normalized:
+                resident_files.append(normalized)
+        config_data['EmotionMapping'] = {
+            "motions": sanitized_motions,
+            "expressions": {
+                **sanitized_expressions,
+                "常驻": resident_files[-1:] if resident_files else [],
+            },
+        }
 
         # 保存配置到文件
         atomic_write_json(model_json_path, config_data, ensure_ascii=False, indent=2)

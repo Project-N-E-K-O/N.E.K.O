@@ -726,6 +726,17 @@ def _normalize_capability_reason(capability: str, raw_reason: str) -> str:
         return "AGENT_NO_PLUGINS_FOUND"
     if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
         return "AGENT_PLUGIN_SERVER_ERROR"
+    if "openfang" in capability_name:
+        openfang_connection_phrases = (
+            "connection refused",
+            "all connection attempts failed",
+            "connection reset",
+            "连接被拒绝",
+            "连接失败",
+            "连接重置",
+        )
+        if any(phrase in lower or phrase in text for phrase in openfang_connection_phrases):
+            return "AGENT_OPENFANG_DAEMON_UNREACHABLE"
     if "openfang" in capability_name and ("openfang" in lower or "daemon" in lower):
         return "AGENT_OPENFANG_DAEMON_UNREACHABLE"
     if "unreachable" in lower or "连接失败" in text or "connectivity" in lower:
