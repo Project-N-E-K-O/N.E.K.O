@@ -310,8 +310,8 @@ _DEFAULT_VRM_LIGHTING_MUTABLE = {
     "rim": 0.0,       # 轮廓光强度（简化模式下禁用，MToon 内建处理）
     "top": 0.0,       # 顶光强度（简化模式下禁用）
     "bottom": 0.0,    # 底光强度（简化模式下禁用）
-    "exposure": 1.0,  # 曝光值
-    "toneMapping": 0, # 色调映射类型 (0 = NoToneMapping)
+    "exposure": 1.1,  # 曝光值
+    "toneMapping": 7, # 色调映射类型 (7 = NeutralToneMapping)
     "outlineWidthScale": 1.0, # 描边粗细倍率
 }
 

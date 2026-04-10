@@ -289,18 +289,18 @@
                 <div class="lighting-control" id="ambient-light-control">
             <label for="ambient-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.ambientLight">环境光强度</label>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="ambient-light-slider" min="0" max="1.0" step="0.01" value="0.5"
+                <input type="range" id="ambient-light-slider" min="0" max="1.0" step="0.01" value="{{ vrm_defaults.ambient }}"
                     style="flex: 1;">
-                <span id="ambient-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.50</span>
+                <span id="ambient-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">{{ "%.2f"|format(vrm_defaults.ambient) }}</span>
             </div>
         </div>
 
         <div class="lighting-control" id="main-light-control">
             <label for="main-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.mainLight">主光源强度</label>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="main-light-slider" min="0" max="2.5" step="0.01" value="0.8"
+                <input type="range" id="main-light-slider" min="0" max="2.5" step="0.01" value="{{ vrm_defaults.main }}"
                     style="flex: 1;">
-                <span id="main-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.80</span>
+                <span id="main-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">{{ "%.2f"|format(vrm_defaults.main) }}</span>
             </div>
         </div>
 
@@ -308,45 +308,45 @@
         <div class="lighting-control hidden-simplified" style="display: none;">
             <label for="fill-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.fillLight">补光强度</label>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="fill-light-slider" min="0" max="1.0" step="0.01" value="0.0"
+                <input type="range" id="fill-light-slider" min="0" max="1.0" step="0.01" value="{{ vrm_defaults.fill }}"
                     style="flex: 1;">
-                <span id="fill-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.00</span>
+                <span id="fill-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">{{ "%.2f"|format(vrm_defaults.fill) }}</span>
             </div>
         </div>
 
         <div class="lighting-control hidden-simplified" style="display: none;">
             <label for="rim-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.rimLight">轮廓光强度</label>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="rim-light-slider" min="0" max="1.5" step="0.05" value="0.0"
+                <input type="range" id="rim-light-slider" min="0" max="1.5" step="0.05" value="{{ vrm_defaults.rim }}"
                     style="flex: 1;">
-                <span id="rim-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.00</span>
+                <span id="rim-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">{{ "%.2f"|format(vrm_defaults.rim) }}</span>
             </div>
         </div>
 
         <div class="lighting-control hidden-simplified" style="display: none;">
             <label for="top-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.topLight">顶光强度</label>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="top-light-slider" min="0" max="1.0" step="0.01" value="0.0"
+                <input type="range" id="top-light-slider" min="0" max="1.0" step="0.01" value="{{ vrm_defaults.top }}"
                     style="flex: 1;">
-                <span id="top-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.00</span>
+                <span id="top-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">{{ "%.2f"|format(vrm_defaults.top) }}</span>
             </div>
         </div>
 
         <div class="lighting-control hidden-simplified" style="display: none;">
             <label for="bottom-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.bottomLight">底光强度</label>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="bottom-light-slider" min="0" max="0.5" step="0.01" value="0.0"
+                <input type="range" id="bottom-light-slider" min="0" max="0.5" step="0.01" value="{{ vrm_defaults.bottom }}"
                     style="flex: 1;">
-                <span id="bottom-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.00</span>
+                <span id="bottom-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">{{ "%.2f"|format(vrm_defaults.bottom) }}</span>
             </div>
         </div>
 
         <div class="lighting-control" id="exposure-control">
             <label for="exposure-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.exposure">曝光</label>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="exposure-slider" min="0.5" max="2.5" step="0.05" value="0.8"
+                <input type="range" id="exposure-slider" min="0.5" max="2.5" step="0.05" value="{{ vrm_defaults.exposure }}"
                     style="flex: 1;">
-                <span id="exposure-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.80</span>
+                <span id="exposure-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">{{ "%.2f"|format(vrm_defaults.exposure) }}</span>
             </div>
         </div>
 
@@ -354,13 +354,13 @@
                 <label for="tonemapping-select" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.toneMapping">色调映射</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <select id="tonemapping-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
-                        <option value="0" style="color: #4f8cff;">None (无)</option>
-                        <option value="1" style="color: #4f8cff;">Linear (线性)</option>
-                        <option value="2" style="color: #4f8cff;">Reinhard</option>
-                        <option value="3" style="color: #4f8cff;">Cineon (电影)</option>
-                        <option value="4" style="color: #4f8cff;">ACES Filmic</option>
-                        <option value="6" style="color: #4f8cff;">AgX</option>
-                        <option value="7" selected style="color: #4f8cff;">Neutral</option>
+                        <option value="0" {{ 'selected' if vrm_defaults.toneMapping|int == 0 }} style="color: #4f8cff;">None (无)</option>
+                        <option value="1" {{ 'selected' if vrm_defaults.toneMapping|int == 1 }} style="color: #4f8cff;">Linear (线性)</option>
+                        <option value="2" {{ 'selected' if vrm_defaults.toneMapping|int == 2 }} style="color: #4f8cff;">Reinhard</option>
+                        <option value="3" {{ 'selected' if vrm_defaults.toneMapping|int == 3 }} style="color: #4f8cff;">Cineon (电影)</option>
+                        <option value="4" {{ 'selected' if vrm_defaults.toneMapping|int == 4 }} style="color: #4f8cff;">ACES Filmic</option>
+                        <option value="6" {{ 'selected' if vrm_defaults.toneMapping|int == 6 }} style="color: #4f8cff;">AgX</option>
+                        <option value="7" {{ 'selected' if vrm_defaults.toneMapping|int == 7 }} style="color: #4f8cff;">Neutral</option>
                     </select>
                 </div>
             </div>
@@ -368,8 +368,8 @@
             <div class="lighting-control" id="vrm-outline-width-control">
                 <label for="vrm-outline-width-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.outlineWidth">描边粗细</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
-                    <input type="range" id="vrm-outline-width-slider" min="0" max="3" step="0.1" value="1.0" style="flex: 1;">
-                    <span id="vrm-outline-width-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">1.00</span>
+                    <input type="range" id="vrm-outline-width-slider" min="0" max="3" step="0.1" value="{{ vrm_defaults.outlineWidthScale }}" style="flex: 1;">
+                    <span id="vrm-outline-width-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">{{ "%.2f"|format(vrm_defaults.outlineWidthScale) }}</span>
                 </div>
             </div>
 

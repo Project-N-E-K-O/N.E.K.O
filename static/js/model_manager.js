@@ -1836,7 +1836,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ? modelName.split(/[\\/]/).pop().replace(/\.(vrm|pmx|pmd)$/i, '') 
                 : modelName;
             let saveMessage;
-            const lightingFailed = (currentModelType === 'live3d') && ambient && main && (!lightingResult || !lightingResult.success);
+            const lightingFailed = (currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main && (!lightingResult || !lightingResult.success);
             const mmdSettingsFailed = mmdSettingsResult && !mmdSettingsResult.success;
 
             if (lightingFailed && mmdSettingsFailed) {

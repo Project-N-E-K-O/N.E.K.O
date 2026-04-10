@@ -660,14 +660,10 @@
 
                         if (window.vrmManager?.ambientLight && window.vrmManager?.mainLight &&
                             window.vrmManager?.fillLight && window.vrmManager?.rimLight) {
-                            // 与 vrm-core.js defaultLighting 保持一致
-                            const defaultLighting = {
-                                ambient: 0.83,     // 默认环境光
-                                main: 1.91,        // 默认主光源
-                                fill: 0.0,         // 不需要补光
-                                rim: 0.0,          // 不需要外部轮廓光
-                                top: 0.0,          // 不需要顶光
-                                bottom: 0.0        // 不需要底光
+                            // 引用全局唯一默认值（定义于 vrm-core.js）
+                            const defaultLighting = window.VRM_DEFAULT_LIGHTING || {
+                                ambient: 0.83, main: 1.91, fill: 0.0,
+                                rim: 0.0, top: 0.0, bottom: 0.0
                             };
 
                             if (window.vrmManager.ambientLight) {

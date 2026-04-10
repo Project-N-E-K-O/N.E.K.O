@@ -23,9 +23,11 @@ async def get_default_index(request: Request):
 
 def _render_model_manager(request: Request):
     """渲染模型管理器页面的内部实现"""
+    from config import DEFAULT_VRM_LIGHTING
     templates = get_templates()
     return templates.TemplateResponse("templates/model_manager.html", {
-        "request": request
+        "request": request,
+        "vrm_defaults": dict(DEFAULT_VRM_LIGHTING),
     })
 
 

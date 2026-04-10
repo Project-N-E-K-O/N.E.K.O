@@ -2,6 +2,27 @@
  * VRM 核心模块 - 负责场景初始化、模型加载、性能管理等核心功能
  */
 
+/**
+ * VRM 光照默认值 —— 前端唯一权威来源
+ *
+ * 后端对应: config/__init__.py  _DEFAULT_VRM_LIGHTING_MUTABLE
+ * HTML 对应: templates/model_manager.html 中各 slider / select 的 value
+ * 其他 JS:  app-character.js / model_manager.js 均应引用此常量
+ *
+ * 修改此处后，需同步更新上述位置。
+ */
+window.VRM_DEFAULT_LIGHTING = Object.freeze({
+    ambient: 0.83,
+    main: 1.91,
+    fill: 0.0,
+    rim: 0.0,
+    top: 0.0,
+    bottom: 0.0,
+    exposure: 1.1,
+    toneMapping: 7,          // 7 = THREE.NeutralToneMapping
+    outlineWidthScale: 1.0,
+});
+
 class VRMCore {
     constructor(manager) {
         this.manager = manager;
@@ -433,9 +454,12 @@ class VRMCore {
             this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
         }
         
-        // 默认使用 NeutralToneMapping（色调平衡、对比度适中）
-        this.manager.renderer.toneMapping = THREE.NeutralToneMapping;
-        this.manager.renderer.toneMappingExposure = 1.1;
+        // 使用光照配置中的色调映射和曝光，若无则使用全局默认值
+        const _defaults = window.VRM_DEFAULT_LIGHTING;
+        const _initToneMapping = lightingConfig?.toneMapping ?? _defaults.toneMapping;
+        const _initExposure = lightingConfig?.exposure ?? _defaults.exposure;
+        this.manager.renderer.toneMapping = _initToneMapping;
+        this.manager.renderer.toneMappingExposure = _initExposure;
 
         const canvas = this.manager.renderer.domElement;
         canvas.style.setProperty('pointer-events', 'auto', 'important');
@@ -461,16 +485,8 @@ class VRMCore {
 
         this.manager.scene.add(this.manager.camera);
 
-        // 使用光照配置（如果提供），否则使用默认值
-        // VRoid Hub 风格：极高环境光、主灯跟随摄像机、无阴影
-        const defaultLighting = {
-            ambient: 0.83,     // 默认环境光
-            main: 1.91,        // 默认主光源
-            fill: 0.0,         // 不需要补光
-            rim: 0.0,          // 不需要外部轮廓光（MToon 内建处理）
-            top: 0.0,          // 不需要顶光
-            bottom: 0.0        // 不需要底光
-        };
+        // 使用光照配置（如果提供），否则使用全局默认值
+        const defaultLighting = window.VRM_DEFAULT_LIGHTING;
         const lighting = lightingConfig || defaultLighting;
 
         // 环境光：使用 HemisphereLight，天空色和地面色都接近白色
