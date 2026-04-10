@@ -655,6 +655,9 @@ def test_negative_topic_validation_prompt_normalizes_full_locale_code() -> None:
     from config.prompts_memory import get_negative_topic_validation_prompt
 
     assert get_negative_topic_validation_prompt("zh-CN") == get_negative_topic_validation_prompt("zh")
+    assert get_negative_topic_validation_prompt("ja-JP") == get_negative_topic_validation_prompt("ja")
+    assert get_negative_topic_validation_prompt("ko-KR") == get_negative_topic_validation_prompt("ko")
+    assert get_negative_topic_validation_prompt("ru-RU") == get_negative_topic_validation_prompt("ru")
 
 
 def test_negative_topic_validation_prompt_formatting_is_safe() -> None:
@@ -666,3 +669,24 @@ def test_negative_topic_validation_prompt_formatting_is_safe() -> None:
         CANDIDATE_TOPIC="昆虫食品",
     )
     assert '"accepted": true' in rendered
+
+
+def test_negative_topic_validation_prompt_has_localized_entries_for_ja_ko_ru() -> None:
+    from config.prompts_memory import get_negative_topic_validation_prompt
+
+    ja_prompt = get_negative_topic_validation_prompt("ja")
+    ko_prompt = get_negative_topic_validation_prompt("ko")
+    ru_prompt = get_negative_topic_validation_prompt("ru")
+    zh_prompt = get_negative_topic_validation_prompt("zh")
+
+    assert ja_prompt != zh_prompt
+    assert ko_prompt != zh_prompt
+    assert ru_prompt != zh_prompt
+
+    for prompt in (ja_prompt, ko_prompt, ru_prompt):
+        rendered = prompt.format(
+            USER_MESSAGE="don't mention insect food again",
+            REFERENCED_TOPIC="insect food",
+            CANDIDATE_TOPIC="insect food",
+        )
+        assert '"accepted": true' in rendered
