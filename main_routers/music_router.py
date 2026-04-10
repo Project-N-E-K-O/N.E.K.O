@@ -13,6 +13,51 @@ router = APIRouter()
 
 logger = get_module_logger(__name__, "Music")
 
+# ---------------------------------------------------------------------------
+#  pyncm_async compat patch — 1.8.2 uses Python 3.12+ f-string syntax in
+#  cloud.py which triggers SyntaxError on older interpreters.  We patch the
+#  source file on disk before import so the rest of the code works normally.
+# ---------------------------------------------------------------------------
+def _patch_pyncm_async() -> None:
+    import os, sys, tempfile
+    if sys.version_info >= (3, 12):
+        return
+    for p in sys.path:
+        target = os.path.join(p, "pyncm_async", "apis", "cloud.py")
+        if not os.path.isfile(target):
+            continue
+        try:
+            with open(target, "r", encoding="utf-8") as f:
+                code = f.read()
+            if 'objectKey.replace("/", "%2F")' in code:
+                if not os.access(target, os.W_OK):
+                    logger.error("[Music] pyncm_async cloud.py is read-only, cannot patch: %s", target)
+                    return
+                code = code.replace(
+                    'objectKey.replace("/", "%2F")',
+                    "objectKey.replace('/', '%2F')",
+                )
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=os.path.dirname(target), prefix="cloud.py.", suffix=".tmp",
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(code)
+                    os.replace(tmp_path, target)
+                except Exception:
+                    try:
+                        os.remove(tmp_path)
+                    except OSError as cleanup_exc:
+                        logger.debug("[Music] Failed to remove temp file %s: %s", tmp_path, cleanup_exc)
+                    raise
+                logger.info("[Music] Patched pyncm_async cloud.py for Python <3.12 compat")
+            return
+        except Exception as exc:
+            logger.error("[Music] Failed to patch pyncm_async: %s", exc)
+            return
+
+_patch_pyncm_async()
+
 try:
     import pyncm_async
     from pyncm_async.apis.track import GetTrackAudio
