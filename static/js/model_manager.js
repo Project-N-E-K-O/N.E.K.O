@@ -1877,6 +1877,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             } catch (_) {}
             window._motionPreviewFetchController = null;
         }
+        isMotionPlaying = false;
         if (typeof window._resumeExpressionPreviewSuspend === 'function') {
             window._resumeExpressionPreviewSuspend(reapplyPersistent);
             window._resumeExpressionPreviewSuspend = null;
@@ -5583,6 +5584,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window._motionPreviewRestoreTimer = null;
             }
             window._currentMotionPreviewId = null;
+            isMotionPlaying = false;
 
             // 创建预览标记，防止快速连续点击时并发 await 导致多个定时器共存
             previewToken = nextExpressionPreviewToken();

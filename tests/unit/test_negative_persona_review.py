@@ -61,9 +61,6 @@ def _import_memory_server_with_tempdir():
             try:
                 memory_server = importlib.import_module("memory_server")
                 yield memory_server, mock_cm
-            except Exception:
-                _restore_modules()
-                raise
             finally:
                 _restore_modules()
 

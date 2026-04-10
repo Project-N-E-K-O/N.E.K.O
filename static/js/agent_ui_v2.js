@@ -201,10 +201,8 @@
 
         state.snapshot = snapshot;
         if (Number.isFinite(rev)) state.revision = rev;
-        if (!state.popupOpen) {
-            state.openfangProbeReady = null;
-            state.openfangProbeReason = '';
-        }
+        state.openfangProbeReady = null;
+        state.openfangProbeReason = '';
         window._agentStatusSnapshot = snapshot;
         if (snapshot.notification && typeof window.showStatusToast === 'function') {
             const msg = window.translateStatusMessage ? window.translateStatusMessage(snapshot.notification) : snapshot.notification;

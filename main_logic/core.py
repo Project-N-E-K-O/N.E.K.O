@@ -646,6 +646,11 @@ class LLMSessionManager:
                     await self._reset_preparation_state(clear_main_cache=False)
                 except Exception as e:
                     logger.debug(f"清理临时响应指令关联的 pending session 失败: {e}")
+                    self.pending_session = None
+                    self.pending_session_warmed_up_event = None
+                    if self.background_preparation_task:
+                        self.background_preparation_task.cancel()
+                    self.background_preparation_task = None
             return
 
         if not isinstance(self.session, OmniRealtimeClient):
@@ -674,6 +679,11 @@ class LLMSessionManager:
                 await self._reset_preparation_state(clear_main_cache=False)
             except Exception as e:
                 logger.debug(f"应用临时响应指令后的 pending session 清理失败: {e}")
+                self.pending_session = None
+                self.pending_session_warmed_up_event = None
+                if self.background_preparation_task:
+                    self.background_preparation_task.cancel()
+                self.background_preparation_task = None
 
     async def _restore_transient_response_instruction(self, session_override=None) -> None:
         if not self._transient_response_instruction_active:
@@ -2181,17 +2191,23 @@ class LLMSessionManager:
                     if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
                         try:
                             self.tts_request_queue.put((None, None))
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.error("[%s] proactive TTS turn_end enqueue failed: %s", self.lanlan_name, e)
+                            delivered = False
 
-                    self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+                    try:
+                        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+                    except Exception as e:
+                        logger.error("[%s] proactive sync turn_end enqueue failed: %s", self.lanlan_name, e)
+                        delivered = False
                     try:
                         if (self.websocket
                                 and hasattr(self.websocket, 'client_state')
                                 and self.websocket.client_state == self.websocket.client_state.CONNECTED):
                             await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.error("[%s] proactive websocket turn_end send failed: %s", self.lanlan_name, e)
+                        delivered = False
         finally:
             await self._finalize_or_discard_current_assistant_turn(commit=delivered)
         if delivered:

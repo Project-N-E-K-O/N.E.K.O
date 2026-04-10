@@ -130,9 +130,11 @@ def _coerce_mapping_group_files(files, group_name: str, mapping_name: str):
 def _sanitize_mapping_file_path(file_path):
     if not isinstance(file_path, str):
         return None
-    normalized = file_path.replace('\\', '/')
+    normalized = file_path.strip().replace('\\', '/')
+    if not normalized or normalized == '.':
+        return None
     p = pathlib.PurePosixPath(normalized)
-    if p.is_absolute() or ".." in p.parts:
+    if p.is_absolute() or ".." in p.parts or str(p) == '.':
         return None
     return str(p)
 
@@ -536,11 +538,11 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 item.get("File") for item in items
                 if isinstance(item, dict) and item.get("File")
             ]
-        for item in new_expressions:
+        for item in file_refs['Expressions']:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("Name") or "")
-            file_path = str(item.get("File") or "")
+            file_path = _sanitize_mapping_file_path(item.get("File"))
             if not name or not file_path or "_" not in name:
                 continue
             emotion = name.split("_", 1)[0]

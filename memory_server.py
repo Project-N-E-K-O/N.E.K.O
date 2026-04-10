@@ -635,18 +635,35 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
     )
     already_signaled_topics: set[str] = set()
     reviewed = await _review_negative_preferences(messages, lanlan_name)
-    deduped_candidates: list[dict] = []
-    seen_topics: set[str] = set()
+    deduped_candidates: dict[str, dict] = {}
     for item in reviewed:
         topic = str(item.get('topic', '')).strip()
         normalized_topic = _normalize_topic_key(topic)
         if not normalized_topic:
             continue
-        if normalized_topic in seen_topics:
+        policy = str(item.get('policy', '')).strip()
+        try:
+            confidence = float(item.get('confidence', 0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        current = deduped_candidates.get(normalized_topic)
+        next_rank = 1 if policy == 'avoid' else 0
+        if current is None:
+            deduped_candidates[normalized_topic] = {
+                **item,
+                '_policy_rank': next_rank,
+                '_confidence_value': confidence,
+            }
             continue
-        seen_topics.add(normalized_topic)
-        deduped_candidates.append(item)
-    limited_candidates = deduped_candidates[:3]
+        current_rank = int(current.get('_policy_rank', 0))
+        current_confidence = float(current.get('_confidence_value', 0.0))
+        if next_rank > current_rank or (next_rank == current_rank and confidence > current_confidence):
+            deduped_candidates[normalized_topic] = {
+                **item,
+                '_policy_rank': next_rank,
+                '_confidence_value': confidence,
+            }
+    limited_candidates = list(deduped_candidates.values())[:3]
     if len(limited_candidates) != len(reviewed[:3]):
         logger.info(
             f"[MemoryServer] {lanlan_name}: 负面偏好候选已去重 raw={len(reviewed[:3])} deduped={len(limited_candidates)}"

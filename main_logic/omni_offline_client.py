@@ -539,7 +539,7 @@ class OmniOfflineClient:
                                 f"retryable_stream_error:{error_type}",
                                 attempt + 1,
                                 max_retries,
-                                True,
+                                False,
                                 None,
                             )
                             assistant_message = ""

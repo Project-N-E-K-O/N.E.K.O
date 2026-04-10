@@ -731,11 +731,18 @@ def _normalize_capability_reason(capability: str, raw_reason: str) -> str:
             "connection refused",
             "all connection attempts failed",
             "connection reset",
+            "timed out",
+            "timeout",
+            "read timeout",
+            "connect timeout",
             "连接被拒绝",
             "连接失败",
             "连接重置",
+            "超时",
+            "读取超时",
+            "连接超时",
         )
-        if any(phrase in lower or phrase in text for phrase in openfang_connection_phrases):
+        if any(phrase in lower for phrase in openfang_connection_phrases):
             return "AGENT_OPENFANG_DAEMON_UNREACHABLE"
     if "openfang" in capability_name and ("openfang" in lower or "daemon" in lower):
         return "AGENT_OPENFANG_DAEMON_UNREACHABLE"
@@ -3072,6 +3079,8 @@ async def openfang_availability():
             "code": "AGENT_OPENFANG_CAPABILITY_LOST",
             "details": {"reason_code": normalized_reason},
         })
+        _bump_state_revision()
+        await _emit_agent_status_update()
     return payload
 
 
