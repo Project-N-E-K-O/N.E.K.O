@@ -77,7 +77,7 @@ export default function App({
             className="topbar-action-btn jukebox-floating"
             type="button"
             aria-label={jukeboxButtonAriaLabel}
-            title={jukeboxButtonAriaLabel}
+            title={jukeboxButtonLabel}
             onClick={() => onJukeboxClick?.()}
           >
             <img className="topbar-action-icon-img" src="/static/icons/音符0.png" alt="" aria-hidden="true" />
