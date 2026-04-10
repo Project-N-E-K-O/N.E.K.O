@@ -23,15 +23,15 @@ export default function App({
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
   inputPlaceholder = '输入消息...',
-  sendButtonLabel = '发送',
+  sendButtonLabel: _sendButtonLabel = '发送',
   emptyText = '聊天内容接入后会显示在这里。',
   chatWindowAriaLabel = 'Neko chat window',
   messageListAriaLabel = 'Chat messages',
   composerToolsAriaLabel = 'Composer tools',
   composerAttachments = [],
   composerAttachmentsAriaLabel = 'Pending attachments',
-  importImageButtonLabel = '导入图片',
-  screenshotButtonLabel = '截图',
+  importImageButtonLabel: _importImageButtonLabel = '导入图片',
+  screenshotButtonLabel: _screenshotButtonLabel = '截图',
   importImageButtonAriaLabel = '导入图片',
   screenshotButtonAriaLabel = '截图',
   removeAttachmentButtonAriaLabel = '移除图片',
@@ -97,73 +97,58 @@ export default function App({
               ))}
             </div>
           ) : null}
-          <div className="composer-toolbar" aria-label={composerToolsAriaLabel}>
-            <button
-              className="composer-tool-chip"
-              type="button"
-              aria-label={importImageButtonAriaLabel}
-              onClick={() => onComposerImportImage?.()}
-            >
-              <img
-                className="composer-tool-chip-icon"
-                src="/static/icons/image_icon.svg"
-                alt=""
-                aria-hidden="true"
-              />
-              <span>{importImageButtonLabel}</span>
-            </button>
-            <button
-              className="composer-tool-chip"
-              type="button"
-              aria-label={screenshotButtonAriaLabel}
-              onClick={() => onComposerScreenshot?.()}
-            >
-              <img
-                className="composer-tool-chip-icon"
-                src="/static/icons/screenshot_icon.png"
-                alt=""
-                aria-hidden="true"
-              />
-              <span>{screenshotButtonLabel}</span>
-            </button>
-          </div>
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();
             submitDraft();
           }}>
-            <div className="composer-row">
-              <label className="composer-input-shell">
-                <textarea
-                  className="composer-input"
-                  placeholder={inputPlaceholder}
-                  aria-label={inputPlaceholder}
-                  rows={1}
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.nativeEvent.isComposing) return;
-                    if (event.key === 'Enter' && !event.shiftKey) {
-                      event.preventDefault();
-                      submitDraft();
-                    }
-                  }}
-                />
-              </label>
-              <button className="send-button" type="submit">
-                <img
-                  className="send-button-paw"
-                  src="/static/icons/paw_ui.png"
-                  alt=""
-                  aria-hidden="true"
-                />
-                <img
-                  className="send-button-icon"
-                  src="/static/icons/send_icon.png"
-                  alt=""
-                  aria-hidden="true"
-                />
-                <span>{sendButtonLabel}</span>
-              </button>
+            <div className="composer-input-shell">
+              <textarea
+                className="composer-input"
+                placeholder={inputPlaceholder}
+                aria-label={inputPlaceholder}
+                rows={1}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing) return;
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    submitDraft();
+                  }
+                }}
+              />
+              <div className="composer-bottom-bar">
+                <div className="composer-bottom-tools" aria-label={composerToolsAriaLabel}>
+                  <button
+                    className="composer-tool-btn"
+                    type="button"
+                    aria-label={importImageButtonAriaLabel}
+                    onClick={() => onComposerImportImage?.()}
+                  >
+                    <img src="/static/icons/import_image_icon.png" alt="" aria-hidden="true" />
+                  </button>
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  <button
+                    className="composer-tool-btn"
+                    type="button"
+                    aria-label={screenshotButtonAriaLabel}
+                    onClick={() => onComposerScreenshot?.()}
+                  >
+                    <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
+                  </button>
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  <button
+                    className="composer-tool-btn"
+                    type="button"
+                    aria-label="表情"
+                  >
+                    <img src="/static/icons/emoji_icon.png" alt="" aria-hidden="true" />
+                  </button>
+                </div>
+                <button className="send-button-circle" type="submit">
+                  <img src="/static/icons/send_new_icon.png" alt="" aria-hidden="true" />
+                </button>
+              </div>
             </div>
           </form>
         </footer>
