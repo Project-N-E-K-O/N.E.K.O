@@ -671,7 +671,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         """获取连接详情（内部方法）"""
         if self._listener:
             return self._listener.get_connection_state()
-        return {"state": "disconnected", "server": "", "viewer_count": 0}
+        return {"state": "disconnected", "server": "", "viewer_count": 0, "room_id": self._room_id}
 
     @plugin_entry(
         id="get_danmaku",
