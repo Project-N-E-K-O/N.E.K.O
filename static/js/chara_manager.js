@@ -528,6 +528,9 @@ function sanitizeProfileNameValue(value, caretPos = null) {
 
 function translateBackendError(errorMessage) {
     if (!errorMessage || typeof errorMessage !== 'string') return errorMessage;
+    if (errorMessage.includes('保留的路由名称')) {
+        return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, errorMessage);
+    }
     if (errorMessage.includes('路径分隔符') || errorMessage.includes('不能包含"/"')) {
         return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, errorMessage);
     }
@@ -609,7 +612,22 @@ function flashProfileNameContainsInvalidChars(inputEl) {
     flashProfileNameError(inputEl, msg);
 }
 
+function flashProfileNameReservedRoute(inputEl) {
+    if (!inputEl) return;
+
+    const msg = tOrFallback(
+        PROFILE_NAME_RESERVED_ROUTE_KEY,
+        '此名称是系统保留的路由名称，不能用作档案名'
+    );
+
+    flashProfileNameError(inputEl, msg);
+}
+
 function flashProfileNameInvalidIssue(inputEl, issue) {
+    if (issue === 'reserved_route') {
+        flashProfileNameReservedRoute(inputEl);
+        return;
+    }
     if (issue === 'slash') {
         flashProfileNameContainsSlash(inputEl);
         return;
