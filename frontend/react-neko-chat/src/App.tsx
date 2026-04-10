@@ -23,7 +23,7 @@ export default function App({
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
   inputPlaceholder = '输入消息...',
-  sendButtonLabel: _sendButtonLabel = '发送',
+  sendButtonLabel = '发送',
   emptyText = '聊天内容接入后会显示在这里。',
   chatWindowAriaLabel = 'Neko chat window',
   messageListAriaLabel = 'Chat messages',
@@ -43,6 +43,7 @@ export default function App({
   onComposerSubmit,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
+  const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
 
   function submitDraft() {
     const text = draft.trim();
@@ -140,12 +141,15 @@ export default function App({
                   <button
                     className="composer-tool-btn"
                     type="button"
-                    aria-label="表情"
+                    aria-label="表情（暂不可用）"
+                    title="表情（暂不可用）"
+                    disabled
+                    aria-disabled="true"
                   >
                     <img src="/static/icons/emoji_icon.png" alt="" aria-hidden="true" />
                   </button>
                 </div>
-                <button className="send-button-circle" type="submit">
+                <button className="send-button-circle" type="submit" aria-label={sendButtonLabel} disabled={!canSubmit}>
                   <img src="/static/icons/send_new_icon.png" alt="" aria-hidden="true" />
                 </button>
               </div>

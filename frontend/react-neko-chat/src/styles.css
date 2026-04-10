@@ -743,6 +743,11 @@ textarea {
   background: rgba(68, 183, 254, 0.1);
 }
 
+.composer-tool-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .composer-tool-btn img {
   width: 24px;
   height: 24px;
