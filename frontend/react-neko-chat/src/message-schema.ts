@@ -93,6 +93,10 @@ export const chatWindowPropsSchema = z.object({
   removeAttachmentButtonAriaLabel: z.string().optional(),
   failedStatusLabel: z.string().optional(),
   inputHint: z.string().optional(),
+  jukeboxButtonLabel: z.string().optional(),
+  jukeboxButtonAriaLabel: z.string().optional(),
+  avatarGeneratorButtonLabel: z.string().optional(),
+  avatarGeneratorButtonAriaLabel: z.string().optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())
@@ -111,6 +115,14 @@ export const chatWindowPropsSchema = z.object({
     .optional(),
   onComposerSubmit: z.function()
     .args(composerSubmitSchema)
+    .returns(z.void())
+    .optional(),
+  onJukeboxClick: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
+  onAvatarGeneratorClick: z.function()
+    .args()
     .returns(z.void())
     .optional(),
 });

@@ -349,6 +349,15 @@ window.updateChatModeStyle = function(checkbox) {
         indicator.style.borderColor = '#ccc';
         checkmark.style.opacity = '0';
     }
+
+    const hovered = wrapper.matches(':hover');
+    wrapper.style.background = checkbox.checked
+        ? (hovered
+            ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+            : 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))')
+        : (hovered
+            ? 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))'
+            : 'transparent');
 };
 
 // 兼容旧函数名
@@ -366,8 +375,12 @@ window.createChatModeToggle = function(options) {
         alignItems: 'center',
         gap: '6px',
         width: '100%',
-        paddingLeft: '0',
-        marginTop: '2px'
+        padding: '8px 12px',
+        marginTop: '0',
+        cursor: 'pointer',
+        borderRadius: '6px',
+        boxSizing: 'border-box',
+        transition: 'background 0.2s ease'
     });
 
     const checkbox = document.createElement('input');
@@ -461,6 +474,18 @@ window.createChatModeToggle = function(options) {
     });
 
     checkbox.addEventListener('click', (e) => e.stopPropagation());
+    wrapper.addEventListener('mouseenter', () => {
+        window.updateChatModeStyle(checkbox);
+    });
+    wrapper.addEventListener('mouseleave', () => {
+        window.updateChatModeStyle(checkbox);
+    });
+    wrapper.addEventListener('click', (e) => {
+        if (e.target === checkbox) return;
+        e.preventDefault();
+        e.stopPropagation();
+        checkbox.click();
+    });
     label.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -526,7 +551,7 @@ window.createChatModeToggles = function(prefix) {
     Object.assign(container.style, {
         display: 'flex',
         flexDirection: 'column',
-        gap: '2px',
+        gap: '0',
         width: '100%'
     });
 

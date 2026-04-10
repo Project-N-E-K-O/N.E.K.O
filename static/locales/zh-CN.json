@@ -2928,7 +2928,7 @@
         "loadError": "音乐播放器加载失败",
         "autoplayBlocked": "浏览器限制了自动播放，请点击播放按钮",
         "ended": "已结束",
-        "nowPlayingCard": "🎵 正在播放"
+        "unknownState": "未知状态"
     },
     "Jukebox": {
         "title": "点歌台",
