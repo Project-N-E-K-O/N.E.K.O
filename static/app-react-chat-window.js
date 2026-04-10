@@ -731,7 +731,7 @@
                 handled = true;
                 shell.removeEventListener('transitionend', onEnd);
                 shell.classList.remove('is-collapsing');
-                shell.style.removeProperty('transform');
+                shell.style.transform = 'none';
                 // 清除内联尺寸，让 .is-minimized 的 CSS 生效
                 shell.style.removeProperty('width');
                 shell.style.removeProperty('height');
@@ -906,7 +906,11 @@
         if (shell) {
             shell.classList.remove('is-dragging');
             var rect = shell.getBoundingClientRect();
-            persistPosition(rect.left, rect.top);
+            // 最小化 click-to-restore 时不持久化悬浮球坐标，
+            // 否则 restorePosition 会把完整窗口放到左下角
+            if (!(minimized && !wasMoved)) {
+                persistPosition(rect.left, rect.top);
+            }
         }
 
         dragState = null;
