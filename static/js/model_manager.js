@@ -379,6 +379,14 @@ class DropdownManager {
         if (typeof this.config.onBeforeShow === 'function') {
             await this.config.onBeforeShow();
         }
+        if (
+            !this.dropdown
+            || this.config.disabled
+            || (this.select && this.select.disabled)
+            || (this.button && this.button.disabled)
+        ) {
+            return;
+        }
 
         this.updateDropdown();
         this.dropdown.style.display = 'block';

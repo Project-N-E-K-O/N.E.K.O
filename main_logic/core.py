@@ -395,7 +395,7 @@ class LLMSessionManager:
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
-    async def handle_proactive_complete(self, commit: bool = True):
+    async def handle_proactive_complete(self, content_committed: bool = True):
         """Lightweight completion for proactive (agent callback) replies.
 
         Only flushes TTS and sends turn_end to the frontend so that the
@@ -403,35 +403,35 @@ class LLMSessionManager:
         analyze_request, or agent-callback re-delivery — those belong
         exclusively to user-initiated conversation turns.
         """
-        delivered = bool(commit)
-        if delivered and self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+        turn_closed = bool(content_committed)
+        if turn_closed and self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             try:
                 self.tts_request_queue.put((None, None))
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
-                delivered = False
-        if delivered and self.sync_message_queue:
+                turn_closed = False
+        if turn_closed and self.sync_message_queue:
             try:
                 self.sync_message_queue.put({'type': 'system', 'data': 'turn end agent_callback'})
             except Exception as e:
                 logger.warning("[%s] handle_proactive_complete: sync turn_end error: %s", self.lanlan_name, e)
-                delivered = False
-        if delivered:
+                turn_closed = False
+        if turn_closed:
             try:
                 if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                     await self.websocket.send_json({'type': 'system', 'data': 'turn end agent_callback'})
                     logger.debug("[%s] handle_proactive_complete: turn_end (agent_callback) sent to frontend", self.lanlan_name)
                 else:
                     logger.warning("[%s] handle_proactive_complete: websocket not connected, turn_end NOT sent", self.lanlan_name)
-                    delivered = False
+                    turn_closed = False
             except Exception as e:
                 logger.warning("[%s] handle_proactive_complete: WS send turn_end error: %s", self.lanlan_name, e)
-                delivered = False
-        await self._finalize_or_discard_current_assistant_turn(commit=delivered)
+                turn_closed = False
+        await self._finalize_or_discard_current_assistant_turn(content_committed=content_committed)
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
-        await self._finalize_or_discard_current_assistant_turn(commit=True)
+        await self._finalize_or_discard_current_assistant_turn(content_committed=True)
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
@@ -509,7 +509,7 @@ class LLMSessionManager:
         """
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
 
-        await self._finalize_or_discard_current_assistant_turn(commit=False)
+        await self._finalize_or_discard_current_assistant_turn(content_committed=False)
         await self._clear_tts_pipeline()
         
         if self.websocket and hasattr(self.websocket, 'client_state') and \
@@ -611,11 +611,11 @@ class LLMSessionManager:
     async def _finalize_or_discard_current_assistant_turn(
         self,
         *,
-        commit: bool,
+        content_committed: bool,
         session_override=None,
     ) -> None:
         current = (self._current_assistant_turn_text or "").strip()
-        if commit and current:
+        if content_committed and current:
             self._last_assistant_turn_text = current
         self._current_assistant_turn_text = ""
         await self._restore_transient_response_instruction(session_override=session_override)
@@ -1332,7 +1332,6 @@ class LLMSessionManager:
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
         self.user_language = normalize_language_code(get_global_language(), format='short')
-        self._clear_transient_response_instruction_state()
         if new:
             self._reset_assistant_turn_tracking(clear_last=True)
         # 重置防刷屏标志
@@ -1342,6 +1341,7 @@ class LLMSessionManager:
         if self.is_starting_session:
             logger.warning("⚠️ Session正在启动中，忽略重复请求")
             return
+        self._clear_transient_response_instruction_state()
         
         # 标记正在启动
         self.is_starting_session = True
@@ -2254,7 +2254,7 @@ class LLMSessionManager:
                         if self.session and hasattr(self.session, '_conversation_history'):
                             self.session._conversation_history.append(_AIMsg(content=full_text))
         finally:
-            await self._finalize_or_discard_current_assistant_turn(commit=turn_closed)
+            await self._finalize_or_discard_current_assistant_turn(content_committed=text_delivered)
         if text_delivered:
             logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
         else:
@@ -3046,7 +3046,7 @@ class LLMSessionManager:
             tts_response_queue_ref = self.tts_response_queue
 
         await self._finalize_or_discard_current_assistant_turn(
-            commit=False,
+            content_committed=False,
             session_override=main_session_ref,
         )
         self._clear_transient_response_instruction_state()

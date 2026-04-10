@@ -561,16 +561,23 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 continue
             emotion = name.split("_", 1)[0]
             sanitized_expressions.setdefault(emotion, []).append(file_path)
-        resident_files = []
+        resident_files = list(sanitized_expressions.get('常驻') or [])
+        resident_files = resident_files[-1:] if resident_files else []
         for file_path in _coerce_mapping_group_files((data.get('expressions') or {}).get('常驻'), '常驻', 'expressions'):
             normalized = _sanitize_mapping_file_path(file_path)
             if normalized:
                 resident_files.append(normalized)
+        resident_files = resident_files[-1:] if resident_files else []
+        sanitized_expressions_without_resident = {
+            emotion: files
+            for emotion, files in sanitized_expressions.items()
+            if emotion != '常驻'
+        }
         config_data['EmotionMapping'] = {
             "motions": sanitized_motions,
             "expressions": {
-                **sanitized_expressions,
-                "常驻": resident_files[-1:] if resident_files else [],
+                **sanitized_expressions_without_resident,
+                "常驻": resident_files,
             },
         }
 

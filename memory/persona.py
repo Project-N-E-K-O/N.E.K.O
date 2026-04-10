@@ -67,7 +67,8 @@ _NEGATIVE_PATTERNS = (
 _NEGATIVE_KEYWORDS = (
     "烦", "烦死", "烦透", "讨厌", "恶心", "难受", "不舒服", "不爽", "生气",
     "焦虑", "崩溃", "郁闷", "失望", "无语", "受不了", "痛苦", "别提",
-    "不要提", "不想聊", "别聊", "不要聊", "不想提", "别说", "不要说",
+    "别再提", "别再提了", "不要提", "不要再提", "不要再提了", "不想聊",
+    "别聊", "不要聊", "不想提", "别说", "不要说",
     "不喜欢", "不爱吃", "讨厌吃", "不想吃",
     "hate", "annoying", "upset", "frustrated", "frustrating", "anxious", "depressed",
     "horrible", "awful", "terrible", "broken", "useless", "sucks", "pissed off",
@@ -214,6 +215,9 @@ def _contains_negative_signal(text: str) -> bool:
     for keyword in _NEGATIVE_KEYWORDS:
         if _matches_latin_keyword(lowered, keyword):
             return True
+    for token in _EXPLICIT_AVOID_TOKENS:
+        if _matches_latin_keyword(lowered, token):
+            return True
     return _GENERIC_AVOID_SIGNAL_RE.search(raw) is not None
 
 
@@ -231,8 +235,18 @@ def _normalize_topic_tokens(topic: str) -> set[str]:
         if token in _LATIN_TOPIC_TOKEN_STOPWORDS:
             continue
         if len(token) > 4 and token.endswith('ies'):
-            token = token[:-3] + 'y'
-        elif len(token) > 4 and token.endswith('es') and not token.endswith('ss'):
+            if token[-4] in 'aeiou':
+                token = token[:-1]
+            else:
+                token = token[:-3] + 'y'
+        elif (
+            len(token) > 4
+            and token.endswith('es')
+            and (
+                token.endswith(('ches', 'shes', 'xes', 'zes', 'sses'))
+                or (token.endswith('ses') and token[:-2].endswith(('ss', 'us')))
+            )
+        ):
             token = token[:-2]
         elif len(token) > 3 and token.endswith('s') and not token.endswith('ss'):
             token = token[:-1]

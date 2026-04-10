@@ -347,7 +347,10 @@ def _sanitize_llm_json(raw: str) -> str:
     except (ValueError, SyntaxError):
         pass
 
-    logger.warning(f"[MemoryServer] 无法清洗 LLM JSON，回退为空列表: {_truncate_log_text(s, 200)}")
+    logger.warning(
+        "[MemoryServer] 无法清洗 LLM JSON，回退为空列表 (length=%s, stage=quote-normalization)",
+        len(s or ""),
+    )
     return "[]"
 
 

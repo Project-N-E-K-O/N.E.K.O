@@ -1076,12 +1076,24 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         return;
     }
 
+    const restorePersistentAfterResume = async (reason, forceAll = false) => {
+        if ((reason == null && forceAll !== true) || typeof this.resumePersistentExpressions !== 'function') {
+            return;
+        }
+        this.resumePersistentExpressions(reason, forceAll === true);
+        if (typeof this.applyPersistentExpressionsNative === 'function') {
+            try {
+                await this.applyPersistentExpressionsNative(false);
+            } catch (e) {
+                console.warn('[ClickEffect] 恢复常驻表情失败:', e);
+            }
+        }
+    };
+
     // 清除之前的点击效果恢复定时器
     if (this._clickEffectRestoreTimer) {
         clearTimeout(this._clickEffectRestoreTimer);
-        if (this._clickEffectSuspendReason && typeof this.resumePersistentExpressions === 'function') {
-            this.resumePersistentExpressions(this._clickEffectSuspendReason);
-        }
+        await restorePersistentAfterResume(this._clickEffectSuspendReason);
         this._clickEffectRestoreTimer = null;
         this._clickEffectSuspendReason = null;
         this._currentClickEffectToken = null;
@@ -1091,9 +1103,8 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         if (
             canceledSmoothReset &&
             (canceledSmoothReset.pendingResumeReason != null || canceledSmoothReset.pendingForceAllPersistentResume)
-            && typeof this.resumePersistentExpressions === 'function'
         ) {
-            this.resumePersistentExpressions(
+            await restorePersistentAfterResume(
                 canceledSmoothReset.pendingResumeReason,
                 canceledSmoothReset.pendingForceAllPersistentResume === true,
             );
@@ -1768,12 +1779,24 @@ Live2DManager.prototype.playTutorialMotion = async function() {
  * 触发随机表情和动作（用于教程模式和点击空白区域）
  */
 Live2DManager.prototype.triggerRandomEmotion = async function() {
+    const restorePersistentAfterResume = async (reason, forceAll = false) => {
+        if ((reason == null && forceAll !== true) || typeof this.resumePersistentExpressions !== 'function') {
+            return;
+        }
+        this.resumePersistentExpressions(reason, forceAll === true);
+        if (typeof this.applyPersistentExpressionsNative === 'function') {
+            try {
+                await this.applyPersistentExpressionsNative(false);
+            } catch (e) {
+                console.warn('[Interaction] 恢复常驻表情失败:', e);
+            }
+        }
+    };
+
     // 清除之前的点击效果恢复定时器
     if (this._clickEffectRestoreTimer) {
         clearTimeout(this._clickEffectRestoreTimer);
-        if (this._clickEffectSuspendReason && typeof this.resumePersistentExpressions === 'function') {
-            this.resumePersistentExpressions(this._clickEffectSuspendReason);
-        }
+        await restorePersistentAfterResume(this._clickEffectSuspendReason);
         this._clickEffectRestoreTimer = null;
         this._clickEffectSuspendReason = null;
         this._currentClickEffectToken = null;
@@ -1783,9 +1806,8 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         if (
             canceledSmoothReset &&
             (canceledSmoothReset.pendingResumeReason != null || canceledSmoothReset.pendingForceAllPersistentResume)
-            && typeof this.resumePersistentExpressions === 'function'
         ) {
-            this.resumePersistentExpressions(
+            await restorePersistentAfterResume(
                 canceledSmoothReset.pendingResumeReason,
                 canceledSmoothReset.pendingForceAllPersistentResume === true,
             );
