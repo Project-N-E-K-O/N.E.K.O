@@ -2184,10 +2184,6 @@ class LLMSessionManager:
                 delivered = await self.send_lanlan_response(full_text, is_first_chunk=True)
 
                 if delivered:
-                    from utils.llm_client import AIMessage as _AIMsg
-                    if self.session and hasattr(self.session, '_conversation_history'):
-                        self.session._conversation_history.append(_AIMsg(content=full_text))
-
                     if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
                         try:
                             self.tts_request_queue.put((None, None))
@@ -2208,6 +2204,11 @@ class LLMSessionManager:
                     except Exception as e:
                         logger.error("[%s] proactive websocket turn_end send failed: %s", self.lanlan_name, e)
                         delivered = False
+
+                    if delivered:
+                        from utils.llm_client import AIMessage as _AIMsg
+                        if self.session and hasattr(self.session, '_conversation_history'):
+                            self.session._conversation_history.append(_AIMsg(content=full_text))
         finally:
             await self._finalize_or_discard_current_assistant_turn(commit=delivered)
         if delivered:

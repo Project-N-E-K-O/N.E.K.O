@@ -201,6 +201,7 @@
 
         state.snapshot = snapshot;
         if (Number.isFinite(rev)) state.revision = rev;
+        state.openfangProbeSeq = (state.openfangProbeSeq || 0) + 1;
         state.openfangProbeReady = null;
         state.openfangProbeReason = '';
         window._agentStatusSnapshot = snapshot;

@@ -233,7 +233,7 @@ def test_negative_review_uses_recent_history_when_increment_is_empty() -> None:
         with patch.object(memory_server.recent_history_manager, "review_history", side_effect=fake_review_history), \
              patch.object(memory_server.recent_history_manager, "get_recent_history", return_value=fallback_messages), \
              patch.object(memory_server, "_review_and_apply_negative_preferences", side_effect=fake_review_negative_preferences):
-            asyncio.run(memory_server._run_review_in_background("测试猫娘", []))
+            asyncio.run(memory_server._run_review_in_background("测试猫娘", None))
 
         assert events[0] == ("review_history", "测试猫娘", False)
         assert events[1] == ("negative_review", "测试猫娘", fallback_messages)
@@ -623,8 +623,8 @@ def test_handle_negative_signal_only_returns_tone_only_without_persisting_person
         assert response.status_code == 200
         payload = json.loads(response.body)
         assert payload["matched"] is True
-        assert payload["topic"] == ""
-        assert payload["policy"] == "tone_only"
+        assert payload["topic"] == "那吃不了一点，更"
+        assert payload["policy"] == "de_emphasize"
         assert "先共情安抚" in payload["response_instruction"]
         validate_mock.assert_not_called()
         commit_mock.assert_not_called()

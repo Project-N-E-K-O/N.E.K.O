@@ -1000,6 +1000,10 @@ class PersonaManager:
         source: str = "negative_review",
     ) -> dict:
         normalized_topic = self._topic_key(topic)
+        if policy == "soft_avoid":
+            policy = "de_emphasize"
+        elif policy == "hard_avoid":
+            policy = "avoid"
         if policy not in {"avoid", "de_emphasize"} or not _is_specific_topic(normalized_topic):
             return {
                 'matched': False,

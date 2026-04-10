@@ -442,12 +442,17 @@ def _topic_matches_cleaned_text(topic: str, cleaned_text: str) -> bool:
     if _topics_match(topic_clean, cleaned_topic):
         return True
     if re.search(r'[A-Za-z]', topic_clean) and not persona_contains_cjk(topic_clean):
-        topic_tokens = _normalize_topic_tokens(topic_clean)
-        cleaned_tokens = _normalize_topic_tokens(cleaned_topic)
-        if topic_tokens and cleaned_tokens:
-            return topic_tokens.issubset(cleaned_tokens)
         return False
-    return topic_clean.casefold() in cleaned.casefold()
+    return topic_clean.casefold() in cleaned_topic.casefold()
+
+
+def _normalize_negative_preference_policy(policy: str) -> str:
+    normalized = str(policy or "").strip()
+    if normalized == "soft_avoid":
+        return "de_emphasize"
+    if normalized == "hard_avoid":
+        return "avoid"
+    return normalized
 
 
 def _should_skip_recent_message_for_prompt(message, hard_topics: list[str], cleaned_text: str) -> bool:
@@ -641,7 +646,7 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
         normalized_topic = _normalize_topic_key(topic)
         if not normalized_topic:
             continue
-        policy = str(item.get('policy', '')).strip()
+        policy = _normalize_negative_preference_policy(item.get('policy', ''))
         try:
             confidence = float(item.get('confidence', 0))
         except (TypeError, ValueError):
@@ -671,7 +676,7 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
     applied = 0
     for item in limited_candidates:
         topic = str(item.get('topic', '')).strip()
-        policy = str(item.get('policy', '')).strip()
+        policy = _normalize_negative_preference_policy(item.get('policy', ''))
         try:
             confidence = float(item.get('confidence', 0))
         except (TypeError, ValueError):
