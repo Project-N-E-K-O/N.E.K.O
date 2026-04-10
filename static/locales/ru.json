@@ -796,6 +796,8 @@
         "keyAutoFilledFromKeyBook": "Ключ автозаполнен из книги API ключей. Настройте его там.",
         "goToKeyBook": "Перейти к книге ключей",
         "providerLabel": "Провайдер",
+        "providerSelectPlaceholder": "Выберите провайдера",
+        "noOptionsAvailable": "Нет доступных вариантов",
         "customModelProviderFollowCore": "Следовать за основным API",
         "customModelProviderFollowAssist": "Следовать за вспомогательным API",
         "customModelProviderCustom": "Пользовательский",
@@ -873,7 +875,7 @@
         "apiUrl": "URL API",
         "apiKey": "API Key",
         "modelId": "ID модели",
-        "agentApiConfigTitle": "Конфигурация API Агента",
+        "agentApiConfigTitle": "Конфигурация API Агента (нужна поддержка зрения)",
         "providerPlaceholder": "например, openai, azure, local",
         "apiUrlPlaceholder": "например, https://api.openai.com/v1",
         "modelIdPlaceholder": "например, gpt-5.1-chat-latest, qwen-flash",
@@ -2702,7 +2704,8 @@
         "playError": "Не удалось загрузить воспроизведение музыки",
         "loadError": "Не удалось загрузить музыкальный плеер",
         "autoplayBlocked": "Браузер заблокировал автовоспроизведение, пожалуйста, нажмите кнопку воспроизведения",
-        "ended": "Завершено"
+        "ended": "Завершено",
+        "nowPlayingCard": "🎵 Сейчас играет"
     },
     "Jukebox": {
         "title": "Музыкальный автомат",

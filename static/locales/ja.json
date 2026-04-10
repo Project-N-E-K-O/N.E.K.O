@@ -796,6 +796,8 @@
         "keyAutoFilledFromKeyBook": "APIキーブックから自動入力されます。キーブックで設定してください。",
         "goToKeyBook": "キーブックへ",
         "providerLabel": "プロバイダー",
+        "providerSelectPlaceholder": "プロバイダーを選択",
+        "noOptionsAvailable": "利用可能な項目はありません",
         "customModelProviderFollowCore": "コアAPIに従う",
         "customModelProviderFollowAssist": "アシストAPIに従う",
         "customModelProviderCustom": "カスタム",
@@ -873,7 +875,7 @@
         "apiUrl": "API URL",
         "apiKey": "APIキー",
         "modelId": "モデルID",
-        "agentApiConfigTitle": "Agent API 設定",
+        "agentApiConfigTitle": "Agent API 設定（視覚機能対応が必要）",
         "providerPlaceholder": "例: openai, azure, local",
         "apiUrlPlaceholder": "例: https://api.openai.com/v1",
         "modelIdPlaceholder": "例: gpt-5.1-chat-latest",
@@ -2702,7 +2704,8 @@
         "playError": "音楽の再生読み込みに失敗しました",
         "loadError": "音楽プレイヤーの読み込みに失敗しました",
         "autoplayBlocked": "ブラウザが自動再生をブロックしました。再生ボタンをクリックしてください",
-        "ended": "終了"
+        "ended": "終了",
+        "nowPlayingCard": "🎵 再生中"
     },
     "Jukebox": {
         "title": "ジュークボックス",

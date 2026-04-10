@@ -175,12 +175,19 @@ class AgentTaskTracker:
         desc: str,
         detail: str = "",
         success: bool = True,
+        cancelled: bool = False,
     ) -> None:
         key = _normalize_lanlan_key(lanlan_name)
         records = self._ensure_key(key)
+        if cancelled:
+            kind = "cancelled"
+        elif success:
+            kind = "completed"
+        else:
+            kind = "failed"
         records.append({
             "ts": time.time(),
-            "kind": "completed" if success else "failed",
+            "kind": kind,
             "method": method,
             "desc": desc,
             "detail": detail[:300] if detail else "",
@@ -240,6 +247,8 @@ class AgentTaskTracker:
                 line = f"[COMPLETED] method={method} | {desc}"
                 if detail:
                     line += f" | result: {detail}"
+            elif kind == "cancelled":
+                line = f"[CANCELLED] method={method} | {desc} | DO NOT retry this task unless user explicitly requests again"
             else:
                 line = f"[FAILED] method={method} | {desc}"
                 if detail:
@@ -747,6 +756,7 @@ def _collect_existing_task_descriptions(lanlan_name: Optional[str] = None) -> li
     return items
 
 
+
 async def _is_duplicate_task(query: str, lanlan_name: Optional[str] = None) -> tuple[bool, Optional[str]]:
     """Use LLM to judge if query duplicates any existing queued/running task."""
     try:
@@ -987,6 +997,11 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             if Modules.last_user_turn_fingerprint.get(lanlan_key) == fp:
                 logger.info("[AgentAnalyze] skip analyze: no new user turn (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
                 return
+            # Fingerprint changed → genuinely new user content; always allow.
+            # Re-dispatch prevention is handled by:
+            # - _is_duplicate_task() checking recently completed tasks
+            # - Cancelled tasks not emitting task_result callbacks
+            # - Voice-mode hot-swap sending 'turn end agent_callback'
             Modules.last_user_turn_fingerprint[lanlan_key] = fp
             conversation_id = event.get("conversation_id")
             task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id))
@@ -1090,6 +1105,7 @@ async def _run_computer_use_task(
             desc=instruction or "",
             detail=cu_detail[:200] if cu_detail else "",
             success=success and info["status"] != "cancelled",
+            cancelled=(info["status"] == "cancelled"),
         )
         # 失败时将解析后的 cu_detail 写入 info["error"]（仅在非异常路径下补全）
         if not success and not info.get("error") and cu_detail:
@@ -1509,7 +1525,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="user_plugin",
                             desc=f"{plugin_id}.{entry_id}: {result.task_description or ''}",
-                            detail=cancel_msg[:200], success=False,
+                            detail=cancel_msg[:200], success=False, cancelled=True,
                         )
                         try:
                             await _emit_task_result(
@@ -1692,7 +1708,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="openclaw",
                             desc=result.task_description or instruction or "",
-                            detail=cancel_msg[:200], success=False,
+                            detail=cancel_msg[:200], success=False, cancelled=True,
                         )
                         try:
                             await _emit_task_result(
@@ -1857,7 +1873,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         bu_session.complete_task(cancel_msg, success=False)
                         _task_tracker.record_completed(
                             lanlan_name, task_id=bu_task_id, method="browser_use",
-                            desc=result.task_description or "", detail=cancel_msg[:200], success=False,
+                            desc=result.task_description or "", detail=cancel_msg[:200], success=False, cancelled=True,
                         )
                         try:
                             await _emit_task_result(
@@ -1865,7 +1881,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 channel="browser_use",
                                 task_id=bu_task_id,
                                 success=False,
-                                summary=f'你的任务"{result.task_description}"已取消',
+                                summary=_rp_phrase('bu_cancelled', _rp_lang(None), desc=result.task_description or ''),
                                 error_message=cancel_msg,
                             )
                         except Exception as emit_err:
@@ -2031,13 +2047,13 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             of_session.complete_task(cancel_msg, success=False)
                             _task_tracker.record_completed(
                                 lanlan_name, task_id=of_task_id, method="openfang",
-                                desc=result.task_description or "", detail=cancel_msg[:200], success=False,
+                                desc=result.task_description or "", detail=cancel_msg[:200], success=False, cancelled=True,
                             )
                             try:
                                 await _emit_task_result(
                                     lanlan_name, channel="openfang", task_id=of_task_id,
                                     success=False,
-                                    summary=f'虚拟机任务 "{result.task_description}" 已取消',
+                                    summary=_rp_phrase('of_cancelled', _rp_lang(None), desc=result.task_description or ''),
                                     error_message=cancel_msg,
                                 )
                             except Exception:

@@ -360,15 +360,20 @@
 
         // --- 1. DOM 基础架构 ---
         if (isFirstRender) {
-            const chatContainerEl = document.getElementById(MUSIC_CONFIG.dom.containerId);
-            const textInputArea = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
-            if (!chatContainerEl) return;
+            // 优先挂载到 React 聊天窗口 composer-panel 内的专用挂载点，回退到旧 chat-container
+            let mountTarget = document.getElementById('music-player-mount');
+            let insertBeforeEl = null;
+            if (!mountTarget) {
+                mountTarget = document.getElementById(MUSIC_CONFIG.dom.containerId);
+                insertBeforeEl = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
+            }
+            if (!mountTarget) return;
 
             musicBar = document.createElement('div');
             musicBar.id = MUSIC_CONFIG.dom.barId;
             musicBar.className = 'music-player-bar';
-            if (textInputArea) chatContainerEl.insertBefore(musicBar, textInputArea);
-            else chatContainerEl.appendChild(musicBar);
+            if (insertBeforeEl) mountTarget.insertBefore(musicBar, insertBeforeEl);
+            else mountTarget.appendChild(musicBar);
 
             const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
             musicBar.style.setProperty('--dynamic-random-color', randomColor);
@@ -406,6 +411,18 @@
             `;
         } else {
             musicBar.classList.remove('fading-out');
+
+            // Relocate musicBar if a new mount target has appeared
+            let newMountTarget = document.getElementById('music-player-mount');
+            let newInsertBeforeEl = null;
+            if (!newMountTarget) {
+                newMountTarget = document.getElementById(MUSIC_CONFIG.dom.containerId);
+                newInsertBeforeEl = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
+            }
+            if (newMountTarget && musicBar.parentNode !== newMountTarget) {
+                if (newInsertBeforeEl) newMountTarget.insertBefore(musicBar, newInsertBeforeEl);
+                else newMountTarget.appendChild(musicBar);
+            }
         }
 
         // --- 2. 原地更新 UI 文本/封面 (始终执行) ---
@@ -433,6 +450,42 @@
         const timeTotal = musicBar.querySelector('.music-bar-time-total');
         if (progressFill) progressFill.style.width = '0%';
         if (timeCurrent) timeCurrent.textContent = '00:00';
+
+        // --- 2b. 向 React 聊天窗口推送音乐卡片消息 ---
+        {
+            const host = window.reactChatWindowHost;
+            if (host && typeof host.appendMessage === 'function') {
+                let assistantName = '';
+                if (window.lanlan_config && window.lanlan_config.lanlan_name) assistantName = window.lanlan_config.lanlan_name;
+                else if (window._currentCatgirl) assistantName = window._currentCatgirl;
+                else if (window.currentCatgirl) assistantName = window.currentCatgirl;
+                assistantName = assistantName || 'Neko';
+                let avatarUrl = '';
+                if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
+                    avatarUrl = window.appChatAvatar.getCurrentAvatarDataUrl() || '';
+                }
+                const now = new Date();
+                const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+                host.appendMessage({
+                    id: 'music-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                    role: 'assistant',
+                    author: assistantName,
+                    time: timeStr,
+                    createdAt: Date.now(),
+                    avatarLabel: assistantName.trim().slice(0, 1).toUpperCase(),
+                    avatarUrl: avatarUrl || undefined,
+                    blocks: [{
+                        type: 'link',
+                        url: trackInfo.url || '#',
+                        title: trackInfo.name || '未知曲目',
+                        description: trackInfo.artist || '未知艺术家',
+                        siteName: (window.t && window.t('music.nowPlayingCard')) || '🎵 Now Playing',
+                        thumbnailUrl: hasCover ? trackInfo.cover : undefined
+                    }],
+                    status: 'sent'
+                });
+            }
+        }
         if (timeTotal) timeTotal.textContent = '00:00';
 
         // --- 3. APlayer 实例管理 (复用或创建) ---

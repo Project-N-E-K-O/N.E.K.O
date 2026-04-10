@@ -118,10 +118,6 @@ class OmniOfflineClient:
         self.master_name = master_name
         self._prefix_buffer_size = max(len(lanlan_name), len(master_name)) + 3 if (lanlan_name or master_name) else 0
 
-        # Rate-limit 播报节流：首次播报后 10s 内不再重复通知前端
-        self._last_rate_limit_broadcast: float = 0.0
-        self._rate_limit_broadcast_cooldown: float = 10.0
-
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡
 
     def update_max_response_length(self, max_length: int) -> None:
@@ -487,25 +483,12 @@ class OmniOfflineClient:
                             
                 except (APIConnectionError, InternalServerError, RateLimitError) as e:
                     error_type = type(e).__name__
-                    is_rate_limit = isinstance(e, RateLimitError)
                     is_internal_error = isinstance(e, InternalServerError)
                     logger.info(f"ℹ️ 捕获到 {error_type} 错误")
                     if attempt < max_retries - 1:
                         wait_time = retry_delays[attempt]
                         logger.warning(f"OmniOfflineClient: LLM调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
-                        if self.on_status_message:
-                            now = time.monotonic()
-                            if is_rate_limit:
-                                # Rate limit: 10s 内只播报一次，避免刷屏
-                                if now - self._last_rate_limit_broadcast >= self._rate_limit_broadcast_cooldown:
-                                    await self.on_status_message(json.dumps({"code": "LLM_RETRY", "details": {"error_type": error_type, "attempt": attempt + 1, "max_retries": max_retries}}))
-                                    self._last_rate_limit_broadcast = now
-                            elif is_internal_error:
-                                # InternalServerError: 甩锅给上游，只提示一次
-                                if attempt == 0:
-                                    await self.on_status_message(json.dumps({"code": "LLM_UPSTREAM_ERROR"}))
-                            else:
-                                await self.on_status_message(json.dumps({"code": "LLM_RETRY", "details": {"error_type": error_type, "attempt": attempt + 1, "max_retries": max_retries}}))
+                        # 前3次重试不通知前端，仅在最终失败时发送
                         await asyncio.sleep(wait_time)
                         continue
                     else:
