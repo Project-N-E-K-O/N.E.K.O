@@ -894,11 +894,19 @@
 
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
     if (window.location.pathname === '/chat' && nekoBroadcastChannel) {
-        nekoBroadcastChannel.postMessage({
-            action: 'request_avatar',
-            lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
-            timestamp: Date.now()
-        });
+        var initialLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        var postAvatarRequest = function () {
+            nekoBroadcastChannel.postMessage({
+                action: 'request_avatar',
+                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                timestamp: Date.now()
+            });
+        };
+        postAvatarRequest();
+        // 配置可能尚未注入（lanlan_name 为空），等 IPC 注入后补发一次
+        if (!initialLanlanName) {
+            window.addEventListener('neko:config-injected', postAvatarRequest, { once: true });
+        }
     }
 
     // =====================================================================
