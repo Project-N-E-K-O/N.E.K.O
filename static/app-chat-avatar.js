@@ -14,6 +14,9 @@
     let cachedPreview = null;
     let autoCaptureTimer = null;
     let lastScheduledCacheKey = '';
+    // 多窗口模式：由 IPC 从 Pet 窗口注入的头像（/chat 页面无本地模型）
+    let externalAvatarDataUrl = '';
+    let externalAvatarModelType = '';
 
     function translateLabel(key, fallback) {
         if (typeof window.safeT === 'function') {
@@ -387,8 +390,27 @@
     };
 
     mod.getCurrentAvatarDataUrl = function getCurrentAvatarDataUrl() {
-        if (!hasUsableCachedPreview()) return '';
-        return cachedPreview.dataUrl || '';
+        if (hasUsableCachedPreview()) return cachedPreview.dataUrl || '';
+        // 多窗口 fallback：使用 IPC 注入的头像
+        if (externalAvatarDataUrl) return externalAvatarDataUrl;
+        return '';
+    };
+
+    /**
+     * 多窗口模式：由 preload / IPC 调用，设置从 Pet 窗口获取的头像
+     * @param {string} dataUrl - base64 data URL
+     * @param {string} [modelType] - 'live2d' | 'vrm' | 'mmd'
+     */
+    mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType) {
+        externalAvatarDataUrl = dataUrl || '';
+        externalAvatarModelType = modelType || '';
+        window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+            detail: { dataUrl: externalAvatarDataUrl, modelType: externalAvatarModelType, source: 'ipc' }
+        }));
+    };
+
+    mod.getExternalAvatar = function getExternalAvatar() {
+        return externalAvatarDataUrl ? { dataUrl: externalAvatarDataUrl, modelType: externalAvatarModelType } : null;
     };
 
     window.appChatAvatar = mod;

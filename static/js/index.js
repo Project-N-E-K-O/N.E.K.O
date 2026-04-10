@@ -68,7 +68,7 @@ async function loadPageConfig() {
         // 从路径中提取 lanlan_name (例如 /{lanlan_name})
         if (!lanlanNameFromUrl) {
             const pathParts = window.location.pathname.split('/').filter(Boolean);
-            if (pathParts.length > 0 && !['focus', 'api', 'static', 'templates'].includes(pathParts[0])) {
+            if (pathParts.length > 0 && !['focus', 'api', 'static', 'templates', 'chat', 'toast'].includes(pathParts[0])) {
                 lanlanNameFromUrl = decodeURIComponent(pathParts[0]);
             }
         }
@@ -92,6 +92,15 @@ async function loadPageConfig() {
             // 保存 live3d_sub_type 供 vrm-init.js / mmd-init.js 判断
             const live3dSubType = (data.live3d_sub_type || '').toLowerCase();
             lanlan_config.live3d_sub_type = live3dSubType;
+            // master 信息（与 index.html 内联脚本对齐）
+            lanlan_config.master_name = data.master_name || '';
+            lanlan_config.master_profile_name = data.master_profile_name || '';
+            lanlan_config.master_nickname = data.master_nickname || '';
+            lanlan_config.master_display_name = data.master_display_name || data.master_nickname || data.master_name || '';
+            window.master_name = lanlan_config.master_name;
+            window.master_profile_name = lanlan_config.master_profile_name;
+            window.master_nickname = lanlan_config.master_nickname;
+            window.master_display_name = lanlan_config.master_display_name;
             window.lanlan_config = lanlan_config;
             // 根据model_type判断是Live2D还是Live3D (VRM/MMD)
             if (modelType === 'live3d' || modelType === 'vrm') {
@@ -161,8 +170,40 @@ async function loadPageConfig() {
     }
 }
 
-// 标记配置是否已加载
-window.pageConfigReady = loadPageConfig();
+// 多窗口模式（Electron Chat 独立窗口）：配置由 IPC 从 Pet 窗口注入，不走 HTTP API
+if (window.__NEKO_MULTI_WINDOW__) {
+    window.pageConfigReady = new Promise(function (resolve) {
+        // preload 通过 IPC 拿到 Pet 窗口的 lanlan_config 后派发此事件
+        window.addEventListener('neko:config-injected', function handler(event) {
+            window.removeEventListener('neko:config-injected', handler);
+            var d = (event && event.detail) || {};
+            lanlan_config.lanlan_name = d.lanlan_name || '';
+            lanlan_config.model_type = (d.model_type || 'live2d').toLowerCase();
+            lanlan_config.live3d_sub_type = (d.live3d_sub_type || '').toLowerCase();
+            window.lanlan_config = lanlan_config;
+            // master 信息
+            window.master_name = d.master_name || '';
+            window.master_profile_name = d.master_profile_name || '';
+            window.master_nickname = d.master_nickname || '';
+            window.master_display_name = d.master_display_name || d.master_nickname || d.master_name || '';
+            lanlan_config.master_name = window.master_name;
+            lanlan_config.master_profile_name = window.master_profile_name;
+            lanlan_config.master_nickname = window.master_nickname;
+            lanlan_config.master_display_name = window.master_display_name;
+            resolve(d);
+        });
+        // 超时保护：5 秒后 fallback 到 HTTP API
+        setTimeout(function () {
+            if (!lanlan_config.lanlan_name) {
+                console.warn('[主页] 多窗口 IPC 配置超时，fallback 到 API');
+                loadPageConfig().then(resolve);
+            }
+        }, 5000);
+    });
+} else {
+    // 标记配置是否已加载
+    window.pageConfigReady = loadPageConfig();
+}
 
 // 对话区提示自动消失功能
 function initChatTooltipAutoHide() {
