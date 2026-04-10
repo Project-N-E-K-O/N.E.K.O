@@ -146,6 +146,14 @@ async def test_switching_live3d_subtypes_preserves_inactive_model_config(
     assert get_reserved(catgirl, 'avatar', 'model_type') == 'live3d'
     assert get_reserved(catgirl, 'avatar', 'live3d_sub_type') == expected_sub_type
     assert get_reserved(catgirl, *preserved_path_key) == preserved_path
+    if expected_sub_type == 'vrm':
+        assert get_reserved(catgirl, 'avatar', 'vrm', 'model_path') == payload['vrm']
+        assert get_reserved(catgirl, 'avatar', 'vrm', 'animation') == payload['vrm_animation']
+        assert get_reserved(catgirl, 'avatar', 'vrm', 'idle_animation') == payload['idle_animation']
+    else:
+        assert get_reserved(catgirl, 'avatar', 'mmd', 'model_path') == payload['mmd']
+        assert get_reserved(catgirl, 'avatar', 'mmd', 'animation') == payload['mmd_animation']
+        assert get_reserved(catgirl, 'avatar', 'mmd', 'idle_animation') == payload['mmd_idle_animation']
 
 
 def test_live3d_sub_type_prefers_persisted_active_sub_type_when_both_paths_exist():
@@ -155,6 +163,18 @@ def test_live3d_sub_type_prefers_persisted_active_sub_type_when_both_paths_exist
 
     set_reserved_target = catgirl['_reserved']['avatar']
     set_reserved_target['live3d_sub_type'] = 'mmd'
+    assert _get_live3d_sub_type(catgirl) == 'mmd'
+
+
+def test_live3d_sub_type_does_not_fallback_when_persisted_value_is_present():
+    catgirl = _build_characters_fixture()['猫娘']['测试角色']
+
+    catgirl['_reserved']['avatar']['live3d_sub_type'] = 'vrm'
+    catgirl['_reserved']['avatar']['vrm']['model_path'] = ''
+    assert _get_live3d_sub_type(catgirl) == 'vrm'
+
+    catgirl['_reserved']['avatar']['live3d_sub_type'] = 'mmd'
+    catgirl['_reserved']['avatar']['mmd']['model_path'] = ''
     assert _get_live3d_sub_type(catgirl) == 'mmd'
 
 

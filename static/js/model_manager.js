@@ -4644,7 +4644,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const data = await RequestHelper.fetchJson('/api/characters/');
             const charData = data['猫娘']?.[lanlanName];
-            let vrmIdleAnimation = charData?.idleAnimations ?? charData?.idleAnimation;
+            let vrmIdleAnimation = charData?.idle_animation;
+            if (vrmIdleAnimation == null) {
+                vrmIdleAnimation = charData?.idleAnimations ?? charData?.idleAnimation;
+            }
 
             if (vrmIdleAnimation == null) return;
             if (typeof vrmIdleAnimation === 'string') vrmIdleAnimation = vrmIdleAnimation ? [vrmIdleAnimation] : [];
@@ -7280,6 +7283,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
                     } else {
                         console.warn('[模型管理] 未找到匹配的 MMD 选项:', mmdPath);
+                        selectDefaultLive3DModel();
                     }
                 } else if (live3dSubType === 'vrm' && hasValidVRMPath && vrmModelSelect) {
                     // VRM 模型：安全获取路径并在合并列表中查找 [VRM] 选项

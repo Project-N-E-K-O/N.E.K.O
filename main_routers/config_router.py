@@ -104,14 +104,13 @@ def _get_live3d_sub_type(catgirl_config: dict) -> str:
         )
         or ''
     ).strip().lower()
+    if stored_sub_type in {'mmd', 'vrm'}:
+        return stored_sub_type
+
     mmd_path = get_reserved(catgirl_config, 'avatar', 'mmd', 'model_path', default='')
-    vrm_path = get_reserved(catgirl_config, 'avatar', 'vrm', 'model_path', default='', legacy_keys=('vrm',))
-    if stored_sub_type == 'mmd' and mmd_path:
-        return 'mmd'
-    if stored_sub_type == 'vrm' and vrm_path:
-        return 'vrm'
     if mmd_path:
         return 'mmd'
+    vrm_path = get_reserved(catgirl_config, 'avatar', 'vrm', 'model_path', default='', legacy_keys=('vrm',))
     if vrm_path:
         return 'vrm'
     return ''

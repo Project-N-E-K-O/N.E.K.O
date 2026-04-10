@@ -34,7 +34,7 @@ function _getReservedConfigOrFallback() {
 
 function getWorkshopReservedFields() {
     const cfg = _getReservedConfigOrFallback();
-    const extraSystemFields = ['live2d_item_id', 'live3d_sub_type', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations', 'mmd_idle_animation', 'mmd_idle_animations']
+    const extraSystemFields = ['live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations', 'mmd_idle_animation', 'mmd_idle_animations']
         .filter(f => cfg.all_reserved_fields.includes(f));
     return _uniqueFields([...cfg.workshop_reserved_fields, ...extraSystemFields]);
 }
@@ -2704,12 +2704,19 @@ function expandCharacterCardSection(card) {
     const modelType = rawData['model_type'] || 'live2d';
     const vrmPath = rawData['vrm'] || '';
     const mmdPath = rawData['mmd'] || '';
+    const explicitLive3dSubType = String(rawData['live3d_sub_type'] || '').toLowerCase();
 
-    // 判断实际模型类型：如果 model_type 是 live3d 或 vrm，根据路径区分 VRM/MMD
+    // 判断实际模型类型：优先使用显式 live3d_sub_type，缺失时再根据路径区分 VRM/MMD
     let effectiveModelType = 'live2d';
     let effectiveModelPath = '';
     if (modelType === 'live3d' || modelType === 'vrm') {
-        if (mmdPath) {
+        if (explicitLive3dSubType === 'mmd') {
+            effectiveModelType = 'mmd';
+            effectiveModelPath = mmdPath;
+        } else if (explicitLive3dSubType === 'vrm') {
+            effectiveModelType = 'vrm';
+            effectiveModelPath = vrmPath;
+        } else if (mmdPath) {
             effectiveModelType = 'mmd';
             effectiveModelPath = mmdPath;
         } else if (vrmPath) {
