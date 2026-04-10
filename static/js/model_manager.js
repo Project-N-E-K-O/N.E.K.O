@@ -7201,7 +7201,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             const hasValidMMDPath = !!(catgirlConfig.mmd && (typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path));
-            const storedLive3dSubType = String(catgirlConfig.live3d_sub_type || '').toLowerCase();
+            // 优先使用 live3d_sub_type（后端权威来源，含 _reserved 迁移路径）
+            const storedLive3dSubType = String(
+                catgirlConfig._reserved?.avatar?.live3d_sub_type
+                || catgirlConfig.live3d_sub_type
+                || ''
+            ).trim().toLowerCase();
 
             // 确定模型类型：优先使用 model_type，如果没有则根据是否有有效的 Live3D 路径判断
             let modelType = catgirlConfig.model_type || ((hasValidVRMPath || hasValidMMDPath) ? 'live3d' : 'live2d');
@@ -7213,10 +7218,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 确定 Live3D 子类型（VRM 或 MMD）
             let live3dSubType = '';
             if (modelType === 'live3d') {
-                if ((storedLive3dSubType === 'mmd' && hasValidMMDPath) ||
-                    (storedLive3dSubType === 'vrm' && hasValidVRMPath)) {
+                if (storedLive3dSubType === 'vrm' || storedLive3dSubType === 'mmd') {
                     live3dSubType = storedLive3dSubType;
-                } else if (hasValidMMDPath) {
+                } else if (hasValidMMDPath && !hasValidVRMPath) {
                     live3dSubType = 'mmd';
                 } else if (hasValidVRMPath) {
                     live3dSubType = 'vrm';
