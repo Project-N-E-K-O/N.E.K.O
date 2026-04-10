@@ -452,6 +452,18 @@ function tOrFallback(key, fallback, params) {
 const PROFILE_NAME_CONTAINS_SLASH_KEY = 'character.profileNameContainsSlash';
 const PROFILE_NAME_CONTAINS_DOT_KEY = 'character.profileNameContainsDot';
 const PROFILE_NAME_INVALID_CHARS_KEY = 'character.profileNameInvalidChars';
+const PROFILE_NAME_RESERVED_ROUTE_KEY = 'character.profileNameReservedRoute';
+
+// 系统保留的一级路由名称，不可用作角色名
+const RESERVED_ROUTE_NAMES = new Set([
+    'l2d', 'model_manager', 'live2d_parameter_editor', 'live2d_emotion_manager',
+    'vrm_emotion_manager', 'mmd_emotion_manager', 'chara_manager', 'voice_clone',
+    'api_key', 'steam_workshop_manager', 'memory_browser', 'cookies_login',
+    'chat', 'subtitle', 'agenthud', 'toast',
+    'static', 'user_live2d', 'user_live2d_local', 'user_vrm', 'user_mmd',
+    'user_mods', 'workshop',
+    'api', 'ws', 'health',
+]);
 const PROFILE_NAME_WINDOWS_FORBIDDEN_CHARS = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*']);
 const PROFILE_NAME_SAFE_EXTRA_CHARS = new Set([' ', '_', '-', '(', ')', '（', '）', '·', '・', '•', "'", '’']);
 
@@ -467,7 +479,9 @@ function getProfileNameCharIssue(ch) {
 }
 
 function findInvalidProfileNameIssue(value) {
-    for (const ch of String(value ?? '')) {
+    const str = String(value ?? '');
+    if (RESERVED_ROUTE_NAMES.has(str)) return 'reserved_route';
+    for (const ch of str) {
         const issue = getProfileNameCharIssue(ch);
         if (issue) return issue;
     }
@@ -514,6 +528,9 @@ function sanitizeProfileNameValue(value, caretPos = null) {
 
 function translateBackendError(errorMessage) {
     if (!errorMessage || typeof errorMessage !== 'string') return errorMessage;
+    if (errorMessage.includes('保留的路由名称')) {
+        return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, errorMessage);
+    }
     if (errorMessage.includes('路径分隔符') || errorMessage.includes('不能包含"/"')) {
         return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, errorMessage);
     }
@@ -595,7 +612,22 @@ function flashProfileNameContainsInvalidChars(inputEl) {
     flashProfileNameError(inputEl, msg);
 }
 
+function flashProfileNameReservedRoute(inputEl) {
+    if (!inputEl) return;
+
+    const msg = tOrFallback(
+        PROFILE_NAME_RESERVED_ROUTE_KEY,
+        '此名称是系统保留的路由名称，不能用作档案名'
+    );
+
+    flashProfileNameError(inputEl, msg);
+}
+
 function flashProfileNameInvalidIssue(inputEl, issue) {
+    if (issue === 'reserved_route') {
+        flashProfileNameReservedRoute(inputEl);
+        return;
+    }
     if (issue === 'slash') {
         flashProfileNameContainsSlash(inputEl);
         return;
@@ -2686,6 +2718,9 @@ window.renameMaster = async function (oldName) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
                 }
                 const invalidIssue = findInvalidProfileNameIssue(trimmed);
+                if (invalidIssue === 'reserved_route') {
+                    return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, '此名称是系统保留的路由名称，不能用作档案名');
+                }
                 if (invalidIssue === 'slash') {
                     return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符(/或\\)');
                 }
@@ -2783,6 +2818,9 @@ window.renameCatgirl = async function (oldName) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
                 }
                 const invalidIssue = findInvalidProfileNameIssue(trimmed);
+                if (invalidIssue === 'reserved_route') {
+                    return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, '此名称是系统保留的路由名称，不能用作档案名');
+                }
                 if (invalidIssue === 'slash') {
                     return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符(/或\\)');
                 }

@@ -1369,6 +1369,7 @@
         "profileNameContainsSlash": "프로필 이름에 경로 구분 기호(/ 또는 \\)를 포함할 수 없습니다",
         "profileNameContainsDot": "프로필 이름에 점(.)을 포함할 수 없습니다",
         "profileNameInvalidChars": "프로필 이름에는 문자, 숫자, 공백, 밑줄, 하이픈, 괄호, 가운데점(·/・), 아포스트로피만 사용할 수 있습니다",
+        "profileNameReservedRoute": "이 이름은 시스템 예약 경로 이름이므로 프로필 이름으로 사용할 수 없습니다",
         "newProfileNameRequired": "새 프로필 이름은 비워둘 수 없습니다.",
         "newProfileNameTooLong": "프로필 이름이 너무 깁니다.",
         "required": "*",
