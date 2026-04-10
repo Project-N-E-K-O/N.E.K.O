@@ -718,6 +718,8 @@ async def update_core_config(request: Request):
 
         logger.info(f"已通知 {notification_count} 个连接的客户端API配置已更新")
         return {"success": True, "message": "API Key已保存并重新加载配置", "sessions_ended": len(sessions_ended)}
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         return {"success": False, "error": str(e)}
 

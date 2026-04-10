@@ -12,6 +12,10 @@ def _make_config_manager(tmp_path):
         ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
+    ), patch.object(
+        ConfigManager,
+        "_get_project_root",
+        return_value=tmp_path / "project_root",
     ):
         return ConfigManager("N.E.K.O")
 

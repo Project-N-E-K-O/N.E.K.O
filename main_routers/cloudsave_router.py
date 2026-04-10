@@ -7,6 +7,7 @@ and safety checks around runtime reload.
 """
 
 import asyncio
+import logging
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -33,6 +34,8 @@ from utils.cloudsave_runtime import (
     restore_cloudsave_operation_backup,
 )
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cloudsave", tags=["cloudsave"])
 
@@ -314,8 +317,21 @@ async def post_cloudsave_character_upload(name: str, request: Request):
     try:
         body = await request.json()
     except Exception:
-        body = {}
-    overwrite = bool((body or {}).get("overwrite", False))
+        return _cloudsave_error_response(
+            "INVALID_JSON_BODY",
+            "请求体 JSON 解析失败",
+            status_code=400,
+            character_name=name,
+        )
+    overwrite_val = (body or {}).get("overwrite", False)
+    if not isinstance(overwrite_val, bool):
+        return _cloudsave_error_response(
+            "INVALID_PARAMETER",
+            "overwrite 必须为布尔值",
+            status_code=400,
+            character_name=name,
+        )
+    overwrite = overwrite_val
 
     try:
         result = export_cloudsave_character_unit(config_manager, name, overwrite=overwrite)
@@ -329,9 +345,10 @@ async def post_cloudsave_character_upload(name: str, request: Request):
             character_name=name,
         )
     except Exception as exc:
+        logger.exception("云存档上传失败: %s", name)
         return _cloudsave_error_response(
             "CLOUDSAVE_UPLOAD_FAILED",
-            str(exc),
+            "上传失败，请稍后重试",
             status_code=500,
             character_name=name,
         )
@@ -360,9 +377,30 @@ async def post_cloudsave_character_download(name: str, request: Request):
     try:
         body = await request.json()
     except Exception:
-        body = {}
-    overwrite = bool((body or {}).get("overwrite", False))
-    backup_before_overwrite = bool((body or {}).get("backup_before_overwrite", True))
+        return _cloudsave_error_response(
+            "INVALID_JSON_BODY",
+            "请求体 JSON 解析失败",
+            status_code=400,
+            character_name=name,
+        )
+    overwrite_val = (body or {}).get("overwrite", False)
+    backup_val = (body or {}).get("backup_before_overwrite", True)
+    if not isinstance(overwrite_val, bool):
+        return _cloudsave_error_response(
+            "INVALID_PARAMETER",
+            "overwrite 必须为布尔值",
+            status_code=400,
+            character_name=name,
+        )
+    if "backup_before_overwrite" in (body or {}) and not isinstance(backup_val, bool):
+        return _cloudsave_error_response(
+            "INVALID_PARAMETER",
+            "backup_before_overwrite 必须为布尔值",
+            status_code=400,
+            character_name=name,
+        )
+    overwrite = overwrite_val
+    backup_before_overwrite = backup_val
 
     block_reason = _active_session_block_reason(name)
     if block_reason:
@@ -420,9 +458,10 @@ async def post_cloudsave_character_download(name: str, request: Request):
             character_name=name,
         )
     except Exception as exc:
+        logger.exception("云存档下载失败: %s", name)
         return _cloudsave_error_response(
             "CLOUDSAVE_DOWNLOAD_FAILED",
-            str(exc),
+            "下载失败，请稍后重试",
             status_code=500,
             character_name=name,
         )

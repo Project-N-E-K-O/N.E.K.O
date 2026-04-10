@@ -334,13 +334,21 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
         # 确保配置目录存在，并使用最新路径（与 save_user_preferences 保持一致）
         _config_manager.ensure_config_directory()
         global PREFERENCES_FILE
-        PREFERENCES_FILE = _get_preferences_write_path()
 
-        # 直接读取完整文件（不经过 load_user_preferences，避免哨兵被过滤）
-        if os.path.exists(PREFERENCES_FILE):
+        write_path = _get_preferences_write_path()
+        read_path = _get_preferences_read_path()
+
+        # 优先从写路径读取；若不存在则回退读路径（迁移旧版只读偏好数据）
+        if os.path.exists(write_path):
+            PREFERENCES_FILE = write_path
             with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+        elif os.path.exists(read_path):
+            with open(read_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            PREFERENCES_FILE = write_path
         else:
+            PREFERENCES_FILE = write_path
             data = []
 
         if isinstance(data, dict):

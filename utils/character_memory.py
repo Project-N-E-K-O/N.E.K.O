@@ -110,6 +110,15 @@ def _merge_directories(source_dir: Path, target_dir: Path) -> bool:
         shutil.move(str(source_dir), str(target_dir))
         return True
 
+    # Pre-flight: check for conflicts before moving anything
+    for child in source_dir.iterdir():
+        candidate = target_dir / child.name
+        if candidate.exists():
+            raise FileExistsError(
+                f"Refusing to overwrite existing path while merging directories "
+                f"{source_dir} -> {target_dir}: conflict at {child.name}"
+            )
+
     changed = False
     for child in sorted(source_dir.iterdir(), key=lambda item: item.name):
         changed = _move_path(child, target_dir / child.name) or changed

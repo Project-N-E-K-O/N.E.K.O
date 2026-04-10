@@ -1016,6 +1016,8 @@ async def update_catgirl_l2d(name: str, request: Request):
             'message': message
         })
         
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.exception("更新角色模型设置失败")
         return JSONResponse(content={
@@ -1547,6 +1549,12 @@ async def rename_catgirl(old_name: str, request: Request):
                 reason=f"角色重命名: {old_name} -> {new_name}",
             )
         except MaintenanceModeError:
+            await _rollback_character_operation(
+                _config_manager,
+                characters_snapshot=characters_snapshot,
+                memory_snapshot_records=memory_snapshot_records,
+                reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
+            )
             raise
         except Exception as exc:
             rollback_error = await _rollback_character_operation(
@@ -2011,6 +2019,13 @@ async def delete_catgirl(name: str):
             await initialize_character_data()
             memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
         except MaintenanceModeError:
+            await _rollback_character_operation(
+                _config_manager,
+                characters_snapshot=characters_snapshot,
+                memory_snapshot_records=memory_snapshot_records,
+                tombstone_snapshot=tombstone_snapshot,
+                reason=f"维护模式：删除角色回滚 {name}",
+            )
             raise
         except Exception as exc:
             rollback_error = await _rollback_character_operation(

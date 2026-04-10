@@ -3097,13 +3097,23 @@ function sendBeacon() {
 }
 
 // 监听API Key变更事件
-function handleCloudsaveCharacterSync(payload) {
+async function handleCloudsaveCharacterSync(payload) {
     if (!payload || payload.type !== CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE) return;
 
     const nextTimestamp = Number(payload.timestamp || 0);
     if (nextTimestamp && nextTimestamp === lastCloudsaveSyncTimestamp) {
         return;
     }
+
+    if (hasUnsavedChanges()) {
+        try {
+            await saveAllUnsavedChanges();
+        } catch (error) {
+            console.warn('[Cloud Save] 自动保存失败，跳过本次同步刷新:', error);
+            return;
+        }
+    }
+
     if (nextTimestamp) {
         lastCloudsaveSyncTimestamp = nextTimestamp;
     }
