@@ -45,8 +45,37 @@
 
     let currentPlayingTrack = null;
     let localPlayer = null;
+    let musicCardMessageId = null;
     let aplayerLoadPromise = null;
     let latestMusicRequestToken = 0;
+
+    // --- 更新 React 聊天窗口音乐卡片 ---
+    const updateMusicCard = (state, track) => {
+        const host = window.reactChatWindowHost;
+        if (!host || typeof host.updateMessage !== 'function' || !musicCardMessageId) return;
+
+        let prefix = '🎵';
+        let text = (window.t && window.t('music.playing')) || '播放中';
+        if (state === 'paused') { prefix = '⏸'; text = (window.t && window.t('music.paused')) || '已暂停'; }
+        else if (state === 'ended') { prefix = '✅'; text = (window.t && window.t('music.ended')) || '已播完'; }
+        else if (state === 'error') { prefix = '❌'; text = (window.t && window.t('music.playError')) || '播放失败'; }
+        else { prefix = '❓'; text = (window.t && window.t('music.unknownState')) || '未知状态'; }
+
+        host.updateMessage(musicCardMessageId, {
+            blocks: [{
+                type: 'link',
+                url: track?.url || '#',
+                title: track?.name || '未知曲目',
+                description: track?.artist || '未知艺术家',
+                siteName: prefix + ' ' + text,
+                thumbnailUrl: track?.cover || undefined
+            }]
+        });
+
+        if (state === 'ended' || state === 'error') {
+            musicCardMessageId = null;
+        }
+    };
 
     // --- 状态追踪：用于 5 秒去重 与 进度条清理 ---
     let lastPlayedMusicUrl = null;
@@ -282,6 +311,7 @@
             clearManagedListeners();
         }
         currentPlayingTrack = null;
+        musicCardMessageId = null;
     };
 
     // --- 查找并替换整个 loadAPlayerLibrary 函数 ---
@@ -466,8 +496,10 @@
                 }
                 const now = new Date();
                 const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+                const msgId = 'music-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+                musicCardMessageId = msgId;
                 host.appendMessage({
-                    id: 'music-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                    id: msgId,
                     role: 'assistant',
                     author: assistantName,
                     time: timeStr,
@@ -479,7 +511,7 @@
                         url: trackInfo.url || '#',
                         title: trackInfo.name || '未知曲目',
                         description: trackInfo.artist || '未知艺术家',
-                        siteName: (window.t && window.t('music.nowPlayingCard')) || '🎵 Now Playing',
+                        siteName: '🎵 ' + ((window.t && window.t('music.playing')) || '播放中'),
                         thumbnailUrl: hasCover ? trackInfo.cover : undefined
                     }],
                     status: 'sent'
@@ -542,36 +574,36 @@
                     updatePlayBtnState(true);
                     autoplayBlocked = false;
                     lastPlayPosition = (boundPlayer.audio && boundPlayer.audio.currentTime) || 0;
+                    updateMusicCard('playing', currentPlayingTrack);
                 });
                 boundPlayer.on('pause', () => {
                     updatePlayBtnState(false);
-                    // Accumulate actual playback on pause
                     const cur = (boundPlayer.audio && boundPlayer.audio.currentTime) || 0;
                     accumulatedPlaySeconds += (cur - lastPlayPosition);
                     lastPlayPosition = cur;
-                    // 用户点击暂停后，启动 71 秒销毁计时
                     const tokenAtEvent = boundPlayer._latestToken;
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     autoDestroyTimer = setTimeout(() => {
                         if (latestMusicRequestToken === tokenAtEvent) destroyMusicPlayer(true, true, true);
                     }, MUSIC_CONFIG.timeouts.paused);
+                    updateMusicCard('paused', currentPlayingTrack);
                 });
                 boundPlayer.on('ended', () => {
                     updatePlayBtnState(false);
                     resetSkipCounter();
                     accumulatedPlaySeconds = 0;
                     lastPlayPosition = 0;
-                    // 歌曲自然播放结束后，启动 21 秒销毁计时
                     const tokenAtEvent = boundPlayer._latestToken;
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     autoDestroyTimer = setTimeout(() => {
                         if (latestMusicRequestToken === tokenAtEvent) destroyMusicPlayer(true, true, true);
                     }, MUSIC_CONFIG.timeouts.ended);
+                    updateMusicCard('ended', null);
                 });
                 boundPlayer.on('error', (err) => {
                     if (boundPlayer._destroying) return;
                     console.error('[Music UI] APlayer error:', err);
-                    accumulatedPlaySeconds = 0;  // load failure is not a skip
+                    accumulatedPlaySeconds = 0;
                     lastPlayPosition = 0;
 
                     const tokenAtEvent = boundPlayer._latestToken;
@@ -594,6 +626,8 @@
                                 destroyMusicPlayer(true, true, true);
                             }
                         }, 3000);
+
+                        updateMusicCard('error', currentPlayingTrack);
                     }, 200);
                 });
 
