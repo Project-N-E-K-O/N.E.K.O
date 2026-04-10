@@ -1369,6 +1369,7 @@
         "profileNameContainsSlash": "Profile name cannot contain path separators (/ or \\)",
         "profileNameContainsDot": "Profile name cannot contain dots (.)",
         "profileNameInvalidChars": "Profile name can only contain letters, numbers, spaces, underscores, hyphens, parentheses, middle dots (·/・), and apostrophes",
+        "profileNameReservedRoute": "This name is a reserved system route and cannot be used as a profile name",
         "newProfileNameRequired": "New profile name cannot be empty",
         "newProfileNameTooLong": "Profile name is too long",
         "required": "*",
