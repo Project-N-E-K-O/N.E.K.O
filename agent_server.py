@@ -696,44 +696,45 @@ def _bump_state_revision() -> int:
     return Modules.state_revision
 
 
-def _set_capability(name: str, ready: bool, reason: str = "") -> None:
-    def _normalize_precheck_reason(raw_reason: str) -> str:
-        text = str(raw_reason or "").strip()
-        if not text:
-            return ""
-        if text.startswith("AGENT_"):
-            return text
+def _normalize_capability_reason(raw_reason: str) -> str:
+    text = str(raw_reason or "").strip()
+    if not text:
+        return ""
+    if text.startswith("AGENT_"):
+        return text
 
-        lower = text.lower()
-        # Normalize legacy Chinese/English free-text reasons into stable i18n codes.
-        if "未检查" in text or "not checked" in lower or "pending" in lower:
-            return "AGENT_PRECHECK_PENDING"
-        if "模型未配置" in text or "model not configured" in lower:
-            return "AGENT_MODEL_NOT_CONFIGURED"
-        if "api url 未配置" in lower or "url not configured" in lower:
-            return "AGENT_URL_NOT_CONFIGURED"
-        if "api key 未配置" in lower or "key not configured" in lower:
-            return "AGENT_KEY_NOT_CONFIGURED"
-        if "endpoint not configured" in lower or "api 未配置" in lower:
-            return "AGENT_ENDPOINT_NOT_CONFIGURED"
-        if "pyautogui" in lower and ("not installed" in lower or "未安装" in text):
-            return "AGENT_PYAUTOGUI_NOT_INSTALLED"
-        if "browser-use" in lower and ("not installed" in lower or "未安装" in text):
-            return "AGENT_BROWSER_USE_NOT_INSTALLED"
-        if "not initialized" in lower or "初始化失败" in text:
-            return "AGENT_NOT_INITIALIZED"
-        if "未发现可用插件" in text or "no plugins" in lower:
-            return "AGENT_NO_PLUGINS_FOUND"
-        if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
-            return "AGENT_PLUGIN_SERVER_ERROR"
-        if "openfang" in lower or "daemon" in lower:
-            return "AGENT_OPENFANG_DAEMON_UNREACHABLE"
-        if "unreachable" in lower or "连接失败" in text or "connectivity" in lower:
-            return "AGENT_LLM_UNREACHABLE"
+    lower = text.lower()
+    # Normalize legacy Chinese/English free-text reasons into stable i18n codes.
+    if "未检查" in text or "not checked" in lower or "pending" in lower:
+        return "AGENT_PRECHECK_PENDING"
+    if "模型未配置" in text or "model not configured" in lower:
+        return "AGENT_MODEL_NOT_CONFIGURED"
+    if "api url 未配置" in lower or "url not configured" in lower:
+        return "AGENT_URL_NOT_CONFIGURED"
+    if "api key 未配置" in lower or "key not configured" in lower:
+        return "AGENT_KEY_NOT_CONFIGURED"
+    if "endpoint not configured" in lower or "api 未配置" in lower:
+        return "AGENT_ENDPOINT_NOT_CONFIGURED"
+    if "pyautogui" in lower and ("not installed" in lower or "未安装" in text):
+        return "AGENT_PYAUTOGUI_NOT_INSTALLED"
+    if "browser-use" in lower and ("not installed" in lower or "未安装" in text):
+        return "AGENT_BROWSER_USE_NOT_INSTALLED"
+    if "not initialized" in lower or "初始化失败" in text:
+        return "AGENT_NOT_INITIALIZED"
+    if "未发现可用插件" in text or "no plugins" in lower:
+        return "AGENT_NO_PLUGINS_FOUND"
+    if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
+        return "AGENT_PLUGIN_SERVER_ERROR"
+    if "openfang" in lower or "daemon" in lower:
+        return "AGENT_OPENFANG_DAEMON_UNREACHABLE"
+    if "unreachable" in lower or "连接失败" in text or "connectivity" in lower:
         return "AGENT_LLM_UNREACHABLE"
+    return "AGENT_LLM_UNREACHABLE"
 
+
+def _set_capability(name: str, ready: bool, reason: str = "") -> None:
     prev = Modules.capability_cache.get(name, {})
-    normalized_reason = _normalize_precheck_reason(reason)
+    normalized_reason = _normalize_capability_reason(reason)
     Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}
     if prev.get("ready") != bool(ready) or prev.get("reason", "") != normalized_reason:
         _bump_state_revision()
@@ -3034,21 +3035,22 @@ async def openfang_availability():
         chosen_reason = str(reasons[0] or "").strip() if reasons else ""
         if not chosen_reason:
             chosen_reason = "OPENFANG_DAEMON_UNREACHABLE"
+    normalized_reason = _normalize_capability_reason(chosen_reason)
     payload = {
         "enabled": bool(status.get("enabled", True)) if isinstance(status, dict) else True,
         "ready": bool(ok),
-        "reason": chosen_reason if not ok else "",
-        "reasons": ([chosen_reason] if (not ok and chosen_reason) else []),
+        "reason": normalized_reason if not ok else "",
+        "reasons": ([normalized_reason] if (not ok and normalized_reason) else []),
         "provider": status.get("provider", "openfang") if isinstance(status, dict) else "openfang",
         "version": status.get("version", "unknown") if isinstance(status, dict) else "unknown",
         "tools_count": status.get("tools_count", 0) if isinstance(status, dict) else 0,
     }
-    _set_capability("openfang", ok, chosen_reason)
+    _set_capability("openfang", ok, normalized_reason)
     if not ok and Modules.agent_flags.get("openfang_enabled"):
         Modules.agent_flags["openfang_enabled"] = False
         Modules.notification = json.dumps({
             "code": "AGENT_OPENFANG_CAPABILITY_LOST",
-            "details": {"reason_code": chosen_reason},
+            "details": {"reason_code": normalized_reason},
         })
     return payload
 

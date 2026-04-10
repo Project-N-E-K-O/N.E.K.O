@@ -357,6 +357,7 @@ class OmniOfflineClient:
                     status_reported = True
                 return
             for attempt in range(max_retries):
+                first_chunk_sent = False
                 try:
                     messages_to_send = self._build_messages_with_temporary_system_messages(temporary_messages)
                     assistant_message = ""
@@ -365,6 +366,7 @@ class OmniOfflineClient:
                         self._is_responding = True
                         assistant_message = ""
                         is_first_chunk = True
+                        first_chunk_sent = False
                         pipe_count = 0  # 围栏：追踪 | 字符的出现次数
                         fence_triggered = False  # 围栏是否已触发
                         guard_triggered = False
@@ -428,6 +430,7 @@ class OmniOfflineClient:
                                     assistant_message += truncated_content
                                     if self.on_text_delta:
                                         await self.on_text_delta(truncated_content, is_first_chunk)
+                                    first_chunk_sent = True
                                     is_first_chunk = False
 
                                     if self.enable_response_guard:
@@ -467,6 +470,7 @@ class OmniOfflineClient:
                                     assistant_message += flush_text
                                     if self.on_text_delta:
                                         await self.on_text_delta(flush_text, is_first_chunk)
+                                    first_chunk_sent = True
                                     is_first_chunk = False
                                     if self.enable_response_guard:
                                         current_length = count_words_and_chars(assistant_message)
@@ -525,6 +529,15 @@ class OmniOfflineClient:
                     if attempt < max_retries - 1:
                         wait_time = retry_delays[attempt]
                         logger.warning(f"OmniOfflineClient: LLM调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
+                        if first_chunk_sent:
+                            await self._notify_response_discarded(
+                                f"retryable_stream_error:{error_type}",
+                                attempt + 1,
+                                max_retries,
+                                True,
+                                None,
+                            )
+                            assistant_message = ""
                         # 前3次重试不通知前端，仅在最终失败时发送
                         await asyncio.sleep(wait_time)
                         continue

@@ -24,7 +24,14 @@ from config.prompts_memory import (
     get_negative_preference_review_prompt,
     get_negative_topic_validation_prompt,
 )
-from memory.persona import contains_negative_signal, is_topic_refusal_signal
+from memory.persona import (
+    _clean_topic_candidate,
+    _contains_cjk as persona_contains_cjk,
+    _normalize_topic_tokens,
+    _topics_match,
+    contains_negative_signal,
+    is_topic_refusal_signal,
+)
 from utils.language_utils import get_global_language
 from utils.character_name import validate_character_name
 from utils.config_manager import get_config_manager
@@ -427,20 +434,19 @@ def _contains_cjk(text: str) -> bool:
 
 
 def _topic_matches_cleaned_text(topic: str, cleaned_text: str) -> bool:
-    topic = str(topic or '').strip()
-    cleaned_cf = str(cleaned_text or '').casefold()
-    if not topic or not cleaned_cf:
+    topic_clean = _clean_topic_candidate(topic)
+    cleaned = str(cleaned_text or '').strip()
+    cleaned_topic = _clean_topic_candidate(cleaned)
+    if not topic_clean or not cleaned:
         return False
-    topic_cf = topic.casefold()
-    if re.search(r'[A-Za-z]', topic) and not _contains_cjk(topic):
-        tokens = [token for token in re.split(r'[^a-z0-9]+', topic_cf) if len(token) >= 2]
-        if not tokens:
-            return False
-        return all(
-            re.search(r'(?<![a-z0-9])' + re.escape(token) + r'(?![a-z0-9])', cleaned_cf)
-            for token in tokens
-        )
-    return topic_cf in cleaned_cf
+    if _topics_match(topic_clean, cleaned_topic):
+        return True
+    if re.search(r'[A-Za-z]', topic_clean) and not persona_contains_cjk(topic_clean):
+        topic_tokens = _normalize_topic_tokens(topic_clean)
+        cleaned_tokens = _normalize_topic_tokens(cleaned_topic)
+        if topic_tokens and cleaned_tokens:
+            return topic_tokens.issubset(cleaned_tokens)
+    return topic_clean.casefold() in cleaned.casefold()
 
 
 def _should_skip_recent_message_for_prompt(message, hard_topics: list[str], cleaned_text: str) -> bool:
@@ -1021,8 +1027,8 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
 async def handle_negative_signal(request: NegativeSignalRequest, lanlan_name: str):
     """识别用户负面信号，并返回当前轮可直接注入模型的安抚策略。
 
-    即时路径只负责把当前轮回复语气调整为更温和的 tone_only，
-    不在这里落地 persona。长期负面偏好统一交给后台 review 复审后写入。
+    即时路径只返回当前轮建议使用的策略，不在这里落地 persona。
+    长期负面偏好统一交给后台 review 复审后写入。
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
@@ -1033,9 +1039,10 @@ async def handle_negative_signal(request: NegativeSignalRequest, lanlan_name: st
         )
         if result.get("matched"):
             original_topic = result.get("topic", "")
-            result["topic"] = ""
-            result["policy"] = "tone_only"
-            result["response_instruction"] = persona_manager._build_negative_response_instruction(original_topic, "tone_only")
+            result["response_instruction"] = persona_manager._build_negative_response_instruction(
+                original_topic,
+                result.get("policy"),
+            )
         result.pop("explicit_avoid", None)
         return JSONResponse(result)
     except Exception as e:

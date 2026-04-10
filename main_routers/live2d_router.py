@@ -82,6 +82,15 @@ def _has_meaningful_emotion_mapping(mapping):
 
     expressions = mapping.get('expressions') or {}
     if isinstance(expressions, dict):
+        resident_items = expressions.get('常驻')
+        if isinstance(resident_items, str) and resident_items.strip():
+            return True
+        if isinstance(resident_items, dict) and any(
+            isinstance(item, str) and item.strip() for item in resident_items.values()
+        ):
+            return True
+        if isinstance(resident_items, list) and any(isinstance(item, str) and item.strip() for item in resident_items):
+            return True
         for group_name, items in expressions.items():
             if group_name == '常驻':
                 continue
@@ -89,6 +98,19 @@ def _has_meaningful_emotion_mapping(mapping):
                 return True
 
     return False
+
+
+def _coerce_mapping_group_files(files, group_name: str, mapping_name: str):
+    if isinstance(files, str):
+        return [files]
+    if files is None:
+        return []
+    if isinstance(files, list):
+        return files
+    if hasattr(files, '__iter__') and not isinstance(files, dict):
+        return list(files)
+    logger.warning("忽略无效的 %s 分组 %s: %r", mapping_name, group_name, type(files).__name__)
+    return []
 
 
 def _normalize_model_path(path: str) -> str:
@@ -441,7 +463,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 logger.info("忽略常驻组中的motion配置（只允许expression）")
                 continue
             items = []
-            for file_path in files or []:
+            for file_path in _coerce_mapping_group_files(files, group_name, 'motions'):
                 if not isinstance(file_path, str):
                     continue
                 normalized = file_path.replace('\\', '/')
@@ -472,7 +494,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
 
         new_expressions = []
         for emotion, files in expressions_input.items():
-            for file_path in files or []:
+            for file_path in _coerce_mapping_group_files(files, emotion, 'expressions'):
                 if not isinstance(file_path, str):
                     continue
                 normalized = file_path.replace('\\', '/')

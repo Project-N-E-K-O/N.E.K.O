@@ -638,14 +638,13 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         }
         
         // 方法2: 回退到手动参数设置（使用每帧应用 + 淡入效果，避免参数被 loadParameters 覆盖）
-        console.log('使用手动参数设置播放expression（带淡入过渡）');
-        if (expressionData.Parameters && expressionData.Parameters.length > 0) {
+        if (!playedExpression && expressionData.Parameters && expressionData.Parameters.length > 0) {
+            console.log('使用手动参数设置播放expression（带淡入过渡）');
             // 使用 _installManualExpressionOverride 在每帧中持续应用参数，并带有淡入效果
             this._installManualExpressionOverride(expressionData.Parameters, 300);
             playedExpression = true;
+            console.log(`手动设置表情（带淡入过渡）: ${loadedExpressionFile}`);
         }
-        
-        console.log(`手动设置表情（带淡入过渡）: ${loadedExpressionFile}`);
     } catch (error) {
         console.error('播放表情失败:', error);
     }

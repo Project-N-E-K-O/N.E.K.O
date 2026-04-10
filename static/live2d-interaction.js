@@ -1795,6 +1795,35 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         } catch (error) {
             console.warn('[Interaction] 教程模式播放表情失败:', error);
         }
+        const clickEffectId = Date.now();
+        this._currentClickEffectId = clickEffectId;
+
+        if (this._clickEffectRestoreTimer) {
+            clearTimeout(this._clickEffectRestoreTimer);
+            this._clickEffectRestoreTimer = null;
+        }
+
+        this._clickEffectRestoreTimer = setTimeout(() => {
+            this._clickEffectRestoreTimer = null;
+
+            if (this._currentClickEffectId !== clickEffectId) {
+                console.log('[Interaction] 点击效果已被新的情感覆盖，跳过恢复');
+                return;
+            }
+
+            console.log('[Interaction] 点击效果持续时间结束，平滑恢复到默认状态');
+            this._currentClickEffectId = null;
+            if (typeof this.smoothResetToInitialState === 'function') {
+                this.smoothResetToInitialState(800, {
+                    persistentResumeReason: clickEffectSuspendReason,
+                }).catch(e => {
+                    console.warn('[Interaction] 平滑恢复失败，回退到即时恢复:', e);
+                    if (typeof this.clearExpression === 'function') this.clearExpression(clickEffectSuspendReason);
+                });
+            } else if (typeof this.clearExpression === 'function') {
+                this.clearExpression(clickEffectSuspendReason);
+            }
+        }, window.live2dManager.CLICK_EFFECT_DURATION);
     } else {
         // 正常模式：使用情感系统
         // 获取可用的情感列表
@@ -1823,35 +1852,6 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
             console.warn('[Interaction] 触发情感失败:', error);
         }
     }
-
-    // 设置恢复定时器：在效果持续时间后清除表情，恢复到常驻/默认状态
-    // 使用唯一 ID 标记此次点击效果，用于判断是否应该恢复
-    const clickEffectId = Date.now();
-    this._currentClickEffectId = clickEffectId;
-    
-    this._clickEffectRestoreTimer = setTimeout(() => {
-        this._clickEffectRestoreTimer = null;
-        
-        // 检查是否仍然是此次点击效果（没有被新的情感/点击覆盖）
-        if (this._currentClickEffectId !== clickEffectId) {
-            console.log('[Interaction] 点击效果已被新的情感覆盖，跳过恢复');
-            return;
-        }
-        
-        console.log('[Interaction] 点击效果持续时间结束，平滑恢复到默认状态');
-        this._currentClickEffectId = null;
-        // 使用平滑过渡恢复到常驻表情或默认状态（smoothReset 内部会在快照后停止 motion/expression）
-        if (typeof this.smoothResetToInitialState === 'function') {
-            this.smoothResetToInitialState(800, {
-                persistentResumeReason: clickEffectSuspendReason,
-            }).catch(e => {
-                console.warn('[Interaction] 平滑恢复失败，回退到即时恢复:', e);
-                if (typeof this.clearExpression === 'function') this.clearExpression(clickEffectSuspendReason);
-            });
-        } else if (typeof this.clearExpression === 'function') {
-            this.clearExpression(clickEffectSuspendReason);
-        }
-    }, window.live2dManager.CLICK_EFFECT_DURATION);
 };
 
 /**
