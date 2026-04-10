@@ -170,8 +170,9 @@ async function loadPageConfig() {
     }
 }
 
-// 多窗口模式（Electron Chat 独立窗口）：配置由 IPC 从 Pet 窗口注入，不走 HTTP API
-if (window.__NEKO_MULTI_WINDOW__) {
+// 多窗口模式下，Chat 独立窗口（/chat）通过 IPC 从 Pet 窗口注入配置，不走 HTTP API。
+// Pet 窗口（/）虽然也设了 __NEKO_MULTI_WINDOW__，但它是主窗口，应走正常 HTTP 路径。
+if (window.__NEKO_MULTI_WINDOW__ && window.location.pathname === '/chat') {
     window.pageConfigReady = new Promise(function (resolve) {
         // preload 通过 IPC 拿到 Pet 窗口的 lanlan_config 后派发此事件
         window.addEventListener('neko:config-injected', function handler(event) {
