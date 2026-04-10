@@ -53,6 +53,15 @@ uv run python agent_server.py
 
 - 想验证 Steam Auto-Cloud 的真实“启动前下载 / 退出后上传”，应通过 Steam 或桌面启动器启动，不要把纯源码直跑当作 Steam 云同步验证路径。
 - 手动三服务模式更适合开发调试；当前 `main_server` 会在需要时兜底导入快照，并尝试通知 `memory_server` reload。
+- macOS 源码模式如果提示“Apple 无法验证 `SteamworksPy.dylib`”，通常是 Gatekeeper 在拦截未公证的本地动态库。先确认从项目根目录启动；如果仍被拦截，可在项目根目录执行：
+
+```bash
+xattr -dr com.apple.quarantine SteamworksPy.dylib libsteam_api.dylib
+codesign --force --sign - libsteam_api.dylib
+codesign --force --sign - SteamworksPy.dylib
+```
+
+- 重新签名后再执行 `uv run python launcher.py` 或 `uv run python main_server.py`。
 
 ## 配置
 

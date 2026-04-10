@@ -35,7 +35,7 @@ def _get_app_root():
         else:
             return os.path.dirname(sys.executable)
     else:
-        return os.getcwd()
+        return os.path.dirname(os.path.abspath(__file__))
 
 # 仅在 Windows 上调整 DLL 搜索路径
 if sys.platform == "win32" and hasattr(os, "add_dll_directory"):

@@ -55,6 +55,15 @@ Notes:
 
 - To validate real Steam Auto-Cloud behavior, launch through Steam or the desktop launcher. Running source files directly is useful for development, but it is not a reliable way to verify Steam-side download/upload timing.
 - In manual three-server mode, `main_server` will still perform a fallback snapshot import when needed and will try to notify `memory_server` to reload afterward.
+- On macOS source runs, if Apple reports that `SteamworksPy.dylib` cannot be verified, Gatekeeper is usually blocking the local unnotarized Steamworks libraries. First make sure you are launching from the project root. If it is still blocked, run the following from the repo root:
+
+```bash
+xattr -dr com.apple.quarantine SteamworksPy.dylib libsteam_api.dylib
+codesign --force --sign - libsteam_api.dylib
+codesign --force --sign - SteamworksPy.dylib
+```
+
+- After that, retry `uv run python launcher.py` or `uv run python main_server.py`.
 
 ## Configuration
 

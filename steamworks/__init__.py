@@ -39,8 +39,8 @@ def _get_app_root():
             # PyInstaller 多文件模式：DLL 应该在 exe 同目录
             return os.path.dirname(sys.executable)
     else:
-        # 脚本运行：使用当前工作目录
-        return os.getcwd()
+        # 脚本运行：固定使用项目根目录，避免 IDE / 外部 cwd 导致加载到错误位置的本地库
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from steamworks.interfaces.apps         import SteamApps
 from steamworks.interfaces.friends      import SteamFriends
@@ -128,7 +128,19 @@ class STEAMWORKS(object):
         with open(app_id_file, 'r') as f:
             self.app_id	= int(f.read())
 
-        self._cdll 		= CDLL(library_path) # Throw native exception in case of error
+        try:
+            self._cdll = CDLL(library_path)  # Throw native exception in case of error
+        except OSError as exc:
+            if platform == 'darwin':
+                dependency_path = os.path.join(os.path.dirname(library_path), 'libsteam_api.dylib')
+                raise OSError(
+                    f'{exc}. macOS may be blocking "{os.path.basename(library_path)}" via Gatekeeper. '
+                    f'If you are launching from source, ensure the project root is the load root and try: '
+                    f'xattr -dr com.apple.quarantine "{library_path}" "{dependency_path}" && '
+                    f'codesign --force --sign - "{dependency_path}" && '
+                    f'codesign --force --sign - "{library_path}"'
+                ) from exc
+            raise
         self._loaded 	= True
 
         self._load_steamworks_api()
