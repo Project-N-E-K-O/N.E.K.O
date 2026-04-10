@@ -19,8 +19,8 @@ class ControlledQueue:
     def put(self, item):
         self._queue.put(item)
 
-    def get(self):
-        item = self._queue.get()
+    def get(self, timeout=None):
+        item = self._queue.get(timeout=timeout)
         if item is self._stop:
             raise EOFError("queue closed")
         return item
@@ -123,10 +123,10 @@ def test_get_minimax_tts_ws_url():
 
 
 @pytest.mark.unit
-def test_minimax_worker_streams_audio_and_reconnects_idle(monkeypatch):
+def test_minimax_worker_probes_ready_and_streams_audio_per_turn(monkeypatch):
     pcm_bytes = (np.arange(3000, dtype=np.int16)).tobytes()
 
-    async def first_on_send(ws, message):
+    async def task_on_send(ws, message):
         event = message.get("event")
         if event == "task_start":
             ws.queue_event({"event": "task_started"})
@@ -141,9 +141,9 @@ def test_minimax_worker_streams_audio_and_reconnects_idle(monkeypatch):
         elif event == "task_finish":
             ws.queue_event({"event": "task_finished"})
 
-    first_ws = FakeMiniMaxWebSocket(on_send=first_on_send)
-    second_ws = FakeMiniMaxWebSocket()
-    factory = FakeConnectFactory(first_ws, second_ws)
+    probe_ws = FakeMiniMaxWebSocket()
+    task_ws = FakeMiniMaxWebSocket(on_send=task_on_send)
+    factory = FakeConnectFactory(probe_ws, task_ws)
     monkeypatch.setattr(tts_client.websockets, "connect", factory)
 
     request_queue = ControlledQueue()
@@ -170,9 +170,12 @@ def test_minimax_worker_streams_audio_and_reconnects_idle(monkeypatch):
     thread.join(timeout=2.0)
     assert not thread.is_alive()
 
-    assert [msg["event"] for msg in first_ws.sent_messages] == ["task_start", "task_continue", "task_finish"]
-    assert first_ws.sent_messages[1]["text"] == "你好世界今天"
-    assert len(factory.calls) >= 2
+    assert probe_ws.sent_messages == []
+    assert probe_ws.closed is True
+    assert [msg["event"] for msg in task_ws.sent_messages] == ["task_start", "task_continue", "task_finish"]
+    assert task_ws.sent_messages[1]["text"] == "你好世界今天"
+    assert task_ws.closed is True
+    assert len(factory.calls) == 2
     assert factory.calls[0][0] == "wss://api.minimaxi.com/ws/v1/t2a_v2"
 
 
@@ -200,16 +203,16 @@ def test_minimax_worker_handshake_failure_reports_not_ready(monkeypatch):
 
 @pytest.mark.unit
 def test_minimax_worker_unexpected_disconnect_triggers_reconnecting(monkeypatch):
-    async def first_on_send(ws, message):
+    async def task_on_send(ws, message):
         event = message.get("event")
         if event == "task_start":
             ws.queue_event({"event": "task_started"})
         elif event == "task_continue":
             ws.force_disconnect()
 
-    first_ws = FakeMiniMaxWebSocket(on_send=first_on_send)
-    second_ws = FakeMiniMaxWebSocket()
-    factory = FakeConnectFactory(first_ws, second_ws)
+    probe_ws = FakeMiniMaxWebSocket()
+    task_ws = FakeMiniMaxWebSocket(on_send=task_on_send)
+    factory = FakeConnectFactory(probe_ws, task_ws)
     monkeypatch.setattr(tts_client.websockets, "connect", factory)
 
     request_queue = ControlledQueue()
@@ -226,7 +229,7 @@ def test_minimax_worker_unexpected_disconnect_triggers_reconnecting(monkeypatch)
         lambda item: item == ("__reconnecting__", "TTS_RECONNECTING"),
     )
     assert reconnecting_item == ("__reconnecting__", "TTS_RECONNECTING")
-    assert len(factory.calls) >= 2
+    assert len(factory.calls) == 2
 
     request_queue.close()
     thread.join(timeout=2.0)
@@ -237,11 +240,11 @@ def test_minimax_worker_unexpected_disconnect_triggers_reconnecting(monkeypatch)
 def test_minimax_worker_switches_speech_id_without_reusing_old_connection(monkeypatch):
     pcm_bytes = (np.arange(2500, dtype=np.int16)).tobytes()
 
-    async def first_on_send(ws, message):
+    async def old_turn_on_send(ws, message):
         if message.get("event") == "task_start":
             ws.queue_event({"event": "task_started"})
 
-    async def second_on_send(ws, message):
+    async def new_turn_on_send(ws, message):
         event = message.get("event")
         if event == "task_start":
             ws.queue_event({"event": "task_started"})
@@ -256,10 +259,10 @@ def test_minimax_worker_switches_speech_id_without_reusing_old_connection(monkey
         elif event == "task_finish":
             ws.queue_event({"event": "task_finished"})
 
-    first_ws = FakeMiniMaxWebSocket(on_send=first_on_send)
-    second_ws = FakeMiniMaxWebSocket(on_send=second_on_send)
-    third_ws = FakeMiniMaxWebSocket()
-    factory = FakeConnectFactory(first_ws, second_ws, third_ws)
+    probe_ws = FakeMiniMaxWebSocket()
+    old_turn_ws = FakeMiniMaxWebSocket(on_send=old_turn_on_send)
+    new_turn_ws = FakeMiniMaxWebSocket(on_send=new_turn_on_send)
+    factory = FakeConnectFactory(probe_ws, old_turn_ws, new_turn_ws)
     monkeypatch.setattr(tts_client.websockets, "connect", factory)
 
     request_queue = ControlledQueue()
@@ -277,9 +280,10 @@ def test_minimax_worker_switches_speech_id_without_reusing_old_connection(monkey
         lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
     )
     assert audio_item[1] == "speech-new"
-    assert first_ws.closed is True
-    assert [msg["event"] for msg in first_ws.sent_messages] == ["task_start", "task_continue"]
-    assert [msg["event"] for msg in second_ws.sent_messages] == ["task_start", "task_continue", "task_finish"]
+    assert probe_ws.closed is True
+    assert old_turn_ws.closed is True
+    assert [msg["event"] for msg in old_turn_ws.sent_messages] == ["task_start", "task_continue"]
+    assert [msg["event"] for msg in new_turn_ws.sent_messages] == ["task_start", "task_continue", "task_finish"]
 
     request_queue.close()
     thread.join(timeout=2.0)
