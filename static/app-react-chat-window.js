@@ -1172,7 +1172,11 @@
         window.addEventListener('resize', function () {
             var overlay = getOverlay();
             if (overlay && !overlay.hidden) {
-                restorePosition();
+                if (minimized) {
+                    applyPosition(MINIMIZED_LEFT, getMinimizedTop());
+                } else {
+                    restorePosition();
+                }
             }
         });
 
