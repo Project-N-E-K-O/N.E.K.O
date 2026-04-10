@@ -141,17 +141,7 @@ export default function App({
                   >
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
                   </button>
-                  <span className="composer-tool-divider" aria-hidden="true">|</span>
-                  <button
-                    className="composer-tool-btn"
-                    type="button"
-                    aria-label="表情（暂不可用）"
-                    title="表情（暂不可用）"
-                    disabled
-                    aria-disabled="true"
-                  >
-                    <img src="/static/icons/emoji_icon.png" alt="" aria-hidden="true" />
-                  </button>
+                  {/* TODO: 表情按钮，下个版本启用 */}
                 </div>
                 <button className="send-button-circle" type="submit" aria-label={sendButtonLabel} disabled={!canSubmit}>
                   <img src="/static/icons/send_new_icon.png" alt="" aria-hidden="true" />
