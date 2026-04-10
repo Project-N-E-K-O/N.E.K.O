@@ -75,7 +75,7 @@
             }]
         });
 
-        if (state === 'ended' || state === 'error') {
+        if (state === 'error') {
             musicCardMessageId = null;
         }
     };
