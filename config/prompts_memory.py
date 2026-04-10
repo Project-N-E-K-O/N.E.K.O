@@ -985,6 +985,90 @@ def get_negative_preference_review_prompt(lang: str = 'zh') -> str:
 
 negative_preference_review_prompt = NEGATIVE_PREFERENCE_REVIEW_PROMPT['zh']
 
+
+NEGATIVE_TOPIC_VALIDATION_PROMPT = {
+    'zh': """请判断下面这个“负面偏好 topic 候选”是否是一个正常、具体、可写入长期记忆的话题。
+
+目标：
+- 只接受“具体、自然、可单独识别”的 topic
+- 如果 topic 是半截句子、语气残片、连接词残留、明显不完整短语、拼接错误、代词、口头禅，拒绝
+- 如果可以从上下文中明显看出更自然的规范 topic，可以给出 normalized_topic
+- 如果无法高置信修正，就拒绝，不要硬猜
+
+判定标准：
+- 合格示例：昆虫食品、日本动漫、工作、寿司、辣味零食
+- 不合格示例：那吃不了一点，更 / 这个 / 那个 / 反正就那个 / 说这个事情
+
+请只返回 JSON 对象：
+{
+  "accepted": true,
+  "normalized_topic": "昆虫食品",
+  "confidence": 0.97,
+  "reason": "候选 topic 具体且自然，可直接写入长期记忆"
+}
+
+或
+
+{
+  "accepted": false,
+  "normalized_topic": "",
+  "confidence": 0.12,
+  "reason": "候选 topic 是不完整残句，不适合写入长期记忆"
+}
+
+当前用户原话：
+{USER_MESSAGE}
+
+最近被引用的上一轮话题：
+{REFERENCED_TOPIC}
+
+候选 topic：
+{CANDIDATE_TOPIC}
+""",
+    'en': """Decide whether the following negative-preference topic candidate is a normal, concrete, memory-worthy topic that should be written into long-term memory.
+
+Goal:
+- Accept only topics that are concrete, natural, and independently identifiable
+- Reject fragments, sentence leftovers, filler phrases, broken clauses, pronouns, or malformed snippets
+- If the context clearly supports a better normalized topic, you may provide normalized_topic
+- If you cannot correct it with high confidence, reject it instead of guessing
+
+Good examples: insect food, Japanese anime, work, sushi, spicy snacks
+Bad examples: can't eat that at all, and / this / that / well that thing / talking about this matter
+
+Return only a JSON object:
+{
+  "accepted": true,
+  "normalized_topic": "insect food",
+  "confidence": 0.97,
+  "reason": "The topic is concrete and natural, so it is safe to store."
+}
+
+or
+
+{
+  "accepted": false,
+  "normalized_topic": "",
+  "confidence": 0.12,
+  "reason": "The candidate is an incomplete fragment and should not be stored."
+}
+
+Current user message:
+{USER_MESSAGE}
+
+Referenced recent topic:
+{REFERENCED_TOPIC}
+
+Candidate topic:
+{CANDIDATE_TOPIC}
+""",
+}
+
+
+def get_negative_topic_validation_prompt(lang: str = 'zh') -> str:
+    lang = (lang or 'zh').strip().split('-', 1)[0].split('_', 1)[0].lower() or 'zh'
+    return _loc(NEGATIVE_TOPIC_VALIDATION_PROMPT, lang)
+
 # ---------- reflection_prompt → i18n dict ----------
 
 REFLECTION_PROMPT = {

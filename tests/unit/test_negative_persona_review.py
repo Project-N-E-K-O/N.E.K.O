@@ -296,6 +296,35 @@ def test_negative_review_skips_topic_already_signaled_in_same_round() -> None:
         apply_mock.assert_not_called()
 
 
+def test_negative_review_skips_invalid_topic_candidate_before_persist() -> None:
+    mock_cm = _build_mock_config_manager(tempfile.gettempdir())
+    with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+         patch("utils.config_manager._config_manager", mock_cm):
+        sys.modules.pop("memory_server", None)
+        memory_server = importlib.import_module("memory_server")
+
+        reviewed = [
+            {"topic": "那吃不了一点，更", "policy": "de_emphasize", "confidence": 0.96, "user_evidence": "那吃不了一点，更", "assistant_evidence": "推荐了几个吃的选项"},
+        ]
+
+        async def fake_review_negative_preferences(messages, name):
+            return reviewed
+
+        with patch.object(memory_server, "_get_negative_signal_user_messages", return_value=["那吃不了一点，更"]), \
+             patch.object(memory_server, "_review_negative_preferences", side_effect=fake_review_negative_preferences), \
+             patch.object(memory_server, "_validate_negative_topic_candidate", return_value={
+                 "accepted": False,
+                 "normalized_topic": "",
+                 "confidence": 0.11,
+                 "reason": "fragment",
+             }), \
+             patch.object(memory_server.persona_manager, "apply_negative_preference_review") as apply_mock:
+            applied = asyncio.run(memory_server._review_and_apply_negative_preferences(reviewed, "测试猫娘"))
+
+        assert applied == 0
+        apply_mock.assert_not_called()
+
+
 def test_negative_signal_explicit_avoid_uses_referenced_topic() -> None:
     with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
         mock_cm = _build_mock_config_manager(tmpdir)
@@ -469,13 +498,46 @@ def test_handle_negative_signal_returns_server_error_on_exception() -> None:
 
         request = memory_server.NegativeSignalRequest(message="别提了", referenced_topic="工作")
 
-        with patch.object(memory_server.persona_manager, "register_negative_signal", side_effect=RuntimeError("boom")):
+        with patch.object(memory_server.persona_manager, "analyze_negative_signal", side_effect=RuntimeError("boom")):
             response = asyncio.run(memory_server.handle_negative_signal(request, "测试猫娘"))
 
         assert response.status_code == 500
         payload = json.loads(response.body)
         assert payload["matched"] is False
         assert payload["error"] == "boom"
+
+
+def test_handle_negative_signal_only_returns_tone_only_without_persisting_persona() -> None:
+    mock_cm = _build_mock_config_manager(tempfile.gettempdir())
+    with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+         patch("utils.config_manager._config_manager", mock_cm):
+        sys.modules.pop("memory_server", None)
+        memory_server = importlib.import_module("memory_server")
+
+        request = memory_server.NegativeSignalRequest(
+            message="那吃不了一点，更",
+            referenced_topic="推荐了几个吃的选项",
+        )
+
+        with patch.object(memory_server.persona_manager, "analyze_negative_signal", return_value={
+            "matched": True,
+            "topic": "那吃不了一点，更",
+            "policy": "de_emphasize",
+            "response_instruction": "topic-specific",
+            "explicit_avoid": False,
+        }), \
+             patch.object(memory_server, "_validate_negative_topic_candidate") as validate_mock, \
+             patch.object(memory_server.persona_manager, "commit_negative_signal") as commit_mock:
+            response = asyncio.run(memory_server.handle_negative_signal(request, "测试猫娘"))
+
+        assert response.status_code == 200
+        payload = json.loads(response.body)
+        assert payload["matched"] is True
+        assert payload["topic"] == ""
+        assert payload["policy"] == "tone_only"
+        assert "先共情安抚" in payload["response_instruction"]
+        validate_mock.assert_not_called()
+        commit_mock.assert_not_called()
 
 
 def test_negative_signal_english_topic_detection() -> None:
@@ -555,3 +617,9 @@ def test_negative_preference_prompt_normalizes_full_locale_code() -> None:
 
     assert get_negative_preference_review_prompt("zh-CN") == get_negative_preference_review_prompt("zh")
     assert get_negative_preference_review_prompt("ja-JP") == get_negative_preference_review_prompt("ja")
+
+
+def test_negative_topic_validation_prompt_normalizes_full_locale_code() -> None:
+    from config.prompts_memory import get_negative_topic_validation_prompt
+
+    assert get_negative_topic_validation_prompt("zh-CN") == get_negative_topic_validation_prompt("zh")

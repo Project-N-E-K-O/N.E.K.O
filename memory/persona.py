@@ -826,8 +826,23 @@ class PersonaManager:
             )
         return "用户刚刚表现出负面情绪。当前回复请先共情安抚，语气更柔和，避免追问和说教。"
 
-    def register_negative_signal(self, name: str, user_text: str, referenced_topic: str = "") -> dict:
-        """记录负面信号，并返回当前轮应该采用的回复指令。"""
+    def _preview_negative_signal_policy(self, persona: dict, topic: str, *, explicit_avoid: bool) -> str:
+        topic = self._topic_key(topic)
+        if not _is_specific_topic(topic):
+            return 'tone_only'
+        guidance = self._get_topic_guidance(persona)
+        soft_entry = self._find_topic_entry(guidance.get('soft_avoid', []), topic)
+        hard_entry = self._find_topic_entry(guidance.get('hard_avoid', []), topic)
+        if hard_entry is not None:
+            return 'avoid'
+        if explicit_avoid:
+            return 'avoid'
+        if soft_entry is not None:
+            next_count = int(soft_entry.get('trigger_count', 1)) + 1
+            return 'avoid' if next_count >= TOPIC_HARD_AVOID_THRESHOLD else 'de_emphasize'
+        return 'de_emphasize'
+
+    def analyze_negative_signal(self, name: str, user_text: str, referenced_topic: str = "") -> dict:
         text = (user_text or "").strip()
         if not text or not _contains_negative_signal(text):
             return {
@@ -835,34 +850,83 @@ class PersonaManager:
                 'topic': '',
                 'policy': 'none',
                 'response_instruction': '',
+                'explicit_avoid': False,
             }
 
         topic, explicit_avoid = _extract_negative_topic(text, referenced_topic=referenced_topic)
         policy = 'tone_only'
-        persona = self.ensure_persona(name)
-        now_str = datetime.now().isoformat()
-        changed = False
-
         if topic:
-            policy, changed = self._apply_topic_guidance_update(
+            persona = self.ensure_persona(name)
+            policy = self._preview_negative_signal_policy(
                 persona,
                 topic,
                 explicit_avoid=explicit_avoid,
-                source='negative_signal',
-                now_str=now_str,
             )
-
-        if changed:
-            self.save_persona(name, persona)
-
         instruction = self._build_negative_response_instruction(topic, policy)
-
         return {
             'matched': True,
             'topic': topic,
             'policy': policy,
             'response_instruction': instruction,
+            'explicit_avoid': explicit_avoid,
         }
+
+    def commit_negative_signal(
+        self,
+        name: str,
+        *,
+        topic: str,
+        explicit_avoid: bool,
+        source: str = 'negative_signal',
+    ) -> dict:
+        normalized_topic = self._topic_key(topic)
+        if not _is_specific_topic(normalized_topic):
+            return {
+                'matched': False,
+                'topic': '',
+                'policy': 'none',
+                'response_instruction': '',
+            }
+        persona = self.ensure_persona(name)
+        policy, changed = self._apply_topic_guidance_update(
+            persona,
+            normalized_topic,
+            explicit_avoid=explicit_avoid,
+            source=source,
+            now_str=datetime.now().isoformat(),
+        )
+        if changed:
+            self.save_persona(name, persona)
+        return {
+            'matched': True,
+            'topic': normalized_topic,
+            'policy': policy,
+            'response_instruction': self._build_negative_response_instruction(normalized_topic, policy),
+        }
+
+    def register_negative_signal(
+        self,
+        name: str,
+        user_text: str,
+        referenced_topic: str = "",
+        *,
+        persist: bool = True,
+    ) -> dict:
+        """记录负面信号，并返回当前轮应该采用的回复指令。"""
+        result = self.analyze_negative_signal(name, user_text, referenced_topic=referenced_topic)
+        if persist and result.get('matched') and result.get('topic'):
+            committed = self.commit_negative_signal(
+                name,
+                topic=result['topic'],
+                explicit_avoid=bool(result.get('explicit_avoid')),
+                source='negative_signal',
+            )
+            if committed.get('matched'):
+                result['topic'] = committed['topic']
+                result['policy'] = committed['policy']
+                result['response_instruction'] = committed['response_instruction']
+        result.pop('explicit_avoid', None)
+        return result
 
     def apply_negative_preference_review(
         self,

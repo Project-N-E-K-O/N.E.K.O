@@ -22,6 +22,7 @@ from config.prompts_memory import (
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
     get_negative_preference_review_prompt,
+    get_negative_topic_validation_prompt,
 )
 from memory.persona import contains_negative_signal, is_topic_refusal_signal, extract_negative_signal_topic
 from utils.language_utils import get_global_language
@@ -208,6 +209,7 @@ async def shutdown_memory_server():
 REBUTTAL_CHECK_INTERVAL = 300  # 5 分钟
 _last_rebuttal_check: dict[str, datetime] = {}  # per-character 上次检查时间戳
 NEGATIVE_PREFERENCE_CONFIDENCE_THRESHOLD = 0.85
+NEGATIVE_TOPIC_VALIDATION_CONFIDENCE_THRESHOLD = 0.8
 
 
 def _extract_user_messages_from_rows(rows: list) -> list[str]:
@@ -466,6 +468,88 @@ async def _review_negative_preferences(messages: list, lanlan_name: str) -> list
         return []
 
 
+async def _validate_negative_topic_candidate(
+    *,
+    lanlan_name: str,
+    candidate_topic: str,
+    user_message: str,
+    referenced_topic: str = "",
+) -> dict:
+    candidate_topic = str(candidate_topic or "").strip()
+    if not candidate_topic:
+        return {
+            "accepted": False,
+            "normalized_topic": "",
+            "confidence": 0.0,
+            "reason": "empty_topic",
+        }
+
+    from config import SETTING_PROPOSER_MODEL
+    from utils.llm_client import create_chat_llm
+    from utils.token_tracker import set_call_type
+
+    prompt = get_negative_topic_validation_prompt(get_global_language())
+    prompt = prompt.replace("{USER_MESSAGE}", str(user_message or "").strip() or "（空）")
+    prompt = prompt.replace("{REFERENCED_TOPIC}", str(referenced_topic or "").strip() or "（空）")
+    prompt = prompt.replace("{CANDIDATE_TOPIC}", candidate_topic)
+
+    try:
+        set_call_type("memory_negative_topic_validation")
+        api_config = _config_manager.get_model_api_config('summary')
+        llm = create_chat_llm(
+            api_config.get('model', SETTING_PROPOSER_MODEL),
+            api_config['base_url'], api_config['api_key'],
+            temperature=0.0,
+        )
+        try:
+            resp = await llm.ainvoke(prompt)
+        finally:
+            await llm.aclose()
+        raw = str(resp.content).strip()
+        if raw.startswith("```"):
+            match = re.search(r'```(?:json)?\s*([\s\S]*?)```', raw)
+            if match:
+                raw = match.group(1).strip()
+            else:
+                raw = raw.replace("```json", "").replace("```", "").strip()
+        try:
+            reviewed = json.loads(raw)
+        except json.JSONDecodeError:
+            reviewed = json.loads(_sanitize_llm_json(raw))
+        if not isinstance(reviewed, dict):
+            return {
+                "accepted": False,
+                "normalized_topic": "",
+                "confidence": 0.0,
+                "reason": "invalid_response_shape",
+            }
+        normalized_topic = str(reviewed.get("normalized_topic", "")).strip()
+        try:
+            confidence = float(reviewed.get("confidence", 0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        accepted = bool(reviewed.get("accepted")) and confidence >= NEGATIVE_TOPIC_VALIDATION_CONFIDENCE_THRESHOLD
+        result = {
+            "accepted": accepted,
+            "normalized_topic": normalized_topic,
+            "confidence": confidence,
+            "reason": str(reviewed.get("reason", "")).strip(),
+        }
+        logger.info(
+            f"[MemoryServer] {lanlan_name}: 主题候选校验 topic={candidate_topic or '∅'} "
+            f"accepted={result['accepted']} normalized={normalized_topic or '∅'} confidence={confidence:.2f}"
+        )
+        return result
+    except Exception as e:
+        logger.warning(f"[MemoryServer] 主题候选校验失败: {e}")
+        return {
+            "accepted": False,
+            "normalized_topic": "",
+            "confidence": 0.0,
+            "reason": f"validator_error:{e}",
+        }
+
+
 async def _review_and_apply_negative_preferences(messages: list, lanlan_name: str) -> int:
     negative_user_msgs = _get_negative_signal_user_messages(messages)
     if not negative_user_msgs:
@@ -536,9 +620,22 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
                 f"policy={policy or '∅'} confidence={confidence:.2f} reason=already_signaled_this_round"
             )
             continue
+        validation = await _validate_negative_topic_candidate(
+            lanlan_name=lanlan_name,
+            candidate_topic=topic,
+            user_message=str(item.get('user_evidence', '')).strip(),
+            referenced_topic=str(item.get('assistant_evidence', '')).strip(),
+        )
+        if not validation.get("accepted"):
+            logger.info(
+                f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={topic or '∅'} "
+                f"policy={policy or '∅'} confidence={confidence:.2f} reason=invalid_topic_candidate"
+            )
+            continue
+        validated_topic = str(validation.get("normalized_topic", "")).strip() or topic
         result = persona_manager.apply_negative_preference_review(
             lanlan_name,
-            topic=topic,
+            topic=validated_topic,
             policy=policy,
         )
         if result.get('matched'):
@@ -856,14 +953,23 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
 
 @app.post("/negative_signal/{lanlan_name}")
 async def handle_negative_signal(request: NegativeSignalRequest, lanlan_name: str):
-    """识别用户负面信号，并返回当前轮可直接注入模型的回复策略。"""
+    """识别用户负面信号，并返回当前轮可直接注入模型的安抚策略。
+
+    即时路径只负责把当前轮回复语气调整为更温和的 tone_only，
+    不在这里落地 persona。长期负面偏好统一交给后台 review 复审后写入。
+    """
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
-        result = persona_manager.register_negative_signal(
+        result = persona_manager.analyze_negative_signal(
             lanlan_name,
             request.message,
             referenced_topic=request.referenced_topic,
         )
+        if result.get("matched"):
+            result["topic"] = ""
+            result["policy"] = "tone_only"
+            result["response_instruction"] = persona_manager._build_negative_response_instruction("", "tone_only")
+        result.pop("explicit_avoid", None)
         return JSONResponse(result)
     except Exception as e:
         logger.exception(f"[MemoryServer] 负面信号处理失败: {e}")
