@@ -13,7 +13,7 @@ from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_pr
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.7.3.1"
+APP_VERSION = "0.7.4"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -28,6 +28,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "voice_id",
     "system_prompt",
     "model_type",
+    "live3d_sub_type",
     "vrm",
     "vrm_animation",
     "lighting",
@@ -72,6 +73,7 @@ RESERVED_FIELD_SCHEMA = {
     "system_prompt": str,
     "avatar": {
         "model_type": str,
+        "live3d_sub_type": str,
         "asset_source": str,
         "asset_source_id": str,
         "live2d": {
@@ -103,6 +105,7 @@ LEGACY_FLAT_TO_RESERVED = {
     "voice_id": ("voice_id",),
     "system_prompt": ("system_prompt",),
     "model_type": ("avatar", "model_type"),
+    "live3d_sub_type": ("avatar", "live3d_sub_type"),
     "live2d_item_id": ("avatar", "asset_source_id"),
     "item_id": ("avatar", "asset_source_id"),
     "live2d": ("avatar", "live2d", "model_path"),
