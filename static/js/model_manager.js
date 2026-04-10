@@ -5559,6 +5559,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 从完整路径中提取表情名称（去掉路径和扩展名）
         const expressionName = expressionSelect.value.split('/').pop().replace('.exp3.json', '');
         const live2dManager = window.live2dManager;
+        let previewToken = null;
         let previewSuspendReason = null;
         let resumePreviewSuspend = () => {};
 
@@ -5573,7 +5574,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             window._currentMotionPreviewId = null;
 
             // 创建预览标记，防止快速连续点击时并发 await 导致多个定时器共存
-            const previewToken = nextExpressionPreviewToken();
+            previewToken = nextExpressionPreviewToken();
             window._currentExpressionPreviewToken = previewToken;
             previewSuspendReason = `preview-expression-${previewToken}`;
             let previewSuspendResumed = false;
@@ -5636,7 +5637,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (previewSuspendReason) {
                 resumePreviewSuspend(true);
             }
-            if (window._currentExpressionPreviewToken !== previewToken) {
+            if (previewToken != null && window._currentExpressionPreviewToken !== previewToken) {
                 return;
             }
             console.error('播放表情失败:', error);

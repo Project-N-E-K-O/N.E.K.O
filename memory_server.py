@@ -245,16 +245,23 @@ def _sanitize_llm_json(raw: str) -> str:
     if not s:
         return "[]"
 
-    json_ready = s.replace("True", "true").replace("False", "false").replace("None", "null")
+    def _dump_json(parsed) -> str | None:
+        try:
+            return json.dumps(parsed, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return None
+
     try:
-        json.loads(json_ready)
-        return json_ready
+        json.loads(s)
+        return s
     except json.JSONDecodeError:
         pass
 
     try:
         parsed = ast.literal_eval(s)
-        return json.dumps(parsed, ensure_ascii=False)
+        dumped = _dump_json(parsed)
+        if dumped is not None:
+            return dumped
     except (ValueError, SyntaxError):
         pass
 
@@ -263,13 +270,22 @@ def _sanitize_llm_json(raw: str) -> str:
         lambda match: json.dumps(match.group(1)),
         s,
     )
-    normalized_quotes = normalized_quotes.replace("True", "true").replace("False", "false").replace("None", "null")
     try:
         json.loads(normalized_quotes)
         return normalized_quotes
     except json.JSONDecodeError:
-        logger.warning(f"[MemoryServer] 无法清洗 LLM JSON，回退为空列表: {_truncate_log_text(s, 200)}")
-        return "[]"
+        pass
+
+    try:
+        parsed = ast.literal_eval(normalized_quotes)
+        dumped = _dump_json(parsed)
+        if dumped is not None:
+            return dumped
+    except (ValueError, SyntaxError):
+        pass
+
+    logger.warning(f"[MemoryServer] 无法清洗 LLM JSON，回退为空列表: {_truncate_log_text(s, 200)}")
+    return "[]"
 
 
 def _format_messages_for_review(messages: list, lanlan_name: str) -> str:

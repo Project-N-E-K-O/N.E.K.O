@@ -1191,15 +1191,15 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             // 再停止 motion/expression，确保过渡起点与屏幕一致，无视觉跳变。
             if (typeof this.smoothResetToInitialState === 'function') {
                 this.smoothResetToInitialState(800, {
-                    persistentResumeReason: 'click-effect',
+                    persistentResumeReason: clickEffectSuspendReason,
                 }).catch(e => {
                     console.warn('[ClickEffect] 平滑恢复失败，回退到即时恢复:', e);
                     if (typeof this.clearExpression === 'function') {
-                        this.clearExpression('click-effect');
+                        this.clearExpression(clickEffectSuspendReason);
                     }
                 });
             } else if (typeof this.clearExpression === 'function') {
-                this.clearExpression('click-effect');
+                this.clearExpression(clickEffectSuspendReason);
             }
         }, duration);
 

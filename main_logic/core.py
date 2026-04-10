@@ -2161,30 +2161,33 @@ class LLMSessionManager:
         delivered = False
         try:
             async with self._proactive_write_lock:
-                await self.send_lanlan_response(full_text, is_first_chunk=True)
+                delivered = await self.send_lanlan_response(full_text, is_first_chunk=True)
 
-                from utils.llm_client import AIMessage as _AIMsg
-                if self.session and hasattr(self.session, '_conversation_history'):
-                    self.session._conversation_history.append(_AIMsg(content=full_text))
+                if delivered:
+                    from utils.llm_client import AIMessage as _AIMsg
+                    if self.session and hasattr(self.session, '_conversation_history'):
+                        self.session._conversation_history.append(_AIMsg(content=full_text))
 
-                if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+                    if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+                        try:
+                            self.tts_request_queue.put((None, None))
+                        except Exception:
+                            pass
+
+                    self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
                     try:
-                        self.tts_request_queue.put((None, None))
+                        if (self.websocket
+                                and hasattr(self.websocket, 'client_state')
+                                and self.websocket.client_state == self.websocket.client_state.CONNECTED):
+                            await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
                     except Exception:
                         pass
-
-                self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-                try:
-                    if (self.websocket
-                            and hasattr(self.websocket, 'client_state')
-                            and self.websocket.client_state == self.websocket.client_state.CONNECTED):
-                        await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
-                except Exception:
-                    pass
-                delivered = True
         finally:
             await self._finalize_or_discard_current_assistant_turn(commit=delivered)
-        logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
+        if delivered:
+            logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
+        else:
+            logger.info("[%s] Proactive stream was not delivered and has been discarded", self.lanlan_name)
 
     async def trigger_agent_callbacks(self) -> None:
         """Proactively deliver pending agent task results via LLM rephrase.

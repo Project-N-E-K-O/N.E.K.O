@@ -264,7 +264,6 @@
                 computer_use_enabled: keyboard,
                 browser_use_enabled: browser,
                 user_plugin_enabled: userPlugin,
-                openfang_enabled: openfang,
             };
             const list = flagElMap[k] || [];
             if (!list.length) return;

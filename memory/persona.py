@@ -114,11 +114,25 @@ _REFERENCE_TOPIC_PATTERNS = (
 )
 _REFERENCE_LATIN_FALLBACK_STOPWORDS = {
     "a", "an", "about", "again", "can", "chat", "continue", "could", "discuss",
-    "i", "it", "keep", "later", "lets", "let's", "mention", "our", "should",
+    "i", "it", "keep", "later", "lets", "let's", "mention", "ok", "okay", "our", "should",
     "speak", "talk", "talking", "the", "this", "today", "tomorrow", "tonight",
-    "we", "will", "with", "you", "your",
+    "we", "will", "with", "you", "your", "sure",
+}
+_REFERENCE_CONFIRMATIONS = {
+    "好", "好的", "好吧", "行", "行吧", "可以", "嗯", "嗯嗯",
+    "ok", "okay", "sure", "alright", "don't mention it", "dont mention it",
+    "别提了",
 }
 _REFERENCE_LISTLIKE_SEPARATORS = ("、", "，", ",", "；", ";", "/", "／")
+_REFERENCE_SENTENCE_PUNCTUATION = ("。", "！", "!", "，", ",", "；", ";", "：", ":")
+_REFERENCE_CJK_QUESTION_MARKERS = ("吗", "么", "呢", "什么", "为什么", "怎么", "如何", "谁", "哪", "哪里", "哪个")
+_REFERENCE_LATIN_QUESTION_RE = re.compile(r"\b(?:what|why|how|who|when|where|which)\b", re.IGNORECASE)
+_REFERENCE_LATIN_FALLBACK_VERBS = {
+    "am", "are", "ask", "asked", "asking", "be", "can", "could", "did", "do", "does",
+    "discuss", "go", "going", "keep", "know", "like", "look", "looking", "make", "mention",
+    "need", "say", "speak", "talk", "talking", "tell", "think", "want", "will", "would",
+}
+_REFERENCE_SIMPLE_LATIN_TOPIC_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,23}$")
 _META_AVOID_TOPIC_RE = re.compile(
     r'^(?:就|再|也)?(?:别提|别提及|不要提|不要提及|别说|不要说|别聊|不要聊|不想聊|不想提|提及|提起)$'
 )
@@ -255,6 +269,22 @@ def _contains_cjk(text: str) -> bool:
     )
 
 
+def _normalize_reference_fallback_text(topic: str) -> str:
+    normalized = re.sub(r'\s+', ' ', (topic or '').strip())
+    return normalized.strip(" \t\r\n，。！？!?；;：:,.")
+
+
+def _contains_reference_question_marker(topic: str) -> bool:
+    normalized = _normalize_reference_fallback_text(topic)
+    if not normalized:
+        return False
+    if "?" in normalized or "？" in normalized:
+        return True
+    if any(marker in normalized for marker in _REFERENCE_CJK_QUESTION_MARKERS):
+        return True
+    return _REFERENCE_LATIN_QUESTION_RE.search(normalized) is not None
+
+
 def _clean_topic_candidate(text: str) -> str:
     topic = (text or "").strip()
     if not topic:
@@ -319,24 +349,49 @@ def _extract_topic_from_reference_text(text: str) -> str:
 
 
 def _is_safe_reference_fallback_topic(topic: str) -> bool:
-    if not topic:
+    normalized = _normalize_reference_fallback_text(topic)
+    if not normalized:
         return False
-    if _contains_cjk(topic):
-        if any(sep in topic for sep in _REFERENCE_LISTLIKE_SEPARATORS):
+    if normalized.casefold() in _REFERENCE_CONFIRMATIONS:
+        return False
+    if _contains_reference_question_marker(normalized):
+        return False
+    if _contains_cjk(normalized):
+        if any(sep in normalized for sep in _REFERENCE_LISTLIKE_SEPARATORS):
+            return False
+        if any(punct in normalized for punct in _REFERENCE_SENTENCE_PUNCTUATION):
+            return False
+        if len(normalized.replace(" ", "")) > 12:
+            return False
+        if re.match(r'^(?:聊|说|讲|提|问|看|吃|喝|去|做|想|要|能|会|把|让|给|用|继续)', normalized):
+            return False
+        if re.search(r'(?:继续聊|说说|讲讲|问问|告诉我|让我|帮我|别提|不要提|不想聊|不要聊)', normalized):
+            return False
+        if re.search(
+            r'(?:我|你|他|她|它|我们|你们|他们|咱们).{0,8}'
+            r'(?:是|会|要|想|能|在|有|说|讲|聊|提|问|喜欢|讨厌|觉得|知道|别|不要|不想|可以|应该)',
+            normalized,
+        ):
             return False
         return True
     tokens = [
         re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", token.casefold())
-        for token in topic.split()
+        for token in normalized.split()
     ]
     tokens = [token for token in tokens if token]
     if not tokens:
         return False
+    if len(tokens) > 3:
+        return False
+    if any(not _REFERENCE_SIMPLE_LATIN_TOPIC_RE.fullmatch(token) for token in tokens):
+        return False
+    if any(token in _REFERENCE_LATIN_FALLBACK_STOPWORDS for token in tokens):
+        return False
+    if any(token in _REFERENCE_LATIN_FALLBACK_VERBS for token in tokens):
+        return False
     if len(tokens) == 1:
-        return True
-    if len(tokens) <= 3 and not any(token in _REFERENCE_LATIN_FALLBACK_STOPWORDS for token in tokens):
-        return True
-    return False
+        return 2 <= len(tokens[0]) <= 24
+    return True
 
 
 def _extract_negative_topic(text: str, referenced_topic: str = "") -> tuple[str, bool]:

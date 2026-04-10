@@ -152,6 +152,27 @@ class OmniOfflineClient:
         self._temporary_system_messages.clear()
         return temporary_messages
 
+    def _build_messages_with_temporary_system_messages(
+        self,
+        temporary_messages: list[SystemMessage] | None,
+    ) -> list[Any]:
+        messages_to_send = list(self._conversation_history)
+        temporary_messages = list(temporary_messages or [])
+        if not temporary_messages:
+            return messages_to_send
+
+        first_system_index = next(
+            (idx for idx, msg in enumerate(messages_to_send) if isinstance(msg, SystemMessage)),
+            None,
+        )
+        if first_system_index is None:
+            return temporary_messages + messages_to_send
+        return (
+            messages_to_send[: first_system_index + 1]
+            + temporary_messages
+            + messages_to_send[first_system_index + 1 :]
+        )
+
     async def connect(self, instructions: str, native_audio=False) -> None:
         """Initialize the client with system instructions."""
         self._temporary_system_messages.clear()
@@ -338,7 +359,7 @@ class OmniOfflineClient:
                 return
             for attempt in range(max_retries):
                 try:
-                    messages_to_send = self._conversation_history + temporary_messages
+                    messages_to_send = self._build_messages_with_temporary_system_messages(temporary_messages)
                     assistant_message = ""
                     guard_attempt = 0
                     while guard_attempt <= self.max_response_rerolls:

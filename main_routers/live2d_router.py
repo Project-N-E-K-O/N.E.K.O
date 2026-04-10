@@ -38,10 +38,13 @@ def _normalize_persistent_expression_group(mapping):
         return []
 
     if isinstance(mapping, (str, list)):
+        normalized_persistent_files = _normalize_persistent_files(mapping)
+        if not normalized_persistent_files:
+            return None
         return {
             "motions": {},
             "expressions": {
-                "常驻": _normalize_persistent_files(mapping),
+                "常驻": normalized_persistent_files,
             },
         }
     if not isinstance(mapping, dict):

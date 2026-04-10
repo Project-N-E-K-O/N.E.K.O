@@ -72,13 +72,15 @@ Live2DManager.prototype.recordInitialParameters = function() {
 // 清除expression到默认状态（使用保存的初始参数）
 Live2DManager.prototype.clearExpression = function(reason = null, forceAll = false) {
     // 取消正在进行的平滑过渡和手动表情覆盖
-    this._cancelSmoothReset();
+    const canceledSmoothReset = this._cancelSmoothReset({ resumePersistent: false });
     this._removeManualExpressionOverride();
 
     try {
         if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
             console.warn('无法清除expression：模型未加载');
-            this.resumePersistentExpressions(reason, forceAll);
+            const resumeReason = reason != null ? reason : canceledSmoothReset.pendingResumeReason;
+            const resumeForceAll = forceAll === true || canceledSmoothReset.pendingForceAllPersistentResume === true;
+            this.resumePersistentExpressions(resumeReason, resumeForceAll);
             return;
         }
 
@@ -86,7 +88,9 @@ Live2DManager.prototype.clearExpression = function(reason = null, forceAll = fal
         if (!this.initialParameters || Object.keys(this.initialParameters).length === 0) {
             console.error('严重错误：未找到初始参数记录！expression清除失败。');
             console.error('请确保在模型加载完成后立即调用recordInitialParameters()初始化参数基准');
-            this.resumePersistentExpressions(reason, forceAll);
+            const resumeReason = reason != null ? reason : canceledSmoothReset.pendingResumeReason;
+            const resumeForceAll = forceAll === true || canceledSmoothReset.pendingForceAllPersistentResume === true;
+            this.resumePersistentExpressions(resumeReason, resumeForceAll);
             return;
         }
 
@@ -136,7 +140,9 @@ Live2DManager.prototype.clearExpression = function(reason = null, forceAll = fal
         console.warn('expression重置失败:', error);
     }
 
-    this.resumePersistentExpressions(reason, forceAll);
+    const resumeReason = reason != null ? reason : canceledSmoothReset.pendingResumeReason;
+    const resumeForceAll = forceAll === true || canceledSmoothReset.pendingForceAllPersistentResume === true;
+    this.resumePersistentExpressions(resumeReason, resumeForceAll);
 
     // 如存在常驻表情，清除后立即重放常驻，保证不被清掉
     this.applyPersistentExpressionsNative(false);
@@ -234,6 +240,8 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800, opt
         const emitter = this.currentModel.internalModel; // 捕获绑定时的 emitter 引用
         this._smoothResetEmitter = emitter;
         this._smoothResetResolve = resolve; // 存储 resolve 以便外部取消时也能结束 Promise
+        this._pendingSmoothResetResumeReason = persistentResumeReason;
+        this._pendingForceAllPersistentResume = forceAllPersistentResume === true;
         let phase = 0;          // 0 = 采集含表情, 1 = 采集无表情 & 计算 delta, 2 = 淡出
         const valuesA = [];     // Phase 0 采集的全参数值（按索引）
         const deltaByIndex = {}; // { 参数索引: 差值 }
@@ -301,7 +309,7 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800, opt
 
                 if (deltaKeys.length === 0) {
                     // 没有活跃表情，无需淡出
-                    self._cancelSmoothReset();
+                    self._cancelSmoothReset({ resumePersistent: false });
                     self.resumePersistentExpressions(persistentResumeReason, forceAllPersistentResume);
                     try { self.applyPersistentExpressionsNative(false); } catch (e) {}
                     resolve();
@@ -342,7 +350,7 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800, opt
             }
 
             if (progress >= 1) {
-                self._cancelSmoothReset();
+                self._cancelSmoothReset({ resumePersistent: false });
                 // 淡出完成，重新应用常驻表情
                 self.resumePersistentExpressions(persistentResumeReason, forceAllPersistentResume);
                 try { self.applyPersistentExpressionsNative(false); } catch (e) {}
@@ -360,7 +368,12 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800, opt
 /**
  * 取消正在进行的平滑过渡恢复
  */
-Live2DManager.prototype._cancelSmoothReset = function() {
+Live2DManager.prototype._cancelSmoothReset = function(options = {}) {
+    const pendingResumeReason = Object.prototype.hasOwnProperty.call(this, '_pendingSmoothResetResumeReason')
+        ? this._pendingSmoothResetResumeReason
+        : null;
+    const pendingForceAllPersistentResume = !!this._pendingForceAllPersistentResume;
+    const resumePersistent = options.resumePersistent !== false;
     if (this._smoothResetListener) {
         const emitter = this._smoothResetEmitter || (this.currentModel && this.currentModel.internalModel);
         if (emitter) {
@@ -369,11 +382,21 @@ Live2DManager.prototype._cancelSmoothReset = function() {
     }
     this._smoothResetListener = null;
     this._smoothResetEmitter = null;
+    this._pendingSmoothResetResumeReason = null;
+    this._pendingForceAllPersistentResume = false;
+    if (resumePersistent && (pendingResumeReason != null || pendingForceAllPersistentResume)) {
+        this.resumePersistentExpressions(pendingResumeReason, pendingForceAllPersistentResume);
+        try { this.applyPersistentExpressionsNative(false); } catch (e) {}
+    }
     // 外部取消时结束挂起的 Promise，避免调用方永久等待
     if (this._smoothResetResolve) {
         this._smoothResetResolve();
         this._smoothResetResolve = null;
     }
+    return {
+        pendingResumeReason,
+        pendingForceAllPersistentResume,
+    };
 };
 
 /**
@@ -606,7 +629,6 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
                 if (expression) {
                     console.log(`成功使用原生API播放expression: ${expressionName}`);
                     playedExpression = true;
-                    return; // 成功播放，直接返回
                 } else {
                     console.warn(`原生expression API未返回有效结果 (name: ${expressionName})，回退到手动参数设置`);
                 }
