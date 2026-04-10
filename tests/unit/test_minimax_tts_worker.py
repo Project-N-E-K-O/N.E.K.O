@@ -288,3 +288,60 @@ def test_minimax_worker_switches_speech_id_without_reusing_old_connection(monkey
     request_queue.close()
     thread.join(timeout=2.0)
     assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_preserves_tail_audio_until_close_flush(monkeypatch):
+    # Keep resampled output below the 4KB aggregation threshold so audio only
+    # appears when the receive-loop finally block flushes on close.
+    pcm_bytes = (np.arange(1500, dtype=np.int16)).tobytes()
+    original_asyncio_wait = asyncio.wait
+    wait_call_count = 0
+
+    async def patched_asyncio_wait(*args, **kwargs):
+        nonlocal wait_call_count
+        wait_call_count += 1
+        if wait_call_count == 2:
+            pending = set(args[0])
+            return set(), pending
+        return await original_asyncio_wait(*args, **kwargs)
+
+    async def task_on_send(ws, message):
+        event = message.get("event")
+        if event == "task_start":
+            ws.queue_event({"event": "task_started"})
+        elif event == "task_continue":
+            ws.queue_event(
+                {
+                    "event": "task_continued",
+                    "data": {"audio": pcm_bytes.hex()},
+                }
+            )
+
+    probe_ws = FakeMiniMaxWebSocket()
+    task_ws = FakeMiniMaxWebSocket(on_send=task_on_send)
+    factory = FakeConnectFactory(probe_ws, task_ws)
+    monkeypatch.setattr(tts_client.websockets, "connect", factory)
+    monkeypatch.setattr(asyncio, "wait", patched_asyncio_wait)
+    monkeypatch.setattr(tts_client.asyncio, "wait", patched_asyncio_wait)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue)
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    request_queue.put(("speech-tail", "abcdef"))
+    request_queue.put((None, None))
+
+    audio_item, _ = _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
+    )
+    assert audio_item[1] == "speech-tail"
+    assert len(audio_item[2]) > 0
+    assert [msg["event"] for msg in task_ws.sent_messages] == ["task_start", "task_continue", "task_finish"]
+
+    request_queue.close()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()

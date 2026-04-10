@@ -2258,7 +2258,7 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                 return False
 
         async def _finish_current_task() -> None:
-            nonlocal current_speech_id, pending_text, task_started, accepted_speech_id
+            nonlocal current_speech_id, pending_text, task_started
             nonlocal disconnect_reason, last_send_monotonic
             if current_speech_id is None:
                 pending_text = ""
@@ -2293,7 +2293,6 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                 return
 
             await _wait_for_event(task_finished_event, task_finish_timeout)
-            accepted_speech_id = None
             await _close_connection(expect_close=True)
             _reset_task_state(clear_sid=True)
 
