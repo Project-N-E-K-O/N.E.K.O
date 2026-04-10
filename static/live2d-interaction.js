@@ -861,7 +861,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 distance = Math.sqrt(dx * dx + dy * dy);
             } else {
                 // 椭圆半径比例（相对于边界框）
-                const ellipseRadiusX = width * 0.35;
+                const ellipseRadiusX = width * 0.28;
                 const ellipseRadiusY = height * 0.45;
 
                 // 计算点到椭圆的归一化距离

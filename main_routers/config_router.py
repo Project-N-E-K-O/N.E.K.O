@@ -93,7 +93,20 @@ _MMD_EXTENSIONS = {'.pmx', '.pmd'}
 
 def _get_live3d_sub_type(catgirl_config: dict) -> str:
     """判断 Live3D 模式下应使用 VRM 还是 MMD 渲染器。
-    优先检查 MMD 路径（因为 VRM 是旧字段，可能遗留非空值）。"""
+    优先使用持久化的子类型；缺失或失效时再按模型路径回退判断。"""
+    stored_sub_type = str(
+        get_reserved(
+            catgirl_config,
+            'avatar',
+            'live3d_sub_type',
+            default='',
+            legacy_keys=('live3d_sub_type',),
+        )
+        or ''
+    ).strip().lower()
+    if stored_sub_type in {'mmd', 'vrm'}:
+        return stored_sub_type
+
     mmd_path = get_reserved(catgirl_config, 'avatar', 'mmd', 'model_path', default='')
     if mmd_path:
         return 'mmd'
