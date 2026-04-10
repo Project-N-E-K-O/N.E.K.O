@@ -700,63 +700,17 @@ textarea {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
-.composer-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  flex-wrap: wrap;
-}
-
-.composer-tool-chip {
-  min-height: 42px;
-  padding: 8px 14px;
-  border: 2px solid #44b7fe;
-  border-radius: 8px;
-  color: #44b7fe;
-  background: #fff;
-  cursor: pointer;
-  font-size: 0.85rem;
-  font-weight: 500;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  white-space: nowrap;
-  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
-}
-
-.composer-tool-chip:hover {
-  background: #f0f9ff;
-  border-color: #2ea0e0;
-  color: #2ea0e0;
-}
-
-.composer-tool-chip-icon {
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  object-fit: contain;
-  pointer-events: none;
-}
-
+/* ===== 输入框统一容器 ===== */
 .composer {
   display: block;
 }
 
-.composer-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0;
-}
-
 .composer-input-shell {
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
   min-height: 98px;
   padding: 0 16px;
-  border-radius: 12px 0 0 12px;
+  border-radius: 16px;
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid rgba(127, 144, 170, 0.16);
   transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
@@ -814,54 +768,90 @@ textarea {
   box-shadow: none !important;
 }
 
-.send-button {
-  min-width: 104px;
-  height: 98px;
-  padding: 0 18px;
-  border: 2px solid transparent;
-  border-radius: 0 8px 8px 0;
-  color: #fff;
-  background: #44b7fe;
-  cursor: pointer;
-  font-weight: 500;
-  font-size: 0.92rem;
-  box-shadow: none;
-  margin-left: -1px;
-  position: relative;
+/* ===== 底部工具栏 ===== */
+.composer-bottom-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0 10px;
+}
+
+.composer-bottom-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.composer-tool-btn {
   display: inline-flex;
   align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-  overflow: hidden;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.15s ease;
 }
 
-.send-button:hover {
-  background: #2ea0e0;
+.composer-tool-btn:hover {
+  background: rgba(68, 183, 254, 0.1);
 }
 
-.send-button-icon {
-  position: relative;
-  z-index: 1;
-  width: 28px;
-  height: 28px;
+.composer-tool-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.composer-tool-btn img {
+  width: 24px;
+  height: 24px;
   object-fit: contain;
-  flex-shrink: 0;
-}
-
-.send-button-paw {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 18px;
-  height: 18px;
-  object-fit: contain;
-  opacity: 0.3;
   pointer-events: none;
 }
 
-.send-button span {
-  position: relative;
-  z-index: 1;
+.composer-tool-divider {
+  color: rgba(127, 144, 170, 0.35);
+  font-size: 1rem;
+  line-height: 1;
+  user-select: none;
+  padding: 0 2px;
+}
+
+/* ===== 圆形发送按钮 ===== */
+.send-button-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.send-button-circle:hover {
+  transform: scale(1.08);
+}
+
+.send-button-circle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.send-button-circle img {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  pointer-events: none;
 }
 
 @media (max-width: 820px) {
@@ -879,14 +869,6 @@ textarea {
 
   .composer-panel {
     padding: 12px 10px 14px;
-  }
-
-  .send-button {
-    width: 100%;
-  }
-
-  .composer-row {
-    grid-template-columns: 1fr;
   }
 }
 
@@ -1141,16 +1123,12 @@ textarea {
   background: #2a2a3a;
 }
 
-[data-theme="dark"] .composer-tool-chip {
-  background: rgba(40, 40, 55, 0.9);
-  border-color: #44b7fe;
-  color: #6fc7ff;
+[data-theme="dark"] .composer-tool-btn:hover {
+  background: rgba(68, 183, 254, 0.15);
 }
 
-[data-theme="dark"] .composer-tool-chip:hover {
-  background: rgba(68, 183, 254, 0.12);
-  border-color: #6fc7ff;
-  color: #8ed4ff;
+[data-theme="dark"] .composer-tool-divider {
+  color: rgba(255, 255, 255, 0.15);
 }
 
 [data-theme="dark"] .composer-input-shell {
@@ -1178,10 +1156,6 @@ textarea {
   color: #9aa0ac;
 }
 
-[data-theme="dark"] .send-button {
-  background: #3a9ee0;
-}
-
-[data-theme="dark"] .send-button:hover {
-  background: #2a8fd0;
+[data-theme="dark"] .send-button-circle:hover {
+  opacity: 0.85;
 }
