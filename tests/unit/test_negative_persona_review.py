@@ -254,7 +254,7 @@ def test_negative_review_deduplicates_same_topic_in_one_round() -> None:
         assert applied_calls == [("测试猫娘", "work", "avoid", "negative_review")]
 
 
-def test_negative_review_skips_topic_already_signaled_in_same_round() -> None:
+def test_negative_review_does_not_infer_already_persisted_topic_from_raw_signal() -> None:
     with _import_memory_server_with_tempdir() as (memory_server, _mock_cm):
         reviewed = [
             {"topic": "Work", "policy": "avoid", "confidence": 0.95},
@@ -265,11 +265,22 @@ def test_negative_review_skips_topic_already_signaled_in_same_round() -> None:
 
         with patch.object(memory_server, "_get_negative_signal_user_messages", return_value=["don't mention work anymore"]), \
              patch.object(memory_server, "_review_negative_preferences", side_effect=fake_review_negative_preferences), \
-             patch.object(memory_server.persona_manager, "apply_negative_preference_review") as apply_mock:
+             patch.object(memory_server, "_validate_negative_topic_candidate", return_value={
+                 "accepted": True,
+                 "normalized_topic": "work",
+                 "confidence": 0.99,
+                 "reason": "ok",
+             }), \
+             patch.object(memory_server.persona_manager, "apply_negative_preference_review", return_value={
+                 "matched": True,
+                 "topic": "work",
+                 "policy": "avoid",
+                 "response_instruction": "",
+             }) as apply_mock:
             applied = asyncio.run(memory_server._review_and_apply_negative_preferences(reviewed, "测试猫娘"))
 
-        assert applied == 0
-        apply_mock.assert_not_called()
+        assert applied == 1
+        apply_mock.assert_called_once()
 
 
 def test_negative_review_skips_invalid_topic_candidate_before_persist() -> None:
@@ -313,6 +324,26 @@ def test_negative_signal_explicit_avoid_uses_referenced_topic() -> None:
             )
             assert result["matched"] is True
             assert result["topic"] == "工作上的安排"
+            assert result["policy"] == "avoid"
+
+
+def test_negative_signal_explicit_variant_without_topic_uses_referenced_topic() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            result = pm.register_negative_signal(
+                "测试猫娘",
+                "不想提了",
+                referenced_topic="那我们继续聊工作问题吧",
+            )
+            assert result["matched"] is True
+            assert result["topic"] == "工作问题"
             assert result["policy"] == "avoid"
 
 
@@ -411,6 +442,22 @@ def test_negative_signal_placeholder_topic_falls_back_to_tone_only() -> None:
             pm._config_manager = mock_cm
 
             result = pm.register_negative_signal("测试猫娘", "don't mention it anymore")
+            assert result["matched"] is True
+            assert result["topic"] == ""
+            assert result["policy"] == "tone_only"
+
+
+def test_negative_signal_capitalized_dont_mention_placeholder_stays_tone_only() -> None:
+    with tempfile.TemporaryDirectory(prefix="negative_persona_") as tmpdir:
+        mock_cm = _build_mock_config_manager(tmpdir)
+        with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
+             patch("utils.config_manager._config_manager", mock_cm):
+            from memory.persona import PersonaManager
+
+            pm = PersonaManager()
+            pm._config_manager = mock_cm
+
+            result = pm.register_negative_signal("测试猫娘", "Don't mention it")
             assert result["matched"] is True
             assert result["topic"] == ""
             assert result["policy"] == "tone_only"
@@ -634,6 +681,12 @@ def test_topics_match_avoids_partial_latin_false_positive() -> None:
     assert _topics_match("art", "martial arts") is False
 
 
+def test_topics_match_merges_simple_latin_inflection_variants() -> None:
+    from memory.persona import _topics_match
+
+    assert _topics_match("work issue", "work issues") is True
+
+
 def test_negative_preference_prompt_normalizes_full_locale_code() -> None:
     from config.prompts_memory import get_negative_preference_review_prompt
 
@@ -644,10 +697,9 @@ def test_negative_preference_prompt_normalizes_full_locale_code() -> None:
 def test_negative_preference_prompt_formatting_is_safe() -> None:
     from config.prompts_memory import get_negative_preference_review_prompt
 
-    rendered = get_negative_preference_review_prompt("en").format(
-        CURRENT_GUIDANCE="[]",
-        CONVERSATION="user: don't mention insect food again",
-    )
+    rendered = get_negative_preference_review_prompt("en")
+    rendered = rendered.replace("{CURRENT_GUIDANCE}", "[]")
+    rendered = rendered.replace("{CONVERSATION}", "user: don't mention insect food again")
     assert '"topic": "insect food"' in rendered
 
 
@@ -663,11 +715,10 @@ def test_negative_topic_validation_prompt_normalizes_full_locale_code() -> None:
 def test_negative_topic_validation_prompt_formatting_is_safe() -> None:
     from config.prompts_memory import get_negative_topic_validation_prompt
 
-    rendered = get_negative_topic_validation_prompt("zh").format(
-        USER_MESSAGE="别提昆虫食品了",
-        REFERENCED_TOPIC="昆虫食品",
-        CANDIDATE_TOPIC="昆虫食品",
-    )
+    rendered = get_negative_topic_validation_prompt("zh")
+    rendered = rendered.replace("{USER_MESSAGE}", "别提昆虫食品了")
+    rendered = rendered.replace("{REFERENCED_TOPIC}", "昆虫食品")
+    rendered = rendered.replace("{CANDIDATE_TOPIC}", "昆虫食品")
     assert '"accepted": true' in rendered
 
 
@@ -684,9 +735,8 @@ def test_negative_topic_validation_prompt_has_localized_entries_for_ja_ko_ru() -
     assert ru_prompt != zh_prompt
 
     for prompt in (ja_prompt, ko_prompt, ru_prompt):
-        rendered = prompt.format(
-            USER_MESSAGE="don't mention insect food again",
-            REFERENCED_TOPIC="insect food",
-            CANDIDATE_TOPIC="insect food",
-        )
+        rendered = prompt
+        rendered = rendered.replace("{USER_MESSAGE}", "don't mention insect food again")
+        rendered = rendered.replace("{REFERENCED_TOPIC}", "insect food")
+        rendered = rendered.replace("{CANDIDATE_TOPIC}", "insect food")
         assert '"accepted": true' in rendered

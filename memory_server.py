@@ -24,7 +24,7 @@ from config.prompts_memory import (
     get_negative_preference_review_prompt,
     get_negative_topic_validation_prompt,
 )
-from memory.persona import contains_negative_signal, is_topic_refusal_signal, extract_negative_signal_topic
+from memory.persona import contains_negative_signal, is_topic_refusal_signal
 from utils.language_utils import get_global_language
 from utils.character_name import validate_character_name
 from utils.config_manager import get_config_manager
@@ -626,11 +626,7 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
         f"[MemoryServer] {lanlan_name}: 负面偏好门控命中 {len(negative_user_msgs)} 条，用户原句="
         f"{_truncate_log_text(' | '.join(negative_user_msgs), 240)}"
     )
-    already_signaled_topics = {
-        _normalize_topic_key(extract_negative_signal_topic(text))
-        for text in negative_user_msgs
-        if extract_negative_signal_topic(text)
-    }
+    already_signaled_topics: set[str] = set()
     reviewed = await _review_negative_preferences(messages, lanlan_name)
     deduped_candidates: dict[str, dict] = {}
     for item in reviewed[:3]:
@@ -706,6 +702,9 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
             policy=policy,
         )
         if result.get('matched'):
+            persisted_topic = _normalize_topic_key(result.get('topic', ''))
+            if persisted_topic:
+                already_signaled_topics.add(persisted_topic)
             applied += 1
             logger.info(
                 f"[MemoryServer] {lanlan_name}: 后台确认负面偏好 topic={result.get('topic')} "

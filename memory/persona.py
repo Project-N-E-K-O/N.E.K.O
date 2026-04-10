@@ -74,6 +74,7 @@ _NEGATIVE_KEYWORDS = (
 )
 _EXPLICIT_AVOID_TOKENS = (
     "别提", "不要提", "别再提", "不要再提", "不想聊", "别聊", "不要聊",
+    "不想提", "别说", "不要说",
     "don't mention", "dont mention", "don't talk about", "dont talk about",
     "stop talking about", "stop mentioning",
 )
@@ -414,7 +415,7 @@ def _extract_negative_topic(text: str, referenced_topic: str = "") -> tuple[str,
     if explicit:
         fallback = raw
         for token in _NEGATIVE_KEYWORDS:
-            fallback = fallback.replace(token, " ")
+            fallback = re.sub(re.escape(token), " ", fallback, flags=re.IGNORECASE)
         fallback = re.sub(r'[，。、！？；：,.!?]', ' ', fallback)
         segments = [seg.strip() for seg in fallback.split() if seg.strip()]
         if segments:
@@ -760,7 +761,7 @@ class PersonaManager:
 
     @classmethod
     def _topic_matches(cls, lhs: str, rhs: str) -> bool:
-        return cls._topic_key(lhs) == cls._topic_key(rhs)
+        return _topics_match(lhs, rhs)
 
     def _get_topic_guidance(self, persona: dict) -> dict:
         guidance = persona.setdefault('_topic_guidance', {})

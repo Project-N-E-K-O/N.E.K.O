@@ -328,7 +328,7 @@ class OmniOfflineClient:
         else:
             # Text-only message
             user_message = HumanMessage(content=text.strip())
-        
+        temporary_messages = self._consume_temporary_system_messages()
         self._conversation_history.append(user_message)
         
         # Callback for user input
@@ -341,7 +341,6 @@ class OmniOfflineClient:
         assistant_message = ""
         status_reported = False
         guard_exhausted = False
-        temporary_messages = self._consume_temporary_system_messages()
         
         try:
             self._is_responding = True

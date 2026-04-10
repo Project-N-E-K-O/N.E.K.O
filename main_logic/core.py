@@ -641,8 +641,11 @@ class LLMSessionManager:
         if isinstance(self.session, OmniOfflineClient):
             self.session.queue_temporary_system_message(instruction)
             if self.pending_session or self.background_preparation_task or self.pending_session_warmed_up_event:
-                await self._cleanup_pending_session_resources()
-                await self._reset_preparation_state(clear_main_cache=False)
+                try:
+                    await self._cleanup_pending_session_resources()
+                    await self._reset_preparation_state(clear_main_cache=False)
+                except Exception as e:
+                    logger.debug(f"清理临时响应指令关联的 pending session 失败: {e}")
             return
 
         if not isinstance(self.session, OmniRealtimeClient):
@@ -657,13 +660,20 @@ class LLMSessionManager:
             return
 
         transient_instructions = base_instructions.rstrip() + "\n" + instruction
-        await self.session.update_session({"instructions": transient_instructions})
+        try:
+            await self.session.update_session({"instructions": transient_instructions})
+        except Exception as e:
+            logger.debug(f"应用临时响应指令失败: {e}")
+            return
         self.session.instructions = transient_instructions
         self._transient_response_instruction_base = base_instructions
         self._transient_response_instruction_active = instruction
         if self.pending_session or self.background_preparation_task or self.pending_session_warmed_up_event:
-            await self._cleanup_pending_session_resources()
-            await self._reset_preparation_state(clear_main_cache=False)
+            try:
+                await self._cleanup_pending_session_resources()
+                await self._reset_preparation_state(clear_main_cache=False)
+            except Exception as e:
+                logger.debug(f"应用临时响应指令后的 pending session 清理失败: {e}")
 
     async def _restore_transient_response_instruction(self, session_override=None) -> None:
         if not self._transient_response_instruction_active:

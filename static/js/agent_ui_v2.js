@@ -329,8 +329,8 @@
         }
 
         if (openfang.length) {
-            const ready = capabilityReady(snap, 'openfang_enabled');
-            const reason = capabilityReason(snap, 'openfang_enabled') || state.openfangProbeReason;
+            const ready = state.openfangProbeReady ?? capabilityReady(snap, 'openfang_enabled');
+            const reason = state.openfangProbeReason || capabilityReason(snap, 'openfang_enabled');
             const disabledByPending = state.pending.has('openfang_enabled');
             const canUse = effectiveAnalyzerEnabled && ready && !disabledByPending;
             const openfangName = window.t ? window.t('settings.toggles.openfang') : '虚拟机';
