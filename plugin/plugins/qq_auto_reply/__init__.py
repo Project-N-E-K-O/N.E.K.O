@@ -516,6 +516,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
                 character_prompt
             ]
 
+            # TODO: i18n — 角色卡分隔标记、转述场景、relay_prompt 需国际化
             if character_card_fields:
                 system_prompt_parts.append("\n======角色卡额外设定======")
                 for field_name, field_value in character_card_fields.items():
@@ -617,6 +618,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
             current_character = catgirl_data.get(her_name, {})
 
             # 获取角色核心提示词（system_prompt）
+            # TODO: i18n — fallback prompt 需国际化
             character_prompt = lanlan_prompt_map.get(her_name, "你是一个友好的AI助手")
 
             # 获取角色卡的额外字段（如果有）
@@ -692,6 +694,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
                 if memory_context:
                     system_prompt_parts.append(memory_context)
 
+                # TODO: i18n — 角色卡分隔标记、群聊/私聊环境说明需国际化
                 # 注入角色卡额外字段
                 if character_card_fields:
                     system_prompt_parts.append("\n======角色卡额外设定======")

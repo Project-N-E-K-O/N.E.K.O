@@ -306,6 +306,73 @@ VISION_USER_NO_TITLE = {
     'ru': 'Опишите содержимое этого изображения.',
 }
 
+# ---------- 翻译服务 prompt ----------
+# 安全水印（所有语言固定中文）
+TRANSLATION_WATERMARK_START = "======以下为要求======"
+TRANSLATION_WATERMARK_END = "======以上为要求======"
+
+# 翻译指令行（{source_name} 和 {target_name} 为占位符）
+TRANSLATION_INSTRUCTION = {
+    'zh': '请根据要求将用户提供的文本从{source_name}翻译成{target_name}。',
+    'en': 'Please translate the user\'s text from {source_name} to {target_name} as required.',
+    'ja': '以下の要件に従い、ユーザーのテキストを{source_name}から{target_name}に翻訳してください。',
+    'ko': '요구사항에 따라 사용자의 텍스트를 {source_name}에서 {target_name}(으)로 번역하세요.',
+    'ru': 'Переведите текст пользователя с {source_name} на {target_name} согласно требованиям.',
+}
+
+# 翻译要求（水印包裹部分）
+TRANSLATION_REQUIREMENTS = {
+    'zh': '1. 保持原文的语气和风格\n2. 准确传达原文的意思\n3. 只输出翻译结果，不要添加任何解释或说明\n4. 如果文本包含emoji或特殊符号，请保留它们',
+    'en': '1. Maintain the tone and style of the original text\n2. Convey the meaning accurately\n3. Output only the translation, without any explanations or notes\n4. Preserve any emoji or special symbols in the text',
+    'ja': '1. 原文の語調とスタイルを維持する\n2. 原文の意味を正確に伝える\n3. 翻訳結果のみを出力し、説明や注釈は一切加えない\n4. テキストに含まれる絵文字や特殊記号はそのまま残す',
+    'ko': '1. 원문의 어조와 스타일을 유지할 것\n2. 원문의 의미를 정확히 전달할 것\n3. 번역 결과만 출력하고 설명이나 부연을 추가하지 말 것\n4. 텍스트에 포함된 이모지나 특수 기호는 그대로 유지할 것',
+    'ru': '1. Сохраняйте тон и стиль оригинала\n2. Точно передавайте смысл исходного текста\n3. Выводите только перевод, без пояснений и примечаний\n4. Сохраняйте эмодзи и специальные символы из текста',
+}
+
+# 语言名称（外层 key=UI 语言，内层 key=语言代码）
+TRANSLATION_LANG_NAMES = {
+    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语'},
+    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian'},
+    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語'},
+    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어'},
+    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский'},
+}
+
+# ---------- 对话备忘录注入 LLM 上下文 ----------
+MEMORY_MEMO_WITH_SUMMARY = {
+    'zh': '先前对话的备忘录: {summary}',
+    'en': 'Memo from prior conversations: {summary}',
+    'ja': '以前の会話のメモ: {summary}',
+    'ko': '이전 대화의 메모: {summary}',
+    'ru': 'Заметки из предыдущих разговоров: {summary}',
+}
+
+MEMORY_MEMO_EMPTY = {
+    'zh': '先前对话的备忘录: 无。',
+    'en': 'Memo from prior conversations: None.',
+    'ja': '以前の会話のメモ: なし。',
+    'ko': '이전 대화의 메모: 없음.',
+    'ru': 'Заметки из предыдущих разговоров: нет.',
+}
+
+# ---------- 搜索关键词生成 prompt ----------
+# china_region 时使用 'zh'（百度），否则按 get_global_language() 选择
+SEARCH_KEYWORD_SYSTEM = {
+    'zh': '你是搜索关键词生成助手。根据用户提供的窗口标题，输出 3 个适合百度搜索的多样化关键词。\n\n要求：\n1. 生成 3 个不同角度的搜索关键词\n2. 关键词应简洁，控制在 2-8 个字\n3. 关键词应尽量覆盖不同方面\n4. 只输出 3 行关键词，不要添加序号、标点、解释或其他内容',
+    'en': 'You generate search keywords from a window title.\n\nRequirements:\n1. Generate 3 diverse keywords for Google search from different angles\n2. Each keyword should be concise, about 2-6 words\n3. Keep the keywords diverse\n4. Output exactly 3 lines, one keyword per line, without numbers, punctuation, explanations, or any extra text',
+    'ja': 'ウィンドウタイトルから検索キーワードを生成してください。\n\n要件：\n1. 異なる角度から Google 検索用のキーワードを 3 つ生成\n2. 各キーワードは簡潔に、2〜6 語程度\n3. キーワードは多様性を持たせる\n4. 3 行のみ出力し、番号・句読点・説明等は一切不要',
+    'ko': '창 제목에서 검색 키워드를 생성하세요.\n\n요구사항:\n1. 서로 다른 관점에서 Google 검색용 키워드 3개 생성\n2. 각 키워드는 간결하게, 2~6 단어 정도\n3. 키워드는 다양하게\n4. 정확히 3줄만 출력하고 번호, 구두점, 설명 등은 추가하지 마세요',
+    'ru': 'Сгенерируйте ключевые слова для поиска на основе заголовка окна.\n\nТребования:\n1. Сгенерируйте 3 разнообразных ключевых слова для поиска Google с разных сторон\n2. Каждое ключевое слово — кратко, около 2-6 слов\n3. Ключевые слова должны быть разнообразными\n4. Выведите ровно 3 строки, по одному ключевому слову, без номеров, пунктуации и пояснений',
+}
+
+SEARCH_KEYWORD_USER = {
+    'zh': '窗口标题：{window_title}\n\n请输出 3 个搜索关键词。',
+    'en': 'Window title: {window_title}\n\nPlease output 3 search keywords.',
+    'ja': 'ウィンドウタイトル：{window_title}\n\n検索キーワードを 3 つ出力してください。',
+    'ko': '창 제목: {window_title}\n\n검색 키워드 3개를 출력하세요.',
+    'ru': 'Заголовок окна: {window_title}\n\nВыведите 3 ключевых слова для поиска.',
+}
+
 # =====================================================================
 # backward compat re-exports
 # =====================================================================
