@@ -47,8 +47,38 @@
 
     let currentPlayingTrack = null;
     let localPlayer = null;
+    let musicCardMessageId = null;
     let aplayerLoadPromise = null;
     let latestMusicRequestToken = 0;
+
+    // --- 更新 React 聊天窗口音乐卡片 ---
+    const updateMusicCard = (state, track) => {
+        const host = window.reactChatWindowHost;
+        if (!host || typeof host.updateMessage !== 'function' || !musicCardMessageId) return;
+
+        let prefix = '❓';
+        let text = (window.t && window.t('music.unknownState')) || '未知状态';
+        if (state === 'playing') { prefix = '🎵'; text = (window.t && window.t('music.playing')) || '播放中'; }
+        else if (state === 'paused') { prefix = '⏸'; text = (window.t && window.t('music.paused')) || '已暂停'; }
+        else if (state === 'ended') { prefix = '✅'; text = (window.t && window.t('music.ended')) || '已播完'; }
+        else if (state === 'error') { prefix = '❌'; text = (window.t && window.t('music.playError')) || '播放失败'; }
+        else { prefix = '❓'; text = (window.t && window.t('music.unknownState')) || '未知状态'; }
+
+        host.updateMessage(musicCardMessageId, {
+            blocks: [{
+                type: 'link',
+                url: track?.url || '#',
+                title: track?.name || '未知曲目',
+                description: track?.artist || '未知艺术家',
+                siteName: prefix + ' ' + text,
+                thumbnailUrl: track?.cover || undefined
+            }]
+        });
+
+        if (state === 'error') {
+            musicCardMessageId = null;
+        }
+    };
 
     // --- 状态追踪：用于 5 秒去重 与 进度条清理 ---
     let lastPlayedMusicUrl = null;
@@ -352,6 +382,7 @@
             clearManagedListeners();
         }
         currentPlayingTrack = null;
+        musicCardMessageId = null;
     };
 
     // --- 查找并替换整个 loadAPlayerLibrary 函数 ---
@@ -541,8 +572,10 @@
                 }
                 const now = new Date();
                 const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+                const msgId = 'music-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+                musicCardMessageId = msgId;
                 host.appendMessage({
-                    id: 'music-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                    id: msgId,
                     role: 'assistant',
                     author: assistantName,
                     time: timeStr,
@@ -554,7 +587,7 @@
                         url: trackInfo.url || '#',
                         title: trackInfo.name || '未知曲目',
                         description: trackInfo.artist || '未知艺术家',
-                        siteName: (window.t && window.t('music.nowPlayingCard')) || '🎵 Now Playing',
+                        siteName: '🎵 ' + ((window.t && window.t('music.playing')) || '播放中'),
                         thumbnailUrl: hasCover ? trackInfo.cover : undefined
                     }],
                     status: 'sent'
@@ -617,36 +650,36 @@
                     updatePlayBtnState(true);
                     autoplayBlocked = false;
                     lastPlayPosition = (boundPlayer.audio && boundPlayer.audio.currentTime) || 0;
+                    updateMusicCard('playing', currentPlayingTrack);
                 });
                 boundPlayer.on('pause', () => {
                     updatePlayBtnState(false);
-                    // Accumulate actual playback on pause
                     const cur = (boundPlayer.audio && boundPlayer.audio.currentTime) || 0;
                     accumulatedPlaySeconds += (cur - lastPlayPosition);
                     lastPlayPosition = cur;
-                    // 用户点击暂停后，启动 71 秒销毁计时
                     const tokenAtEvent = boundPlayer._latestToken;
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     autoDestroyTimer = setTimeout(() => {
                         if (latestMusicRequestToken === tokenAtEvent) destroyMusicPlayer(true, true, true);
                     }, MUSIC_CONFIG.timeouts.paused);
+                    updateMusicCard('paused', currentPlayingTrack);
                 });
                 boundPlayer.on('ended', () => {
                     updatePlayBtnState(false);
                     resetSkipCounter();
                     accumulatedPlaySeconds = 0;
                     lastPlayPosition = 0;
-                    // 歌曲自然播放结束后，启动 21 秒销毁计时
                     const tokenAtEvent = boundPlayer._latestToken;
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     autoDestroyTimer = setTimeout(() => {
                         if (latestMusicRequestToken === tokenAtEvent) destroyMusicPlayer(true, true, true);
                     }, MUSIC_CONFIG.timeouts.ended);
+                    updateMusicCard('ended', currentPlayingTrack);
                 });
                 boundPlayer.on('error', (err) => {
                     if (boundPlayer._destroying) return;
                     console.error('[Music UI] APlayer error:', err);
-                    accumulatedPlaySeconds = 0;  // load failure is not a skip
+                    accumulatedPlaySeconds = 0;
                     lastPlayPosition = 0;
 
                     const tokenAtEvent = boundPlayer._latestToken;
@@ -669,6 +702,8 @@
                                 destroyMusicPlayer(true, true, true);
                             }
                         }, 3000);
+
+                        updateMusicCard('error', currentPlayingTrack);
                     }, 200);
                 });
 
@@ -995,11 +1030,11 @@
         }
 
         // --- 网易云音乐代理：如果检测到网易云外链，替换为后端代理接口 ---
-        // 注意：URL编码后music.163.com依然是music.163.com，需要用/api/music/proxy-netease判断是否已代理
-        if (trackInfo.url && trackInfo.url.includes('music.163.com') && !trackInfo.url.startsWith('/api/music/proxy-netease')) {
+        // 统一使用 /api/music/proxy 路由
+        if (trackInfo.url && trackInfo.url.includes('music.163.com') && !trackInfo.url.startsWith('/api/music/proxy')) {
             const originalUrl = trackInfo.url;
             const encodedUrl = encodeURIComponent(trackInfo.url);
-            trackInfo.url = `/api/music/proxy-netease?url=${encodedUrl}`;
+            trackInfo.url = `/api/music/proxy?url=${encodedUrl}`;
             console.log('[Music UI] 网易云URL已代理:', originalUrl, '->', trackInfo.url);
         }
 
@@ -1127,6 +1162,26 @@
         }
     };
 
+    // --- 自动从后端同步音乐源域名到白名单 ---
+    const syncDomainsFromBackend = async () => {
+        try {
+            const response = await fetch('/api/music/domains');
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success && data.domains) {
+                    const newDomains = data.domains.filter(d => !MUSIC_CONFIG.allowlist.includes(d));
+                    if (newDomains.length > 0) {
+                        MUSIC_CONFIG.allowlist.push(...newDomains);
+                        console.log('[Music UI] 已同步后端域名到白名单', newDomains);
+                        window.dispatchEvent(new CustomEvent('music-allowlist-updated'));
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[Music UI] 从后端同步域名失败:', e);
+        }
+    };
+
     const MusicPluginAPI = {
         getAllowlist: () => [...MUSIC_CONFIG.allowlist],
         addAllowlist: (input) => {
@@ -1154,5 +1209,8 @@
     // 派发就绪事件，通知提前加载的插件可以开始注册域名了
     window.dispatchEvent(new CustomEvent('music-ui-ready'));
     console.log('[Music UI] 接口已暴露，就绪信号已发送');
+
+    // 自动从后端同步音乐源域名到白名单
+    syncDomainsFromBackend();
 
 })();
