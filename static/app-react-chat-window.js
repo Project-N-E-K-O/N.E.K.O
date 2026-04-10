@@ -936,12 +936,15 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
-                // 确保位置不溢出
+                // 确保位置不溢出；全屏模式（/chat）不持久化，
+                // 否则 (0,0) 会覆盖 index.html 中用户保存的窗口位置
                 requestAnimationFrame(function () {
                     var r = shell.getBoundingClientRect();
                     var clamped = clampPosition(r.left, r.top);
                     applyPosition(clamped.left, clamped.top);
-                    persistPosition(clamped.left, clamped.top);
+                    if (!window._chatAdapterActive) {
+                        persistPosition(clamped.left, clamped.top);
+                    }
                 });
             };
             var onExpandEnd = function (e) {
