@@ -224,9 +224,13 @@ function createPopup(manager, prefix, buttonId) {
         popup.style.overflowY = 'auto';
     } else if (buttonId === 'agent') {
         popup.classList.add(`${prefix}-popup-agent`);
+        popup.style.gap = '0';
+        popup.style.cursor = 'pointer';
         window.AgentHUD._createAgentPopupContent.call(manager, popup);
     } else if (buttonId === 'settings') {
         popup.classList.add(`${prefix}-popup-settings`);
+        popup.style.gap = '0';
+        popup.style.cursor = 'pointer';
         manager._createSettingsPopupContent(popup);
     }
 
@@ -301,9 +305,9 @@ function createSettingsPopupContent(manager, prefix, popup) {
                 const authLink = document.createElement('div');
                 Object.assign(authLink.style, {
                     display: 'flex', alignItems: 'center', gap: '6px',
-                    padding: '4px 8px', marginLeft: '-6px', fontSize: '12px',
+                    padding: '8px 12px', marginLeft: '0', fontSize: '12px',
                     color: 'var(--neko-popup-text, #333)', cursor: 'pointer',
-                    borderRadius: '6px', transition: 'background 0.2s ease', width: '100%'
+                    borderRadius: '6px', transition: 'background 0.2s ease', width: '100%', boxSizing: 'border-box'
                 });
 
                 const authIcon = document.createElement('img');
@@ -429,7 +433,7 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
     const container = manager._createSidePanelContainer();
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
-    container.style.gap = '2px';
+    container.style.gap = '0';
     container.style.width = '200px';
     container.style.minWidth = '0';
     container.style.padding = '4px 4px';
@@ -896,7 +900,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const container = manager._createSidePanelContainer();
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
-    container.style.gap = '8px';
+    container.style.gap = '0';
     container.style.width = '200px';
     container.style.minWidth = '0';
     container.style.padding = '10px 14px';
@@ -1004,9 +1008,19 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 
     // ── 跟踪相关开关（统一三行间距） ──
     const trackingRow = document.createElement('div');
-    Object.assign(trackingRow.style, { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '4px', width: '100%', marginTop: '4px' });
+    Object.assign(trackingRow.style, { display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '0', width: '100%', marginTop: '0' });
 
-    const trackingToggleRowStyle = { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', width: '100%' };
+    const trackingToggleRowStyle = {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        cursor: 'pointer',
+        width: '100%',
+        padding: '8px 12px',
+        borderRadius: '6px',
+        boxSizing: 'border-box',
+        transition: 'background 0.2s ease'
+    };
 
     // 鼠标跟踪复选框
     const checkbox = document.createElement('input');
@@ -1244,6 +1258,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
         transform: 'translateX(-6px)',
         pointerEvents: 'auto',
+        cursor: 'pointer',
         flexWrap: options.flexWrap || 'wrap',
         width: options.width || 'auto',
         maxWidth: '300px'
@@ -1365,7 +1380,7 @@ function createIntervalControl(manager, prefix, toggle) {
         display: 'none',
         alignItems: 'stretch',
         flexDirection: 'column',
-        gap: '6px',
+        gap: toggle.id === 'proactive-chat' ? '0' : '6px',
         padding: '6px 12px',
         fontSize: '12px',
         color: 'var(--neko-popup-text, #333)',
@@ -1379,6 +1394,7 @@ function createIntervalControl(manager, prefix, toggle) {
         transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
         transform: 'translateX(-6px)',
         pointerEvents: 'auto',
+        cursor: 'pointer',
         flexWrap: 'nowrap',
         width: 'max-content',
         maxWidth: 'min(320px, calc(100vw - 24px))'

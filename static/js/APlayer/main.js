@@ -179,6 +179,10 @@ export async function initializeAPlayer(options = {}, onReady = null) {
         });
 
         ap.on('error', (e) => {
+            if (ap._destroying) {
+                console.log('[APlayer] Destruction in progress, ignoring error event');
+                return;
+            }
             console.error('[APlayer] Error:', e);
         });
 
