@@ -660,24 +660,24 @@
     }
 
     function handleTranslateToggle() {
-        // Toggle subtitle/translate enabled state
         var bridge = window.subtitleBridge;
-        var appSt = window.appState;
-        var current = (appSt && typeof appSt.subtitleEnabled !== 'undefined')
-            ? appSt.subtitleEnabled
-            : localStorage.getItem('subtitleEnabled') === 'true';
-        var next = !current;
+        var next;
 
-        if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
-            bridge.setSubtitleEnabled(next);
+        if (bridge && typeof bridge.toggle === 'function') {
+            // Use full toggle with runtime side effects (hide/show subtitle, clear timers, re-translate)
+            next = bridge.toggle();
         } else {
+            // Fallback: flip flag manually if bridge not yet loaded
+            var appSt = window.appState;
+            var current = (appSt && typeof appSt.subtitleEnabled !== 'undefined')
+                ? appSt.subtitleEnabled
+                : localStorage.getItem('subtitleEnabled') === 'true';
+            next = !current;
             if (appSt) appSt.subtitleEnabled = next;
             localStorage.setItem('subtitleEnabled', String(next));
-        }
-
-        // Persist via appSettings if available
-        if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
-            window.appSettings.saveSettings();
+            if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                window.appSettings.saveSettings();
+            }
         }
 
         // Update React prop to reflect new state
