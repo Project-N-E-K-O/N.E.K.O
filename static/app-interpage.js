@@ -833,11 +833,55 @@
                     case 'memory_edited':
                         await handleMemoryEdited(event.data.catgirl_name);
                         break;
+                    case 'avatar_updated':
+                        // 从 Pet 窗口接收头像数据，注入到 Chat 窗口
+                        if (window.appChatAvatar && typeof window.appChatAvatar.setExternalAvatar === 'function') {
+                            window.appChatAvatar.setExternalAvatar(event.data.dataUrl || '', event.data.modelType || '');
+                        }
+                        break;
+                    case 'request_avatar':
+                        // Chat 窗口请求当前头像，Pet 窗口回传已缓存的头像
+                        if (window.appChatAvatar && typeof window.appChatAvatar.getCachedPreview === 'function') {
+                            var cached = window.appChatAvatar.getCachedPreview();
+                            if (cached && cached.dataUrl && nekoBroadcastChannel) {
+                                nekoBroadcastChannel.postMessage({
+                                    action: 'avatar_updated',
+                                    dataUrl: cached.dataUrl,
+                                    modelType: cached.modelType || '',
+                                    timestamp: Date.now()
+                                });
+                            }
+                        }
+                        break;
                 }
             };
         }
     } catch (e) {
         console.log('[BroadcastChannel] 初始化失败，将使用 postMessage 后备方案:', e);
+    }
+
+    // =====================================================================
+    // Cross-window avatar forwarding via BroadcastChannel
+    // =====================================================================
+
+    // Pet 窗口（/index）捕获头像后，通过 BC 广播给 Chat 窗口
+    window.addEventListener('chat-avatar-preview-updated', function (evt) {
+        // source === 'ipc' 表示此事件来自 BC 注入（setExternalAvatar），不回传避免循环
+        if (evt.detail && evt.detail.source === 'ipc') return;
+        if (!nekoBroadcastChannel) return;
+        var dataUrl = evt.detail && evt.detail.dataUrl;
+        if (!dataUrl) return;
+        nekoBroadcastChannel.postMessage({
+            action: 'avatar_updated',
+            dataUrl: dataUrl,
+            modelType: (evt.detail && evt.detail.modelType) || '',
+            timestamp: Date.now()
+        });
+    });
+
+    // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
+    if (window.location.pathname === '/chat' && nekoBroadcastChannel) {
+        nekoBroadcastChannel.postMessage({ action: 'request_avatar', timestamp: Date.now() });
     }
 
     // =====================================================================

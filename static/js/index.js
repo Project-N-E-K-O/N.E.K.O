@@ -191,6 +191,10 @@ if (window.__NEKO_MULTI_WINDOW__ && window.location.pathname === '/chat') {
             lanlan_config.master_profile_name = window.master_profile_name;
             lanlan_config.master_nickname = window.master_nickname;
             lanlan_config.master_display_name = window.master_display_name;
+            // 头像：如果 IPC 注入了头像 dataUrl，设置到 appChatAvatar
+            if (d.avatarDataUrl && window.appChatAvatar && typeof window.appChatAvatar.setExternalAvatar === 'function') {
+                window.appChatAvatar.setExternalAvatar(d.avatarDataUrl, d.avatarModelType || '');
+            }
             resolve(d);
         });
         // 超时保护：5 秒后 fallback 到 HTTP API
