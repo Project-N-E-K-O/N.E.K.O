@@ -673,6 +673,15 @@
     var MINIMIZED_BOTTOM = 70; // 距底部距离
     var MINIMIZED_SIZE = 50;
     var isMinimizeTransitioning = false;
+    var activeAnimationCleanup = null; // 当前进行中动画的清理函数
+
+    function cancelActiveAnimation() {
+        if (activeAnimationCleanup) {
+            activeAnimationCleanup();
+            activeAnimationCleanup = null;
+        }
+        isMinimizeTransitioning = false;
+    }
 
     function getMinimizedTop() {
         return window.innerHeight - MINIMIZED_BOTTOM - MINIMIZED_SIZE;
@@ -726,10 +735,13 @@
 
             // 5. 过渡结束后切换到最终的 minimized 状态
             var handled = false;
+            var collapseTimer = null;
             var finishCollapse = function () {
                 if (handled) return;
                 handled = true;
+                clearTimeout(collapseTimer);
                 shell.removeEventListener('transitionend', onEnd);
+                activeAnimationCleanup = null;
                 shell.classList.remove('is-collapsing');
                 shell.style.transform = 'none';
                 // 清除内联尺寸，让 .is-minimized 的 CSS 生效
@@ -746,7 +758,16 @@
                 finishCollapse();
             };
             shell.addEventListener('transitionend', onEnd);
-            setTimeout(finishCollapse, 420); // 兜底
+            collapseTimer = setTimeout(finishCollapse, 420); // 兜底
+
+            // 注册清理句柄，供 closeWindow / 下次动画调用
+            activeAnimationCleanup = function () {
+                clearTimeout(collapseTimer);
+                shell.removeEventListener('transitionend', onEnd);
+                shell.classList.remove('is-collapsing');
+                shell.style.transform = 'none';
+                handled = true;
+            };
 
         } else {
             // ---- 展开动画：从左下角飞回 + 放大 ----
@@ -807,10 +828,13 @@
 
             // 动画结束后清理
             var expandHandled = false;
+            var expandTimer = null;
             var finishExpand = function () {
                 if (expandHandled) return;
                 expandHandled = true;
+                clearTimeout(expandTimer);
                 shell.removeEventListener('transitionend', onExpandEnd);
+                activeAnimationCleanup = null;
                 shell.classList.remove('is-expanding');
                 shell.style.transform = 'none';
                 savedShellSize = null;
@@ -830,7 +854,16 @@
                 finishExpand();
             };
             shell.addEventListener('transitionend', onExpandEnd);
-            setTimeout(finishExpand, 420); // 兜底
+            expandTimer = setTimeout(finishExpand, 420); // 兜底
+
+            // 注册清理句柄
+            activeAnimationCleanup = function () {
+                clearTimeout(expandTimer);
+                shell.removeEventListener('transitionend', onExpandEnd);
+                shell.classList.remove('is-expanding');
+                shell.style.transform = 'none';
+                expandHandled = true;
+            };
 
             } // end of else (valid dimensions)
         }
@@ -862,10 +895,13 @@
                     showToast(getI18nText('chat.reactWindowMountFailed', '新版聊天框挂载失败'), 3000);
                     return;
                 }
+                var wasMinimized = minimized;
                 setMinimized(false);
                 overlay.hidden = false;
                 document.body.classList.add('react-chat-window-open');
-                restorePosition();
+                if (!wasMinimized) {
+                    restorePosition();
+                }
             })
             .catch(function (error) {
                 console.error('[ReactChatWindow] open failed:', error);
@@ -876,6 +912,7 @@
     function closeWindow() {
         var overlay = getOverlay();
         if (!overlay) return;
+        cancelActiveAnimation(); // 清理进行中的折叠/展开回调
         overlay.hidden = true;
         document.body.classList.remove('react-chat-window-open');
     }
