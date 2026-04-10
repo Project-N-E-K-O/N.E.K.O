@@ -351,7 +351,7 @@ class DropdownManager {
     }
 
     selectItem(value) {
-        if (!this.select) return;
+        if (!this.select || this.select.disabled) return;
         this.select.value = value;
         this.select.dispatchEvent(new Event('change', { bubbles: true }));
         this.updateButtonText();
@@ -370,7 +370,7 @@ class DropdownManager {
     }
 
     async showDropdown() {
-        if (!this.dropdown || this.config.disabled) return;
+        if (!this.dropdown || this.config.disabled || (this.select && this.select.disabled)) return;
 
         // 在显示当前下拉菜单前，先隐藏所有其他的下拉菜单
         DropdownManager.hideAll();
@@ -407,7 +407,7 @@ class DropdownManager {
     }
 
     async toggleDropdown() {
-        if (this.config.disabled) return;
+        if (this.config.disabled || (this.select && this.select.disabled)) return;
         const isVisible = this.dropdown && this.dropdown.style.display === 'block';
         if (isVisible) {
             this.hideDropdown();
@@ -6968,6 +6968,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(t('live2d.persistentExpressionAdded', '常驻表情已添加'), 2000);
                 }
                 await loadPersistentExpressions();
+                if (!currentModelInfo || currentModelInfo.name !== modelName) return;
                 persistentSelect.value = '';
                 // 立即应用常驻表情到预览模型
                 if (window.live2dManager) {
@@ -7027,6 +7028,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (saveData.success) {
                         showStatus(t('live2d.persistentExpressionRemoved', '常驻表情已删除'), 2000);
                         await loadPersistentExpressions();
+                        if (!currentModelInfo || currentModelInfo.name !== modelName) return;
                         // 立即应用常驻表情变化到预览模型
                         if (window.live2dManager) {
                             try {

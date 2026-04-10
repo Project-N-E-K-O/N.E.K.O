@@ -228,6 +228,7 @@ class LLMSessionManager:
         # 当前轮临时响应指令：用于负面情绪命中后的即时安抚/换题
         self._transient_response_instruction_base: str | None = None
         self._transient_response_instruction_active: str = ""
+        self._transient_response_instruction_blocked_session_id: int | None = None
         self._last_assistant_turn_text: str = ""
         self._current_assistant_turn_text: str = ""
         # 防止 trigger_agent_callbacks 重入
@@ -659,6 +660,15 @@ class LLMSessionManager:
         if getattr(self.session, "_is_gemini", False):
             # Gemini Live 当前没有稳定的单轮 instructions 覆写入口；降级为仅记录记忆策略。
             return
+        session_id = id(self.session)
+        if self._transient_response_instruction_blocked_session_id == session_id:
+            logger.debug("跳过应用临时响应指令：当前 realtime session 已标记为不可复用")
+            return
+        if (
+            self._transient_response_instruction_blocked_session_id is not None
+            and self._transient_response_instruction_blocked_session_id != session_id
+        ):
+            self._transient_response_instruction_blocked_session_id = None
 
         base_instructions = self._transient_response_instruction_base or getattr(self.session, "instructions", "") or ""
         if instruction == self._transient_response_instruction_active:
@@ -673,6 +683,7 @@ class LLMSessionManager:
         self.session.instructions = transient_instructions
         self._transient_response_instruction_base = base_instructions
         self._transient_response_instruction_active = instruction
+        self._transient_response_instruction_blocked_session_id = None
         if self.pending_session or self.background_preparation_task or self.pending_session_warmed_up_event:
             try:
                 await self._cleanup_pending_session_resources()
@@ -702,9 +713,27 @@ class LLMSessionManager:
         try:
             await session.update_session({"instructions": base_instructions})
             session.instructions = base_instructions
+            self._transient_response_instruction_blocked_session_id = None
             self._clear_transient_response_instruction_state()
         except Exception as e:
             logger.debug(f"恢复临时响应指令失败: {e}")
+            active_instruction = self._transient_response_instruction_active
+            self._clear_transient_response_instruction_state()
+            self._transient_response_instruction_blocked_session_id = id(session)
+            cleaned_instructions = base_instructions
+            try:
+                current_instructions = getattr(session, "instructions", "") or ""
+                if not cleaned_instructions and active_instruction and isinstance(current_instructions, str):
+                    suffix = "\n" + active_instruction
+                    if current_instructions.endswith(suffix):
+                        cleaned_instructions = current_instructions[: -len(suffix)]
+                    elif current_instructions.endswith(active_instruction):
+                        cleaned_instructions = current_instructions[: -len(active_instruction)].rstrip()
+                session.instructions = cleaned_instructions
+                await session.update_session({"instructions": cleaned_instructions})
+                self._transient_response_instruction_blocked_session_id = None
+            except Exception as cleanup_error:
+                logger.debug(f"恢复失败后的临时响应指令清理也失败: {cleanup_error}")
 
     async def handle_output_transcript(self, text: str, is_first_chunk: bool = False):
         """输出转录回调：处理文本显示和TTS（用于语音模式）"""        

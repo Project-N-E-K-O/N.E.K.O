@@ -502,24 +502,28 @@
                 if (state.suppressChange) { clearProcessing(openfang); return; }
                 const value = !!e.target.checked;
                 const openfangName = window.t ? window.t('settings.toggles.openfang') : '虚拟机';
+                state.pending.add('openfang_enabled');
+                state.optimistic['openfang_enabled'] = value;
+                setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...');
+                render('command');
                 if (value) {
                     const ready = await refreshOpenFangAvailability();
                     if (!ready) {
+                        state.pending.delete('openfang_enabled');
+                        state.optimistic = {};
+                        setGlobalBusy(false);
                         state.suppressChange = true;
                         openfang.forEach(c => { c.checked = false; });
                         state.suppressChange = false;
                         sync(openfang);
                         clearProcessing(openfang);
+                        render('openfang-probe-failed');
                         if (typeof window.showStatusToast === 'function') {
                             window.showStatusToast(window.t ? window.t('settings.toggles.unavailable', { name: openfangName }) : `${openfangName}不可用`, 2500);
                         }
                         return;
                     }
                 }
-                state.pending.add('openfang_enabled');
-                state.optimistic['openfang_enabled'] = value;
-                setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...');
-                render('command');
                 try {
                     await sendCommand('set_flag', { key: 'openfang_enabled', value });
                     await fetchSnapshot().catch(() => {});

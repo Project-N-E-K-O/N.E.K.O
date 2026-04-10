@@ -134,7 +134,14 @@ def _sanitize_mapping_file_path(file_path):
     if not normalized or normalized == '.':
         return None
     p = pathlib.PurePosixPath(normalized)
-    if p.is_absolute() or ".." in p.parts or str(p) == '.':
+    windows_path = pathlib.PureWindowsPath(normalized)
+    if (
+        p.is_absolute()
+        or windows_path.is_absolute()
+        or bool(windows_path.drive)
+        or ".." in p.parts
+        or str(p) == '.'
+    ):
         return None
     return str(p)
 
@@ -498,7 +505,8 @@ async def update_emotion_mapping(model_name: str, request: Request):
 
                 items.append({"File": normalized})
             motions_output[group_name] = items
-        file_refs['Motions'] = motions_output
+        if any(items for items in motions_output.values()):
+            file_refs['Motions'] = motions_output
 
         # 处理 expressions: 将按 emotion 前缀生成扁平列表，Name 采用 "{emotion}_{basename}" 的约定
         expressions_input = data.get('expressions') or {}

@@ -455,6 +455,13 @@ def _normalize_negative_preference_policy(policy: str) -> str:
     return normalized
 
 
+def _is_valid_negative_preference_candidate(policy: str, confidence: float) -> bool:
+    return (
+        policy in {"avoid", "de_emphasize"}
+        and confidence >= NEGATIVE_PREFERENCE_CONFIDENCE_THRESHOLD
+    )
+
+
 def _should_skip_recent_message_for_prompt(message, hard_topics: list[str], cleaned_text: str) -> bool:
     if not cleaned_text or not hard_topics:
         return False
@@ -506,8 +513,12 @@ async def _review_negative_preferences(messages: list, lanlan_name: str) -> list
     prompt = get_negative_preference_review_prompt(get_global_language())
     prompt = prompt.replace('{CONVERSATION}', conversation_text)
     prompt = prompt.replace('{CURRENT_GUIDANCE}', _format_current_topic_guidance(lanlan_name))
+    conversation_line_count = len([line for line in conversation_text.splitlines() if line.strip()])
     logger.info(
-        f"[MemoryServer] {lanlan_name}: 负面偏好送审，上下文预览={_truncate_log_text(conversation_text, 280)}"
+        "[MemoryServer] %s: 负面偏好送审 message_lines=%s text_chars=%s",
+        lanlan_name,
+        conversation_line_count,
+        len(conversation_text),
     )
 
     try:
@@ -535,13 +546,25 @@ async def _review_negative_preferences(messages: list, lanlan_name: str) -> list
             reviewed = json.loads(_sanitize_llm_json(raw))
         if not isinstance(reviewed, list):
             logger.info(
-                f"[MemoryServer] {lanlan_name}: 负面偏好审查返回非列表，raw={_truncate_log_text(raw, 280)}"
+                "[MemoryServer] %s: 负面偏好审查返回非列表 response_type=%s raw_chars=%s",
+                lanlan_name,
+                type(reviewed).__name__,
+                len(raw),
             )
             return []
+        reviewed_items = [item for item in reviewed if isinstance(item, dict)]
+        policy_counts: dict[str, int] = {}
+        for item in reviewed_items:
+            policy = _normalize_negative_preference_policy(item.get("policy", ""))
+            key = policy or "unknown"
+            policy_counts[key] = policy_counts.get(key, 0) + 1
         logger.info(
-            f"[MemoryServer] {lanlan_name}: 负面偏好审查结果={_truncate_log_text(json.dumps(reviewed, ensure_ascii=False), 280)}"
+            "[MemoryServer] %s: 负面偏好审查完成 items=%s policy_counts=%s",
+            lanlan_name,
+            len(reviewed_items),
+            policy_counts,
         )
-        return [item for item in reviewed if isinstance(item, dict)]
+        return reviewed_items
     except Exception as e:
         logger.warning(f"[MemoryServer] 负面偏好后台审查失败: {e}")
         return []
@@ -635,8 +658,9 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
         logger.info(f"[MemoryServer] {lanlan_name}: 负面偏好门控未命中，跳过审查")
         return 0
     logger.info(
-        f"[MemoryServer] {lanlan_name}: 负面偏好门控命中 {len(negative_user_msgs)} 条，用户原句="
-        f"{_truncate_log_text(' | '.join(negative_user_msgs), 240)}"
+        "[MemoryServer] %s: 负面偏好门控命中 count=%s",
+        lanlan_name,
+        len(negative_user_msgs),
     )
     already_signaled_topics: set[str] = set()
     reviewed = await _review_negative_preferences(messages, lanlan_name)
@@ -651,11 +675,14 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
             confidence = float(item.get('confidence', 0))
         except (TypeError, ValueError):
             confidence = 0.0
+        if not _is_valid_negative_preference_candidate(policy, confidence):
+            continue
         current = deduped_candidates.get(normalized_topic)
         next_rank = 1 if policy == 'avoid' else 0
         if current is None:
             deduped_candidates[normalized_topic] = {
                 **item,
+                'policy': policy,
                 '_policy_rank': next_rank,
                 '_confidence_value': confidence,
             }
@@ -665,13 +692,17 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
         if next_rank > current_rank or (next_rank == current_rank and confidence > current_confidence):
             deduped_candidates[normalized_topic] = {
                 **item,
+                'policy': policy,
                 '_policy_rank': next_rank,
                 '_confidence_value': confidence,
             }
     limited_candidates = list(deduped_candidates.values())[:3]
-    if len(limited_candidates) != len(reviewed[:3]):
+    if len(limited_candidates) != len(deduped_candidates):
         logger.info(
-            f"[MemoryServer] {lanlan_name}: 负面偏好候选已去重 raw={len(reviewed[:3])} deduped={len(limited_candidates)}"
+            "[MemoryServer] %s: 负面偏好候选已截断 deduped=%s limited=%s",
+            lanlan_name,
+            len(deduped_candidates),
+            len(limited_candidates),
         )
     applied = 0
     for item in limited_candidates:
@@ -682,16 +713,10 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
         except (TypeError, ValueError):
             confidence = 0.0
         normalized_topic = _normalize_topic_key(topic)
-        if confidence < NEGATIVE_PREFERENCE_CONFIDENCE_THRESHOLD:
+        if not _is_valid_negative_preference_candidate(policy, confidence):
             logger.info(
                 f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={topic or '∅'} "
-                f"policy={policy or '∅'} confidence={confidence:.2f} reason=low_confidence"
-            )
-            continue
-        if policy not in {'avoid', 'de_emphasize'}:
-            logger.info(
-                f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={topic or '∅'} "
-                f"policy={policy or '∅'} confidence={confidence:.2f} reason=invalid_policy"
+                f"policy={policy or '∅'} confidence={confidence:.2f} reason=invalid_policy_or_confidence"
             )
             continue
         if normalized_topic in already_signaled_topics:

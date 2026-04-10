@@ -29,6 +29,10 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     }
 
     try {
+        if (typeof this.clearTransientExpressions === 'function') {
+            this.clearTransientExpressions();
+        }
+
         // 移除当前模型
         if (this.currentModel) {
             // 关闭所有已打开的设置窗口（防御性检查）；可通过 options.skipCloseWindows 跳过此操作（例如从设置窗口返回时重新加载模型）

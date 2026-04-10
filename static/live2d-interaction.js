@@ -1084,6 +1084,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         }
         this._clickEffectRestoreTimer = null;
         this._clickEffectSuspendReason = null;
+        this._currentClickEffectToken = null;
     }
     const clickEffectSuspendReason = window.isInTutorial
         ? 'tutorial-click-expression'
@@ -1175,17 +1176,20 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         // 3. 设置恢复定时器
         // 使用唯一 ID 标记此次点击效果，用于判断是否应该恢复
         const clickEffectId = Date.now();
+        const clickEffectToken = Symbol('click-effect');
         this._currentClickEffectId = clickEffectId;
+        this._currentClickEffectToken = clickEffectToken;
         this._clickEffectSuspendReason = clickEffectSuspendReason;
         
         this._clickEffectRestoreTimer = setTimeout(() => {
             this._clickEffectRestoreTimer = null;
             
             // 检查是否仍然是此次点击效果（没有被新的情感/点击覆盖）
-            if (this._currentClickEffectId !== clickEffectId) {
+            if (this._currentClickEffectId !== clickEffectId || this._currentClickEffectToken !== clickEffectToken) {
                 console.log('[ClickEffect] 临时效果已被新的情感覆盖，跳过恢复');
                 return;
             }
+            this._currentClickEffectToken = null;
             this._clickEffectSuspendReason = null;
             
             console.log('[ClickEffect] 临时效果结束，平滑恢复到默认状态');
@@ -1588,7 +1592,18 @@ Live2DManager.prototype.cleanupEventListeners = function () {
         this._snapCheckTimer = null;
     }
 
-    // 清理点击效果恢复定时器和 ID
+    this.clearTransientExpressions();
+
+    // 清理页面卸载监听器（如果存在）
+    if (this._unloadListener) {
+        window.removeEventListener('beforeunload', this._unloadListener);
+        this._unloadListener = null;
+    }
+
+    console.debug('[Live2D] 全局事件监听器清理完成');
+};
+
+Live2DManager.prototype.clearTransientExpressions = function () {
     if (this._clickEffectRestoreTimer) {
         clearTimeout(this._clickEffectRestoreTimer);
         if (this._clickEffectSuspendReason && typeof this.resumePersistentExpressions === 'function') {
@@ -1598,6 +1613,8 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     }
     this._clickEffectSuspendReason = null;
     this._currentClickEffectId = null;
+    this._currentClickEffectToken = null;
+    this._clickEffectMotion = null;
 
     if (this._touchsetExpressionTimers instanceof Map) {
         this._touchsetExpressionTimers.forEach((timer, token) => {
@@ -1606,14 +1623,6 @@ Live2DManager.prototype.cleanupEventListeners = function () {
         });
         this._touchsetExpressionTimers.clear();
     }
-
-    // 清理页面卸载监听器（如果存在）
-    if (this._unloadListener) {
-        window.removeEventListener('beforeunload', this._unloadListener);
-        this._unloadListener = null;
-    }
-
-    console.debug('[Live2D] 全局事件监听器清理完成');
 };
 
 /**
@@ -1738,6 +1747,7 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         }
         this._clickEffectRestoreTimer = null;
         this._clickEffectSuspendReason = null;
+        this._currentClickEffectToken = null;
     }
     const clickEffectSuspendReason = window.isInTutorial
         ? 'tutorial-click-expression'
@@ -1818,16 +1828,19 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
             console.warn('[Interaction] 教程模式播放表情失败:', error);
         }
         const clickEffectId = Date.now();
+        const clickEffectToken = Symbol('click-effect');
         this._currentClickEffectId = clickEffectId;
+        this._currentClickEffectToken = clickEffectToken;
         this._clickEffectSuspendReason = clickEffectSuspendReason;
 
         this._clickEffectRestoreTimer = setTimeout(() => {
             this._clickEffectRestoreTimer = null;
 
-            if (this._currentClickEffectId !== clickEffectId) {
+            if (this._currentClickEffectId !== clickEffectId || this._currentClickEffectToken !== clickEffectToken) {
                 console.log('[Interaction] 点击效果已被新的情感覆盖，跳过恢复');
                 return;
             }
+            this._currentClickEffectToken = null;
             this._clickEffectSuspendReason = null;
 
             console.log('[Interaction] 点击效果持续时间结束，平滑恢复到默认状态');

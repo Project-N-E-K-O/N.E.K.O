@@ -74,13 +74,29 @@ Live2DManager.prototype.clearExpression = function(reason = null, forceAll = fal
     // 取消正在进行的平滑过渡和手动表情覆盖
     const canceledSmoothReset = this._cancelSmoothReset({ resumePersistent: false });
     this._removeManualExpressionOverride();
+    const resumeReasons = [];
+    if (reason != null) {
+        resumeReasons.push(reason);
+    }
+    if (canceledSmoothReset.pendingResumeReason != null && !resumeReasons.includes(canceledSmoothReset.pendingResumeReason)) {
+        resumeReasons.push(canceledSmoothReset.pendingResumeReason);
+    }
+    const resumeForceAll = forceAll === true || canceledSmoothReset.pendingForceAllPersistentResume === true;
+    const resumePersistentState = () => {
+        if (resumeReasons.length === 0) {
+            this.resumePersistentExpressions(null, resumeForceAll);
+            return;
+        }
+        resumeReasons.forEach(resumeReason => {
+            this.resumePersistentExpressions(resumeReason, resumeForceAll);
+        });
+    };
 
     try {
         if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
             console.warn('无法清除expression：模型未加载');
-            const resumeReason = reason != null ? reason : canceledSmoothReset.pendingResumeReason;
-            const resumeForceAll = forceAll === true || canceledSmoothReset.pendingForceAllPersistentResume === true;
-            this.resumePersistentExpressions(resumeReason, resumeForceAll);
+            resumePersistentState();
+            this.applyPersistentExpressionsNative(false);
             return;
         }
 
@@ -88,9 +104,8 @@ Live2DManager.prototype.clearExpression = function(reason = null, forceAll = fal
         if (!this.initialParameters || Object.keys(this.initialParameters).length === 0) {
             console.error('严重错误：未找到初始参数记录！expression清除失败。');
             console.error('请确保在模型加载完成后立即调用recordInitialParameters()初始化参数基准');
-            const resumeReason = reason != null ? reason : canceledSmoothReset.pendingResumeReason;
-            const resumeForceAll = forceAll === true || canceledSmoothReset.pendingForceAllPersistentResume === true;
-            this.resumePersistentExpressions(resumeReason, resumeForceAll);
+            resumePersistentState();
+            this.applyPersistentExpressionsNative(false);
             return;
         }
 
@@ -140,9 +155,7 @@ Live2DManager.prototype.clearExpression = function(reason = null, forceAll = fal
         console.warn('expression重置失败:', error);
     }
 
-    const resumeReason = reason != null ? reason : canceledSmoothReset.pendingResumeReason;
-    const resumeForceAll = forceAll === true || canceledSmoothReset.pendingForceAllPersistentResume === true;
-    this.resumePersistentExpressions(resumeReason, resumeForceAll);
+    resumePersistentState();
 
     // 如存在常驻表情，清除后立即重放常驻，保证不被清掉
     this.applyPersistentExpressionsNative(false);

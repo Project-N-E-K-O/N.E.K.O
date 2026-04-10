@@ -751,11 +751,17 @@ def _normalize_capability_reason(capability: str, raw_reason: str) -> str:
     return "AGENT_CAPABILITY_ERROR"
 
 
-def _set_capability(name: str, ready: bool, reason: str = "") -> None:
+def _set_capability(name: str, ready: bool, reason: str = "", **metadata: Any) -> None:
     prev = Modules.capability_cache.get(name, {})
     normalized_reason = _normalize_capability_reason(name, reason)
-    Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}
-    if prev.get("ready") != bool(ready) or prev.get("reason", "") != normalized_reason:
+    next_value = {
+        **prev,
+        **metadata,
+        "ready": bool(ready),
+        "reason": normalized_reason,
+    }
+    Modules.capability_cache[name] = next_value
+    if prev != next_value:
         _bump_state_revision()
 
 
@@ -3045,7 +3051,7 @@ def _extract_tool_intent_as_text(refusal_text: str) -> str:
 async def openfang_availability():
     """检查 OpenFang 可用性。"""
     if not Modules.openfang:
-        return {
+        payload = {
             "enabled": False,
             "ready": False,
             "reason": "adapter 未加载",
@@ -3054,6 +3060,17 @@ async def openfang_availability():
             "version": "unknown",
             "tools_count": 0,
         }
+        _set_capability(
+            "openfang",
+            False,
+            payload["reason"],
+            provider=payload["provider"],
+            version=payload["version"],
+            tools_count=payload["tools_count"],
+            enabled=payload["enabled"],
+            reasons=list(payload["reasons"]),
+        )
+        return payload
     ok = await asyncio.to_thread(Modules.openfang.check_connectivity)
     status = Modules.openfang.is_available()
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
@@ -3072,7 +3089,16 @@ async def openfang_availability():
         "version": status.get("version", "unknown") if isinstance(status, dict) else "unknown",
         "tools_count": status.get("tools_count", 0) if isinstance(status, dict) else 0,
     }
-    _set_capability("openfang", ok, normalized_reason)
+    _set_capability(
+        "openfang",
+        ok,
+        normalized_reason,
+        provider=payload["provider"],
+        version=payload["version"],
+        tools_count=payload["tools_count"],
+        enabled=payload["enabled"],
+        reasons=list(payload["reasons"]),
+    )
     if not ok and Modules.agent_flags.get("openfang_enabled"):
         Modules.agent_flags["openfang_enabled"] = False
         Modules.notification = json.dumps({
