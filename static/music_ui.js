@@ -1062,7 +1062,7 @@
                     const newDomains = data.domains.filter(d => !MUSIC_CONFIG.allowlist.includes(d));
                     if (newDomains.length > 0) {
                         MUSIC_CONFIG.allowlist.push(...newDomains);
-                        console.log('[Music UI] ：已同步后端域名到白名单', newDomains);
+                        console.log('[Music UI] 已同步后端域名到白名单', newDomains);
                         window.dispatchEvent(new CustomEvent('music-allowlist-updated'));
                     }
                 }

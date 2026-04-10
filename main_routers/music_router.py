@@ -13,51 +13,6 @@ router = APIRouter()
 
 logger = get_module_logger(__name__, "Music")
 
-# ---------------------------------------------------------------------------
-#  pyncm_async compat patch — 1.8.2 uses Python 3.12+ f-string syntax in
-#  cloud.py which triggers SyntaxError on older interpreters.  We patch the
-#  source file on disk before import so the rest of the code works normally.
-# ---------------------------------------------------------------------------
-def _patch_pyncm_async() -> None:
-    import os, sys, tempfile
-    if sys.version_info >= (3, 12):
-        return
-    for p in sys.path:
-        target = os.path.join(p, "pyncm_async", "apis", "cloud.py")
-        if not os.path.isfile(target):
-            continue
-        try:
-            with open(target, "r", encoding="utf-8") as f:
-                code = f.read()
-            if 'objectKey.replace("/", "%2F")' in code:
-                if not os.access(target, os.W_OK):
-                    logger.error("[Music] pyncm_async cloud.py is read-only, cannot patch: %s", target)
-                    return
-                code = code.replace(
-                    'objectKey.replace("/", "%2F")',
-                    "objectKey.replace('/', '%2F')",
-                )
-                fd, tmp_path = tempfile.mkstemp(
-                    dir=os.path.dirname(target), prefix="cloud.py.", suffix=".tmp",
-                )
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        f.write(code)
-                    os.replace(tmp_path, target)
-                except Exception:
-                    try:
-                        os.remove(tmp_path)
-                    except OSError as cleanup_exc:
-                        logger.debug("[Music] Failed to remove temp file %s: %s", tmp_path, cleanup_exc)
-                    raise
-                logger.info("[Music] Patched pyncm_async cloud.py for Python <3.12 compat")
-            return
-        except Exception as exc:
-            logger.error("[Music] Failed to patch pyncm_async: %s", exc)
-            return
-
-_patch_pyncm_async()
-
 try:
     import pyncm_async
     from pyncm_async.apis.track import GetTrackAudio
@@ -125,62 +80,61 @@ async def proxy_music(url: str):
         MAX_MUSIC_SIZE = 50 * 1024 * 1024  # 50MB 上限
 
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            async with client.stream("GET", decoded_url, headers=request_headers) as resp:
-                resp.raise_for_status()
+            resp = await client.get(decoded_url, headers=request_headers)
+            resp.raise_for_status()
 
-                content_type = resp.headers.get('Content-Type', 'audio/mpeg').split(';', 1)[0].strip()
-                if 'audio' not in content_type and 'video' not in content_type:
-                    logger.warning(f"[Music Proxy] 非音频内容类型: {content_type}")
-                    return JSONResponse(content={"success": False, "error": "音乐源返回了无效内容（非音频格式）"}, status_code=502)
+            content_type = resp.headers.get('Content-Type', 'audio/mpeg').split(';', 1)[0].strip()
+            if 'audio' not in content_type and 'video' not in content_type:
+                logger.warning(f"[Music Proxy] 非音频内容类型: {content_type}")
+                return JSONResponse(content={"success": False, "error": "音乐源返回了无效内容（非音频格式）"}, status_code=502)
 
-                content_length = resp.headers.get('Content-Length')
-                declared_size = 0
-                if content_length:
-                    try:
-                        declared_size = int(content_length)
-                        if declared_size > MAX_MUSIC_SIZE:
-                            logger.warning(f"[Music Proxy] 音乐文件过大: {declared_size}")
-                            return JSONResponse(content={"success": False, "error": "音乐文件超过大小限制 (50MB)"}, status_code=413)
-                    except (ValueError, TypeError):
-                        pass
-
-                # 大文件（≥10MB）流式传输
-                if declared_size >= STREAMING_SIZE_THRESHOLD:
-                    logger.debug(f"[Music Proxy] 流式传输: {url[:60]}..., 预大小: {declared_size}")
-                    return StreamingResponse(
-                        _stream_music(resp, MAX_MUSIC_SIZE),
-                        media_type='audio/mpeg',
-                        headers={
-                            'Content-Length': str(declared_size) if declared_size else '*',
-                            'Accept-Ranges': 'bytes',
-                            'Cache-Control': 'no-cache',
-                            'X-Cache': 'STREAM'
-                        }
-                    )
-
-                # 小文件先缓存再返回
-                body = bytearray()
-                async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
-                    body.extend(chunk)
-                    if len(body) > MAX_MUSIC_SIZE:
-                        logger.warning(f"[Music Proxy] 音乐文件过大 (实际读取): {len(body)}")
+            content_length = resp.headers.get('Content-Length')
+            declared_size = 0
+            if content_length:
+                try:
+                    declared_size = int(content_length)
+                    if declared_size > MAX_MUSIC_SIZE:
+                        logger.warning(f"[Music Proxy] 音乐文件过大: {declared_size}")
                         return JSONResponse(content={"success": False, "error": "音乐文件超过大小限制 (50MB)"}, status_code=413)
+                except (ValueError, TypeError):
+                    pass
 
-                body_bytes = bytes(body)
-                if len(body_bytes) < STREAMING_SIZE_THRESHOLD:
-                    MUSIC_PROXY_CACHE[cache_key] = {'body': body_bytes}
-
-                logger.debug(f"[Music Proxy] 小文件返回: {url[:60]}..., 大小: {len(body_bytes)}")
-                return Response(
-                    content=body_bytes,
+            if declared_size >= STREAMING_SIZE_THRESHOLD:
+                logger.debug(f"[Music Proxy] 流式传输: {url[:60]}..., 预大小: {declared_size}")
+                return StreamingResponse(
+                    _stream_music(client, resp, MAX_MUSIC_SIZE),
                     media_type='audio/mpeg',
                     headers={
-                        'Content-Length': str(len(body_bytes)),
-                        'Cache-Control': 'public, max-age=21600',
-                        'X-Cache': 'MISS',
-                        'Accept-Ranges': 'bytes'
+                        'Content-Length': str(declared_size) if declared_size else '*',
+                        'Accept-Ranges': 'bytes',
+                        'Cache-Control': 'no-cache',
+                        'X-Cache': 'STREAM'
                     }
                 )
+
+            body = bytearray()
+            async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                body.extend(chunk)
+                if len(body) > MAX_MUSIC_SIZE:
+                    logger.warning(f"[Music Proxy] 音乐文件过大 (实际读取): {len(body)}")
+                    return JSONResponse(content={"success": False, "error": "音乐文件超过大小限制 (50MB)"}, status_code=413)
+
+            body_bytes = bytes(body)
+
+            if len(body_bytes) < STREAMING_SIZE_THRESHOLD:
+                MUSIC_PROXY_CACHE[cache_key] = {'body': body_bytes}
+
+            logger.debug(f"[Music Proxy] 小文件返回: {url[:60]}..., 大小: {len(body_bytes)}")
+            return Response(
+                content=body_bytes,
+                media_type='audio/mpeg',
+                headers={
+                    'Content-Length': str(len(body_bytes)),
+                    'Cache-Control': 'public, max-age=21600',
+                    'X-Cache': 'MISS',
+                    'Accept-Ranges': 'bytes'
+                }
+            )
 
     except httpx.HTTPStatusError as e:
         logger.error(f"[Music Proxy] HTTP错误: {e.response.status_code}")
@@ -192,14 +146,17 @@ async def proxy_music(url: str):
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
 
-async def _stream_music(resp, max_size: int):
-    """流式生成器：边下载边 yield"""
-    total = 0
-    async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
-        total += len(chunk)
-        if total > max_size:
-            break
-        yield chunk
+async def _stream_music(client, resp, max_size):
+    """流式生成器：自行管理 httpx 客户端生命周期，边下载边 yield"""
+    try:
+        total = 0
+        async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+            total += len(chunk)
+            if total > max_size:
+                break
+            yield chunk
+    finally:
+        await client.aclose()
 
 @router.get("/api/music/domains")
 async def get_music_domains():
