@@ -1061,16 +1061,6 @@
                 }
 
             } else {
-                // 如果当前有 VRM/MMD 模型在运行，不要切换到 Live2D
-                if (isVrmCurrentlyActive) {
-                    console.log('[showCurrentModel] effectiveModelType 为', effectiveModelType, '但 VRM 模型正在运行，保持 VRM');
-                    return;
-                }
-                if (isMmdCurrentlyActive) {
-                    console.log('[showCurrentModel] effectiveModelType 为', effectiveModelType, '但 MMD 模型正在运行，保持 MMD');
-                    return;
-                }
-
                 // 显示 Live2D 模型
                 showLive2d();
 
