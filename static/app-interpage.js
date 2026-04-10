@@ -843,7 +843,8 @@
                         }
                         break;
                     case 'request_avatar':
-                        // Chat 窗口请求当前头像，Pet 窗口回传已缓存的头像
+                        // 仅 Pet 主窗口（/index）应答，Chat 窗口不回传
+                        if (window.location.pathname === '/chat') break;
                         // 校验 lanlan_name：仅回传同角色的头像
                         if (event.data.lanlan_name && window.lanlan_config &&
                             event.data.lanlan_name !== window.lanlan_config.lanlan_name) break;
