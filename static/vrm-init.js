@@ -441,6 +441,8 @@ async function initVRMModel() {
                         if (charData.vrm) window.lanlan_config.vrm = charData.vrm;
                         // 待机动作配置传播到全局，供 vrm-manager.js loadModel 使用
                         if (charData.idleAnimation) window.lanlan_config.vrmIdleAnimation = charData.idleAnimation;
+                        // 完整动画列表用于主页面待机轮换
+                        if (Array.isArray(charData.idleAnimations)) window.lanlan_config.vrmIdleAnimations = charData.idleAnimations;
                     }
                 } else {
                     if (res.status === 404) {
@@ -587,6 +589,9 @@ async function initVRMModel() {
         // 如果模型背对屏幕，会自动翻转180度并保存，下次加载时直接应用
         await window.vrmManager.loadModel(modelUrl);
 
+        // 启动主页面待机动作轮换（loadModel 已播放第一个，这里只调度后续切换）
+        _startVrmIdleRotation(window.lanlan_config?.vrmIdleAnimations);
+
         // 页面加载时立即应用打光配置（如果初始化时没有传入，这里会应用）
         applyVRMLighting(window.lanlan_config?.lighting, window.vrmManager);
 
@@ -611,6 +616,55 @@ async function initVRMModel() {
         window._isVRMLoading = false;
     }
 }
+
+// ── 主页面 VRM 待机动作轮换 ──────────────────────────────
+let _vrmIdleTimer = null;
+let _vrmIdleLastUrl = null;
+
+function _startVrmIdleRotation(urls) {
+    _stopVrmIdleRotation();
+    if (!Array.isArray(urls) || urls.length < 2) return;
+
+    function pickRandom() {
+        const candidates = urls.filter(u => u !== _vrmIdleLastUrl);
+        return candidates[Math.floor(Math.random() * candidates.length)] || urls[0];
+    }
+
+    function scheduleNext() {
+        _vrmIdleTimer = setTimeout(async () => {
+            const mgr = window.vrmManager;
+            if (!mgr || !mgr.currentModel || !mgr.animation) {
+                _vrmIdleTimer = null;
+                return;
+            }
+            try {
+                const url = pickRandom();
+                if (url) {
+                    if (mgr.vrmaAction) mgr.stopVRMAAnimation();
+                    await mgr.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
+                    _vrmIdleLastUrl = url;
+                    console.debug('[VRM IdleRotation] 切换待机动作:', url.split('/').pop());
+                }
+            } catch (e) {
+                console.warn('[VRM IdleRotation] 切换失败:', e);
+            }
+            scheduleNext();
+        }, 20000);
+    }
+    scheduleNext();
+}
+
+function _stopVrmIdleRotation() {
+    if (_vrmIdleTimer) {
+        clearTimeout(_vrmIdleTimer);
+        _vrmIdleTimer = null;
+    }
+    _vrmIdleLastUrl = null;
+}
+
+// 暴露给外部（如 app-interpage.js 切模型时停止旧轮换��
+window._stopVrmIdleRotation = _stopVrmIdleRotation;
+window._startVrmIdleRotation = _startVrmIdleRotation;
 
 // 添加强制解锁函数
 window.forceUnlockVRM = function () {
