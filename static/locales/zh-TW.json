@@ -1656,7 +1656,8 @@
     },
     "subtitle": {
         "title": "實時字幕",
-        "enable": "開啓字幕翻譯"
+        "enable": "開啓字幕翻譯",
+        "enableAriaLabel": "翻譯開關"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."

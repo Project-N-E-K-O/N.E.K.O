@@ -1656,7 +1656,8 @@
     },
     "subtitle": {
         "title": "실시간 자막",
-        "enable": "번역 활성화"
+        "enable": "번역 활성화",
+        "enableAriaLabel": "번역 전환"
     },
     "viewer": {
         "title": "뷰어 - 프로젝트 N.E.K.O."

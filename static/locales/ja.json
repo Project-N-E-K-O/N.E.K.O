@@ -1656,7 +1656,8 @@
     },
     "subtitle": {
         "title": "リアルタイム字幕",
-        "enable": "翻訳を有効にする"
+        "enable": "翻訳を有効にする",
+        "enableAriaLabel": "翻訳の切り替え"
     },
     "viewer": {
         "title": "ビューアー - Project N.E.K.O."

@@ -838,6 +838,36 @@ textarea {
   padding: 0 2px;
 }
 
+/* ===== 翻译开关按钮 ===== */
+.composer-translate-btn {
+  position: relative;
+}
+
+.composer-translate-btn img {
+  opacity: 0.45;
+  transition: opacity 0.18s ease;
+}
+
+.composer-translate-btn:hover img {
+  opacity: 0.7;
+}
+
+.composer-translate-btn.is-active img {
+  opacity: 1;
+}
+
+.composer-translate-btn.is-active::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+  background: #2497d9;
+}
+
 /* ===== 圆形发送按钮 ===== */
 .send-button-circle {
   display: inline-flex;
@@ -1146,6 +1176,10 @@ textarea {
 
 [data-theme="dark"] .composer-tool-divider {
   color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="dark"] .composer-translate-btn.is-active::after {
+  background: #44b7fe;
 }
 
 [data-theme="dark"] .composer-input-shell {
