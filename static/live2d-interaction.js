@@ -1620,6 +1620,19 @@ Live2DManager.prototype.cleanupEventListeners = function () {
 };
 
 Live2DManager.prototype.clearTransientExpressions = function () {
+    if (typeof this._cancelSmoothReset === 'function') {
+        const canceledSmoothReset = this._cancelSmoothReset({ resumePersistent: false });
+        if (
+            canceledSmoothReset &&
+            (canceledSmoothReset.pendingResumeReason != null || canceledSmoothReset.pendingForceAllPersistentResume)
+            && typeof this.resumePersistentExpressions === 'function'
+        ) {
+            this.resumePersistentExpressions(
+                canceledSmoothReset.pendingResumeReason,
+                canceledSmoothReset.pendingForceAllPersistentResume === true,
+            );
+        }
+    }
     if (this._clickEffectRestoreTimer) {
         clearTimeout(this._clickEffectRestoreTimer);
         if (this._clickEffectSuspendReason && typeof this.resumePersistentExpressions === 'function') {

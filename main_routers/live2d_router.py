@@ -466,7 +466,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
 
         data = _normalize_persistent_expression_group(data)
         if not isinstance(data, dict):
-            data = {}
+            return JSONResponse(status_code=400, content={"success": False, "error": "无效的常驻表情配置"})
 
         # 查找模型目录（可能在static或用户文档目录）
         model_dir, url_prefix = find_model_directory(model_name)

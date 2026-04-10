@@ -354,7 +354,7 @@
                 } else if (!effectiveAnalyzerEnabled) {
                     cb.title = window.t ? window.t('settings.toggles.masterRequired', { name: openfangName }) : '请先开启Agent总开关';
                 } else {
-                    let translatedReason = reason;
+                    let translatedReason = null;
                     if (reason && window.t) {
                         const precheckKey = `agent.precheck.${reason}`;
                         const translated = window.t(precheckKey, { name: openfangName });

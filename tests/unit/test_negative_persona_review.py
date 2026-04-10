@@ -100,21 +100,23 @@ def test_negative_signal_explicit_avoid_immediately_hard() -> None:
         mock_cm = _build_mock_config_manager(tmpdir)
         with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
              patch("utils.config_manager._config_manager", mock_cm):
-            from memory.persona import PersonaManager
+            import memory.persona as persona_module
+            with patch.object(persona_module, "get_config_manager", return_value=mock_cm):
+                PersonaManager = persona_module.PersonaManager
 
-            pm = PersonaManager()
-            pm._config_manager = mock_cm
+                pm = PersonaManager()
+                pm._config_manager = mock_cm
 
-            result = pm.register_negative_signal("测试猫娘", "别提考试了，我现在很难受")
-            assert result["matched"] is True
-            assert result["topic"] == "考试"
-            assert result["policy"] == "avoid"
+                result = pm.register_negative_signal("测试猫娘", "别提考试了，我现在很难受")
+                assert result["matched"] is True
+                assert result["topic"] == "考试"
+                assert result["policy"] == "avoid"
 
-            fresh_pm = PersonaManager()
-            fresh_pm._config_manager = mock_cm
-            md = fresh_pm.render_persona_markdown("测试猫娘")
-            assert "不要主动提及的话题" in md
-            assert "考试" in md
+                fresh_pm = PersonaManager()
+                fresh_pm._config_manager = mock_cm
+                md = fresh_pm.render_persona_markdown("测试猫娘")
+                assert "不要主动提及的话题" in md
+                assert "考试" in md
 
 
 def test_negative_signal_topicless_emotion_falls_back_to_tone_only() -> None:

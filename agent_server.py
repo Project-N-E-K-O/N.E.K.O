@@ -764,6 +764,9 @@ def _set_capability(name: str, ready: bool, reason: str = "", **metadata: Any) -
         _bump_state_revision()
 
 
+AGENT_OPENFANG_NOT_LOADED = "AGENT_OPENFANG_NOT_LOADED"
+
+
 def _collect_existing_task_descriptions(lanlan_name: Optional[str] = None) -> list[tuple[str, str]]:
     """Return list of (task_id, description) for queued/running tasks, optionally filtered by lanlan_name."""
     items: list[tuple[str, str]] = []
@@ -3053,8 +3056,8 @@ async def openfang_availability():
         payload = {
             "enabled": False,
             "ready": False,
-            "reason": "adapter 未加载",
-            "reasons": ["adapter 未加载"],
+            "reason": AGENT_OPENFANG_NOT_LOADED,
+            "reasons": [AGENT_OPENFANG_NOT_LOADED],
             "provider": "openfang",
             "version": "unknown",
             "tools_count": 0,

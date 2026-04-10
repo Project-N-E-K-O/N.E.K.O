@@ -403,22 +403,31 @@ class LLMSessionManager:
         analyze_request, or agent-callback re-delivery — those belong
         exclusively to user-initiated conversation turns.
         """
-        await self._finalize_or_discard_current_assistant_turn(commit=commit)
-        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+        delivered = bool(commit)
+        if delivered and self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             try:
                 self.tts_request_queue.put((None, None))
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
-        if self.sync_message_queue:
-            self.sync_message_queue.put({'type': 'system', 'data': 'turn end agent_callback'})
-        try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                await self.websocket.send_json({'type': 'system', 'data': 'turn end agent_callback'})
-                logger.debug("[%s] handle_proactive_complete: turn_end (agent_callback) sent to frontend", self.lanlan_name)
-            else:
-                logger.warning("[%s] handle_proactive_complete: websocket not connected, turn_end NOT sent", self.lanlan_name)
-        except Exception as e:
-            logger.warning("[%s] handle_proactive_complete: WS send turn_end error: %s", self.lanlan_name, e)
+                delivered = False
+        if delivered and self.sync_message_queue:
+            try:
+                self.sync_message_queue.put({'type': 'system', 'data': 'turn end agent_callback'})
+            except Exception as e:
+                logger.warning("[%s] handle_proactive_complete: sync turn_end error: %s", self.lanlan_name, e)
+                delivered = False
+        if delivered:
+            try:
+                if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                    await self.websocket.send_json({'type': 'system', 'data': 'turn end agent_callback'})
+                    logger.debug("[%s] handle_proactive_complete: turn_end (agent_callback) sent to frontend", self.lanlan_name)
+                else:
+                    logger.warning("[%s] handle_proactive_complete: websocket not connected, turn_end NOT sent", self.lanlan_name)
+                    delivered = False
+            except Exception as e:
+                logger.warning("[%s] handle_proactive_complete: WS send turn_end error: %s", self.lanlan_name, e)
+                delivered = False
+        await self._finalize_or_discard_current_assistant_turn(commit=delivered)
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""

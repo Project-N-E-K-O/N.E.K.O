@@ -351,6 +351,16 @@ def _sanitize_llm_json(raw: str) -> str:
     return "[]"
 
 
+def _parse_review_boolean(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y"}
+    return False
+
+
 def _format_messages_for_review(messages: list, lanlan_name: str) -> str:
     _, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
     name_mapping['ai'] = lanlan_name
@@ -635,7 +645,8 @@ async def _validate_negative_topic_candidate(
             confidence = float(reviewed.get("confidence", 0))
         except (TypeError, ValueError):
             confidence = 0.0
-        accepted = bool(reviewed.get("accepted")) and confidence >= NEGATIVE_TOPIC_VALIDATION_CONFIDENCE_THRESHOLD
+        accepted_flag = _parse_review_boolean(reviewed.get("accepted"))
+        accepted = accepted_flag and confidence >= NEGATIVE_TOPIC_VALIDATION_CONFIDENCE_THRESHOLD
         result = {
             "accepted": accepted,
             "normalized_topic": normalized_topic,
@@ -1166,7 +1177,8 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
                 pass
         
         # 启动新的review任务
-        task = asyncio.create_task(_run_review_in_background(lanlan_name, input_history))
+        review_messages = input_history if input_history else None
+        task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
         correction_tasks[lanlan_name] = task
         
         return {"status": "processed"}
@@ -1210,7 +1222,8 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
                 pass
         
         # 启动新的review任务
-        task = asyncio.create_task(_run_review_in_background(lanlan_name, input_history))
+        review_messages = input_history if input_history else None
+        task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
         correction_tasks[lanlan_name] = task
         
         return {"status": "processed"}
