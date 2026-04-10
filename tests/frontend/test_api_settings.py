@@ -48,3 +48,60 @@ def test_api_key_settings(mock_page: Page, running_server: str):
     # The JS sets the value asynchronously after fetching config
     expect(mock_page.locator("#apiKeyInput")).to_have_value(test_key, timeout=5000)
     expect(mock_page.locator("#coreApiSelect")).to_have_value("qwen", timeout=5000)
+
+
+@pytest.mark.frontend
+def test_tts_voice_id_not_rewritten_when_gptsovits_disabled(mock_page: Page, running_server: str):
+    """普通 HTTP TTS 配置在 GPT-SoVITS 关闭时不应被编码成占位串。"""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    url = f"{running_server}/api_key"
+    mock_page.goto(url)
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+
+    mock_page.evaluate("""
+        () => {
+            const enableCustomApi = document.getElementById('enableCustomApi');
+            enableCustomApi.checked = true;
+            toggleCustomApi();
+
+            const ttsContent = document.getElementById('tts-model-content');
+            if (ttsContent && !ttsContent.classList.contains('expanded')) {
+                toggleModelConfig('tts');
+            }
+
+            const provider = document.getElementById('ttsModelProvider');
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+
+            document.getElementById('ttsModelUrl').value = 'https://example.com/v1/audio/speech';
+            document.getElementById('ttsModelId').value = 'tts-1';
+            document.getElementById('ttsVoiceId').value = 'alloy';
+        }
+    """)
+
+    assert mock_page.evaluate("document.getElementById('gptsovitsEnabled').checked") is False
+
+    payload = mock_page.evaluate("""
+        async () => {
+            window.__capturedSavePayload = null;
+            window.saveApiKey = async (params) => {
+                window.__capturedSavePayload = JSON.parse(JSON.stringify(params));
+            };
+
+            const currentApiKeyDiv = document.getElementById('current-api-key');
+            if (currentApiKeyDiv) {
+                currentApiKeyDiv.dataset.hasKey = 'false';
+            }
+
+            await save_button_down({ preventDefault() {} });
+            return window.__capturedSavePayload;
+        }
+    """)
+
+    assert payload["enableCustomApi"] is True
+    assert payload["gptsovitsEnabled"] is False
+    assert payload["ttsModelUrl"] == "https://example.com/v1/audio/speech"
+    assert payload["ttsModelId"] == "tts-1"
+    assert payload["ttsVoiceId"] == "alloy"
+    assert not payload["ttsVoiceId"].startswith("__gptsovits_disabled__|")

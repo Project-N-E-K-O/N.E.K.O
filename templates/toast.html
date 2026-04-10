@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>N.E.K.O. Toast</title>
+    <link rel="stylesheet" href="/static/css/index.css">
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <style>
+        html, body {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            background: transparent !important;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        /* prominent notice overlay 需要可交互 */
+        #prominent-notice-overlay {
+            pointer-events: auto;
+        }
+    </style>
+</head>
+<body>
+    <!-- Status toast（复用 index.css 中的 #status-toast 样式） -->
+    <div id="status-toast"></div>
+
+    <script>
+    (function() {
+        'use strict';
+
+        // ===== Toast API（由 preload-toast.js 注入）=====
+        var api = window.nekoToastAPI;
+
+        // ===== Status Toast =====
+        var statusToast = document.getElementById('status-toast');
+        var statusTimeout = null;
+        var cleanupTimer = null;
+
+        function showStatusToast(message, duration) {
+            duration = duration || 3000;
+
+            if (!message || !message.trim()) {
+                if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
+                statusToast.classList.remove('show');
+                statusToast.classList.add('hide');
+                cleanupTimer = setTimeout(function() {
+                    statusToast.textContent = '';
+                    cleanupTimer = null;
+                }, 300);
+                return;
+            }
+
+            if (statusTimeout) { clearTimeout(statusTimeout); statusTimeout = null; }
+            if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
+
+            statusToast.textContent = message;
+            statusToast.style.display = 'block';
+            statusToast.style.visibility = 'visible';
+            statusToast.classList.remove('hide');
+            setTimeout(function() { statusToast.classList.add('show'); }, 10);
+
+            statusTimeout = setTimeout(function() {
+                statusToast.classList.remove('show');
+                statusToast.classList.add('hide');
+                cleanupTimer = setTimeout(function() {
+                    statusToast.textContent = '';
+                    cleanupTimer = null;
+                }, 300);
+            }, duration);
+        }
+
+        // ===== Voice Preparing Toast =====
+        var voiceAnimInjected = false;
+        var spinAnimInjected = false;
+
+        function injectVoiceAnimations() {
+            if (voiceAnimInjected) return;
+            voiceAnimInjected = true;
+            var s = document.createElement('style');
+            s.textContent = [
+                '@keyframes voiceToastFadeIn { from { opacity:0; transform:translateX(-50%) scale(0.8); } to { opacity:1; transform:translateX(-50%) scale(1); } }',
+                '@keyframes voiceToastPulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.1); } }',
+            ].join('\n');
+            document.head.appendChild(s);
+        }
+
+        function injectSpinAnimation() {
+            if (spinAnimInjected) return;
+            spinAnimInjected = true;
+            var s = document.createElement('style');
+            s.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
+            document.head.appendChild(s);
+        }
+
+        function showVoicePreparing(message) {
+            injectVoiceAnimations();
+            injectSpinAnimation();
+
+            var toast = document.getElementById('voice-preparing-toast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'voice-preparing-toast';
+                document.body.appendChild(toast);
+            }
+
+            toast.style.cssText = [
+                'position:fixed', 'bottom:18%', 'left:50%', 'transform:translateX(-50%)',
+                "background-image:url('/static/icons/reminder_blue.png')",
+                'background-size:100% 100%', 'background-position:center',
+                'background-repeat:no-repeat', 'background-color:transparent',
+                'color:white', 'padding:20px 32px', 'border-radius:16px',
+                'font-size:16px', 'font-weight:600', 'z-index:10000',
+                'display:flex', 'align-items:center', 'gap:12px',
+                'animation:voiceToastFadeIn 0.3s ease',
+                'pointer-events:none', 'width:320px', 'box-sizing:border-box',
+                'justify-content:center',
+            ].join(';');
+
+            toast.innerHTML = '';
+            var spinner = document.createElement('div');
+            spinner.style.cssText = 'width:20px;height:20px;border:3px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 1s linear infinite;';
+            var span = document.createElement('span');
+            span.textContent = message || '';
+            toast.appendChild(spinner);
+            toast.appendChild(span);
+        }
+
+        function hideVoicePreparing() {
+            var toast = document.getElementById('voice-preparing-toast');
+            if (toast) {
+                toast.style.animation = 'voiceToastFadeIn 0.3s ease reverse';
+                setTimeout(function() { toast.style.display = 'none'; }, 300);
+            }
+        }
+
+        // ===== Voice Ready Toast =====
+        function showReadyToSpeak(message) {
+            injectVoiceAnimations();
+
+            var toast = document.getElementById('voice-ready-toast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'voice-ready-toast';
+                document.body.appendChild(toast);
+            }
+
+            toast.style.cssText = [
+                'position:fixed', 'bottom:18%', 'left:50%', 'transform:translateX(-50%)',
+                "background-image:url('/static/icons/reminder_midori.png')",
+                'background-size:100% 100%', 'background-position:center',
+                'background-repeat:no-repeat', 'background-color:transparent',
+                'color:white', 'padding:20px 32px', 'border-radius:16px',
+                'font-size:16px', 'font-weight:600', 'box-shadow:none',
+                'z-index:10000', 'display:flex', 'align-items:center', 'gap:12px',
+                'animation:voiceToastFadeIn 0.3s ease',
+                'pointer-events:none', 'width:320px', 'box-sizing:border-box',
+                'justify-content:center',
+            ].join(';');
+
+            toast.innerHTML = '';
+            var img = document.createElement('img');
+            img.src = '/static/icons/ready_to_talk.png';
+            img.style.cssText = 'width:36px;height:36px;object-fit:contain;display:block;flex-shrink:0;';
+            img.alt = 'ready';
+            var span = document.createElement('span');
+            span.style.cssText = 'display:flex;align-items:center;';
+            span.textContent = message || 'You can start talking!';
+            toast.appendChild(img);
+            toast.appendChild(span);
+
+            setTimeout(function() {
+                toast.style.animation = 'voiceToastFadeIn 0.3s ease reverse';
+                setTimeout(function() { toast.style.display = 'none'; }, 300);
+            }, 2000);
+        }
+
+        // ===== Prominent Notice =====
+        var pnAnimInjected = false;
+        var pnQueue = [];
+        var pnActive = false;
+
+        function injectPnAnimations() {
+            if (pnAnimInjected) return;
+            pnAnimInjected = true;
+            var s = document.createElement('style');
+            s.textContent = [
+                '@keyframes pnOverlayIn { from{opacity:0} to{opacity:1} }',
+                '@keyframes pnBoxIn { from{opacity:0;transform:scale(0.85)} to{opacity:1;transform:scale(1)} }',
+                '@keyframes pnOverlayOut { from{opacity:1} to{opacity:0} }',
+            ].join('\n');
+            document.head.appendChild(s);
+        }
+
+        function miniMarkdown(text) {
+            var s = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            s = s.replace(/^#{1,6}\s+(.+)$/gm, '<strong>$1</strong>');
+            s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            s = s.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
+            s = s.replace(/^[-\u2022]\s+(.+)$/gm, '<li style="margin-left:18px;list-style:disc;text-align:left;">$1</li>');
+            s = s.replace(/\n/g, '<br>');
+            s = s.replace(/<\/li><br><li/g, '</li><li');
+            return s;
+        }
+
+        function drainPnQueue() {
+            if (pnActive || pnQueue.length === 0) return;
+            var item = pnQueue.shift();
+            pnActive = true;
+            renderProminentNotice(item, function() {
+                pnActive = false;
+                drainPnQueue();
+            });
+        }
+
+        function renderProminentNotice(notice, onDismiss) {
+            injectPnAnimations();
+
+            var displayText = notice.message || notice.message_en || '';
+
+            // 通知主进程：取消鼠标穿透（需要点击确认按钮）
+            if (api) api.setMouseThrough(false);
+
+            var overlay = document.createElement('div');
+            overlay.id = 'prominent-notice-overlay';
+            overlay.style.cssText = [
+                'position:fixed', 'inset:0',
+                'background:rgba(0,0,0,0.55)',
+                'z-index:2147483647',
+                'display:flex', 'align-items:center', 'justify-content:center',
+                'pointer-events:auto',
+                'animation:pnOverlayIn 0.25s ease',
+            ].join(';');
+
+            var box = document.createElement('div');
+            box.setAttribute('role', 'dialog');
+            box.setAttribute('aria-modal', 'true');
+            box.tabIndex = -1;
+            box.style.cssText = [
+                'position:relative',
+                'background:#1e293b', 'color:#f1f5f9',
+                'border:1px solid rgba(255,255,255,0.12)',
+                'border-radius:16px', 'padding:32px 28px 24px',
+                'width:370px', 'max-width:88vw',
+                'box-shadow:0 12px 40px rgba(0,0,0,0.5)',
+                'text-align:center', 'pointer-events:auto',
+                'animation:pnBoxIn 0.3s ease',
+            ].join(';');
+
+            var icon = document.createElement('img');
+            icon.src = '/static/icons/exclamation.png';
+            icon.alt = '';
+            icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;';
+
+            var textDiv = document.createElement('div');
+            textDiv.style.cssText = 'font-size:16px;font-weight:600;line-height:1.7;margin-bottom:22px;text-align:left;';
+            textDiv.innerHTML = miniMarkdown(displayText);
+
+            var hasMore = pnQueue.length > 0;
+            var btn = document.createElement('button');
+            btn.textContent = hasMore ? '下一个' : '确认';
+            btn.style.cssText = [
+                'background:#3b82f6', 'color:#fff', 'border:none',
+                'border-radius:10px', 'padding:10px 48px',
+                'font-size:15px', 'font-weight:600', 'cursor:pointer',
+                'pointer-events:auto', 'transition:background 0.15s',
+            ].join(';');
+
+            box.appendChild(icon);
+            box.appendChild(textDiv);
+            box.appendChild(btn);
+            overlay.appendChild(box);
+            document.body.appendChild(overlay);
+            btn.focus();
+
+            var dismissed = false;
+            function dismiss() {
+                if (dismissed) return;
+                dismissed = true;
+                overlay.style.animation = 'pnOverlayOut 0.2s ease forwards';
+                setTimeout(function() {
+                    overlay.remove();
+                    // 恢复鼠标穿透
+                    if (api) api.setMouseThrough(true);
+                    onDismiss();
+                }, 200);
+            }
+            btn.addEventListener('click', dismiss);
+        }
+
+        function showProminentNotice(notice) {
+            if (typeof notice === 'string') notice = { message: notice };
+            pnQueue.push(notice);
+            drainPnQueue();
+        }
+
+        // ===== IPC 监听（Electron 环境下由 preload-toast.js 注入 API）=====
+        if (api) {
+            api.onShowStatusToast(function(data) {
+                showStatusToast(data.message, data.duration);
+            });
+            api.onShowVoicePreparing(function(data) {
+                showVoicePreparing(data.message);
+            });
+            api.onHideVoicePreparing(function() {
+                hideVoicePreparing();
+            });
+            api.onShowReadyToSpeak(function(data) {
+                showReadyToSpeak(data.message);
+            });
+            api.onShowProminentNotice(function(data) {
+                showProminentNotice(data);
+            });
+        }
+
+        console.log('[Toast] 页面初始化完成');
+    })();
+    </script>
+</body>
+</html>
