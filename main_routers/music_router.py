@@ -1,11 +1,9 @@
 # 音乐路由
 
 from fastapi import APIRouter, Query
-from fastapi.responses import RedirectResponse, Response, JSONResponse
+from fastapi.responses import RedirectResponse, Response, JSONResponse, StreamingResponse
 from cachetools import TTLCache
 import httpx
-import pyncm_async
-from pyncm_async.apis.track import GetTrackAudio
 from utils.music_crawlers import fetch_music_content, MUSIC_SOURCE_DOMAINS
 from utils.cookies_login import load_cookies_from_file
 from utils.logger_config import get_module_logger
@@ -71,26 +69,31 @@ except Exception as _pyncm_err:
     logger.error("[Music] pyncm_async unavailable, netease VIP playback disabled: %s", _pyncm_err)
 
 # ==================== 音乐代理缓存 ====================
+# 仅缓存小文件（<10MB），大文件流式传输
 MUSIC_PROXY_CACHE = TTLCache(
-    maxsize=500 * 1024 * 1024,  # 500MB 内存预算
+    maxsize=100 * 1024 * 1024,  # 100MB 内存预算（减小）
     ttl=3600 * 6,
     getsizeof=lambda item: len(item.get('body', b''))
 )
+
+STREAMING_SIZE_THRESHOLD = 10 * 1024 * 1024  # 10MB 以上流式传输
 
 @router.get("/api/music/proxy")
 async def proxy_music(url: str):
     """
     通用音乐代理，解决跨域和 Referer 限制问题。
-    使用 MUSIC_SOURCE_DOMAINS 白名单验证域名。
+    - <10MB: 完整缓存，快速返回
+    - ≥10MB: 流式传输，边下边播
     """
     cache_key = url
     if cache_key in MUSIC_PROXY_CACHE:
-        logger.info(f"[Music Proxy] 命中缓存: {url[:60]}...")
         cached = MUSIC_PROXY_CACHE[cache_key]
+        logger.debug(f"[Music Proxy] 命中缓存: {url[:60]}..., 大小: {len(cached['body'])} bytes")
         return Response(
             content=cached['body'],
             media_type='audio/mpeg',
             headers={
+                'Content-Length': str(len(cached['body'])),
                 'Cache-Control': 'public, max-age=21600',
                 'X-Cache': 'HIT',
                 'Accept-Ranges': 'bytes'
@@ -98,8 +101,6 @@ async def proxy_music(url: str):
         )
 
     try:
-        logger.info(f"[Music Proxy] 收到代理请求: {url[:80]}...")
-
         if not url:
             return JSONResponse(content={"success": False, "error": "缺少URL参数"}, status_code=400)
 
@@ -110,22 +111,21 @@ async def proxy_music(url: str):
         parsed = urlparse(decoded_url)
         hostname = (parsed.hostname or '').lower()
 
-        # 使用统一的域名池验证（博士建议）
         if not any(hostname == domain or hostname.endswith('.' + domain) for domain in MUSIC_SOURCE_DOMAINS):
             logger.warning(f"[Music Proxy] 非法域名请求: {hostname}")
             return JSONResponse(content={"success": False, "error": f"不允许代理该域名: {hostname}"}, status_code=403)
 
-        headers = {
+        request_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Referer': 'https://music.163.com/',
             'Accept': '*/*',
             'Accept-Encoding': 'identity',
         }
 
-        MAX_MUSIC_SIZE = 50 * 1024 * 1024  # 50MB
+        MAX_MUSIC_SIZE = 50 * 1024 * 1024  # 50MB 上限
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            async with client.stream("GET", decoded_url, headers=headers) as resp:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            async with client.stream("GET", decoded_url, headers=request_headers) as resp:
                 resp.raise_for_status()
 
                 content_type = resp.headers.get('Content-Type', 'audio/mpeg').split(';', 1)[0].strip()
@@ -134,6 +134,7 @@ async def proxy_music(url: str):
                     return JSONResponse(content={"success": False, "error": "音乐源返回了无效内容（非音频格式）"}, status_code=502)
 
                 content_length = resp.headers.get('Content-Length')
+                declared_size = 0
                 if content_length:
                     try:
                         declared_size = int(content_length)
@@ -143,6 +144,21 @@ async def proxy_music(url: str):
                     except (ValueError, TypeError):
                         pass
 
+                # 大文件（≥10MB）流式传输
+                if declared_size >= STREAMING_SIZE_THRESHOLD:
+                    logger.debug(f"[Music Proxy] 流式传输: {url[:60]}..., 预大小: {declared_size}")
+                    return StreamingResponse(
+                        _stream_music(resp, MAX_MUSIC_SIZE),
+                        media_type='audio/mpeg',
+                        headers={
+                            'Content-Length': str(declared_size) if declared_size else '*',
+                            'Accept-Ranges': 'bytes',
+                            'Cache-Control': 'no-cache',
+                            'X-Cache': 'STREAM'
+                        }
+                    )
+
+                # 小文件先缓存再返回
                 body = bytearray()
                 async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
                     body.extend(chunk)
@@ -150,13 +166,16 @@ async def proxy_music(url: str):
                         logger.warning(f"[Music Proxy] 音乐文件过大 (实际读取): {len(body)}")
                         return JSONResponse(content={"success": False, "error": "音乐文件超过大小限制 (50MB)"}, status_code=413)
 
-                MUSIC_PROXY_CACHE[cache_key] = {'body': bytes(body)}
+                body_bytes = bytes(body)
+                if len(body_bytes) < STREAMING_SIZE_THRESHOLD:
+                    MUSIC_PROXY_CACHE[cache_key] = {'body': body_bytes}
 
-                logger.info(f"[Music Proxy] 代理成功，大小: {len(body)} bytes")
+                logger.debug(f"[Music Proxy] 小文件返回: {url[:60]}..., 大小: {len(body_bytes)}")
                 return Response(
-                    content=bytes(body),
+                    content=body_bytes,
                     media_type='audio/mpeg',
                     headers={
+                        'Content-Length': str(len(body_bytes)),
                         'Cache-Control': 'public, max-age=21600',
                         'X-Cache': 'MISS',
                         'Accept-Ranges': 'bytes'
@@ -171,6 +190,16 @@ async def proxy_music(url: str):
     except Exception as e:
         logger.error(f"[Music Proxy] 代理失败: {str(e)}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+
+
+async def _stream_music(resp, max_size: int):
+    """流式生成器：边下载边 yield"""
+    total = 0
+    async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+        total += len(chunk)
+        if total > max_size:
+            break
+        yield chunk
 
 @router.get("/api/music/domains")
 async def get_music_domains():
