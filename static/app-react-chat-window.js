@@ -1275,6 +1275,8 @@
         if (avatarHeaderButton) {
             avatarHeaderButton.addEventListener('click', function (event) {
                 event.stopPropagation();
+                // Notify external listeners/analytics/extensions first
+                dispatchHostEvent('avatar-generator-click', {});
                 // Always use direct capture — the legacy avatarPreviewButton opens
                 // the old-chat preview card which is hidden behind the React overlay.
                 captureAvatarDirect();

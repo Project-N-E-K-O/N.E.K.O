@@ -15,7 +15,6 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
   onJukeboxClick?: () => void;
-  onAvatarGeneratorClick?: () => void;
 };
 
 const defaultMessages: ChatMessage[] = [];
