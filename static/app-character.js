@@ -149,26 +149,45 @@
 
             const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
 
-            // 检测 live3d 子类型（优先检查 MMD，与后端 _get_live3d_sub_type 保持一致）
-            const _sanitize = v => (typeof v === 'string' && v.trim() && v !== 'undefined' && v !== 'null') ? v : '';
+            // 检测 live3d 子类型：优先使用 live3d_sub_type（后端权威来源）
+            const _sanitize = (v) => {
+                if (v === undefined || v === null) return '';
+                const s = String(v).trim();
+                const lower = s.toLowerCase();
+                if (!s || lower === 'undefined' || lower === 'null') return '';
+                return s;
+            };
             let mmdPath = '';
             let vrmPath = '';
             let effectiveModelType = modelType;
             if (modelType === 'live3d') {
-                mmdPath = _sanitize(catgirlConfig.mmd)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
-                    || '';
-                vrmPath = _sanitize(catgirlConfig.vrm)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
-                    || '';
-                if (mmdPath) {
-                    effectiveModelType = 'mmd';
-                } else if (vrmPath) {
+                const subType = (
+                    catgirlConfig._reserved?.avatar?.live3d_sub_type
+                    || catgirlConfig.live3d_sub_type
+                    || ''
+                ).toString().trim().toLowerCase();
+
+                if (subType === 'vrm') {
                     effectiveModelType = 'vrm';
+                } else if (subType === 'mmd') {
+                    effectiveModelType = 'mmd';
                 } else {
-                    effectiveModelType = 'live2d'; // fallback
+                    // sub_type 缺失时回退到路径探测
+                    mmdPath = _sanitize(catgirlConfig.mmd)
+                        || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
+                        || '';
+                    vrmPath = _sanitize(catgirlConfig.vrm)
+                        || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
+                        || '';
+                    if (mmdPath && !vrmPath) {
+                        effectiveModelType = 'mmd';
+                    } else if (vrmPath) {
+                        effectiveModelType = 'vrm';
+                    } else {
+                        effectiveModelType = 'live2d';
+                    }
                 }
-                console.log('[猫娘切换] live3d 子类型检测:', effectiveModelType, '(mmd:', !!mmdPath, 'vrm:', !!vrmPath, ')');
+                console.log('[猫娘切换] live3d 子类型检测:', effectiveModelType, '(subType:', subType, 'mmd:', !!mmdPath, 'vrm:', !!vrmPath, ')');
             }
             console.log('[猫娘切换] effectiveModelType:', effectiveModelType);
 

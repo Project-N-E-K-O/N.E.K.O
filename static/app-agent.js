@@ -1558,8 +1558,16 @@
     };
 
     window.stopAgentTaskPolling = function () {
-        console.log('[App] \u505c\u6b62 Agent \u4efb\u52a1\u72b6\u6001\u8f6e\u8be2');
-        console.trace('[App] stopAgentTaskPolling caller trace');
+        // 如果轮询已经停止，跳过重复清理
+        if (!agentTaskPollingInterval && !agentTaskTimeUpdateInterval && !window._agentTaskTimeUpdateInterval) {
+            // 仍然确保 HUD 隐藏（幂等操作）
+            if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD) {
+                window.AgentHUD.hideAgentTaskHUD();
+            }
+            return;
+        }
+
+        console.log('[App] 停止 Agent 任务状态轮询');
 
         if (agentTaskTimeUpdateInterval) {
             clearInterval(agentTaskTimeUpdateInterval);
@@ -1674,7 +1682,7 @@
         }
 
         if (isMasterOn && isChildOn) {
-            console.log('[DEBUG HUD] Starting polling. Master:', isMasterOn, 'Child:', isChildOn, 'DOM:', domMaster, domChild, 'Flag:', flags?.agent_enabled, 'Opt:', optMaster, optChild);
+            console.log('[HUD] Starting polling. Master:', isMasterOn, 'Child:', isChildOn);
             window.startAgentTaskPolling();
         } else {
             const LINGER_MS = 10000;
@@ -1686,9 +1694,8 @@
                     return isTerminal && t.terminal_at && (now - t.terminal_at < LINGER_MS);
                 });
             if (hasActiveTasks) {
-                console.log('[DEBUG HUD] Flags off but active tasks exist, keeping HUD visible. Master:', isMasterOn, 'Child:', isChildOn);
+                // 开关已关但还有活跃任务，保持 HUD 可见
             } else {
-                console.log('[DEBUG HUD] Stopping polling. Master:', isMasterOn, 'Child:', isChildOn, 'DOM:', domMaster, domChild, 'Flag:', flags?.agent_enabled, 'Opt:', optMaster, optChild);
                 window.stopAgentTaskPolling();
             }
         }

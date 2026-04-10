@@ -1985,12 +1985,24 @@ function showCatgirlForm(key, container) {
     const normalizedModelType = modelType === 'vrm' ? 'live3d' : modelType;
     let modelDisplayText = '';
 
-    const mmdPath = validateModelPath(cat['mmd']);
-    const vrmPath = validateModelPath(cat['vrm']);
+    const mmdPath = validateModelPath(cat['mmd'])
+        || validateModelPath(cat['_reserved']?.avatar?.mmd?.model_path);
+    const vrmPath = validateModelPath(cat['vrm'])
+        || validateModelPath(cat['_reserved']?.avatar?.vrm?.model_path);
     const live2dPath = validateModelPath(cat['live2d']);
 
-    if (normalizedModelType === 'live3d' && mmdPath) {
-        // live3d 模式下 MMD 优先（VRM 是旧字段，可能遗留非空值，与后端 _get_live3d_sub_type 一致）
+    // 优先使用 live3d_sub_type 判断当前活跃的 3D 模型类型
+    const live3dSubType = String(
+        cat['_reserved']?.avatar?.live3d_sub_type || cat['live3d_sub_type'] || ''
+    ).trim().toLowerCase();
+
+    if (normalizedModelType === 'live3d' && live3dSubType === 'mmd' && mmdPath) {
+        const mmdName = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
+        modelDisplayText = mmdName;
+    } else if (normalizedModelType === 'live3d' && live3dSubType === 'vrm' && vrmPath) {
+        const vrmName = (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '');
+        modelDisplayText = vrmName;
+    } else if (normalizedModelType === 'live3d' && mmdPath && !vrmPath) {
         const mmdName = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
         modelDisplayText = mmdName;
     } else if (normalizedModelType === 'live3d' && vrmPath) {

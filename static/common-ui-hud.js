@@ -600,14 +600,18 @@ window.AgentHUD.showAgentTaskHUD = function () {
 
 // 隐藏任务 HUD
 window.AgentHUD.hideAgentTaskHUD = function () {
-    console.log('[AgentHUD] hideAgentTaskHUD called');
-    let hud = document.getElementById('agent-task-hud');
+    const hud = document.getElementById('agent-task-hud');
     if (!hud) {
-        console.log('[AgentHUD] HUD element not found, creating it first to hide it properly');
-        hud = this.createAgentTaskHUD();
+        // HUD 不存在时无需创建再隐藏，直接返回
+        return;
     }
-    
-    console.log('[AgentHUD] HUD element found, starting fade out');
+
+    // 已经处于隐藏状态时跳过重复操作
+    if (hud.style.display === 'none') {
+        return;
+    }
+
+    console.log('[AgentHUD] hideAgentTaskHUD: starting fade out');
     hud.style.opacity = '0';
     const savedPos = localStorage.getItem('agent-task-hud-position');
     if (!savedPos) {
@@ -616,16 +620,13 @@ window.AgentHUD.hideAgentTaskHUD = function () {
 
     // 如果之前有正在等待的隐藏定时器，先清理掉
     if (this._hideTimeout) {
-        console.log('[AgentHUD][TimeoutTrace] hideAgentTaskHUD clearing previous timeout ID:', this._hideTimeout);
         clearTimeout(this._hideTimeout);
     }
 
     this._hideTimeout = setTimeout(() => {
-        console.log('[AgentHUD][TimeoutTrace] HUD element display set to none. Timeout ID was:', this._hideTimeout);
         hud.style.display = 'none';
         this._hideTimeout = null;
     }, 300);
-    console.log('[AgentHUD][TimeoutTrace] hideAgentTaskHUD set new timeout ID:', this._hideTimeout);
 };
 
 // 更新任务 HUD 内容
