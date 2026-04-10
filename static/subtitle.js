@@ -842,6 +842,68 @@ window.subtitleBridge = {
         }
         localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
     },
+    /** 完整切换：翻转开关 + 执行运行时副作用（隐藏/重新翻译字幕） */
+    toggle: function() {
+        subtitleEnabled = !subtitleEnabled;
+        if (typeof window.appState !== 'undefined') {
+            window.appState.subtitleEnabled = subtitleEnabled;
+        }
+        localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
+        if (typeof window.appSettings !== 'undefined' && window.appSettings.saveSettings) {
+            window.appSettings.saveSettings();
+        }
+
+        // 更新旧版提示框的指示器（如果存在）
+        var indicator = document.querySelector('.subtitle-toggle-indicator');
+        if (indicator) {
+            if (subtitleEnabled) {
+                indicator.classList.add('active');
+            } else {
+                indicator.classList.remove('active');
+            }
+        }
+
+        console.log('字幕开关:', subtitleEnabled ? '开启' : '关闭');
+
+        if (!subtitleEnabled) {
+            // 关闭：隐藏字幕、清除定时器
+            var display = document.getElementById('subtitle-display');
+            if (display) {
+                var text = document.getElementById('subtitle-text');
+                if (text) text.textContent = '';
+                display.classList.remove('show');
+                display.classList.add('hidden');
+                display.style.opacity = '0';
+            }
+            if (subtitleTimeout) {
+                clearTimeout(subtitleTimeout);
+                subtitleTimeout = null;
+            }
+        } else {
+            // 开启：中止旧请求，重新翻译当前消息
+            if (currentTranslateAbortController) {
+                currentTranslateAbortController.abort();
+                currentTranslateAbortController = null;
+            }
+            pendingTranslation = null;
+
+            if (window.currentGeminiMessage &&
+                window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
+                window.currentGeminiMessage.isConnected &&
+                typeof window.currentGeminiMessage.textContent === 'string') {
+                var fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
+                if (fullText && fullText.trim()) {
+                    var subtitleDisplay = document.getElementById('subtitle-display');
+                    if (subtitleDisplay) {
+                        subtitleDisplay.classList.remove('hidden');
+                        translateAndShowSubtitle(fullText);
+                    }
+                }
+            }
+        }
+
+        return subtitleEnabled;
+    },
     setUserLanguage: function(lang) {
         // 空值时回退到默认值
         if (!lang || typeof lang !== 'string') {

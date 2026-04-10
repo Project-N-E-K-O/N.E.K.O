@@ -861,7 +861,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 distance = Math.sqrt(dx * dx + dy * dy);
             } else {
                 // 椭圆半径比例（相对于边界框）
-                const ellipseRadiusX = width * 0.28;
+                const ellipseRadiusX = width * 0.3;
                 const ellipseRadiusY = height * 0.45;
 
                 // 计算点到椭圆的归一化距离
@@ -949,7 +949,14 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             if (distance < threshold) {
                 showButtons();
                 if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
-                    canvasEl.style.cursor = 'grab';
+                    // hitTest + 椭圆内部判定（0.3w × 0.45h），不外扩
+                    let isOnModel = false;
+                    try {
+                        const hitAreas = model.hitTest(pointer.x, pointer.y);
+                        if (hitAreas && hitAreas.length > 0) isOnModel = true;
+                    } catch (_) {}
+                    if (!isOnModel) isOnModel = distance === 0;
+                    canvasEl.style.cursor = isOnModel ? 'grab' : '';
                 }
                 const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
                 if (this.isFocusing) {
