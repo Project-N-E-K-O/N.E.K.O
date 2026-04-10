@@ -657,14 +657,48 @@ body.react-chat-adapter-active #chat-container {
     pointer-events: auto;
 }
 
+/* ---- 最小化：50px 圆形悬浮窗 + 呼吸灯 ---- */
 #react-chat-window-shell.is-minimized {
-    width: 220px;
-    height: 56px;
-    border-radius: 16px;
+    width: 50px !important;
+    height: 50px !important;
+    border-radius: 50%;
+    background: rgba(68, 183, 254, 0.15);
+    box-shadow: 0 0 8px rgba(68, 183, 254, 0.6);
+    animation: breathingGlow 2s ease-in-out infinite;
+    will-change: box-shadow;
+    cursor: pointer;
+    overflow: hidden;
 }
 
-#react-chat-window-shell.is-minimized #react-chat-window-root {
+#react-chat-window-shell.is-minimized #react-chat-window-root,
+#react-chat-window-shell.is-minimized #react-chat-window-header-actions {
     display: none;
+}
+
+/* 拖拽手柄撑满圆形，充当点击恢复区域 */
+#react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+}
+
+/* 隐藏 resize 边缘 */
+#react-chat-window-shell.is-minimized .react-chat-resize-edge {
+    display: none;
+}
+
+/* ---- 折叠动画（飞到左下角 + 缩放） ---- */
+#react-chat-window-shell.is-collapsing {
+    transform-origin: 0 0;
+    transition: transform 0.38s cubic-bezier(0.4, 0, 0.2, 1);
+    will-change: transform;
+}
+
+/* ---- 展开动画（从左下角飞回 + 放大） ---- */
+#react-chat-window-shell.is-expanding {
+    transform-origin: 0 0;
+    transition: transform 0.35s cubic-bezier(0.2, 0, 0, 1);
+    will-change: transform;
 }
 
 #react-chat-window-shell.is-dragging {
@@ -821,6 +855,10 @@ body.react-chat-window-resizing {
 
 [data-theme="dark"] #react-chat-window-shell.is-dragging {
     box-shadow: 0 36px 110px rgba(0, 0, 0, 0.6);
+}
+
+[data-theme="dark"] #react-chat-window-shell.is-minimized {
+    background: rgba(68, 183, 254, 0.2);
 }
 
 [data-theme="dark"] #reactChatWindowMinimizeButton,
