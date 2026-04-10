@@ -88,10 +88,11 @@ async def proxy_music(url: str):
     cache_key = url
     if cache_key in MUSIC_PROXY_CACHE:
         cached = MUSIC_PROXY_CACHE[cache_key]
+        cached_type = cached.get('content_type', 'audio/mpeg')
         logger.debug(f"[Music Proxy] 命中缓存: {url[:60]}..., 大小: {len(cached['body'])} bytes")
         return Response(
             content=cached['body'],
-            media_type='audio/mpeg',
+            media_type=cached_type,
             headers={
                 'Content-Length': str(len(cached['body'])),
                 'Cache-Control': 'public, max-age=21600',
@@ -124,8 +125,23 @@ async def proxy_music(url: str):
 
         MAX_MUSIC_SIZE = 50 * 1024 * 1024  # 50MB 上限
 
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            resp = await client.get(decoded_url, headers=request_headers)
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
+            current_url = decoded_url
+            for _ in range(10):
+                parsed = urlparse(current_url)
+                hostname = (parsed.hostname or '').lower()
+                if not any(hostname == domain or hostname.endswith('.' + domain) for domain in MUSIC_SOURCE_DOMAINS):
+                    logger.warning(f"[Music Proxy] 重定向目标域名不在白名单: {hostname}")
+                    return JSONResponse(content={"success": False, "error": f"重定向目标域名不在白名单: {hostname}"}, status_code=403)
+                resp = await client.get(current_url, headers=request_headers)
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    current_url = resp.headers.get('location')
+                    if not current_url:
+                        return JSONResponse(content={"success": False, "error": "重定向响应缺少 Location 头"}, status_code=502)
+                    if not current_url.startswith(('http://', 'https://')):
+                        current_url = str(parsed.scheme) + '://' + str(parsed.netloc) + current_url
+                    continue
+                break
             resp.raise_for_status()
 
             content_type = resp.headers.get('Content-Type', 'audio/mpeg').split(';', 1)[0].strip()
@@ -146,15 +162,16 @@ async def proxy_music(url: str):
 
             if declared_size >= STREAMING_SIZE_THRESHOLD:
                 logger.debug(f"[Music Proxy] 流式传输: {url[:60]}..., 预大小: {declared_size}")
+                headers = {
+                    'Content-Length': str(declared_size),
+                    'Accept-Ranges': 'bytes',
+                    'Cache-Control': 'no-cache',
+                    'X-Cache': 'STREAM'
+                }
                 return StreamingResponse(
-                    _stream_music(client, resp, MAX_MUSIC_SIZE),
-                    media_type='audio/mpeg',
-                    headers={
-                        'Content-Length': str(declared_size) if declared_size else '*',
-                        'Accept-Ranges': 'bytes',
-                        'Cache-Control': 'no-cache',
-                        'X-Cache': 'STREAM'
-                    }
+                    _stream_music(client, decoded_url, request_headers, MAX_MUSIC_SIZE),
+                    media_type=content_type,
+                    headers=headers
                 )
 
             body = bytearray()
@@ -167,12 +184,12 @@ async def proxy_music(url: str):
             body_bytes = bytes(body)
 
             if len(body_bytes) < STREAMING_SIZE_THRESHOLD:
-                MUSIC_PROXY_CACHE[cache_key] = {'body': body_bytes}
+                MUSIC_PROXY_CACHE[cache_key] = {'body': body_bytes, 'content_type': content_type}
 
             logger.debug(f"[Music Proxy] 小文件返回: {url[:60]}..., 大小: {len(body_bytes)}")
             return Response(
                 content=body_bytes,
-                media_type='audio/mpeg',
+                media_type=content_type,
                 headers={
                     'Content-Length': str(len(body_bytes)),
                     'Cache-Control': 'public, max-age=21600',
@@ -188,20 +205,45 @@ async def proxy_music(url: str):
         return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
     except Exception as e:
         logger.error(f"[Music Proxy] 代理失败: {str(e)}")
-        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+        return JSONResponse(content={"success": False, "error": "请求处理失败"}, status_code=500)
 
 
-async def _stream_music(client, resp, max_size):
-    """流式生成器：自行管理 httpx 客户端生命周期，边下载边 yield"""
-    try:
-        total = 0
-        async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
-            total += len(chunk)
-            if total > max_size:
-                break
-            yield chunk
-    finally:
-        await client.aclose()
+async def _stream_music(client, url, headers, max_size):
+    """流式生成器：自行管理 httpx 客户端生命周期，边下边 yield"""
+    current_url = url
+    for _ in range(10):
+        parsed = urlparse(current_url)
+        hostname = (parsed.hostname or '').lower()
+        if not any(hostname == domain or hostname.endswith('.' + domain) for domain in MUSIC_SOURCE_DOMAINS):
+            logger.warning(f"[Music Proxy] 流式重定向目标域名不在白名单: {hostname}")
+            break
+        try:
+            req = client.build_request("GET", current_url, headers=headers)
+            resp = await client.send(req, stream=True)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                await resp.aclose()
+                location = resp.headers.get('location')
+                if not location:
+                    break
+                if not location.startswith(('http://', 'https://')):
+                    location = str(parsed.scheme) + '://' + str(parsed.netloc) + location
+                current_url = location
+                continue
+            resp.raise_for_status()
+            try:
+                total = 0
+                async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                    total += len(chunk)
+                    if total > max_size:
+                        break
+                    yield chunk
+            finally:
+                await resp.aclose()
+            break
+        except Exception as e:
+            logger.error(f"[Music Proxy] 流式传输错误: {e}")
+            break
+    await client.aclose()
 
 @router.get("/api/music/domains")
 async def get_music_domains():
