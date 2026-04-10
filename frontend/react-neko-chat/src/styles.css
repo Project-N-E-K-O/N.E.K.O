@@ -843,20 +843,17 @@ textarea {
   position: relative;
 }
 
-.composer-translate-icon {
-  width: 22px;
-  height: 22px;
-  fill: #8c9ab5;
-  transition: fill 0.18s ease;
-  pointer-events: none;
+.composer-translate-btn img {
+  opacity: 0.45;
+  transition: opacity 0.18s ease;
 }
 
-.composer-translate-btn:hover .composer-translate-icon {
-  fill: #5a9fd4;
+.composer-translate-btn:hover img {
+  opacity: 0.7;
 }
 
-.composer-translate-btn.is-active .composer-translate-icon {
-  fill: #2497d9;
+.composer-translate-btn.is-active img {
+  opacity: 1;
 }
 
 .composer-translate-btn.is-active::after {
@@ -1179,18 +1176,6 @@ textarea {
 
 [data-theme="dark"] .composer-tool-divider {
   color: rgba(255, 255, 255, 0.15);
-}
-
-[data-theme="dark"] .composer-translate-icon {
-  fill: #6b7a94;
-}
-
-[data-theme="dark"] .composer-translate-btn:hover .composer-translate-icon {
-  fill: #7ab8e0;
-}
-
-[data-theme="dark"] .composer-translate-btn.is-active .composer-translate-icon {
-  fill: #44b7fe;
 }
 
 [data-theme="dark"] .composer-translate-btn.is-active::after {
