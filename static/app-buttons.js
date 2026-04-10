@@ -1073,7 +1073,25 @@
                     console.log(window.t('console.screenshotSuccess'), width + 'x' + height);
                 }
 
-                mod.addScreenshotToList(dataUrl);
+                // Release one-time stream BEFORE opening crop overlay (avoid holding stream during crop)
+                if (captureStream instanceof MediaStream) {
+                    captureStream.getTracks().forEach(function (track) { track.stop(); });
+                    captureStream = null; // prevent double-release in finally
+                }
+
+                // Open crop overlay for region selection
+                if (window.appCrop && typeof window.appCrop.cropImage === 'function') {
+                    var croppedUrl = await window.appCrop.cropImage(dataUrl);
+                    if (!croppedUrl) {
+                        // User cancelled cropping
+                        window.showStatusToast(window.t ? window.t('app.screenshotCancelled') : '\u5DF2\u53D6\u6D88\u622A\u56FE', 2000);
+                        return;
+                    }
+                    mod.addScreenshotToList(croppedUrl);
+                } else {
+                    // Fallback: no crop module available, add full screenshot directly
+                    mod.addScreenshotToList(dataUrl);
+                }
                 window.showStatusToast(window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001', 3000);
 
             } catch (err) {

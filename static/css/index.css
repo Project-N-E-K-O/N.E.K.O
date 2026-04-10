@@ -1582,6 +1582,155 @@ body.react-chat-window-dragging {
     border: 1px solid rgba(68, 183, 254, 0.3);
 }
 
+/* ============ 截图裁切 overlay ============ */
+.crop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100000;
+    display: flex;
+    flex-direction: column;
+    background: #111;
+    animation: crop-fade-in 0.2s ease;
+}
+
+@keyframes crop-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.crop-bg-image {
+    position: absolute;
+    inset: 0;
+    bottom: 52px;
+    width: 100%;
+    height: calc(100% - 52px);
+    object-fit: contain;
+    pointer-events: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.crop-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: calc(100% - 52px);
+    cursor: crosshair;
+    touch-action: none;
+}
+
+.crop-toolbar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    background: rgba(0, 0, 0, 0.85);
+    border-top: 1px solid rgba(68, 183, 254, 0.3);
+    z-index: 1;
+}
+
+.crop-hint {
+    font-size: 0.85rem;
+    color: rgba(255, 255, 255, 0.7);
+    user-select: none;
+}
+
+.crop-btn-group {
+    display: flex;
+    gap: 8px;
+}
+
+.crop-btn {
+    padding: 6px 16px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.crop-btn-full {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.25);
+}
+
+.crop-btn-full:hover {
+    background: rgba(255, 255, 255, 0.22);
+}
+
+.crop-btn-cancel {
+    background: rgba(220, 53, 69, 0.15);
+    color: #ff6b7a;
+    border-color: rgba(220, 53, 69, 0.4);
+}
+
+.crop-btn-cancel:hover {
+    background: rgba(220, 53, 69, 0.3);
+}
+
+.crop-btn-confirm {
+    background: #44b7fe;
+    color: #fff;
+    border-color: #44b7fe;
+}
+
+.crop-btn-confirm:hover:not(:disabled) {
+    background: #2fa8f5;
+}
+
+.crop-btn-confirm:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.crop-btn-confirm.active {
+    opacity: 1;
+    animation: crop-confirm-pulse 0.3s ease;
+}
+
+@keyframes crop-confirm-pulse {
+    0%   { transform: scale(1); }
+    50%  { transform: scale(1.06); }
+    100% { transform: scale(1); }
+}
+
+/* Mobile adjustments */
+@media (max-width: 768px) {
+    .crop-toolbar {
+        padding: 0 8px;
+        height: 48px;
+    }
+
+    .crop-hint {
+        font-size: 0.75rem;
+        max-width: 120px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .crop-btn {
+        padding: 5px 10px;
+        font-size: 0.78rem;
+    }
+
+    .crop-bg-image {
+        height: calc(100% - 48px);
+        bottom: 48px;
+    }
+
+    .crop-canvas {
+        height: calc(100% - 48px);
+    }
+}
+
 #text-input-row {
     display: flex;
     gap: 8px;
