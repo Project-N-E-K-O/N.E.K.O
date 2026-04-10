@@ -132,7 +132,7 @@ async def proxy_music(url: str):
                 hostname = (parsed.hostname or '').lower()
                 if not any(hostname == domain or hostname.endswith('.' + domain) for domain in MUSIC_SOURCE_DOMAINS):
                     logger.warning(f"[Music Proxy] 重定向目标域名不在白名单: {hostname}")
-                    return JSONResponse(content={"success": False, "error": f"重定向目标域名不在白名单: {hostname}"}, status_code=403)
+                    return JSONResponse(content={"success": False, "error": "重定向目标域名不在白名单"}, status_code=403)
                 resp = await client.get(current_url, headers=request_headers)
                 if resp.status_code in (301, 302, 303, 307, 308):
                     current_url = resp.headers.get('location')
