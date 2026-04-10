@@ -1567,13 +1567,15 @@
     "cloudsave": {
         "pageTitle": "雲存檔管理 - Project N.E.K.O.",
         "headerTitle": "雲存檔管理",
-        "subtitle": "可逐隻角色上傳 / 下載，不會自動覆蓋全域設定。",
+        "subtitle": "可按角色逐一產生或恢復本地雲快照，不會自動覆蓋全域設定。若透過 Steam 啟動並正常退出，Steam Cloud 會自動上傳該快照目錄。",
         "refresh": "重新整理",
         "backToCharacterManager": "返回角色管理",
         "loadingSummary": "雲存檔摘要載入中...",
         "emptyState": "目前沒有可顯示的角色摘要。",
-        "providerAvailable": "雲存檔功能可用，可以手動上傳或下載單一角色。",
-        "providerUnavailable": "雲存檔提供方目前不可用，頁面只顯示本地摘要。",
+        "providerAvailable": "雲存檔功能可用，可以手動產生或恢復單一角色快照。",
+        "providerUnavailable": "雲存檔目前不可用，頁面只顯示本地摘要。",
+        "providerSteamAutoCloudReady": "Steam Cloud 已連線。上傳會立即寫入本地雲快照，等你透過 Steam 離開遊戲後，Steam 會自動把該快照上傳到雲端。",
+        "providerSteamAutoCloudOffline": "本地雲快照目前可用，但 Steam Cloud 還沒有連線。若希望 Steam 自動上傳或下載快照，請確認是從 Steam 啟動遊戲且帳號已登入。",
         "currentCharacter": "目前本地角色：{{name}}",
         "noCurrentCharacter": "目前本地角色：未設定",
         "nameConflictNotice": {
@@ -1734,14 +1736,14 @@
             "downloadOriginUnconfirmed": "\n該雲端角色原本來自 Steam 創意工坊，但目前記錄的綁定模型已經是本地或手動模型。下載後你仍需要自己準備目前這套模型檔案，同時目前也還不能確認原始創意工坊條目是否仍可恢復。"
         },
         "confirm": {
-            "uploadOverwrite": "這會覆蓋雲端同名角色資料，不會改動本地角色，也不會上傳模型資源本體。",
-            "uploadNew": "這會把本地該角色上傳到雲端，不會上傳模型資源本體。",
+            "uploadOverwrite": "這會覆蓋本地雲快照中同名角色的紀錄，不會立刻改動本地角色，也不會包含模型資源本體。",
+            "uploadNew": "這會把本地該角色寫入本地雲快照快取，不會包含模型資源本體。",
             "uploadManualAsset": "\n目前本地角色使用的是手動匯入或外部模型。上傳後，其他裝置下載這個角色時仍需要你自己匯入這套模型檔案。",
-            "uploadFinal": "\n確定繼續上傳嗎？",
-            "downloadOverwrite": "這會覆蓋本地同名角色設定與記憶目錄，不會自動下載模型資源，並會先建立本地備份。",
-            "downloadNew": "這會把雲端該角色下載到本地，不會自動下載模型資源，並會先建立本地備份。",
+            "uploadFinal": "\n確定繼續產生 Steam Cloud 快照嗎？",
+            "downloadOverwrite": "這會使用目前裝置上已同步到本地的雲快照，覆蓋本地同名角色設定與記憶目錄，不會自動下載模型資源，並會先建立本地備份。",
+            "downloadNew": "這會把目前裝置上已同步到本地的雲快照恢復到本地，不會自動下載模型資源，並會先建立本地備份。",
             "downloadManualAsset": "\n該雲端角色依賴手動匯入或外部模型。下載後，如目前裝置沒有這套模型檔案，仍需要你手動匯入或移動資源。",
-            "downloadFinal": "\n確定繼續下載嗎？"
+            "downloadFinal": "\n確定繼續從 Steam Cloud 快照恢復嗎？"
         },
         "dialog": {
             "providerUnavailable": "雲存檔提供方目前不可用，請稍後再試。",
@@ -1749,8 +1751,13 @@
             "downloadTitle": "下載雲存檔",
             "uploadSuccess": "上傳成功。",
             "downloadSuccess": "下載成功。",
+            "uploadTitleSteamAutoCloud": "產生 Steam Cloud 快照",
+            "downloadTitleSteamAutoCloud": "套用 Steam Cloud 快照",
+            "uploadSuccessSteamAutoCloud": "本地雲快照已更新。等你透過 Steam 離開遊戲後，Steam 會自動把它上傳到雲端。",
+            "downloadSuccessSteamAutoCloud": "Steam Cloud 快照已恢復到本地。",
             "operationFailed": "操作失敗：{{message}}",
             "rollbackApplied": "\n本地資料已自動回滾到操作前狀態。",
+            "rollbackFailed": "\n回滾也失敗了：{{message}}",
             "loadFailed": "載入雲存檔摘要失敗：{{message}}",
             "stateChanged": "雲存檔狀態已變更，頁面已重新整理，請先確認最新狀態後再重試。"
         },
@@ -1758,12 +1765,12 @@
             "expandDetails": "展開詳情",
             "collapseDetails": "收起詳情",
             "uploadDisabledByProvider": "暫時無法上傳",
-            "uploadOverwrite": "上傳並覆蓋雲端",
-            "uploadNew": "上傳到雲端",
+            "uploadOverwrite": "更新 Steam Cloud 快照",
+            "uploadNew": "產生 Steam Cloud 快照",
             "uploadUnavailable": "無法上傳",
             "downloadDisabledByProvider": "暫時無法下載",
-            "downloadOverwrite": "下載並覆蓋本地",
-            "downloadNew": "下載到本地",
+            "downloadOverwrite": "恢復並覆蓋本地",
+            "downloadNew": "恢復到本地",
             "downloadUnavailable": "無法下載"
         },
         "meta": {

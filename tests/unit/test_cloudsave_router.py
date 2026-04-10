@@ -3,7 +3,6 @@ import json
 import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -16,9 +15,12 @@ from utils.file_utils import atomic_write_json
 
 
 def _make_config_manager(tmp_root: Path):
-    with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_root):
+    with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_root), patch.object(
+        ConfigManager,
+        "get_legacy_app_root_candidates",
+        return_value=[],
+    ):
         config_manager = ConfigManager("N.E.K.O")
-    config_manager.get_legacy_app_root_candidates = lambda: []
     return config_manager
 
 

@@ -8,7 +8,11 @@ from utils.file_utils import atomic_write_json
 def _make_config_manager(tmp_path):
     from utils.config_manager import ConfigManager
 
-    with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_path):
+    with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_path), patch.object(
+        ConfigManager,
+        "get_legacy_app_root_candidates",
+        return_value=[],
+    ):
         return ConfigManager("N.E.K.O")
 
 
@@ -109,6 +113,27 @@ def test_ensure_cloudsave_state_files_raises_when_local_state_directory_init_fai
 
 
 @pytest.mark.unit
+def test_get_documents_directory_preserves_first_readable_legacy_candidate(tmp_path):
+    from utils.config_manager import ConfigManager
+
+    standard_dir = tmp_path / "standard"
+    legacy_dir = tmp_path / "legacy"
+    standard_dir.mkdir(parents=True, exist_ok=True)
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+
+    cm = object.__new__(ConfigManager)
+    cm._log = lambda *_args, **_kwargs: None
+    cm._get_standard_data_directory_candidates = lambda: [standard_dir]
+    cm._get_legacy_storage_candidates = lambda: [legacy_dir]
+    cm._dedupe_paths = lambda paths: list(dict.fromkeys(paths))
+
+    chosen = ConfigManager._get_documents_directory(cm)
+
+    assert chosen == standard_dir
+    assert cm._first_readable_candidate == legacy_dir
+
+
+@pytest.mark.unit
 def test_persist_user_workshop_folder_retries_after_save_failure(tmp_path):
     cm = _make_config_manager(tmp_path)
     workshop_dir = tmp_path / "workshop"
@@ -128,6 +153,24 @@ def test_persist_user_workshop_folder_retries_after_save_failure(tmp_path):
         assert cm._user_workshop_folder_persisted is True
 
     assert save_mock.call_count == 2
+
+
+@pytest.mark.unit
+def test_load_workshop_config_does_not_delete_invalid_file_on_read(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    config_path = cm.config_dir / "workshop_config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        config_path,
+        {"default_workshop_folder": str(tmp_path / "missing-workshop")},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    loaded = cm.load_workshop_config()
+
+    assert loaded["default_workshop_folder"] == str(tmp_path / "missing-workshop")
+    assert config_path.is_file()
 
 
 @pytest.mark.unit

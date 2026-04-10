@@ -674,14 +674,26 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                 except Exception as we:
                     logger.debug(f"获取工坊模型列表时出错（非关键）: {we}")
                 
-                # 查找匹配的模型
-                matching_model = _find_live2d_model_catalog_entry(
-                    all_models,
-                    model_name=live2d_model_name,
-                    model_path=saved_model_path if 'saved_model_path' in locals() else '',
-                    asset_source=saved_asset_source if 'saved_asset_source' in locals() else '',
-                    item_id=saved_item_id if 'saved_item_id' in locals() else '',
-                )
+                matching_model = model_info.copy() if model_info else None
+                if matching_model is None:
+                    # 保留前面已命中的 item_id 结果；仅在没有现成匹配时再做目录级回退查找。
+                    matching_model = _find_live2d_model_catalog_entry(
+                        all_models,
+                        model_name=live2d_model_name,
+                        model_path=saved_model_path if 'saved_model_path' in locals() else '',
+                        asset_source=saved_asset_source if 'saved_asset_source' in locals() else '',
+                        item_id=saved_item_id if 'saved_item_id' in locals() else '',
+                    )
+                elif not (saved_item_id if 'saved_item_id' in locals() else ''):
+                    fallback_model = _find_live2d_model_catalog_entry(
+                        all_models,
+                        model_name=live2d_model_name,
+                        model_path=saved_model_path if 'saved_model_path' in locals() else '',
+                        asset_source=saved_asset_source if 'saved_asset_source' in locals() else '',
+                        item_id='',
+                    )
+                    if fallback_model is not None:
+                        matching_model = fallback_model
                 
                 if matching_model:
                     # 使用完整的模型信息，包含item_id

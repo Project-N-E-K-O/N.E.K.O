@@ -280,6 +280,15 @@ def test_cloudsave_download_notifies_open_character_manager_to_refresh():
 
 
 @pytest.mark.unit
+def test_cloudsave_manager_surfaces_rollback_failure_details():
+    script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+
+    assert "cloudsave.dialog.rollbackFailed" in script
+    assert "payloadError.rollback_error" in script
+    assert "Rollback also failed: {{message}}" in script
+
+
+@pytest.mark.unit
 def test_cloudsave_manager_formats_timestamps_with_locale_aware_intl_formatter():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
 

@@ -1567,13 +1567,15 @@
     "cloudsave": {
         "pageTitle": "クラウドセーブ管理 - Project N.E.K.O.",
         "headerTitle": "クラウドセーブ管理",
-        "subtitle": "1キャラクターずつアップロード/ダウンロードでき、グローバル設定は自動上書きされません。",
+        "subtitle": "ローカルのクラウドスナップショットキャッシュを使って、1キャラクターずつ準備または復元できます。Steam 経由でゲームを終了すると、Steam Cloud がスナップショットフォルダを自動アップロードします。",
         "refresh": "更新",
         "backToCharacterManager": "キャラクター管理に戻る",
         "loadingSummary": "クラウドセーブの概要を読み込み中...",
         "emptyState": "表示できるキャラクター概要はありません。",
-        "providerAvailable": "クラウドセーブは利用可能です。キャラクター単位で手動アップロード/ダウンロードできます。",
-        "providerUnavailable": "クラウドセーブ提供元は現在利用できません。このページではローカル概要のみ表示します。",
+        "providerAvailable": "クラウドセーブは利用可能です。キャラクター単位でローカルクラウドスナップショットを手動で準備または復元できます。",
+        "providerUnavailable": "クラウドセーブは現在利用できません。このページではローカル概要のみ表示します。",
+        "providerSteamAutoCloudReady": "Steam Cloud は接続済みです。アップロードすると今すぐローカルクラウドスナップショットへ書き込み、Steam 経由でゲーム終了後に Steam が自動でクラウドへアップロードします。",
+        "providerSteamAutoCloudOffline": "ローカルクラウドスナップショットは利用できますが、Steam Cloud は現在接続されていません。Steam にログインした状態で Steam からゲームを起動すると、Steam がスナップショットを自動でアップロードまたはダウンロードできます。",
         "currentCharacter": "現在のローカルキャラクター：{{name}}",
         "noCurrentCharacter": "現在のローカルキャラクター：未設定",
         "nameConflictNotice": {
@@ -1734,14 +1736,14 @@
             "downloadOriginUnconfirmed": "\nこのクラウドキャラクターは元々 Steam Workshop 由来ですが、記録されているバインドモデルはすでにローカルまたは手動モデルに変わっています。ダウンロード後も現在のモデルファイルを自分で用意する必要があり、元の Steam Workshop 項目がまだ復元可能かどうかも今の時点では確認できません。"
         },
         "confirm": {
-            "uploadOverwrite": "同名のクラウドキャラクターデータを上書きします。ローカルキャラクターは変更されず、モデル本体ファイルもアップロードしません。",
-            "uploadNew": "このローカルキャラクターをクラウドへアップロードします。モデル本体ファイルは含まれません。",
+            "uploadOverwrite": "同名のローカルクラウドスナップショット項目を上書きします。ローカルキャラクターはすぐには変更されず、モデル本体ファイルも含まれません。",
+            "uploadNew": "このローカルキャラクターをローカルクラウドスナップショットキャッシュへ書き込みます。モデル本体ファイルは含まれません。",
             "uploadManualAsset": "\nこのローカルキャラクターは手動インポートまたは外部モデルを使用しています。別の端末でダウンロードした後も、同じモデルファイルを手動で用意する必要があります。",
-            "uploadFinal": "\nアップロードを続行しますか？",
-            "downloadOverwrite": "同名のローカルキャラクター設定とメモリディレクトリを上書きします。モデルリソースは自動ダウンロードされず、先にローカルバックアップを作成します。",
-            "downloadNew": "このクラウドキャラクターをローカルにダウンロードします。モデルリソースは自動ダウンロードされず、先にローカルバックアップを作成します。",
+            "uploadFinal": "\nSteam Cloud スナップショットの準備を続行しますか？",
+            "downloadOverwrite": "この端末にすでに同期済みのクラウドスナップショットを使って、同名のローカルキャラクター設定とメモリディレクトリを上書きします。モデルリソースは自動ダウンロードされず、先にローカルバックアップを作成します。",
+            "downloadNew": "この端末にすでに同期済みのクラウドスナップショットをローカルストレージへ復元します。モデルリソースは自動ダウンロードされず、先にローカルバックアップを作成します。",
             "downloadManualAsset": "\nこのクラウドキャラクターは手動インポートまたは外部モデルに依存しています。この端末にファイルがない場合、ダウンロード後も手動でインポートまたは移動する必要があります。",
-            "downloadFinal": "\nダウンロードを続行しますか？"
+            "downloadFinal": "\nSteam Cloud スナップショットからの復元を続行しますか？"
         },
         "dialog": {
             "providerUnavailable": "クラウドセーブ提供元は現在利用できません。後でもう一度お試しください。",
@@ -1749,8 +1751,13 @@
             "downloadTitle": "クラウドセーブをダウンロード",
             "uploadSuccess": "アップロードが完了しました。",
             "downloadSuccess": "ダウンロードが完了しました。",
+            "uploadTitleSteamAutoCloud": "Steam Cloud スナップショットを準備",
+            "downloadTitleSteamAutoCloud": "Steam Cloud スナップショットを適用",
+            "uploadSuccessSteamAutoCloud": "ローカルクラウドスナップショットを更新しました。Steam 経由でゲームを終了すると、Steam が自動でクラウドへアップロードします。",
+            "downloadSuccessSteamAutoCloud": "Steam Cloud スナップショットをローカルに適用しました。",
             "operationFailed": "操作に失敗しました：{{message}}",
             "rollbackApplied": "\nローカルデータは操作前の状態に自動ロールバックされました。",
+            "rollbackFailed": "\nロールバックも失敗しました：{{message}}",
             "loadFailed": "クラウドセーブ概要の読み込みに失敗しました：{{message}}",
             "stateChanged": "クラウドセーブの状態が変わりました。最新の状態を確認してから再試行してください。"
         },
@@ -1758,12 +1765,12 @@
             "expandDetails": "詳細を表示",
             "collapseDetails": "詳細を隠す",
             "uploadDisabledByProvider": "アップロード不可",
-            "uploadOverwrite": "アップロードしてクラウドを上書き",
-            "uploadNew": "クラウドへアップロード",
+            "uploadOverwrite": "Steam Cloud スナップショットを更新",
+            "uploadNew": "Steam Cloud スナップショットを準備",
             "uploadUnavailable": "アップロード不可",
             "downloadDisabledByProvider": "ダウンロード不可",
-            "downloadOverwrite": "ダウンロードしてローカルを上書き",
-            "downloadNew": "ローカルへダウンロード",
+            "downloadOverwrite": "復元してローカルを上書き",
+            "downloadNew": "ローカルストレージへ復元",
             "downloadUnavailable": "ダウンロード不可"
         },
         "meta": {

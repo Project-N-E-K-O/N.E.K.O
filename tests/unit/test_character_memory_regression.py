@@ -16,10 +16,13 @@ from utils.cloudsave_runtime import (
 
 
 def _make_config_manager(tmp_root: Path):
-    with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_root):
+    with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_root), patch.object(
+        ConfigManager,
+        "get_legacy_app_root_candidates",
+        return_value=[],
+    ):
         config_manager = ConfigManager("N.E.K.O")
     config_manager.project_memory_dir = tmp_root / "memory" / "store"
-    config_manager.get_legacy_app_root_candidates = lambda: []
     return config_manager
 
 
@@ -910,7 +913,7 @@ def test_move_path_raises_when_target_file_exists(tmp_path):
 
 
 @pytest.mark.unit
-def test_timeindexed_dispose_engine_also_clears_sql_chat_engine_cache():
+def test_timeindexed_dispose_engine_also_clears_sql_chat_engine_cache(monkeypatch):
     from memory.timeindex import TimeIndexedMemory
     from utils.llm_client import SQLChatMessageHistory
 
@@ -927,9 +930,14 @@ def test_timeindexed_dispose_engine_also_clears_sql_chat_engine_cache():
 
     original_cache = dict(SQLChatMessageHistory._engine_cache)
     try:
-        SQLChatMessageHistory._engine_cache[connection_string] = cached_engine
+        monkeypatch.setitem(SQLChatMessageHistory._engine_cache, connection_string, cached_engine)
 
-        manager = object.__new__(TimeIndexedMemory)
+        fake_config_manager = SimpleNamespace(
+            get_character_data=lambda: ({}, {}, {}, {}, {}, {}, {}, {}, {}),
+        )
+        monkeypatch.setattr("memory.timeindex.get_config_manager", lambda: fake_config_manager)
+
+        manager = TimeIndexedMemory(recent_history_manager=None)
         manager.engines = {"测试角色": primary_engine}
         manager.db_paths = {"测试角色": "D:/tmp/test-time-indexed.db"}
 

@@ -49,6 +49,7 @@ import atexit # noqa
 import httpx # noqa
 from datetime import datetime, timezone # noqa
 from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
+from utils.cloudsave_autocloud import get_cloudsave_manager # noqa
 from utils.cloudsave_runtime import (
     MaintenanceModeError,
     ROOT_MODE_NORMAL,
@@ -169,6 +170,7 @@ steamworks = None
 _server_loop: asyncio.AbstractEventLoop | None = None
 
 _config_manager = get_config_manager()
+_cloudsave_manager = get_cloudsave_manager(_config_manager)
 
 def cleanup():
     """通知所有同步线程停止"""
@@ -947,6 +949,19 @@ async def on_startup():
         global steamworks, _preload_task, agent_event_bridge, _server_loop
         _server_loop = asyncio.get_running_loop()
         bootstrap_local_cloudsave_environment(_config_manager)
+        try:
+            import_result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _cloudsave_manager.import_if_needed,
+                    reason="main_server_startup",
+                ),
+                timeout=10.0,
+            )
+            logger.info("Steam Auto-Cloud startup import: %s", import_result)
+        except asyncio.TimeoutError:
+            logger.warning("Steam Auto-Cloud startup import timed out after 10 seconds; continuing with local runtime state")
+        except Exception as e:
+            logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
         await initialize_character_data()
         try:
             set_root_mode(
@@ -1104,6 +1119,42 @@ async def on_shutdown():
             logger.warning("音乐爬虫连接池清理超时，已强制跳过以保证服务正常退出。")
         except Exception as e:
             logger.debug(f"音乐爬虫清理失败: {e}", exc_info=True)
+
+        try:
+            from main_routers.characters_router import release_memory_server_character
+
+            releasable_names = sorted(
+                name
+                for name, mgr in session_manager.items()
+                if mgr is not None
+            )
+            for character_name in releasable_names:
+                try:
+                    await asyncio.wait_for(
+                        release_memory_server_character(
+                            character_name,
+                            reason=f"Steam Auto-Cloud export before shutdown: {character_name}",
+                        ),
+                        timeout=1.0,
+                    )
+                except Exception as e:
+                    logger.debug("Steam Auto-Cloud pre-export release skipped for %s: %s", character_name, e)
+        except Exception as e:
+            logger.debug(f"Steam Auto-Cloud pre-export release phase failed: {e}")
+
+        try:
+            export_result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _cloudsave_manager.export_snapshot,
+                    reason="main_server_shutdown",
+                ),
+                timeout=3.0,
+            )
+            logger.info("Steam Auto-Cloud shutdown export: %s", export_result)
+        except asyncio.TimeoutError:
+            logger.warning("Steam Auto-Cloud shutdown export timed out after 3 seconds; Steam may upload the previous local snapshot")
+        except Exception as e:
+            logger.warning(f"Steam Auto-Cloud shutdown export failed: {e}")
 
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():

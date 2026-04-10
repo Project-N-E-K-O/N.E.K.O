@@ -458,7 +458,6 @@ class ConfigManager:
         self._user_workshop_folder_persisted = False
         self.chara_dir = self.app_docs_dir / "character_cards"
         self._workshop_config_lock = threading.Lock()
-        self._workshop_config_cleanup_done = False
 
         self.project_config_dir = self._get_project_config_directory()
         self.project_memory_dir = self._get_project_memory_directory()
@@ -640,19 +639,16 @@ class ConfigManager:
         primary_candidates = self._get_standard_data_directory_candidates()
         legacy_candidates = self._get_legacy_storage_candidates()
         candidates = self._dedupe_paths(primary_candidates + legacy_candidates)
-        legacy_candidate_strings = {str(path) for path in legacy_candidates}
-        
-        first_readable = None
+        first_readable = next(
+            (
+                path
+                for path in legacy_candidates
+                if path.exists() and os.access(str(path), os.R_OK)
+            ),
+            None,
+        )
         for docs_dir in candidates:
             try:
-                if (
-                    first_readable is None
-                    and str(docs_dir) in legacy_candidate_strings
-                    and docs_dir.exists()
-                    and os.access(str(docs_dir), os.R_OK)
-                ):
-                    first_readable = docs_dir
-
                 if docs_dir.exists() and os.access(str(docs_dir), os.R_OK | os.W_OK):
                     test_path = docs_dir / ".test_neko_write"
                     try:
@@ -2446,6 +2442,11 @@ class ConfigManager:
         )
         for candidate in candidates:
             self._cleanup_invalid_workshop_config_file(candidate)
+
+    def repair_workshop_configs(self):
+        """显式修复 workshop 配置文件，仅在调用方明确允许写盘时执行。"""
+        with self._workshop_config_lock:
+            self._cleanup_invalid_workshop_configs()
     
     def load_workshop_config(self):
         """
@@ -2454,13 +2455,6 @@ class ConfigManager:
         Returns:
             dict: workshop配置数据
         """
-        # 兼容历史错误配置：仅在进程内首次读取时自愈一次，避免高频读取重复触发清理逻辑
-        if not self._workshop_config_cleanup_done:
-            with self._workshop_config_lock:
-                if not self._workshop_config_cleanup_done:
-                    self._cleanup_invalid_workshop_configs()
-                    self._workshop_config_cleanup_done = True
-
         config_path = self.get_workshop_config_path()
         try:
             if os.path.exists(config_path):

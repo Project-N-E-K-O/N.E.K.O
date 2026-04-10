@@ -320,6 +320,27 @@
         return !summary || summary.provider_available !== false;
     }
 
+    function getCurrentSyncBackend(summary = state.summary) {
+        return String((summary && summary.sync_backend) || '').trim();
+    }
+
+    function getSteamAutoCloudStatus(summary = state.summary) {
+        if (!summary || typeof summary !== 'object') {
+            return {};
+        }
+        return summary.steam_autocloud && typeof summary.steam_autocloud === 'object'
+            ? summary.steam_autocloud
+            : {};
+    }
+
+    function isSteamAutoCloudBackend(summary = state.summary) {
+        return getCurrentSyncBackend(summary) === 'steam_auto_cloud';
+    }
+
+    function isSteamAutoCloudConnected(summary = state.summary) {
+        return !!getSteamAutoCloudStatus(summary).steam_available;
+    }
+
     function getCloudsaveSyncChannel() {
         if (typeof BroadcastChannel !== 'function') {
             return null;
@@ -1250,8 +1271,16 @@
         const confirmed = await showConfirm(
             buildConfirmMessage(latestItem, action),
             action === 'upload'
-                ? translate('cloudsave.dialog.uploadTitle', 'Upload Cloud Save')
-                : translate('cloudsave.dialog.downloadTitle', 'Download Cloud Save'),
+                ? (
+                    isSteamAutoCloudBackend(latestDetail)
+                        ? translate('cloudsave.dialog.uploadTitleSteamAutoCloud', 'Prepare Steam Cloud Snapshot')
+                        : translate('cloudsave.dialog.uploadTitle', 'Upload Cloud Save')
+                )
+                : (
+                    isSteamAutoCloudBackend(latestDetail)
+                        ? translate('cloudsave.dialog.downloadTitleSteamAutoCloud', 'Apply Steam Cloud Snapshot')
+                        : translate('cloudsave.dialog.downloadTitle', 'Download Cloud Save')
+                ),
             { danger: action === 'download' || isOverwrite },
         );
         if (!confirmed) return;
@@ -1269,8 +1298,22 @@
             });
             await showAlert(
                 action === 'upload'
-                    ? translate('cloudsave.dialog.uploadSuccess', 'Upload completed.')
-                    : translate('cloudsave.dialog.downloadSuccess', 'Download completed.'),
+                    ? (
+                        isSteamAutoCloudBackend(result)
+                            ? translate(
+                                'cloudsave.dialog.uploadSuccessSteamAutoCloud',
+                                'Local cloud snapshot updated. Steam will upload it automatically after you exit the game through Steam.',
+                            )
+                            : translate('cloudsave.dialog.uploadSuccess', 'Upload completed.')
+                    )
+                    : (
+                        isSteamAutoCloudBackend(result)
+                            ? translate(
+                                'cloudsave.dialog.downloadSuccessSteamAutoCloud',
+                                'The Steam Cloud snapshot was applied locally.',
+                            )
+                            : translate('cloudsave.dialog.downloadSuccess', 'Download completed.')
+                    ),
             );
             if (result && result.detail && result.detail.item) {
                 state.preferredCharacterName = result.detail.item.character_name || state.preferredCharacterName;
@@ -1290,12 +1333,30 @@
                 payloadError,
                 payloadError.message || payloadError.error || error.message,
             ) || payloadError.message || payloadError.error || error.message;
-            const rollbackHint = payloadError.code === 'LOCAL_RELOAD_FAILED_ROLLED_BACK' && payloadError.rolled_back
-                ? translate(
-                    'cloudsave.dialog.rollbackApplied',
-                    '\nLocal data was rolled back automatically to the state before the operation.',
-                )
-                : '';
+            let rollbackHint = '';
+            if (payloadError.code === 'LOCAL_RELOAD_FAILED_ROLLED_BACK') {
+                if (payloadError.rolled_back) {
+                    rollbackHint = translate(
+                        'cloudsave.dialog.rollbackApplied',
+                        '\nLocal data was rolled back automatically to the state before the operation.',
+                    );
+                } else if (payloadError.rollback_error) {
+                    rollbackHint = translate(
+                        'cloudsave.dialog.rollbackFailed',
+                        '\nRollback also failed: {{message}}',
+                        {
+                            message: translateErrorPayload(
+                                {
+                                    code: payloadError.rollback_error,
+                                    message: payloadError.rollback_error,
+                                    error: payloadError.rollback_error,
+                                },
+                                payloadError.rollback_error,
+                            ) || payloadError.rollback_error,
+                        },
+                    );
+                }
+            }
             await showAlert(
                 translate(
                     'cloudsave.dialog.operationFailed',
@@ -1514,7 +1575,19 @@
         const list = document.getElementById('cloudsave-list');
         const emptyState = document.getElementById('cloudsave-empty-state');
 
-        if (summary.provider_available) {
+        if (isSteamAutoCloudBackend(summary) && isSteamAutoCloudConnected(summary)) {
+            setTranslatedText(
+                providerStatus,
+                'cloudsave.providerSteamAutoCloudReady',
+                'Steam Cloud is connected. Upload writes the local cloud snapshot now, and Steam will upload it automatically after you exit the game through Steam.',
+            );
+        } else if (isSteamAutoCloudBackend(summary)) {
+            setTranslatedText(
+                providerStatus,
+                'cloudsave.providerSteamAutoCloudOffline',
+                'Local cloud snapshots are available, but Steam Cloud is not currently connected. Start the game from Steam while logged in if you want Steam to upload or download snapshots automatically.',
+            );
+        } else if (summary.provider_available) {
             setTranslatedText(
                 providerStatus,
                 'cloudsave.providerAvailable',

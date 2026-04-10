@@ -1567,13 +1567,15 @@
     "cloudsave": {
         "pageTitle": "云存档管理 - Project N.E.K.O.",
         "headerTitle": "云存档管理",
-        "subtitle": "单猫娘上传 / 下载，不会自动覆盖全局配置。",
+        "subtitle": "可按角色逐个生成或恢复本地云快照，不会自动覆盖全局配置。若通过 Steam 启动并正常退出，Steam Cloud 会自动上传该快照目录。",
         "refresh": "刷新",
         "backToCharacterManager": "返回角色管理",
         "loadingSummary": "云存档摘要加载中...",
         "emptyState": "当前没有可展示的角色摘要。",
-        "providerAvailable": "云存档功能可用，可以手动上传或下载单个角色。",
-        "providerUnavailable": "云存档提供方当前不可用，页面只展示本地摘要。",
+        "providerAvailable": "云存档功能可用，可以手动生成或恢复单个角色快照。",
+        "providerUnavailable": "云存档当前不可用，页面只展示本地摘要。",
+        "providerSteamAutoCloudReady": "Steam Cloud 已连接。上传会立即写入本地云快照，等你通过 Steam 退出游戏后，Steam 会自动把该快照上传到云端。",
+        "providerSteamAutoCloudOffline": "本地云快照当前可用，但 Steam Cloud 还没有连接。若希望 Steam 自动上传或下载快照，请确保从 Steam 启动游戏并保持已登录状态。",
         "currentCharacter": "当前本地角色：{{name}}",
         "noCurrentCharacter": "当前本地角色：未设置",
         "nameConflictNotice": {
@@ -1734,14 +1736,14 @@
             "downloadOriginUnconfirmed": "\n该云端角色原本来自 Steam 创意工坊，但当前记录的绑定模型已经是本地或手动模型。下载后你仍需要自己准备当前这套模型文件，同时当前也还不能确认原始创意工坊条目是否仍可恢复。"
         },
         "confirm": {
-            "uploadOverwrite": "这会覆盖云端同名角色数据，不会改动本地角色，也不会上传模型资源本体。",
-            "uploadNew": "这会把本地该角色上传到云端，不会上传模型资源本体。",
+            "uploadOverwrite": "这会覆盖本地云快照中同名角色的记录，不会立刻改动本地角色，也不会包含模型资源本体。",
+            "uploadNew": "这会把本地该角色写入本地云快照缓存，不会包含模型资源本体。",
             "uploadManualAsset": "\n当前本地角色使用的是手动导入或外部模型。上传后，其他设备下载这个角色时仍需要你自己导入这套模型文件。",
-            "uploadFinal": "\n确定继续上传吗？",
-            "downloadOverwrite": "这会覆盖本地同名角色配置和记忆目录，不会自动下载模型资源，并会先创建本地备份。",
-            "downloadNew": "这会把云端该角色下载到本地，不会自动下载模型资源，并会先创建本地备份。",
+            "uploadFinal": "\n确定继续生成 Steam Cloud 快照吗？",
+            "downloadOverwrite": "这会使用当前设备上已同步到本地的云快照，覆盖本地同名角色配置和记忆目录，不会自动下载模型资源，并会先创建本地备份。",
+            "downloadNew": "这会把当前设备上已同步到本地的云快照恢复到本地，不会自动下载模型资源，并会先创建本地备份。",
             "downloadManualAsset": "\n该云端角色依赖手动导入或外部模型。下载后，如当前设备没有这套模型文件，仍需要你手动导入或移动资源。",
-            "downloadFinal": "\n确定继续下载吗？"
+            "downloadFinal": "\n确定继续从 Steam Cloud 快照恢复吗？"
         },
         "dialog": {
             "providerUnavailable": "云存档提供方当前不可用，请稍后再试。",
@@ -1749,8 +1751,13 @@
             "downloadTitle": "下载云存档",
             "uploadSuccess": "上传成功。",
             "downloadSuccess": "下载成功。",
+            "uploadTitleSteamAutoCloud": "生成 Steam Cloud 快照",
+            "downloadTitleSteamAutoCloud": "应用 Steam Cloud 快照",
+            "uploadSuccessSteamAutoCloud": "本地云快照已更新。等你通过 Steam 退出游戏后，Steam 会自动把它上传到云端。",
+            "downloadSuccessSteamAutoCloud": "Steam Cloud 快照已恢复到本地。",
             "operationFailed": "操作失败：{{message}}",
             "rollbackApplied": "\n本地数据已自动回滚到操作前状态。",
+            "rollbackFailed": "\n回滚也失败了：{{message}}",
             "loadFailed": "加载云存档摘要失败：{{message}}",
             "stateChanged": "云存档状态已变化，页面已刷新，请先确认最新状态后再重试。"
         },
@@ -1758,12 +1765,12 @@
             "expandDetails": "展开详情",
             "collapseDetails": "收起详情",
             "uploadDisabledByProvider": "上传暂不可用",
-            "uploadOverwrite": "上传并覆盖云端",
-            "uploadNew": "上传到云端",
+            "uploadOverwrite": "更新 Steam Cloud 快照",
+            "uploadNew": "生成 Steam Cloud 快照",
             "uploadUnavailable": "上传不可用",
             "downloadDisabledByProvider": "下载暂不可用",
-            "downloadOverwrite": "下载并覆盖本地",
-            "downloadNew": "下载到本地",
+            "downloadOverwrite": "恢复并覆盖本地",
+            "downloadNew": "恢复到本地",
             "downloadUnavailable": "下载不可用"
         },
         "meta": {

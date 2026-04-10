@@ -6,18 +6,22 @@ Provides cloudsave summary, single-character upload/download APIs,
 and safety checks around runtime reload.
 """
 
-import json
+import asyncio
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from .shared_state import get_config_manager, get_initialize_character_data, get_session_manager
+from .shared_state import get_config_manager, get_initialize_character_data, get_session_manager, get_steamworks
 from .characters_router import (
     notify_memory_server_reload,
     release_memory_server_character,
     send_reload_page_notice,
 )
 from .workshop_router import get_subscribed_workshop_items, get_workshop_item_details
+from utils.cloudsave_autocloud import (
+    STEAM_AUTO_CLOUD_SYNC_BACKEND,
+    build_steam_autocloud_status,
+)
 from utils.cloudsave_runtime import (
     CloudsaveOperationError,
     build_cloudsave_character_detail,
@@ -32,11 +36,11 @@ from utils.cloudsave_runtime import (
 router = APIRouter(prefix="/api/cloudsave", tags=["cloudsave"])
 
 
-def _decode_json_response_payload(response: JSONResponse) -> dict:
-    try:
-        return json.loads(response.body.decode("utf-8"))
-    except Exception:
-        return {}
+def _build_steam_autocloud_payload(config_manager) -> dict:
+    return build_steam_autocloud_status(
+        config_manager,
+        steamworks=get_steamworks(),
+    )
 
 
 def _default_workshop_status_payload(item_id: str, status: str = "") -> dict:
@@ -123,11 +127,23 @@ async def _build_workshop_status_map(items: list[dict]) -> dict[str, dict]:
             if published_file_id:
                 subscribed_lookup[published_file_id] = item_info
 
+    missing_item_ids: list[str] = []
     for item_id in item_ids:
         if item_id in subscribed_lookup:
             status_map[item_id] = _derive_workshop_status_payload(item_id, subscribed_lookup[item_id])
         else:
-            status_map[item_id] = await _fetch_workshop_status_payload(item_id)
+            missing_item_ids.append(item_id)
+
+    if missing_item_ids:
+        results = await asyncio.gather(
+            *(_fetch_workshop_status_payload(item_id) for item_id in missing_item_ids),
+            return_exceptions=True,
+        )
+        for item_id, result in zip(missing_item_ids, results):
+            if isinstance(result, Exception):
+                status_map[item_id] = _default_workshop_status_payload(item_id, "unknown")
+            else:
+                status_map[item_id] = result
     return status_map
 
 
@@ -244,7 +260,19 @@ async def _reload_after_character_download(character_name: str) -> tuple[bool, s
 async def get_cloudsave_summary():
     config_manager = get_config_manager()
     summary = build_cloudsave_summary(config_manager)
+    summary["sync_backend"] = STEAM_AUTO_CLOUD_SYNC_BACKEND
+    summary["steam_autocloud"] = _build_steam_autocloud_payload(config_manager)
     return await _enrich_cloudsave_payload_with_workshop_status(summary)
+
+
+@router.get("/steam-autocloud-config")
+async def get_steam_autocloud_config():
+    config_manager = get_config_manager()
+    return {
+        "success": True,
+        "sync_backend": STEAM_AUTO_CLOUD_SYNC_BACKEND,
+        "steam_autocloud": _build_steam_autocloud_payload(config_manager),
+    }
 
 
 @router.get("/character/{name}")
@@ -258,6 +286,8 @@ async def get_cloudsave_character_detail(name: str):
             status_code=404,
             character_name=name,
         )
+    detail["sync_backend"] = STEAM_AUTO_CLOUD_SYNC_BACKEND
+    detail["steam_autocloud"] = _build_steam_autocloud_payload(config_manager)
     return await _enrich_cloudsave_payload_with_workshop_status(detail)
 
 
@@ -300,6 +330,8 @@ async def post_cloudsave_character_upload(name: str, request: Request):
         "detail": await _enrich_cloudsave_payload_with_workshop_status(result.get("detail")),
         "meta": result.get("meta"),
         "sequence_number": result.get("sequence_number"),
+        "sync_backend": STEAM_AUTO_CLOUD_SYNC_BACKEND,
+        "steam_autocloud": _build_steam_autocloud_payload(config_manager),
     }
 
 
@@ -418,4 +450,6 @@ async def post_cloudsave_character_download(name: str, request: Request):
         "character_name": name,
         "detail": await _enrich_cloudsave_payload_with_workshop_status(refreshed_detail),
         "backup_path": backup_path,
+        "sync_backend": STEAM_AUTO_CLOUD_SYNC_BACKEND,
+        "steam_autocloud": _build_steam_autocloud_payload(config_manager),
     }

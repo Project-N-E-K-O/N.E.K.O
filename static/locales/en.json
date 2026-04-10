@@ -1567,13 +1567,15 @@
     "cloudsave": {
         "pageTitle": "Cloud Save Manager - Project N.E.K.O.",
         "headerTitle": "Cloud Save Manager",
-        "subtitle": "Upload or download one character at a time without automatically overwriting global settings.",
+        "subtitle": "Prepare or restore one character at a time using the local cloud snapshot cache. When the game exits through Steam, Steam Cloud uploads the snapshot folder automatically.",
         "refresh": "Refresh",
         "backToCharacterManager": "Back to Character Manager",
         "loadingSummary": "Loading cloud save summary...",
         "emptyState": "There are no character summaries to display right now.",
-        "providerAvailable": "Cloud save is available. You can upload or download individual characters manually.",
-        "providerUnavailable": "Cloud save provider is currently unavailable. This page only shows local summaries.",
+        "providerAvailable": "Cloud save is available. You can prepare or restore individual character snapshots manually.",
+        "providerUnavailable": "Cloud save is currently unavailable. This page only shows local summaries.",
+        "providerSteamAutoCloudReady": "Steam Cloud is connected. Upload writes the local cloud snapshot now, and Steam will upload it automatically after you exit the game through Steam.",
+        "providerSteamAutoCloudOffline": "Local cloud snapshots are available, but Steam Cloud is not currently connected. Start the game from Steam while logged in if you want Steam to upload or download snapshots automatically.",
         "currentCharacter": "Current local character: {{name}}",
         "noCurrentCharacter": "Current local character: Not set",
         "nameConflictNotice": {
@@ -1734,14 +1736,14 @@
             "downloadOriginUnconfirmed": "\nThis cloud character originally came from Steam Workshop, but the recorded bound model is now local or manual. After download, you will still need the current model files, and it is not currently possible to confirm whether the original Steam Workshop item can still be restored."
         },
         "confirm": {
-            "uploadOverwrite": "This will overwrite the cloud copy with the same name. It will not change the local character and will not upload model asset files.",
-            "uploadNew": "This will upload the local character to the cloud. Model asset files are not included.",
+            "uploadOverwrite": "This will overwrite the local cloud snapshot entry with the same name. It will not change the local character immediately, and model asset files are still not included.",
+            "uploadNew": "This will write the local character into the local cloud snapshot cache. Model asset files are not included.",
             "uploadManualAsset": "\nThis local character uses a manually imported or external model. After another device downloads this character, the same model files must still be imported manually.",
-            "uploadFinal": "\nDo you want to continue with the upload?",
-            "downloadOverwrite": "This will overwrite the local character settings and memory directory with the same name. Model assets will not be downloaded automatically, and a local backup will be created first.",
-            "downloadNew": "This will download the cloud character to local storage. Model assets will not be downloaded automatically, and a local backup will be created first.",
+            "uploadFinal": "\nDo you want to continue preparing the Steam Cloud snapshot?",
+            "downloadOverwrite": "This will overwrite the local character settings and memory directory with the same name using the cloud snapshot already synced to this device. Model assets will not be downloaded automatically, and a local backup will be created first.",
+            "downloadNew": "This will restore the cloud snapshot already synced to this device into local storage. Model assets will not be downloaded automatically, and a local backup will be created first.",
             "downloadManualAsset": "\nThis cloud character depends on a manually imported or external model. If this device does not already have those files, you will still need to import or move them manually after download.",
-            "downloadFinal": "\nDo you want to continue with the download?"
+            "downloadFinal": "\nDo you want to continue restoring from the Steam Cloud snapshot?"
         },
         "dialog": {
             "providerUnavailable": "Cloud save provider is currently unavailable. Please try again later.",
@@ -1749,8 +1751,13 @@
             "downloadTitle": "Download Cloud Save",
             "uploadSuccess": "Upload completed.",
             "downloadSuccess": "Download completed.",
+            "uploadTitleSteamAutoCloud": "Prepare Steam Cloud Snapshot",
+            "downloadTitleSteamAutoCloud": "Apply Steam Cloud Snapshot",
+            "uploadSuccessSteamAutoCloud": "Local cloud snapshot updated. Steam will upload it automatically after you exit the game through Steam.",
+            "downloadSuccessSteamAutoCloud": "The Steam Cloud snapshot was applied locally.",
             "operationFailed": "Operation failed: {{message}}",
             "rollbackApplied": "\nLocal data was rolled back automatically to the state before the operation.",
+            "rollbackFailed": "\nRollback also failed: {{message}}",
             "loadFailed": "Failed to load the cloud save summary: {{message}}",
             "stateChanged": "Cloud save status changed. Please review the refreshed summary and try again."
         },
@@ -1758,12 +1765,12 @@
             "expandDetails": "Expand details",
             "collapseDetails": "Collapse details",
             "uploadDisabledByProvider": "Upload unavailable",
-            "uploadOverwrite": "Upload and overwrite cloud copy",
-            "uploadNew": "Upload to cloud",
+            "uploadOverwrite": "Update Steam Cloud snapshot",
+            "uploadNew": "Prepare Steam Cloud snapshot",
             "uploadUnavailable": "Upload unavailable",
             "downloadDisabledByProvider": "Download unavailable",
-            "downloadOverwrite": "Download and overwrite local copy",
-            "downloadNew": "Download to local storage",
+            "downloadOverwrite": "Restore and overwrite local copy",
+            "downloadNew": "Restore to local storage",
             "downloadUnavailable": "Download unavailable"
         },
         "meta": {

@@ -1567,13 +1567,15 @@
     "cloudsave": {
         "pageTitle": "클라우드 저장 관리 - Project N.E.K.O.",
         "headerTitle": "클라우드 저장 관리",
-        "subtitle": "한 캐릭터씩 업로드/다운로드할 수 있으며, 전역 설정은 자동으로 덮어쓰지 않습니다.",
+        "subtitle": "로컬 클라우드 스냅샷 캐시를 사용해 캐릭터를 하나씩 준비하거나 복원할 수 있습니다. Steam을 통해 게임을 종료하면 Steam Cloud가 스냅샷 폴더를 자동으로 업로드합니다.",
         "refresh": "새로고침",
         "backToCharacterManager": "캐릭터 관리로 돌아가기",
         "loadingSummary": "클라우드 저장 요약을 불러오는 중...",
         "emptyState": "표시할 수 있는 캐릭터 요약이 없습니다.",
-        "providerAvailable": "클라우드 저장을 사용할 수 있습니다. 캐릭터 단위로 수동 업로드/다운로드가 가능합니다.",
-        "providerUnavailable": "클라우드 저장 제공자를 현재 사용할 수 없습니다. 이 페이지에는 로컬 요약만 표시됩니다.",
+        "providerAvailable": "클라우드 저장을 사용할 수 있습니다. 캐릭터 단위로 로컬 클라우드 스냅샷을 수동으로 준비하거나 복원할 수 있습니다.",
+        "providerUnavailable": "클라우드 저장을 현재 사용할 수 없습니다. 이 페이지에는 로컬 요약만 표시됩니다.",
+        "providerSteamAutoCloudReady": "Steam Cloud가 연결되었습니다. 업로드하면 지금 로컬 클라우드 스냅샷에 기록되며, Steam을 통해 게임을 종료한 뒤 Steam이 자동으로 클라우드에 업로드합니다.",
+        "providerSteamAutoCloudOffline": "로컬 클라우드 스냅샷은 사용할 수 있지만 Steam Cloud는 현재 연결되어 있지 않습니다. Steam에 로그인한 상태로 Steam에서 게임을 실행하면 Steam이 스냅샷을 자동으로 업로드하거나 다운로드할 수 있습니다.",
         "currentCharacter": "현재 로컬 캐릭터: {{name}}",
         "noCurrentCharacter": "현재 로컬 캐릭터: 설정되지 않음",
         "nameConflictNotice": {
@@ -1734,14 +1736,14 @@
             "downloadOriginUnconfirmed": "\n이 클라우드 캐릭터는 원래 창작마당에서 왔지만, 기록된 연결 모델은 이미 로컬 또는 수동 모델로 바뀌었습니다. 다운로드 후에도 현재 모델 파일을 직접 준비해야 하며, 원래 창작마당 항목을 아직 복구할 수 있는지도 지금은 확인할 수 없습니다."
         },
         "confirm": {
-            "uploadOverwrite": "같은 이름의 클라우드 캐릭터 데이터를 덮어씁니다. 로컬 캐릭터는 변경되지 않으며 모델 파일 본체도 업로드되지 않습니다.",
-            "uploadNew": "이 로컬 캐릭터를 클라우드에 업로드합니다. 모델 파일 본체는 포함되지 않습니다.",
+            "uploadOverwrite": "같은 이름의 로컬 클라우드 스냅샷 항목을 덮어씁니다. 로컬 캐릭터는 즉시 변경되지 않으며 모델 파일 본체도 포함되지 않습니다.",
+            "uploadNew": "이 로컬 캐릭터를 로컬 클라우드 스냅샷 캐시에 기록합니다. 모델 파일 본체는 포함되지 않습니다.",
             "uploadManualAsset": "\n이 로컬 캐릭터는 수동으로 가져온 모델 또는 외부 모델을 사용합니다. 다른 장치에서 이 캐릭터를 다운로드해도 동일한 모델 파일을 직접 준비해야 합니다.",
-            "uploadFinal": "\n업로드를 계속하시겠습니까?",
-            "downloadOverwrite": "같은 이름의 로컬 캐릭터 설정과 메모리 디렉터리를 덮어씁니다. 모델 리소스는 자동으로 다운로드되지 않으며 먼저 로컬 백업을 만듭니다.",
-            "downloadNew": "이 클라우드 캐릭터를 로컬로 다운로드합니다. 모델 리소스는 자동으로 다운로드되지 않으며 먼저 로컬 백업을 만듭니다.",
+            "uploadFinal": "\nSteam Cloud 스냅샷 준비를 계속하시겠습니까?",
+            "downloadOverwrite": "이 장치에 이미 동기화된 클라우드 스냅샷으로 같은 이름의 로컬 캐릭터 설정과 메모리 디렉터리를 덮어씁니다. 모델 리소스는 자동으로 다운로드되지 않으며 먼저 로컬 백업을 만듭니다.",
+            "downloadNew": "이 장치에 이미 동기화된 클라우드 스냅샷을 로컬 저장소로 복원합니다. 모델 리소스는 자동으로 다운로드되지 않으며 먼저 로컬 백업을 만듭니다.",
             "downloadManualAsset": "\n이 클라우드 캐릭터는 수동으로 가져온 모델 또는 외부 모델에 의존합니다. 이 장치에 파일이 없다면 다운로드 후에도 수동으로 가져오거나 옮겨야 합니다.",
-            "downloadFinal": "\n다운로드를 계속하시겠습니까?"
+            "downloadFinal": "\nSteam Cloud 스냅샷에서 복원을 계속하시겠습니까?"
         },
         "dialog": {
             "providerUnavailable": "클라우드 저장 제공자를 현재 사용할 수 없습니다. 나중에 다시 시도해 주세요.",
@@ -1749,8 +1751,13 @@
             "downloadTitle": "클라우드 저장 다운로드",
             "uploadSuccess": "업로드가 완료되었습니다.",
             "downloadSuccess": "다운로드가 완료되었습니다.",
+            "uploadTitleSteamAutoCloud": "Steam Cloud 스냅샷 준비",
+            "downloadTitleSteamAutoCloud": "Steam Cloud 스냅샷 적용",
+            "uploadSuccessSteamAutoCloud": "로컬 클라우드 스냅샷을 업데이트했습니다. Steam을 통해 게임을 종료하면 Steam이 자동으로 클라우드에 업로드합니다.",
+            "downloadSuccessSteamAutoCloud": "Steam Cloud 스냅샷을 로컬에 적용했습니다.",
             "operationFailed": "작업 실패: {{message}}",
             "rollbackApplied": "\n로컬 데이터가 작업 전 상태로 자동 롤백되었습니다.",
+            "rollbackFailed": "\n롤백도 실패했습니다: {{message}}",
             "loadFailed": "클라우드 저장 요약을 불러오지 못했습니다: {{message}}",
             "stateChanged": "클라우드 저장 상태가 변경되었습니다. 새로고침된 요약을 확인한 뒤 다시 시도해 주세요."
         },
@@ -1758,12 +1765,12 @@
             "expandDetails": "세부 정보 펼치기",
             "collapseDetails": "세부 정보 숨기기",
             "uploadDisabledByProvider": "업로드 불가",
-            "uploadOverwrite": "업로드 후 클라우드 덮어쓰기",
-            "uploadNew": "클라우드에 업로드",
+            "uploadOverwrite": "Steam Cloud 스냅샷 업데이트",
+            "uploadNew": "Steam Cloud 스냅샷 준비",
             "uploadUnavailable": "업로드 불가",
             "downloadDisabledByProvider": "다운로드 불가",
-            "downloadOverwrite": "다운로드 후 로컬 덮어쓰기",
-            "downloadNew": "로컬에 다운로드",
+            "downloadOverwrite": "복원 후 로컬 덮어쓰기",
+            "downloadNew": "로컬 저장소로 복원",
             "downloadUnavailable": "다운로드 불가"
         },
         "meta": {
