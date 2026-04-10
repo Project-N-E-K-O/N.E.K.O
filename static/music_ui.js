@@ -28,6 +28,8 @@
             idle: 24000,   // AI推荐未播放 (或被拦截)
             paused: 71000  // 用户点击暂停
         },
+        // 标题超过「容器宽 × 该比例」时启用横向滚动（0.9~1 可调，便于微调观感）
+        titleOverflowRatio: 1,
         // 域名白名单
         allowlist: [
             'i.scdn.co', 'p.scdn.co', 'a.scdn.co', 'i.imgur.com', 'y.qq.com',
@@ -197,6 +199,73 @@
 
     let autoDestroyTimer = null;
     let domRemovalTimer = null;
+    let titleMarqueeObserver = null;
+
+    const disconnectTitleMarqueeObserver = () => {
+        if (titleMarqueeObserver) {
+            titleMarqueeObserver.disconnect();
+            titleMarqueeObserver = null;
+        }
+    };
+
+    const syncMusicBarTitleLayout = (musicBar) => {
+        const wrap = musicBar && musicBar.querySelector('.music-bar-title-wrap');
+        const track = wrap && wrap.querySelector('.music-bar-title-track');
+        const segPrimary = wrap && wrap.querySelector('.music-bar-title-seg-primary');
+        if (!wrap || !track || !segPrimary) return;
+
+        wrap.classList.remove('is-marquee');
+        track.style.removeProperty('--marquee-duration');
+
+        const ratio = typeof MUSIC_CONFIG.titleOverflowRatio === 'number' ? MUSIC_CONFIG.titleOverflowRatio : 1;
+        const maxW = Math.max(0, wrap.clientWidth * ratio);
+        const textW = segPrimary.offsetWidth;
+
+        if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+            return;
+        }
+
+        if (textW > maxW) {
+            wrap.classList.add('is-marquee');
+            requestAnimationFrame(() => {
+                const bar = document.getElementById(MUSIC_CONFIG.dom.barId);
+                if (!bar) return;
+                const w = bar.querySelector('.music-bar-title-wrap');
+                const t = w && w.querySelector('.music-bar-title-track');
+                if (!w || !t || !w.classList.contains('is-marquee')) return;
+                const loopPx = t.scrollWidth / 2;
+                const duration = Math.min(50, Math.max(6, loopPx / 45));
+                t.style.setProperty('--marquee-duration', duration + 's');
+            });
+        }
+    };
+
+    const setMusicBarTitle = (musicBar, text) => {
+        const wrap = musicBar.querySelector('.music-bar-title-wrap');
+        const segPrimary = musicBar.querySelector('.music-bar-title-seg-primary');
+        const segDup = musicBar.querySelector('.music-bar-title-seg-dup');
+        const display = text || (window.t ? window.t('music.unknownTrack', '未知曲目') : '未知曲目');
+        if (segPrimary) segPrimary.textContent = display;
+        if (segDup) segDup.textContent = display;
+        if (wrap) {
+            wrap.setAttribute('title', display);
+            wrap.setAttribute('aria-label', display);
+        }
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => syncMusicBarTitleLayout(musicBar));
+        });
+    };
+
+    const ensureTitleMarqueeObserver = (musicBar) => {
+        const wrap = musicBar.querySelector('.music-bar-title-wrap');
+        if (!wrap || typeof ResizeObserver === 'undefined') return;
+        disconnectTitleMarqueeObserver();
+        titleMarqueeObserver = new ResizeObserver(() => {
+            const bar = document.getElementById(MUSIC_CONFIG.dom.barId);
+            if (bar) syncMusicBarTitleLayout(bar);
+        });
+        titleMarqueeObserver.observe(wrap);
+    };
 
     const formatTime = (seconds) => {
         if (isNaN(seconds) || !isFinite(seconds)) return '00:00';
@@ -266,6 +335,7 @@
         }
 
         if (removeDOM) {
+            disconnectTitleMarqueeObserver();
             const bar = document.getElementById(MUSIC_CONFIG.dom.barId);
             if (bar) {
                 // 如果是手动关闭，执行动画
@@ -386,7 +456,11 @@
                     <span class="music-bar-fallback">🎵</span>
                 </div>
                 <div class="music-bar-info">
-                    <div class="music-bar-title"></div>
+                    <div class="music-bar-title-wrap">
+                        <div class="music-bar-title-track">
+                            <span class="music-bar-title-seg music-bar-title-seg-primary"></span><span class="music-bar-title-seg music-bar-title-seg-dup" aria-hidden="true"></span>
+                        </div>
+                    </div>
                     <div class="music-bar-progress-container">
                         <div class="music-bar-progress-fill"></div>
                     </div>
@@ -409,6 +483,7 @@
                 <button type="button" class="music-bar-close" aria-label="Close" title="Close">✕</button>
                 <div class="aplayer-internal-container" style="display: none;"></div>
             `;
+            ensureTitleMarqueeObserver(musicBar);
         } else {
             musicBar.classList.remove('fading-out');
 
@@ -427,7 +502,7 @@
 
         // --- 2. 原地更新 UI 文本/封面 (始终执行) ---
         currentPlayingTrack = trackInfo;
-        musicBar.querySelector('.music-bar-title').textContent = trackInfo.name || '未知曲目';
+        setMusicBarTitle(musicBar, trackInfo.name || '');
         musicBar.querySelector('.music-bar-artist').textContent = trackInfo.artist || '未知艺术家';
 
         const coverImg = musicBar.querySelector('img');
