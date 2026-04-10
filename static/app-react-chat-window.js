@@ -603,12 +603,6 @@
         }
     }
 
-    function isLegacyChatVisible() {
-        var el = document.getElementById('chat-container');
-        if (!el) return false;
-        return window.getComputedStyle(el).display !== 'none';
-    }
-
     function captureAvatarDirect() {
         if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
             showToast(getI18nText('chat.avatarPreviewUnavailable', '头像预览功能尚未就绪。'), 3000);
@@ -642,15 +636,13 @@
 
     function handleAvatarGeneratorClick() {
         try {
-            if (isLegacyChatVisible()) {
-                // Legacy chat is visible — use legacy button for its card UI
-                var legacyBtn = document.getElementById('avatarPreviewButton');
-                if (legacyBtn) {
-                    legacyBtn.click();
-                    return;
-                }
+            // Prefer legacy button if it exists (index.html); absent in chat.html
+            var legacyBtn = document.getElementById('avatarPreviewButton');
+            if (legacyBtn) {
+                legacyBtn.click();
+                return;
             }
-            // React-first mode or legacy button absent — capture directly
+            // React-first mode or standalone chat window — capture directly
             captureAvatarDirect();
         } finally {
             dispatchHostEvent('avatar-generator-click', {});
