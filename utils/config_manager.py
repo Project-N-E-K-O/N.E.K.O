@@ -1003,7 +1003,12 @@ class ConfigManager:
         """确保本地 cloudsave 相关状态文件存在，返回是否发生创建。"""
         created = False
         if not self.ensure_local_state_directory():
-            return False
+            raise RuntimeError(
+                "Failed to initialize local state directory for "
+                f"{self.root_state_path.name}, "
+                f"{self.cloudsave_local_state_path.name}, and "
+                f"{self.character_tombstones_state_path.name}"
+            )
 
         if not self.root_state_path.exists():
             self.save_root_state(self.build_default_root_state())
@@ -2534,11 +2539,11 @@ class ConfigManager:
             return
         if not workshop_path or not os.path.isdir(workshop_path):
             return
-        self._user_workshop_folder_persisted = True
         try:
             config = self.load_workshop_config()
             config["user_workshop_folder"] = workshop_path
             self.save_workshop_config(config)
+            self._user_workshop_folder_persisted = True
             logger.info(f"已持久化Steam创意工坊路径到配置文件: {workshop_path}")
         except Exception as e:
             logger.error(f"持久化user_workshop_folder失败: {e}")

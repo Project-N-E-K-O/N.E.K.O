@@ -1578,7 +1578,7 @@
         "noCurrentCharacter": "Current local character: Not set",
         "nameConflictNotice": {
             "title": "Same-name reminder",
-            "bodyStorage": "Cloud save uses the character name as a single character slot. It does not split entries automatically just because one role came from Steam Workshop and another was created locally.",
+            "bodyStorage": "Cloud save uses the character name as a single character slot. It does not split entries automatically just because one character came from Steam Workshop and another was created locally.",
             "bodyImpact": "If two different characters share the same name, uploads and downloads will treat them as the same cloud character and may overwrite the character settings, memory directory, and cloud record.",
             "bodyAction": "Before syncing, make sure the character name is unique. If they are not the same character, rename one of them before uploading or downloading."
         },

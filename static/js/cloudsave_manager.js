@@ -7,7 +7,12 @@
         expandedCharacterNames: new Set(),
     };
 
+    const CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY = 'neko_cloudsave_character_sync';
+    const CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE = 'cloudsave_character_changed';
+    const CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME = 'neko_cloudsave_character_sync';
+
     let detailPanelIdSequence = 0;
+    let cloudsaveSyncChannel = null;
 
     const WARNING_MESSAGES = {
         local_resource_missing_on_this_device: {
@@ -313,6 +318,57 @@
 
     function isProviderAvailable(summary = state.summary) {
         return !summary || summary.provider_available !== false;
+    }
+
+    function getCloudsaveSyncChannel() {
+        if (typeof BroadcastChannel !== 'function') {
+            return null;
+        }
+        if (!cloudsaveSyncChannel) {
+            cloudsaveSyncChannel = new BroadcastChannel(CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME);
+        }
+        return cloudsaveSyncChannel;
+    }
+
+    function notifyCharacterManagerSync(detail = {}) {
+        const payload = {
+            type: CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE,
+            source: 'cloudsave_manager',
+            action: detail.action || '',
+            character_name: detail.character_name || '',
+            timestamp: Date.now(),
+        };
+
+        try {
+            localStorage.setItem(CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY, JSON.stringify(payload));
+        } catch (error) {
+            console.warn('Failed to persist cloud save sync signal:', error);
+        }
+
+        try {
+            if (window.opener && !window.opener.closed) {
+                window.opener.postMessage(payload, window.location.origin);
+            }
+        } catch (error) {
+            console.warn('Failed to notify opener about cloud save sync:', error);
+        }
+
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage(payload, window.location.origin);
+            }
+        } catch (error) {
+            console.warn('Failed to notify parent about cloud save sync:', error);
+        }
+
+        try {
+            const channel = getCloudsaveSyncChannel();
+            if (channel) {
+                channel.postMessage(payload);
+            }
+        } catch (error) {
+            console.warn('Failed to broadcast cloud save sync:', error);
+        }
     }
 
     function summarizeWarning(code) {
@@ -1221,6 +1277,12 @@
             } else if (latestItem.character_name) {
                 state.preferredCharacterName = latestItem.character_name;
             }
+            if (action === 'download') {
+                notifyCharacterManagerSync({
+                    action,
+                    character_name: state.preferredCharacterName || latestItem.character_name || item.character_name,
+                });
+            }
             await loadSummary();
         } catch (error) {
             const payloadError = error.payload || {};
@@ -1570,7 +1632,9 @@
                     window.close();
                     return;
                 }
-                window.location.href = '/chara_manager';
+                // Replace the current history entry so closing the character manager
+                // does not bounce back into the cloud save page and create a loop.
+                window.location.replace('/chara_manager');
             });
         }
 

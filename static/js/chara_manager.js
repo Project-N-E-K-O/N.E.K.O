@@ -5,10 +5,15 @@
  */
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
+const CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY = 'neko_cloudsave_character_sync';
+const CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE = 'cloudsave_character_changed';
+const CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME = 'neko_cloudsave_character_sync';
 
 // 自动保存提示管理
 let autoSaveToastTimer = null;
 let autoSaveToastElement = null;
+let lastCloudsaveSyncTimestamp = 0;
+let cloudsaveSyncChannel = null;
 
 function showAutoSaveToast(disableAutoHide = false, customMessage = null) {
     if (!autoSaveToastElement) {
@@ -962,7 +967,7 @@ async function loadCharacterData() {
     const thisRequestId = ++currentRequestId;
     
     try {
-        const resp = await fetch('/api/characters');
+        const resp = await fetch('/api/characters', { cache: 'no-store' });
         if (!resp.ok) {
             throw new Error(`HTTP error! status: ${resp.status}`);
         }
@@ -980,7 +985,10 @@ async function loadCharacterData() {
         const timeoutId = setTimeout(() => controller.abort(), 5000);
         
         try {
-            const currentResp = await fetch('/api/characters/current_catgirl', { signal: controller.signal });
+            const currentResp = await fetch('/api/characters/current_catgirl', {
+                signal: controller.signal,
+                cache: 'no-store'
+            });
             clearTimeout(timeoutId);
             if (currentResp.ok) {
                 const currentData = await currentResp.json();
@@ -3089,6 +3097,36 @@ function sendBeacon() {
 }
 
 // 监听API Key变更事件
+function handleCloudsaveCharacterSync(payload) {
+    if (!payload || payload.type !== CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE) return;
+
+    const nextTimestamp = Number(payload.timestamp || 0);
+    if (nextTimestamp && nextTimestamp === lastCloudsaveSyncTimestamp) {
+        return;
+    }
+    if (nextTimestamp) {
+        lastCloudsaveSyncTimestamp = nextTimestamp;
+    }
+
+    console.log('[Cloud Save] 收到角色列表刷新通知，正在刷新角色数据...', payload);
+    loadCharacterData();
+}
+
+function initCloudsaveCharacterSyncChannel() {
+    if (typeof BroadcastChannel !== 'function' || cloudsaveSyncChannel) {
+        return;
+    }
+
+    try {
+        cloudsaveSyncChannel = new BroadcastChannel(CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME);
+        cloudsaveSyncChannel.addEventListener('message', function (event) {
+            handleCloudsaveCharacterSync(event.data);
+        });
+    } catch (error) {
+        console.warn('[Cloud Save] 初始化同步频道失败:', error);
+    }
+}
+
 window.addEventListener('message', function (event) {
     if (!ALLOWED_ORIGINS.includes(event.origin)) return;
     if (event.data && event.data.type === 'api_key_changed') {
@@ -3160,8 +3198,23 @@ window.addEventListener('message', function (event) {
                 select.value = voiceId;
             }).catch(() => {});
         } catch (e) {}
+    } else if (event.data && event.data.type === CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE) {
+        handleCloudsaveCharacterSync(event.data);
     }
 });
+
+window.addEventListener('storage', function (event) {
+    if (event.key !== CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY || !event.newValue) return;
+
+    try {
+        const payload = JSON.parse(event.newValue);
+        handleCloudsaveCharacterSync(payload);
+    } catch (error) {
+        console.warn('[Cloud Save] 解析角色列表刷新通知失败:', error);
+    }
+});
+
+initCloudsaveCharacterSyncChannel();
 
 // 监听页面关闭事件
 window.addEventListener('beforeunload', sendBeacon);

@@ -330,8 +330,8 @@ def mock_memory_server():
         if _is_memory_server_ready():
             yield
             return
-    except Exception:
-        pass
+    except (httpx.HTTPError, OSError) as exc:
+        logger.debug("Memory server readiness check failed, starting mock server: %s", exc)
 
     config = uvicorn.Config(app, host="127.0.0.1", port=48912, log_level="error")
     server = uvicorn.Server(config)

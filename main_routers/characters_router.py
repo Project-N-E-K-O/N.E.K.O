@@ -65,6 +65,144 @@ logger = get_module_logger(__name__, "Main")
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
 
 
+def _json_no_store_response(content, *, status_code: int = 200):
+    return JSONResponse(
+        content=content,
+        status_code=status_code,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+def _derive_live2d_model_name(model_ref: str) -> str:
+    normalized_ref = str(model_ref or "").strip().replace("\\", "/")
+    if not normalized_ref:
+        return ""
+    if normalized_ref.endswith(".model3.json"):
+        parts = [part for part in normalized_ref.split("/") if part]
+        if len(parts) >= 2:
+            return parts[-2]
+        filename = parts[-1] if parts else normalized_ref
+        return filename[:-len(".model3.json")]
+    return normalized_ref.rsplit("/", 1)[-1]
+
+
+def _normalize_live2d_catalog_path(model_path: str) -> str:
+    normalized_path = str(model_path or "").strip().replace("\\", "/")
+    if not normalized_path:
+        return ""
+    if normalized_path.startswith("/workshop/"):
+        parts = [part for part in normalized_path.split("/") if part]
+        return "/".join(parts[2:]) if len(parts) >= 3 else ""
+    for prefix in ("/user_live2d/", "/user_live2d_local/", "/static/"):
+        if normalized_path.startswith(prefix):
+            return normalized_path[len(prefix):]
+    return normalized_path.lstrip("/")
+
+
+def _derive_live2d_asset_source(model_path: str) -> str:
+    normalized_path = str(model_path or "").strip().replace("\\", "/")
+    if normalized_path.startswith("/workshop/"):
+        return "steam_workshop"
+    if normalized_path.startswith("/static/"):
+        return "builtin"
+    if normalized_path.startswith(("/user_live2d/", "/user_live2d_local/")):
+        return "local_imported"
+    return ""
+
+
+def _find_live2d_model_catalog_entry(
+    all_models: list[dict],
+    *,
+    model_name: str = "",
+    model_path: str = "",
+    asset_source: str = "",
+    item_id: str = "",
+):
+    normalized_name = str(model_name or "").strip()
+    normalized_path = _normalize_live2d_catalog_path(model_path)
+    normalized_source = str(asset_source or "").strip().lower()
+    normalized_item_id = str(item_id or "").strip()
+
+    if normalized_item_id:
+        exact_item_match = next(
+            (
+                model
+                for model in all_models
+                if str(model.get("item_id") or "").strip() == normalized_item_id
+                and (not normalized_name or str(model.get("name") or "").strip() == normalized_name)
+            ),
+            None,
+        )
+        if exact_item_match is not None:
+            return exact_item_match
+
+        loose_item_match = next(
+            (model for model in all_models if str(model.get("item_id") or "").strip() == normalized_item_id),
+            None,
+        )
+        if loose_item_match is not None:
+            return loose_item_match
+
+    if normalized_path:
+        expected_prefixes: tuple[str, ...] = ()
+        if normalized_source == "builtin":
+            expected_prefixes = ("/static/",)
+        elif normalized_source in {"local", "local_imported"}:
+            expected_prefixes = ("/user_live2d/", "/user_live2d_local/")
+        elif normalized_source == "steam_workshop":
+            expected_prefixes = ("/workshop/",)
+
+        for model in all_models:
+            candidate_path = str(model.get("path") or "").strip().replace("\\", "/")
+            if expected_prefixes and not candidate_path.startswith(expected_prefixes):
+                continue
+            if _normalize_live2d_catalog_path(candidate_path) == normalized_path:
+                return model
+
+    if normalized_name:
+        return next(
+            (model for model in all_models if str(model.get("name") or "").strip() == normalized_name),
+            None,
+        )
+
+    return None
+
+
+def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -> tuple[str, str, str]:
+    normalized_model = str(model_identifier or "").strip().replace("\\", "/")
+    normalized_item_id = str(item_id or "").strip()
+    live2d_name = _derive_live2d_model_name(normalized_model)
+
+    resolved_model_path = _normalize_live2d_catalog_path(normalized_model)
+    if not resolved_model_path and live2d_name:
+        resolved_model_path = f"{live2d_name}/{live2d_name}.model3.json"
+
+    resolved_source = "steam_workshop" if normalized_item_id else (_derive_live2d_asset_source(normalized_model) or "local_imported")
+    resolved_source_id = normalized_item_id
+
+    try:
+        all_models = find_models()
+        matching_model = _find_live2d_model_catalog_entry(
+            all_models,
+            model_name=live2d_name,
+            model_path=normalized_model,
+            asset_source=resolved_source,
+            item_id=normalized_item_id,
+        )
+        if matching_model is not None:
+            matched_path = str(matching_model.get("path") or "").strip().replace("\\", "/")
+            resolved_model_path = _normalize_live2d_catalog_path(matched_path) or resolved_model_path
+            resolved_source = _derive_live2d_asset_source(matched_path) or resolved_source
+            resolved_source_id = normalized_item_id or str(matching_model.get("item_id") or "").strip()
+    except Exception as exc:
+        logger.debug("解析 Live2D 模型绑定时查找模型目录失败: %s", exc)
+
+    return resolved_model_path, resolved_source_id, resolved_source
+
+
 def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
     """将 ZIP 数据嵌入 PNG 的 ancillary private chunk（neKo 块），插在 IEND 之前。
 
@@ -338,7 +476,9 @@ async def _rollback_character_operation(
         rollback_errors.append(f"initialize_character_data failed: {exc}")
 
     try:
-        await notify_memory_server_reload(reason=reason)
+        reload_notified = await notify_memory_server_reload(reason=reason)
+        if not reload_notified:
+            rollback_errors.append("notify_memory_server_reload failed: returned False")
     except Exception as exc:
         rollback_errors.append(f"notify_memory_server_reload failed: {exc}")
 
@@ -368,7 +508,7 @@ async def get_characters(request: Request):
     
     # 如果语言是中文，不需要翻译
     if user_language == 'zh-CN':
-        return JSONResponse(content=characters_data)
+        return _json_no_store_response(characters_data)
     
     # 需要翻译：翻译人设数据（在深拷贝上进行，不影响原始配置）
     try:
@@ -399,10 +539,10 @@ async def get_characters(request: Request):
             ])
             characters_data['猫娘'] = dict(results)
         
-        return JSONResponse(content=characters_data)
+        return _json_no_store_response(characters_data)
     except Exception as e:
         logger.error(f"翻译人设数据失败: {e}，返回原始数据")
-        return JSONResponse(content=characters_data)
+        return _json_no_store_response(characters_data)
 
 
 @router.get('/current_live2d_model')
@@ -447,7 +587,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             # 在猫娘列表中查找
             if '猫娘' in characters and catgirl_name in characters['猫娘']:
                 catgirl_data = characters['猫娘'][catgirl_name]
-                live2d_model_name = get_reserved(
+                saved_model_path = get_reserved(
                     catgirl_data,
                     'avatar',
                     'live2d',
@@ -455,14 +595,13 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     default='',
                     legacy_keys=('live2d',),
                 )
-                if live2d_model_name and str(live2d_model_name).endswith('.model3.json'):
-                    # COMPAT(v1->v2): 新 schema 存 model_path，旧逻辑需要模型目录名。
-                    path_parts = str(live2d_model_name).replace('\\', '/').split('/')
-                    if len(path_parts) >= 2:
-                        live2d_model_name = path_parts[-2]
-                    else:
-                        filename = path_parts[-1]
-                        live2d_model_name = filename[:-len('.model3.json')]
+                live2d_model_name = _derive_live2d_model_name(saved_model_path)
+                saved_asset_source = get_reserved(
+                    catgirl_data,
+                    'avatar',
+                    'asset_source',
+                    default='',
+                )
                 
                 # 检查是否有保存的item_id
                 saved_item_id = get_reserved(
@@ -477,7 +616,13 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     try:
                         # 尝试通过保存的item_id查找模型
                         all_models = find_models()
-                        matching_model = next((m for m in all_models if m.get('item_id') == saved_item_id), None)
+                        matching_model = _find_live2d_model_catalog_entry(
+                            all_models,
+                            model_name=live2d_model_name,
+                            model_path=saved_model_path,
+                            asset_source=saved_asset_source,
+                            item_id=saved_item_id,
+                        )
                         if matching_model:
                             logger.debug(f"通过保存的item_id找到模型: {matching_model['name']}")
                             model_info = matching_model.copy()
@@ -530,7 +675,13 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     logger.debug(f"获取工坊模型列表时出错（非关键）: {we}")
                 
                 # 查找匹配的模型
-                matching_model = next((m for m in all_models if m['name'] == live2d_model_name), None)
+                matching_model = _find_live2d_model_catalog_entry(
+                    all_models,
+                    model_name=live2d_model_name,
+                    model_path=saved_model_path if 'saved_model_path' in locals() else '',
+                    asset_source=saved_asset_source if 'saved_asset_source' in locals() else '',
+                    item_id=saved_item_id if 'saved_item_id' in locals() else '',
+                )
                 
                 if matching_model:
                     # 使用完整的模型信息，包含item_id
@@ -813,12 +964,10 @@ async def update_catgirl_l2d(name: str, request: Request):
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [])
             
             # 更新Live2D模型设置，同时保存item_id（如果有）
-            normalized_live2d = str(live2d_model).strip().replace('\\', '/')
-            if normalized_live2d.endswith('.model3.json'):
-                live2d_model_path = normalized_live2d
-            else:
-                live2d_name = normalized_live2d.rsplit('/', 1)[-1]
-                live2d_model_path = f"{live2d_name}/{live2d_name}.model3.json"
+            live2d_model_path, resolved_item_id, resolved_asset_source = _resolve_live2d_model_binding(
+                live2d_model,
+                item_id=str(item_id or ""),
+            )
             set_reserved(
                 characters['猫娘'][name],
                 'avatar',
@@ -827,14 +976,14 @@ async def update_catgirl_l2d(name: str, request: Request):
                 live2d_model_path,
             )
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live2d')
-            if item_id:
-                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', str(item_id))
+            if resolved_item_id:
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', resolved_item_id)
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'steam_workshop')
-                logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {item_id}")
+                logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {resolved_item_id}")
             else:
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
-                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'local_imported')
-                logger.debug(f"已保存角色 {name} 的模型 {live2d_model}")
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', resolved_asset_source or 'local_imported')
+                logger.debug(f"已保存角色 {name} 的模型 {live2d_model}，asset_source={resolved_asset_source or 'local_imported'}")
         
         # 保存配置
         _config_manager.save_characters(characters)
@@ -1466,7 +1615,7 @@ async def get_current_catgirl():
     _config_manager = get_config_manager()
     characters = _config_manager.load_characters()
     current_catgirl = characters.get('当前猫娘', '')
-    return JSONResponse(content={'current_catgirl': current_catgirl})
+    return _json_no_store_response({'current_catgirl': current_catgirl})
 
 @router.post('/current_catgirl')
 async def set_current_catgirl(request: Request):

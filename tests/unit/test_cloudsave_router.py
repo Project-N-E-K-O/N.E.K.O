@@ -470,6 +470,62 @@ async def test_cloudsave_router_handles_not_found_and_release_failures():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cloudsave_router_download_without_overwrite_returns_conflict_before_release():
+    with TemporaryDirectory() as td:
+        source_cm = _make_config_manager(Path(td) / "source")
+        target_cm = _make_config_manager(Path(td) / "target")
+        bootstrap_local_cloudsave_environment(source_cm)
+        bootstrap_local_cloudsave_environment(target_cm)
+        _write_runtime_state(source_cm, character_name="共享角色")
+        _write_runtime_state(target_cm, character_name="共享角色")
+
+        from utils.cloudsave_runtime import export_cloudsave_character_unit
+
+        export_cloudsave_character_unit(source_cm, "共享角色")
+        shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", target_cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=target_cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            with patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=True),
+            ) as release_mock, patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+            ) as import_mock:
+                blocked = await cloudsave_router_module.post_cloudsave_character_download(
+                    "共享角色",
+                    _DummyRequest({"overwrite": False, "backup_before_overwrite": True}),
+                )
+
+        blocked_payload = json.loads(blocked.body)
+        assert blocked.status_code == 409
+        assert blocked_payload["code"] == "LOCAL_CHARACTER_EXISTS"
+        release_mock.assert_not_awaited()
+        import_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_cloudsave_router_upload_overwrite_succeeds_for_diverged_character():
     with TemporaryDirectory() as td:
         source_cm = _make_config_manager(Path(td) / "source")
@@ -709,6 +765,74 @@ async def test_cloudsave_router_download_reload_failure_rolls_back():
             assert failed_payload["rolled_back"] is True
             assert target_cm.load_characters() == original_characters
             assert (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8") == original_recent
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_router_download_rollback_reports_notify_reload_false():
+    with TemporaryDirectory() as td:
+        source_cm = _make_config_manager(Path(td) / "source")
+        target_cm = _make_config_manager(Path(td) / "target")
+        bootstrap_local_cloudsave_environment(source_cm)
+        bootstrap_local_cloudsave_environment(target_cm)
+        _write_runtime_state(source_cm, character_name="小满")
+        source_characters = source_cm.load_characters()
+        source_characters["猫娘"]["小满"]["喜欢的食物"] = "鱼干"
+        source_cm.save_characters(source_characters, bypass_write_fence=True)
+
+        from utils.cloudsave_runtime import export_cloudsave_character_unit
+
+        export_cloudsave_character_unit(source_cm, "小满", overwrite=True)
+
+        _write_runtime_state(target_cm, character_name="小满")
+        target_characters = target_cm.load_characters()
+        target_characters["猫娘"]["小满"]["喜欢的食物"] = "本地旧版本"
+        target_cm.save_characters(target_characters, bypass_write_fence=True)
+        shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", target_cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=target_cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            with patch.object(
+                cloudsave_router_module,
+                "_reload_after_character_download",
+                AsyncMock(return_value=(False, "forced reload failure")),
+            ), patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=True),
+            ), patch.object(
+                cloudsave_router_module,
+                "notify_memory_server_reload",
+                AsyncMock(return_value=False),
+            ):
+                failed = await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True, "backup_before_overwrite": True}),
+                )
+
+        failed_payload = json.loads(failed.body)
+        assert failed.status_code == 500
+        assert failed_payload["code"] == "LOCAL_RELOAD_FAILED_ROLLED_BACK"
+        assert failed_payload["rolled_back"] is False
+        assert failed_payload["rollback_error"] == "notify_memory_server_reload returned False"
 
 
 @pytest.mark.unit

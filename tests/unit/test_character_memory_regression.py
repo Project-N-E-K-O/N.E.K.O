@@ -18,6 +18,7 @@ from utils.cloudsave_runtime import (
 def _make_config_manager(tmp_root: Path):
     with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_root):
         config_manager = ConfigManager("N.E.K.O")
+    config_manager.project_memory_dir = tmp_root / "memory" / "store"
     config_manager.get_legacy_app_root_candidates = lambda: []
     return config_manager
 
@@ -28,6 +29,12 @@ class _DummyRequest:
 
     async def json(self):
         return self._payload
+
+
+class _DummyGetRequest:
+    def __init__(self, query_params=None, headers=None):
+        self.query_params = query_params or {}
+        self.headers = headers or {}
 
 
 @pytest.mark.unit
@@ -113,6 +120,44 @@ async def test_character_management_and_recent_save_regression():
             assert not (Path(cm.memory_dir) / "测试角色").exists()
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert any(entry.get("character_name") == "测试角色" for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_read_endpoints_disable_caching():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            characters_router_module = importlib.import_module("main_routers.characters_router")
+
+            characters_response = await characters_router_module.get_characters(
+                _DummyGetRequest(headers={"Accept-Language": "zh-CN"})
+            )
+            current_response = await characters_router_module.get_current_catgirl()
+
+            assert characters_response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate, max-age=0"
+            assert characters_response.headers["Pragma"] == "no-cache"
+            assert current_response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate, max-age=0"
+            assert current_response.headers["Pragma"] == "no-cache"
 
 
 @pytest.mark.unit
@@ -703,6 +748,115 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
             assert (memory_dir / "recent.json").is_file()
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert not any(entry.get("character_name") == "删除回滚角色" for entry in tombstones)
+
+
+@pytest.mark.unit
+def test_character_memory_regression_fixture_isolates_project_memory_dir(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    assert cm.project_memory_dir == tmp_path / "memory" / "store"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_catgirl_l2d_marks_builtin_live2d_as_builtin():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            characters_router_module = importlib.import_module("main_routers.characters_router")
+            characters = cm.load_characters()
+            characters["当前猫娘"] = "测试内置模型"
+            characters["猫娘"]["测试内置模型"] = json.loads(
+                json.dumps(characters["猫娘"][next(iter(characters["猫娘"]))], ensure_ascii=False)
+            )
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            with patch.object(
+                characters_router_module,
+                "find_models",
+                return_value=[
+                    {
+                        "name": "mao_pro",
+                        "path": "/static/mao_pro/mao_pro.model3.json",
+                        "source": "static",
+                    }
+                ],
+            ):
+                response = await characters_router_module.update_catgirl_l2d(
+                    "测试内置模型",
+                    _DummyRequest({"live2d": "mao_pro", "model_type": "live2d"}),
+                )
+
+            assert response.status_code == 200
+
+            from utils.config_manager import get_reserved
+
+            payload = cm.load_characters()["猫娘"]["测试内置模型"]
+            assert get_reserved(payload, "avatar", "live2d", "model_path", default="") == "mao_pro/mao_pro.model3.json"
+            assert get_reserved(payload, "avatar", "asset_source", default="") == "builtin"
+            assert get_reserved(payload, "avatar", "asset_source_id", default="") == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_rollback_reports_notify_reload_false_as_failure():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            characters_router_module = importlib.import_module("main_routers.characters_router")
+            characters_snapshot = cm.load_characters()
+
+            with patch.object(
+                characters_router_module,
+                "notify_memory_server_reload",
+                AsyncMock(return_value=False),
+            ):
+                rollback_error = await characters_router_module._rollback_character_operation(
+                    cm,
+                    characters_snapshot=characters_snapshot,
+                    memory_snapshot_records=[],
+                    reason="unit-test rollback",
+                )
+
+        assert "notify_memory_server_reload failed: returned False" in rollback_error
 
 
 @pytest.mark.unit

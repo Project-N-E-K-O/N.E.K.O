@@ -100,6 +100,37 @@ def test_cloudsave_state_round_trip_preserves_data(tmp_path):
 
 
 @pytest.mark.unit
+def test_ensure_cloudsave_state_files_raises_when_local_state_directory_init_fails(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    with patch.object(cm, "ensure_local_state_directory", return_value=False):
+        with pytest.raises(RuntimeError, match="root_state.json"):
+            cm.ensure_cloudsave_state_files()
+
+
+@pytest.mark.unit
+def test_persist_user_workshop_folder_retries_after_save_failure(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    workshop_dir = tmp_path / "workshop"
+    workshop_dir.mkdir(parents=True, exist_ok=True)
+
+    save_side_effects = [OSError("disk full"), None]
+
+    with patch.object(cm, "load_workshop_config", return_value={}), patch.object(
+        cm,
+        "save_workshop_config",
+        side_effect=save_side_effects,
+    ) as save_mock:
+        cm.persist_user_workshop_folder(str(workshop_dir))
+        assert cm._user_workshop_folder_persisted is False
+
+        cm.persist_user_workshop_folder(str(workshop_dir))
+        assert cm._user_workshop_folder_persisted is True
+
+    assert save_mock.call_count == 2
+
+
+@pytest.mark.unit
 def test_save_characters_writes_runtime_root_even_when_project_fallback_exists(tmp_path):
     cm = _make_config_manager(tmp_path)
 

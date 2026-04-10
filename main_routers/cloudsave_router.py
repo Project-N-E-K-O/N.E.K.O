@@ -330,7 +330,23 @@ async def post_cloudsave_character_download(name: str, request: Request):
         )
 
     local_exists = _local_character_exists(config_manager, name)
-    if local_exists:
+    if local_exists and not overwrite:
+        cloud_detail = build_cloudsave_character_detail(config_manager, name)
+        if cloud_detail is None:
+            return _cloudsave_error_response(
+                "CLOUD_CHARACTER_NOT_FOUND",
+                f"cloud character not found: {name}",
+                status_code=404,
+                character_name=name,
+            )
+        return _cloudsave_error_response(
+            "LOCAL_CHARACTER_EXISTS",
+            f"local character already exists: {name}",
+            status_code=409,
+            character_name=name,
+        )
+
+    if local_exists and overwrite:
         released_memory_handle = await release_memory_server_character(
             name,
             reason=f"云存档下载前释放 SQLite 句柄: {name}",
@@ -373,13 +389,16 @@ async def post_cloudsave_character_download(name: str, request: Request):
     except Exception as exc:
         rollback_attempted = False
         rollback_error = ""
+        rollback_notify_ok = False
         try:
             if backup_path:
                 rollback_attempted = True
                 restore_cloudsave_operation_backup(config_manager, backup_path)
                 initialize_character_data = get_initialize_character_data()
                 await initialize_character_data()
-                await notify_memory_server_reload(reason=f"云存档下载回滚: {name}")
+                rollback_notify_ok = await notify_memory_server_reload(reason=f"云存档下载回滚: {name}")
+                if not rollback_notify_ok:
+                    rollback_error = "notify_memory_server_reload returned False"
         except Exception as rollback_exc:
             rollback_error = str(rollback_exc)
         return _cloudsave_error_response(
@@ -388,7 +407,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
             status_code=500,
             character_name=name,
             extra={
-                "rolled_back": rollback_attempted and rollback_error == "",
+                "rolled_back": rollback_attempted and rollback_error == "" and rollback_notify_ok,
                 "rollback_error": rollback_error,
             },
         )

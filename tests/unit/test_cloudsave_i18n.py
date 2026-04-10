@@ -248,6 +248,38 @@ def test_cloudsave_popup_url_carries_current_ui_language():
 
 
 @pytest.mark.unit
+def test_cloudsave_back_to_character_manager_replaces_history_entry():
+    script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+
+    assert "window.location.replace('/chara_manager');" in script
+    assert "window.location.href = '/chara_manager';" not in script
+
+
+@pytest.mark.unit
+def test_cloudsave_download_notifies_open_character_manager_to_refresh():
+    cloudsave_script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+    chara_script = CHARA_MANAGER_JS.read_text(encoding="utf-8")
+
+    assert "const CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY = 'neko_cloudsave_character_sync';" in cloudsave_script
+    assert "const CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE = 'cloudsave_character_changed';" in cloudsave_script
+    assert "const CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME = 'neko_cloudsave_character_sync';" in cloudsave_script
+    assert "localStorage.setItem(CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY, JSON.stringify(payload));" in cloudsave_script
+    assert "window.opener.postMessage(payload, window.location.origin);" in cloudsave_script
+    assert "new BroadcastChannel(CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME);" in cloudsave_script
+    assert "channel.postMessage(payload);" in cloudsave_script
+    assert "if (action === 'download') {" in cloudsave_script
+    assert "notifyCharacterManagerSync({" in cloudsave_script
+    assert "const CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY = 'neko_cloudsave_character_sync';" in chara_script
+    assert "const CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE = 'cloudsave_character_changed';" in chara_script
+    assert "const CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME = 'neko_cloudsave_character_sync';" in chara_script
+    assert "handleCloudsaveCharacterSync(event.data);" in chara_script
+    assert "event.key !== CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY" in chara_script
+    assert "fetch('/api/characters', { cache: 'no-store' });" in chara_script
+    assert "cache: 'no-store'" in chara_script
+    assert "new BroadcastChannel(CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME);" in chara_script
+
+
+@pytest.mark.unit
 def test_cloudsave_manager_formats_timestamps_with_locale_aware_intl_formatter():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
 
