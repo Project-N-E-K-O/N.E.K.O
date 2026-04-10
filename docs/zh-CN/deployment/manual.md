@@ -28,6 +28,14 @@ cd frontend/plugin-manager && npm install && npm run build && cd ../..
 
 ## 运行
 
+推荐优先使用统一启动器：
+
+```bash
+uv run python launcher.py
+```
+
+这样会先完成本地 `cloudsave/` bootstrap 与快照导入，再启动各个服务，更接近 Steam / 桌面版实际启动链路。
+
 在不同终端中启动所需的服务器：
 
 ```bash
@@ -40,6 +48,11 @@ uv run python main_server.py
 # 终端 3 — 智能体服务器（可选）
 uv run python agent_server.py
 ```
+
+补充说明：
+
+- 想验证 Steam Auto-Cloud 的真实“启动前下载 / 退出后上传”，应通过 Steam 或桌面启动器启动，不要把纯源码直跑当作 Steam 云同步验证路径。
+- 手动三服务模式更适合开发调试；当前 `main_server` 会在需要时兜底导入快照，并尝试通知 `memory_server` reload。
 
 ## 配置
 

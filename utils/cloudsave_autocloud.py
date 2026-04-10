@@ -47,8 +47,8 @@ def _build_recommended_root_paths(config_manager) -> dict[str, Any]:
             },
             {
                 "os": "Linux",
-                "new_root": "LinuxHome",
-                "add_replace_path": f".local/share/{subdirectory}",
+                "new_root": "LinuxXdgDataHome",
+                "add_replace_path": subdirectory,
                 "replace_path": True,
             },
         ],
@@ -115,13 +115,11 @@ class CloudSaveManager:
         has_snapshot = bool(manifest_files)
         startup_import_required = bool(
             has_snapshot
-            and not runtime_has_user_content
             and (
-                not last_applied_manifest_fingerprint
-                or (
-                    manifest_fingerprint
-                    and manifest_fingerprint != last_applied_manifest_fingerprint
-                )
+                not runtime_has_user_content
+                or not last_applied_manifest_fingerprint
+                or not manifest_fingerprint
+                or manifest_fingerprint != last_applied_manifest_fingerprint
             )
         )
 

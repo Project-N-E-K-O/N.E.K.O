@@ -44,6 +44,7 @@ if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
 import mimetypes # noqa
 mimetypes.add_type("application/javascript", ".js")
 import asyncio # noqa
+import importlib # noqa
 import logging # noqa
 import atexit # noqa
 import httpx # noqa
@@ -174,7 +175,6 @@ _cloudsave_manager = get_cloudsave_manager(_config_manager)
 
 def cleanup():
     """通知所有同步线程停止"""
-    logger.info("正在关闭同步线程...")
     for k in sync_shutdown_event:
         try:
             sync_shutdown_event[k].set()
@@ -939,6 +939,23 @@ def _sync_preload_modules():
     logger.info(f"📦 模块预加载完成，耗时 {elapsed:.2f}s")
 
 
+async def _sync_memory_server_after_startup_import(import_result):
+    """Keep memory_server aligned when main_server applies a cloud snapshot on startup."""
+    if not isinstance(import_result, dict) or import_result.get("action") != "imported":
+        return
+
+    try:
+        from main_routers.characters_router import notify_memory_server_reload
+
+        reloaded = await notify_memory_server_reload(
+            reason="Steam Auto-Cloud startup import",
+        )
+        if not reloaded:
+            logger.warning("Steam Auto-Cloud startup import applied, but memory_server reload did not succeed")
+    except Exception as e:
+        logger.warning(f"Steam Auto-Cloud startup import could not sync memory_server: {e}")
+
+
 # Startup 事件：延迟初始化 Steamworks 和全局语言
 @app.on_event("startup")
 async def on_startup():
@@ -947,6 +964,7 @@ async def on_startup():
         global steamworks, _preload_task, agent_event_bridge, _server_loop
         _server_loop = asyncio.get_running_loop()
         bootstrap_local_cloudsave_environment(_config_manager)
+        import_result = None
         try:
             import_result = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -961,6 +979,7 @@ async def on_startup():
         except Exception as e:
             logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
         await initialize_character_data()
+        await _sync_memory_server_after_startup_import(import_result)
         try:
             set_root_mode(
                 _config_manager,
@@ -995,7 +1014,7 @@ async def on_startup():
         
         # 后台预热 UGC 缓存 + 同步角色卡（分别独立任务，互不阻塞）
         if steamworks:
-            import main_routers.workshop_router as _wr
+            _wr = importlib.import_module("main_routers.workshop_router")
             
             async def _warmup_only():
                 """仅预热 UGC 缓存"""
@@ -1222,7 +1241,7 @@ async def shutdown_server_async():
 
         # 取消后台创意工坊任务，避免残留协程
         try:
-            import main_routers.workshop_router as _wr
+            _wr = importlib.import_module("main_routers.workshop_router")
             _SHUTDOWN_TASK_TIMEOUT = 5  # 等待后台任务结束的超时秒数
             for task_attr in ('_ugc_warmup_task', '_ugc_sync_task'):
                 task = getattr(_wr, task_attr, None)

@@ -82,12 +82,13 @@
 
 1. 用户通过 Steam 启动游戏。
 2. Steam 在进程启动前，把云端 `cloudsave/` 同步到本机。
-3. `main_server` 启动时执行 `CloudSaveManager.import_if_needed()`。
+3. `launcher` 在拉起任何本地服务前，先执行 phase-0 bootstrap，并调用 `CloudSaveManager.import_if_needed()`。
 4. 若发现以下任一条件成立，则自动把快照导入运行时目录：
    - 本地运行时为空。
    - `last_applied_manifest_fingerprint` 为空。
    - `manifest.fingerprint` 与上次已应用指纹不同。
-5. 导入完成后，再进入角色初始化与业务层启动。
+5. 导入完成后，再依次拉起 `memory_server`、`main_server`、`agent_server`，确保三服务看到同一份运行时真源。
+6. 若绕过 `launcher` 直接启动 `main_server`，`main_server` 仍会做一次兜底 `import_if_needed()`；如果这次兜底真的执行了导入，还需要主动通知 `memory_server` reload，避免主服务与记忆服务状态不一致。
 
 ### 3.3 运行中闭环
 
@@ -98,7 +99,7 @@
 
 ### 3.4 退出闭环
 
-1. 进入 `main_server` shutdown。
+1. 进入 `main_server` shutdown（或由 `launcher` 请求优雅退出）。
 2. 先释放可见角色的 memory server 句柄，降低 SQLite 锁冲突概率。
 3. 调用 `CloudSaveManager.export_snapshot()`。
 4. 导出后的安全快照覆盖本地 `cloudsave/`。
@@ -197,13 +198,15 @@
 
 - 启动时检查是否需要把 `cloudsave/` 应用回运行时。
 - 没有快照则跳过。
-- 快照与本地已应用指纹一致且运行时已有内容时跳过。
+- 只有在“快照指纹与本地已对齐指纹一致”且运行时已有内容时才跳过。
+- 只要 `last_applied_manifest_fingerprint` 为空、运行时为空、或 `manifest.fingerprint` 发生变化，就应执行导入。
 - 其余情况执行导入。
 
 设计意图：
 
 - 避免每次启动都无脑覆盖本地运行时。
 - 避免崩溃恢复场景下，把未变化的旧快照反复覆盖到可能更新过的本地运行时。
+- 同时允许跨设备场景在本地运行时仍有旧内容时，用新 manifest 覆盖回最新云端快照。
 
 ### 6.3 `export_snapshot()`
 

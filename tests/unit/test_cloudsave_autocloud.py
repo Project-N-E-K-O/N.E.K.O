@@ -104,7 +104,7 @@ def test_cloudsave_manager_skips_import_when_manifest_was_already_applied():
 
 
 @pytest.mark.unit
-def test_cloudsave_manager_does_not_auto_import_when_runtime_already_has_user_content():
+def test_cloudsave_manager_imports_new_snapshot_even_when_runtime_already_has_user_content():
     with TemporaryDirectory() as td:
         source_cm = _make_config_manager(Path(td) / "source")
         target_cm = _make_config_manager(Path(td) / "target")
@@ -112,23 +112,26 @@ def test_cloudsave_manager_does_not_auto_import_when_runtime_already_has_user_co
         bootstrap_local_cloudsave_environment(target_cm)
         _write_runtime_state(source_cm, character_name="云端角色")
         export_result = export_local_cloudsave_snapshot(source_cm)
-        shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
 
         _write_runtime_state(target_cm, character_name="本地角色")
+        local_export_result = export_local_cloudsave_snapshot(target_cm)
+        assert target_cm.load_cloudsave_local_state()["last_applied_manifest_fingerprint"] == local_export_result["manifest"]["fingerprint"]
+
+        shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
 
         manager = CloudSaveManager(target_cm)
         status = manager.build_status()
-        result = manager.import_if_needed(reason="existing_runtime_should_not_auto_import")
+        result = manager.import_if_needed(reason="import_new_cloud_snapshot_over_stale_runtime")
 
         assert status["has_snapshot"] is True
         assert status["runtime_has_user_content"] is True
         assert status["manifest_fingerprint"] == export_result["manifest"]["fingerprint"]
-        assert status["last_applied_manifest_fingerprint"] == ""
-        assert status["startup_import_required"] is False
+        assert status["last_applied_manifest_fingerprint"] == local_export_result["manifest"]["fingerprint"]
+        assert status["startup_import_required"] is True
         assert result["success"] is True
-        assert result["action"] == "skipped"
-        assert result["reason"] == "already_applied"
-        assert target_cm.load_characters()["当前猫娘"] == "本地角色"
+        assert result["action"] == "imported"
+        assert target_cm.load_characters()["当前猫娘"] == "云端角色"
+        assert target_cm.load_cloudsave_local_state()["last_applied_manifest_fingerprint"] == export_result["manifest"]["fingerprint"]
 
 
 @pytest.mark.unit
@@ -149,7 +152,9 @@ def test_cloudsave_manager_exports_snapshot_with_steam_status():
         assert result["action"] == "exported"
         assert result["status"]["backend"] == STEAM_AUTO_CLOUD_SYNC_BACKEND
         assert result["status"]["has_snapshot"] is True
+        assert result["status"]["startup_import_required"] is False
         assert result["status"]["steam_available"] is True
+        assert result["status"]["last_applied_manifest_fingerprint"] == manifest["fingerprint"]
         assert result["status"]["last_successful_export_at"]
         assert manifest["fingerprint"]
 

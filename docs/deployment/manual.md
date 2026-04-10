@@ -28,6 +28,16 @@ cd frontend/plugin-manager && npm install && npm run build && cd ../..
 
 ## Running
 
+Prefer the unified launcher when possible:
+
+```bash
+uv run python launcher.py
+```
+
+This path bootstraps local `cloudsave/`, applies any staged snapshot, and only
+then starts the backend services, so it is closer to the real Steam / desktop
+startup path.
+
 Start the required servers in separate terminals:
 
 ```bash
@@ -40,6 +50,11 @@ uv run python main_server.py
 # Terminal 3 — Agent server (optional)
 uv run python agent_server.py
 ```
+
+Notes:
+
+- To validate real Steam Auto-Cloud behavior, launch through Steam or the desktop launcher. Running source files directly is useful for development, but it is not a reliable way to verify Steam-side download/upload timing.
+- In manual three-server mode, `main_server` will still perform a fallback snapshot import when needed and will try to notify `memory_server` to reload afterward.
 
 ## Configuration
 

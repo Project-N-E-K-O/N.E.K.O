@@ -3285,6 +3285,7 @@ def export_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
         save_cloudsave_manifest(config_manager, manifest)
 
         cloud_state["next_sequence_number"] = sequence_number + 1
+        cloud_state["last_applied_manifest_fingerprint"] = manifest["fingerprint"]
         cloud_state["last_successful_export_at"] = exported_at
         config_manager.save_cloudsave_local_state(cloud_state)
 

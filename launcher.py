@@ -65,6 +65,7 @@ from utils.cloudsave_runtime import (
     cloud_apply_fence,
     set_root_mode,
 )
+from utils.cloudsave_autocloud import get_cloudsave_manager
 from utils.config_manager import get_config_manager
 
 # 本次 launcher 启动的唯一标识
@@ -1161,6 +1162,42 @@ def _ensure_playwright_browsers():
         emit_frontend_event("playwright_check", {"status": "skipped", "message": str(e)})
 
 
+def _prepare_cloudsave_runtime_for_launch() -> dict:
+    """Bootstrap local cloudsave state and apply any staged snapshot before services start."""
+    print("[Launcher] 初始化本地 cloudsave 基础设施...", flush=True)
+    config_manager = get_config_manager(APP_NAME)
+
+    with cloud_apply_fence(
+        config_manager,
+        mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
+        reason="launcher_phase0_bootstrap",
+    ):
+        bootstrap_result = bootstrap_local_cloudsave_environment(config_manager)
+
+    import_result = get_cloudsave_manager(config_manager).import_if_needed(
+        reason="launcher_phase0_prelaunch_import",
+    )
+
+    root_state = set_root_mode(
+        config_manager,
+        ROOT_MODE_NORMAL,
+        current_root=str(config_manager.app_docs_dir),
+        last_known_good_root=str(config_manager.app_docs_dir),
+    )
+    event_payload = {
+        "root_state": root_state,
+        "manifest_path": str(config_manager.cloudsave_manifest_path),
+        "import_result": import_result,
+    }
+    emit_frontend_event("cloudsave_bootstrap_ready", event_payload)
+    return {
+        "bootstrap_result": bootstrap_result,
+        "import_result": import_result,
+        "root_state": root_state,
+        "event_payload": event_payload,
+    }
+
+
 def main():
     """主函数"""
     # 支持 multiprocessing 在 Windows 上的打包
@@ -1191,28 +1228,8 @@ def main():
         # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
         setup_job_object()
 
-        print("[Launcher] 初始化本地 cloudsave 基础设施...", flush=True)
         try:
-            _config_manager = get_config_manager(APP_NAME)
-            with cloud_apply_fence(
-                _config_manager,
-                mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
-                reason="launcher_phase0_bootstrap",
-            ):
-                bootstrap_local_cloudsave_environment(_config_manager)
-            bootstrap_root_state = set_root_mode(
-                _config_manager,
-                ROOT_MODE_NORMAL,
-                current_root=str(_config_manager.app_docs_dir),
-                last_known_good_root=str(_config_manager.app_docs_dir),
-            )
-            emit_frontend_event(
-                "cloudsave_bootstrap_ready",
-                {
-                    "root_state": bootstrap_root_state,
-                    "manifest_path": str(_config_manager.cloudsave_manifest_path),
-                },
-            )
+            _prepare_cloudsave_runtime_for_launch()
         except Exception as e:
             try:
                 _config_manager = get_config_manager(APP_NAME)
