@@ -652,7 +652,7 @@ body.react-chat-adapter-active #chat-container {
     display: block;
     border-radius: 22px;
     overflow: hidden;
-    background: rgba(248, 250, 255, 0.96);
+    background: transparent;
     box-shadow: 0 30px 100px rgba(12, 20, 34, 0.3);
     pointer-events: auto;
 }
@@ -773,7 +773,7 @@ body.react-chat-adapter-active #chat-container {
 #react-chat-window-root {
     width: 100%;
     height: 100%;
-    background: #eef3fb;
+    background: transparent;
     pointer-events: auto;
 }
 
@@ -861,7 +861,7 @@ body.react-chat-window-resizing {
 
 /* ===== React Chat Window Dark Mode ===== */
 [data-theme="dark"] #react-chat-window-shell {
-    background: rgba(30, 30, 42, 0.96);
+    background: transparent;
     box-shadow: 0 30px 100px rgba(0, 0, 0, 0.5);
 }
 
@@ -887,7 +887,7 @@ body.react-chat-window-resizing {
 }
 
 [data-theme="dark"] #react-chat-window-root {
-    background: #1c1c2e;
+    background: transparent;
 }
 
 [data-theme="dark"] .react-chat-resize-se {
