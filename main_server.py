@@ -47,6 +47,7 @@ import asyncio # noqa
 import logging # noqa
 import atexit # noqa
 import httpx # noqa
+import time # noqa
 from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
 from utils.config_manager import get_config_manager, get_reserved # noqa
 # 将日志初始化提前，确保导入阶段异常也能落盘
@@ -181,10 +182,12 @@ def _signal_sync_connectors_shutdown(*, log: bool = True) -> None:
 def join_sync_connector_threads(timeout: float = 3.0) -> list[str]:
     alive_threads: list[str] = []
     wait_timeout = max(0.0, float(timeout))
+    deadline = time.monotonic() + wait_timeout
 
     for name, thread in _iter_sync_connector_threads():
         try:
-            thread.join(timeout=wait_timeout)
+            remaining = deadline - time.monotonic()
+            thread.join(timeout=max(0.0, remaining))
             if thread.is_alive():
                 alive_threads.append(name)
         except Exception as e:
