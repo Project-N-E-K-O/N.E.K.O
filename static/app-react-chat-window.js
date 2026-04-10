@@ -172,7 +172,11 @@
                 : getI18nText('chat.screenshotAriaLabel', '截图'),
             removeAttachmentButtonAriaLabel: getI18nText('chat.removePendingImage', '移除图片'),
             failedStatusLabel: getI18nText('chat.messageFailed', '发送失败'),
-            inputHint: getI18nText('chat.reactWindowInputHint', 'Enter 发送，Shift + Enter 换行')
+            inputHint: getI18nText('chat.reactWindowInputHint', 'Enter 发送，Shift + Enter 换行'),
+            jukeboxButtonLabel: getI18nText('chat.jukeboxLabel', '点歌台'),
+            jukeboxButtonAriaLabel: getI18nText('chat.jukebox', '点歌台'),
+            avatarGeneratorButtonLabel: getI18nText('chat.avatarPreviewLabel', '头像'),
+            avatarGeneratorButtonAriaLabel: getI18nText('chat.avatarPreview', '生成头像')
         };
     }
 
@@ -276,7 +280,9 @@
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
             onComposerRemoveAttachment: handleComposerRemoveAttachment,
-            onComposerSubmit: handleComposerSubmit
+            onComposerSubmit: handleComposerSubmit,
+            onJukeboxClick: handleJukeboxClick,
+            onAvatarGeneratorClick: handleAvatarGeneratorClick
         });
     }
 
@@ -583,6 +589,67 @@
         }
 
         dispatchHostEvent('remove-attachment', { attachmentId: attachmentId });
+    }
+
+    function handleJukeboxClick() {
+        try {
+            if (typeof window.Jukebox !== 'undefined' && typeof window.Jukebox.toggle === 'function') {
+                window.Jukebox.toggle();
+            } else {
+                console.warn('[ReactChatWindow] Jukebox not available');
+            }
+        } finally {
+            dispatchHostEvent('jukebox-click', {});
+        }
+    }
+
+    function captureAvatarDirect() {
+        if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
+            showToast(getI18nText('chat.avatarPreviewUnavailable', '头像预览功能尚未就绪。'), 3000);
+            return;
+        }
+
+        showToast(getI18nText('chat.avatarPreviewGenerating', '正在生成当前头像...'), 2000);
+
+        window.avatarPortrait.capture({
+            width: 320, height: 320, padding: 0.035,
+            shape: 'rounded', radius: 40,
+            background: 'rgba(255, 255, 255, 0.96)',
+            includeDataUrl: true
+        }).then(function (result) {
+            if (result && result.dataUrl) {
+                // Dispatch the same event that app-chat-adapter.js already listens to
+                window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+                    detail: {
+                        dataUrl: result.dataUrl,
+                        modelType: result.modelType || '',
+                        source: 'react-chat-window'
+                    }
+                }));
+                showToast(getI18nText('chat.avatarPreviewReady', '头像已更新'), 2500);
+            } else {
+                console.warn('[ReactChatWindow] Avatar capture completed without dataUrl');
+                showToast(getI18nText('chat.avatarPreviewFailed', '生成头像失败'), 3000);
+            }
+        }).catch(function (error) {
+            console.error('[ReactChatWindow] Avatar capture failed:', error);
+            showToast(getI18nText('chat.avatarPreviewFailed', '生成头像失败'), 3000);
+        });
+    }
+
+    function handleAvatarGeneratorClick() {
+        try {
+            // Prefer legacy button if it exists (index.html); absent in chat.html
+            var legacyBtn = document.getElementById('avatarPreviewButton');
+            if (legacyBtn) {
+                legacyBtn.click();
+                return;
+            }
+            // React-first mode or standalone chat window — capture directly
+            captureAvatarDirect();
+        } finally {
+            dispatchHostEvent('avatar-generator-click', {});
+        }
     }
 
     function setViewProps(nextViewProps) {
