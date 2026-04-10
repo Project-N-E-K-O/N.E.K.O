@@ -772,6 +772,21 @@
             void shell.offsetHeight;
             var expandedRect = shell.getBoundingClientRect();
 
+            // 尺寸无效时（overlay 仍隐藏等边界情况）跳过动画，直接恢复
+            if (!curRect.width || !curRect.height || !expandedRect.width || !expandedRect.height) {
+                shell.style.transform = 'none';
+                savedShellSize = null;
+                savedShellPosition = null;
+                isMinimizeTransitioning = false;
+                requestAnimationFrame(function () {
+                    var r = shell.getBoundingClientRect();
+                    var clamped = clampPosition(r.left, r.top);
+                    if (clamped.left !== r.left || clamped.top !== r.top) {
+                        applyPosition(clamped.left, clamped.top);
+                    }
+                });
+            } else {
+
             // 计算初始 transform：从当前（左下角 50px）→ 最终（恢复位置，完整尺寸）
             var dx2 = curLeft - expandedRect.left;
             var dy2 = curTop - expandedRect.top;
@@ -816,6 +831,8 @@
             };
             shell.addEventListener('transitionend', onExpandEnd);
             setTimeout(finishExpand, 420); // 兜底
+
+            } // end of else (valid dimensions)
         }
 
         // 更新按钮图标和 aria
@@ -906,9 +923,9 @@
         if (shell) {
             shell.classList.remove('is-dragging');
             var rect = shell.getBoundingClientRect();
-            // 最小化 click-to-restore 时不持久化悬浮球坐标，
-            // 否则 restorePosition 会把完整窗口放到左下角
-            if (!(minimized && !wasMoved)) {
+            // 最小化态下不持久化悬浮球坐标到展开态存储，
+            // 否则 restorePosition 会把完整窗口放到悬浮球位置
+            if (!minimized) {
                 persistPosition(rect.left, rect.top);
             }
         }
