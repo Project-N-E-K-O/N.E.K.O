@@ -16,6 +16,7 @@
     'use strict';
 
     var MAX_EXPORT_SELECTION = 100;
+    var DEFAULT_USER_EXPORT_AVATAR = '/static/icons/avatar/04F0E17351255886095E903B30EC1570.png';
 
     // ======================== State ========================
 
@@ -277,6 +278,14 @@
         var author = message.author ? String(message.author) : '';
         var time = message.time ? String(message.time) : '';
         var header = [author, time].filter(Boolean).join(' · ');
+        var avatarUrl = message.avatarUrl ? String(message.avatarUrl) : '';
+        if (!avatarUrl && message.role === 'user') {
+            avatarUrl = DEFAULT_USER_EXPORT_AVATAR;
+        }
+        var avatarLabel = message.avatarLabel ? String(message.avatarLabel) : '';
+        if (!avatarLabel) {
+            avatarLabel = (author || role || '?').trim().slice(0, 2).toUpperCase();
+        }
         return {
             id: String(message.id),
             role: role,
@@ -284,6 +293,8 @@
             time: time,
             header: header,
             rawRole: message.role,
+            avatarUrl: avatarUrl,
+            avatarLabel: avatarLabel,
             textContent: extractBlocksPlainText(message.blocks),
             markdownContent: blocksToMarkdown(message.blocks),
             mediaDescriptors: collectImageDescriptors(message.blocks),
@@ -543,6 +554,19 @@
             var mediaList = entry.mediaDescriptors || [];
             var imageDescriptors = [];
             var promises = [];
+            var avatarPromise = null;
+            if (entry.avatarUrl) {
+                avatarPromise = cache.get('avatar:' + entry.avatarUrl);
+                if (!avatarPromise) {
+                    avatarPromise = inlineImageSourceToDataUrl(entry.avatarUrl)
+                        .then(loadImageElement)
+                        .catch(function (error) {
+                            logExportError('resolveImageEntryAvatar', error);
+                            return null;
+                        });
+                    cache.set('avatar:' + entry.avatarUrl, avatarPromise);
+                }
+            }
             for (var j = 0; j < mediaList.length; j += 1) {
                 var descriptor = mediaList[j];
                 if (!descriptor || descriptor.type !== 'image') continue;
@@ -573,12 +597,15 @@
                     });
                 }
             }
+            var avatarImage = avatarPromise ? await avatarPromise : null;
             resolved.push({
                 id: entry.id,
                 role: entry.role,
                 author: entry.author,
                 time: entry.time,
                 rawRole: entry.rawRole,
+                avatarLabel: entry.avatarLabel,
+                avatarImage: avatarImage,
                 textContent: entry.textContent,
                 media: loaded
             });
@@ -660,6 +687,52 @@
             h = h * ratio2;
         }
         return { width: Math.round(w), height: Math.round(h) };
+    }
+
+    function drawAvatarCircle(ctx, x, y, size, options) {
+        options = options || {};
+        var radius = size / 2;
+        var image = options.image || null;
+        var label = String(options.label || '?').trim().slice(0, 2) || '?';
+        var background = options.background || '#e5e7eb';
+        var textColor = options.textColor || '#111827';
+        var borderColor = options.borderColor || 'rgba(255,255,255,0.4)';
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x + radius, y + radius, radius, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+        if (image) {
+            try {
+                ctx.drawImage(image, x, y, size, size);
+            } catch (_) {
+                ctx.fillStyle = background;
+                ctx.fillRect(x, y, size, size);
+            }
+        } else {
+            ctx.fillStyle = background;
+            ctx.fillRect(x, y, size, size);
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(x + radius, y + radius, Math.max(0, radius - 0.75), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+
+        if (!image) {
+            ctx.save();
+            ctx.font = '700 ' + Math.max(12, Math.floor(size * 0.38)) + 'px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+            ctx.fillStyle = textColor;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, x + radius, y + radius + 1);
+            ctx.restore();
+        }
     }
 
     // ======================== Image export — 4 styles ========================
@@ -1071,6 +1144,8 @@
         var bodyFont = '500 17px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
         var metaFont = '500 12px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
         var bodyLineHeight = 28;
+        var avatarSize = 34;
+        var avatarGap = 12;
         var cardInnerWidth = width - padding * 2 - cardPadding * 2;
         var contentMaxWidth = Math.floor(cardInnerWidth * 0.76);
 
@@ -1133,6 +1208,13 @@
             var textX = isUser
                 ? (cardX + cardW - cardPadding - textMaxWidth)
                 : (cardX + cardPadding);
+            var avatarX = isUser
+                ? (cardX + cardW - cardPadding - avatarSize)
+                : textX;
+            var avatarY = cardY + cardPadding - 2;
+            var authorAnchorX = isUser
+                ? (avatarX - avatarGap)
+                : (avatarX + avatarSize + avatarGap);
 
             ctx.save();
             ctx.shadowColor = 'rgba(0,0,0,0.15)';
@@ -1147,13 +1229,21 @@
             drawRoundedRect(ctx, cardX + 0.5, cardY + 0.5, cardW - 1, cardH - 1, 16);
             ctx.stroke();
 
+            drawAvatarCircle(ctx, avatarX, avatarY, avatarSize, {
+                image: m.entry.avatarImage,
+                label: m.entry.avatarLabel || m.entry.author || m.entry.role,
+                background: isUser ? 'rgba(255,232,163,0.95)' : 'rgba(255,210,228,0.95)',
+                textColor: isUser ? '#8a5a00' : '#9f1853',
+                borderColor: isUser ? theme.userBorder : theme.assistantBorder
+            });
+
             // author
             ctx.font = authorFont;
             ctx.fillStyle = isUser ? theme.userText : theme.assistantText;
             ctx.textAlign = isUser ? 'right' : 'left';
             ctx.fillText(
                 entry.author || entry.role || '',
-                isUser ? (cardX + cardW - cardPadding) : textX,
+                authorAnchorX,
                 cardY + cardPadding
             );
 
@@ -1163,7 +1253,7 @@
             ctx.textAlign = isUser ? 'right' : 'left';
             ctx.fillText(
                 [entry.role, entry.time].filter(Boolean).join(' · '),
-                isUser ? (cardX + cardW - cardPadding) : textX,
+                authorAnchorX,
                 cardY + cardPadding + 20
             );
 
