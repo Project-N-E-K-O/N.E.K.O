@@ -165,18 +165,26 @@ window.addEventListener('mmd-modules-ready', async () => {
                 window.mmdManager.applySettings(nonPhysicsSettings);
             }
 
-            // 播放待机动作
+            // 播放待机动作 & 启动轮换
             if (catgirlName) {
                 try {
                     const charRes = await fetch('/api/characters/');
                     if (charRes.ok) {
                         const charData = await charRes.json();
-                        const mmdIdleAnimation = charData?.['猫娘']?.[catgirlName]?.mmd_idle_animation;
-                        if (mmdIdleAnimation && window.mmdManager) {
+                        const catData = charData?.['猫娘']?.[catgirlName];
+                        // 优先取列表，向前兼容单字符串
+                        let idleList = catData?.mmd_idle_animations;
+                        if (!Array.isArray(idleList)) {
+                            const single = catData?.mmd_idle_animation;
+                            idleList = single ? [single] : [];
+                        }
+                        if (idleList.length > 0 && window.mmdManager) {
                             try {
-                                await window.mmdManager.loadAnimation(mmdIdleAnimation);
+                                await window.mmdManager.loadAnimation(idleList[0]);
                                 window.mmdManager.playAnimation();
-                                console.log('[MMD Init] 已播放待机动作:', mmdIdleAnimation);
+                                console.log('[MMD Init] 已播放待机动作:', idleList[0]);
+                                // 多于 1 个时启动轮换
+                                _startMmdIdleRotation(idleList);
                             } catch (idleErr) {
                                 console.warn('[MMD Init] 播放待机动作失败:', idleErr);
                             }
@@ -193,6 +201,55 @@ window.addEventListener('mmd-modules-ready', async () => {
         console.error('[MMD Init] MMD 自动加载失败:', e);
     }
 });
+
+// ── 主页面 MMD 待机动作轮换 ──────────────────────────────
+let _mmdIdleTimer = null;
+let _mmdIdleLastUrl = null;
+
+function _startMmdIdleRotation(urls) {
+    _stopMmdIdleRotation();
+    if (!Array.isArray(urls) || urls.length < 2) return;
+
+    function pickRandom() {
+        const candidates = urls.filter(u => u !== _mmdIdleLastUrl);
+        return candidates[Math.floor(Math.random() * candidates.length)] || urls[0];
+    }
+
+    function scheduleNext() {
+        _mmdIdleTimer = setTimeout(async () => {
+            const mgr = window.mmdManager;
+            if (!mgr || !mgr.currentModel) {
+                _mmdIdleTimer = null;
+                return;
+            }
+            try {
+                const url = pickRandom();
+                if (url) {
+                    mgr.stopAnimation();
+                    await mgr.loadAnimation(url);
+                    mgr.playAnimation();
+                    _mmdIdleLastUrl = url;
+                    console.debug('[MMD IdleRotation] 切换待机动作:', url.split('/').pop());
+                }
+            } catch (e) {
+                console.warn('[MMD IdleRotation] 切换失败:', e);
+            }
+            scheduleNext();
+        }, 20000);
+    }
+    scheduleNext();
+}
+
+function _stopMmdIdleRotation() {
+    if (_mmdIdleTimer) {
+        clearTimeout(_mmdIdleTimer);
+        _mmdIdleTimer = null;
+    }
+    _mmdIdleLastUrl = null;
+}
+
+window._stopMmdIdleRotation = _stopMmdIdleRotation;
+window._startMmdIdleRotation = _startMmdIdleRotation;
 
 // 全局路径配置
 window.MMD_PATHS = {

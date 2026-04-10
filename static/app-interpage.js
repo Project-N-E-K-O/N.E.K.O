@@ -326,7 +326,33 @@
 
                     // Load the new model
                     if (window.vrmManager) {
+                        // 停止旧的待机轮换
+                        if (typeof window._stopVrmIdleRotation === 'function') window._stopVrmIdleRotation();
+                        if (typeof window._stopMmdIdleRotation === 'function') window._stopMmdIdleRotation();
+
                         await window.vrmManager.loadModel(newModelPath);
+
+                        // 获取角色待机动作列表并启动轮换
+                        if (nameForConfig && typeof window._startVrmIdleRotation === 'function') {
+                            try {
+                                const charRes = await fetch('/api/characters/');
+                                if (charRes.ok) {
+                                    const charData = await charRes.json();
+                                    const catData = charData?.['猫娘']?.[nameForConfig];
+                                    let idleList = catData?.idleAnimations;
+                                    if (!Array.isArray(idleList)) {
+                                        const single = catData?.idleAnimation;
+                                        idleList = single ? [single] : [];
+                                    }
+                                    window.lanlan_config.vrmIdleAnimations = idleList;
+                                    if (idleList.length > 0) {
+                                        window._startVrmIdleRotation(idleList);
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn('[Model] 获取VRM待机动作列表失败:', e);
+                            }
+                        }
 
                         // Apply lighting config if available
                         if (window.lanlan_config?.lighting && typeof window.applyVRMLighting === 'function') {
@@ -411,6 +437,10 @@
                         } catch (settingsErr) {
                             console.warn('[Model] 获取MMD设置失败:', settingsErr);
                         }
+                        // 停止旧的待机轮换
+                        if (typeof window._stopVrmIdleRotation === 'function') window._stopVrmIdleRotation();
+                        if (typeof window._stopMmdIdleRotation === 'function') window._stopMmdIdleRotation();
+
                         await window.mmdManager.loadModel(newModelPath);
 
                         // 应用完整设置（光照、渲染、物理、鼠标跟踪）
@@ -418,18 +448,26 @@
                             window.mmdManager.applySettings(savedSettings);
                         }
 
-                        // 播放待机动作（使用已确定的 nameForConfig，确保目标一致）
+                        // 播放待机动作 & 启动轮换
                         if (nameForConfig) {
                             try {
                                 const charRes = await fetch('/api/characters/');
                                 if (charRes.ok) {
                                     const charData = await charRes.json();
-                                    const mmdIdleAnimation = charData?.['猫娘']?.[nameForConfig]?.mmd_idle_animation;
-                                    if (mmdIdleAnimation) {
+                                    const catData = charData?.['猫娘']?.[nameForConfig];
+                                    let idleList = catData?.mmd_idle_animations;
+                                    if (!Array.isArray(idleList)) {
+                                        const single = catData?.mmd_idle_animation;
+                                        idleList = single ? [single] : [];
+                                    }
+                                    if (idleList.length > 0) {
                                         try {
-                                            await window.mmdManager.loadAnimation(mmdIdleAnimation);
+                                            await window.mmdManager.loadAnimation(idleList[0]);
                                             window.mmdManager.playAnimation();
-                                            console.log('[Model] 已播放待机动作:', mmdIdleAnimation);
+                                            console.log('[Model] 已播放待机动作:', idleList[0]);
+                                            if (typeof window._startMmdIdleRotation === 'function') {
+                                                window._startMmdIdleRotation(idleList);
+                                            }
                                         } catch (idleErr) {
                                             console.warn('[Model] 播放待机动作失败:', idleErr);
                                         }
