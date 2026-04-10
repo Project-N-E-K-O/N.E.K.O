@@ -175,7 +175,6 @@ async def proxy_music(url: str):
                 await resp.aclose()
                 logger.debug(f"[Music Proxy] 流式传输: {url[:60]}..., 预大小: {declared_size}")
                 headers = {
-                    'Content-Length': str(declared_size),
                     'Cache-Control': 'no-cache',
                     'X-Cache': 'STREAM'
                 }
