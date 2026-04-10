@@ -663,11 +663,16 @@
         var bridge = window.subtitleBridge;
         var next;
 
-        if (bridge && typeof bridge.toggle === 'function') {
-            // Use full toggle with runtime side effects (hide/show subtitle, clear timers, re-translate)
-            next = bridge.toggle();
-        } else {
-            // Fallback: flip flag manually if bridge not yet loaded
+        try {
+            if (bridge && typeof bridge.toggle === 'function') {
+                // Use full toggle with runtime side effects (hide/show subtitle, clear timers, re-translate)
+                next = bridge.toggle();
+            } else {
+                throw new Error('subtitleBridge.toggle unavailable');
+            }
+        } catch (err) {
+            console.warn('[ReactChatWindow] bridge.toggle failed, using fallback:', err);
+            // Fallback: flip flag manually if bridge not loaded or threw
             var appSt = window.appState;
             var current = (appSt && typeof appSt.subtitleEnabled !== 'undefined')
                 ? appSt.subtitleEnabled
