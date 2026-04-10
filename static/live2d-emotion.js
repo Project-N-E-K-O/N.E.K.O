@@ -1092,10 +1092,14 @@ Live2DManager.prototype.collectPersistentExpressionFiles = function() {
     }
 
     const all = [...filesFromMapping, ...filesFromRefs];
-    // 去重
-    const normalized = Array.from(new Set(all));
     // 常驻表情现在是单选；如果旧配置里残留了多个来源，保留最后一个有效项作为最终常驻表情。
-    return normalized.length > 0 ? [normalized[normalized.length - 1]] : [];
+    for (let i = all.length - 1; i >= 0; i -= 1) {
+        const candidate = all[i];
+        if (candidate !== null && candidate !== undefined && String(candidate).trim()) {
+            return [candidate];
+        }
+    }
+    return [];
 };
 
 Live2DManager.prototype.setupPersistentExpressions = async function() {

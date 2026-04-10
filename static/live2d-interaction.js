@@ -1180,13 +1180,13 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         
         this._clickEffectRestoreTimer = setTimeout(() => {
             this._clickEffectRestoreTimer = null;
-            this._clickEffectSuspendReason = null;
             
             // 检查是否仍然是此次点击效果（没有被新的情感/点击覆盖）
             if (this._currentClickEffectId !== clickEffectId) {
                 console.log('[ClickEffect] 临时效果已被新的情感覆盖，跳过恢复');
                 return;
             }
+            this._clickEffectSuspendReason = null;
             
             console.log('[ClickEffect] 临时效果结束，平滑恢复到默认状态');
             this._currentClickEffectId = null;
@@ -1600,7 +1600,10 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     this._currentClickEffectId = null;
 
     if (this._touchsetExpressionTimers instanceof Map) {
-        this._touchsetExpressionTimers.forEach((timer) => clearTimeout(timer));
+        this._touchsetExpressionTimers.forEach((timer, token) => {
+            this.clearExpression?.(token);
+            clearTimeout(timer);
+        });
         this._touchsetExpressionTimers.clear();
     }
 
@@ -1820,12 +1823,12 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
 
         this._clickEffectRestoreTimer = setTimeout(() => {
             this._clickEffectRestoreTimer = null;
-            this._clickEffectSuspendReason = null;
 
             if (this._currentClickEffectId !== clickEffectId) {
                 console.log('[Interaction] 点击效果已被新的情感覆盖，跳过恢复');
                 return;
             }
+            this._clickEffectSuspendReason = null;
 
             console.log('[Interaction] 点击效果持续时间结束，平滑恢复到默认状态');
             this._currentClickEffectId = null;

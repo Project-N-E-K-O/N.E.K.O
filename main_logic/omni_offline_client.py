@@ -293,6 +293,7 @@ class OmniOfflineClient:
         
         # Check if we need to switch to vision model
         has_images = len(self._pending_images) > 0
+        temporary_messages = self._consume_temporary_system_messages()
         
         # Prepare user message content
         if has_images:
@@ -328,7 +329,6 @@ class OmniOfflineClient:
         else:
             # Text-only message
             user_message = HumanMessage(content=text.strip())
-        temporary_messages = self._consume_temporary_system_messages()
         self._conversation_history.append(user_message)
         
         # Callback for user input

@@ -1866,6 +1866,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             clearTimeout(window._expressionPreviewRestoreTimer);
             window._expressionPreviewRestoreTimer = null;
         }
+        if (window._motionPreviewRestoreTimer) {
+            clearTimeout(window._motionPreviewRestoreTimer);
+            window._motionPreviewRestoreTimer = null;
+        }
+        window._currentMotionPreviewId = null;
+        if (window._motionPreviewFetchController) {
+            try {
+                window._motionPreviewFetchController.abort();
+            } catch (_) {}
+            window._motionPreviewFetchController = null;
+        }
         if (typeof window._resumeExpressionPreviewSuspend === 'function') {
             window._resumeExpressionPreviewSuspend(reapplyPersistent);
             window._resumeExpressionPreviewSuspend = null;
@@ -5620,7 +5631,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window._expressionPreviewRestoreTimer = null;
                 if (window._currentExpressionPreviewToken !== previewToken) return; // 已被新的预览覆盖
                 window._currentExpressionPreviewToken = null;
-                resumePreviewSuspend(false);
+                resumePreviewSuspend(true);
                 console.log('[ModelManager] 表情预览结束，自动恢复到初始状态');
                 if (window.live2dManager && typeof window.live2dManager.smoothResetToInitialState === 'function') {
                     window.live2dManager.smoothResetToInitialState().catch(e => {

@@ -730,7 +730,7 @@ def _normalize_capability_reason(capability: str, raw_reason: str) -> str:
         return "AGENT_OPENFANG_DAEMON_UNREACHABLE"
     if "unreachable" in lower or "连接失败" in text or "connectivity" in lower:
         return "AGENT_LLM_UNREACHABLE"
-    return "AGENT_LLM_UNREACHABLE"
+    return "AGENT_CAPABILITY_ERROR"
 
 
 def _set_capability(name: str, ready: bool, reason: str = "") -> None:
@@ -3027,7 +3027,15 @@ def _extract_tool_intent_as_text(refusal_text: str) -> str:
 async def openfang_availability():
     """检查 OpenFang 可用性。"""
     if not Modules.openfang:
-        return {"enabled": False, "ready": False, "reason": "adapter 未加载"}
+        return {
+            "enabled": False,
+            "ready": False,
+            "reason": "adapter 未加载",
+            "reasons": ["adapter 未加载"],
+            "provider": "openfang",
+            "version": "unknown",
+            "tools_count": 0,
+        }
     ok = await asyncio.to_thread(Modules.openfang.check_connectivity)
     status = Modules.openfang.is_available()
     reasons = status.get("reasons", []) if isinstance(status, dict) else []

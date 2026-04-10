@@ -39,9 +39,15 @@ def _import_memory_server_with_tempdir():
              patch("utils.config_manager._config_manager", mock_cm):
             original_module = sys.modules.get("memory_server")
             sys.modules.pop("memory_server", None)
-            memory_server = importlib.import_module("memory_server")
             try:
+                memory_server = importlib.import_module("memory_server")
                 yield memory_server, mock_cm
+            except Exception:
+                if original_module is None:
+                    sys.modules.pop("memory_server", None)
+                else:
+                    sys.modules["memory_server"] = original_module
+                raise
             finally:
                 if original_module is None:
                     sys.modules.pop("memory_server", None)
