@@ -414,4 +414,10 @@
     };
 
     window.appChatAvatar = mod;
+
+    // 消费 IPC 暂存的头像数据（neko:config-injected 可能在本脚本加载前触发）
+    if (window.__nekoPendingAvatar) {
+        mod.setExternalAvatar(window.__nekoPendingAvatar.dataUrl, window.__nekoPendingAvatar.modelType);
+        delete window.__nekoPendingAvatar;
+    }
 })();
