@@ -685,6 +685,18 @@ function _startVrmIdleRotation(urls) {
     }
 
     scheduleFallback();
+
+    // 如果动画已经在播放（如外部预先播放的第一个待机动作），
+    // 立即注册 loop 监听器，不必等 20 秒回退定时器
+    const mixer = window.vrmManager?.animation?.vrmaMixer;
+    if (mixer) {
+        const handler = () => {
+            console.debug('[VRM IdleRotation] 初始动画循环完成，切换下一个');
+            switchToNext();
+        };
+        mixer.addEventListener('loop', handler);
+        _vrmIdleLoopCleanup = () => mixer.removeEventListener('loop', handler);
+    }
 }
 
 function _stopVrmIdleRotation() {

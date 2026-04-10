@@ -271,6 +271,18 @@ function _startMmdIdleRotation(urls) {
     }
 
     scheduleFallback();
+
+    // 如果动画已经在播放（如 app-interpage.js 预先播放的第一个），
+    // 立即注册 loop 监听器，不必等 20 秒回退定时器
+    const mixer = window.mmdManager?.animationModule?.mixer;
+    if (mixer) {
+        const handler = () => {
+            console.debug('[MMD IdleRotation] 初始动画循环完成，切换下一个');
+            switchToNext();
+        };
+        mixer.addEventListener('loop', handler);
+        _mmdIdleLoopCleanup = () => mixer.removeEventListener('loop', handler);
+    }
 }
 
 function _stopMmdIdleRotation() {
