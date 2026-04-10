@@ -2702,8 +2702,14 @@ function expandCharacterCardSection(card) {
     // 处理模型默认值 - 兼容 Live2D / VRM / MMD 三种模型类型
     let live2d = rawData['live2d'] || (rawData['model'] && rawData['model']['name']) || '';
     const modelType = rawData['model_type'] || 'live2d';
-    const vrmPath = rawData['vrm'] || '';
-    const mmdPath = rawData['mmd'] || '';
+        const normalizeModelPath = value => {
+            if (value && typeof value === 'object' && 'model_path' in value) {
+                return String(value.model_path || '');
+            }
+            return String(value || '');
+        };
+        const vrmPath = normalizeModelPath(rawData['vrm']);
+        const mmdPath = normalizeModelPath(rawData['mmd']);
     const explicitLive3dSubType = String(rawData['live3d_sub_type'] || '').toLowerCase();
 
     // 判断实际模型类型：优先使用显式 live3d_sub_type，缺失时再根据路径区分 VRM/MMD
