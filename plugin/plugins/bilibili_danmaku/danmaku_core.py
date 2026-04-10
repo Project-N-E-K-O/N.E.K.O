@@ -70,8 +70,7 @@ class ConnectionState:
     DISCONNECTED = "disconnected"      # 未连接
     CONNECTING = "connecting"          # 连接中
     AUTHENTICATING = "authenticating"   # 认证中
-    AUTHENTICATED = "authenticated"     # 已认证
-    RECEIVING = "receiving"             # 接收中
+    RECEIVING = "receiving"             # 接收中（认证成功后进入）
     RECONNECTING = "reconnecting"       # 重连中
 
 
@@ -411,8 +410,19 @@ class DanmakuListener:
         except Exception as e:
             self._log(f"获取弹幕服务器信息失败: {e}，使用默认地址", "warning")
 
-        # 回退到默认服务器
-        return [(WS_URL, "broadcastlv.chat.bilibili.com", 443)], token
+        # 回退到所有备用服务器（而非单一地址）
+        fallback_servers = []
+        for url in WS_FALLBACK_URLS:
+            # 解析 wss://host:port/sub 格式
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                host = parsed.hostname or ""
+                port = parsed.port or 443
+                fallback_servers.append((url, host, port))
+            except Exception:
+                fallback_servers.append((url, url.split("//")[1].split(":")[0] if "//" in url else "", 443))
+        return fallback_servers, token
 
     def _build_auth_body(self, real_room_id: int, token: str) -> bytes:
         """构建认证包 body"""
@@ -585,8 +595,8 @@ class DanmakuListener:
                 result = json.loads(body.decode("utf-8"))
                 code = result.get("code", -1)
                 if code == 0:
-                    self._connection_state = ConnectionState.AUTHENTICATED
-                    self._log("✅ 认证成功，开始接收弹幕")
+                    self._connection_state = ConnectionState.RECEIVING
+                    self._log(f"✅ 认证成功，开始接收弹幕 [{self._current_server}]")
                 else:
                     self._connection_state = ConnectionState.DISCONNECTED
                     self._log(f"❌ 认证失败: code={code} msg={result}", "warning")
@@ -724,6 +734,9 @@ class DanmakuListener:
             self._current_server = f"{host}:{port}"
             self._log(f"正在连接弹幕服务器 [{host}:{port}]...")
 
+            # 标记是否曾成功建立连接（用于区分"从未连上"和"连上后正常断开"）
+            had_authenticated = False
+
             try:
                 async with websockets.connect(ws_url, ping_interval=None, **_ws_kwargs) as ws:
                     self._ws = ws
@@ -733,24 +746,31 @@ class DanmakuListener:
                     await ws.send(_pack(OPERATION_AUTH, auth_body))
                     self._log("认证包已发送，等待服务器回复...")
 
-                    # 启动心跳
+                    # 启动心跳（心跳会在收到 AUTH_REPLY 成功后自动开始计时）
                     self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-
-                    self._connection_state = ConnectionState.RECEIVING
-                    self._log(f"✅ 弹幕连接已建立 [{host}:{port}]，开始接收消息")
 
                     async for message in ws:
                         if self._stop_event.is_set():
                             break
                         try:
                             if isinstance(message, bytes):
+                                # 认证成功会在这里设置 RECEIVING 状态
                                 self._process_packet(message)
                             # str 消息忽略
                         except Exception as e:
                             self._log(f"处理消息异常: {e}", "debug")
 
-                    # 正常退出循环
-                    break
+                    # 正常退出循环（可能是 stop() 调用或服务器断开）
+                    had_authenticated = self._connection_state == ConnectionState.RECEIVING
+
+                    # 如果是被 stop() 打断，跳出不再尝试其他服务器
+                    if self._stop_event.is_set():
+                        break
+
+                    # 否则是服务器正常断开（直播结束等），继续尝试下一个服务器
+                    if had_authenticated:
+                        self._log(f"服务器 [{host}:{port}] 连接已正常关闭，尝试下一个...", "info")
+                    continue
 
             except Exception as e:
                 err_str = str(e)
@@ -768,12 +788,13 @@ class DanmakuListener:
                 self._ws = None
                 self._log(f"弹幕连接 [{host}:{port}] 已断开")
 
-        # 所有服务器都连接失败
-        if not self._ws and servers:
+        # 只有在从未成功认证过的情况下才报"所有服务器失败"
+        # 如果有任意服务器曾成功连接并断开，说明是直播结束，不是故障
+        if not self._stop_event.is_set() and self._connection_state != ConnectionState.RECEIVING:
             self._connection_state = ConnectionState.DISCONNECTED
             self._current_server = ""
-            self._log(f"所有 {len(servers)} 个服务器连接失败: {last_error}", "error")
             if last_error:
+                self._log(f"所有 {len(servers)} 个服务器连接失败: {last_error}", "error")
                 raise last_error
 
     async def send_danmaku(
@@ -866,6 +887,7 @@ class DanmakuListener:
         self.running = False
         self._connection_state = ConnectionState.DISCONNECTED
         self._current_server = ""
+        self._viewer_count = 0  # 清空人气值
         self._stop_event.set()  # 唤醒所有等待此事件的协程
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()

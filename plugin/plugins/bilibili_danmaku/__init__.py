@@ -1047,7 +1047,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 "disconnected": "🔴 未连接",
                 "connecting": "🟡 连接中",
                 "authenticating": "🟡 认证中",
-                "authenticated": "🟢 已认证",
                 "receiving": "🟢 接收中",
                 "reconnecting": "🟠 重连中",
             }
