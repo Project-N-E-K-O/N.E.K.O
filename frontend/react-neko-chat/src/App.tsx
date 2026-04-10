@@ -26,7 +26,6 @@ export default function App({
   messages = defaultMessages,
   inputPlaceholder = '输入消息...',
   sendButtonLabel = '发送',
-  emptyText = '聊天内容接入后会显示在这里。',
   chatWindowAriaLabel = 'Neko chat window',
   messageListAriaLabel = 'Chat messages',
   composerToolsAriaLabel = 'Composer tools',
@@ -91,7 +90,6 @@ export default function App({
           </button>
           <MessageList
             messages={messages}
-            emptyText={emptyText}
             ariaLabel={messageListAriaLabel}
             failedStatusLabel={failedStatusLabel}
             onAction={onMessageAction}

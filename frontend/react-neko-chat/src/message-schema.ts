@@ -80,7 +80,7 @@ export const chatWindowPropsSchema = z.object({
   messages: z.array(chatMessageSchema).optional(),
   inputPlaceholder: z.string().optional(),
   sendButtonLabel: z.string().optional(),
-  emptyText: z.string().optional(),
+
   chatWindowAriaLabel: z.string().optional(),
   messageListAriaLabel: z.string().optional(),
   composerToolsAriaLabel: z.string().optional(),
