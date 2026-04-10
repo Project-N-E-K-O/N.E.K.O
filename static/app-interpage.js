@@ -835,17 +835,24 @@
                         break;
                     case 'avatar_updated':
                         // 从 Pet 窗口接收头像数据，注入到 Chat 窗口
+                        // 校验 lanlan_name：多角色场景下避免串头像
+                        if (event.data.lanlan_name && window.lanlan_config &&
+                            event.data.lanlan_name !== window.lanlan_config.lanlan_name) break;
                         if (window.appChatAvatar && typeof window.appChatAvatar.setExternalAvatar === 'function') {
                             window.appChatAvatar.setExternalAvatar(event.data.dataUrl || '', event.data.modelType || '');
                         }
                         break;
                     case 'request_avatar':
                         // Chat 窗口请求当前头像，Pet 窗口回传已缓存的头像
+                        // 校验 lanlan_name：仅回传同角色的头像
+                        if (event.data.lanlan_name && window.lanlan_config &&
+                            event.data.lanlan_name !== window.lanlan_config.lanlan_name) break;
                         if (window.appChatAvatar && typeof window.appChatAvatar.getCachedPreview === 'function') {
                             var cached = window.appChatAvatar.getCachedPreview();
                             if (cached && cached.dataUrl && nekoBroadcastChannel) {
                                 nekoBroadcastChannel.postMessage({
                                     action: 'avatar_updated',
+                                    lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
                                     dataUrl: cached.dataUrl,
                                     modelType: cached.modelType || '',
                                     timestamp: Date.now()
@@ -873,6 +880,7 @@
         if (!dataUrl) return;
         nekoBroadcastChannel.postMessage({
             action: 'avatar_updated',
+            lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
             dataUrl: dataUrl,
             modelType: (evt.detail && evt.detail.modelType) || '',
             timestamp: Date.now()
@@ -881,7 +889,11 @@
 
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
     if (window.location.pathname === '/chat' && nekoBroadcastChannel) {
-        nekoBroadcastChannel.postMessage({ action: 'request_avatar', timestamp: Date.now() });
+        nekoBroadcastChannel.postMessage({
+            action: 'request_avatar',
+            lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+            timestamp: Date.now()
+        });
     }
 
     // =====================================================================
