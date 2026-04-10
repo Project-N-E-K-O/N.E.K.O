@@ -29,6 +29,8 @@ logger = get_module_logger(__name__, "Main")
 
 
 def _normalize_persistent_expression_group(mapping):
+    allowed_top_level_keys = {'motions', 'expressions', '常驻'}
+
     def _normalize_persistent_files(value):
         if isinstance(value, list):
             normalized_files = [item.strip() for item in value if isinstance(item, str) and item.strip()]
@@ -49,6 +51,8 @@ def _normalize_persistent_expression_group(mapping):
         }
     if not isinstance(mapping, dict):
         return mapping
+    if any(key not in allowed_top_level_keys for key in mapping.keys()):
+        return None
     if (
         '常驻' in mapping
         and 'motions' not in mapping

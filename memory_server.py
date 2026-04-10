@@ -1119,7 +1119,7 @@ async def handle_negative_signal(request: NegativeSignalRequest, lanlan_name: st
             "topic": "",
             "policy": "none",
             "response_instruction": "",
-            "error": str(e),
+            "error": "internal_server_error",
         })
 
 
@@ -1260,7 +1260,8 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
                 await correction_tasks[lanlan_name]
             except asyncio.CancelledError:
                 pass
-        task = asyncio.create_task(_run_review_in_background(lanlan_name, input_history))
+        review_messages = input_history if input_history else None
+        task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
         correction_tasks[lanlan_name] = task
 
         return {"status": "settled"}

@@ -1798,6 +1798,7 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
     // 教程模式：直接随机播放表情
     if (window.isInTutorial) {
         console.log('[Interaction] 教程模式 - 随机播放表情（低优先级，将自动恢复）');
+        let playedAnyEffect = false;
         try {
             // 获取表情列表
             let expressionNames = [];
@@ -1815,11 +1816,15 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
                         suspendPersistent: true,
                         suspendReason: clickEffectSuspendReason,
                     });
+                    playedAnyEffect = true;
                 } else {
                     console.warn('[Interaction] 教程模式 - 表情文件缺失，跳过表情播放');
                 }
 
                 const playedMotion = await this.playTutorialMotion();
+                if (playedMotion) {
+                    playedAnyEffect = true;
+                }
 
                 if (!playedMotion) {
                     // 动作不可用时，回退到参数动画模拟效果
@@ -1862,6 +1867,7 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
                         };
 
                         animate();
+                        playedAnyEffect = true;
                         console.log('[Interaction] 教程模式 - 播放参数动画');
                     }
                 }
@@ -1871,6 +1877,9 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
             if (typeof this.clearExpression === 'function') {
                 this.clearExpression(clickEffectSuspendReason);
             }
+        }
+        if (!playedAnyEffect) {
+            return;
         }
         const clickEffectId = Date.now();
         const clickEffectToken = Symbol('click-effect');

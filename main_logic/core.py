@@ -683,7 +683,12 @@ class LLMSessionManager:
         ):
             self._transient_response_instruction_blocked_session_id = None
 
-        base_instructions = self._transient_response_instruction_base or getattr(self.session, "instructions", "") or ""
+        if self._transient_response_instruction_base is not None:
+            base_instructions = self._transient_response_instruction_base
+        else:
+            base_instructions = getattr(self.session, "instructions", "")
+            if base_instructions is None:
+                base_instructions = ""
         if instruction == self._transient_response_instruction_active:
             return
 
@@ -726,7 +731,6 @@ class LLMSessionManager:
         except Exception as e:
             logger.debug(f"恢复临时响应指令失败: {e}")
             active_instruction = self._transient_response_instruction_active
-            self._clear_transient_response_instruction_state()
             self._transient_response_instruction_blocked_session_id = id(session)
             cleaned_instructions = base_instructions
             try:
@@ -740,6 +744,7 @@ class LLMSessionManager:
                 session.instructions = cleaned_instructions
                 await session.update_session({"instructions": cleaned_instructions})
                 self._transient_response_instruction_blocked_session_id = None
+                self._clear_transient_response_instruction_state()
             except Exception as cleanup_error:
                 logger.debug(f"恢复失败后的临时响应指令清理也失败: {cleanup_error}")
 
@@ -2215,24 +2220,26 @@ class LLMSessionManager:
 
     async def finish_proactive_delivery(self, full_text: str):
         """流式完成后收尾：一次性投递完整文本 + 记录历史 + TTS/turn end 信号。"""
-        delivered = False
+        text_delivered = False
+        turn_closed = False
         try:
             async with self._proactive_write_lock:
-                delivered = await self.send_lanlan_response(full_text, is_first_chunk=True)
+                text_delivered = await self.send_lanlan_response(full_text, is_first_chunk=True)
+                turn_closed = text_delivered
 
-                if delivered:
+                if text_delivered:
                     if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
                         try:
                             self.tts_request_queue.put((None, None))
                         except Exception as e:
                             logger.error("[%s] proactive TTS turn_end enqueue failed: %s", self.lanlan_name, e)
-                            delivered = False
+                            turn_closed = False
 
                     try:
                         self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
                     except Exception as e:
                         logger.error("[%s] proactive sync turn_end enqueue failed: %s", self.lanlan_name, e)
-                        delivered = False
+                        turn_closed = False
                     try:
                         if (self.websocket
                                 and hasattr(self.websocket, 'client_state')
@@ -2240,15 +2247,15 @@ class LLMSessionManager:
                             await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
                     except Exception as e:
                         logger.error("[%s] proactive websocket turn_end send failed: %s", self.lanlan_name, e)
-                        delivered = False
+                        turn_closed = False
 
-                    if delivered:
+                    if text_delivered:
                         from utils.llm_client import AIMessage as _AIMsg
                         if self.session and hasattr(self.session, '_conversation_history'):
                             self.session._conversation_history.append(_AIMsg(content=full_text))
         finally:
-            await self._finalize_or_discard_current_assistant_turn(commit=delivered)
-        if delivered:
+            await self._finalize_or_discard_current_assistant_turn(commit=turn_closed)
+        if text_delivered:
             logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
         else:
             logger.info("[%s] Proactive stream was not delivered and has been discarded", self.lanlan_name)

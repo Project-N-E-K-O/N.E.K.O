@@ -754,7 +754,13 @@ def _normalize_capability_reason(capability: str, raw_reason: str) -> str:
 def _set_capability(name: str, ready: bool, reason: str = "", **metadata: Any) -> None:
     prev = Modules.capability_cache.get(name, {})
     normalized_reason = _normalize_capability_reason(name, reason)
+    preserved_metadata = {
+        key: prev[key]
+        for key in ("enabled", "reasons", "provider", "version", "tools_count", "is_free_version")
+        if key in prev and key not in metadata
+    }
     next_value = {
+        **preserved_metadata,
         **metadata,
         "ready": bool(ready),
         "reason": normalized_reason,

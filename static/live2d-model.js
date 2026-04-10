@@ -32,6 +32,11 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         if (typeof this.clearTransientExpressions === 'function') {
             this.clearTransientExpressions();
         }
+        if (this._persistentExpressionSuspendCounts instanceof Map) {
+            this._persistentExpressionSuspendCounts.clear();
+        } else {
+            this._persistentExpressionSuspendCounts = new Map();
+        }
 
         // 移除当前模型
         if (this.currentModel) {
