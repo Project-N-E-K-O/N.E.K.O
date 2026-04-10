@@ -35,9 +35,11 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "live2d_item_id",
     "item_id",
     "idleAnimation",
+    "idleAnimations",
     "mmd",
     "mmd_animation",
     "mmd_idle_animation",
+    "mmd_idle_animations",
     "touch_set",
 )
 
@@ -107,10 +109,12 @@ LEGACY_FLAT_TO_RESERVED = {
     "vrm": ("avatar", "vrm", "model_path"),
     "vrm_animation": ("avatar", "vrm", "animation"),
     "idleAnimation": ("avatar", "vrm", "idle_animation"),
+    "idleAnimations": ("avatar", "vrm", "idle_animation"),
     "lighting": ("avatar", "vrm", "lighting"),
     "mmd": ("avatar", "mmd", "model_path"),
     "mmd_animation": ("avatar", "mmd", "animation"),
     "mmd_idle_animation": ("avatar", "mmd", "idle_animation"),
+    "mmd_idle_animations": ("avatar", "mmd", "idle_animation"),
 }
 
 # 从 Electron userData 目录读取端口覆盖配置（由前端端口设置窗口写入）
@@ -537,7 +541,7 @@ DEFAULT_VOICE_STORAGE = {}
 # 默认API配置（供 utils.api_config_loader 作为回退选项使用）
 DEFAULT_CORE_API_PROFILES = {
     'free': {
-        'CORE_URL': "wss://lanlan.tech/core",
+        'CORE_URL': "wss://api.lanlan.tech/core",
         'CORE_MODEL': "free-model",
         'CORE_API_KEY': "free-access",
         'IS_FREE_VERSION': True,
@@ -566,7 +570,7 @@ DEFAULT_CORE_API_PROFILES = {
 
 DEFAULT_ASSIST_API_PROFILES = {
     'free': {
-        'OPENROUTER_URL': "https://lanlan.tech/text/v1",
+        'OPENROUTER_URL': "https://api.lanlan.tech/text/v1",
         'CONVERSATION_MODEL' : "free-model" ,
         'SUMMARY_MODEL': "free-model",
         'CORRECTION_MODEL': "free-model",

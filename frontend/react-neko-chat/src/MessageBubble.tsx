@@ -9,7 +9,6 @@ import {
 type MessageBubbleProps = {
   message: ChatMessage;
   isGroupedWithPrevious?: boolean;
-  streamingStatusLabel?: string;
   failedStatusLabel?: string;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
@@ -122,7 +121,6 @@ function MessageBlockView({
 export default function MessageBubble({
   message,
   isGroupedWithPrevious = false,
-  streamingStatusLabel = '生成中',
   failedStatusLabel = '发送失败',
   onAction,
 }: MessageBubbleProps) {
@@ -179,7 +177,6 @@ export default function MessageBubble({
           <div className="message-meta">
             <span className="message-author">{message.author}</span>
             <span className="message-time">{message.time}</span>
-            {message.status === 'streaming' ? <span className="message-delivery">{streamingStatusLabel}</span> : null}
             {message.status === 'failed' ? <span className="message-delivery message-delivery-failed">{failedStatusLabel}</span> : null}
           </div>
         ) : null}

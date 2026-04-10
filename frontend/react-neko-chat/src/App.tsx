@@ -35,7 +35,6 @@ export default function App({
   importImageButtonAriaLabel = '导入图片',
   screenshotButtonAriaLabel = '截图',
   removeAttachmentButtonAriaLabel = '移除图片',
-  streamingStatusLabel = '生成中',
   failedStatusLabel = '发送失败',
   onMessageAction,
   onComposerImportImage,
@@ -69,13 +68,13 @@ export default function App({
             messages={messages}
             emptyText={emptyText}
             ariaLabel={messageListAriaLabel}
-            streamingStatusLabel={streamingStatusLabel}
             failedStatusLabel={failedStatusLabel}
             onAction={onMessageAction}
           />
         </section>
 
         <footer className="composer-panel">
+          <div id="music-player-mount" />
           {composerAttachments.length > 0 ? (
             <div className="composer-attachments" aria-label={composerAttachmentsAriaLabel}>
               {composerAttachments.map((attachment) => (
@@ -107,7 +106,7 @@ export default function App({
             >
               <img
                 className="composer-tool-chip-icon"
-                src="/static/icons/upload_icon.png"
+                src="/static/icons/image_icon.svg"
                 alt=""
                 aria-hidden="true"
               />

@@ -143,10 +143,6 @@ plugin/rust/
 plugin/plugins/music_tester/
 plugin/plugins/web_radio/
 
-# QQ 自动回复：NapCat.Shell 按账号生成的配置、密钥与登录二维码（勿入库）
-plugin/plugins/qq_auto_reply/NapCat.Shell/config/
-plugin/plugins/qq_auto_reply/NapCat.Shell/cache/
-
-# QQ 自动回复：NapCat.Shell 运行时配置、缓存与登录二维码（按本机/账号生成，勿入库）
-plugin/plugins/qq_auto_reply/NapCat.Shell/config/
-plugin/plugins/qq_auto_reply/NapCat.Shell/cache/
+# QQ 自动回复：NapCat.Shell 整个目录不入库，仅保留 .gitkeep 占位
+plugin/plugins/qq_auto_reply/NapCat.Shell/*
+!plugin/plugins/qq_auto_reply/NapCat.Shell/.gitkeep

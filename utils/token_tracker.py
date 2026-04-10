@@ -192,6 +192,33 @@ _TELEMETRY_REPORT_INTERVAL = 60
 _TELEMETRY_TIMEOUT = 10  # 秒
 
 
+def _get_app_version_from_changelog() -> str:
+    """从 config/changelog/ 目录中读取最高版本号作为当前 app 版本。"""
+    changelog_dir = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "config", "changelog"
+    )
+    if not os.path.isdir(changelog_dir):
+        return "unknown"
+    best_ver: tuple[int, ...] = (0,)
+    best_stem = "unknown"
+    try:
+        for fname in os.listdir(changelog_dir):
+            if not fname.endswith(".md"):
+                continue
+            stem = fname[:-3]
+            try:
+                ver = tuple(int(x) for x in stem.split("."))
+            except (ValueError, AttributeError):
+                continue
+            if ver > best_ver:
+                best_ver = ver
+                best_stem = stem
+        return best_stem
+    except OSError as e:
+        logger.debug(f"Token tracker: failed to read changelog dir: {e}")
+        return "unknown"
+
+
 def _get_anonymous_device_id() -> str:
     """生成匿名设备指纹。
 
@@ -700,11 +727,7 @@ class TokenTracker:
             if not self._device_id:
                 self._device_id = _get_anonymous_device_id()
 
-            try:
-                from config import EDITION_INFO
-                app_version = EDITION_INFO.get("edition", "unknown") if EDITION_INFO else "unknown"
-            except Exception:
-                app_version = "unknown"
+            app_version = _get_app_version_from_changelog()
 
             payload = {
                 "device_id": self._device_id,

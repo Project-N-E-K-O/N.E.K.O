@@ -23,7 +23,6 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
-from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
 import httpx
@@ -31,7 +30,7 @@ from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from config import get_extra_body, MEMORY_SERVER_PORT
+from config import MEMORY_SERVER_PORT
 from config.prompts_sys import _loc
 from config.prompts_emotion import get_outward_emotion_analysis_prompt
 from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
@@ -48,6 +47,8 @@ from config.prompts_proactive import (
     SCREEN_SECTION_HEADER, SCREEN_SECTION_FOOTER,
     SCREEN_WINDOW_TITLE, SCREEN_IMG_HINT,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
+    MUSIC_SECTION_HEADER, MUSIC_SECTION_FOOTER,
+    MEME_SECTION_HEADER, MEME_SECTION_FOOTER,
     PROACTIVE_SOURCE_LABELS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
@@ -1385,29 +1386,23 @@ async def emotion_analysis(request: Request):
             }
         ]
 
-        # 异步调用模型
-        request_params = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.3,
-            # Gemini 模型可能返回 markdown 格式，需要更多 token
-            "max_completion_tokens": 40
-        }
-        
-        # 只有在需要时才添加 extra_body
-        extra_body = get_extra_body(model)
-        if extra_body:
-            request_params["extra_body"] = extra_body
-        
         from utils.token_tracker import set_call_type
         set_call_type("emotion")
-        
-        # 使用异步上下文管理器确保 client 正确关闭
-        async with AsyncOpenAI(api_key=api_key, base_url=emotion_base_url) as client:
-            response = await client.chat.completions.create(**request_params)
+
+        # 异步调用模型（使用统一工厂，自动处理 extra_body / provider 兼容）
+        llm = create_chat_llm(
+            model,
+            emotion_base_url,
+            api_key,
+            temperature=0.3,
+            # Gemini 模型可能返回 markdown 格式，需要更多 token
+            max_completion_tokens=40,
+        )
+        async with llm:
+            result = await llm.ainvoke(messages)
 
         # 解析响应
-        result_text = response.choices[0].message.content.strip()
+        result_text = result.content.strip()
 
         # 处理 markdown 代码块格式（Gemini 可能返回 ```json {...} ``` 格式）
         # 首先尝试使用正则表达式提取第一个代码块
@@ -3204,7 +3199,9 @@ async def proactive_chat(request: Request):
         # 如果正在放歌或处于冷却期，强行屏蔽音乐素材推荐，避免 AI 误触
         if music_topic and not is_playing_music and not music_cooldown:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
-            music_section = f"======音乐推荐素材======\n{music_topic}\n======音乐素材结束======"
+            msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
+            msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
+            music_section = f"{msh}\n{music_topic}\n{msf}"
         elif is_playing_music or music_cooldown:
             reason = "正在播放音乐" if is_playing_music else "音乐冷却期"
             print(f"[{lanlan_name}] {reason}，已屏蔽音乐推荐素材（仅保留 playing_hint）")
@@ -3218,7 +3215,9 @@ async def proactive_chat(request: Request):
                 meme_topic = topic
                 break
         if meme_topic:
-            meme_section = f"======表情包素材======\n{meme_topic}\n======表情包素材结束======"
+            meh = _loc(MEME_SECTION_HEADER, proactive_lang)
+            mef = _loc(MEME_SECTION_FOOTER, proactive_lang)
+            meme_section = f"{meh}\n{meme_topic}\n{mef}"
         
         source_instruction, output_format_section = get_proactive_format_sections(
             has_screen=bool(screen_section),

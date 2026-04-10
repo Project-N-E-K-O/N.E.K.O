@@ -219,6 +219,8 @@ function clearApiProviderSelects() {
         assistSelect.innerHTML = '';
         assistSelect.value = '';
     }
+
+    syncProviderSelectDropdowns(null, { rebuild: true });
 }
 
 // 等待下拉选项加载完成再设置值，避免单次 setTimeout 竞态
@@ -231,6 +233,7 @@ function waitForOptions(select, targetValue, { maxAttempts = 20, interval = 50, 
             const optionExists = Array.from(select.options).some(opt => opt.value === targetValue);
             if (optionExists) {
                 select.value = targetValue;
+                syncProviderSelectDropdowns(select);
                 // 选项设置完成后执行回调
                 if (onSuccess && typeof onSuccess === 'function') {
                     onSuccess();
@@ -246,6 +249,227 @@ function waitForOptions(select, targetValue, { maxAttempts = 20, interval = 50, 
     };
 
     checkAndSet();
+}
+
+let providerDropdownHandlersBound = false;
+
+function getProviderDropdownPlaceholder(select) {
+    const fallbackText = window.t ? window.t('api.providerSelectPlaceholder') : '请选择服务商';
+    if (!select) return fallbackText;
+
+    const label = select.id ? document.querySelector(`label[for="${select.id}"]`) : null;
+    const labelText = label ? label.querySelector('span')?.textContent?.trim() : '';
+    return labelText || fallbackText;
+}
+
+function closeProviderSelectDropdown(wrapper) {
+    if (!wrapper) return;
+
+    wrapper.classList.remove('open');
+
+    const trigger = wrapper.querySelector('.api-provider-dropdown-trigger');
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', 'false');
+    }
+}
+
+function closeAllProviderSelectDropdowns(exceptWrapper = null) {
+    document.querySelectorAll('.api-provider-dropdown.open').forEach(wrapper => {
+        if (wrapper !== exceptWrapper) {
+            closeProviderSelectDropdown(wrapper);
+        }
+    });
+}
+
+function openProviderSelectDropdown(wrapper) {
+    if (!wrapper || wrapper.classList.contains('disabled')) return;
+
+    closeAllProviderSelectDropdowns(wrapper);
+    wrapper.classList.add('open');
+
+    const trigger = wrapper.querySelector('.api-provider-dropdown-trigger');
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', 'true');
+    }
+}
+
+function buildProviderSelectDropdownMenu(select) {
+    if (!select) return;
+
+    const wrapper = select.closest('.api-provider-dropdown');
+    const menu = wrapper ? wrapper.querySelector('.api-provider-dropdown-menu') : null;
+    const menuScroll = menu ? menu.querySelector('.api-provider-dropdown-menu-scroll') : null;
+    if (!wrapper || !menu || !menuScroll) return;
+
+    menuScroll.innerHTML = '';
+
+    const options = Array.from(select.options);
+    if (options.length === 0) {
+        const emptyState = document.createElement('div');
+        emptyState.className = 'api-provider-dropdown-empty';
+        emptyState.textContent = window.t ? window.t('api.noOptionsAvailable') : '暂无可选项';
+        menuScroll.appendChild(emptyState);
+        return;
+    }
+
+    options.forEach(option => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'api-provider-dropdown-option';
+        item.setAttribute('role', 'option');
+        item.dataset.value = option.value;
+        item.textContent = option.textContent;
+
+        if (option.disabled) {
+            item.disabled = true;
+            item.setAttribute('aria-disabled', 'true');
+        }
+
+        item.addEventListener('click', event => {
+            event.preventDefault();
+
+            if (option.disabled || select.disabled) {
+                return;
+            }
+
+            select.value = option.value;
+            syncProviderSelectDropdowns(select);
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            closeProviderSelectDropdown(wrapper);
+        });
+
+        menuScroll.appendChild(item);
+    });
+}
+
+function syncProviderSelectDropdowns(targetSelect = null, { rebuild = false } = {}) {
+    const selects = targetSelect
+        ? [targetSelect]
+        : Array.from(document.querySelectorAll('.api-provider-select[data-dropdown-enhanced="true"]'));
+
+    selects.forEach(select => {
+        if (!select) return;
+
+        const wrapper = select.closest('.api-provider-dropdown');
+        const trigger = wrapper ? wrapper.querySelector('.api-provider-dropdown-trigger') : null;
+        const current = wrapper ? wrapper.querySelector('.api-provider-dropdown-current') : null;
+        const menu = wrapper ? wrapper.querySelector('.api-provider-dropdown-menu') : null;
+
+        if (!wrapper || !trigger || !current || !menu) return;
+
+        if (rebuild) {
+            buildProviderSelectDropdownMenu(select);
+        }
+
+        const selectedOption = select.options[select.selectedIndex] || null;
+        const placeholder = getProviderDropdownPlaceholder(select);
+
+        current.textContent = selectedOption ? selectedOption.textContent : placeholder;
+        current.classList.toggle('placeholder', !selectedOption);
+
+        trigger.disabled = !!select.disabled;
+        wrapper.classList.toggle('disabled', !!select.disabled);
+
+        menu.querySelectorAll('.api-provider-dropdown-option').forEach(item => {
+            const isSelected = item.dataset.value === select.value;
+            item.classList.toggle('selected', isSelected);
+            item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        });
+
+        if (select.disabled) {
+            closeProviderSelectDropdown(wrapper);
+        }
+    });
+}
+
+function bindProviderDropdownGlobalHandlers() {
+    if (providerDropdownHandlersBound) return;
+
+    document.addEventListener('click', event => {
+        if (!event.target.closest('.api-provider-dropdown')) {
+            closeAllProviderSelectDropdowns();
+        }
+    });
+
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+            closeAllProviderSelectDropdowns();
+        }
+    });
+
+    window.addEventListener('resize', () => closeAllProviderSelectDropdowns());
+
+    providerDropdownHandlersBound = true;
+}
+
+function initProviderSelectDropdown(select) {
+    if (!select || select.dataset.dropdownEnhanced === 'true') return;
+
+    bindProviderDropdownGlobalHandlers();
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'api-provider-dropdown';
+
+    select.parentNode.insertBefore(wrapper, select);
+    wrapper.appendChild(select);
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'api-provider-dropdown-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-label', getProviderDropdownPlaceholder(select));
+    trigger.innerHTML = '<span class="api-provider-dropdown-current"></span><span class="api-provider-dropdown-arrow" aria-hidden="true"></span>';
+
+    const menu = document.createElement('div');
+    menu.className = 'api-provider-dropdown-menu';
+    menu.setAttribute('role', 'listbox');
+
+    const menuScroll = document.createElement('div');
+    menuScroll.className = 'api-provider-dropdown-menu-scroll';
+
+    if (select.id) {
+        menu.id = `${select.id}-menu`;
+        trigger.setAttribute('aria-controls', menu.id);
+    }
+
+    menu.appendChild(menuScroll);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+
+    select.classList.add('is-enhanced');
+    select.dataset.dropdownEnhanced = 'true';
+
+    trigger.addEventListener('click', event => {
+        event.preventDefault();
+
+        if (wrapper.classList.contains('open')) {
+            closeProviderSelectDropdown(wrapper);
+        } else {
+            openProviderSelectDropdown(wrapper);
+        }
+    });
+
+    select.addEventListener('change', () => syncProviderSelectDropdowns(select));
+
+    const observer = new MutationObserver(() => {
+        syncProviderSelectDropdowns(select, { rebuild: true });
+    });
+
+    observer.observe(select, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['disabled', 'label', 'value', 'selected']
+    });
+
+    syncProviderSelectDropdowns(select, { rebuild: true });
+}
+
+function initProviderSelectDropdowns() {
+    document.querySelectorAll('.api-provider-select').forEach(initProviderSelectDropdown);
+    syncProviderSelectDropdowns(null, { rebuild: true });
 }
 
 async function clearVoiceIds() {
@@ -418,6 +642,8 @@ function populateModelProviderDropdowns() {
 function onCustomModelProviderChange(modelType) {
     const sel = document.getElementById(`${modelType}ModelProvider`);
     if (!sel) return;
+
+    syncProviderSelectDropdowns(sel);
 
     const provider = sel.value;
     const urlInput = document.getElementById(`${modelType}ModelUrl`);
@@ -665,6 +891,8 @@ async function loadApiProviders() {
                 // 填充模型服务商下拉框
                 populateModelProviderDropdowns();
 
+                syncProviderSelectDropdowns(null, { rebuild: true });
+
                 return true;
             } else {
                 console.error('加载API服务商配置失败:', data.error);
@@ -705,6 +933,8 @@ async function loadCurrentApiKey() {
     if (assistApiKeyInput) {
         assistApiKeyInput.value = '';
     }
+
+    syncProviderSelectDropdowns();
 
     try {
         const response = await fetch('/api/config/core_api');
@@ -753,6 +983,7 @@ async function loadCurrentApiKey() {
                     const optionExists = Array.from(coreApiSelect.options).some(opt => opt.value === data.coreApi);
                     if (optionExists) {
                         coreApiSelect.value = data.coreApi;
+                        syncProviderSelectDropdowns(coreApiSelect);
                     }
                 } else {
                     // 等待选项加载完成后再设置值
@@ -778,6 +1009,7 @@ async function loadCurrentApiKey() {
                     const optionExists = Array.from(assistApiSelect.options).some(opt => opt.value === data.assistApi);
                     if (optionExists) {
                         assistApiSelect.value = data.assistApi;
+                        syncProviderSelectDropdowns(assistApiSelect);
                     }
                 } else {
                     waitForOptions(assistApiSelect, data.assistApi);
@@ -1210,6 +1442,8 @@ function toggleCustomApi() {
         autoFillAssistApiKey(true);
         updateAssistApiRecommendation();
     }
+
+    syncProviderSelectDropdowns();
 }
 
 // 自定义API折叠切换函数
@@ -1644,6 +1878,8 @@ function updateAssistApiRecommendation() {
 
     // Auto-fill core API key from book
     autoFillCoreApiKey();
+
+    syncProviderSelectDropdowns();
 }
 
 // 自动填充核心API Key到核心API Key输入框
@@ -1907,6 +2143,8 @@ async function initializePage() {
             loadingOverlay.style.display = 'flex';
         }
 
+        initProviderSelectDropdowns();
+
         await waitForI18n();
 
         isMainlandChinaUser = await checkMainlandChinaUser();
@@ -1954,6 +2192,7 @@ async function initializePage() {
             updateAssistApiRecommendation();
             autoFillCoreApiKey(true);
             autoFillAssistApiKey(true);
+            syncProviderSelectDropdowns();
         }
 
         // CRITICAL: Core/Assist selector change handlers that recompute follow-provider model slots
@@ -2019,6 +2258,8 @@ async function initializePage() {
             if (assistApiSelect && selectedAssistApi) {
                 assistApiSelect.value = selectedAssistApi;
             }
+
+            syncProviderSelectDropdowns();
 
             // Restore Key Book input values
             Object.keys(keyBookSnapshot).forEach(providerKey => {

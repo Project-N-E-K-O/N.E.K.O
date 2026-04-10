@@ -6,6 +6,7 @@ For development and customization on any platform.
 
 - Python 3.11 (exactly — not 3.12+)
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) package manager
+- Node.js (>=20.19)
 - Git
 
 ## Installation
@@ -14,6 +15,15 @@ For development and customization on any platform.
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 uv sync
+```
+
+## Build Frontend
+
+The project has two frontend projects under `frontend/` that must be built before running:
+
+```bash
+cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+cd frontend/plugin-manager && npm install && npm run build && cd ../..
 ```
 
 ## Running
