@@ -108,6 +108,8 @@ try {
 
 // 创建Agent弹出框内容
 window.AgentHUD._createAgentPopupContent = function (popup) {
+    popup.style.gap = '0';
+
     // 添加状态显示栏 - Fluent Design
     const statusDiv = document.createElement('div');
     statusDiv.id = 'live2d-agent-status';
@@ -117,7 +119,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
         padding: '6px 8px',
         borderRadius: '4px',
         background: 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05))',
-        marginBottom: '8px',
+        marginBottom: '0',
         minHeight: '20px',
         textAlign: 'center'
     });
