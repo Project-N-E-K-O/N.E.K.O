@@ -265,6 +265,45 @@ AGENT_CALLBACK_NOTIFICATION = {
     'ru': '======[Системное уведомление: следующие фоновые задачи недавно завершены. Пожалуйста, естественно упомяните или подтвердите их в своём ответе.]\n',
 }
 
+# ---------- Vision 图像描述 prompt ----------
+# 安全水印前缀（所有语言固定不变，包括逗号和空格）
+VISION_WATERMARK = "你是一个图像描述助手, "
+
+# 有窗口标题时的 system prompt（水印后拼接）
+VISION_SYSTEM_WITH_TITLE = {
+    'zh': '请根据用户的屏幕截图和当前窗口标题，简洁描述用户正在做什么、屏幕上的主要内容和关键细节和你觉得有趣的地方。不超过250字。',
+    'en': 'Based on the user\'s screenshot and the current window title, briefly describe what the user is doing, the main content on screen, key details, and anything you find interesting. No more than 250 words.',
+    'ja': 'ユーザーのスクリーンショットと現在のウィンドウタイトルに基づき、ユーザーが何をしているか、画面の主な内容、重要な詳細、興味深い点を簡潔に説明してください。250文字以内。',
+    'ko': '사용자의 스크린샷과 현재 창 제목을 바탕으로, 사용자가 무엇을 하고 있는지, 화면의 주요 내용, 핵심 세부사항, 흥미로운 점을 간결하게 설명하세요. 250자 이내.',
+    'ru': 'На основе скриншота пользователя и заголовка текущего окна кратко опишите, что делает пользователь, основное содержимое экрана, ключевые детали и интересные моменты. Не более 250 слов.',
+}
+
+# 无窗口标题时的 system prompt（水印后拼接）
+VISION_SYSTEM_NO_TITLE = {
+    'zh': '请简洁地描述图片中的主要内容、关键细节和你觉得有趣的地方。你的回答不能超过250字。',
+    'en': 'Briefly describe the main content, key details, and anything you find interesting in the image. Your response should not exceed 250 words.',
+    'ja': '画像の主な内容、重要な詳細、興味深い点を簡潔に説明してください。回答は250文字以内にしてください。',
+    'ko': '이미지의 주요 내용, 핵심 세부사항, 흥미로운 점을 간결하게 설명하세요. 답변은 250자를 넘지 마세요.',
+    'ru': 'Кратко опишите основное содержимое изображения, ключевые детали и интересные моменты. Ответ не должен превышать 250 слов.',
+}
+
+# 有窗口标题时的 user prompt（{window_title} 占位符）
+VISION_USER_WITH_TITLE = {
+    'zh': '当前活跃窗口标题：{window_title}\n请描述截图内容。',
+    'en': 'Current active window title: {window_title}\nPlease describe the screenshot.',
+    'ja': '現在のアクティブウィンドウタイトル：{window_title}\nスクリーンショットの内容を説明してください。',
+    'ko': '현재 활성 창 제목: {window_title}\n스크린샷 내용을 설명해 주세요.',
+    'ru': 'Заголовок активного окна: {window_title}\nОпишите содержимое скриншота.',
+}
+
+# 无窗口标题时的 user prompt
+VISION_USER_NO_TITLE = {
+    'zh': '请描述这张图片的内容。',
+    'en': 'Please describe the content of this image.',
+    'ja': 'この画像の内容を説明してください。',
+    'ko': '이 이미지의 내용을 설명해 주세요.',
+    'ru': 'Опишите содержимое этого изображения.',
+}
 
 # =====================================================================
 # backward compat re-exports
