@@ -861,11 +861,13 @@ body.react-chat-window-resizing {
     background: rgba(68, 183, 254, 0.2);
 }
 
+[data-theme="dark"] #avatarPreviewHeaderButton,
 [data-theme="dark"] #reactChatWindowMinimizeButton,
 [data-theme="dark"] #reactChatWindowCloseButton {
     color: #aab0bc;
 }
 
+[data-theme="dark"] #avatarPreviewHeaderButton:hover,
 [data-theme="dark"] #reactChatWindowMinimizeButton:hover,
 [data-theme="dark"] #reactChatWindowCloseButton:hover {
     background: rgba(200, 210, 230, 0.12);
@@ -2098,6 +2100,7 @@ body.react-chat-window-dragging {
 /* Chat Export — header button + preview modal                  */
 /* ============================================================ */
 
+#avatarPreviewHeaderButton,
 #exportConversationButton {
     width: 32px;
     height: 32px;
@@ -2114,16 +2117,19 @@ body.react-chat-window-dragging {
     transition: background 0.18s ease, color 0.18s ease;
 }
 
+#avatarPreviewHeaderButton:hover,
 #exportConversationButton:hover {
     background: rgba(88, 108, 145, 0.12);
     color: #2b3851;
 }
 
+#avatarPreviewHeaderButton:focus-visible,
 #exportConversationButton:focus-visible {
     outline: 2px solid rgba(88, 108, 145, 0.55);
     outline-offset: 2px;
 }
 
+#avatarPreviewHeaderButton svg,
 #exportConversationButton svg {
     pointer-events: none;
     display: block;

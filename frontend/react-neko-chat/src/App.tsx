@@ -40,15 +40,12 @@ export default function App({
   failedStatusLabel = '发送失败',
   jukeboxButtonLabel = '点歌台',
   jukeboxButtonAriaLabel = '点歌台',
-  avatarGeneratorButtonLabel = '头像',
-  avatarGeneratorButtonAriaLabel = '生成头像',
   onMessageAction,
   onComposerImportImage,
   onComposerScreenshot,
   onComposerRemoveAttachment,
   onComposerSubmit,
   onJukeboxClick,
-  onAvatarGeneratorClick,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
@@ -72,38 +69,21 @@ export default function App({
             </div>
             <h1 className="window-title" id="react-chat-window-title">{title}</h1>
           </div>
-          <div className="window-topbar-actions">
-            <button
-              id="reactAvatarPreviewButton"
-              className="topbar-action-btn"
-              type="button"
-              aria-label={avatarGeneratorButtonAriaLabel}
-              title={avatarGeneratorButtonAriaLabel}
-              onClick={() => onAvatarGeneratorClick?.()}
-            >
-              <svg className="topbar-action-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 12a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z" />
-                <path d="M5.5 19.25a6.5 6.5 0 0 1 13 0" />
-              </svg>
-              <span className="topbar-action-label">{avatarGeneratorButtonLabel}</span>
-            </button>
-            <button
-              id="reactJukeboxButton"
-              className="topbar-action-btn"
-              type="button"
-              aria-label={jukeboxButtonAriaLabel}
-              title={jukeboxButtonAriaLabel}
-              onClick={() => onJukeboxClick?.()}
-            >
-              <svg className="topbar-action-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
-              </svg>
-              <span className="topbar-action-label">{jukeboxButtonLabel}</span>
-            </button>
-          </div>
+          {/* Avatar button moved to #react-chat-window-header-actions in host template */}
         </header>
 
         <section className="chat-body">
+          <button
+            id="reactJukeboxButton"
+            className="topbar-action-btn jukebox-floating"
+            type="button"
+            aria-label={jukeboxButtonAriaLabel}
+            title={jukeboxButtonAriaLabel}
+            onClick={() => onJukeboxClick?.()}
+          >
+            <img className="topbar-action-icon-img" src="/static/icons/音符0.png" alt="" aria-hidden="true" />
+            <span className="topbar-action-label">{jukeboxButtonLabel}</span>
+          </button>
           <MessageList
             messages={messages}
             emptyText={emptyText}

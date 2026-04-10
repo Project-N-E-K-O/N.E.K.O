@@ -186,6 +186,23 @@ textarea {
   min-height: 0;
   padding: 0;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(245, 247, 251, 0.98));
+  position: relative;
+}
+
+/* Jukebox button — floating at top-right of chat-body */
+.jukebox-floating {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+}
+
+.topbar-action-icon-img {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  pointer-events: none;
 }
 
 .message-list {
