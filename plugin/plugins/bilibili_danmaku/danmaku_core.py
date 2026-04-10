@@ -320,7 +320,11 @@ class DanmakuListener:
         获取所有弹幕服务器地址列表和 token（带 WBI 签名）。
 
         Returns:
-            tuple: ([(host, wss_port), ...], token)
+            tuple: ([(ws_url, host, wss_port), ...], token)
+                - ws_url: 完整的 WebSocket URL
+                - host: 服务器域名
+                - wss_port: WSS 端口
+                - token: 认证 token
         """
         servers = []
         token = ""

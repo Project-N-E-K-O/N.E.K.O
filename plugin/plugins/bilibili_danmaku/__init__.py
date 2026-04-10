@@ -667,6 +667,12 @@ class BiliDanmakuPlugin(NekoPluginBase):
     # AI 可调用入口
     # ==========================================
 
+    def _get_connection_info(self) -> dict:
+        """获取连接详情（内部方法）"""
+        if self._listener:
+            return self._listener.get_connection_state()
+        return {"state": "disconnected", "server": "", "viewer_count": 0}
+
     @plugin_entry(
         id="get_danmaku",
         name="获取直播间弹幕",
@@ -687,12 +693,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
         },
         llm_result_fields=["message"]
     )
-    def _get_connection_info(self) -> dict:
-        """获取连接详情"""
-        if self._listener:
-            return self._listener.get_connection_state()
-        return {"state": "disconnected", "server": "", "viewer_count": 0}
-
     async def get_danmaku(self, max_count: int = 10, include_gifts: bool = True, **_):
         """获取缓冲区中的弹幕，格式化返回给 AI"""
         is_listening = self._listener is not None and self._listener.is_running()
