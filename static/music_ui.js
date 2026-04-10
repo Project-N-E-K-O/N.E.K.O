@@ -920,11 +920,11 @@
         }
 
         // --- 网易云音乐代理：如果检测到网易云外链，替换为后端代理接口 ---
-        // 注意：URL编码后music.163.com依然是music.163.com，需要用/api/music/proxy-netease判断是否已代理
-        if (trackInfo.url && trackInfo.url.includes('music.163.com') && !trackInfo.url.startsWith('/api/music/proxy-netease')) {
+        // 统一使用 /api/music/proxy 路由
+        if (trackInfo.url && trackInfo.url.includes('music.163.com') && !trackInfo.url.startsWith('/api/music/proxy')) {
             const originalUrl = trackInfo.url;
             const encodedUrl = encodeURIComponent(trackInfo.url);
-            trackInfo.url = `/api/music/proxy-netease?url=${encodedUrl}`;
+            trackInfo.url = `/api/music/proxy?url=${encodedUrl}`;
             console.log('[Music UI] 网易云URL已代理:', originalUrl, '->', trackInfo.url);
         }
 
@@ -1052,6 +1052,26 @@
         }
     };
 
+    // --- 自动从后端同步音乐源域名到白名单 ---
+    const syncDomainsFromBackend = async () => {
+        try {
+            const response = await fetch('/api/music/domains');
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success && data.domains) {
+                    const newDomains = data.domains.filter(d => !MUSIC_CONFIG.allowlist.includes(d));
+                    if (newDomains.length > 0) {
+                        MUSIC_CONFIG.allowlist.push(...newDomains);
+                        console.log('[Music UI] ：已同步后端域名到白名单', newDomains);
+                        window.dispatchEvent(new CustomEvent('music-allowlist-updated'));
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[Music UI] 从后端同步域名失败:', e);
+        }
+    };
+
     const MusicPluginAPI = {
         getAllowlist: () => [...MUSIC_CONFIG.allowlist],
         addAllowlist: (input) => {
@@ -1079,5 +1099,8 @@
     // 派发就绪事件，通知提前加载的插件可以开始注册域名了
     window.dispatchEvent(new CustomEvent('music-ui-ready'));
     console.log('[Music UI] 接口已暴露，就绪信号已发送');
+
+    // 自动从后端同步音乐源域名到白名单
+    syncDomainsFromBackend();
 
 })();
