@@ -838,8 +838,12 @@
                         // 校验 lanlan_name：多角色场景下避免串头像
                         if (event.data.lanlan_name && window.lanlan_config &&
                             event.data.lanlan_name !== window.lanlan_config.lanlan_name) break;
+                        var incomingDataUrl = event.data.dataUrl || '';
+                        var incomingModelType = event.data.modelType || '';
                         if (window.appChatAvatar && typeof window.appChatAvatar.setExternalAvatar === 'function') {
-                            window.appChatAvatar.setExternalAvatar(event.data.dataUrl || '', event.data.modelType || '');
+                            window.appChatAvatar.setExternalAvatar(incomingDataUrl, incomingModelType);
+                        } else if (incomingDataUrl) {
+                            window.__nekoPendingAvatar = { dataUrl: incomingDataUrl, modelType: incomingModelType };
                         }
                         break;
                     case 'request_avatar':
