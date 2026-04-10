@@ -4396,15 +4396,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         stopIdleRotation(type);
         if (!urls || urls.length === 0) return;
 
-        // 立即播放一个
+        // 立即播放一个（回退定时器和 loop 监听器在 await 成功后由 _playIdleAnimation 内部注册）
         const firstUrl = urls.length === 1 ? urls[0] : _pickRandomDifferent(urls, _idleRotationLast[type]);
         _playIdleAnimation(type, firstUrl);
         _idleRotationLast[type] = firstUrl;
-
-        // 多于 1 个才轮换（loop 事件 + 回退定时器）
-        if (urls.length > 1) {
-            _scheduleNextIdle(type);
-        }
     }
 
     /** 触发一次待机动作切换（loop 完成或回退定时器都走这里） */
@@ -4425,9 +4420,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (currentUrls.length < 2) return;
 
         const nextUrl = _pickRandomDifferent(currentUrls, _idleRotationLast[type]);
-        _playIdleAnimation(type, nextUrl); // loop 监听器会在动画加载完成后注册
+        _playIdleAnimation(type, nextUrl); // loop 监听器和回退定时器在 await 成功后注册
         _idleRotationLast[type] = nextUrl;
-        _scheduleNextIdle(type); // 设置回退定时器
     }
 
     /** 设置回退定时器（仅当动画过长未触发 loop 事件时强制切换） */
@@ -4487,6 +4481,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                         mixer.addEventListener('loop', handler);
                         _idleLoopCleanup['vrm'] = () => mixer.removeEventListener('loop', handler);
                     }
+
+                    // 动画加载成功后再启动回退定时器（从实际播放开始计时）
+                    const vrmUrls = getSelectedIdleAnimations('vrm-idle-animation-multiselect');
+                    if (vrmUrls.length > 1) _scheduleNextIdle('vrm');
                 }
             } else {
                 if (window.mmdManager && window.mmdManager.currentModel) {
@@ -4509,6 +4507,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                         mixer.addEventListener('loop', handler);
                         _idleLoopCleanup['mmd'] = () => mixer.removeEventListener('loop', handler);
                     }
+
+                    // 动画加载成功后再启动回退定时器（从实际播放开始计时）
+                    const mmdUrls = getSelectedIdleAnimations('mmd-idle-animation-multiselect');
+                    if (mmdUrls.length > 1) _scheduleNextIdle('mmd');
                 }
             }
         } catch (err) {
