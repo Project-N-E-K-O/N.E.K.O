@@ -831,31 +831,25 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         # 复用emotion模型配置
         emotion_config = config_manager.get_model_api_config('emotion')
         
-        # 语言名称映射
-        lang_names = {
-            'zh': '中文',
-            'en': '英文',
-            'ja': '日语',
-            'ko': '韩语',
-            'ru': '俄语',
-        }
-        
+        from config.prompts_sys import (
+            _loc, TRANSLATION_WATERMARK_START, TRANSLATION_WATERMARK_END,
+            TRANSLATION_INSTRUCTION, TRANSLATION_REQUIREMENTS, TRANSLATION_LANG_NAMES,
+        )
+        lang = get_global_language()
+        lang_names = TRANSLATION_LANG_NAMES.get(lang, TRANSLATION_LANG_NAMES['en'])
         source_name = lang_names.get(source_lang, source_lang)
         target_name = lang_names.get(target_lang, target_lang)
-        
+
         llm = create_chat_llm(
             emotion_config['model'], emotion_config['base_url'],
             emotion_config['api_key'],
             temperature=0.3, timeout=10.0,
         )
-        
-        system_prompt = f"""你是一个专业的翻译助手。请将用户提供的文本从{source_name}翻译成{target_name}。
 
-要求：
-1. 保持原文的语气和风格
-2. 准确传达原文的意思
-3. 只输出翻译结果，不要添加任何解释或说明
-4. 如果文本包含emoji或特殊符号，请保留它们"""
+        instruction = _loc(TRANSLATION_INSTRUCTION, lang).format(
+            source_name=source_name, target_name=target_name)
+        requirements = _loc(TRANSLATION_REQUIREMENTS, lang)
+        system_prompt = f"{instruction}\n{TRANSLATION_WATERMARK_START}\n{requirements}\n{TRANSLATION_WATERMARK_END}"
         
         messages = [
             SystemMessage(content=system_prompt),

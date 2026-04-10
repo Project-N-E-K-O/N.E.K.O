@@ -1002,9 +1002,11 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     fpsRow.appendChild(fpsValue);
     container.appendChild(fpsRow);
 
-    // ── 鼠标跟踪 + 全屏/局部跟踪（同一行） ──
+    // ── 跟踪相关开关（统一三行间距） ──
     const trackingRow = document.createElement('div');
-    Object.assign(trackingRow.style, { display: 'flex', alignItems: 'center', gap: '6px', width: '100%', marginTop: '4px' });
+    Object.assign(trackingRow.style, { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '4px', width: '100%', marginTop: '4px' });
+
+    const trackingToggleRowStyle = { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', width: '100%' };
 
     // 鼠标跟踪复选框
     const checkbox = document.createElement('input');
@@ -1031,7 +1033,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 
     // 鼠标跟踪点击区域（左半部分）
     const trackingClickArea = document.createElement('div');
-    Object.assign(trackingClickArea.style, { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' });
+    Object.assign(trackingClickArea.style, trackingToggleRowStyle);
     trackingClickArea.appendChild(checkbox);
     trackingClickArea.appendChild(indicator);
     trackingClickArea.appendChild(label);
@@ -1062,10 +1064,6 @@ function createAnimationSettingsSidePanel(manager, prefix) {
             handleTrackingChange();
         }
     });
-
-    // 弹性间距
-    const spacer = document.createElement('div');
-    spacer.style.flex = '1';
 
     // 全屏/局部跟踪复选框（右半部分）
     const modeCheckbox = document.createElement('input');
@@ -1109,7 +1107,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     Object.assign(modeLabel.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
 
     const modeClickArea = document.createElement('div');
-    Object.assign(modeClickArea.style, { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' });
+    Object.assign(modeClickArea.style, trackingToggleRowStyle);
     modeClickArea.appendChild(modeCheckbox);
     modeClickArea.appendChild(modeIndicator);
     modeClickArea.appendChild(modeLabel);
@@ -1156,13 +1154,12 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     });
 
     trackingRow.appendChild(trackingClickArea);
-    trackingRow.appendChild(spacer);
     trackingRow.appendChild(modeClickArea);
     container.appendChild(trackingRow);
 
     // ── 取消隐藏（锁定悬停淡化）开关 ──
     const hoverFadeRow = document.createElement('div');
-    Object.assign(hoverFadeRow.style, { display: 'flex', alignItems: 'center', gap: '6px', width: '100%', marginTop: '4px' });
+    Object.assign(hoverFadeRow.style, trackingToggleRowStyle);
 
     const hoverFadeCheckbox = document.createElement('input');
     hoverFadeCheckbox.type = 'checkbox';
@@ -1216,7 +1213,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         }
     });
 
-    container.appendChild(hoverFadeRow);
+    trackingRow.appendChild(hoverFadeRow);
 
     document.body.appendChild(container);
     return container;

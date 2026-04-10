@@ -1251,31 +1251,13 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
             sanitized_title = window_title
         
         # 检测区域并使用适当的提示词
+        # china_region → 'zh'（百度），否则按用户语言选择（Google）
+        from config.prompts_sys import _loc, SEARCH_KEYWORD_SYSTEM, SEARCH_KEYWORD_USER
+        from utils.language_utils import get_global_language
         china_region = is_china_region()
-        
-        if china_region:
-            system_prompt = """你是搜索关键词生成助手。根据用户提供的窗口标题，输出 3 个适合百度搜索的多样化关键词。
-
-要求：
-1. 生成 3 个不同角度的搜索关键词
-2. 关键词应简洁，控制在 2-8 个字
-3. 关键词应尽量覆盖不同方面
-4. 只输出 3 行关键词，不要添加序号、标点、解释或其他内容"""
-            user_prompt = f"""窗口标题：{window_title}
-
-请输出 3 个搜索关键词。"""
-        else:
-            system_prompt = """You generate search keywords from a window title.
-
-Requirements:
-1. Generate 3 keywords for Google search from different angles
-2. Each keyword should be concise, about 2-6 words
-3. Keep the keywords diverse
-4. Output exactly 3 lines, one keyword per line
-5. Do not add numbers, punctuation, explanations, or any extra text"""
-            user_prompt = f"""Window title: {window_title}
-
-Please output 3 search keywords."""
+        keyword_lang = 'zh' if china_region else get_global_language()
+        system_prompt = _loc(SEARCH_KEYWORD_SYSTEM, keyword_lang)
+        user_prompt = _loc(SEARCH_KEYWORD_USER, keyword_lang).format(window_title=window_title)
 
         # Gemini 的 OpenAI 兼容接口需要实际的 user content；
         # 仅发送 system message 可能被底层适配为空 contents。
