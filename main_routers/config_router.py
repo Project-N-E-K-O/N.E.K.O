@@ -556,6 +556,7 @@ async def get_core_config_api():
                            'vision', 'agent', 'omni', 'tts')
                 for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
             },
+            "gptsovitsEnabled": core_cfg.get('gptsovitsEnabled'),
             "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
             "success": True
         }
@@ -646,6 +647,8 @@ async def update_core_config(request: Request):
             core_cfg['openclawDefaultSenderId'] = data['openclawDefaultSenderId']
         if 'enableCustomApi' in data:
             core_cfg['enableCustomApi'] = data['enableCustomApi']
+        if 'gptsovitsEnabled' in data:
+            core_cfg['gptsovitsEnabled'] = data['gptsovitsEnabled']
 
         # 自定义API配置（Provider / Url / Id / ApiKey per model type）
         _model_types = [
