@@ -1757,16 +1757,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             const ambient = document.getElementById('ambient-light-slider');
             const main = document.getElementById('main-light-slider');
 
-            // 4. 如果是 VRM/Live3D 模式，单独保存光照设置（仅光照部分独立保存）
-            if ((currentModelType === 'live3d') && ambient && main) {
+            // 4. 如果是 VRM/Live3D 模式且当前子类型为 VRM，单独保存光照设置
+            const isVrmSubTypeForSave = !currentLive3dSubType || currentLive3dSubType === 'vrm';
+            if ((currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main) {
+                const fillSlider = document.getElementById('fill-light-slider');
+                const rimSlider = document.getElementById('rim-light-slider');
+                const topSlider = document.getElementById('top-light-slider');
+                const bottomSlider = document.getElementById('bottom-light-slider');
                 const lightingData = {
                     lighting: {
                         ambient: parseFloat(ambient.value),
                         main: parseFloat(main.value),
-                        fill: 0.0,
-                        rim: 0.0,
-                        top: 0.0,
-                        bottom: 0.0
+                        fill: fillSlider ? parseFloat(fillSlider.value) : 0.0,
+                        rim: rimSlider ? parseFloat(rimSlider.value) : 0.0,
+                        top: topSlider ? parseFloat(topSlider.value) : 0.0,
+                        bottom: bottomSlider ? parseFloat(bottomSlider.value) : 0.0,
                     }
                 };
 
@@ -2300,10 +2305,25 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 3. 检查并初始化 Three.js 场景（移到 if 块外部，每次切换都会检查）
                 if (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer) {
                     console.log('[模型管理] VRM 场景未完全初始化，正在初始化...');
-                    await vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                    // 获取已保存的光照配置，避免用错误的默认值初始化场景
+                    let savedLightingConfig = null;
+                    try {
+                        const _lanlanName = await getLanlanName();
+                        if (_lanlanName) {
+                            const _charData = await RequestHelper.fetchJson('/api/characters/');
+                            savedLightingConfig = _charData['猫娘']?.[_lanlanName]?.lighting || null;
+                        }
+                    } catch (e) {
+                        console.warn('[模型管理] 获取光照配置失败，使用默认值:', e);
+                    }
+                    await vrmManager.initThreeJS('vrm-canvas', 'vrm-container', savedLightingConfig);
                     // 再次验证初始化是否成功
                     if (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer) {
                         throw new Error('场景初始化后仍缺少必要组件');
+                    }
+                    // 同步光照值到 UI 滑块
+                    if (savedLightingConfig) {
+                        applyLightingValues(savedLightingConfig);
                     }
                     console.log('[模型管理] VRM 场景初始化成功');
                     showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
@@ -2457,13 +2477,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const charactersData = await RequestHelper.fetchJson('/api/characters');
                         const catgirlConfig = charactersData['猫娘']?.[lanlanName];
                         if (vrmModelSelect) {
+                            // 使用 live3d_sub_type 决定优先匹配哪种模型，避免 PR#702 保留双模型路径后总是选到 MMD
+                            const activeSubType = String(catgirlConfig?.live3d_sub_type || '').toLowerCase();
+
                             const _mmdPathSwitch = catgirlConfig && catgirlConfig.mmd
                                 ? (typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path)
                                 : '';
-                            if (_mmdPathSwitch) {
+                            const _vrmPathSwitch = catgirlConfig?.vrm || '';
+
+                            // 根据 live3d_sub_type 决定优先匹配顺序
+                            const tryMatchMmd = () => {
+                                if (!_mmdPathSwitch) return false;
                                 const mmdPath = _mmdPathSwitch;
                                 const mmdFilename = mmdPath.split(/[/\\]/).pop();
-                                // 优先完整路径匹配，其次文件名匹配
                                 const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
                                     if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
                                     return opt.value === mmdPath;
@@ -2474,13 +2500,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
                                     vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
-                                    matched = true;
+                                    return true;
                                 }
-                            }
-                            if (!matched && catgirlConfig && catgirlConfig.vrm) {
-                                const vrmPath = catgirlConfig.vrm;
+                                return false;
+                            };
+
+                            const tryMatchVrm = () => {
+                                if (!_vrmPathSwitch) return false;
+                                const vrmPath = _vrmPathSwitch;
                                 const vrmFilename = vrmPath.split(/[/\\]/).pop();
-                                // 优先完整路径匹配，其次文件名匹配
                                 const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
                                     if (!opt.value) return false;
                                     return opt.value === vrmPath;
@@ -2492,8 +2520,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
                                     vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
-                                    matched = true;
+                                    return true;
                                 }
+                                return false;
+                            };
+
+                            if (activeSubType === 'mmd') {
+                                matched = tryMatchMmd() || tryMatchVrm();
+                            } else {
+                                // vrm 优先（包括 activeSubType 为空的情况）
+                                matched = tryMatchVrm() || tryMatchMmd();
                             }
                         }
                     }
@@ -5011,8 +5047,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         if (fillLightSlider && fillLightValue) {
-            // 简化模式下，补光强制归零
-            const fillValue = 0.0;
+            const fillValue = lighting.fill ?? 0.0;
             fillLightSlider.value = fillValue;
             fillLightValue.textContent = fillValue.toFixed(2);
             if (vrmManager.fillLight) {
@@ -5020,8 +5055,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         if (rimLightSlider && rimLightValue) {
-            // 简化模式下，轮廓光强制归零
-            const rimValue = 0.0;
+            const rimValue = lighting.rim ?? 0.0;
             rimLightSlider.value = rimValue;
             rimLightValue.textContent = rimValue.toFixed(2);
             if (vrmManager.rimLight) {
@@ -5029,8 +5063,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         if (topLightSlider && topLightValue) {
-            // 简化模式下，顶光强制归零
-            const topValue = 0.0;
+            const topValue = lighting.top ?? 0.0;
             topLightSlider.value = topValue;
             topLightValue.textContent = topValue.toFixed(2);
             if (vrmManager.topLight) {
@@ -5038,8 +5071,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         if (bottomLightSlider && bottomLightValue) {
-            // 简化模式下，底光强制归零
-            const bottomValue = 0.0;
+            const bottomValue = lighting.bottom ?? 0.0;
             bottomLightSlider.value = bottomValue;
             bottomLightValue.textContent = bottomValue.toFixed(2);
             if (vrmManager.bottomLight) {

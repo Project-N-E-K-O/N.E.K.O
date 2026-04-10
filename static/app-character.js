@@ -660,10 +660,10 @@
 
                         if (window.vrmManager?.ambientLight && window.vrmManager?.mainLight &&
                             window.vrmManager?.fillLight && window.vrmManager?.rimLight) {
-                            // VRoid Hub 风格：极高环境光，柔和主光，无辅助光
+                            // 与 vrm-core.js defaultLighting 保持一致
                             const defaultLighting = {
-                                ambient: 1.0,      // 极高环境光，消除所有暗部
-                                main: 0.6,         // 适中主光，配合跟随相机
+                                ambient: 0.83,     // 默认环境光
+                                main: 1.91,        // 默认主光源
                                 fill: 0.0,         // 不需要补光
                                 rim: 0.0,          // 不需要外部轮廓光
                                 top: 0.0,          // 不需要顶光
