@@ -2705,7 +2705,7 @@
         "loadError": "音樂播放器載入失敗",
         "autoplayBlocked": "瀏覽器限制了自動播放，請點擊播放按鈕",
         "ended": "已結束",
-        "nowPlayingCard": "🎵 正在播放"
+        "unknownState": "未知狀態"
     },
     "Jukebox": {
         "title": "點歌台",
