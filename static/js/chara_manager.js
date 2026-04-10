@@ -1985,8 +1985,10 @@ function showCatgirlForm(key, container) {
     const normalizedModelType = modelType === 'vrm' ? 'live3d' : modelType;
     let modelDisplayText = '';
 
-    const mmdPath = validateModelPath(cat['mmd']);
-    const vrmPath = validateModelPath(cat['vrm']);
+    const mmdPath = validateModelPath(cat['mmd'])
+        || validateModelPath(cat['_reserved']?.avatar?.mmd?.model_path);
+    const vrmPath = validateModelPath(cat['vrm'])
+        || validateModelPath(cat['_reserved']?.avatar?.vrm?.model_path);
     const live2dPath = validateModelPath(cat['live2d']);
 
     // 优先使用 live3d_sub_type 判断当前活跃的 3D 模型类型

@@ -779,7 +779,13 @@
                     effectiveModelType = 'mmd';
                 } else {
                     // sub_type 缺失时回退到路径探测
-                    const _sanitize = v => (typeof v === 'string' && v.trim() && v !== 'undefined' && v !== 'null') ? v : '';
+                    const _sanitize = (v) => {
+                        if (v === undefined || v === null) return '';
+                        const s = String(v).trim();
+                        const lower = s.toLowerCase();
+                        if (!s || lower === 'undefined' || lower === 'null') return '';
+                        return s;
+                    };
                     const mmdPath = _sanitize(catgirlConfig.mmd)
                         || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
                         || '';

@@ -150,7 +150,13 @@
             const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
 
             // 检测 live3d 子类型：优先使用 live3d_sub_type（后端权威来源）
-            const _sanitize = v => (typeof v === 'string' && v.trim() && v !== 'undefined' && v !== 'null') ? v : '';
+            const _sanitize = (v) => {
+                if (v === undefined || v === null) return '';
+                const s = String(v).trim();
+                const lower = s.toLowerCase();
+                if (!s || lower === 'undefined' || lower === 'null') return '';
+                return s;
+            };
             let mmdPath = '';
             let vrmPath = '';
             let effectiveModelType = modelType;
