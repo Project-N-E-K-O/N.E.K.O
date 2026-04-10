@@ -755,7 +755,6 @@ def _set_capability(name: str, ready: bool, reason: str = "", **metadata: Any) -
     prev = Modules.capability_cache.get(name, {})
     normalized_reason = _normalize_capability_reason(name, reason)
     next_value = {
-        **prev,
         **metadata,
         "ready": bool(ready),
         "reason": normalized_reason,

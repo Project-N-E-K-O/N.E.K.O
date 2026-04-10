@@ -133,7 +133,7 @@ _REFERENCE_LATIN_FALLBACK_VERBS = {
 }
 _REFERENCE_SIMPLE_LATIN_TOPIC_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,23}$")
 _META_AVOID_TOPIC_RE = re.compile(
-    r'^(?:就|再|也)?(?:别提|别提及|不要提|不要提及|别说|不要说|别聊|不要聊|不想聊|不想提|提及|提起)$'
+    r'^(?:就|再|也)?(?:别再?提|别提及|不要再?提|不要提及|别说|不要说|别聊|不要聊|不想聊|不想提|提及|提起)$'
 )
 _LATIN_TOPIC_MATCH_THRESHOLD = 0.66
 _LATIN_TOPIC_TOKEN_STOPWORDS = {
@@ -420,7 +420,8 @@ def _extract_negative_topic(text: str, referenced_topic: str = "") -> tuple[str,
     # 回退：尝试从句子中剥离负面词，保留剩余较具体的主题描述。
     if explicit:
         fallback = raw
-        for token in _NEGATIVE_KEYWORDS:
+        explicit_cleanup_tokens = tuple(dict.fromkeys(_NEGATIVE_KEYWORDS + _EXPLICIT_AVOID_TOKENS))
+        for token in explicit_cleanup_tokens:
             if _contains_ascii_letters(token) and not _contains_cjk(token):
                 pattern = r'(?<![a-z])' + re.escape(token.casefold()) + r'(?![a-z])'
                 fallback = re.sub(pattern, " ", fallback, flags=re.IGNORECASE)

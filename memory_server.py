@@ -247,8 +247,7 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
 
 
 def _sanitize_llm_json(raw: str) -> str:
-    s = str(raw or "").strip().replace("{{", "{").replace("}}", "}")
-    s = re.sub(r',\s*([}\]])', r'\1', s)
+    s = str(raw or "").strip()
     if not s:
         return "[]"
 
@@ -259,10 +258,16 @@ def _sanitize_llm_json(raw: str) -> str:
             return None
 
     try:
-        json.loads(s)
+        parsed = json.loads(s)
+        dumped = _dump_json(parsed)
+        if dumped is not None:
+            return dumped
         return s
     except json.JSONDecodeError:
         pass
+
+    s = s.replace("{{", "{").replace("}}", "}")
+    s = re.sub(r',\s*([}\]])', r'\1', s)
 
     try:
         parsed = ast.literal_eval(s)
@@ -423,7 +428,7 @@ def _extract_message_text_for_prompt(message, brackets_pattern: re.Pattern[str])
 
 
 def _normalize_topic_key(topic: str) -> str:
-    return str(topic or '').strip().casefold()
+    return PersonaManager._topic_key(str(topic or ''))
 
 
 def _contains_cjk(text: str) -> bool:
@@ -696,7 +701,15 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
                 '_policy_rank': next_rank,
                 '_confidence_value': confidence,
             }
-    limited_candidates = list(deduped_candidates.values())[:3]
+    sorted_candidates = sorted(
+        deduped_candidates.values(),
+        key=lambda item: (
+            int(item.get('_policy_rank', 0)),
+            float(item.get('_confidence_value', 0.0)),
+        ),
+        reverse=True,
+    )
+    limited_candidates = sorted_candidates[:3]
     if len(limited_candidates) != len(deduped_candidates):
         logger.info(
             "[MemoryServer] %s: 负面偏好候选已截断 deduped=%s limited=%s",
@@ -738,6 +751,13 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
             )
             continue
         validated_topic = str(validation.get("normalized_topic", "")).strip() or topic
+        normalized_validated_topic = _normalize_topic_key(validated_topic)
+        if normalized_validated_topic in already_signaled_topics:
+            logger.info(
+                f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={validated_topic or '∅'} "
+                f"policy={policy or '∅'} confidence={confidence:.2f} reason=already_signaled_after_validation"
+            )
+            continue
         result = persona_manager.apply_negative_preference_review(
             lanlan_name,
             topic=validated_topic,

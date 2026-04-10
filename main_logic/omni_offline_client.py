@@ -720,12 +720,11 @@ class OmniOfflineClient:
         if not instruction or not instruction.strip():
             return False
 
+        temporary_messages = self._consume_temporary_system_messages()
         # 临时注入：instruction 已由调用方用 ======== 格式封装，作为 HumanMessage 发送，
         # 不持久化到 _conversation_history，避免污染长期上下文。
-        messages_to_send = (
-            self._conversation_history
-            + [HumanMessage(content=instruction)]
-        )
+        messages_to_send = self._build_messages_with_temporary_system_messages(temporary_messages)
+        messages_to_send.append(HumanMessage(content=instruction))
 
         assistant_message = ""
         is_first_chunk = True

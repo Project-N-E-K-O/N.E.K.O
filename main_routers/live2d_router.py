@@ -507,6 +507,8 @@ async def update_emotion_mapping(model_name: str, request: Request):
             motions_output[group_name] = items
         if any(items for items in motions_output.values()):
             file_refs['Motions'] = motions_output
+        else:
+            file_refs.pop('Motions', None)
 
         # 处理 expressions: 将按 emotion 前缀生成扁平列表，Name 采用 "{emotion}_{basename}" 的约定
         expressions_input = data.get('expressions') or {}

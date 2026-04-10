@@ -1086,6 +1086,19 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         this._clickEffectSuspendReason = null;
         this._currentClickEffectToken = null;
     }
+    if (typeof this._cancelSmoothReset === 'function') {
+        const canceledSmoothReset = this._cancelSmoothReset({ resumePersistent: false });
+        if (
+            canceledSmoothReset &&
+            (canceledSmoothReset.pendingResumeReason != null || canceledSmoothReset.pendingForceAllPersistentResume)
+            && typeof this.resumePersistentExpressions === 'function'
+        ) {
+            this.resumePersistentExpressions(
+                canceledSmoothReset.pendingResumeReason,
+                canceledSmoothReset.pendingForceAllPersistentResume === true,
+            );
+        }
+    }
     const clickEffectSuspendReason = window.isInTutorial
         ? 'tutorial-click-expression'
         : 'click-effect';
@@ -1217,6 +1230,9 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
 
     } catch (error) {
         console.error('[ClickEffect] 播放临时效果失败:', error);
+        if (typeof this.clearExpression === 'function') {
+            this.clearExpression(clickEffectSuspendReason);
+        }
     }
 };
 
@@ -1749,6 +1765,19 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         this._clickEffectSuspendReason = null;
         this._currentClickEffectToken = null;
     }
+    if (typeof this._cancelSmoothReset === 'function') {
+        const canceledSmoothReset = this._cancelSmoothReset({ resumePersistent: false });
+        if (
+            canceledSmoothReset &&
+            (canceledSmoothReset.pendingResumeReason != null || canceledSmoothReset.pendingForceAllPersistentResume)
+            && typeof this.resumePersistentExpressions === 'function'
+        ) {
+            this.resumePersistentExpressions(
+                canceledSmoothReset.pendingResumeReason,
+                canceledSmoothReset.pendingForceAllPersistentResume === true,
+            );
+        }
+    }
     const clickEffectSuspendReason = window.isInTutorial
         ? 'tutorial-click-expression'
         : 'click-effect';
@@ -1826,6 +1855,9 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
             }
         } catch (error) {
             console.warn('[Interaction] 教程模式播放表情失败:', error);
+            if (typeof this.clearExpression === 'function') {
+                this.clearExpression(clickEffectSuspendReason);
+            }
         }
         const clickEffectId = Date.now();
         const clickEffectToken = Symbol('click-effect');

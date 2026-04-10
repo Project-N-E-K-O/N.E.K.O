@@ -1877,7 +1877,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             } catch (_) {}
             window._motionPreviewFetchController = null;
         }
+        if ((window._currentMotionPreviewId || isMotionPlaying) && live2dModel && typeof live2dModel.motion === 'function') {
+            try {
+                live2dModel.motion('PreviewAll', -1, 0);
+            } catch (error) {
+                console.warn('[ModelManager] 停止动作预览失败:', error);
+            }
+        }
         isMotionPlaying = false;
+        window._currentMotionPreviewId = null;
         if (typeof window._resumeExpressionPreviewSuspend === 'function') {
             window._resumeExpressionPreviewSuspend(reapplyPersistent);
             window._resumeExpressionPreviewSuspend = null;

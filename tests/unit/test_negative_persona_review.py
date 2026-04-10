@@ -70,27 +70,29 @@ def test_negative_signal_first_soft_then_hard() -> None:
         mock_cm = _build_mock_config_manager(tmpdir)
         with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
              patch("utils.config_manager._config_manager", mock_cm):
-            from memory.persona import PersonaManager
+            import memory.persona as persona_module
+            with patch.object(persona_module, "get_config_manager", return_value=mock_cm):
+                PersonaManager = persona_module.PersonaManager
 
-            pm = PersonaManager()
-            pm._config_manager = mock_cm
+                pm = PersonaManager()
+                pm._config_manager = mock_cm
 
-            first = pm.register_negative_signal("测试猫娘", "工作这个话题真的好烦")
-            assert first["matched"] is True
-            assert first["topic"] == "工作"
-            assert first["policy"] == "de_emphasize"
-            assert "减少对这个话题的提及" in first["response_instruction"]
+                first = pm.register_negative_signal("测试猫娘", "工作这个话题真的好烦")
+                assert first["matched"] is True
+                assert first["topic"] == "工作"
+                assert first["policy"] == "de_emphasize"
+                assert "减少对这个话题的提及" in first["response_instruction"]
 
-            second = pm.register_negative_signal("测试猫娘", "工作真的烦死了")
-            assert second["policy"] == "avoid"
-            assert "不要继续展开这个话题" in second["response_instruction"]
+                second = pm.register_negative_signal("测试猫娘", "工作真的烦死了")
+                assert second["policy"] == "avoid"
+                assert "不要继续展开这个话题" in second["response_instruction"]
 
-            fresh_pm = PersonaManager()
-            fresh_pm._config_manager = mock_cm
-            persona = fresh_pm.get_persona("测试猫娘")
-            guidance = persona["_topic_guidance"]
-            assert guidance["soft_avoid"] == []
-            assert guidance["hard_avoid"][0]["topic"] == "工作"
+                fresh_pm = PersonaManager()
+                fresh_pm._config_manager = mock_cm
+                persona = fresh_pm.get_persona("测试猫娘")
+                guidance = persona["_topic_guidance"]
+                assert guidance["soft_avoid"] == []
+                assert guidance["hard_avoid"][0]["topic"] == "工作"
 
 
 def test_negative_signal_explicit_avoid_immediately_hard() -> None:
