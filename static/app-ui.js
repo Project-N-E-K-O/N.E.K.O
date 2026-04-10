@@ -724,9 +724,18 @@
         }
 
         try {
+            // 运行时检测当前已加载的模型类型，用于 API 失败时的回退
+            const isVrmCurrentlyActive = window.vrmManager && window.vrmManager.currentModel;
+            const isMmdCurrentlyActive = window.mmdManager && window.mmdManager.currentModel;
+
             const charResponse = await fetch('/api/characters');
             if (!charResponse.ok) {
-                console.warn('[showCurrentModel] 无法获取角色配置，默认显示Live2D');
+                console.warn('[showCurrentModel] 无法获取角色配置');
+                // 如果当前已有 VRM/MMD 模型在运行，保持当前状态而非回退到 Live2D
+                if (isVrmCurrentlyActive || isMmdCurrentlyActive) {
+                    console.log('[showCurrentModel] 保持当前已加载的模型');
+                    return;
+                }
                 showLive2d();
                 return;
             }
@@ -736,7 +745,11 @@
             const catgirlConfig = charactersData['猫娘']?.[currentCatgirl];
 
             if (!catgirlConfig) {
-                console.warn('[showCurrentModel] 未找到角色配置，默认显示Live2D');
+                console.warn('[showCurrentModel] 未找到角色配置');
+                if (isVrmCurrentlyActive || isMmdCurrentlyActive) {
+                    console.log('[showCurrentModel] 保持当前已加载的模型');
+                    return;
+                }
                 showLive2d();
                 return;
             }
@@ -757,6 +770,11 @@
                     effectiveModelType = 'mmd';
                 } else if (vrmPath) {
                     effectiveModelType = 'vrm';
+                } else if (isVrmCurrentlyActive) {
+                    // live3d 类型但无法解析出具体子类型时，依据当前运行时状态
+                    effectiveModelType = 'vrm';
+                } else if (isMmdCurrentlyActive) {
+                    effectiveModelType = 'mmd';
                 }
             }
             console.log('[showCurrentModel] 当前角色模型类型:', modelType, '有效类型:', effectiveModelType);
@@ -1021,6 +1039,16 @@
                 }
 
             } else {
+                // 如果当前有 VRM/MMD 模型在运行，不要切换到 Live2D
+                if (isVrmCurrentlyActive) {
+                    console.log('[showCurrentModel] effectiveModelType 为', effectiveModelType, '但 VRM 模型正在运行，保持 VRM');
+                    return;
+                }
+                if (isMmdCurrentlyActive) {
+                    console.log('[showCurrentModel] effectiveModelType 为', effectiveModelType, '但 MMD 模型正在运行，保持 MMD');
+                    return;
+                }
+
                 // 显示 Live2D 模型
                 showLive2d();
 
