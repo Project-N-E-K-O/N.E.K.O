@@ -795,6 +795,13 @@
                 top: rect.top
             };
 
+            // 1b. 锁定当前像素几何到内联样式，防止切类后尺寸跳变
+            //     （chat.html 全屏规则退出后 shell 会回落到默认尺寸）
+            shell.style.width = rect.width + 'px';
+            shell.style.height = rect.height + 'px';
+            shell.style.left = rect.left + 'px';
+            shell.style.top = rect.top + 'px';
+
             // 2. 球的目标位置 = 对话框自身的左下角
             var targetLeft = rect.left;
             var targetTop = rect.bottom - MINIMIZED_SIZE;
@@ -967,6 +974,10 @@
         }
 
         // 更新按钮图标和 aria
+        syncMinimizeUI();
+    }
+
+    function syncMinimizeUI() {
         var button = getMinimizeButton();
         var btnIcon = getMinimizeIcon();
         if (button) {
@@ -1039,6 +1050,7 @@
             minimized = false;
             savedShellSize = null;
             savedShellPosition = null;
+            syncMinimizeUI();
         }
 
         overlay.hidden = true;
