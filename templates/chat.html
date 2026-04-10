@@ -11,6 +11,7 @@
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/index.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css">
     <script src="/static/theme-manager.js"></script>
     <link rel="stylesheet" href="/static/libs/APlayer.min.css">
     <script src="/static/libs/APlayer.min.js"></script>
@@ -22,8 +23,26 @@
             background: transparent !important;
             overflow: hidden;
         }
-        /* chat-container 填满窗口（窗口大小由 JS 控制）*/
-        #chat-container {
+        /* Electron 独立窗口模式：React Chat 覆盖全窗口 */
+        #react-chat-window-overlay {
+            position: fixed; inset: 0;
+            display: block !important;
+            background: transparent !important;
+        }
+        #react-chat-window-backdrop { display: none !important; }
+        #react-chat-window-shell {
+            position: fixed !important; inset: 0 !important;
+            width: 100% !important; height: 100% !important;
+            max-width: none !important; max-height: none !important;
+            left: 0 !important; top: 0 !important;
+            transform: none !important;
+            border-radius: 8px !important;
+        }
+        /* 隐藏旧版 chat */
+        #chat-container { display: none !important; }
+        /* 旧版 chat 样式保留但不激活（app-*.js 的 getElementById 依赖 DOM 存在）*/
+        /*chat-container 填满窗口（窗口大小由 JS 控制）*/
+        .legacy-chat-style #chat-container {
             position: fixed !important;
             left: 0 !important; top: 0 !important;
             width: 100% !important; height: 100% !important;
@@ -229,6 +248,27 @@
         <button id="returnSessionButton">返回</button>
     </div>
 
+    <!-- React Chat（与 index.html 完全相同的 DOM 结构）-->
+    <div id="react-chat-window-overlay">
+        <div id="react-chat-window-backdrop"></div>
+        <div id="react-chat-window-shell" role="dialog" aria-modal="true" aria-labelledby="react-chat-window-title">
+            <div id="react-chat-window-drag-handle" aria-hidden="true"></div>
+            <div id="react-chat-window-header-actions">
+                <button id="exportConversationButton" type="button"
+                        data-i18n-aria="chat.exportConversation"
+                        data-i18n-title="chat.exportConversation"
+                        aria-label="导出对话" title="导出对话">
+                    <img src="/static/icons/fenxiang.svg" alt="" aria-hidden="true" width="20" height="20">
+                </button>
+                <button id="reactChatWindowMinimizeButton" type="button" data-i18n-aria="chat.reactWindowMinimize" data-i18n-title="chat.reactWindowMinimize">
+                    <img id="reactChatWindowMinimizeIcon" src="/static/icons/expand_icon_off.png" data-i18n-alt="chat.reactWindowMinimize" alt="最小化新版聊天框" width="32" height="32">
+                </button>
+                <button id="reactChatWindowCloseButton" type="button" data-i18n-aria="chat.reactWindowClose" data-i18n-title="chat.reactWindowClose">×</button>
+            </div>
+            <div id="react-chat-window-root"></div>
+        </div>
+    </div>
+
     <!-- 跳过：Live2D/VRM/Three.js、common_ui.js(DOM拖拽不兼容)、touch-config、tutorial -->
     <script src="/static/libs/ogg-opus-decoder.min.js"></script>
     <script src="/static/music_ui.js"></script>
@@ -254,6 +294,12 @@
     <script src="/static/app-buttons.js"></script>
     <script src="/static/app.js"></script>
     <script src="/static/subtitle.js"></script>
+
+    <!-- React Chat（与 index.html 相同的 bundle + 初始化器）-->
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js"></script>
+    <script src="/static/app-react-chat-window.js"></script>
+    <script src="/static/app-chat-adapter.js"></script>
+    <script src="/static/app-chat-export.js"></script>
 
     <script>
     // =====================================================================

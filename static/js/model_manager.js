@@ -3165,9 +3165,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     isVrmAnimationPlaying = false;
                     updateVRMAnimationPlayButtonIcon();
                     showStatus(t('live2d.vrmAnimation.animationStopped', '动作已停止'), 2000);
-                    // 恢复 idle 轮换 (空选择时回退内置 wait03)
+                    // 恢复 idle 轮换 (空选择时保持静止)
                     const vrmIdleUrls = getSelectedIdleAnimations('vrm-idle-animation-multiselect');
-                    startIdleRotation('vrm', vrmIdleUrls.length > 0 ? vrmIdleUrls : ['/static/vrm/animation/wait03.vrma']);
+                    if (vrmIdleUrls.length > 0) startIdleRotation('vrm', vrmIdleUrls);
                 }
             } else {
                 // 当前未播放，暂停 idle 轮换并播放手动动作
@@ -3942,9 +3942,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 isMmdAnimationPlaying = false;
                 updateMMDAnimationPlayButtonIcon();
                 showStatus(t('live2d.mmdAnimation.stopped', 'VMD动画已停止'), 2000);
-                // 恢复 idle 轮换 (空选择时回退内置 wait03)
+                // 恢复 idle 轮换 (空选择时保持静止)
                 const mmdIdleUrls = getSelectedIdleAnimations('mmd-idle-animation-multiselect');
-                startIdleRotation('mmd', mmdIdleUrls.length > 0 ? mmdIdleUrls : ['/static/mmd/animation/wait03.vmd']);
+                if (mmdIdleUrls.length > 0) startIdleRotation('mmd', mmdIdleUrls);
             } else {
                 stopIdleRotation('mmd');
                 // 加载用户选中的动画 (idle rotation 可能已替换为 idle clip)
@@ -4289,10 +4289,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // ===== 待机动作多选：工具函数 =====
 
-    /** 待机动作轮换定时器 */
+    /** 待机动作轮换定时器（回退用，防止动画过长不切换） */
     const _idleRotationTimers = { vrm: null, mmd: null };
     /** 上一次播放的 URL（避免连续播放同一个） */
     const _idleRotationLast = { vrm: null, mmd: null };
+    /** loop 事件监听器清理函数（动画一轮播完时自动切换） */
+    const _idleLoopCleanup = { vrm: null, mmd: null };
 
     /** 从多选容器中获取所有已勾选的动画 URL 列表 */
     function getSelectedIdleAnimations(containerId) {
@@ -4371,12 +4373,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     });
 
+    /** 清理 loop 事件监听器 */
+    function _cleanupIdleLoopListener(type) {
+        if (_idleLoopCleanup[type]) {
+            _idleLoopCleanup[type]();
+            _idleLoopCleanup[type] = null;
+        }
+    }
+
     /** 停止待机动作轮换 */
     function stopIdleRotation(type) {
         if (_idleRotationTimers[type]) {
             clearTimeout(_idleRotationTimers[type]);
             _idleRotationTimers[type] = null;
         }
+        _cleanupIdleLoopListener(type);
         _idleRotationLast[type] = null;
     }
 
@@ -4385,35 +4396,40 @@ document.addEventListener('DOMContentLoaded', async () => {
         stopIdleRotation(type);
         if (!urls || urls.length === 0) return;
 
-        // 立即播放一个
+        // 立即播放一个（回退定时器和 loop 监听器在 await 成功后由 _playIdleAnimation 内部注册）
         const firstUrl = urls.length === 1 ? urls[0] : _pickRandomDifferent(urls, _idleRotationLast[type]);
         _playIdleAnimation(type, firstUrl);
         _idleRotationLast[type] = firstUrl;
-
-        // 多于 1 个才定时轮换
-        if (urls.length > 1) {
-            _scheduleNextIdle(type, urls);
-        }
     }
 
-    function _scheduleNextIdle(type, urls) {
+    /** 触发一次待机动作切换（loop 完成或回退定时器都走这里） */
+    function _triggerIdleSwitch(type) {
+        // 清理当前的定时器和 loop 监听器
+        if (_idleRotationTimers[type]) {
+            clearTimeout(_idleRotationTimers[type]);
+            _idleRotationTimers[type] = null;
+        }
+        _cleanupIdleLoopListener(type);
+
+        // 模式不匹配时停止轮换
+        if (!_isIdleTypeActive(type)) return;
+
+        // 重新获取当前已选列表（用户可能在期间改了勾选）
+        const containerId = type === 'vrm' ? 'vrm-idle-animation-multiselect' : 'mmd-idle-animation-multiselect';
+        const currentUrls = getSelectedIdleAnimations(containerId);
+        if (currentUrls.length < 2) return;
+
+        const nextUrl = _pickRandomDifferent(currentUrls, _idleRotationLast[type]);
+        _playIdleAnimation(type, nextUrl); // loop 监听器和回退定时器在 await 成功后注册
+        _idleRotationLast[type] = nextUrl;
+    }
+
+    /** 设置回退定时器（仅当动画过长未触发 loop 事件时强制切换） */
+    function _scheduleNextIdle(type) {
+        if (_idleRotationTimers[type]) clearTimeout(_idleRotationTimers[type]);
         _idleRotationTimers[type] = setTimeout(() => {
-            // 模式不匹配时停止轮换
-            if (!_isIdleTypeActive(type)) {
-                _idleRotationTimers[type] = null;
-                return;
-            }
-            // 重新获取当前已选列表（用户可能在期间改了勾选）
-            const containerId = type === 'vrm' ? 'vrm-idle-animation-multiselect' : 'mmd-idle-animation-multiselect';
-            const currentUrls = getSelectedIdleAnimations(containerId);
-            if (currentUrls.length < 2) {
-                _idleRotationTimers[type] = null;
-                return;
-            }
-            const nextUrl = _pickRandomDifferent(currentUrls, _idleRotationLast[type]);
-            _playIdleAnimation(type, nextUrl);
-            _idleRotationLast[type] = nextUrl;
-            _scheduleNextIdle(type, currentUrls);
+            console.debug(`[${type.toUpperCase()} IdleAnimation] 回退定时器触发，强制切换`);
+            _triggerIdleSwitch(type);
         }, 20000);
     }
 
@@ -4443,6 +4459,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (type === 'vrm' && isVrmAnimationPlaying) return;
         if (type === 'mmd' && isMmdAnimationPlaying) return;
 
+        // 播放新动画前先清理旧的 loop 监听器
+        _cleanupIdleLoopListener(type);
+
         try {
             if (type === 'vrm') {
                 if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
@@ -4451,6 +4470,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                     await vrmManager.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
                     console.log('[VRM IdleAnimation] 待机动作已切换:', url.split('/').pop());
+
+                    // 注册 loop 事件监听：动画一轮播完时自动切换
+                    const mixer = vrmManager.animation?.vrmaMixer;
+                    if (mixer) {
+                        const handler = () => {
+                            console.debug('[VRM IdleAnimation] 动画循环完成，切换下一个');
+                            _triggerIdleSwitch('vrm');
+                        };
+                        mixer.addEventListener('loop', handler);
+                        _idleLoopCleanup['vrm'] = () => mixer.removeEventListener('loop', handler);
+                    }
+
+                    // 动画加载成功后再启动回退定时器（从实际播放开始计时）
+                    const vrmUrls = getSelectedIdleAnimations('vrm-idle-animation-multiselect');
+                    if (vrmUrls.length > 1) _scheduleNextIdle('vrm');
                 }
             } else {
                 if (window.mmdManager && window.mmdManager.currentModel) {
@@ -4462,6 +4496,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                     window.mmdManager.playAnimation();
                     isMmdIdlePlaying = true;
                     console.log('[MMD IdleAnimation] 待机动作已切换:', url.split('/').pop());
+
+                    // 注册 loop 事件监听：动画一轮播完时自动切换
+                    const mixer = window.mmdManager.animationModule?.mixer;
+                    if (mixer) {
+                        const handler = () => {
+                            console.debug('[MMD IdleAnimation] 动画循环完成，切换下一个');
+                            _triggerIdleSwitch('mmd');
+                        };
+                        mixer.addEventListener('loop', handler);
+                        _idleLoopCleanup['mmd'] = () => mixer.removeEventListener('loop', handler);
+                    }
+
+                    // 动画加载成功后再启动回退定时器（从实际播放开始计时）
+                    const mmdUrls = getSelectedIdleAnimations('mmd-idle-animation-multiselect');
+                    if (mmdUrls.length > 1) _scheduleNextIdle('mmd');
                 }
             }
         } catch (err) {
@@ -4479,29 +4528,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         const urls = getSelectedIdleAnimations(containerId);
         if (urls.length === 0) {
             stopIdleRotation(type);
-            // 取消全选时回退到内置待机动画 (手动预览中不覆盖)
+            // 全部取消勾选时停止所有待机动画，允许用户保持静止姿态
             if (type === 'vrm' && !isVrmAnimationPlaying) {
-                const builtinVrm = '/static/vrm/animation/wait03.vrma';
                 if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
                     if (vrmManager.vrmaAction) vrmManager.stopVRMAAnimation();
-                    vrmManager.playVRMAAnimation(builtinVrm, { loop: true, immediate: true, isIdle: true }).catch(e => {
-                        console.warn('[VRM IdleAnimation] 回退内置待机失败:', e);
-                    });
                 }
-                showStatus(t('vrm.idleAnimation.changed', '待机动作已切换', { name: 'wait03' }), 2000);
+                showStatus(t('vrm.idleAnimation.stopped', '待机动作已停止'), 2000);
             } else if (type === 'mmd' && !isMmdAnimationPlaying) {
-                const builtinMmd = '/static/mmd/animation/wait03.vmd';
                 if (window.mmdManager && window.mmdManager.currentModel) {
                     if (isMmdIdlePlaying) window.mmdManager.stopAnimation();
-                    window.mmdManager.loadAnimation(builtinMmd).then(() => {
-                        window.mmdManager.playAnimation();
-                        isMmdIdlePlaying = true;
-                    }).catch(e => {
-                        console.warn('[MMD IdleAnimation] 回退内置待机失败:', e);
-                        isMmdIdlePlaying = false;
-                    });
+                    isMmdIdlePlaying = false;
                 }
-                showStatus(t('mmd.idleAnimation.changed', '待机动作已切换', { name: 'wait03' }), 2000);
+                showStatus(t('mmd.idleAnimation.stopped', '待机动作已停止'), 2000);
             }
         } else {
             startIdleRotation(type, urls);
@@ -4537,8 +4575,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.log('[VRM IdleAnimation] 正在从 API 加载待机动作列表...');
             const data = await RequestHelper.fetchJson('/api/model/vrm/animations');
             const animations = (data.success && data.animations) ? data.animations : [];
-            const defaultUrl = '/static/vrm/animation/wait03.vrma';
-
             optionsEl.innerHTML = '';
             optionsEl.onclick = (e) => e.stopPropagation();
 
@@ -4551,7 +4587,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     const finalUrl = ModelPathHelper.vrmToUrl(animPath, 'animation');
                     const displayName = anim.name || anim.filename || finalUrl.split('/').pop();
-                    const isDefault = finalUrl === defaultUrl || animPath.includes('wait03.vrma');
+                    const fileName = finalUrl.split('/').pop() || '';
+                    const isDefault = /^wait\d*\.vrma$/i.test(fileName) || /\/wait\d*\.vrma$/i.test(animPath);
 
                     const item = document.createElement('div');
                     item.className = 'multiselect-item';
@@ -4632,7 +4669,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     const finalUrl = anim.url || animPath;
                     const displayName = anim.name || anim.filename || finalUrl.split('/').pop();
-                    const isDefault = finalUrl.includes('wait03.vmd') || animPath.includes('wait03.vmd');
+                    const fileName = finalUrl.split('/').pop() || '';
+                    const isDefault = /^wait\d*\.vmd$/i.test(fileName) || /\/wait\d*\.vmd$/i.test(animPath);
 
                     const item = document.createElement('div');
                     item.className = 'multiselect-item';

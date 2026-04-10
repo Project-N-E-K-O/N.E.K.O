@@ -45,7 +45,22 @@
               "exposure": 1.1,
               "toneMapping": 1.0
             },
-            "idle_animation": "/static/vrm/animation/wait03.vrma"
+            "idle_animation": [
+              "/static/vrm/animation/wait01.vrma",
+              "/static/vrm/animation/wait02.vrma",
+              "/static/vrm/animation/wait03.vrma",
+              "/static/vrm/animation/wait04.vrma",
+              "/static/vrm/animation/wait05.vrma"
+            ]
+          },
+          "mmd": {
+            "idle_animation": [
+              "/static/mmd/animation/wait01.vmd",
+              "/static/mmd/animation/wait02.vmd",
+              "/static/mmd/animation/wait03.vmd",
+              "/static/mmd/animation/wait04.vmd",
+              "/static/mmd/animation/wait05.vmd"
+            ]
           }
         }
       }
