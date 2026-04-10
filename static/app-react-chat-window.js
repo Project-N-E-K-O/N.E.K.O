@@ -802,9 +802,9 @@
             shell.style.left = rect.left + 'px';
             shell.style.top = rect.top + 'px';
 
-            // 2. 球的目标位置 = 对话框自身的左下角
-            var targetLeft = rect.left;
-            var targetTop = rect.bottom - MINIMIZED_SIZE;
+            // 2. 球的目标位置 = 对话框自身的左下角（clamp 到视口内）
+            var targetLeft = Math.max(0, Math.min(rect.left, window.innerWidth - MINIMIZED_SIZE));
+            var targetTop = Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE, window.innerHeight - MINIMIZED_SIZE));
 
             // 3. 计算缩放比（transform-origin 为 0% 100% 即左下角，无需 translate）
             var sx = rect.width > 0 ? MINIMIZED_SIZE / rect.width : 1;
@@ -980,6 +980,7 @@
     function syncMinimizeUI() {
         var button = getMinimizeButton();
         var btnIcon = getMinimizeIcon();
+        var ballIcon = ensureMinimizedBallIcon();
         if (button) {
             button.setAttribute('aria-label', minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框'));
             button.title = minimized ? getI18nText('chat.reactWindowRestoreShort', '恢复') : getI18nText('chat.reactWindowMinimizeShort', '最小化');
@@ -988,9 +989,10 @@
             btnIcon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
             btnIcon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框');
         }
-
-        // 确保悬浮球图标存在
-        ensureMinimizedBallIcon();
+        // 重置悬浮球图标到默认态（清除可能残留的 hover 图标）
+        if (ballIcon) {
+            ballIcon.src = '/static/icons/expand_icon_off.png';
+        }
     }
 
     function toggleMinimized() {
