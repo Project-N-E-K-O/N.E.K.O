@@ -592,27 +592,31 @@
     }
 
     function handleJukeboxClick() {
-        if (typeof window.Jukebox !== 'undefined' && typeof window.Jukebox.toggle === 'function') {
-            window.Jukebox.toggle();
-        } else {
-            console.warn('[ReactChatWindow] Jukebox not available');
+        try {
+            if (typeof window.Jukebox !== 'undefined' && typeof window.Jukebox.toggle === 'function') {
+                window.Jukebox.toggle();
+            } else {
+                console.warn('[ReactChatWindow] Jukebox not available');
+            }
+        } finally {
+            dispatchHostEvent('jukebox-click', {});
         }
-
-        dispatchHostEvent('jukebox-click', {});
     }
 
     function handleAvatarGeneratorClick() {
-        // Try clicking the legacy avatar preview button (app-chat-avatar.js binds to it)
-        var legacyBtn = document.getElementById('avatarPreviewButton');
-        if (legacyBtn) {
-            legacyBtn.click();
-        } else {
-            // Fallback: dispatch event for other modules to listen
-            window.dispatchEvent(new CustomEvent('avatar-generator-request', { detail: { source: 'react-chat-window' } }));
-            console.warn('[ReactChatWindow] Avatar preview button not found, event dispatched');
+        try {
+            // Try clicking the legacy avatar preview button (app-chat-avatar.js binds to it)
+            var legacyBtn = document.getElementById('avatarPreviewButton');
+            if (legacyBtn) {
+                legacyBtn.click();
+            } else {
+                // Fallback: dispatch event for other modules to listen
+                window.dispatchEvent(new CustomEvent('avatar-generator-request', { detail: { source: 'react-chat-window' } }));
+                console.warn('[ReactChatWindow] Avatar preview button not found, event dispatched');
+            }
+        } finally {
+            dispatchHostEvent('avatar-generator-click', {});
         }
-
-        dispatchHostEvent('avatar-generator-click', {});
     }
 
     function setViewProps(nextViewProps) {
