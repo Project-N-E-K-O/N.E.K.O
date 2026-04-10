@@ -1086,7 +1086,14 @@
             }
         } catch (error) {
             console.error('[showCurrentModel] 失败:', error);
-            showLive2d(); // 出错时默认显示Live2D
+            // 出错时检查是否有 VRM/MMD 正在运行，如果有则保持当前状态
+            const isVrmRunning = window.vrmManager && window.vrmManager.currentModel;
+            const isMmdRunning = window.mmdManager && window.mmdManager.currentModel;
+            if (isVrmRunning || isMmdRunning) {
+                console.log('[showCurrentModel] 保持当前已加载的模型');
+                return;
+            }
+            showLive2d();
         }
     }
 
