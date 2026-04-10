@@ -603,17 +603,55 @@
         }
     }
 
+    function isLegacyChatVisible() {
+        var el = document.getElementById('chat-container');
+        if (!el) return false;
+        return window.getComputedStyle(el).display !== 'none';
+    }
+
+    function captureAvatarDirect() {
+        if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
+            showToast(getI18nText('chat.avatarPreviewUnavailable', '头像预览功能尚未就绪。'), 3000);
+            return;
+        }
+
+        showToast(getI18nText('chat.avatarPreviewGenerating', '正在生成当前头像...'), 2000);
+
+        window.avatarPortrait.capture({
+            width: 320, height: 320, padding: 0.035,
+            shape: 'rounded', radius: 40,
+            background: 'rgba(255, 255, 255, 0.96)',
+            includeDataUrl: true
+        }).then(function (result) {
+            if (result && result.dataUrl) {
+                // Dispatch the same event that app-chat-adapter.js already listens to
+                window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+                    detail: {
+                        dataUrl: result.dataUrl,
+                        modelType: result.modelType || '',
+                        source: 'react-chat-window'
+                    }
+                }));
+                showToast(getI18nText('chat.avatarPreviewReady', '头像已更新'), 2500);
+            }
+        }).catch(function (error) {
+            console.error('[ReactChatWindow] Avatar capture failed:', error);
+            showToast(getI18nText('chat.avatarPreviewFailed', '生成头像失败'), 3000);
+        });
+    }
+
     function handleAvatarGeneratorClick() {
         try {
-            // Try clicking the legacy avatar preview button (app-chat-avatar.js binds to it)
-            var legacyBtn = document.getElementById('avatarPreviewButton');
-            if (legacyBtn) {
-                legacyBtn.click();
-            } else {
-                // Fallback: dispatch event for other modules to listen
-                window.dispatchEvent(new CustomEvent('avatar-generator-request', { detail: { source: 'react-chat-window' } }));
-                console.warn('[ReactChatWindow] Avatar preview button not found, event dispatched');
+            if (isLegacyChatVisible()) {
+                // Legacy chat is visible — use legacy button for its card UI
+                var legacyBtn = document.getElementById('avatarPreviewButton');
+                if (legacyBtn) {
+                    legacyBtn.click();
+                    return;
+                }
             }
+            // React-first mode or legacy button absent — capture directly
+            captureAvatarDirect();
         } finally {
             dispatchHostEvent('avatar-generator-click', {});
         }
