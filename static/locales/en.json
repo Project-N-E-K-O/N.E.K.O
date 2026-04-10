@@ -1655,7 +1655,8 @@
     },
     "subtitle": {
         "title": "Real-time Subtitles",
-        "enable": "Enable Translation"
+        "enable": "Enable Translation",
+        "enableAriaLabel": "Toggle translation"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
