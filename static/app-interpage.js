@@ -833,27 +833,28 @@
                     case 'memory_edited':
                         await handleMemoryEdited(event.data.catgirl_name);
                         break;
-                    case 'avatar_updated':
+                    case 'avatar_updated': {
                         // 从 Pet 窗口接收头像数据，注入到 Chat 窗口
                         // 校验 lanlan_name：多角色场景下避免串头像
                         if (event.data.lanlan_name && window.lanlan_config &&
                             event.data.lanlan_name !== window.lanlan_config.lanlan_name) break;
-                        var incomingDataUrl = event.data.dataUrl || '';
-                        var incomingModelType = event.data.modelType || '';
+                        const incomingDataUrl = event.data.dataUrl || '';
+                        const incomingModelType = event.data.modelType || '';
                         if (window.appChatAvatar && typeof window.appChatAvatar.setExternalAvatar === 'function') {
                             window.appChatAvatar.setExternalAvatar(incomingDataUrl, incomingModelType);
                         } else if (incomingDataUrl) {
                             window.__nekoPendingAvatar = { dataUrl: incomingDataUrl, modelType: incomingModelType };
                         }
                         break;
-                    case 'request_avatar':
+                    }
+                    case 'request_avatar': {
                         // 仅 Pet 主窗口（/index）应答，Chat 窗口不回传
                         if (window.location.pathname === '/chat') break;
                         // 校验 lanlan_name：仅回传同角色的头像
                         if (event.data.lanlan_name && window.lanlan_config &&
                             event.data.lanlan_name !== window.lanlan_config.lanlan_name) break;
                         if (window.appChatAvatar && typeof window.appChatAvatar.getCachedPreview === 'function') {
-                            var cached = window.appChatAvatar.getCachedPreview();
+                            const cached = window.appChatAvatar.getCachedPreview();
                             if (cached && cached.dataUrl && nekoBroadcastChannel) {
                                 nekoBroadcastChannel.postMessage({
                                     action: 'avatar_updated',
@@ -865,6 +866,7 @@
                             }
                         }
                         break;
+                    }
                 }
             };
         }
