@@ -184,6 +184,22 @@ def test_cloudsave_manager_status_includes_autocloud_configuration_hints():
 
 
 @pytest.mark.unit
+def test_cloudsave_manager_no_snapshot_result_includes_diagnostic_hint():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        manager = CloudSaveManager(cm)
+        result = manager.import_if_needed(reason="unit_test_no_snapshot")
+
+        assert result["success"] is True
+        assert result["action"] == "skipped"
+        assert result["reason"] == "no_snapshot"
+        assert str(cm.cloudsave_dir) in result["hint"]
+        assert "Steam" in result["hint"]
+
+
+@pytest.mark.unit
 def test_single_character_export_keeps_manifest_marked_as_already_applied():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))

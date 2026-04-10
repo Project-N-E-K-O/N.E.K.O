@@ -1324,6 +1324,53 @@ def test_export_cloudsave_character_unit_updates_only_single_character_scope(tmp
 
 
 @pytest.mark.unit
+def test_local_cloudsave_snapshot_roundtrip_supports_embedded_dot_character_names(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot, import_local_cloudsave_snapshot
+
+    _write_runtime_state(source_cm, character_name="N.E.K.O")
+
+    export_local_cloudsave_snapshot(source_cm)
+
+    assert (source_cm.cloudsave_dir / "characters" / "N.E.K.O" / "profile.json").is_file()
+    assert (source_cm.cloudsave_dir / "bindings" / "N.E.K.O.json").is_file()
+
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    import_local_cloudsave_snapshot(target_cm)
+
+    imported_characters = target_cm.load_characters()
+    assert "N.E.K.O" in (imported_characters.get("鐚") or {})
+    assert (Path(target_cm.memory_dir) / "N.E.K.O" / "recent.json").is_file()
+
+
+@pytest.mark.unit
+def test_single_character_cloudsave_operations_support_embedded_dot_names(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils.cloudsave_runtime import export_cloudsave_character_unit, import_cloudsave_character_unit
+
+    _write_runtime_state(source_cm, character_name="N.E.K.O")
+
+    export_result = export_cloudsave_character_unit(source_cm, "N.E.K.O")
+
+    assert export_result["character_name"] == "N.E.K.O"
+    assert (source_cm.cloudsave_dir / "bindings" / "N.E.K.O.json").is_file()
+    assert (source_cm.cloudsave_dir / "characters" / "N.E.K.O" / "meta.json").is_file()
+
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    import_result = import_cloudsave_character_unit(target_cm, "N.E.K.O")
+
+    assert import_result["character_name"] == "N.E.K.O"
+    assert "N.E.K.O" in (target_cm.load_characters().get("鐚") or {})
+    assert (Path(target_cm.memory_dir) / "N.E.K.O" / "recent.json").is_file()
+
+
+@pytest.mark.unit
 def test_single_character_upload_rebuilds_legacy_mirrors_from_sharded_cloud_union(tmp_path):
     source_cm = _make_config_manager(tmp_path / "source")
     target_cm = _make_config_manager(tmp_path / "target")

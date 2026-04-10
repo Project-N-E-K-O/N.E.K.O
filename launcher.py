@@ -350,6 +350,8 @@ SERVERS = [
         'port': MEMORY_SERVER_PORT,
         'process': None,
         'ready_event': None,
+        'shutdown_complete_event': None,
+        'graceful_shutdown_timeout': 12,
     },
     {
         'name': 'Main Server',
@@ -357,6 +359,8 @@ SERVERS = [
         'port': MAIN_SERVER_PORT,
         'process': None,
         'ready_event': None,
+        'shutdown_complete_event': None,
+        'graceful_shutdown_timeout': 20,
     },
     {
         'name': 'Agent Server',
@@ -364,6 +368,8 @@ SERVERS = [
         'port': TOOL_SERVER_PORT,
         'process': None,
         'ready_event': None,
+        'shutdown_complete_event': None,
+        'graceful_shutdown_timeout': 8,
     },
 ]
 
@@ -373,6 +379,7 @@ def run_memory_server(
     ready_event: Event,
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
+    shutdown_complete_event: Event | None = None,
 ):
     """运行 Memory Server"""
     try:
@@ -415,6 +422,13 @@ def run_memory_server(
         )
         server = uvicorn.Server(config)
 
+        if shutdown_complete_event is not None:
+            async def _notify_shutdown_complete() -> None:
+                print("[Memory Server] Shutdown lifecycle complete", flush=True)
+                shutdown_complete_event.set()
+
+            memory_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
+
         if shutdown_event is not None:
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
@@ -453,11 +467,15 @@ def run_memory_server(
         print(f"Memory Server error: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        if shutdown_complete_event is not None:
+            shutdown_complete_event.set()
 
 def run_agent_server(
     ready_event: Event,
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
+    shutdown_complete_event: Event | None = None,
 ):
     """运行 Agent Server (不需要等待初始化)"""
     try:
@@ -502,6 +520,13 @@ def run_agent_server(
         )
         server = uvicorn.Server(config)
 
+        if shutdown_complete_event is not None:
+            async def _notify_shutdown_complete() -> None:
+                print("[Agent Server] Shutdown lifecycle complete", flush=True)
+                shutdown_complete_event.set()
+
+            agent_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
+
         if shutdown_event is not None:
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
@@ -515,11 +540,15 @@ def run_agent_server(
         print(f"Agent Server error: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        if shutdown_complete_event is not None:
+            shutdown_complete_event.set()
 
 def run_main_server(
     ready_event: Event,
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
+    shutdown_complete_event: Event | None = None,
 ):
     """运行 Main Server"""
     try:
@@ -555,6 +584,13 @@ def run_main_server(
         )
         server = uvicorn.Server(config)
 
+        if shutdown_complete_event is not None:
+            async def _notify_shutdown_complete() -> None:
+                print("[Main Server] Shutdown lifecycle complete", flush=True)
+                shutdown_complete_event.set()
+
+            main_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
+
         if shutdown_event is not None:
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
@@ -588,6 +624,9 @@ def run_main_server(
         print(f"Main Server error: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        if shutdown_complete_event is not None:
+            shutdown_complete_event.set()
 
 def check_port(port: int, timeout: float = 0.5) -> bool:
     """检查端口是否已开放"""
@@ -610,6 +649,8 @@ def get_port_owners(port: int) -> list[int]:
                 ["netstat", "-ano", "-p", "tcp"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=3,
                 check=False,
             )
@@ -629,6 +670,8 @@ def get_port_owners(port: int) -> list[int]:
                 ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=3,
                 check=False,
             )
@@ -916,12 +959,18 @@ def start_server(server: Dict) -> bool:
         server['ready_event'] = Event()
         server['import_event'] = Event()
         server['shutdown_event'] = Event()
+        server['shutdown_complete_event'] = Event()
         
         # 使用 multiprocessing 启动服务器
         # 注意：不能设置 daemon=True，因为 main_server 自己会创建子进程
         server['process'] = Process(
             target=target_func,
-            args=(server['ready_event'], server['import_event'], server['shutdown_event']),
+            args=(
+                server['ready_event'],
+                server['import_event'],
+                server['shutdown_event'],
+                server['shutdown_complete_event'],
+            ),
             daemon=False,
         )
         server['process'].start()
@@ -1025,12 +1074,18 @@ def cleanup_servers():
 
         try:
             shutdown_evt = server.get('shutdown_event')
+            shutdown_complete_evt = server.get('shutdown_complete_event')
+            graceful_timeout = float(server.get('graceful_shutdown_timeout') or 8)
 
             # 先请求子进程优雅退出
             if proc.is_alive():
                 if shutdown_evt is not None:
                     shutdown_evt.set()
-                proc.join(timeout=8)
+                if shutdown_complete_evt is not None:
+                    shutdown_complete_evt.wait(timeout=graceful_timeout)
+                    proc.join(timeout=2)
+                else:
+                    proc.join(timeout=graceful_timeout)
 
             # 第二步：仍存活则发送终止信号
             if proc.is_alive():
@@ -1144,6 +1199,8 @@ def _ensure_playwright_browsers():
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=300,
         )
 

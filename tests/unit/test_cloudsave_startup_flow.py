@@ -81,3 +81,74 @@ async def test_main_server_skips_memory_reload_when_startup_import_did_not_run()
         await main_server._sync_memory_server_after_startup_import({"action": "skipped"})
 
     mock_reload.assert_not_called()
+
+
+@pytest.mark.unit
+def test_launcher_cleanup_waits_for_main_server_shutdown_completion(monkeypatch):
+    import launcher
+
+    class _DummyEvent:
+        def __init__(self, *, wait_result=True):
+            self.wait_result = wait_result
+            self.set_called = False
+            self.wait_calls = []
+
+        def set(self):
+            self.set_called = True
+
+        def wait(self, timeout=None):
+            self.wait_calls.append(timeout)
+            return self.wait_result
+
+    class _DummyProcess:
+        def __init__(self):
+            self.alive = True
+            self.join_calls = []
+            self.terminate_called = False
+            self.kill_called = False
+            self.pid = 43210
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout=None):
+            self.join_calls.append(timeout)
+            if timeout == 2:
+                self.alive = False
+
+        def terminate(self):
+            self.terminate_called = True
+
+        def kill(self):
+            self.kill_called = True
+
+    shutdown_event = _DummyEvent()
+    shutdown_complete_event = _DummyEvent(wait_result=True)
+    process = _DummyProcess()
+
+    monkeypatch.setattr(launcher, "_cleanup_done", False)
+    monkeypatch.setattr(launcher, "JOB_HANDLE", None)
+    monkeypatch.setattr(
+        launcher,
+        "SERVERS",
+        [
+            {
+                "name": "Main Server",
+                "module": "main_server",
+                "port": launcher.MAIN_SERVER_PORT,
+                "process": process,
+                "shutdown_event": shutdown_event,
+                "shutdown_complete_event": shutdown_complete_event,
+                "graceful_shutdown_timeout": 20,
+            }
+        ],
+        raising=False,
+    )
+
+    launcher.cleanup_servers()
+
+    assert shutdown_event.set_called is True
+    assert shutdown_complete_event.wait_calls == [20]
+    assert process.join_calls == [2]
+    assert process.terminate_called is False
+    assert process.kill_called is False

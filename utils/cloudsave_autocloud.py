@@ -77,6 +77,32 @@ def _build_current_platform_rule_preview(config_manager) -> dict[str, str]:
     }
 
 
+def _build_missing_snapshot_hint(status: dict[str, Any]) -> str:
+    cloudsave_root = str(status.get("cloudsave_root") or "")
+    runtime_root = str(status.get("runtime_root") or "")
+    launched_from_source = not getattr(sys, "frozen", False) and Path(sys.argv[0]).suffix.lower() == ".py"
+
+    hint_parts = [
+        f"No staged Steam Auto-Cloud snapshot was found under {cloudsave_root}.",
+    ]
+    if launched_from_source:
+        hint_parts.append(
+            "If you are validating cross-device Steam Cloud sync, launch through Steam or the desktop launcher once "
+            "so Steam can download cloudsave/ before startup import."
+        )
+    else:
+        hint_parts.append(
+            "If you expected cloud data on this device, launch through Steam once and confirm Auto-Cloud finished "
+            "downloading cloudsave/ before startup import."
+        )
+    if runtime_root and bool(status.get("runtime_has_user_content")):
+        hint_parts.append(
+            f"The current runtime root {runtime_root} already has local user content, so this session will continue "
+            "with local data until a staged snapshot appears."
+        )
+    return " ".join(hint_parts)
+
+
 def _build_steam_connectivity_status(steamworks) -> dict[str, bool]:
     if steamworks is None:
         return {
@@ -162,6 +188,7 @@ class CloudSaveManager:
                 "action": "skipped",
                 "reason": "no_snapshot",
                 "requested_reason": str(reason or ""),
+                "hint": _build_missing_snapshot_hint(status),
                 "status": status,
             }
         if not force and not status["startup_import_required"]:

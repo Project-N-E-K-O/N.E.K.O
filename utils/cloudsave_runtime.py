@@ -474,7 +474,10 @@ def audit_cloudsave_character_names(
 
         validation = validate_character_name(
             trimmed,
-            allow_dots=False,
+            # Cloudsave paths legitimately use names like "N.E.K.O" in both
+            # directory names and legacy "*.json" mirrors. Keep the broader
+            # filesystem safety checks, but allow embedded dots here.
+            allow_dots=True,
             max_units=PROFILE_NAME_MAX_UNITS,
         )
         if not validation.ok:
