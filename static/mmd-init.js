@@ -203,8 +203,22 @@ window.addEventListener('mmd-modules-ready', async () => {
 });
 
 // ── 主页面 MMD 待机动作轮换 ──────────────────────────────
+// 策略：优先在动画一轮播完（loop 事件）时切换，避免动作中途跳变；
+//       20 秒回退定时器仅在动画过长时强制切换。
 let _mmdIdleTimer = null;
 let _mmdIdleLastUrl = null;
+let _mmdIdleLoopCleanup = null;
+
+function _clearMmdIdleSchedule() {
+    if (_mmdIdleTimer) {
+        clearTimeout(_mmdIdleTimer);
+        _mmdIdleTimer = null;
+    }
+    if (_mmdIdleLoopCleanup) {
+        _mmdIdleLoopCleanup();
+        _mmdIdleLoopCleanup = null;
+    }
+}
 
 function _startMmdIdleRotation(urls) {
     _stopMmdIdleRotation();
@@ -215,36 +229,52 @@ function _startMmdIdleRotation(urls) {
         return candidates[Math.floor(Math.random() * candidates.length)] || urls[0];
     }
 
-    function scheduleNext() {
-        _mmdIdleTimer = setTimeout(async () => {
-            const mgr = window.mmdManager;
-            if (!mgr || !mgr.currentModel) {
-                _mmdIdleTimer = null;
-                return;
-            }
-            try {
-                const url = pickRandom();
-                if (url) {
-                    mgr.stopAnimation();
-                    await mgr.loadAnimation(url);
-                    mgr.playAnimation();
-                    _mmdIdleLastUrl = url;
-                    console.debug('[MMD IdleRotation] 切换待机动作:', url.split('/').pop());
+    async function switchToNext() {
+        _clearMmdIdleSchedule();
+
+        const mgr = window.mmdManager;
+        if (!mgr || !mgr.currentModel) return;
+
+        try {
+            const url = pickRandom();
+            if (url) {
+                mgr.stopAnimation();
+                await mgr.loadAnimation(url);
+                mgr.playAnimation();
+                _mmdIdleLastUrl = url;
+                console.debug('[MMD IdleRotation] 切换待机动作:', url.split('/').pop());
+
+                // 注册 loop 事件监听：动画一轮播完时自动切换
+                const mixer = mgr.animationModule?.mixer;
+                if (mixer) {
+                    const handler = () => {
+                        console.debug('[MMD IdleRotation] 动画循环完成，切换下一个');
+                        switchToNext();
+                    };
+                    mixer.addEventListener('loop', handler);
+                    _mmdIdleLoopCleanup = () => mixer.removeEventListener('loop', handler);
                 }
-            } catch (e) {
-                console.warn('[MMD IdleRotation] 切换失败:', e);
             }
-            scheduleNext();
+        } catch (e) {
+            console.warn('[MMD IdleRotation] 切换失败:', e);
+        }
+        scheduleFallback();
+    }
+
+    /** 设置回退定时器 */
+    function scheduleFallback() {
+        if (_mmdIdleTimer) clearTimeout(_mmdIdleTimer);
+        _mmdIdleTimer = setTimeout(() => {
+            console.debug('[MMD IdleRotation] 回退定时器触发，强制切换');
+            switchToNext();
         }, 20000);
     }
-    scheduleNext();
+
+    scheduleFallback();
 }
 
 function _stopMmdIdleRotation() {
-    if (_mmdIdleTimer) {
-        clearTimeout(_mmdIdleTimer);
-        _mmdIdleTimer = null;
-    }
+    _clearMmdIdleSchedule();
     _mmdIdleLastUrl = null;
 }
 

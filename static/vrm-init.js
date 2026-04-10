@@ -618,8 +618,22 @@ async function initVRMModel() {
 }
 
 // ── 主页面 VRM 待机动作轮换 ──────────────────────────────
+// 策略：优先在动画一轮播完（loop 事件）时切换，避免动作中途跳变；
+//       20 秒回退定时器仅在动画过长时强制切换。
 let _vrmIdleTimer = null;
 let _vrmIdleLastUrl = null;
+let _vrmIdleLoopCleanup = null;
+
+function _clearVrmIdleSchedule() {
+    if (_vrmIdleTimer) {
+        clearTimeout(_vrmIdleTimer);
+        _vrmIdleTimer = null;
+    }
+    if (_vrmIdleLoopCleanup) {
+        _vrmIdleLoopCleanup();
+        _vrmIdleLoopCleanup = null;
+    }
+}
 
 function _startVrmIdleRotation(urls) {
     _stopVrmIdleRotation();
@@ -630,35 +644,51 @@ function _startVrmIdleRotation(urls) {
         return candidates[Math.floor(Math.random() * candidates.length)] || urls[0];
     }
 
-    function scheduleNext() {
-        _vrmIdleTimer = setTimeout(async () => {
-            const mgr = window.vrmManager;
-            if (!mgr || !mgr.currentModel || !mgr.animation) {
-                _vrmIdleTimer = null;
-                return;
-            }
-            try {
-                const url = pickRandom();
-                if (url) {
-                    if (mgr.vrmaAction) mgr.stopVRMAAnimation();
-                    await mgr.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
-                    _vrmIdleLastUrl = url;
-                    console.debug('[VRM IdleRotation] 切换待机动作:', url.split('/').pop());
+    async function switchToNext() {
+        _clearVrmIdleSchedule();
+
+        const mgr = window.vrmManager;
+        if (!mgr || !mgr.currentModel || !mgr.animation) return;
+
+        try {
+            const url = pickRandom();
+            if (url) {
+                if (mgr.vrmaAction) mgr.stopVRMAAnimation();
+                await mgr.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
+                _vrmIdleLastUrl = url;
+                console.debug('[VRM IdleRotation] 切换待机动作:', url.split('/').pop());
+
+                // 注册 loop 事件监听：动画一轮播完时自动切换
+                const mixer = mgr.animation?.vrmaMixer;
+                if (mixer) {
+                    const handler = () => {
+                        console.debug('[VRM IdleRotation] 动画循环完成，切换下一个');
+                        switchToNext();
+                    };
+                    mixer.addEventListener('loop', handler);
+                    _vrmIdleLoopCleanup = () => mixer.removeEventListener('loop', handler);
                 }
-            } catch (e) {
-                console.warn('[VRM IdleRotation] 切换失败:', e);
             }
-            scheduleNext();
+        } catch (e) {
+            console.warn('[VRM IdleRotation] 切换失败:', e);
+        }
+        scheduleFallback();
+    }
+
+    /** 设置回退定时器 */
+    function scheduleFallback() {
+        if (_vrmIdleTimer) clearTimeout(_vrmIdleTimer);
+        _vrmIdleTimer = setTimeout(() => {
+            console.debug('[VRM IdleRotation] 回退定时器触发，强制切换');
+            switchToNext();
         }, 20000);
     }
-    scheduleNext();
+
+    scheduleFallback();
 }
 
 function _stopVrmIdleRotation() {
-    if (_vrmIdleTimer) {
-        clearTimeout(_vrmIdleTimer);
-        _vrmIdleTimer = null;
-    }
+    _clearVrmIdleSchedule();
     _vrmIdleLastUrl = null;
 }
 
