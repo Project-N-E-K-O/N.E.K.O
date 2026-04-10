@@ -85,6 +85,39 @@ CH_HEADERS_CHROME = {
 }
 
 # ==================================================
+# 统一域名池：统一白名单池和爬虫池
+# 所有音乐源使用的域名都集中在这里管理
+# ==================================================
+MUSIC_SOURCE_DOMAINS = {
+    # 网易云音乐
+    'music.163.com',
+    'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
+    'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
+    'music.126.net',
+    # SoundCloud
+    'soundcloud.com', 'api.soundcloud.com', 'sndcdn.com',
+    'playback.media-streaming.soundcloud.cloud',
+    # iTunes/Apple Music
+    'itunes.apple.com', 'audio-ssl.itunes.apple.com',
+    'a.scdn.co', 'i.scdn.co', 'p.scdn.co',
+    # QQ音乐
+    'y.qq.com', 'dl.stream.qqmusic.com',
+    # 酷狗/其他
+    'kugou.com', 'stream.kugou.com',
+    # FMA (Free Music Archive)
+    'freemusicarchive.org', 'freemusicarchive.imgix.net',
+    # Musopen
+    'musopen.org', 'imslp.org',
+    # Bandcamp
+    'bandcamp.com', 'bcbits.com',
+    # 通用图片
+    'dummyimage.com', 'i.imgur.com',
+    # B站 (部分音乐)
+    'hdslb.com', 'bilivideo.com',
+    'gg.spriteapp.cn', 'mmusic.spriteapp.cn',
+}
+
+# ==================================================
 # 去重与多样性管理
 # ==================================================
 

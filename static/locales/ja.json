@@ -2686,7 +2686,7 @@
         "loadError": "音楽プレイヤーの読み込みに失敗しました",
         "autoplayBlocked": "ブラウザが自動再生をブロックしました。再生ボタンをクリックしてください",
         "ended": "終了",
-        "nowPlayingCard": "🎵 再生中"
+        "unknownState": "不明な状態"
     },
     "Jukebox": {
         "title": "ジュークボックス",
