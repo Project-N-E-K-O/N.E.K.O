@@ -682,21 +682,33 @@ body.react-chat-adapter-active #chat-container {
     cursor: pointer;
 }
 
+/* 最小化悬浮球内图标 */
+#react-chat-window-shell .react-chat-minimized-icon {
+    display: none;
+}
+#react-chat-window-shell.is-minimized .react-chat-minimized-icon {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+}
+
 /* 隐藏 resize 边缘 */
 #react-chat-window-shell.is-minimized .react-chat-resize-edge {
     display: none;
 }
 
-/* ---- 折叠动画（飞到左下角 + 缩放） ---- */
+/* ---- 折叠动画（向左下角缩放） ---- */
 #react-chat-window-shell.is-collapsing {
-    transform-origin: 0 0;
+    transform-origin: 0% 100%;
     transition: transform 0.38s cubic-bezier(0.4, 0, 0.2, 1);
     will-change: transform;
 }
 
-/* ---- 展开动画（从左下角飞回 + 放大） ---- */
+/* ---- 展开动画（从左下角放大） ---- */
 #react-chat-window-shell.is-expanding {
-    transform-origin: 0 0;
+    transform-origin: 0% 100%;
     transition: transform 0.35s cubic-bezier(0.2, 0, 0, 1);
     will-change: transform;
 }
