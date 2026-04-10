@@ -217,7 +217,9 @@ class CompressedRecentHistoryManager:
                         if summary is None:
                             continue
                     # Listen. Here, summary_json['对话摘要'] is not supposed to be anything else than str, but Qwen is shit.
-                    return SystemMessage(content=f"先前对话的备忘录: {summary}"), str(summary_json['对话摘要'])
+                    from config.prompts_sys import _loc, MEMORY_MEMO_WITH_SUMMARY
+                    memo_text = _loc(MEMORY_MEMO_WITH_SUMMARY, get_global_language()).format(summary=summary)
+                    return SystemMessage(content=memo_text), str(summary_json['对话摘要'])
                 else:
                     print('💥 摘要failed: ', response_content)
                     retries += 1
@@ -236,7 +238,8 @@ class CompressedRecentHistoryManager:
                 # 如果解析失败，重试
                 retries += 1
         # 如果所有重试都失败，返回None
-        return SystemMessage(content="先前对话的备忘录: 无。"), ""
+        from config.prompts_sys import _loc, MEMORY_MEMO_EMPTY
+        return SystemMessage(content=_loc(MEMORY_MEMO_EMPTY, get_global_language())), ""
 
     async def further_compress(self, initial_summary):
         retries = 0
