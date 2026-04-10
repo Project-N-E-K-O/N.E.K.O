@@ -1,87 +1,278 @@
+@import url('base.css');
+
+:root {
+    --cloudsave-blue: #40c5f1;
+    --cloudsave-blue-deep: #1a8ba8;
+    --cloudsave-blue-soft: #b3e5fc;
+    --cloudsave-panel: #ffffff;
+    --cloudsave-panel-soft: #f8fdff;
+    --cloudsave-panel-warm: #fff9ed;
+    --cloudsave-warm-border: #f5d38b;
+    --cloudsave-text: #333333;
+    --cloudsave-muted: #607d8b;
+    --cloudsave-shadow: 0 8px 24px rgba(64, 197, 241, 0.08);
+}
+
+html,
 body {
+    height: 100%;
     margin: 0;
-    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
-    background:
-        radial-gradient(circle at top left, rgba(64, 197, 241, 0.12), transparent 28%),
-        linear-gradient(180deg, #f7fbff 0%, #eef4f8 100%);
-    color: #1f2b38;
+    padding: 0;
+    background: transparent;
+    color: var(--cloudsave-text);
+    font-family: 'Segoe UI', Arial, sans-serif;
+    position: relative;
+    overflow: auto;
 }
 
-.cloudsave-page {
-    max-width: 1120px;
-    margin: 0 auto;
-    padding: 32px 20px 48px;
+.container {
+    max-width: 100%;
+    margin: 0;
+    background: #e3f4ff;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 0;
+    padding-bottom: 24px;
+    overflow: visible;
+    position: relative;
+    min-height: 100vh;
 }
 
-.cloudsave-header {
+body .container-header {
+    background: linear-gradient(to right, #4bd4fd, #17a7ff);
+    padding: 18px 24px;
     display: flex;
     justify-content: space-between;
-    align-items: flex-start;
+    align-items: center;
     gap: 16px;
-    margin-bottom: 24px;
+    border-radius: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    -webkit-app-region: drag;
 }
 
-.cloudsave-header h1 {
-    margin: 0 0 8px;
-    font-size: 2rem;
-}
-
-.cloudsave-header p {
+.container-header h2 {
     margin: 0;
-    color: #556575;
+    font-size: 1.5rem;
+    font-weight: 600;
+    position: relative;
+    font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
+    letter-spacing: 1px;
+    color: transparent;
+    --button-text-stroke-color: #22b3ff;
 }
 
-.cloudsave-header-actions {
+.container-header h2::before {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+    color: var(--button-text-stroke-color);
+    -webkit-text-stroke: 1px var(--button-text-stroke-color);
+    text-shadow:
+        2px 0 0 var(--button-text-stroke-color),
+        0 2px 0 var(--button-text-stroke-color),
+        -2px 0 0 var(--button-text-stroke-color),
+        0 -2px 0 var(--button-text-stroke-color),
+        1.4px 1.4px 0 var(--button-text-stroke-color),
+        -1.4px 1.4px 0 var(--button-text-stroke-color),
+        1.4px -1.4px 0 var(--button-text-stroke-color),
+        -1.4px -1.4px 0 var(--button-text-stroke-color),
+        1.8px 0.8px 0 var(--button-text-stroke-color),
+        -1.8px 0.8px 0 var(--button-text-stroke-color),
+        1.8px -0.8px 0 var(--button-text-stroke-color),
+        -1.8px -0.8px 0 var(--button-text-stroke-color),
+        0.8px 1.8px 0 var(--button-text-stroke-color),
+        -0.8px 1.8px 0 var(--button-text-stroke-color),
+        0.8px -1.8px 0 var(--button-text-stroke-color),
+        -0.8px -1.8px 0 var(--button-text-stroke-color),
+        1px 0 0 var(--button-text-stroke-color),
+        -1px 0 0 var(--button-text-stroke-color),
+        0 1px 0 var(--button-text-stroke-color),
+        0 -1px 0 var(--button-text-stroke-color);
+    white-space: nowrap;
+}
+
+.container-header h2::after {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: none;
+    white-space: nowrap;
+}
+
+.header-actions {
     display: flex;
+    align-items: center;
     gap: 10px;
     flex-wrap: wrap;
+    -webkit-app-region: no-drag;
+}
+
+.container-content {
+    padding: 24px 32px;
+    background: #e3f4ff;
+    border-radius: 0 0 20px 20px;
+}
+
+.page-subtitle {
+    margin: 0 0 12px;
+    color: var(--cloudsave-blue-deep);
+    font-size: 0.96rem;
+    line-height: 1.65;
+    font-weight: 500;
+}
+
+.page-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 18px;
 }
 
 .btn {
-    border: none;
+    padding: 10px 20px;
     border-radius: 999px;
-    padding: 10px 18px;
-    background: #40c5f1;
+    border: none;
+    background: var(--cloudsave-blue);
     color: #fff;
-    cursor: pointer;
     font-size: 0.95rem;
-    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s, transform 0.1s ease, box-shadow 0.1s ease;
+    font-weight: 500;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.btn:hover:not(:disabled) {
+    background: #3ab8e0;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(64, 197, 241, 0.3);
+}
+
+.btn:active:not(:disabled) {
+    background: #2fa8d0;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
+    opacity: 0.95;
 }
 
 .btn.secondary {
-    background: #dce8ef;
-    color: #1f2b38;
+    background: #ffffff;
+    color: var(--cloudsave-blue);
+    border: 1px solid var(--cloudsave-blue-soft);
+}
+
+.btn.secondary:hover:not(:disabled) {
+    background: #f6fcff;
+    box-shadow: 0 2px 8px rgba(64, 197, 241, 0.2);
+}
+
+.btn.secondary:active:not(:disabled) {
+    background: #eef9ff;
 }
 
 .btn.danger {
-    background: #ea5b5b;
+    background: #ff5252;
+}
+
+.btn.danger:hover:not(:disabled) {
+    background: #ff4444;
+    box-shadow: 0 2px 8px rgba(255, 82, 82, 0.3);
+}
+
+.btn.danger:active:not(:disabled) {
+    background: #e53935;
+    box-shadow: 0 1px 3px rgba(255, 82, 82, 0.2);
 }
 
 .btn:disabled {
     opacity: 0.55;
     cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+.btn.sm {
+    padding: 0 18px;
+    border-radius: 999px;
+    min-width: 92px;
+    height: 36px;
+    line-height: 1;
+    font-size: 0.92rem;
+    font-weight: 600;
+    width: auto;
 }
 
 .cloudsave-status-card,
-.cloudsave-item {
-    background: rgba(255, 255, 255, 0.86);
-    border: 1px solid rgba(64, 197, 241, 0.12);
+.cloudsave-name-note,
+.cloudsave-group,
+.cloudsave-item,
+.cloudsave-empty {
+    background: var(--cloudsave-panel);
     border-radius: 20px;
-    box-shadow: 0 14px 40px rgba(25, 66, 107, 0.08);
+    box-shadow: var(--cloudsave-shadow);
+}
+
+.cloudsave-status-card,
+.cloudsave-group,
+.cloudsave-item,
+.cloudsave-empty {
+    border: 1px solid var(--cloudsave-blue-soft);
 }
 
 .cloudsave-status-card {
-    padding: 18px 20px;
+    padding: 20px 24px;
     margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+#cloudsave-provider-status {
+    color: var(--cloudsave-blue-deep);
+    font-size: 0.95rem;
+    line-height: 1.65;
+}
+
+#cloudsave-current-character {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    min-height: 38px;
+    padding: 0 14px;
+    border-radius: 999px;
+    background: #f4fbff;
+    border: 1px solid var(--cloudsave-blue-soft);
+    color: var(--cloudsave-blue);
+    font-size: 0.95rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .cloudsave-name-note {
     margin-bottom: 20px;
-    padding: 16px 18px;
-    border-radius: 18px;
-    background: rgba(255, 244, 221, 0.92);
-    border: 1px solid rgba(232, 169, 66, 0.26);
-    box-shadow: 0 12px 30px rgba(161, 108, 17, 0.08);
+    padding: 18px 20px;
+    background: var(--cloudsave-panel-warm);
+    border: 1px solid var(--cloudsave-warm-border);
+    box-shadow: 0 8px 24px rgba(232, 169, 66, 0.08);
 }
 
 .cloudsave-name-note-title {
@@ -95,7 +286,7 @@ body {
     margin: 0;
     color: #7a5a1f;
     font-size: 0.9rem;
-    line-height: 1.6;
+    line-height: 1.65;
 }
 
 .cloudsave-name-note-body + .cloudsave-name-note-body {
@@ -111,21 +302,15 @@ body {
     display: grid;
     gap: 14px;
     padding: 18px 20px 20px;
-    border-radius: 24px;
-    background: rgba(255, 255, 255, 0.58);
-    border: 1px solid rgba(64, 197, 241, 0.12);
+    background: var(--cloudsave-panel-soft);
 }
 
 .cloudsave-group.workshop {
-    background:
-        linear-gradient(180deg, rgba(232, 248, 255, 0.92) 0%, rgba(255, 255, 255, 0.72) 100%);
-    border-color: rgba(64, 197, 241, 0.2);
+    background: #f4fbff;
 }
 
 .cloudsave-group.other {
-    background:
-        linear-gradient(180deg, rgba(247, 250, 252, 0.95) 0%, rgba(255, 255, 255, 0.78) 100%);
-    border-color: rgba(148, 163, 184, 0.18);
+    background: #ffffff;
 }
 
 .cloudsave-group-header {
@@ -144,7 +329,7 @@ body {
 .cloudsave-group-title {
     margin: 0;
     font-size: 1.05rem;
-    color: #23384d;
+    color: var(--cloudsave-blue);
 }
 
 .cloudsave-group-count {
@@ -152,15 +337,15 @@ body {
     align-items: center;
     padding: 4px 10px;
     border-radius: 999px;
-    background: rgba(31, 43, 56, 0.06);
-    color: #536577;
+    background: #eaf8fd;
+    color: var(--cloudsave-blue-deep);
     font-size: 0.82rem;
     font-weight: 600;
 }
 
 .cloudsave-group-subtitle {
     margin: 0;
-    color: #607284;
+    color: var(--cloudsave-muted);
     font-size: 0.9rem;
     line-height: 1.55;
 }
@@ -196,15 +381,15 @@ body {
     width: 32px;
     height: 32px;
     padding: 0;
-    border: none;
+    border: 1px solid var(--cloudsave-blue-soft);
     border-radius: 999px;
-    background: transparent;
+    background: #f4fbff;
     cursor: pointer;
     flex-shrink: 0;
 }
 
 .cloudsave-item-expand:hover {
-    background: rgba(64, 197, 241, 0.12);
+    background: #eaf8fd;
 }
 
 .cloudsave-item-expand-icon {
@@ -222,11 +407,12 @@ body {
 .cloudsave-item-title {
     margin: 0;
     font-size: 1.12rem;
+    color: var(--cloudsave-blue);
 }
 
 .cloudsave-item-subtitle {
     margin: 4px 0 0;
-    color: #677786;
+    color: var(--cloudsave-muted);
     font-size: 0.92rem;
 }
 
@@ -240,10 +426,14 @@ body {
     gap: 8px;
 }
 
+.cloudsave-item-actions {
+    justify-content: flex-end;
+}
+
 .cloudsave-item-details {
     margin-top: 14px;
     padding-top: 14px;
-    border-top: 1px solid rgba(64, 197, 241, 0.12);
+    border-top: 1px solid #d9f1fb;
 }
 
 .cloudsave-badge {
@@ -267,23 +457,23 @@ body {
 .cloudsave-meta-section {
     padding: 12px;
     border-radius: 16px;
-    border: 1px solid rgba(64, 197, 241, 0.12);
+    border: 1px solid #dceff8;
 }
 
 .cloudsave-meta-section.local {
-    background: linear-gradient(180deg, rgba(234, 248, 253, 0.9) 0%, rgba(255, 255, 255, 0.9) 100%);
+    background: #f4fbff;
 }
 
 .cloudsave-meta-section.cloud {
-    background: linear-gradient(180deg, rgba(255, 247, 236, 0.92) 0%, rgba(255, 255, 255, 0.9) 100%);
-    border-color: rgba(232, 169, 66, 0.16);
+    background: #fffaf1;
+    border-color: #f0dfb5;
 }
 
 .cloudsave-meta-section-title {
     margin-bottom: 10px;
     font-size: 0.86rem;
     font-weight: 700;
-    color: #415363;
+    color: var(--cloudsave-blue-deep);
 }
 
 .cloudsave-meta-grid {
@@ -295,13 +485,13 @@ body {
 .cloudsave-meta {
     padding: 10px 12px;
     border-radius: 14px;
-    background: #f5f8fb;
+    background: #ffffff;
 }
 
 .cloudsave-meta-label {
     display: block;
     font-size: 0.78rem;
-    color: #718293;
+    color: var(--cloudsave-muted);
     margin-bottom: 4px;
 }
 
@@ -327,7 +517,7 @@ body {
     margin-bottom: 8px;
     font-size: 0.9rem;
     font-weight: 700;
-    color: #415363;
+    color: var(--cloudsave-blue-deep);
 }
 
 .cloudsave-guidance-list {
@@ -374,14 +564,86 @@ body {
 .cloudsave-empty {
     padding: 28px;
     text-align: center;
-    color: #677786;
-    background: rgba(255, 255, 255, 0.76);
-    border-radius: 18px;
+    color: var(--cloudsave-muted);
+}
+
+[data-theme="dark"] .header-actions .btn.secondary {
+    background: #2d2d2d;
+    color: #8dd7ff;
+    border-color: #444;
+}
+
+[data-theme="dark"] .cloudsave-status-card,
+[data-theme="dark"] .cloudsave-group,
+[data-theme="dark"] .cloudsave-item,
+[data-theme="dark"] .cloudsave-empty {
+    background: #1e1e1e;
+    border-color: #333;
+    color: #e0e0e0;
+}
+
+[data-theme="dark"] .cloudsave-group.workshop {
+    background: #1b242b;
+}
+
+[data-theme="dark"] .cloudsave-name-note {
+    background: rgba(79, 58, 19, 0.4);
+    border-color: rgba(232, 169, 66, 0.24);
+}
+
+[data-theme="dark"] #cloudsave-current-character,
+[data-theme="dark"] .cloudsave-group-title,
+[data-theme="dark"] .cloudsave-item-title,
+[data-theme="dark"] .cloudsave-section-title,
+[data-theme="dark"] .cloudsave-meta-section-title {
+    color: #4aa3df;
+}
+
+[data-theme="dark"] #cloudsave-current-character,
+[data-theme="dark"] .cloudsave-item-expand,
+[data-theme="dark"] .cloudsave-badge,
+[data-theme="dark"] .cloudsave-meta,
+[data-theme="dark"] .cloudsave-meta-section.local {
+    background: #2d2d2d;
+    border-color: #444;
+}
+
+[data-theme="dark"] .cloudsave-meta-section.cloud {
+    background: rgba(79, 58, 19, 0.28);
+    border-color: rgba(232, 169, 66, 0.2);
+}
+
+[data-theme="dark"] .cloudsave-item-details {
+    border-top-color: #333;
+}
+
+[data-theme="dark"] .cloudsave-group-subtitle,
+[data-theme="dark"] .cloudsave-item-subtitle,
+[data-theme="dark"] .cloudsave-meta-label,
+[data-theme="dark"] #cloudsave-provider-status,
+[data-theme="dark"] .cloudsave-empty {
+    color: #b0bec5;
 }
 
 @media (max-width: 768px) {
-    .cloudsave-header {
+    .container-header {
+        align-items: flex-start;
         flex-direction: column;
+    }
+
+    .container-content {
+        padding: 18px 16px 24px;
+    }
+
+    .header-actions {
+        width: 100%;
+    }
+
+    .cloudsave-group,
+    .cloudsave-item,
+    .cloudsave-name-note,
+    .cloudsave-empty {
+        border-radius: 18px;
     }
 
     .cloudsave-group {
@@ -392,7 +654,8 @@ body {
         flex-direction: column;
     }
 
-    .cloudsave-item-main {
+    .cloudsave-item-main,
+    .cloudsave-item-actions {
         width: 100%;
     }
 
@@ -402,5 +665,27 @@ body {
 
     .cloudsave-meta-sections {
         grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 520px) {
+    .header-actions,
+    .cloudsave-item-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .header-actions .btn,
+    .cloudsave-item-actions .btn {
+        width: 100%;
+    }
+
+    .page-meta-row {
+        margin-bottom: 16px;
+    }
+
+    #cloudsave-current-character {
+        width: 100%;
+        justify-content: center;
     }
 }

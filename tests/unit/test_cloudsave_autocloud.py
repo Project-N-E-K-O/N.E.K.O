@@ -8,7 +8,12 @@ from unittest.mock import patch
 import pytest
 
 from utils.cloudsave_autocloud import CloudSaveManager, STEAM_AUTO_CLOUD_SYNC_BACKEND
-from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment, export_local_cloudsave_snapshot
+from utils.cloudsave_runtime import (
+    CloudsaveDeadlineExceeded,
+    bootstrap_local_cloudsave_environment,
+    export_cloudsave_character_unit,
+    export_local_cloudsave_snapshot,
+)
 from utils.config_manager import ConfigManager
 from utils.file_utils import atomic_write_json
 
@@ -176,3 +181,48 @@ def test_cloudsave_manager_status_includes_autocloud_configuration_hints():
         assert status["recommended_paths"]["primary_root"]["root"] == "WinAppDataLocal"
         assert status["recommended_paths"]["primary_root"]["subdirectory"] == "N.E.K.O/cloudsave"
         assert status["current_platform_rule"]["subdirectory"] == "N.E.K.O/cloudsave"
+
+
+@pytest.mark.unit
+def test_single_character_export_keeps_manifest_marked_as_already_applied():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        _write_runtime_state(cm, character_name="小满")
+        export_local_cloudsave_snapshot(cm)
+
+        export_cloudsave_character_unit(cm, "小满", overwrite=True)
+
+        manager = CloudSaveManager(cm)
+        status = manager.build_status()
+        result = manager.import_if_needed(reason="post_single_export_check")
+
+        assert status["manifest_fingerprint"]
+        assert status["manifest_fingerprint"] == status["last_applied_manifest_fingerprint"]
+        assert status["startup_import_required"] is False
+        assert result["action"] == "skipped"
+        assert result["reason"] == "already_applied"
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_import_deadline_exceeded_before_apply_preserves_local_runtime():
+    with TemporaryDirectory() as td:
+        source_cm = _make_config_manager(Path(td) / "source")
+        target_cm = _make_config_manager(Path(td) / "target")
+        bootstrap_local_cloudsave_environment(source_cm)
+        bootstrap_local_cloudsave_environment(target_cm)
+
+        _write_runtime_state(source_cm, character_name="云端角色")
+        export_local_cloudsave_snapshot(source_cm)
+
+        _write_runtime_state(target_cm, character_name="本地角色")
+        shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+        manager = CloudSaveManager(target_cm)
+        with pytest.raises(CloudsaveDeadlineExceeded):
+            manager.import_if_needed(
+                reason="budget_exhausted_before_apply",
+                deadline_monotonic=0.0,
+            )
+
+        assert target_cm.load_characters()["当前猫娘"] == "本地角色"

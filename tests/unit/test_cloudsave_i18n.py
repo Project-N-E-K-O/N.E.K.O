@@ -51,7 +51,9 @@ def test_cloudsave_templates_use_i18n_keys():
     assert 'data-i18n="cloudsave.subtitle"' in cloudsave_template
     assert 'data-i18n="cloudsave.refresh"' in cloudsave_template
     assert 'data-i18n="cloudsave.backToCharacterManager"' in cloudsave_template
+    assert 'id="cloudsave-provider-status"' in cloudsave_template
     assert 'data-i18n="cloudsave.loadingSummary"' in cloudsave_template
+    assert 'id="cloudsave-current-character"' in cloudsave_template
     assert 'data-i18n="cloudsave.nameConflictNotice.title"' in cloudsave_template
     assert 'data-i18n="cloudsave.nameConflictNotice.bodyStorage"' in cloudsave_template
     assert 'data-i18n="cloudsave.nameConflictNotice.bodyImpact"' in cloudsave_template
@@ -210,6 +212,17 @@ def test_cloudsave_manager_waits_for_i18n_and_rebinds_dynamic_labels():
 
 
 @pytest.mark.unit
+def test_cloudsave_manager_renders_provider_status_card_messages():
+    script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+
+    assert "const providerStatus = document.getElementById('cloudsave-provider-status');" in script
+    assert "cloudsave.providerSteamAutoCloudReady" in script
+    assert "cloudsave.providerSteamAutoCloudOffline" in script
+    assert "cloudsave.providerAvailable" in script
+    assert "cloudsave.providerUnavailable" in script
+
+
+@pytest.mark.unit
 def test_cloudsave_manager_renders_my_characters_first_and_sorts_by_local_update_time():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
 
@@ -237,6 +250,77 @@ def test_cloudsave_group_titles_use_my_characters_copy_in_all_supported_locales(
     for locale_name, expected_value in expected.items():
         payload = json.loads((LOCALE_DIR / locale_name).read_text(encoding="utf-8"))
         assert _get_nested_value(payload, "cloudsave.group.otherTitle") == expected_value
+
+
+@pytest.mark.unit
+def test_cloudsave_action_labels_use_snapshot_copy_in_all_supported_locales():
+    expected = {
+        "en.json": {
+            "cloudsave.action.uploadDisabledByProvider": "Prepare snapshot unavailable",
+            "cloudsave.action.uploadOverwrite": "Prepare snapshot",
+            "cloudsave.action.uploadNew": "Prepare snapshot",
+            "cloudsave.action.uploadUnavailable": "Prepare snapshot unavailable",
+            "cloudsave.action.downloadDisabledByProvider": "Apply snapshot unavailable",
+            "cloudsave.action.downloadOverwrite": "Apply snapshot",
+            "cloudsave.action.downloadNew": "Apply snapshot",
+            "cloudsave.action.downloadUnavailable": "Apply snapshot unavailable",
+        },
+        "zh-CN.json": {
+            "cloudsave.action.uploadDisabledByProvider": "暂不可生成快照",
+            "cloudsave.action.uploadOverwrite": "生成快照",
+            "cloudsave.action.uploadNew": "生成快照",
+            "cloudsave.action.uploadUnavailable": "暂不可生成快照",
+            "cloudsave.action.downloadDisabledByProvider": "暂不可应用快照",
+            "cloudsave.action.downloadOverwrite": "应用快照",
+            "cloudsave.action.downloadNew": "应用快照",
+            "cloudsave.action.downloadUnavailable": "暂不可应用快照",
+        },
+        "zh-TW.json": {
+            "cloudsave.action.uploadDisabledByProvider": "暫時無法產生快照",
+            "cloudsave.action.uploadOverwrite": "產生快照",
+            "cloudsave.action.uploadNew": "產生快照",
+            "cloudsave.action.uploadUnavailable": "暫時無法產生快照",
+            "cloudsave.action.downloadDisabledByProvider": "暫時無法套用快照",
+            "cloudsave.action.downloadOverwrite": "套用快照",
+            "cloudsave.action.downloadNew": "套用快照",
+            "cloudsave.action.downloadUnavailable": "暫時無法套用快照",
+        },
+        "ja.json": {
+            "cloudsave.action.uploadDisabledByProvider": "スナップショットを準備できません",
+            "cloudsave.action.uploadOverwrite": "スナップショットを準備",
+            "cloudsave.action.uploadNew": "スナップショットを準備",
+            "cloudsave.action.uploadUnavailable": "スナップショットを準備できません",
+            "cloudsave.action.downloadDisabledByProvider": "スナップショットを適用できません",
+            "cloudsave.action.downloadOverwrite": "スナップショットを適用",
+            "cloudsave.action.downloadNew": "スナップショットを適用",
+            "cloudsave.action.downloadUnavailable": "スナップショットを適用できません",
+        },
+        "ko.json": {
+            "cloudsave.action.uploadDisabledByProvider": "스냅샷 준비 불가",
+            "cloudsave.action.uploadOverwrite": "스냅샷 준비",
+            "cloudsave.action.uploadNew": "스냅샷 준비",
+            "cloudsave.action.uploadUnavailable": "스냅샷 준비 불가",
+            "cloudsave.action.downloadDisabledByProvider": "스냅샷 적용 불가",
+            "cloudsave.action.downloadOverwrite": "스냅샷 적용",
+            "cloudsave.action.downloadNew": "스냅샷 적용",
+            "cloudsave.action.downloadUnavailable": "스냅샷 적용 불가",
+        },
+        "ru.json": {
+            "cloudsave.action.uploadDisabledByProvider": "Подготовка снимка недоступна",
+            "cloudsave.action.uploadOverwrite": "Подготовить снимок",
+            "cloudsave.action.uploadNew": "Подготовить снимок",
+            "cloudsave.action.uploadUnavailable": "Подготовка снимка недоступна",
+            "cloudsave.action.downloadDisabledByProvider": "Применение снимка недоступно",
+            "cloudsave.action.downloadOverwrite": "Применить снимок",
+            "cloudsave.action.downloadNew": "Применить снимок",
+            "cloudsave.action.downloadUnavailable": "Применение снимка недоступно",
+        },
+    }
+
+    for locale_name, assertions in expected.items():
+        payload = json.loads((LOCALE_DIR / locale_name).read_text(encoding="utf-8"))
+        for key, value in assertions.items():
+            assert _get_nested_value(payload, key) == value
 
 
 @pytest.mark.unit
@@ -287,6 +371,20 @@ def test_cloudsave_manager_surfaces_rollback_failure_details():
     assert "cloudsave.dialog.operationInProgress" in script
     assert "payloadError.rollback_error" in script
     assert "Rollback also failed: {{message}}" in script
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_fallback_copy_uses_snapshot_terms_for_actions():
+    script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+
+    assert "Upload to cloud" not in script
+    assert "Download to local" not in script
+    assert "continue with the upload" not in script
+    assert "continue with the download" not in script
+    assert "Prepare snapshot" in script
+    assert "Apply snapshot" in script
+    assert "continue preparing the Steam Cloud snapshot" in script
+    assert "continue restoring from the Steam Cloud snapshot" in script
 
 
 @pytest.mark.unit

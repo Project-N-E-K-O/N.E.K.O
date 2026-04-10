@@ -45,13 +45,16 @@ import mimetypes # noqa
 mimetypes.add_type("application/javascript", ".js")
 import asyncio # noqa
 import importlib # noqa
+import inspect # noqa
 import logging # noqa
 import atexit # noqa
 import httpx # noqa
+import time # noqa
 from datetime import datetime, timezone # noqa
 from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
 from utils.cloudsave_autocloud import get_cloudsave_manager # noqa
 from utils.cloudsave_runtime import (
+    CloudsaveDeadlineExceeded,
     MaintenanceModeError,
     ROOT_MODE_NORMAL,
     bootstrap_local_cloudsave_environment,
@@ -172,6 +175,36 @@ _server_loop: asyncio.AbstractEventLoop | None = None
 
 _config_manager = get_config_manager()
 _cloudsave_manager = get_cloudsave_manager(_config_manager)
+
+
+def _cloudsave_action_supports_deadline(action) -> bool:
+    try:
+        signature = inspect.signature(action)
+    except (TypeError, ValueError):
+        return False
+    if "deadline_monotonic" in signature.parameters:
+        return True
+    return any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
+async def _run_cloudsave_manager_action(
+    action_name: str,
+    *,
+    reason: str,
+    budget_seconds: float | None = None,
+):
+    action = getattr(_cloudsave_manager, action_name)
+    kwargs = {"reason": reason}
+    if (
+        budget_seconds is not None
+        and budget_seconds > 0
+        and _cloudsave_action_supports_deadline(action)
+    ):
+        kwargs["deadline_monotonic"] = time.monotonic() + float(budget_seconds)
+    return await asyncio.to_thread(action, **kwargs)
 
 def cleanup():
     """通知所有同步线程停止"""
@@ -966,16 +999,16 @@ async def on_startup():
         bootstrap_local_cloudsave_environment(_config_manager)
         import_result = None
         try:
-            import_result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _cloudsave_manager.import_if_needed,
-                    reason="main_server_startup",
-                ),
-                timeout=10.0,
+            import_result = await _run_cloudsave_manager_action(
+                "import_if_needed",
+                reason="main_server_startup",
+                budget_seconds=10.0,
             )
             logger.info("Steam Auto-Cloud startup import: %s", import_result)
-        except asyncio.TimeoutError:
-            logger.warning("Steam Auto-Cloud startup import timed out after 10 seconds; continuing with local runtime state")
+        except CloudsaveDeadlineExceeded:
+            logger.warning(
+                "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
+            )
         except Exception as e:
             logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
         await initialize_character_data()
@@ -1160,16 +1193,16 @@ async def on_shutdown():
             logger.debug(f"Steam Auto-Cloud pre-export release phase failed: {e}")
 
         try:
-            export_result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _cloudsave_manager.export_snapshot,
-                    reason="main_server_shutdown",
-                ),
-                timeout=3.0,
+            export_result = await _run_cloudsave_manager_action(
+                "export_snapshot",
+                reason="main_server_shutdown",
+                budget_seconds=3.0,
             )
             logger.info("Steam Auto-Cloud shutdown export: %s", export_result)
-        except asyncio.TimeoutError:
-            logger.warning("Steam Auto-Cloud shutdown export timed out after 3 seconds; Steam may upload the previous local snapshot")
+        except CloudsaveDeadlineExceeded:
+            logger.warning(
+                "Steam Auto-Cloud shutdown export exceeded 3.0s budget before applying snapshot changes; Steam may upload the previous local snapshot"
+            )
         except Exception as e:
             logger.warning(f"Steam Auto-Cloud shutdown export failed: {e}")
 

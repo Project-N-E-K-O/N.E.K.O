@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 import unicodedata
 from copy import deepcopy
 from contextlib import contextmanager
@@ -160,8 +161,31 @@ class CloudsaveOperationError(RuntimeError):
         super().__init__(message)
 
 
+class CloudsaveDeadlineExceeded(RuntimeError):
+    """Raised when a cloudsave job exceeds its pre-apply time budget."""
+
+    def __init__(self, operation: str, stage: str):
+        self.operation = str(operation or "cloudsave")
+        self.stage = str(stage or "unknown")
+        self.code = "CLOUDSAVE_DEADLINE_EXCEEDED"
+        super().__init__(f"{self.operation} exceeded deadline before stage={self.stage}")
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _assert_deadline_not_exceeded(
+    deadline_monotonic: float | None,
+    *,
+    operation: str,
+    stage: str,
+) -> None:
+    if deadline_monotonic is None:
+        return
+    if time.monotonic() <= float(deadline_monotonic):
+        return
+    raise CloudsaveDeadlineExceeded(operation=operation, stage=stage)
 
 
 def is_cloudsave_provider_available(config_manager) -> bool:
@@ -2777,6 +2801,7 @@ def export_cloudsave_character_unit(config_manager, character_name: str, *, over
                 client_id=str(cloud_state.get("client_id", "")),
             )
             cloud_state["next_sequence_number"] = sequence_number + 1
+            cloud_state["last_applied_manifest_fingerprint"] = str(manifest.get("fingerprint") or "")
             cloud_state["last_successful_export_at"] = exported_at
             config_manager.save_cloudsave_local_state(cloud_state)
         except Exception:
@@ -2916,11 +2941,23 @@ def import_cloudsave_character_unit(
         }
 
 
-def _collect_memory_stage_entries(config_manager, stage_root: Path, character_names: list[str]) -> dict[str, Path]:
+def _collect_memory_stage_entries(
+    config_manager,
+    stage_root: Path,
+    character_names: list[str],
+    *,
+    deadline_monotonic: float | None = None,
+    operation: str = "export",
+) -> dict[str, Path]:
     staged_entries: dict[str, Path] = {}
     for character_name in sorted(character_names):
         character_dir = Path(config_manager.memory_dir) / character_name
         for filename in MANAGED_MEMORY_FILENAMES:
+            _assert_deadline_not_exceeded(
+                deadline_monotonic,
+                operation=operation,
+                stage=f"stage_memory:{character_name}:{filename}",
+            )
             source_path = character_dir / filename
             if not source_path.is_file():
                 continue
@@ -3138,7 +3175,11 @@ def _remove_tombstone_from_state_payload(
     }
 
 
-def export_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
+def export_local_cloudsave_snapshot(
+    config_manager,
+    *,
+    deadline_monotonic: float | None = None,
+) -> dict[str, Any]:
     """Export the current local runtime truth into cloudsave/ with manifest-last semantics."""
     bootstrap_local_cloudsave_environment(config_manager)
 
@@ -3147,6 +3188,11 @@ def export_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
         mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
         reason="local_cloudsave_export",
     ):
+        _assert_deadline_not_exceeded(
+            deadline_monotonic,
+            operation="export",
+            stage="prepare_export",
+        )
         stage_root = _create_staging_workspace(config_manager, "export")
         cloud_state = config_manager.load_cloudsave_local_state()
         sequence_number = max(1, int(cloud_state.get("next_sequence_number") or 1))
@@ -3227,6 +3273,11 @@ def export_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
         manifest = ensure_cloudsave_manifest(config_manager)
         manifest_device_id = str(manifest.get("device_id", ""))
         for name, binding_payload in binding_payloads.items():
+            _assert_deadline_not_exceeded(
+                deadline_monotonic,
+                operation="export",
+                stage=f"stage_character:{name}",
+            )
             staged_entries[f"bindings/{name}.json"] = _stage_json_file(
                 stage_root,
                 f"bindings/{name}.json",
@@ -3244,8 +3295,21 @@ def export_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
                 device_id=manifest_device_id,
             )
             staged_entries.update(single_character_entries)
-        staged_entries.update(_collect_memory_stage_entries(config_manager, stage_root, character_names))
+        staged_entries.update(
+            _collect_memory_stage_entries(
+                config_manager,
+                stage_root,
+                character_names,
+                deadline_monotonic=deadline_monotonic,
+                operation="export",
+            )
+        )
 
+        _assert_deadline_not_exceeded(
+            deadline_monotonic,
+            operation="export",
+            stage="finalize_manifest",
+        )
         files = {
             relative_path: {
                 "sha256": _sha256_file(staged_path),
@@ -3272,6 +3336,11 @@ def export_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
             files=files,
         )
 
+        _assert_deadline_not_exceeded(
+            deadline_monotonic,
+            operation="export",
+            stage="apply_snapshot",
+        )
         for relative_path, staged_path in staged_entries.items():
             _atomic_copy_file(staged_path, config_manager.cloudsave_dir / relative_path)
 
@@ -3296,7 +3365,11 @@ def export_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
         }
 
 
-def import_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
+def import_local_cloudsave_snapshot(
+    config_manager,
+    *,
+    deadline_monotonic: float | None = None,
+) -> dict[str, Any]:
     """Import the current local cloudsave snapshot back into runtime truth with rollback."""
     bootstrap_local_cloudsave_environment(config_manager)
     with cloud_apply_fence(
@@ -3304,6 +3377,11 @@ def import_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
         mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
         reason="local_cloudsave_import",
     ):
+        _assert_deadline_not_exceeded(
+            deadline_monotonic,
+            operation="import",
+            stage="prepare_import",
+        )
         manifest = load_cloudsave_manifest(config_manager)
         manifest_files = manifest.get("files") or {}
         if not isinstance(manifest_files, dict) or not manifest_files:
@@ -3312,6 +3390,11 @@ def import_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
         stage_root = _create_staging_workspace(config_manager, "import")
         staged_entries: dict[str, Path] = {}
         for relative_path in sorted(manifest_files):
+            _assert_deadline_not_exceeded(
+                deadline_monotonic,
+                operation="import",
+                stage=f"stage_file:{relative_path}",
+            )
             source_path = config_manager.cloudsave_dir / relative_path
             if not source_path.is_file():
                 raise FileNotFoundError(f"cloudsave file missing from manifest: {relative_path}")
@@ -3462,6 +3545,11 @@ def import_local_cloudsave_snapshot(config_manager) -> dict[str, Any]:
                 record["backup"] = backup_path
             backup_records.append(record)
 
+        _assert_deadline_not_exceeded(
+            deadline_monotonic,
+            operation="import",
+            stage="apply_runtime",
+        )
         try:
             for target_path, staged_path in runtime_targets.items():
                 _apply_runtime_file(staged_path, target_path)

@@ -147,7 +147,14 @@ class CloudSaveManager:
             "current_platform_rule": current_platform_rule,
         }
 
-    def import_if_needed(self, *, reason: str = "", force: bool = False, steamworks=None) -> dict[str, Any]:
+    def import_if_needed(
+        self,
+        *,
+        reason: str = "",
+        force: bool = False,
+        steamworks=None,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
         status = self.build_status(steamworks=steamworks)
         if not status["has_snapshot"]:
             return {
@@ -165,7 +172,10 @@ class CloudSaveManager:
                 "requested_reason": str(reason or ""),
                 "status": status,
             }
-        result = import_local_cloudsave_snapshot(self.config_manager)
+        result = import_local_cloudsave_snapshot(
+            self.config_manager,
+            deadline_monotonic=deadline_monotonic,
+        )
         return {
             "success": True,
             "action": "imported",
@@ -174,8 +184,17 @@ class CloudSaveManager:
             "status": self.build_status(steamworks=steamworks),
         }
 
-    def export_snapshot(self, *, reason: str = "", steamworks=None) -> dict[str, Any]:
-        result = export_local_cloudsave_snapshot(self.config_manager)
+    def export_snapshot(
+        self,
+        *,
+        reason: str = "",
+        steamworks=None,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        result = export_local_cloudsave_snapshot(
+            self.config_manager,
+            deadline_monotonic=deadline_monotonic,
+        )
         return {
             "success": True,
             "action": "exported",

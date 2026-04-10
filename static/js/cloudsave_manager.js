@@ -1146,11 +1146,11 @@
             const baseMessage = item.relation_state === 'diverged' || item.relation_state === 'matched'
                 ? translate(
                     'cloudsave.confirm.uploadOverwrite',
-                    'This will overwrite the cloud copy with the same name. It will not change the local character and will not upload model asset files.',
+                    'This will overwrite the local cloud snapshot entry with the same name. It will not change the local character immediately, and model asset files are still not included.',
                 )
                 : translate(
                     'cloudsave.confirm.uploadNew',
-                    'This will upload the local character to the cloud. Model asset files are not included.',
+                    'This will write the local character into the local cloud snapshot cache. Model asset files are not included.',
                 );
             const manualAssetHint = localUsesManualAsset
                 ? translate(
@@ -1159,17 +1159,17 @@
                 )
                 : '';
             const workshopHint = buildWorkshopUploadHint(item);
-            return `${baseMessage}${manualAssetHint}${workshopHint}${translate('cloudsave.confirm.uploadFinal', '\nDo you want to continue with the upload?')}`;
+            return `${baseMessage}${manualAssetHint}${workshopHint}${translate('cloudsave.confirm.uploadFinal', '\nDo you want to continue preparing the Steam Cloud snapshot?')}`;
         }
 
         const baseMessage = item.relation_state === 'diverged' || item.relation_state === 'matched'
             ? translate(
                 'cloudsave.confirm.downloadOverwrite',
-                'This will overwrite the local character settings and memory directory with the same name. Model assets will not be downloaded automatically, and a local backup will be created first.',
+                'This will overwrite the local character settings and memory directory with the same name using the cloud snapshot already synced to this device. Model assets will not be downloaded automatically, and a local backup will be created first.',
             )
             : translate(
                 'cloudsave.confirm.downloadNew',
-                'This will download the cloud character to local storage. Model assets will not be downloaded automatically, and a local backup will be created first.',
+                'This will restore the cloud snapshot already synced to this device into local storage. Model assets will not be downloaded automatically, and a local backup will be created first.',
             );
         const manualAssetHint = cloudUsesManualAsset
             ? translate(
@@ -1178,7 +1178,7 @@
             )
             : '';
         const workshopHint = buildWorkshopDownloadHint(item);
-        return `${baseMessage}${manualAssetHint}${workshopHint}${translate('cloudsave.confirm.downloadFinal', '\nDo you want to continue with the download?')}`;
+        return `${baseMessage}${manualAssetHint}${workshopHint}${translate('cloudsave.confirm.downloadFinal', '\nDo you want to continue restoring from the Steam Cloud snapshot?')}`;
     }
 
     async function refreshSummaryAfterStateChange(preferredCharacterName) {
@@ -1543,12 +1543,10 @@
         uploadButton.type = 'button';
         uploadButton.className = 'btn';
         uploadButton.textContent = !providerAvailable
-            ? translate('cloudsave.action.uploadDisabledByProvider', 'Upload unavailable')
+            ? translate('cloudsave.action.uploadDisabledByProvider', 'Prepare snapshot unavailable')
             : (canUpload
-                ? (item.cloud_exists
-                    ? translate('cloudsave.action.uploadOverwrite', 'Upload and overwrite cloud copy')
-                    : translate('cloudsave.action.uploadNew', 'Upload to cloud'))
-                : translate('cloudsave.action.uploadUnavailable', 'Upload unavailable'));
+                ? translate('cloudsave.action.uploadNew', 'Prepare snapshot')
+                : translate('cloudsave.action.uploadUnavailable', 'Prepare snapshot unavailable'));
         uploadButton.disabled = !canUpload;
         uploadButton.addEventListener('click', () => performCharacterAction(item, 'upload'));
         actions.appendChild(uploadButton);
@@ -1557,12 +1555,10 @@
         downloadButton.type = 'button';
         downloadButton.className = 'btn danger';
         downloadButton.textContent = !providerAvailable
-            ? translate('cloudsave.action.downloadDisabledByProvider', 'Download unavailable')
+            ? translate('cloudsave.action.downloadDisabledByProvider', 'Apply snapshot unavailable')
             : (canDownload
-                ? (item.local_exists
-                    ? translate('cloudsave.action.downloadOverwrite', 'Download and overwrite local copy')
-                    : translate('cloudsave.action.downloadNew', 'Download to local storage'))
-                : translate('cloudsave.action.downloadUnavailable', 'Download unavailable'));
+                ? translate('cloudsave.action.downloadNew', 'Apply snapshot')
+                : translate('cloudsave.action.downloadUnavailable', 'Apply snapshot unavailable'));
         downloadButton.disabled = !canDownload;
         downloadButton.addEventListener('click', () => performCharacterAction(item, 'download'));
         actions.appendChild(downloadButton);
@@ -1592,44 +1588,46 @@
         const list = document.getElementById('cloudsave-list');
         const emptyState = document.getElementById('cloudsave-empty-state');
 
-        if (isSteamAutoCloudBackend(summary) && isSteamAutoCloudConnected(summary)) {
-            setTranslatedText(
-                providerStatus,
-                'cloudsave.providerSteamAutoCloudReady',
-                'Steam Cloud is connected. Upload writes the local cloud snapshot now, and Steam will upload it automatically after you exit the game through Steam.',
-            );
-        } else if (isSteamAutoCloudBackend(summary)) {
-            setTranslatedText(
-                providerStatus,
-                'cloudsave.providerSteamAutoCloudOffline',
-                'Local cloud snapshots are available, but Steam Cloud is not currently connected. Start the game from Steam while logged in if you want Steam to upload or download snapshots automatically.',
-            );
-        } else if (summary.provider_available) {
-            setTranslatedText(
-                providerStatus,
-                'cloudsave.providerAvailable',
-                'Cloud save is available. You can upload or download individual characters manually.',
-            );
-        } else {
-            setTranslatedText(
-                providerStatus,
-                'cloudsave.providerUnavailable',
-                'Cloud save provider is currently unavailable. This page only shows local summaries.',
-            );
+        if (providerStatus) {
+            if (isSteamAutoCloudBackend(summary) && isSteamAutoCloudConnected(summary)) {
+                setTranslatedText(
+                    providerStatus,
+                    'cloudsave.providerSteamAutoCloudReady',
+                    'Steam Cloud is connected. Upload writes the local cloud snapshot now, and Steam will upload it automatically after you exit the game through Steam.',
+                );
+            } else if (isSteamAutoCloudBackend(summary)) {
+                setTranslatedText(
+                    providerStatus,
+                    'cloudsave.providerSteamAutoCloudOffline',
+                    'Local cloud snapshots are available, but Steam Cloud is not currently connected. Start the game from Steam while logged in if you want Steam to upload or download snapshots automatically.',
+                );
+            } else if (summary.provider_available) {
+                setTranslatedText(
+                    providerStatus,
+                    'cloudsave.providerAvailable',
+                    'Cloud save is available. You can prepare or restore individual character snapshots manually.',
+                );
+            } else {
+                setTranslatedText(
+                    providerStatus,
+                    'cloudsave.providerUnavailable',
+                    'Cloud save is currently unavailable. This page only shows local summaries.',
+                );
+            }
         }
 
         if (summary.current_character_name) {
             setTranslatedText(
                 currentCharacter,
                 'cloudsave.currentCharacter',
-                'Current local character: {{name}}',
+                'Current character: {{name}}',
                 { name: summary.current_character_name },
             );
         } else {
             setTranslatedText(
                 currentCharacter,
                 'cloudsave.noCurrentCharacter',
-                'Current local character: Not set',
+                'Current character: Not set',
             );
         }
 

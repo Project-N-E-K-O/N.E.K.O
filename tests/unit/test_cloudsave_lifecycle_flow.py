@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from utils.cloudsave_autocloud import CloudSaveManager
+from utils.cloudsave_runtime import CloudsaveDeadlineExceeded
 from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
 from utils.config_manager import ConfigManager
 from utils.file_utils import atomic_write_json
@@ -121,7 +122,7 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
     fake_config_manager = SimpleNamespace(app_docs_dir=Path("/tmp/N.E.K.O"))
     fake_import_result = {"success": True, "action": "imported"}
     mock_bootstrap = Mock()
-    fake_cloudsave_manager = SimpleNamespace(import_if_needed=Mock(return_value=fake_import_result))
+    run_cloudsave_action = AsyncMock(return_value=fake_import_result)
     fake_tracker = SimpleNamespace(
         start_periodic_save=Mock(),
         record_app_start=Mock(),
@@ -140,7 +141,7 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
 
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_config_manager", fake_config_manager), \
-         patch.object(main_server, "_cloudsave_manager", fake_cloudsave_manager), \
+         patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
          patch.object(main_server, "bootstrap_local_cloudsave_environment", mock_bootstrap), \
          patch.object(main_server, "initialize_character_data", AsyncMock(return_value=None)) as mock_init_chars, \
          patch.object(main_server, "_sync_memory_server_after_startup_import", AsyncMock(return_value=None)) as mock_sync_reload, \
@@ -154,11 +155,15 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
          patch("main_routers.shared_state.set_steamworks", Mock()) as mock_set_steamworks, \
          patch("utils.token_tracker.install_hooks", Mock()), \
          patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker), \
-         patch("utils.language_utils.initialize_global_language", Mock(return_value="zh-CN")):
+        patch("utils.language_utils.initialize_global_language", Mock(return_value="zh-CN")):
         await main_server.on_startup()
         await asyncio.sleep(0)
         mock_bootstrap.assert_called_once_with(fake_config_manager)
-        fake_cloudsave_manager.import_if_needed.assert_called_once_with(reason="main_server_startup")
+        run_cloudsave_action.assert_awaited_once_with(
+            "import_if_needed",
+            reason="main_server_startup",
+            budget_seconds=10.0,
+        )
         mock_init_chars.assert_awaited_once_with()
         mock_sync_reload.assert_awaited_once_with(fake_import_result)
         mock_set_root_mode.assert_called_once()
@@ -175,33 +180,33 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_main_server_shutdown_tolerates_cloudsave_export_timeout():
+async def test_main_server_shutdown_skips_cloudsave_export_when_budget_is_exceeded():
     import main_server
 
-    original_wait_for = main_server.asyncio.wait_for
     fake_tracker = SimpleNamespace(save=Mock())
-
-    async def _wait_for_with_export_timeout(awaitable, timeout):
-        if timeout == 3.0:
-            close = getattr(awaitable, "close", None)
-            if callable(close):
-                close()
-            raise asyncio.TimeoutError
-        return await original_wait_for(awaitable, timeout)
+    export_budget_exceeded = AsyncMock(
+        side_effect=CloudsaveDeadlineExceeded("export", stage="apply_snapshot")
+    )
 
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "session_manager", {}), \
-         patch.object(main_server.asyncio, "wait_for", side_effect=_wait_for_with_export_timeout), \
-         patch.object(main_server, "_cloudsave_manager", SimpleNamespace(export_snapshot=Mock(return_value={"success": True}))), \
+         patch.object(main_server, "_run_cloudsave_manager_action", export_budget_exceeded), \
          patch("utils.music_crawlers.close_all_crawlers", AsyncMock(return_value=None)), \
          patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker), \
          patch.object(main_server.logger, "warning", Mock()) as mock_warning:
         await main_server.on_shutdown()
 
     fake_tracker.save.assert_called_once_with()
-    mock_warning.assert_any_call("Steam Auto-Cloud shutdown export timed out after 3 seconds; Steam may upload the previous local snapshot")
+    export_budget_exceeded.assert_awaited_once_with(
+        "export_snapshot",
+        reason="main_server_shutdown",
+        budget_seconds=3.0,
+    )
+    mock_warning.assert_any_call(
+        "Steam Auto-Cloud shutdown export exceeded 3.0s budget before applying snapshot changes; Steam may upload the previous local snapshot"
+    )
 
 
 @pytest.mark.unit
@@ -210,14 +215,14 @@ async def test_main_server_shutdown_releases_live_sessions_and_exports_cloudsave
     import main_server
 
     fake_tracker = SimpleNamespace(save=Mock())
-    export_snapshot = Mock(return_value={"success": True, "action": "exported"})
+    run_cloudsave_action = AsyncMock(return_value={"success": True, "action": "exported"})
     manager_with_resampler = SimpleNamespace(audio_resampler=object())
 
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "session_manager", {"角色A": manager_with_resampler, "角色B": object(), "空槽": None}), \
-         patch.object(main_server, "_cloudsave_manager", SimpleNamespace(export_snapshot=export_snapshot)), \
+         patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
          patch("main_routers.characters_router.release_memory_server_character", AsyncMock(return_value=True)) as mock_release, \
          patch("utils.language_utils.aclose_translation_service", AsyncMock(return_value=None), create=True), \
          patch("utils.music_crawlers.close_all_crawlers", AsyncMock(return_value=None)), \
@@ -225,7 +230,11 @@ async def test_main_server_shutdown_releases_live_sessions_and_exports_cloudsave
         await main_server.on_shutdown()
 
     assert manager_with_resampler.audio_resampler is None
-    export_snapshot.assert_called_once_with(reason="main_server_shutdown")
+    run_cloudsave_action.assert_awaited_once_with(
+        "export_snapshot",
+        reason="main_server_shutdown",
+        budget_seconds=3.0,
+    )
     assert mock_release.await_count == 2
     mock_release.assert_any_await("角色A", reason="Steam Auto-Cloud export before shutdown: 角色A")
     mock_release.assert_any_await("角色B", reason="Steam Auto-Cloud export before shutdown: 角色B")

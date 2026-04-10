@@ -28,6 +28,14 @@ cd frontend/plugin-manager && npm install && npm run build && cd ../..
 
 ## 起動
 
+可能であれば統合ランチャーを優先してください：
+
+```bash
+uv run python launcher.py
+```
+
+この起動経路ではローカルの `cloudsave/` bootstrap とステージ済みスナップショットの適用を先に行ってからバックエンドサービスを起動するため、実際の Steam / デスクトップ版の起動経路により近くなります。
+
 必要なサーバーを別々のターミナルで起動します：
 
 ```bash
@@ -40,6 +48,20 @@ uv run python main_server.py
 # ターミナル 3 -- エージェントサーバー（オプション）
 uv run python agent_server.py
 ```
+
+補足:
+
+- 実際の Steam Auto-Cloud の「起動前ダウンロード / 終了後アップロード」を検証したい場合は、Steam またはデスクトップランチャー経由で起動してください。ソースファイルの直接実行は開発には便利ですが、Steam 側のダウンロード / アップロードのタイミング確認には向きません。
+- 手動の 3 サーバーモードでは、必要に応じて `main_server` がフォールバックのスナップショット import を実行し、その後 `memory_server` に reload を通知しようとします。
+- macOS でソース実行したときに「Apple は `SteamworksPy.dylib` を検証できません」と表示される場合、通常は Gatekeeper がローカルの未公証 Steamworks ライブラリをブロックしています。まずプロジェクトのルートディレクトリから起動していることを確認してください。まだブロックされる場合は、リポジトリルートで次を実行します:
+
+```bash
+xattr -dr com.apple.quarantine SteamworksPy.dylib libsteam_api.dylib
+codesign --force --sign - libsteam_api.dylib
+codesign --force --sign - SteamworksPy.dylib
+```
+
+- その後、`uv run python launcher.py` または `uv run python main_server.py` を再実行してください。
 
 ## 設定
 
