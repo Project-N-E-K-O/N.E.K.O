@@ -3,25 +3,25 @@
  */
 
 /**
- * VRM 光照默认值 —— 前端唯一权威来源
+ * VRM 光照默认值 —— 防御性赋值（仅当 HTML 模板未注入时生效）
  *
- * 后端对应: config/__init__.py  _DEFAULT_VRM_LIGHTING_MUTABLE
- * HTML 对应: templates/model_manager.html 中各 slider / select 的 value
- * 其他 JS:  app-character.js / model_manager.js 均应引用此常量
- *
- * 修改此处后，需同步更新上述位置。
+ * 正常流程下，此常量已由 HTML <head> 中的内联 <script> 从后端注入
+ * （config/__init__.py → Jinja2 → window.VRM_DEFAULT_LIGHTING）。
+ * 此处仅作为兜底，确保非模板页面或单元测试也能正常工作。
  */
-window.VRM_DEFAULT_LIGHTING = Object.freeze({
-    ambient: 0.83,
-    main: 1.91,
-    fill: 0.0,
-    rim: 0.0,
-    top: 0.0,
-    bottom: 0.0,
-    exposure: 1.1,
-    toneMapping: 7,          // 7 = THREE.NeutralToneMapping
-    outlineWidthScale: 1.0,
-});
+if (!window.VRM_DEFAULT_LIGHTING) {
+    window.VRM_DEFAULT_LIGHTING = Object.freeze({
+        ambient: 0.83,
+        main: 1.91,
+        fill: 0.0,
+        rim: 0.0,
+        top: 0.0,
+        bottom: 0.0,
+        exposure: 1.1,
+        toneMapping: 7,          // 7 = THREE.NeutralToneMapping
+        outlineWidthScale: 1.0,
+    });
+}
 
 class VRMCore {
     constructor(manager) {
