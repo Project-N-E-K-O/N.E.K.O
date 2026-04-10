@@ -1845,7 +1845,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 saveMessage = t('live2d.modelSavedMmdSettingsFailed', `已保存模型设置，MMD设置保存失败`, { name: modelDisplayName });
             } else if (lightingFailed) {
                 saveMessage = t('live2d.modelSavedLightingFailed', `已保存模型设置，光照设置保存失败`, { name: modelDisplayName });
-            } else if ((currentModelType === 'live3d') && ambient && main) {
+            } else if ((currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main) {
                 saveMessage = t('live2d.modelSettingsSavedWithLighting', `已保存模型和光照设置`, { name: modelDisplayName });
             } else if (currentModelType === 'live3d') {
                 saveMessage = t('live2d.modelSettingsSaved', `已保存模型设置`, { name: modelDisplayName });
