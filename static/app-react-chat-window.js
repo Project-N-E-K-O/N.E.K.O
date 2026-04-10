@@ -747,7 +747,7 @@
         isMinimizeTransitioning = false;
     }
 
-    function getMinimizedIcon() {
+    function ensureMinimizedBallIcon() {
         var shell = getShell();
         if (!shell) return null;
         var icon = shell.querySelector('.react-chat-minimized-icon');
@@ -979,7 +979,7 @@
         }
 
         // 确保悬浮球图标存在
-        getMinimizedIcon();
+        ensureMinimizedBallIcon();
     }
 
     function toggleMinimized() {
@@ -1348,12 +1348,14 @@
         if (header) {
             header.addEventListener('mouseenter', function () {
                 if (!minimized) return;
-                var ico = getShell() && getShell().querySelector('.react-chat-minimized-icon');
+                var shell = getShell();
+                var ico = shell && shell.querySelector('.react-chat-minimized-icon');
                 if (ico) ico.src = '/static/icons/expand_icon_on.png';
             });
             header.addEventListener('mouseleave', function () {
                 if (!minimized) return;
-                var ico = getShell() && getShell().querySelector('.react-chat-minimized-icon');
+                var shell = getShell();
+                var ico = shell && shell.querySelector('.react-chat-minimized-icon');
                 if (ico) ico.src = '/static/icons/expand_icon_off.png';
             });
         }
