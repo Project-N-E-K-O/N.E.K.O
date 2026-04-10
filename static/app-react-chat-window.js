@@ -627,6 +627,9 @@
                     }
                 }));
                 showToast(getI18nText('chat.avatarPreviewReady', '头像已更新'), 2500);
+            } else {
+                console.warn('[ReactChatWindow] Avatar capture completed without dataUrl');
+                showToast(getI18nText('chat.avatarPreviewFailed', '生成头像失败'), 3000);
             }
         }).catch(function (error) {
             console.error('[ReactChatWindow] Avatar capture failed:', error);
