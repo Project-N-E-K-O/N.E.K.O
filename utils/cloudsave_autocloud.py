@@ -115,9 +115,9 @@ class CloudSaveManager:
         has_snapshot = bool(manifest_files)
         startup_import_required = bool(
             has_snapshot
+            and not runtime_has_user_content
             and (
-                not runtime_has_user_content
-                or not last_applied_manifest_fingerprint
+                not last_applied_manifest_fingerprint
                 or (
                     manifest_fingerprint
                     and manifest_fingerprint != last_applied_manifest_fingerprint

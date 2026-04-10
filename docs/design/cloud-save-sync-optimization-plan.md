@@ -44,7 +44,7 @@
   - `POST /api/cloudsave/character/{name}/download`
 - `static/js/cloudsave_manager.js`
   - 现有页面仍保留单角色操作体验
-  - 已补成 Steam Auto-Cloud 文案分支
+  - 已补充为 Steam Auto-Cloud 文案分支
 - `templates/cloudsave_manager.html`
   - 继续作为云存档管理页入口
 
@@ -262,15 +262,20 @@
 
 ### 8.2 路径规则
 
-- Windows：
+- Windows（解析后的参考路径，不是直接粘贴到 Steamworks 后台的字面值）：
   - `%LOCALAPPDATA%/N.E.K.O/cloudsave/*`
-- macOS：
+- macOS（解析后的参考路径，不是直接粘贴到 Steamworks 后台的字面值）：
   - `~/Library/Application Support/N.E.K.O/cloudsave/*`
-- Linux：
+- Linux（解析后的参考路径，不是直接粘贴到 Steamworks 后台的字面值）：
   - `$XDG_DATA_HOME/N.E.K.O/cloudsave/*`
   - 或 `~/.local/share/N.E.K.O/cloudsave/*`
 
-实际以 Steamworks 后台支持的宏写法为准，但目录目标必须与当前 `ConfigManager` 的真实数据根保持一致。
+补充说明：
+
+- Steamworks Auto-Cloud 不会做 shell 变量展开，也不会解析 `~`、`$XDG_DATA_HOME` 这类写法。
+- 后台配置时应使用 Steamworks 预定义 Root 宏加相对路径，例如 `MacHome`、`LinuxXdgDataHome` 等，再拼接 `N.E.K.O/cloudsave`。
+- 具体可优先参考服务端提供的 `/api/cloudsave/steam-autocloud-config` 返回值，其中 `recommended_paths` 已按当前平台和 `ConfigManager` 的真实数据根给出建议。
+- 无论后台最终填什么宏组合，目标目录都必须与当前 `ConfigManager` 解析出来的真实数据根保持一致。
 
 ### 8.3 配额建议
 

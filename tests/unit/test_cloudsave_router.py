@@ -3,6 +3,7 @@ import json
 import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -10,7 +11,11 @@ from fastapi.responses import JSONResponse
 
 from main_routers.shared_state import init_shared_state
 from utils.config_manager import ConfigManager
-from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment, export_local_cloudsave_snapshot
+from utils.cloudsave_runtime import (
+    MaintenanceModeError,
+    bootstrap_local_cloudsave_environment,
+    export_local_cloudsave_snapshot,
+)
 from utils.file_utils import atomic_write_json
 
 
@@ -21,6 +26,7 @@ def _make_config_manager(tmp_root: Path):
         return_value=[],
     ):
         config_manager = ConfigManager("N.E.K.O")
+    config_manager.get_legacy_app_root_candidates = lambda: []
     return config_manager
 
 
@@ -694,6 +700,65 @@ async def test_cloudsave_router_blocks_mutations_when_provider_is_unavailable():
             download_payload = json.loads(download.body)
             assert download.status_code == 503
             assert download_payload["code"] == "CLOUDSAVE_PROVIDER_UNAVAILABLE"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_router_preserves_maintenance_mode_conflicts():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        _write_runtime_state(cm, character_name="小满")
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            with patch.object(
+                cloudsave_router_module,
+                "export_cloudsave_character_unit",
+                side_effect=MaintenanceModeError("maintenance", operation="export", target="小满"),
+            ):
+                upload = await cloudsave_router_module.post_cloudsave_character_upload(
+                    "小满",
+                    _DummyRequest({"overwrite": False}),
+                )
+            upload_payload = json.loads(upload.body)
+            assert upload.status_code == 409
+            assert upload_payload["code"] == "CLOUDSAVE_WRITE_FENCE_ACTIVE"
+
+            with patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+                side_effect=MaintenanceModeError("maintenance", operation="import", target="小满"),
+            ), patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=True),
+            ):
+                download = await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True, "backup_before_overwrite": True}),
+                )
+            download_payload = json.loads(download.body)
+            assert download.status_code == 409
+            assert download_payload["code"] == "CLOUDSAVE_WRITE_FENCE_ACTIVE"
 
 
 @pytest.mark.unit

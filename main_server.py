@@ -724,23 +724,21 @@ if _IS_MAIN_PROCESS:
         logger.info(f"已挂载用户mod路径: {user_mod_path}")
 
 # --- 初始化共享状态并挂载路由 ---
-# 从 main_routers 包导入并挂载路由
-from main_routers import ( # noqa
-    config_router,
-    characters_router,
-    live2d_router,
-    vrm_router,
-    mmd_router,
-    jukebox_router,
-    workshop_router,
-    memory_router,
-    cloudsave_router,
-    pages_router,
-    websocket_router,
-    agent_router,
-    system_router,
-)
-from main_routers import music_router # noqa
+# 显式从各子模块导入 router，避免与包级模块导出产生同名遮蔽。
+from main_routers.agent_router import router as agent_router # noqa
+from main_routers.characters_router import router as characters_router # noqa
+from main_routers.cloudsave_router import router as cloudsave_router # noqa
+from main_routers.config_router import router as config_router # noqa
+from main_routers.jukebox_router import router as jukebox_router # noqa
+from main_routers.live2d_router import router as live2d_router # noqa
+from main_routers.memory_router import router as memory_router # noqa
+from main_routers.mmd_router import router as mmd_router # noqa
+from main_routers.music_router import router as music_router # noqa
+from main_routers.pages_router import router as pages_router # noqa
+from main_routers.system_router import router as system_router # noqa
+from main_routers.vrm_router import router as vrm_router # noqa
+from main_routers.websocket_router import router as websocket_router # noqa
+from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.shared_state import init_shared_state # noqa
 
@@ -802,7 +800,7 @@ app.include_router(cloudsave_router)
 app.include_router(websocket_router)
 app.include_router(agent_router)
 app.include_router(system_router)
-app.include_router(music_router.router)
+app.include_router(music_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
 app.include_router(pages_router)  # 兜底路由需最后挂载
 

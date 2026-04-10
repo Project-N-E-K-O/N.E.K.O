@@ -105,6 +105,11 @@ LEGACY_RUNTIME_DIR_NAMES = (
     "cloudsave_backups",
     ".cloudsave_staging",
 )
+NON_RUNTIME_CONTENT_DIR_NAMES = {
+    "cloudsave",
+    "cloudsave_backups",
+    ".cloudsave_staging",
+}
 LEGACY_OPTIONAL_STATE_FILES = (
     "cloudsave_local_state.json",
 )
@@ -521,6 +526,8 @@ def _runtime_root_has_user_content(root: Path) -> bool:
     if not root.exists():
         return False
     for name in LEGACY_RUNTIME_DIR_NAMES:
+        if name in NON_RUNTIME_CONTENT_DIR_NAMES:
+            continue
         candidate = root / name
         if candidate.is_file():
             return True

@@ -1567,7 +1567,7 @@
     "cloudsave": {
         "pageTitle": "Cloud Save Manager - Project N.E.K.O.",
         "headerTitle": "Cloud Save Manager",
-        "subtitle": "Prepare or restore one character at a time using the local cloud snapshot cache. When the game exits through Steam, Steam Cloud uploads the snapshot folder automatically.",
+        "subtitle": "Prepare or restore one character at a time using the local cloud snapshot cache. It will not automatically overwrite global configuration. When the game exits through Steam, Steam Cloud uploads the snapshot folder automatically.",
         "refresh": "Refresh",
         "backToCharacterManager": "Back to Character Manager",
         "loadingSummary": "Loading cloud save summary...",
@@ -1756,6 +1756,7 @@
             "uploadSuccessSteamAutoCloud": "Local cloud snapshot updated. Steam will upload it automatically after you exit the game through Steam.",
             "downloadSuccessSteamAutoCloud": "The Steam Cloud snapshot was applied locally.",
             "operationFailed": "Operation failed: {{message}}",
+            "operationInProgress": "An operation for this character is already in progress. Please wait a moment.",
             "rollbackApplied": "\nLocal data was rolled back automatically to the state before the operation.",
             "rollbackFailed": "\nRollback also failed: {{message}}",
             "loadFailed": "Failed to load the cloud save summary: {{message}}",

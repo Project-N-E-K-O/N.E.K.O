@@ -684,7 +684,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                         asset_source=saved_asset_source if 'saved_asset_source' in locals() else '',
                         item_id=saved_item_id if 'saved_item_id' in locals() else '',
                     )
-                elif not (saved_item_id if 'saved_item_id' in locals() else ''):
+                elif not item_id and not (saved_item_id if 'saved_item_id' in locals() else ''):
                     fallback_model = _find_live2d_model_catalog_entry(
                         all_models,
                         model_name=live2d_model_name,

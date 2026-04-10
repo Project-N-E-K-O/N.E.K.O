@@ -1756,6 +1756,7 @@
             "uploadSuccessSteamAutoCloud": "本地云快照已更新。等你通过 Steam 退出游戏后，Steam 会自动把它上传到云端。",
             "downloadSuccessSteamAutoCloud": "Steam Cloud 快照已恢复到本地。",
             "operationFailed": "操作失败：{{message}}",
+            "operationInProgress": "该角色的操作正在进行中，请稍等。",
             "rollbackApplied": "\n本地数据已自动回滚到操作前状态。",
             "rollbackFailed": "\n回滚也失败了：{{message}}",
             "loadFailed": "加载云存档摘要失败：{{message}}",

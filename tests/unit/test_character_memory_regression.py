@@ -22,6 +22,7 @@ def _make_config_manager(tmp_root: Path):
         return_value=[],
     ):
         config_manager = ConfigManager("N.E.K.O")
+    config_manager.get_legacy_app_root_candidates = lambda: []
     config_manager.project_memory_dir = tmp_root / "memory" / "store"
     return config_manager
 

@@ -284,6 +284,7 @@ def test_cloudsave_manager_surfaces_rollback_failure_details():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
 
     assert "cloudsave.dialog.rollbackFailed" in script
+    assert "cloudsave.dialog.operationInProgress" in script
     assert "payloadError.rollback_error" in script
     assert "Rollback also failed: {{message}}" in script
 

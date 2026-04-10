@@ -24,6 +24,7 @@ from utils.cloudsave_autocloud import (
 )
 from utils.cloudsave_runtime import (
     CloudsaveOperationError,
+    MaintenanceModeError,
     build_cloudsave_character_detail,
     build_cloudsave_summary,
     export_cloudsave_character_unit,
@@ -240,6 +241,15 @@ def _operation_error_status_code(exc: CloudsaveOperationError, *, action: str) -
     return 400
 
 
+def _maintenance_mode_error_response(exc: MaintenanceModeError, *, character_name: str = ""):
+    return _cloudsave_error_response(
+        getattr(exc, "code", "CLOUDSAVE_WRITE_FENCE_ACTIVE"),
+        str(exc),
+        status_code=409,
+        character_name=character_name,
+    )
+
+
 async def _reload_after_character_download(character_name: str) -> tuple[bool, str]:
     initialize_character_data = get_initialize_character_data()
     await initialize_character_data()
@@ -309,6 +319,8 @@ async def post_cloudsave_character_upload(name: str, request: Request):
 
     try:
         result = export_cloudsave_character_unit(config_manager, name, overwrite=overwrite)
+    except MaintenanceModeError as exc:
+        return _maintenance_mode_error_response(exc, character_name=name)
     except CloudsaveOperationError as exc:
         return _cloudsave_error_response(
             exc.code,
@@ -398,6 +410,8 @@ async def post_cloudsave_character_download(name: str, request: Request):
             overwrite=overwrite,
             backup_before_overwrite=backup_before_overwrite,
         )
+    except MaintenanceModeError as exc:
+        return _maintenance_mode_error_response(exc, character_name=name)
     except CloudsaveOperationError as exc:
         return _cloudsave_error_response(
             exc.code,

@@ -6,6 +6,7 @@
         preferredCharacterName: '',
         expandedCharacterNames: new Set(),
     };
+    const inflightActions = new Set();
 
     const CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY = 'neko_cloudsave_character_sync';
     const CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE = 'cloudsave_character_changed';
@@ -1210,165 +1211,181 @@
             return;
         }
 
-        let latestDetail;
+        const actionKey = `${item && item.character_name ? item.character_name : ''}::${action}`;
+        if (inflightActions.has(actionKey)) {
+            await showAlert(
+                translate(
+                    'cloudsave.dialog.operationInProgress',
+                    'An operation for this character is already in progress. Please wait a moment.',
+                ),
+            );
+            return;
+        }
+        inflightActions.add(actionKey);
+
         try {
-            latestDetail = await fetchCharacterDetail(item.character_name);
-        } catch (error) {
-            const payload = error.payload || {};
-            if (
-                payload.code === 'CLOUDSAVE_CHARACTER_NOT_FOUND'
-                || payload.code === 'LOCAL_CHARACTER_NOT_FOUND'
-                || payload.code === 'CLOUD_CHARACTER_NOT_FOUND'
-            ) {
+            let latestDetail;
+            try {
+                latestDetail = await fetchCharacterDetail(item.character_name);
+            } catch (error) {
+                const payload = error.payload || {};
+                if (
+                    payload.code === 'CLOUDSAVE_CHARACTER_NOT_FOUND'
+                    || payload.code === 'LOCAL_CHARACTER_NOT_FOUND'
+                    || payload.code === 'CLOUD_CHARACTER_NOT_FOUND'
+                ) {
+                    await refreshSummaryAfterStateChange(item.character_name);
+                    return;
+                }
+
+                const message = translateErrorPayload(
+                    payload,
+                    payload.message || payload.error || error.message,
+                ) || payload.message || payload.error || error.message;
+                await showAlert(
+                    translate(
+                        'cloudsave.dialog.operationFailed',
+                        'Operation failed: {{message}}',
+                        { message },
+                    ),
+                );
+                return;
+            }
+
+            const latestItem = latestDetail && latestDetail.item ? latestDetail.item : null;
+            if (!latestItem) {
                 await refreshSummaryAfterStateChange(item.character_name);
                 return;
             }
 
-            const message = translateErrorPayload(
-                payload,
-                payload.message || payload.error || error.message,
-            ) || payload.message || payload.error || error.message;
-            await showAlert(
-                translate(
-                    'cloudsave.dialog.operationFailed',
-                    'Operation failed: {{message}}',
-                    { message },
-                ),
-            );
-            return;
-        }
+            state.preferredCharacterName = latestItem.character_name || state.preferredCharacterName;
 
-        const latestItem = latestDetail && latestDetail.item ? latestDetail.item : null;
-        if (!latestItem) {
-            await refreshSummaryAfterStateChange(item.character_name);
-            return;
-        }
-
-        state.preferredCharacterName = latestItem.character_name || state.preferredCharacterName;
-
-        if (latestDetail.provider_available === false) {
-            try {
-                await loadSummary({ silent: true });
-            } catch (error) {
-                // Ignore refresh failures and surface the provider-unavailable message instead.
+            if (latestDetail.provider_available === false) {
+                try {
+                    await loadSummary({ silent: true });
+                } catch (error) {
+                    // Ignore refresh failures and surface the provider-unavailable message instead.
+                }
+                await showAlert(
+                    translate(
+                        'cloudsave.dialog.providerUnavailable',
+                        'Cloud save provider is currently unavailable. Please try again later.',
+                    ),
+                );
+                return;
             }
-            await showAlert(
-                translate(
-                    'cloudsave.dialog.providerUnavailable',
-                    'Cloud save provider is currently unavailable. Please try again later.',
-                ),
-            );
-            return;
-        }
 
-        const availableActions = Array.isArray(latestItem.available_actions) ? latestItem.available_actions : [];
-        if (!availableActions.includes(action)) {
-            await refreshSummaryAfterStateChange(latestItem.character_name || item.character_name);
-            return;
-        }
+            const availableActions = Array.isArray(latestItem.available_actions) ? latestItem.available_actions : [];
+            if (!availableActions.includes(action)) {
+                await refreshSummaryAfterStateChange(latestItem.character_name || item.character_name);
+                return;
+            }
 
-        const isOverwrite = latestItem.relation_state === 'diverged' || latestItem.relation_state === 'matched';
-        const confirmed = await showConfirm(
-            buildConfirmMessage(latestItem, action),
-            action === 'upload'
-                ? (
-                    isSteamAutoCloudBackend(latestDetail)
-                        ? translate('cloudsave.dialog.uploadTitleSteamAutoCloud', 'Prepare Steam Cloud Snapshot')
-                        : translate('cloudsave.dialog.uploadTitle', 'Upload Cloud Save')
-                )
-                : (
-                    isSteamAutoCloudBackend(latestDetail)
-                        ? translate('cloudsave.dialog.downloadTitleSteamAutoCloud', 'Apply Steam Cloud Snapshot')
-                        : translate('cloudsave.dialog.downloadTitle', 'Download Cloud Save')
-                ),
-            { danger: action === 'download' || isOverwrite },
-        );
-        if (!confirmed) return;
-
-        const endpoint = `/api/cloudsave/character/${encodeURIComponent(latestItem.character_name)}/${action}`;
-        const payload = action === 'upload'
-            ? { overwrite: isOverwrite }
-            : { overwrite: isOverwrite, backup_before_overwrite: true };
-
-        try {
-            const result = await requestJson(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-            });
-            await showAlert(
+            const isOverwrite = latestItem.relation_state === 'diverged' || latestItem.relation_state === 'matched';
+            const confirmed = await showConfirm(
+                buildConfirmMessage(latestItem, action),
                 action === 'upload'
                     ? (
-                        isSteamAutoCloudBackend(result)
-                            ? translate(
-                                'cloudsave.dialog.uploadSuccessSteamAutoCloud',
-                                'Local cloud snapshot updated. Steam will upload it automatically after you exit the game through Steam.',
-                            )
-                            : translate('cloudsave.dialog.uploadSuccess', 'Upload completed.')
+                        isSteamAutoCloudBackend(latestDetail)
+                            ? translate('cloudsave.dialog.uploadTitleSteamAutoCloud', 'Prepare Steam Cloud Snapshot')
+                            : translate('cloudsave.dialog.uploadTitle', 'Upload Cloud Save')
                     )
                     : (
-                        isSteamAutoCloudBackend(result)
-                            ? translate(
-                                'cloudsave.dialog.downloadSuccessSteamAutoCloud',
-                                'The Steam Cloud snapshot was applied locally.',
-                            )
-                            : translate('cloudsave.dialog.downloadSuccess', 'Download completed.')
+                        isSteamAutoCloudBackend(latestDetail)
+                            ? translate('cloudsave.dialog.downloadTitleSteamAutoCloud', 'Apply Steam Cloud Snapshot')
+                            : translate('cloudsave.dialog.downloadTitle', 'Download Cloud Save')
                     ),
+                { danger: action === 'download' || isOverwrite },
             );
-            if (result && result.detail && result.detail.item) {
-                state.preferredCharacterName = result.detail.item.character_name || state.preferredCharacterName;
-            } else if (latestItem.character_name) {
-                state.preferredCharacterName = latestItem.character_name;
-            }
-            if (action === 'download') {
-                notifyCharacterManagerSync({
-                    action,
-                    character_name: state.preferredCharacterName || latestItem.character_name || item.character_name,
+            if (!confirmed) return;
+
+            const endpoint = `/api/cloudsave/character/${encodeURIComponent(latestItem.character_name)}/${action}`;
+            const payload = action === 'upload'
+                ? { overwrite: isOverwrite }
+                : { overwrite: isOverwrite, backup_before_overwrite: true };
+
+            try {
+                const result = await requestJson(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
                 });
-            }
-            await loadSummary();
-        } catch (error) {
-            const payloadError = error.payload || {};
-            const message = translateErrorPayload(
-                payloadError,
-                payloadError.message || payloadError.error || error.message,
-            ) || payloadError.message || payloadError.error || error.message;
-            let rollbackHint = '';
-            if (payloadError.code === 'LOCAL_RELOAD_FAILED_ROLLED_BACK') {
-                if (payloadError.rolled_back) {
-                    rollbackHint = translate(
-                        'cloudsave.dialog.rollbackApplied',
-                        '\nLocal data was rolled back automatically to the state before the operation.',
-                    );
-                } else if (payloadError.rollback_error) {
-                    rollbackHint = translate(
-                        'cloudsave.dialog.rollbackFailed',
-                        '\nRollback also failed: {{message}}',
-                        {
-                            message: translateErrorPayload(
-                                {
-                                    code: payloadError.rollback_error,
-                                    message: payloadError.rollback_error,
-                                    error: payloadError.rollback_error,
-                                },
-                                payloadError.rollback_error,
-                            ) || payloadError.rollback_error,
-                        },
-                    );
+                await showAlert(
+                    action === 'upload'
+                        ? (
+                            isSteamAutoCloudBackend(result)
+                                ? translate(
+                                    'cloudsave.dialog.uploadSuccessSteamAutoCloud',
+                                    'Local cloud snapshot updated. Steam will upload it automatically after you exit the game through Steam.',
+                                )
+                                : translate('cloudsave.dialog.uploadSuccess', 'Upload completed.')
+                        )
+                        : (
+                            isSteamAutoCloudBackend(result)
+                                ? translate(
+                                    'cloudsave.dialog.downloadSuccessSteamAutoCloud',
+                                    'The Steam Cloud snapshot was applied locally.',
+                                )
+                                : translate('cloudsave.dialog.downloadSuccess', 'Download completed.')
+                        ),
+                );
+                if (result && result.detail && result.detail.item) {
+                    state.preferredCharacterName = result.detail.item.character_name || state.preferredCharacterName;
+                } else if (latestItem.character_name) {
+                    state.preferredCharacterName = latestItem.character_name;
+                }
+                if (action === 'download') {
+                    notifyCharacterManagerSync({
+                        action,
+                        character_name: state.preferredCharacterName || latestItem.character_name || item.character_name,
+                    });
+                }
+                await loadSummary();
+            } catch (error) {
+                const payloadError = error.payload || {};
+                const message = translateErrorPayload(
+                    payloadError,
+                    payloadError.message || payloadError.error || error.message,
+                ) || payloadError.message || payloadError.error || error.message;
+                let rollbackHint = '';
+                if (payloadError.code === 'LOCAL_RELOAD_FAILED_ROLLED_BACK') {
+                    if (payloadError.rolled_back) {
+                        rollbackHint = translate(
+                            'cloudsave.dialog.rollbackApplied',
+                            '\nLocal data was rolled back automatically to the state before the operation.',
+                        );
+                    } else if (payloadError.rollback_error) {
+                        rollbackHint = translate(
+                            'cloudsave.dialog.rollbackFailed',
+                            '\nRollback also failed: {{message}}',
+                            {
+                                message: translateErrorPayload(
+                                    {
+                                        code: payloadError.rollback_error,
+                                        message: payloadError.rollback_error,
+                                        error: payloadError.rollback_error,
+                                    },
+                                    payloadError.rollback_error,
+                                ) || payloadError.rollback_error,
+                            },
+                        );
+                    }
+                }
+                await showAlert(
+                    translate(
+                        'cloudsave.dialog.operationFailed',
+                        'Operation failed: {{message}}',
+                        { message },
+                    ) + rollbackHint,
+                );
+                try {
+                    await loadSummary({ silent: true });
+                } catch (refreshError) {
+                    // Keep the original action error visible even if the silent refresh also fails.
                 }
             }
-            await showAlert(
-                translate(
-                    'cloudsave.dialog.operationFailed',
-                    'Operation failed: {{message}}',
-                    { message },
-                ) + rollbackHint,
-            );
-            try {
-                await loadSummary({ silent: true });
-            } catch (refreshError) {
-                // Keep the original action error visible even if the silent refresh also fails.
-            }
+        } finally {
+            inflightActions.delete(actionKey);
         }
     }
 

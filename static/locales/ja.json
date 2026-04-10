@@ -1567,7 +1567,7 @@
     "cloudsave": {
         "pageTitle": "クラウドセーブ管理 - Project N.E.K.O.",
         "headerTitle": "クラウドセーブ管理",
-        "subtitle": "ローカルのクラウドスナップショットキャッシュを使って、1キャラクターずつ準備または復元できます。Steam 経由でゲームを終了すると、Steam Cloud がスナップショットフォルダを自動アップロードします。",
+        "subtitle": "ローカルのクラウドスナップショットキャッシュを使って、1キャラクターずつ準備または復元できます。グローバル設定を自動で上書きすることはありません。Steam 経由でゲームを終了すると、Steam Cloud がスナップショットフォルダを自動アップロードします。",
         "refresh": "更新",
         "backToCharacterManager": "キャラクター管理に戻る",
         "loadingSummary": "クラウドセーブの概要を読み込み中...",
@@ -1756,6 +1756,7 @@
             "uploadSuccessSteamAutoCloud": "ローカルクラウドスナップショットを更新しました。Steam 経由でゲームを終了すると、Steam が自動でクラウドへアップロードします。",
             "downloadSuccessSteamAutoCloud": "Steam Cloud スナップショットをローカルに適用しました。",
             "operationFailed": "操作に失敗しました：{{message}}",
+            "operationInProgress": "このキャラクターの操作はすでに進行中です。少々お待ちください。",
             "rollbackApplied": "\nローカルデータは操作前の状態に自動ロールバックされました。",
             "rollbackFailed": "\nロールバックも失敗しました：{{message}}",
             "loadFailed": "クラウドセーブ概要の読み込みに失敗しました：{{message}}",
