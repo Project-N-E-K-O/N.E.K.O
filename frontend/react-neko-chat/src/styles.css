@@ -838,6 +838,39 @@ textarea {
   padding: 0 2px;
 }
 
+/* ===== 翻译开关按钮 ===== */
+.composer-translate-btn {
+  position: relative;
+}
+
+.composer-translate-icon {
+  width: 22px;
+  height: 22px;
+  fill: #8c9ab5;
+  transition: fill 0.18s ease;
+  pointer-events: none;
+}
+
+.composer-translate-btn:hover .composer-translate-icon {
+  fill: #5a9fd4;
+}
+
+.composer-translate-btn.is-active .composer-translate-icon {
+  fill: #2497d9;
+}
+
+.composer-translate-btn.is-active::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+  background: #2497d9;
+}
+
 /* ===== 圆形发送按钮 ===== */
 .send-button-circle {
   display: inline-flex;
@@ -1146,6 +1179,22 @@ textarea {
 
 [data-theme="dark"] .composer-tool-divider {
   color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="dark"] .composer-translate-icon {
+  fill: #6b7a94;
+}
+
+[data-theme="dark"] .composer-translate-btn:hover .composer-translate-icon {
+  fill: #7ab8e0;
+}
+
+[data-theme="dark"] .composer-translate-btn.is-active .composer-translate-icon {
+  fill: #44b7fe;
+}
+
+[data-theme="dark"] .composer-translate-btn.is-active::after {
+  background: #44b7fe;
 }
 
 [data-theme="dark"] .composer-input-shell {
