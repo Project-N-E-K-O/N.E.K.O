@@ -269,6 +269,7 @@ AGENT_CALLBACK_NOTIFICATION = {
 # 安全水印前缀（所有语言固定不变，包括逗号和空格）
 VISION_WATERMARK = "你是一个图像描述助手, "
 
+# 长度限制策略：CJK（zh/ja/ko）使用"250字/文字/자"（字符），en/ru 使用"250 words/слов"（词）
 # 有窗口标题时的 system prompt（水印后拼接）
 VISION_SYSTEM_WITH_TITLE = {
     'zh': '请根据用户的屏幕截图和当前窗口标题，简洁描述用户正在做什么、屏幕上的主要内容和关键细节和你觉得有趣的地方。不超过250字。',
