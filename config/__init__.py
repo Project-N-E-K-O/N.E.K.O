@@ -28,6 +28,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "voice_id",
     "system_prompt",
     "model_type",
+    "live3d_sub_type",
     "vrm",
     "vrm_animation",
     "lighting",
@@ -72,6 +73,7 @@ RESERVED_FIELD_SCHEMA = {
     "system_prompt": str,
     "avatar": {
         "model_type": str,
+        "live3d_sub_type": str,
         "asset_source": str,
         "asset_source_id": str,
         "live2d": {
@@ -103,6 +105,7 @@ LEGACY_FLAT_TO_RESERVED = {
     "voice_id": ("voice_id",),
     "system_prompt": ("system_prompt",),
     "model_type": ("avatar", "model_type"),
+    "live3d_sub_type": ("avatar", "live3d_sub_type"),
     "live2d_item_id": ("avatar", "asset_source_id"),
     "item_id": ("avatar", "asset_source_id"),
     "live2d": ("avatar", "live2d", "model_path"),
