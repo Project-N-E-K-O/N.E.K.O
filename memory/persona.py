@@ -219,7 +219,7 @@ def _normalize_topic_tokens(topic: str) -> set[str]:
             continue
         if token in _LATIN_TOPIC_TOKEN_STOPWORDS:
             continue
-        if len(token) > 3 and token.endswith('s'):
+        if len(token) > 3 and token.endswith('s') and not token.endswith('ss'):
             token = token[:-1]
         if len(token) < 2 or token in _LATIN_TOPIC_TOKEN_STOPWORDS:
             continue
@@ -243,6 +243,7 @@ def _topics_match(left: str, right: str) -> bool:
             if overlap_ratio >= _LATIN_TOPIC_MATCH_THRESHOLD:
                 return True
             return False
+        return False
     return left_clean in right_clean or right_clean in left_clean
 
 
@@ -415,7 +416,11 @@ def _extract_negative_topic(text: str, referenced_topic: str = "") -> tuple[str,
     if explicit:
         fallback = raw
         for token in _NEGATIVE_KEYWORDS:
-            fallback = re.sub(re.escape(token), " ", fallback, flags=re.IGNORECASE)
+            if _contains_ascii_letters(token) and not _contains_cjk(token):
+                pattern = r'(?<![a-z])' + re.escape(token.casefold()) + r'(?![a-z])'
+                fallback = re.sub(pattern, " ", fallback, flags=re.IGNORECASE)
+            else:
+                fallback = re.sub(re.escape(token), " ", fallback, flags=re.IGNORECASE)
         fallback = re.sub(r'[，。、！？；：,.!?]', ' ', fallback)
         segments = [seg.strip() for seg in fallback.split() if seg.strip()]
         if segments:
@@ -790,7 +795,6 @@ class PersonaManager:
             if not isinstance(entry, dict):
                 continue
             if PersonaManager._topic_matches(entry.get('topic', ''), topic_key):
-                entry['topic'] = topic_key
                 return entry
         return None
 

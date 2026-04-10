@@ -446,6 +446,7 @@ def _topic_matches_cleaned_text(topic: str, cleaned_text: str) -> bool:
         cleaned_tokens = _normalize_topic_tokens(cleaned_topic)
         if topic_tokens and cleaned_tokens:
             return topic_tokens.issubset(cleaned_tokens)
+        return False
     return topic_clean.casefold() in cleaned.casefold()
 
 
@@ -634,42 +635,30 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
     )
     already_signaled_topics: set[str] = set()
     reviewed = await _review_negative_preferences(messages, lanlan_name)
-    deduped_candidates: dict[str, dict] = {}
-    for item in reviewed[:3]:
+    deduped_candidates: list[dict] = []
+    seen_topics: set[str] = set()
+    for item in reviewed:
         topic = str(item.get('topic', '')).strip()
         normalized_topic = _normalize_topic_key(topic)
         if not normalized_topic:
             continue
+        if normalized_topic in seen_topics:
+            continue
+        seen_topics.add(normalized_topic)
+        deduped_candidates.append(item)
+    limited_candidates = deduped_candidates[:3]
+    if len(limited_candidates) != len(reviewed[:3]):
+        logger.info(
+            f"[MemoryServer] {lanlan_name}: 负面偏好候选已去重 raw={len(reviewed[:3])} deduped={len(limited_candidates)}"
+        )
+    applied = 0
+    for item in limited_candidates:
+        topic = str(item.get('topic', '')).strip()
         policy = str(item.get('policy', '')).strip()
         try:
             confidence = float(item.get('confidence', 0))
         except (TypeError, ValueError):
             confidence = 0.0
-        current = deduped_candidates.get(normalized_topic)
-        if current is None:
-            deduped_candidates[normalized_topic] = {
-                'topic': topic,
-                'policy': policy,
-                'confidence': confidence,
-            }
-            continue
-        current_rank = 1 if current['policy'] == 'avoid' else 0
-        next_rank = 1 if policy == 'avoid' else 0
-        if next_rank > current_rank or (next_rank == current_rank and confidence > current['confidence']):
-            deduped_candidates[normalized_topic] = {
-                'topic': topic,
-                'policy': policy,
-                'confidence': confidence,
-            }
-    if len(deduped_candidates) != len(reviewed[:3]):
-        logger.info(
-            f"[MemoryServer] {lanlan_name}: 负面偏好候选已去重 raw={len(reviewed[:3])} deduped={len(deduped_candidates)}"
-        )
-    applied = 0
-    for item in deduped_candidates.values():
-        topic = item['topic']
-        policy = item['policy']
-        confidence = item['confidence']
         normalized_topic = _normalize_topic_key(topic)
         if confidence < NEGATIVE_PREFERENCE_CONFIDENCE_THRESHOLD:
             logger.info(
@@ -866,7 +855,7 @@ async def _run_review_in_background(lanlan_name: str, review_messages: list | No
     try:
         # 直接异步调用review_history方法
         await recent_history_manager.review_history(lanlan_name, cancel_event)
-        messages = review_messages or recent_history_manager.get_recent_history(lanlan_name)
+        messages = review_messages if review_messages is not None else recent_history_manager.get_recent_history(lanlan_name)
         applied = await _review_and_apply_negative_preferences(messages, lanlan_name)
         if applied:
             logger.info(f"[MemoryServer] {lanlan_name}: 后台负面偏好审查应用 {applied} 条")

@@ -334,6 +334,9 @@ class OmniOfflineClient:
         # Callback for user input
         if self.on_input_transcript:
             await self.on_input_transcript(text.strip())
+            callback_temporary_messages = self._consume_temporary_system_messages()
+            if callback_temporary_messages:
+                temporary_messages.extend(callback_temporary_messages)
         
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3

@@ -696,7 +696,8 @@ def _bump_state_revision() -> int:
     return Modules.state_revision
 
 
-def _normalize_capability_reason(raw_reason: str) -> str:
+def _normalize_capability_reason(capability: str, raw_reason: str) -> str:
+    capability_name = str(capability or "").strip().lower()
     text = str(raw_reason or "").strip()
     if not text:
         return ""
@@ -725,7 +726,7 @@ def _normalize_capability_reason(raw_reason: str) -> str:
         return "AGENT_NO_PLUGINS_FOUND"
     if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
         return "AGENT_PLUGIN_SERVER_ERROR"
-    if "openfang" in lower or "daemon" in lower:
+    if "openfang" in capability_name and ("openfang" in lower or "daemon" in lower):
         return "AGENT_OPENFANG_DAEMON_UNREACHABLE"
     if "unreachable" in lower or "连接失败" in text or "connectivity" in lower:
         return "AGENT_LLM_UNREACHABLE"
@@ -734,7 +735,7 @@ def _normalize_capability_reason(raw_reason: str) -> str:
 
 def _set_capability(name: str, ready: bool, reason: str = "") -> None:
     prev = Modules.capability_cache.get(name, {})
-    normalized_reason = _normalize_capability_reason(reason)
+    normalized_reason = _normalize_capability_reason(name, reason)
     Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}
     if prev.get("ready") != bool(ready) or prev.get("reason", "") != normalized_reason:
         _bump_state_revision()
@@ -3035,7 +3036,7 @@ async def openfang_availability():
         chosen_reason = str(reasons[0] or "").strip() if reasons else ""
         if not chosen_reason:
             chosen_reason = "OPENFANG_DAEMON_UNREACHABLE"
-    normalized_reason = _normalize_capability_reason(chosen_reason)
+    normalized_reason = _normalize_capability_reason("openfang", chosen_reason)
     payload = {
         "enabled": bool(status.get("enabled", True)) if isinstance(status, dict) else True,
         "ready": bool(ok),

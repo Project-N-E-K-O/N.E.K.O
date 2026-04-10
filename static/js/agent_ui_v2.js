@@ -125,7 +125,7 @@
         try {
             const r = await fetch('/api/agent/openfang/availability');
             if (!r.ok) {
-                state.openfangProbeReady = null;
+                state.openfangProbeReady = false;
                 state.openfangProbeReason = `status ${r.status}`;
                 if (state.snapshot) render('openfang-refresh-error');
                 return false;
@@ -140,7 +140,7 @@
             if (state.snapshot) render('openfang-refresh');
             return state.openfangProbeReady;
         } catch (e) {
-            state.openfangProbeReady = null;
+            state.openfangProbeReady = false;
             state.openfangProbeReason = String(e && e.message ? e.message : e || '');
             if (state.snapshot) render('openfang-refresh-error');
             return false;
@@ -347,7 +347,17 @@
                 } else if (!effectiveAnalyzerEnabled) {
                     cb.title = window.t ? window.t('settings.toggles.masterRequired', { name: openfangName }) : '请先开启Agent总开关';
                 } else {
-                    cb.title = reason || (window.t ? window.t('settings.toggles.unavailable', { name: openfangName }) : `${openfangName}不可用`);
+                    let translatedReason = reason;
+                    if (reason && window.t) {
+                        const precheckKey = `agent.precheck.${reason}`;
+                        const translated = window.t(precheckKey, { name: openfangName });
+                        if (translated && translated !== precheckKey) {
+                            translatedReason = translated;
+                        }
+                    }
+                    cb.title = translatedReason || (window.t
+                        ? window.t('settings.toggles.unavailable', { name: openfangName })
+                        : `${openfangName}不可用`);
                 }
             });
             sync(openfang);

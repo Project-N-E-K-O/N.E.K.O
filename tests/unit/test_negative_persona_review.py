@@ -7,6 +7,7 @@ import importlib
 import json
 import sys
 import tempfile
+import types
 from unittest.mock import MagicMock, patch
 
 
@@ -36,12 +37,16 @@ def _import_memory_server_with_tempdir():
         mock_cm = _build_mock_config_manager(tmpdir)
         with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
              patch("utils.config_manager._config_manager", mock_cm):
+            original_module = sys.modules.get("memory_server")
             sys.modules.pop("memory_server", None)
             memory_server = importlib.import_module("memory_server")
             try:
                 yield memory_server, mock_cm
             finally:
-                sys.modules.pop("memory_server", None)
+                if original_module is None:
+                    sys.modules.pop("memory_server", None)
+                else:
+                    sys.modules["memory_server"] = original_module
 
 
 def test_negative_signal_first_soft_then_hard() -> None:
@@ -685,6 +690,55 @@ def test_topics_match_merges_simple_latin_inflection_variants() -> None:
     from memory.persona import _topics_match
 
     assert _topics_match("work issue", "work issues") is True
+
+
+def test_topics_match_rejects_short_latin_substring_false_positive() -> None:
+    from memory.persona import _topics_match
+
+    assert _topics_match("ai", "maid") is False
+
+
+def test_normalize_topic_tokens_preserves_double_s_words() -> None:
+    from memory.persona import _normalize_topic_tokens
+
+    tokens = _normalize_topic_tokens("class classes boss grass")
+    assert "class" in tokens
+    assert "boss" in tokens
+    assert "grass" in tokens
+    assert "bos" not in tokens
+    assert "gras" not in tokens
+
+
+def test_negative_keyword_fallback_keeps_inner_word_content() -> None:
+    from memory.persona import _extract_negative_topic
+
+    topic, explicit = _extract_negative_topic("Don't mention whatever")
+    assert explicit is True
+    assert topic == "whatever"
+
+
+def test_import_memory_server_context_restores_original_module() -> None:
+    original_module = sys.modules.get("memory_server")
+    sentinel = types.ModuleType("memory_server")
+    sys.modules["memory_server"] = sentinel
+
+    try:
+        with _import_memory_server_with_tempdir() as (memory_server, _):
+            assert memory_server is not sentinel
+        assert sys.modules.get("memory_server") is sentinel
+    finally:
+        if original_module is None:
+            sys.modules.pop("memory_server", None)
+        else:
+            sys.modules["memory_server"] = original_module
+
+
+def test_prompt_language_normalizer_handles_locale_variants() -> None:
+    from config.prompts_memory import _normalize_language
+
+    assert _normalize_language("zh-CN") == "zh"
+    assert _normalize_language("ja_JP") == "ja"
+    assert _normalize_language("") == "zh"
 
 
 def test_negative_preference_prompt_normalizes_full_locale_code() -> None:

@@ -978,9 +978,12 @@ Return only a JSON array in this format:
 }
 
 
+def _normalize_language(lang: str = 'zh') -> str:
+    return (lang or 'zh').strip().split('-', 1)[0].split('_', 1)[0].lower() or 'zh'
+
+
 def get_negative_preference_review_prompt(lang: str = 'zh') -> str:
-    lang = (lang or 'zh').strip().split('-', 1)[0].split('_', 1)[0].lower() or 'zh'
-    return _loc(NEGATIVE_PREFERENCE_REVIEW_PROMPT, lang)
+    return _loc(NEGATIVE_PREFERENCE_REVIEW_PROMPT, _normalize_language(lang))
 
 
 negative_preference_review_prompt = NEGATIVE_PREFERENCE_REVIEW_PROMPT['zh']
@@ -1180,8 +1183,7 @@ Candidate topic:
 
 
 def get_negative_topic_validation_prompt(lang: str = 'zh') -> str:
-    lang = (lang or 'zh').strip().split('-', 1)[0].split('_', 1)[0].lower() or 'zh'
-    return _loc(NEGATIVE_TOPIC_VALIDATION_PROMPT, lang)
+    return _loc(NEGATIVE_TOPIC_VALIDATION_PROMPT, _normalize_language(lang))
 
 # ---------- reflection_prompt → i18n dict ----------
 

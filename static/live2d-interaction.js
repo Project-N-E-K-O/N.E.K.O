@@ -1079,7 +1079,11 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
     // 清除之前的点击效果恢复定时器
     if (this._clickEffectRestoreTimer) {
         clearTimeout(this._clickEffectRestoreTimer);
+        if (this._clickEffectSuspendReason && typeof this.resumePersistentExpressions === 'function') {
+            this.resumePersistentExpressions(this._clickEffectSuspendReason);
+        }
         this._clickEffectRestoreTimer = null;
+        this._clickEffectSuspendReason = null;
     }
     const clickEffectSuspendReason = window.isInTutorial
         ? 'tutorial-click-expression'
@@ -1172,9 +1176,11 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         // 使用唯一 ID 标记此次点击效果，用于判断是否应该恢复
         const clickEffectId = Date.now();
         this._currentClickEffectId = clickEffectId;
+        this._clickEffectSuspendReason = clickEffectSuspendReason;
         
         this._clickEffectRestoreTimer = setTimeout(() => {
             this._clickEffectRestoreTimer = null;
+            this._clickEffectSuspendReason = null;
             
             // 检查是否仍然是此次点击效果（没有被新的情感/点击覆盖）
             if (this._currentClickEffectId !== clickEffectId) {
@@ -1585,9 +1591,18 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     // 清理点击效果恢复定时器和 ID
     if (this._clickEffectRestoreTimer) {
         clearTimeout(this._clickEffectRestoreTimer);
+        if (this._clickEffectSuspendReason && typeof this.resumePersistentExpressions === 'function') {
+            this.resumePersistentExpressions(this._clickEffectSuspendReason);
+        }
         this._clickEffectRestoreTimer = null;
     }
+    this._clickEffectSuspendReason = null;
     this._currentClickEffectId = null;
+
+    if (this._touchsetExpressionTimers instanceof Map) {
+        this._touchsetExpressionTimers.forEach((timer) => clearTimeout(timer));
+        this._touchsetExpressionTimers.clear();
+    }
 
     // 清理页面卸载监听器（如果存在）
     if (this._unloadListener) {
@@ -1715,7 +1730,11 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
     // 清除之前的点击效果恢复定时器
     if (this._clickEffectRestoreTimer) {
         clearTimeout(this._clickEffectRestoreTimer);
+        if (this._clickEffectSuspendReason && typeof this.resumePersistentExpressions === 'function') {
+            this.resumePersistentExpressions(this._clickEffectSuspendReason);
+        }
         this._clickEffectRestoreTimer = null;
+        this._clickEffectSuspendReason = null;
     }
     const clickEffectSuspendReason = window.isInTutorial
         ? 'tutorial-click-expression'
@@ -1797,14 +1816,11 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         }
         const clickEffectId = Date.now();
         this._currentClickEffectId = clickEffectId;
-
-        if (this._clickEffectRestoreTimer) {
-            clearTimeout(this._clickEffectRestoreTimer);
-            this._clickEffectRestoreTimer = null;
-        }
+        this._clickEffectSuspendReason = clickEffectSuspendReason;
 
         this._clickEffectRestoreTimer = setTimeout(() => {
             this._clickEffectRestoreTimer = null;
+            this._clickEffectSuspendReason = null;
 
             if (this._currentClickEffectId !== clickEffectId) {
                 console.log('[Interaction] 点击效果已被新的情感覆盖，跳过恢复');
@@ -2043,16 +2059,21 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
             }else {
                 console.log(`[TouchSet] 尝试播放表情: ${faceInfo.File}`);
                 try {
+                    const token = `touchset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
                     await this.playExpression(randomExpressionName, faceInfo.File, {
                         suspendPersistent: true,
-                        suspendReason: 'touchset-expression'
+                        suspendReason: token
                     });
                     console.log(`[TouchSet] 播放表情成功: ${randomExpressionName}, 持续时间: ${faceHoldingTime}ms`);
-                    
-                    clearTimeout(this.expressionTimer);
-                    this.expressionTimer = setTimeout(() => {
-                        this.clearExpression?.('touchset-expression');
+
+                    if (!(this._touchsetExpressionTimers instanceof Map)) {
+                        this._touchsetExpressionTimers = new Map();
+                    }
+                    const timer = setTimeout(() => {
+                        this.clearExpression?.(token);
+                        this._touchsetExpressionTimers?.delete(token);
                     }, faceHoldingTime);
+                    this._touchsetExpressionTimers.set(token, timer);
                 } catch (e) {
                     console.warn(`[TouchSet] 播放表情失败: ${randomExpressionName}`, e);
                 }

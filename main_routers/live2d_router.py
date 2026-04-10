@@ -49,6 +49,20 @@ def _normalize_persistent_expression_group(mapping):
         }
     if not isinstance(mapping, dict):
         return mapping
+    if (
+        '常驻' in mapping
+        and 'motions' not in mapping
+        and 'expressions' not in mapping
+    ):
+        normalized_persistent_files = _normalize_persistent_files(mapping.get('常驻'))
+        if not normalized_persistent_files:
+            return None
+        return {
+            "motions": {},
+            "expressions": {
+                "常驻": normalized_persistent_files,
+            },
+        }
 
     normalized_mapping = dict(mapping)
     motions = mapping.get('motions')
