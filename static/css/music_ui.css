@@ -37,6 +37,13 @@
     animation: musicBarSlideIn 0.3s ease;
 }
 
+/* 挂载在 React 聊天窗口 composer-panel 内的专用挂载点时，宽度擑满 */
+#music-player-mount > .music-player-bar {
+    width: 100%;
+    margin: 0;
+    border-radius: 12px 12px 0 0;
+}
+
 .music-player-bar.fading-out {
     animation: musicBarFadeOut 0.2s ease forwards;
 }

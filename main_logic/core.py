@@ -268,6 +268,7 @@ class LLMSessionManager:
         self._last_tts_respawn_time: float = 0.0  # 上次 respawn 时间戳，用于 12 秒冷却
         self._tts_respawn_task: Optional[asyncio.Task] = None  # 延迟重试 Task，end_session 时取消
         self._last_tts_error_code: str = ''  # 上次 TTS 错误码
+        self._tts_retry_notify_count: int = 0  # TTS 重试通知计数，前3次不通知前端
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -429,7 +430,7 @@ class LLMSessionManager:
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
         self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-        
+
         # 直接向前端发送turn end消息
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
@@ -1023,6 +1024,7 @@ class LLMSessionManager:
             self._tts_respawn_task = None
         self._last_tts_error_code = ''
         self._last_tts_respawn_time = 0.0
+        self._tts_retry_notify_count = 0
 
     async def _teardown_tts_runtime(self, handler_task_ref, thread_ref,
                                      req_queue_ref, resp_queue_ref):
@@ -3180,6 +3182,7 @@ class LLMSessionManager:
                             self.tts_ready = ready_flag
                         if ready_flag:
                             self._last_tts_error_code = ''
+                            self._tts_retry_notify_count = 0
                             logger.info("✅ 收到TTS运行时就绪信号，开始刷新缓存文本")
                             await self._flush_tts_pending_chunks()
                         else:
@@ -3216,9 +3219,11 @@ class LLMSessionManager:
                                 self._tts_respawn_task = asyncio.ensure_future(_delayed_respawn())
                         continue
                     elif data[0] == "__reconnecting__":
-                        logger.info("🌊 TTS 正在自动重连，发送呼吸感状态到前端")
-                        user_msg = json.dumps({"code": "TTS_RECONNECTING", "level": "info"})
-                        self._fire_task(self.send_status(user_msg))
+                        self._tts_retry_notify_count += 1
+                        logger.info(f"🌊 TTS 正在自动重连 (retry {self._tts_retry_notify_count})")
+                        if self._tts_retry_notify_count > 3:
+                            user_msg = json.dumps({"code": "TTS_RECONNECTING", "level": "info"})
+                            self._fire_task(self.send_status(user_msg))
                         continue
                     elif data[0] == "__error__":
                         error_msg = data[1]
@@ -3268,6 +3273,12 @@ class LLMSessionManager:
                             else:
                                 user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
+                        # 可重试的错误：前3次不通知前端，第3次失败后再发
+                        if self._last_tts_error_code not in NO_RETRY_TTS_CODES:
+                            self._tts_retry_notify_count += 1
+                            if self._tts_retry_notify_count <= 3:
+                                logger.info(f"TTS 错误重试 {self._tts_retry_notify_count}/3，暂不通知前端")
+                                continue
                         self._fire_task(self.send_status(user_msg))
                         continue
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":

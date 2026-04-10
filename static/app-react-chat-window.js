@@ -12,12 +12,16 @@
     var BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     var STORAGE_LEFT_KEY = 'neko.reactChatWindow.left';
     var STORAGE_TOP_KEY = 'neko.reactChatWindow.top';
+    var STORAGE_WIDTH_KEY = 'neko.reactChatWindow.width';
+    var STORAGE_HEIGHT_KEY = 'neko.reactChatWindow.height';
     var EVENT_PREFIX = 'react-chat-window:';
 
     var loadedPromise = null;
     var mounted = false;
     var dragState = null;
+    var resizeState = null;
     var minimized = false;
+    var savedShellSize = null;
 
     var state = {
         viewProps: null,
@@ -167,7 +171,6 @@
                 ? getI18nText('chat.takePhotoAriaLabel', '拍照')
                 : getI18nText('chat.screenshotAriaLabel', '截图'),
             removeAttachmentButtonAriaLabel: getI18nText('chat.removePendingImage', '移除图片'),
-            streamingStatusLabel: getI18nText('chat.messageStreaming', '生成中'),
             failedStatusLabel: getI18nText('chat.messageFailed', '发送失败'),
             inputHint: getI18nText('chat.reactWindowInputHint', 'Enter 发送，Shift + Enter 换行')
         };
@@ -370,6 +373,38 @@
         } catch (_) {}
     }
 
+    function persistSize(width, height) {
+        try {
+            localStorage.setItem(STORAGE_WIDTH_KEY, String(Math.round(width)));
+            localStorage.setItem(STORAGE_HEIGHT_KEY, String(Math.round(height)));
+        } catch (_) {}
+    }
+
+    function getStoredSize() {
+        try {
+            var rawWidth = localStorage.getItem(STORAGE_WIDTH_KEY);
+            var rawHeight = localStorage.getItem(STORAGE_HEIGHT_KEY);
+            if (rawWidth === null || rawHeight === null) return null;
+            var width = Number(rawWidth);
+            var height = Number(rawHeight);
+            if (Number.isFinite(width) && Number.isFinite(height) && width >= 320 && height >= 280) {
+                return { width: width, height: height };
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    function restoreSize() {
+        var shell = getShell();
+        if (!shell || isMobileWidth()) return;
+
+        var stored = getStoredSize();
+        if (stored) {
+            shell.style.width = stored.width + 'px';
+            shell.style.height = stored.height + 'px';
+        }
+    }
+
     function clampPosition(left, top) {
         var shell = getShell();
         if (!shell) {
@@ -416,9 +451,13 @@
         if (isMobileWidth()) {
             shell.style.removeProperty('left');
             shell.style.removeProperty('top');
+            shell.style.removeProperty('width');
+            shell.style.removeProperty('height');
             shell.style.removeProperty('transform');
             return;
         }
+
+        restoreSize();
 
         var stored = getStoredPosition();
         if (stored) {
@@ -633,7 +672,39 @@
         if (!shell) return;
 
         minimized = !!nextMinimized;
+
+        if (minimized) {
+            // 保存当前的内联尺寸（restoreSize/updateResize 设置的），
+            // 并清除它们，让 .is-minimized 的 CSS 规则生效（220x56）。
+            // 内联样式的优先级高于类选择器，所以必须先 removeProperty。
+            savedShellSize = {
+                width: shell.style.width,
+                height: shell.style.height
+            };
+            shell.style.removeProperty('width');
+            shell.style.removeProperty('height');
+        } else if (savedShellSize) {
+            // 恢复用户之前调整的尺寸
+            if (savedShellSize.width) {
+                shell.style.width = savedShellSize.width;
+            }
+            if (savedShellSize.height) {
+                shell.style.height = savedShellSize.height;
+            }
+            savedShellSize = null;
+        }
+
         shell.classList.toggle('is-minimized', minimized);
+
+        // 折叠/展开后，盒子尺寸变化可能导致它溢出视窗 —— 重新夹取位置
+        // 在下一帧执行，等待 CSS 应用新尺寸后再读取 boundingRect
+        requestAnimationFrame(function () {
+            var rect = shell.getBoundingClientRect();
+            var clamped = clampPosition(rect.left, rect.top);
+            if (clamped.left !== rect.left || clamped.top !== rect.top) {
+                applyPosition(clamped.left, clamped.top);
+            }
+        });
 
         var button = getMinimizeButton();
         var icon = getMinimizeIcon();
@@ -753,6 +824,142 @@
         document.addEventListener('touchcancel', stopDrag);
     }
 
+    var MIN_WIDTH = 320;
+    var MIN_HEIGHT = 280;
+    var RESIZE_DIRECTIONS = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'];
+
+    function createResizeEdges() {
+        var shell = getShell();
+        if (!shell) return;
+
+        RESIZE_DIRECTIONS.forEach(function (dir) {
+            var edge = document.createElement('div');
+            edge.className = 'react-chat-resize-edge react-chat-resize-' + dir;
+            edge.dataset.resizeDir = dir;
+            shell.appendChild(edge);
+        });
+    }
+
+    function startResize(clientX, clientY, direction) {
+        var shell = getShell();
+        if (!shell || isMobileWidth()) return;
+
+        var rect = shell.getBoundingClientRect();
+        resizeState = {
+            dir: direction,
+            startX: clientX,
+            startY: clientY,
+            origLeft: rect.left,
+            origTop: rect.top,
+            origWidth: rect.width,
+            origHeight: rect.height
+        };
+
+        document.body.classList.add('react-chat-window-resizing');
+    }
+
+    function updateResize(clientX, clientY) {
+        if (!resizeState) return;
+
+        var shell = getShell();
+        if (!shell) return;
+
+        var dx = clientX - resizeState.startX;
+        var dy = clientY - resizeState.startY;
+        var dir = resizeState.dir;
+
+        var newLeft = resizeState.origLeft;
+        var newTop = resizeState.origTop;
+        var newWidth = resizeState.origWidth;
+        var newHeight = resizeState.origHeight;
+
+        if (dir.indexOf('e') !== -1) {
+            newWidth = Math.max(MIN_WIDTH, resizeState.origWidth + dx);
+        }
+        if (dir.indexOf('w') !== -1) {
+            var proposedWidth = resizeState.origWidth - dx;
+            if (proposedWidth >= MIN_WIDTH) {
+                newWidth = proposedWidth;
+                newLeft = resizeState.origLeft + dx;
+            } else {
+                newWidth = MIN_WIDTH;
+                newLeft = resizeState.origLeft + resizeState.origWidth - MIN_WIDTH;
+            }
+        }
+        if (dir.indexOf('s') !== -1) {
+            newHeight = Math.max(MIN_HEIGHT, resizeState.origHeight + dy);
+        }
+        if (dir.indexOf('n') !== -1) {
+            var proposedHeight = resizeState.origHeight - dy;
+            if (proposedHeight >= MIN_HEIGHT) {
+                newHeight = proposedHeight;
+                newTop = resizeState.origTop + dy;
+            } else {
+                newHeight = MIN_HEIGHT;
+                newTop = resizeState.origTop + resizeState.origHeight - MIN_HEIGHT;
+            }
+        }
+
+        // Clamp to viewport
+        newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - 50));
+        newTop = Math.max(0, Math.min(newTop, window.innerHeight - 50));
+        newWidth = Math.min(newWidth, window.innerWidth);
+        newHeight = Math.min(newHeight, window.innerHeight);
+
+        shell.style.width = newWidth + 'px';
+        shell.style.height = newHeight + 'px';
+        shell.style.left = newLeft + 'px';
+        shell.style.top = newTop + 'px';
+        shell.style.transform = 'none';
+    }
+
+    function stopResize() {
+        if (!resizeState) return;
+
+        var shell = getShell();
+        if (shell) {
+            var rect = shell.getBoundingClientRect();
+            persistPosition(rect.left, rect.top);
+            persistSize(rect.width, rect.height);
+        }
+
+        resizeState = null;
+        document.body.classList.remove('react-chat-window-resizing');
+    }
+
+    function bindResizing() {
+        var shell = getShell();
+        if (!shell) return;
+
+        shell.addEventListener('mousedown', function (event) {
+            var target = event.target;
+            if (!target || !target.dataset || !target.dataset.resizeDir) return;
+            startResize(event.clientX, event.clientY, target.dataset.resizeDir);
+            event.preventDefault();
+        });
+
+        shell.addEventListener('touchstart', function (event) {
+            var target = event.target;
+            if (!target || !target.dataset || !target.dataset.resizeDir) return;
+            if (!event.touches || event.touches.length === 0) return;
+            startResize(event.touches[0].clientX, event.touches[0].clientY, target.dataset.resizeDir);
+        }, { passive: true });
+
+        document.addEventListener('mousemove', function (event) {
+            if (!resizeState) return;
+            updateResize(event.clientX, event.clientY);
+        });
+
+        document.addEventListener('touchmove', function (event) {
+            if (!resizeState || !event.touches || event.touches.length === 0) return;
+            updateResize(event.touches[0].clientX, event.touches[0].clientY);
+        }, { passive: true });
+
+        document.addEventListener('mouseup', stopResize);
+        document.addEventListener('touchend', stopResize);
+        document.addEventListener('touchcancel', stopResize);
+    }
+
     function bindBridgeEvents() {
         window.addEventListener(EVENT_PREFIX + 'set-messages', function (event) {
             setMessages(event.detail && event.detail.messages);
@@ -815,6 +1022,8 @@
         }
 
         bindDragging();
+        createResizeEdges();
+        bindResizing();
         bindBridgeEvents();
 
         window.addEventListener('keydown', function (event) {

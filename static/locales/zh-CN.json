@@ -777,6 +777,8 @@
         "keyAutoFilledFromKeyBook": "Key从API管理簿自动填充，请在管理簿中配置",
         "goToKeyBook": "前往管理簿",
         "providerLabel": "服务商",
+        "providerSelectPlaceholder": "请选择服务商",
+        "noOptionsAvailable": "暂无可选项",
         "customModelProviderFollowCore": "跟随核心API",
         "customModelProviderFollowAssist": "跟随辅助API",
         "customModelProviderCustom": "自定义",
@@ -854,7 +856,7 @@
         "apiUrl": "API URL",
         "apiKey": "API Key",
         "modelId": "模型ID",
-        "agentApiConfigTitle": "Agent API 配置",
+        "agentApiConfigTitle": "Agent API 配置（需支持视觉功能）",
         "providerPlaceholder": "如：openai、azure、local",
         "apiUrlPlaceholder": "如：https://api.openai.com/v1",
         "modelIdPlaceholder": "如：gpt-5.1-chat-latest、qwen-flash",
@@ -2683,7 +2685,8 @@
         "playError": "音乐播放加载失败",
         "loadError": "音乐播放器加载失败",
         "autoplayBlocked": "浏览器限制了自动播放，请点击播放按钮",
-        "ended": "已结束"
+        "ended": "已结束",
+        "nowPlayingCard": "🎵 正在播放"
     },
     "Jukebox": {
         "title": "点歌台",
