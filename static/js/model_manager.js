@@ -4289,10 +4289,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // ===== 待机动作多选：工具函数 =====
 
-    /** 待机动作轮换定时器 */
+    /** 待机动作轮换定时器（回退用，防止动画过长不切换） */
     const _idleRotationTimers = { vrm: null, mmd: null };
     /** 上一次播放的 URL（避免连续播放同一个） */
     const _idleRotationLast = { vrm: null, mmd: null };
+    /** loop 事件监听器清理函数（动画一轮播完时自动切换） */
+    const _idleLoopCleanup = { vrm: null, mmd: null };
 
     /** 从多选容器中获取所有已勾选的动画 URL 列表 */
     function getSelectedIdleAnimations(containerId) {
@@ -4371,12 +4373,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     });
 
+    /** 清理 loop 事件监听器 */
+    function _cleanupIdleLoopListener(type) {
+        if (_idleLoopCleanup[type]) {
+            _idleLoopCleanup[type]();
+            _idleLoopCleanup[type] = null;
+        }
+    }
+
     /** 停止待机动作轮换 */
     function stopIdleRotation(type) {
         if (_idleRotationTimers[type]) {
             clearTimeout(_idleRotationTimers[type]);
             _idleRotationTimers[type] = null;
         }
+        _cleanupIdleLoopListener(type);
         _idleRotationLast[type] = null;
     }
 
@@ -4385,35 +4396,40 @@ document.addEventListener('DOMContentLoaded', async () => {
         stopIdleRotation(type);
         if (!urls || urls.length === 0) return;
 
-        // 立即播放一个
+        // 立即播放一个（回退定时器和 loop 监听器在 await 成功后由 _playIdleAnimation 内部注册）
         const firstUrl = urls.length === 1 ? urls[0] : _pickRandomDifferent(urls, _idleRotationLast[type]);
         _playIdleAnimation(type, firstUrl);
         _idleRotationLast[type] = firstUrl;
-
-        // 多于 1 个才定时轮换
-        if (urls.length > 1) {
-            _scheduleNextIdle(type, urls);
-        }
     }
 
-    function _scheduleNextIdle(type, urls) {
+    /** 触发一次待机动作切换（loop 完成或回退定时器都走这里） */
+    function _triggerIdleSwitch(type) {
+        // 清理当前的定时器和 loop 监听器
+        if (_idleRotationTimers[type]) {
+            clearTimeout(_idleRotationTimers[type]);
+            _idleRotationTimers[type] = null;
+        }
+        _cleanupIdleLoopListener(type);
+
+        // 模式不匹配时停止轮换
+        if (!_isIdleTypeActive(type)) return;
+
+        // 重新获取当前已选列表（用户可能在期间改了勾选）
+        const containerId = type === 'vrm' ? 'vrm-idle-animation-multiselect' : 'mmd-idle-animation-multiselect';
+        const currentUrls = getSelectedIdleAnimations(containerId);
+        if (currentUrls.length < 2) return;
+
+        const nextUrl = _pickRandomDifferent(currentUrls, _idleRotationLast[type]);
+        _playIdleAnimation(type, nextUrl); // loop 监听器和回退定时器在 await 成功后注册
+        _idleRotationLast[type] = nextUrl;
+    }
+
+    /** 设置回退定时器（仅当动画过长未触发 loop 事件时强制切换） */
+    function _scheduleNextIdle(type) {
+        if (_idleRotationTimers[type]) clearTimeout(_idleRotationTimers[type]);
         _idleRotationTimers[type] = setTimeout(() => {
-            // 模式不匹配时停止轮换
-            if (!_isIdleTypeActive(type)) {
-                _idleRotationTimers[type] = null;
-                return;
-            }
-            // 重新获取当前已选列表（用户可能在期间改了勾选）
-            const containerId = type === 'vrm' ? 'vrm-idle-animation-multiselect' : 'mmd-idle-animation-multiselect';
-            const currentUrls = getSelectedIdleAnimations(containerId);
-            if (currentUrls.length < 2) {
-                _idleRotationTimers[type] = null;
-                return;
-            }
-            const nextUrl = _pickRandomDifferent(currentUrls, _idleRotationLast[type]);
-            _playIdleAnimation(type, nextUrl);
-            _idleRotationLast[type] = nextUrl;
-            _scheduleNextIdle(type, currentUrls);
+            console.debug(`[${type.toUpperCase()} IdleAnimation] 回退定时器触发，强制切换`);
+            _triggerIdleSwitch(type);
         }, 20000);
     }
 
@@ -4443,6 +4459,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (type === 'vrm' && isVrmAnimationPlaying) return;
         if (type === 'mmd' && isMmdAnimationPlaying) return;
 
+        // 播放新动画前先清理旧的 loop 监听器
+        _cleanupIdleLoopListener(type);
+
         try {
             if (type === 'vrm') {
                 if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
@@ -4451,6 +4470,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                     await vrmManager.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
                     console.log('[VRM IdleAnimation] 待机动作已切换:', url.split('/').pop());
+
+                    // 注册 loop 事件监听：动画一轮播完时自动切换
+                    const mixer = vrmManager.animation?.vrmaMixer;
+                    if (mixer) {
+                        const handler = () => {
+                            console.debug('[VRM IdleAnimation] 动画循环完成，切换下一个');
+                            _triggerIdleSwitch('vrm');
+                        };
+                        mixer.addEventListener('loop', handler);
+                        _idleLoopCleanup['vrm'] = () => mixer.removeEventListener('loop', handler);
+                    }
+
+                    // 动画加载成功后再启动回退定时器（从实际播放开始计时）
+                    const vrmUrls = getSelectedIdleAnimations('vrm-idle-animation-multiselect');
+                    if (vrmUrls.length > 1) _scheduleNextIdle('vrm');
                 }
             } else {
                 if (window.mmdManager && window.mmdManager.currentModel) {
@@ -4462,6 +4496,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                     window.mmdManager.playAnimation();
                     isMmdIdlePlaying = true;
                     console.log('[MMD IdleAnimation] 待机动作已切换:', url.split('/').pop());
+
+                    // 注册 loop 事件监听：动画一轮播完时自动切换
+                    const mixer = window.mmdManager.animationModule?.mixer;
+                    if (mixer) {
+                        const handler = () => {
+                            console.debug('[MMD IdleAnimation] 动画循环完成，切换下一个');
+                            _triggerIdleSwitch('mmd');
+                        };
+                        mixer.addEventListener('loop', handler);
+                        _idleLoopCleanup['mmd'] = () => mixer.removeEventListener('loop', handler);
+                    }
+
+                    // 动画加载成功后再启动回退定时器（从实际播放开始计时）
+                    const mmdUrls = getSelectedIdleAnimations('mmd-idle-animation-multiselect');
+                    if (mmdUrls.length > 1) _scheduleNextIdle('mmd');
                 }
             }
         } catch (err) {
