@@ -70,6 +70,27 @@ def _normalize_persistent_expression_group(mapping):
     return normalized_mapping
 
 
+def _has_meaningful_emotion_mapping(mapping):
+    if not isinstance(mapping, dict):
+        return False
+
+    motions = mapping.get('motions') or {}
+    if isinstance(motions, dict):
+        for items in motions.values():
+            if isinstance(items, list) and any(isinstance(item, str) and item.strip() for item in items):
+                return True
+
+    expressions = mapping.get('expressions') or {}
+    if isinstance(expressions, dict):
+        for group_name, items in expressions.items():
+            if group_name == '常驻':
+                continue
+            if isinstance(items, list) and any(isinstance(item, str) and item.strip() for item in items):
+                return True
+
+    return False
+
+
 def _normalize_model_path(path: str) -> str:
     """Strip any surrounding quotes, then encode a model URL path."""
     return encode_url_path(path.strip('"'))
@@ -318,8 +339,13 @@ def get_emotion_mapping(model_name: str):
         # 优先使用 EmotionMapping；若不存在则从 FileReferences 推导
         emotion_mapping = config_data.get('EmotionMapping')
         emotion_mapping = _normalize_persistent_expression_group(emotion_mapping)
+        resident_expressions = []
         if emotion_mapping and not isinstance(emotion_mapping, dict):
             emotion_mapping = None
+        if isinstance(emotion_mapping, dict):
+            resident_expressions = ((emotion_mapping.get('expressions') or {}).get('常驻') or [])
+            if not _has_meaningful_emotion_mapping(emotion_mapping):
+                emotion_mapping = None
         if not emotion_mapping:
             derived_mapping = {"motions": {}, "expressions": {}}
             file_refs = config_data.get('FileReferences', {}) or {}
@@ -356,6 +382,9 @@ def get_emotion_mapping(model_name: str):
                 derived_mapping["expressions"].setdefault(group, []).append(file_path)
 
             emotion_mapping = _normalize_persistent_expression_group(derived_mapping)
+            if resident_expressions:
+                emotion_mapping.setdefault("expressions", {})
+                emotion_mapping["expressions"]["常驻"] = resident_expressions
 
         return {"success": True, "config": emotion_mapping}
     except Exception as e:

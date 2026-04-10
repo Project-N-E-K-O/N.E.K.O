@@ -265,11 +265,62 @@ def _sanitize_llm_json(raw: str) -> str:
     except (ValueError, SyntaxError):
         pass
 
-    normalized_quotes = re.sub(
-        r"'([^'\\]*(?:\\.[^'\\]*)*)'",
-        lambda match: json.dumps(match.group(1)),
-        s,
-    )
+    def _normalize_single_quoted_strings(text: str) -> str:
+        result: list[str] = []
+        idx = 0
+        in_double = False
+        escaped = False
+        while idx < len(text):
+            ch = text[idx]
+            if in_double:
+                result.append(ch)
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_double = False
+                idx += 1
+                continue
+
+            if ch == '"':
+                in_double = True
+                result.append(ch)
+                idx += 1
+                continue
+
+            if ch != "'":
+                result.append(ch)
+                idx += 1
+                continue
+
+            cursor = idx + 1
+            single_escaped = False
+            token: list[str] = []
+            while cursor < len(text):
+                inner = text[cursor]
+                if single_escaped:
+                    token.append(inner)
+                    single_escaped = False
+                    cursor += 1
+                    continue
+                if inner == "\\":
+                    token.append(inner)
+                    single_escaped = True
+                    cursor += 1
+                    continue
+                if inner == "'":
+                    result.append(json.dumps("".join(token)))
+                    idx = cursor + 1
+                    break
+                token.append(inner)
+                cursor += 1
+            else:
+                result.append(ch)
+                idx += 1
+        return "".join(result)
+
+    normalized_quotes = _normalize_single_quoted_strings(s)
     try:
         json.loads(normalized_quotes)
         return normalized_quotes
@@ -982,9 +1033,10 @@ async def handle_negative_signal(request: NegativeSignalRequest, lanlan_name: st
             referenced_topic=request.referenced_topic,
         )
         if result.get("matched"):
+            original_topic = result.get("topic", "")
             result["topic"] = ""
             result["policy"] = "tone_only"
-            result["response_instruction"] = persona_manager._build_negative_response_instruction("", "tone_only")
+            result["response_instruction"] = persona_manager._build_negative_response_instruction(original_topic, "tone_only")
         result.pop("explicit_avoid", None)
         return JSONResponse(result)
     except Exception as e:

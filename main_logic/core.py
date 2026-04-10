@@ -2749,12 +2749,6 @@ class LLMSessionManager:
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
 
-                    # 文本模式与语音转写路径保持一致：生成前先同步查询一次
-                    # 即时负面信号指令。本路径只做单轮 tone_only 安抚，不落地 persona。
-                    instruction = await self._fetch_negative_signal_instruction(data.strip())
-                    if instruction:
-                        await self._apply_transient_response_instruction(instruction)
-
                     self._reset_assistant_turn_tracking()
                     await self.session.stream_text(data)
                 else:

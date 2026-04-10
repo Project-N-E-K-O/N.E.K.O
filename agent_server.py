@@ -3029,14 +3029,28 @@ async def openfang_availability():
     ok = await asyncio.to_thread(Modules.openfang.check_connectivity)
     status = Modules.openfang.is_available()
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
-    _set_capability("openfang", ok, reasons[0] if reasons else "")
+    chosen_reason = ""
+    if not ok:
+        chosen_reason = str(reasons[0] or "").strip() if reasons else ""
+        if not chosen_reason:
+            chosen_reason = "OPENFANG_DAEMON_UNREACHABLE"
+    payload = {
+        "enabled": bool(status.get("enabled", True)) if isinstance(status, dict) else True,
+        "ready": bool(ok),
+        "reason": chosen_reason if not ok else "",
+        "reasons": ([chosen_reason] if (not ok and chosen_reason) else []),
+        "provider": status.get("provider", "openfang") if isinstance(status, dict) else "openfang",
+        "version": status.get("version", "unknown") if isinstance(status, dict) else "unknown",
+        "tools_count": status.get("tools_count", 0) if isinstance(status, dict) else 0,
+    }
+    _set_capability("openfang", ok, chosen_reason)
     if not ok and Modules.agent_flags.get("openfang_enabled"):
         Modules.agent_flags["openfang_enabled"] = False
         Modules.notification = json.dumps({
             "code": "AGENT_OPENFANG_CAPABILITY_LOST",
-            "details": {"reason_code": reasons[0] if reasons else "OPENFANG_DAEMON_UNREACHABLE"},
+            "details": {"reason_code": chosen_reason},
         })
-    return status
+    return payload
 
 
 @app.get("/openclaw/availability")

@@ -51,10 +51,10 @@ _GENERIC_AVOID_SIGNAL_RE = re.compile(
 _NEGATIVE_PATTERNS = (
     (re.compile(r'(?:别提|不要提|别再提|不要再提|不想聊|别聊|不要聊|不想提|别说|不要说)(?P<topic>.+?)(?:了|啦|呀|啊|吧|。|！|!|？|\?|,|，|$)'), True),
     (_GENERIC_AVOID_SIGNAL_RE, True),
-    (re.compile(r'(?:不喜欢|不爱吃|讨厌吃|不想吃)(?P<topic>.+?)(?:了|啦|呀|啊|吧|嘛|呢|。|！|!|？|\?|,|，|$)'), True),
-    (re.compile(r'(?P<topic>.+?)(?:我|还是)?(?:不喜欢|不爱吃|讨厌吃|不想吃)(?:了|啦|呀|啊|吧|嘛|呢|。|！|!|？|\?|,|，|$)'), True),
+    (re.compile(r'(?:不喜欢|不爱吃|讨厌吃|不想吃)(?P<topic>.+?)(?:了|啦|呀|啊|吧|嘛|呢|。|！|!|？|\?|,|，|$)'), False),
+    (re.compile(r'(?P<topic>.+?)(?:我|还是)?(?:不喜欢|不爱吃|讨厌吃|不想吃)(?:了|啦|呀|啊|吧|嘛|呢|。|！|!|？|\?|,|，|$)'), False),
     (re.compile(r'(?P<topic>.+?)(?:这个|这件事|这话题|这个话题)?(?:很烦|好烦|烦死了|烦透了|讨厌|恶心|让我难受|让我不舒服)(?:了|。|！|!|？|\?|,|，|$)'), False),
-    (re.compile(r"\b(?:don't like|dont like|dislike)\s+(?P<topic>[a-z0-9][\w\s\-]{0,40}?)(?:[.!?,]+|$)", re.IGNORECASE), True),
+    (re.compile(r"\b(?:don't like|dont like|dislike)\s+(?P<topic>[a-z0-9][\w\s\-]{0,40}?)(?:[.!?,]+|$)", re.IGNORECASE), False),
     (re.compile(r"\b(?:don't mention|dont mention|don't talk about|dont talk about|stop talking about|stop mentioning)\s+(?P<topic>[a-z0-9][\w\s\-]{0,40}?)(?:\s+anymore)?(?:[.!?,]+|$)", re.IGNORECASE), True),
     (re.compile(r"\b(?:i hate|hate)\s+(?P<topic>[a-z0-9][\w\s\-]{0,40}?)(?:[.!?,]+|$)", re.IGNORECASE), False),
     (re.compile(r"\b(?P<topic>[a-z0-9][\w\s\-]{0,40}?)\s+(?:is|feels|seems|gets)?\s*(?:so\s+)?(?:annoying|upsetting|frustrating|awful|terrible|horrible|broken|useless)\b", re.IGNORECASE), False),
@@ -74,8 +74,6 @@ _NEGATIVE_KEYWORDS = (
 )
 _EXPLICIT_AVOID_TOKENS = (
     "别提", "不要提", "别再提", "不要再提", "不想聊", "别聊", "不要聊",
-    "不喜欢", "不爱吃", "讨厌吃", "不想吃",
-    "dislike", "don't like", "dont like",
     "don't mention", "dont mention", "don't talk about", "dont talk about",
     "stop talking about", "stop mentioning",
 )
@@ -1001,12 +999,55 @@ class PersonaManager:
             }
 
         persona = self.ensure_persona(name)
-        applied_policy, changed = self._apply_topic_guidance_update(
-            persona,
-            normalized_topic,
-            explicit_avoid=(policy == 'avoid'),
-            source=source,
-        )
+        guidance = self._get_topic_guidance(persona)
+        soft_entries = guidance.get('soft_avoid', [])
+        hard_entries = guidance.get('hard_avoid', [])
+        soft_entry = self._find_topic_entry(soft_entries, normalized_topic)
+        hard_entry = self._find_topic_entry(hard_entries, normalized_topic)
+        now_str = datetime.now().isoformat()
+        changed = False
+
+        if hard_entry is not None:
+            applied_policy = 'avoid'
+            if hard_entry.get('topic') != normalized_topic:
+                hard_entry['topic'] = normalized_topic
+                changed = True
+        elif policy == 'avoid':
+            applied_policy = 'avoid'
+            created_at = now_str
+            trigger_count = 1
+            if soft_entry is not None:
+                created_at = soft_entry.get('created_at', now_str)
+                trigger_count = max(1, int(soft_entry.get('trigger_count', 1) or 1))
+                soft_entries[:] = [
+                    entry for entry in soft_entries
+                    if not self._topic_matches(entry.get('topic', ''), normalized_topic)
+                ]
+            hard_entries.append({
+                'topic': normalized_topic,
+                'state': 'hard',
+                'trigger_count': trigger_count,
+                'created_at': created_at,
+                'last_triggered_at': now_str,
+                'source': source,
+            })
+            changed = True
+        elif soft_entry is not None:
+            applied_policy = 'de_emphasize'
+            if soft_entry.get('topic') != normalized_topic:
+                soft_entry['topic'] = normalized_topic
+                changed = True
+        else:
+            applied_policy = 'de_emphasize'
+            soft_entries.append({
+                'topic': normalized_topic,
+                'state': 'soft',
+                'trigger_count': 1,
+                'created_at': now_str,
+                'last_triggered_at': now_str,
+                'source': source,
+            })
+            changed = True
         if changed:
             self.save_persona(name, persona)
         return {

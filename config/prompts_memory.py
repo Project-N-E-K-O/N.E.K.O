@@ -829,14 +829,14 @@ NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
 
 请仅返回 JSON 数组，格式如下：
 [
-  {
+  {{
     "topic": "昆虫食品",
     "policy": "avoid",
     "confidence": 0.96,
     "user_evidence": "你知道我不喜欢就别提及了嘛",
     "assistant_evidence": "不过昆虫食品你应该不会喜欢。",
     "reason": "用户明确要求不要再提及，目标是上一条回复中的子项“昆虫食品”"
-  }
+  }}
 ]
 """,
     'ja': """以下の会話を確認し、ユーザーが「今後その具体的な話題や対象を自分からはもう持ち出してほしくない／勧めてほしくない」という安定した否定的嗜好を示したか判断してください。
@@ -863,14 +863,14 @@ NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
 
 次の形式の JSON 配列だけを返してください:
 [
-  {
+  {{
     "topic": "昆虫食",
     "policy": "avoid",
     "confidence": 0.96,
     "user_evidence": "それが嫌いだから、もう言わないで",
     "assistant_evidence": "でも昆虫食はあなたに合わないかも",
     "reason": "ユーザーが再言及を明確に拒否しており、対象は直前の返答中の部分項目『昆虫食』である"
-  }
+  }}
 ]
 """,
     'ko': """아래 대화를 검토해서, 사용자가 앞으로 특정 주제나 대상을 먼저 언급하거나 추천하지 않기를 바라는 안정적인 부정 선호를 표현했는지 판단하세요.
@@ -897,14 +897,14 @@ NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
 
 아래 형식의 JSON 배열만 반환하세요:
 [
-  {
+  {{
     "topic": "곤충 식품",
     "policy": "avoid",
     "confidence": 0.96,
     "user_evidence": "내가 싫어하는 거 알면서 왜 또 말해",
     "assistant_evidence": "그래도 곤충 식품은 아마 안 좋아할 것 같아",
     "reason": "사용자가 다시 언급하지 말라고 명확히 요구했고, 대상은 직전 답변의 하위 항목인 '곤충 식품'이다"
-  }
+  }}
 ]
 """,
     'ru': """Проверьте диалог ниже и определите, выразил ли пользователь устойчивое негативное предпочтение, означающее, что в будущем ассистенту не следует самому упоминать или рекомендовать конкретную тему или объект.
@@ -931,14 +931,14 @@ NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
 
 Верните только JSON-массив в формате:
 [
-  {
+  {{
     "topic": "еда из насекомых",
     "policy": "avoid",
     "confidence": 0.96,
     "user_evidence": "ты же знаешь, что мне это не нравится, не поднимай эту тему",
     "assistant_evidence": "тебе, наверное, не понравится еда из насекомых",
     "reason": "Пользователь явно попросил больше не упоминать это; цель — подпункт 'еда из насекомых' из предыдущего ответа"
-  }
+  }}
 ]
 """,
     'en': """Review the conversation below and decide whether the user expressed a stable negative preference meaning the assistant should avoid proactively mentioning or recommending a specific topic or item in the future.
@@ -965,14 +965,14 @@ Current topic constraints:
 
 Return only a JSON array in this format:
 [
-  {
+  {{
     "topic": "insect food",
     "policy": "avoid",
     "confidence": 0.96,
     "user_evidence": "you know I don't like it, so don't bring it up",
     "assistant_evidence": "you probably wouldn't like insect food",
     "reason": "The user explicitly asked not to mention it again; the target is the sub-item 'insect food'"
-  }
+  }}
 ]
 """,
 }
@@ -1000,21 +1000,21 @@ NEGATIVE_TOPIC_VALIDATION_PROMPT = {
 - 不合格示例：那吃不了一点，更 / 这个 / 那个 / 反正就那个 / 说这个事情
 
 请只返回 JSON 对象：
-{
+{{
   "accepted": true,
   "normalized_topic": "昆虫食品",
   "confidence": 0.97,
   "reason": "候选 topic 具体且自然，可直接写入长期记忆"
-}
+}}
 
 或
 
-{
+{{
   "accepted": false,
   "normalized_topic": "",
   "confidence": 0.12,
   "reason": "候选 topic 是不完整残句，不适合写入长期记忆"
-}
+}}
 
 当前用户原话：
 {USER_MESSAGE}
@@ -1037,21 +1037,21 @@ Good examples: insect food, Japanese anime, work, sushi, spicy snacks
 Bad examples: can't eat that at all, and / this / that / well that thing / talking about this matter
 
 Return only a JSON object:
-{
+{{
   "accepted": true,
   "normalized_topic": "insect food",
   "confidence": 0.97,
   "reason": "The topic is concrete and natural, so it is safe to store."
-}
+}}
 
 or
 
-{
+{{
   "accepted": false,
   "normalized_topic": "",
   "confidence": 0.12,
   "reason": "The candidate is an incomplete fragment and should not be stored."
-}
+}}
 
 Current user message:
 {USER_MESSAGE}

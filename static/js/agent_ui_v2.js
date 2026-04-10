@@ -19,8 +19,8 @@
         busyTimer: null,
         openclawReady: null,
         openclawReason: '',
-        openfangReady: null,
-        openfangReason: '',
+        openfangProbeReady: null,
+        openfangProbeReason: '',
     };
     
     // 暴露状态供 app.js 等外部脚本使用乐观更新检测
@@ -125,23 +125,23 @@
         try {
             const r = await fetch('/api/agent/openfang/availability');
             if (!r.ok) {
-                state.openfangReady = null;
-                state.openfangReason = `status ${r.status}`;
+                state.openfangProbeReady = null;
+                state.openfangProbeReason = `status ${r.status}`;
                 if (state.snapshot) render('openfang-refresh-error');
                 return false;
             }
             const payload = await r.json();
-            state.openfangReady = !!payload.ready;
+            state.openfangProbeReady = !!payload.ready;
             if (Array.isArray(payload.reasons)) {
-                state.openfangReason = String(payload.reasons[0] || '');
+                state.openfangProbeReason = String(payload.reasons[0] || '');
             } else {
-                state.openfangReason = String(payload.reason || '');
+                state.openfangProbeReason = String(payload.reason || '');
             }
             if (state.snapshot) render('openfang-refresh');
-            return state.openfangReady;
+            return state.openfangProbeReady;
         } catch (e) {
-            state.openfangReady = null;
-            state.openfangReason = String(e && e.message ? e.message : e || '');
+            state.openfangProbeReady = null;
+            state.openfangProbeReason = String(e && e.message ? e.message : e || '');
             if (state.snapshot) render('openfang-refresh-error');
             return false;
         }
@@ -195,6 +195,8 @@
 
         state.snapshot = snapshot;
         if (Number.isFinite(rev)) state.revision = rev;
+        state.openfangProbeReady = null;
+        state.openfangProbeReason = '';
         window._agentStatusSnapshot = snapshot;
         if (snapshot.notification && typeof window.showStatusToast === 'function') {
             const msg = window.translateStatusMessage ? window.translateStatusMessage(snapshot.notification) : snapshot.notification;
@@ -327,10 +329,8 @@
         }
 
         if (openfang.length) {
-            const ready = typeof state.openfangReady === 'boolean'
-                ? state.openfangReady
-                : capabilityReady(snap, 'openfang_enabled');
-            const reason = state.openfangReason || capabilityReason(snap, 'openfang_enabled');
+            const ready = capabilityReady(snap, 'openfang_enabled');
+            const reason = capabilityReason(snap, 'openfang_enabled') || state.openfangProbeReason;
             const disabledByPending = state.pending.has('openfang_enabled');
             const canUse = effectiveAnalyzerEnabled && ready && !disabledByPending;
             const openfangName = window.t ? window.t('settings.toggles.openfang') : '虚拟机';
