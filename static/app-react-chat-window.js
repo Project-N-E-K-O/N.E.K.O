@@ -177,7 +177,12 @@
             jukeboxButtonLabel: getI18nText('chat.jukeboxLabel', '点歌台'),
             jukeboxButtonAriaLabel: getI18nText('chat.jukebox', '点歌台'),
             avatarGeneratorButtonLabel: getI18nText('chat.avatarPreviewLabel', '头像'),
-            avatarGeneratorButtonAriaLabel: getI18nText('chat.avatarPreview', '生成头像')
+            avatarGeneratorButtonAriaLabel: getI18nText('chat.avatarPreview', '生成头像'),
+            translateEnabled: (window.appState && typeof window.appState.subtitleEnabled !== 'undefined')
+                ? !!window.appState.subtitleEnabled
+                : localStorage.getItem('subtitleEnabled') === 'true',
+            translateButtonLabel: getI18nText('subtitle.enable', '翻译'),
+            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '翻译开关')
         };
     }
 
@@ -283,7 +288,8 @@
             onComposerRemoveAttachment: handleComposerRemoveAttachment,
             onComposerSubmit: handleComposerSubmit,
             onJukeboxClick: handleJukeboxClick,
-            onAvatarGeneratorClick: handleAvatarGeneratorClick
+            onAvatarGeneratorClick: handleAvatarGeneratorClick,
+            onTranslateToggle: handleTranslateToggle
         });
     }
 
@@ -651,6 +657,39 @@
         } finally {
             dispatchHostEvent('avatar-generator-click', {});
         }
+    }
+
+    function handleTranslateToggle() {
+        var bridge = window.subtitleBridge;
+        var next;
+
+        try {
+            if (bridge && typeof bridge.toggle === 'function') {
+                // Use full toggle with runtime side effects (hide/show subtitle, clear timers, re-translate)
+                next = bridge.toggle();
+            } else {
+                throw new Error('subtitleBridge.toggle unavailable');
+            }
+        } catch (err) {
+            console.warn('[ReactChatWindow] bridge.toggle failed, using fallback:', err);
+            // Fallback: flip flag manually if bridge not loaded or threw
+            var appSt = window.appState;
+            var current = (appSt && typeof appSt.subtitleEnabled !== 'undefined')
+                ? appSt.subtitleEnabled
+                : localStorage.getItem('subtitleEnabled') === 'true';
+            next = !current;
+            if (appSt) appSt.subtitleEnabled = next;
+            localStorage.setItem('subtitleEnabled', String(next));
+            if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                window.appSettings.saveSettings();
+            }
+        }
+
+        // Update React prop to reflect new state
+        state.viewProps = Object.assign({}, ensureViewProps(), { translateEnabled: next });
+        renderWindow();
+
+        dispatchHostEvent('translate-toggle', { enabled: next });
     }
 
     function setViewProps(nextViewProps) {

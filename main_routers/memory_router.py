@@ -112,7 +112,7 @@ def path_error_status_code(error_code: str) -> int:
     return 400
 
 
-def validate_catgirl_name(name: str, allow_dots: bool = False) -> tuple[bool, str]:
+def validate_catgirl_name(name: str, allow_dots: bool = False, *, reject_reserved_route: bool = True) -> tuple[bool, str]:
     """
     Validate a catgirl name for safe use in filenames.
     
@@ -135,6 +135,8 @@ def validate_catgirl_name(name: str, allow_dots: bool = False) -> tuple[bool, st
         return False, "名称不能仅由点号组成或以点号结尾"
     if result.code == "reserved_device_name":
         return False, "名称不能使用 Windows 保留设备名"
+    if reject_reserved_route and result.code == "reserved_route_name":
+        return False, "此名称是系统保留的路由名称，不能用作名称"
     if result.code == "invalid_character":
         return False, "名称只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号"
     if result.code == "too_long_length":
@@ -365,13 +367,13 @@ async def update_catgirl_name(request: Request):
         return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
     
     # Validate old_name (allow dots for historical names during migration)
-    is_valid, error_msg = validate_catgirl_name(old_name, allow_dots=True)
+    is_valid, error_msg = validate_catgirl_name(old_name, allow_dots=True, reject_reserved_route=False)
     if not is_valid:
         logger.warning(f"Invalid old_name rejected: {old_name!r} - {error_msg}")
         return JSONResponse({"success": False, "error": f"旧名称无效: {error_msg}"}, status_code=400)
 
     # Validate new_name (strict — no dots allowed)
-    is_valid, error_msg = validate_catgirl_name(new_name)
+    is_valid, error_msg = validate_catgirl_name(new_name, reject_reserved_route=True)
     if not is_valid:
         logger.warning(f"Invalid new_name rejected: {new_name!r} - {error_msg}")
         return JSONResponse({"success": False, "error": f"新名称无效: {error_msg}"}, status_code=400)
