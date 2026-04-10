@@ -30,10 +30,10 @@ export default function App({
   composerToolsAriaLabel = 'Composer tools',
   composerAttachments = [],
   composerAttachmentsAriaLabel = 'Pending attachments',
-  importImageButtonLabel: _importImageButtonLabel = '导入图片',
-  screenshotButtonLabel: _screenshotButtonLabel = '截图',
-  importImageButtonAriaLabel = '导入图片',
-  screenshotButtonAriaLabel = '截图',
+  importImageButtonLabel = '导入图片',
+  screenshotButtonLabel = '截图',
+  importImageButtonAriaLabel,
+  screenshotButtonAriaLabel,
   removeAttachmentButtonAriaLabel = '移除图片',
   failedStatusLabel = '发送失败',
   onMessageAction,
@@ -44,6 +44,8 @@ export default function App({
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
+  const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
+  const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
 
   function submitDraft() {
     const text = draft.trim();
@@ -123,7 +125,8 @@ export default function App({
                   <button
                     className="composer-tool-btn"
                     type="button"
-                    aria-label={importImageButtonAriaLabel}
+                    aria-label={resolvedImportImageAriaLabel}
+                    title={importImageButtonLabel}
                     onClick={() => onComposerImportImage?.()}
                   >
                     <img src="/static/icons/import_image_icon.png" alt="" aria-hidden="true" />
@@ -132,7 +135,8 @@ export default function App({
                   <button
                     className="composer-tool-btn"
                     type="button"
-                    aria-label={screenshotButtonAriaLabel}
+                    aria-label={resolvedScreenshotAriaLabel}
+                    title={screenshotButtonLabel}
                     onClick={() => onComposerScreenshot?.()}
                   >
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
