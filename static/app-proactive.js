@@ -710,12 +710,50 @@
         if (window.realisticGeminiCurrentTurnId !== targetTurnId) return;
         // [优化] 不再此处手动 addToHistory，因为正向的对话流(response_text) 已经由 finish_proactive_delivery 记录。
         // 表情包作为 UI 侧挂件展示，无需单独污染 LLM 上下文。
+        if (!memeLinks || !Array.isArray(memeLinks) || memeLinks.length === 0) {
+            return;
+        }
+
+        // 优先通过 React 聊天窗口 API 显示表情包
+        var host = window.reactChatWindowHost;
+        if (host && typeof host.appendMessage === 'function') {
+            for (var i = 0; i < memeLinks.length; i++) {
+                (function (meme) {
+                    if (!meme || !meme.safeUrl) return;
+                    var proxyUrl = '/api/meme/proxy-image?url=' + encodeURIComponent(meme.safeUrl);
+                    var now = new Date();
+                    var timeStr = now.getHours().toString().padStart(2, '0') + ':' +
+                        now.getMinutes().toString().padStart(2, '0');
+                    var assistantName = '';
+                    if (window.lanlan_config && window.lanlan_config.lanlan_name) assistantName = window.lanlan_config.lanlan_name;
+                    else if (window._currentCatgirl) assistantName = window._currentCatgirl;
+                    else if (window.currentCatgirl) assistantName = window.currentCatgirl;
+                    assistantName = assistantName || 'Neko';
+                    var avatarUrl = '';
+                    if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
+                        avatarUrl = window.appChatAvatar.getCurrentAvatarDataUrl() || '';
+                    }
+                    host.appendMessage({
+                        id: 'meme-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                        role: 'assistant',
+                        author: assistantName,
+                        time: timeStr,
+                        createdAt: Date.now(),
+                        avatarLabel: assistantName.trim().slice(0, 1).toUpperCase(),
+                        avatarUrl: avatarUrl || undefined,
+                        blocks: [{ type: 'image', url: proxyUrl, alt: meme.title || 'Meme' }],
+                        status: 'sent'
+                    });
+                    console.log('[Meme] 已展示图片气泡 (React):', meme.title);
+                })(memeLinks[i]);
+            }
+            return;
+        }
+
+        // 回退：旧 DOM 方式（chatContainer 可见时）
         var chatContainer = S.dom.chatContainer || document.getElementById('chatContainer');
         if (!chatContainer) {
             console.warn('[Meme] chatContainer not found, cannot show meme bubbles');
-            return;
-        }
-        if (!memeLinks || !Array.isArray(memeLinks) || memeLinks.length === 0) {
             return;
         }
 

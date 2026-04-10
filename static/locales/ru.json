@@ -479,7 +479,7 @@
         "RESPONSE_INVALID": "Ответ AI не соответствует требованиям, вывод отброшен",
         "NO_USER_MESSAGE": "⚠️ В истории диалога нет сообщений пользователя, невозможно сгенерировать ответ",
         "LLM_RETRY": "⚠️ LLM {{error_type}}, повторная попытка ({{attempt}}/{{max_retries}})...",
-        "LLM_UPSTREAM_ERROR": "⚠️ Приносим извинения, внутренняя ошибка вышестоящего AI-провайдера. Автоматический повтор...",
+        "LLM_UPSTREAM_ERROR": "⚠️ Приносим извинения, мяу~, внутренняя ошибка вышестоящего AI-провайдера. Автоматический повтор...",
         "LLM_CONNECTION_EXHAUSTED": "💥 Ошибка подключения LLM ({{error_type}}), исчерпано {{max_retries}} попыток: {{error}}",
         "TEXT_GEN_ERROR": "💥 Ошибка генерации текста: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM не вернул ответ. Проверьте подключение к API и настройки.",
@@ -777,6 +777,8 @@
         "keyAutoFilledFromKeyBook": "Ключ автозаполнен из книги API ключей. Настройте его там.",
         "goToKeyBook": "Перейти к книге ключей",
         "providerLabel": "Провайдер",
+        "providerSelectPlaceholder": "Выберите провайдера",
+        "noOptionsAvailable": "Нет доступных вариантов",
         "customModelProviderFollowCore": "Следовать за основным API",
         "customModelProviderFollowAssist": "Следовать за вспомогательным API",
         "customModelProviderCustom": "Пользовательский",
@@ -854,7 +856,7 @@
         "apiUrl": "URL API",
         "apiKey": "API Key",
         "modelId": "ID модели",
-        "agentApiConfigTitle": "Конфигурация API Агента",
+        "agentApiConfigTitle": "Конфигурация API Агента (нужна поддержка зрения)",
         "providerPlaceholder": "например, openai, azure, local",
         "apiUrlPlaceholder": "например, https://api.openai.com/v1",
         "modelIdPlaceholder": "например, gpt-5.1-chat-latest, qwen-flash",
@@ -2917,7 +2919,8 @@
         "playError": "Не удалось загрузить воспроизведение музыки",
         "loadError": "Не удалось загрузить музыкальный плеер",
         "autoplayBlocked": "Браузер заблокировал автовоспроизведение, пожалуйста, нажмите кнопку воспроизведения",
-        "ended": "Завершено"
+        "ended": "Завершено",
+        "nowPlayingCard": "🎵 Сейчас играет"
     },
     "Jukebox": {
         "title": "Музыкальный автомат",

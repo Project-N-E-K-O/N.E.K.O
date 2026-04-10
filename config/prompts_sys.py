@@ -102,6 +102,8 @@ RESULT_PARSER_PHRASES = {
     'cu_status_done':     {'zh': '已完成', 'en': 'completed', 'ja': '完了', 'ko': '완료', 'ru': 'выполнена'},
     'cu_status_ended':    {'zh': '已结束', 'en': 'ended', 'ja': '終了', 'ko': '종료', 'ru': 'завершена'},
 'openclaw_processing': {'zh': 'OpenClaw 处理中...', 'en': 'OpenClaw is processing...', 'ja': 'OpenClaw 処理中...', 'ko': 'OpenClaw 처리 중...', 'ru': 'OpenClaw обрабатывает...'},    'openclaw_done':       {'zh': 'OpenClaw 执行完成', 'en': 'OpenClaw execution completed', 'ja': 'OpenClaw 実行完了', 'ko': 'OpenClaw 실행 완료', 'ru': 'OpenClaw выполнено'},    'openclaw_failed':     {'zh': 'OpenClaw 执行失败', 'en': 'OpenClaw execution failed', 'ja': 'OpenClaw 実行失敗', 'ko': 'OpenClaw 실행 실패', 'ru': 'OpenClaw не выполнено'},    'openclaw_cancelled':  {'zh': 'OpenClaw 任务已取消', 'en': 'OpenClaw task cancelled', 'ja': 'OpenClaw タスクがキャンセルされました', 'ko': 'OpenClaw 작업 취소됨', 'ru': 'Задача OpenClaw отменена'},    'openclaw_dispatch_failed': {'zh': 'OpenClaw 任务分发失败', 'en': 'OpenClaw task dispatch failed', 'ja': 'OpenClaw タスク配信失敗', 'ko': 'OpenClaw 작업 전달 실패', 'ru': 'Ошибка отправки задачи OpenClaw'},
+    'bu_cancelled':        {'zh': '你的任务"{desc}"已取消', 'en': 'Your task "{desc}" cancelled', 'ja': 'タスク「{desc}」がキャンセルされました', 'ko': '작업 "{desc}" 취소됨', 'ru': 'Ваша задача «{desc}» отменена'},
+    'of_cancelled':        {'zh': '虚拟机任务 "{desc}" 已取消', 'en': 'VM task "{desc}" cancelled', 'ja': 'VM タスク「{desc}」がキャンセルされました', 'ko': 'VM 작업 "{desc}" 취소됨', 'ru': 'Задача ВМ «{desc}» отменена'},
 }
 
 # ---------- 语音会话初始 prompt ----------

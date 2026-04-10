@@ -479,7 +479,7 @@
         "RESPONSE_INVALID": "AI 응답이 요구사항을 충족하지 않아 출력이 폐기되었습니다",
         "NO_USER_MESSAGE": "⚠️ 대화 기록에 사용자 메시지가 없어 응답을 생성할 수 없습니다",
         "LLM_RETRY": "⚠️ LLM {{error_type}}, 재시도 중 ({{attempt}}/{{max_retries}})...",
-        "LLM_UPSTREAM_ERROR": "⚠️ 죄송합니다, 상위 AI 서비스 제공자 내부 오류가 발생했습니다. 자동 재시도 중...",
+        "LLM_UPSTREAM_ERROR": "⚠️ 죄송합니다냥, 상위 AI 서비스 제공자 내부 오류가 발생했습니다. 자동 재시도 중...",
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM 연결 실패 ({{error_type}}), {{max_retries}}회 재시도 완료: {{error}}",
         "TEXT_GEN_ERROR": "💥 텍스트 생성 오류: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM이 응답을 반환하지 않았습니다. API 연결 및 설정을 확인하세요.",
@@ -777,6 +777,8 @@
         "keyAutoFilledFromKeyBook": "API 관리 대장에서 자동 입력됩니다. 관리 대장에서 설정하세요.",
         "goToKeyBook": "관리 대장으로 이동",
         "providerLabel": "제공업체",
+        "providerSelectPlaceholder": "제공업체를 선택하세요",
+        "noOptionsAvailable": "사용 가능한 항목이 없습니다",
         "customModelProviderFollowCore": "코어 API 따르기",
         "customModelProviderFollowAssist": "보조 API 따르기",
         "customModelProviderCustom": "사용자 정의",
@@ -854,7 +856,7 @@
         "apiUrl": "API URL",
         "apiKey": "API 키",
         "modelId": "모델 ID",
-        "agentApiConfigTitle": "에이전트 API 설정",
+        "agentApiConfigTitle": "에이전트 API 설정(시각 기능 지원 필요)",
         "providerPlaceholder": "예: openai, azure, 로컬",
         "apiUrlPlaceholder": "예: https://api.openai.com/v1",
         "modelIdPlaceholder": "예: gpt-5.1-chat-latest, qwen-flash",
@@ -2917,7 +2919,8 @@
         "playError": "음악 재생을 로드하지 못했습니다",
         "loadError": "음악 플레이어를 로드하지 못했습니다",
         "autoplayBlocked": "브라우저에서 자동 재생이 차단되었습니다. 재생 버튼을 클릭하세요",
-        "ended": "종료"
+        "ended": "종료",
+        "nowPlayingCard": "🎵 재생 중"
     },
     "Jukebox": {
         "title": "주크박스",

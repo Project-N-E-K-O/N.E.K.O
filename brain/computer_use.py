@@ -17,10 +17,10 @@ import time
 import threading
 import traceback
 from io import BytesIO
-from openai import OpenAI
 from PIL import Image
 from config import get_agent_extra_body
 from utils.config_manager import get_config_manager
+from utils.llm_client import create_chat_llm, ChatOpenAI
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 from utils.screenshot_utils import compress_screenshot
@@ -471,7 +471,8 @@ class ComputerUseAdapter:
         self.screen_width, self.screen_height = 1920, 1080
 
         # LLM
-        self._llm_client: Optional[OpenAI] = None
+        self._llm_client: Optional[ChatOpenAI] = None
+        self._llm_client_sig: Optional[tuple] = None
         self._config_manager = get_config_manager()
         self._agent_model_cfg = self._config_manager.get_model_api_config("agent")
 
@@ -505,11 +506,13 @@ class ComputerUseAdapter:
                 self.last_error = "Agent model not configured"
                 return
 
-            self._llm_client = OpenAI(
+            self._llm_client = create_chat_llm(
+                model=model,
                 base_url=base_url,
                 api_key=api_key,
                 timeout=65.0,
                 max_retries=0,
+                temperature=0,
             )
         except Exception as e:
             self.last_error = str(e)
@@ -520,7 +523,7 @@ class ComputerUseAdapter:
     # ------------------------------------------------------------------
 
     def check_connectivity(self, *, _retries: int = 2) -> bool:
-        """Synchronous LLM ping using the same OpenAI client that real
+        """Synchronous LLM ping using the same ChatOpenAI client that real
         tasks will use, so the TCP/TLS connection pool is warmed up.
         Meant to be called from a background thread.
 
@@ -539,20 +542,20 @@ class ComputerUseAdapter:
         last_exc: Exception | None = None
         for attempt in range(_retries + 1):
             try:
-                if (
-                    self._llm_client is None
-                    or getattr(self._llm_client, "_base_url", None)
-                    and str(self._llm_client._base_url).rstrip("/") != base_url.rstrip("/")
-                ):
-                    self._llm_client = OpenAI(
+                current_sig = (base_url.rstrip("/"), api_key, model)
+                if self._llm_client is None or self._llm_client_sig != current_sig:
+                    self._llm_client = create_chat_llm(
+                        model=model,
                         base_url=base_url,
                         api_key=api_key,
                         timeout=65.0,
                         max_retries=0,
+                        temperature=0,
                     )
+                    self._llm_client_sig = current_sig
                 extra = get_agent_extra_body(model) or {}
                 set_call_type("agent_cua")
-                resp = self._llm_client.chat.completions.create(
+                resp = self._llm_client._client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": "ok"}],
                     max_completion_tokens=5,
@@ -1016,7 +1019,7 @@ class ComputerUseAdapter:
                         ),
                     }
                 set_call_type("agent_cua")
-                resp = self._llm_client.chat.completions.create(
+                resp = self._llm_client._client.chat.completions.create(
                     model=model,
                     messages=messages,
                     max_completion_tokens=self.max_tokens,

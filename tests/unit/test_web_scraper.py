@@ -33,15 +33,16 @@ async def test_generate_diverse_queries_sends_user_message(monkeypatch):
             captured["messages"] = messages
             return AIMessage(content="关键词A\n关键词B\n关键词C")
 
+    def fake_create_chat_llm(*args, **kwargs):
+        return FakeLLM(**kwargs)
+
     monkeypatch.setattr(config_manager_module, "ConfigManager", FakeConfigManager)
-    monkeypatch.setattr(web_scraper, "ChatOpenAI", FakeLLM)
+    monkeypatch.setattr(web_scraper, "create_chat_llm", fake_create_chat_llm)
     monkeypatch.setattr(web_scraper, "is_china_region", lambda: True)
-    monkeypatch.setattr(web_scraper, "get_extra_body", lambda model: {"thinking": False})
 
     result = await web_scraper.generate_diverse_queries("Project N.E.K.O.")
 
     assert result == ["关键词A", "关键词B", "关键词C"]
-    assert captured["kwargs"]["extra_body"] == {"thinking": False}
     assert len(captured["messages"]) == 2
     assert isinstance(captured["messages"][0], SystemMessage)
     assert isinstance(captured["messages"][1], HumanMessage)
