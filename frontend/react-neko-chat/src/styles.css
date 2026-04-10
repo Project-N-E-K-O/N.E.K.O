@@ -105,6 +105,64 @@ textarea {
   white-space: nowrap;
 }
 
+.window-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.topbar-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(68, 183, 254, 0.32);
+  border-radius: 999px;
+  background: rgba(68, 183, 254, 0.08);
+  color: #2497d9;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.topbar-action-btn:hover {
+  background: rgba(68, 183, 254, 0.16);
+  border-color: rgba(68, 183, 254, 0.5);
+  color: #127dbc;
+  transform: translateY(-1px);
+}
+
+.topbar-action-btn:focus-visible {
+  outline: 2px solid rgba(68, 183, 254, 0.48);
+  outline-offset: 2px;
+}
+
+.topbar-action-btn.is-active {
+  background: rgba(68, 183, 254, 0.2);
+  border-color: rgba(68, 183, 254, 0.5);
+  color: #127dbc;
+}
+
+.topbar-action-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.topbar-action-label {
+  line-height: 1;
+}
+
 .icon-button,
 .tool-button {
   border: 0;
@@ -862,6 +920,24 @@ textarea {
 
 [data-theme="dark"] .window-title {
   color: #e8eaed;
+}
+
+[data-theme="dark"] .topbar-action-btn {
+  background: rgba(68, 183, 254, 0.1);
+  border-color: rgba(68, 183, 254, 0.25);
+  color: #6fc7ff;
+}
+
+[data-theme="dark"] .topbar-action-btn:hover {
+  background: rgba(68, 183, 254, 0.18);
+  border-color: rgba(68, 183, 254, 0.4);
+  color: #8ed4ff;
+}
+
+[data-theme="dark"] .topbar-action-btn.is-active {
+  background: rgba(68, 183, 254, 0.22);
+  border-color: rgba(68, 183, 254, 0.45);
+  color: #8ed4ff;
 }
 
 [data-theme="dark"] .icon-button {

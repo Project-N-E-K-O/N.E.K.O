@@ -172,7 +172,11 @@
                 : getI18nText('chat.screenshotAriaLabel', '截图'),
             removeAttachmentButtonAriaLabel: getI18nText('chat.removePendingImage', '移除图片'),
             failedStatusLabel: getI18nText('chat.messageFailed', '发送失败'),
-            inputHint: getI18nText('chat.reactWindowInputHint', 'Enter 发送，Shift + Enter 换行')
+            inputHint: getI18nText('chat.reactWindowInputHint', 'Enter 发送，Shift + Enter 换行'),
+            jukeboxButtonLabel: getI18nText('chat.jukeboxLabel', '点歌台'),
+            jukeboxButtonAriaLabel: getI18nText('chat.jukebox', '点歌台'),
+            avatarGeneratorButtonLabel: getI18nText('chat.avatarPreviewLabel', '头像'),
+            avatarGeneratorButtonAriaLabel: getI18nText('chat.avatarPreview', '生成头像')
         };
     }
 
@@ -276,7 +280,9 @@
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
             onComposerRemoveAttachment: handleComposerRemoveAttachment,
-            onComposerSubmit: handleComposerSubmit
+            onComposerSubmit: handleComposerSubmit,
+            onJukeboxClick: handleJukeboxClick,
+            onAvatarGeneratorClick: handleAvatarGeneratorClick
         });
     }
 
@@ -583,6 +589,30 @@
         }
 
         dispatchHostEvent('remove-attachment', { attachmentId: attachmentId });
+    }
+
+    function handleJukeboxClick() {
+        if (typeof window.Jukebox !== 'undefined' && typeof window.Jukebox.toggle === 'function') {
+            window.Jukebox.toggle();
+        } else {
+            console.warn('[ReactChatWindow] Jukebox not available');
+        }
+
+        dispatchHostEvent('jukebox-click', {});
+    }
+
+    function handleAvatarGeneratorClick() {
+        // Try clicking the legacy avatar preview button (app-chat-avatar.js binds to it)
+        var legacyBtn = document.getElementById('avatarPreviewButton');
+        if (legacyBtn) {
+            legacyBtn.click();
+        } else {
+            // Fallback: dispatch event for other modules to listen
+            window.dispatchEvent(new CustomEvent('avatar-generator-request', { detail: { source: 'react-chat-window' } }));
+            console.warn('[ReactChatWindow] Avatar preview button not found, event dispatched');
+        }
+
+        dispatchHostEvent('avatar-generator-click', {});
     }
 
     function setViewProps(nextViewProps) {
