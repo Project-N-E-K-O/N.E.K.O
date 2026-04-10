@@ -621,6 +621,19 @@
         return y + lines.length * lineHeight;
     }
 
+    function drawWrappedTextAligned(ctx, lines, x, y, lineHeight, align, maxWidth) {
+        var resolvedAlign = align === 'right' ? 'right' : 'left';
+        var width = Number.isFinite(maxWidth) ? maxWidth : 0;
+        lines.forEach(function (line, index) {
+            var drawX = x;
+            if (resolvedAlign === 'right' && width > 0) {
+                drawX = x + width - ctx.measureText(line).width;
+            }
+            ctx.fillText(line, drawX, y + index * lineHeight);
+        });
+        return y + lines.length * lineHeight;
+    }
+
     function drawRoundedRect(ctx, x, y, width, height, radius) {
         var r = Math.max(0, Math.min(radius, Math.min(width, height) / 2));
         ctx.beginPath();
@@ -672,13 +685,20 @@
     function getPosterTheme() {
         var dark = isDarkTheme();
         return {
-            gradientTop: dark ? '#1e1b4b' : '#fde68a',
-            gradientMid: dark ? '#312e81' : '#fca5a5',
-            gradientBot: dark ? '#4c1d95' : '#f472b6',
-            card:       dark ? 'rgba(15,23,42,0.85)' : 'rgba(255,255,255,0.92)',
+            gradientTop: dark ? '#1e1b4b' : '#fff3bf',
+            gradientMid: dark ? '#312e81' : '#ffd6e7',
+            gradientBot: dark ? '#4c1d95' : '#ffb4d4',
             textPrimary: dark ? '#fff8e7' : '#1f2937',
-            textSecondary: dark ? '#e5e7eb' : '#4b5563',
-            accent:     dark ? '#facc15' : '#db2777'
+            textSecondary: dark ? '#e5e7eb' : '#5b6472',
+            headerAccent: dark ? '#f9a8d4' : '#db2777',
+            assistantCard: dark ? 'rgba(50,22,45,0.82)' : 'rgba(255,247,251,0.95)',
+            assistantBorder: dark ? 'rgba(244,114,182,0.34)' : 'rgba(236,72,153,0.30)',
+            assistantText: dark ? '#ffb3d1' : '#be185d',
+            assistantMeta: dark ? 'rgba(255,205,226,0.84)' : '#be5b8f',
+            userCard: dark ? 'rgba(64,50,18,0.82)' : 'rgba(255,251,235,0.95)',
+            userBorder: dark ? 'rgba(250,204,21,0.30)' : 'rgba(245,158,11,0.32)',
+            userText: dark ? '#ffe082' : '#9a6700',
+            userMeta: dark ? 'rgba(255,234,158,0.82)' : '#a67c12'
         };
     }
 
@@ -751,21 +771,27 @@
     function drawSegments(ctx, segments, x, y, options) {
         options = options || {};
         var noteColor = options.noteColor;
+        var textAlign = options.align === 'right' ? 'right' : 'left';
+        var maxWidth = Number.isFinite(options.maxWidth) ? options.maxWidth : 0;
         segments.forEach(function (segment) {
             if (segment.kind === 'text') {
-                y = drawWrappedText(ctx, segment.lines, x, y, segment.lineHeight);
+                y = drawWrappedTextAligned(ctx, segment.lines, x, y, segment.lineHeight, textAlign, maxWidth);
             } else if (segment.kind === 'image') {
-                try { ctx.drawImage(segment.image, x, y, segment.width, segment.height); }
+                var imageX = x;
+                if (textAlign === 'right' && maxWidth > 0) {
+                    imageX = x + Math.max(0, maxWidth - segment.width);
+                }
+                try { ctx.drawImage(segment.image, imageX, y, segment.width, segment.height); }
                 catch (_) { /* draw failed, skip */ }
                 y += segment.height + 8;
             } else if (segment.kind === 'note') {
                 if (noteColor) {
                     var prev = ctx.fillStyle;
                     ctx.fillStyle = noteColor;
-                    y = drawWrappedText(ctx, segment.lines, x, y, segment.lineHeight) + 4;
+                    y = drawWrappedTextAligned(ctx, segment.lines, x, y, segment.lineHeight, textAlign, maxWidth) + 4;
                     ctx.fillStyle = prev;
                 } else {
-                    y = drawWrappedText(ctx, segment.lines, x, y, segment.lineHeight) + 4;
+                    y = drawWrappedTextAligned(ctx, segment.lines, x, y, segment.lineHeight, textAlign, maxWidth) + 4;
                 }
             }
         });
@@ -1045,13 +1071,14 @@
         var bodyFont = '500 17px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
         var metaFont = '500 12px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
         var bodyLineHeight = 28;
-        var cardMaxBodyWidth = width - padding * 2 - cardPadding * 2;
+        var cardInnerWidth = width - padding * 2 - cardPadding * 2;
+        var contentMaxWidth = Math.floor(cardInnerWidth * 0.76);
 
         var measureCanvas = document.createElement('canvas');
         var measureCtx = measureCanvas.getContext('2d');
         var measured = resolvedEntries.map(function (entry) {
             measureCtx.font = bodyFont;
-            var body = measureEntryBody(measureCtx, entry, bodyFont, bodyLineHeight, cardMaxBodyWidth, true, 260);
+            var body = measureEntryBody(measureCtx, entry, bodyFont, bodyLineHeight, contentMaxWidth, true, 240);
             var cardHeight = cardPadding * 2 + 30 + 6 + body.height;
             return { entry: entry, body: body, cardHeight: cardHeight };
         });
@@ -1077,7 +1104,7 @@
 
         // hero area
         ctx.font = kickerFont;
-        ctx.fillStyle = theme.accent;
+        ctx.fillStyle = theme.headerAccent;
         ctx.textBaseline = 'top';
         ctx.fillText(
             translateLabel('chat.exportPosterSubtitle', 'Shared from N.E.K.O').toUpperCase(),
@@ -1097,40 +1124,63 @@
         var y = heroHeight;
         measured.forEach(function (m) {
             var entry = m.entry;
+            var isUser = entry.rawRole === 'user';
             var cardX = padding;
             var cardY = y;
             var cardW = width - padding * 2;
             var cardH = m.cardHeight;
+            var textMaxWidth = contentMaxWidth;
+            var textX = isUser
+                ? (cardX + cardW - cardPadding - textMaxWidth)
+                : (cardX + cardPadding);
 
             ctx.save();
             ctx.shadowColor = 'rgba(0,0,0,0.15)';
             ctx.shadowBlur = 18;
             ctx.shadowOffsetY = 6;
-            ctx.fillStyle = theme.card;
+            ctx.fillStyle = isUser ? theme.userCard : theme.assistantCard;
             drawRoundedRect(ctx, cardX, cardY, cardW, cardH, 16);
             ctx.fill();
             ctx.restore();
+            ctx.strokeStyle = isUser ? theme.userBorder : theme.assistantBorder;
+            ctx.lineWidth = 1;
+            drawRoundedRect(ctx, cardX + 0.5, cardY + 0.5, cardW - 1, cardH - 1, 16);
+            ctx.stroke();
 
             // author
             ctx.font = authorFont;
-            ctx.fillStyle = theme.accent;
-            ctx.fillText(entry.author || entry.role || '', cardX + cardPadding, cardY + cardPadding);
+            ctx.fillStyle = isUser ? theme.userText : theme.assistantText;
+            ctx.textAlign = isUser ? 'right' : 'left';
+            ctx.fillText(
+                entry.author || entry.role || '',
+                isUser ? (cardX + cardW - cardPadding) : textX,
+                cardY + cardPadding
+            );
 
             // meta
             ctx.font = metaFont;
-            ctx.fillStyle = theme.textSecondary;
-            ctx.fillText([entry.role, entry.time].filter(Boolean).join(' · '),
-                cardX + cardPadding, cardY + cardPadding + 20);
+            ctx.fillStyle = isUser ? theme.userMeta : theme.assistantMeta;
+            ctx.textAlign = isUser ? 'right' : 'left';
+            ctx.fillText(
+                [entry.role, entry.time].filter(Boolean).join(' · '),
+                isUser ? (cardX + cardW - cardPadding) : textX,
+                cardY + cardPadding + 20
+            );
 
             // body
             ctx.font = bodyFont;
-            ctx.fillStyle = theme.textPrimary;
+            ctx.fillStyle = isUser ? theme.userText : theme.assistantText;
+            ctx.textAlign = 'left';
             drawSegments(
                 ctx,
                 m.body.segments,
-                cardX + cardPadding,
+                textX,
                 cardY + cardPadding + 40,
-                { noteColor: theme.textSecondary }
+                {
+                    noteColor: isUser ? theme.userMeta : theme.assistantMeta,
+                    align: isUser ? 'right' : 'left',
+                    maxWidth: textMaxWidth
+                }
             );
 
             y += cardH + cardGap;
@@ -1138,7 +1188,7 @@
 
         // footer
         ctx.font = '700 12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
-        ctx.fillStyle = theme.accent;
+        ctx.fillStyle = theme.headerAccent;
         ctx.textAlign = 'center';
         ctx.fillText('N.E.K.O.', width / 2, totalHeight - 34);
         ctx.textAlign = 'start';
