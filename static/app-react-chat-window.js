@@ -629,17 +629,30 @@
                     }
                 }
                 showToast(getI18nText('chat.avatarPreviewGenerating', '正在生成当前头像...'), 2000);
-                var onResult = function (e) {
+                var finished = false;
+                var timerId = null;
+                var finish = function (success) {
+                    if (finished) return;
+                    finished = true;
                     window.removeEventListener('neko:avatar-preview-ipc-result', onResult);
-                    if (e.detail && e.detail.dataUrl) {
+                    if (timerId) { clearTimeout(timerId); timerId = null; }
+                    if (success) {
                         showToast(getI18nText('chat.avatarPreviewReady', '头像已更新'), 2500);
                     } else {
                         showToast(getI18nText('chat.avatarPreviewFailed', '生成头像失败'), 3000);
                     }
                 };
+                var onResult = function (e) {
+                    finish(!!(e.detail && e.detail.dataUrl));
+                };
                 window.addEventListener('neko:avatar-preview-ipc-result', onResult);
-                setTimeout(function () { window.removeEventListener('neko:avatar-preview-ipc-result', onResult); }, 10000);
-                window.__nekoRequestAvatarPreview();
+                timerId = setTimeout(function () { finish(false); }, 10000);
+                try {
+                    window.__nekoRequestAvatarPreview();
+                } catch (err) {
+                    console.error('[ReactChatWindow] __nekoRequestAvatarPreview threw:', err);
+                    finish(false);
+                }
                 return;
             }
             showToast(getI18nText('chat.avatarPreviewUnavailable', '头像预览功能尚未就绪。'), 3000);
