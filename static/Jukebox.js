@@ -3228,6 +3228,13 @@ window.Jukebox = {
     const MAX_RETRIES = 20;
     const jukeboxButton = document.getElementById('jukeboxButton');
     if (!jukeboxButton) {
+      // React Chat 模式下按钮由 React 组件渲染，通过 onJukeboxClick 回调直接调用
+      // window.Jukebox.toggle()，无需绑定 DOM 按钮
+      const reactChatRoot = document.getElementById('react-chat-window-root');
+      if (reactChatRoot) {
+        console.log('[Jukebox]', 'React Chat 模式，跳过 DOM 按钮绑定');
+        return;
+      }
       if (retries >= MAX_RETRIES) {
         console.error('[Jukebox]', window.t('Jukebox.btnNotFoundGiveUp', '点歌台按钮在重试后仍未找到，放弃绑定'));
         return;

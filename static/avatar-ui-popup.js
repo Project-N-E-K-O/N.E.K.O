@@ -695,6 +695,28 @@ function createSidePanelMenuItem(manager, prefix, item) {
 
     let isOpening = false;
 
+    // 打开子窗口并暂停主页渲染，子窗口关闭后自动恢复
+    function openAndPauseMainUI(url, name, feat) {
+        let childWin;
+        if (typeof window.openOrFocusWindow === 'function') {
+            childWin = window.openOrFocusWindow(url, name, feat);
+        } else {
+            childWin = window.open(url, name, feat);
+        }
+        if (typeof window.handleHideMainUI === 'function') {
+            window.handleHideMainUI();
+        }
+        // 子窗口关闭后恢复主页渲染
+        if (childWin && typeof window.handleShowMainUI === 'function') {
+            const checkClosed = setInterval(() => {
+                if (childWin.closed) {
+                    clearInterval(checkClosed);
+                    window.handleShowMainUI();
+                }
+            }, 1000);
+        }
+    }
+
     menuItem.addEventListener('click', (e) => {
         e.stopPropagation();
         if (isOpening) return;
@@ -709,12 +731,7 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 isOpening = true;
                 windowName = `neko_${item.id}_${encodeURIComponent(lanlanName || 'default')}`;
-                if (typeof window.openOrFocusWindow === 'function') {
-                    window.openOrFocusWindow(finalUrl, windowName);
-                } else {
-                    window.open(finalUrl, windowName);
-                }
-                if (typeof window.handleHideMainUI === 'function') window.handleHideMainUI();
+                openAndPauseMainUI(finalUrl, windowName);
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -734,7 +751,6 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 } else {
                     window.open(finalUrl, windowName, features);
                 }
-                if (typeof window.handleHideMainUI === 'function') window.handleHideMainUI();
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.url) {
                 isOpening = true;
@@ -743,7 +759,6 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 } else {
                     window.open(finalUrl, windowName);
                 }
-                if (typeof window.handleHideMainUI === 'function') window.handleHideMainUI();
                 setTimeout(() => { isOpening = false; }, 500);
             }
         }
