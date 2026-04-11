@@ -81,16 +81,6 @@ class TestDetectProviderInfo:
         assert r["provider"] == "openai"
         assert r["needs_proxy"] is True
 
-    def test_lanlan_app_with_gemini_model(self):
-        r = _detect_provider_info("https://api.lanlan.app/v1", "gemini-2.5-pro")
-        assert r["provider"] == "openai"
-        assert r["needs_proxy"] is True
-
-    def test_lanlan_tech_with_any_model(self):
-        r = _detect_provider_info("https://api.lanlan.tech/v1", "qwen-turbo")
-        assert r["provider"] == "openai"
-        assert r["needs_proxy"] is True
-
     # -- Ollama: loopback, LAN, non-standard port --
 
     def test_ollama_localhost_default_port(self):

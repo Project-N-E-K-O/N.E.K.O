@@ -42,7 +42,7 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
     model_lower = model.lower()
 
     # 已知的 OpenAI-compatible 代理/中转 — 必须走 proxy，跳过后续 model-name 启发式匹配
-    _proxy_hosts = ("openrouter.ai", "lanlan.app", "lanlan.tech")
+    _proxy_hosts = ("openrouter.ai",)
     if any(h in url_lower for h in _proxy_hosts):
         return {
             "provider": "openai",
