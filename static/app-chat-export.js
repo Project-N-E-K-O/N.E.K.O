@@ -1207,6 +1207,16 @@
             cursorY = cardY + m.cardHeight + cardGap;
             maxBottom = Math.max(maxBottom, cardY + m.cardHeight);
         });
+        var decorIcons = await Promise.all([
+            loadImageElement('/static/icons/paw_ui.png', 4000).catch(function () { return null; }),
+            loadImageElement('/static/icons/chat_bubble.png', 4000).catch(function () { return null; }),
+            loadImageElement('/static/icons/star.png', 4000).catch(function () { return null; }),
+            loadImageElement('/static/icons/cat_icon.png', 4000).catch(function () { return null; })
+        ]);
+        var pawIcon = decorIcons[0];
+        var bubbleIcon = decorIcons[1];
+        var starIcon = decorIcons[2];
+        var catIcon = decorIcons[3];
         var footerBlock = 50;
         var totalHeight = maxBottom + padding + footerBlock;
 
@@ -1239,6 +1249,31 @@
         var title = translateLabel('chat.exportPosterTitle', 'Conversation Highlights');
         var titleLines = wrapTextLines(ctx, title, width - padding * 2);
         drawWrappedText(ctx, titleLines, padding, padding + 30, 48);
+
+        if (pawIcon) {
+            ctx.save();
+            ctx.globalAlpha = 0.95;
+            ctx.drawImage(pawIcon, padding + 250, padding - 6, 28, 28);
+            ctx.restore();
+        }
+        if (starIcon) {
+            ctx.save();
+            ctx.globalAlpha = 0.82;
+            ctx.drawImage(starIcon, padding + 292, padding + 18, 18, 18);
+            ctx.restore();
+        }
+        if (bubbleIcon) {
+            ctx.save();
+            ctx.globalAlpha = 0.18;
+            ctx.drawImage(bubbleIcon, width - padding - 88, padding + 6, 52, 52);
+            ctx.restore();
+        }
+        if (catIcon) {
+            ctx.save();
+            ctx.globalAlpha = 0.16;
+            ctx.drawImage(catIcon, width - padding - 132, padding + 56, 78, 78);
+            ctx.restore();
+        }
 
         ctx.font = '500 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
         ctx.fillStyle = theme.textSecondary;
