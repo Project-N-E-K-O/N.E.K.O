@@ -918,6 +918,7 @@ class LLMSessionManager:
         self._last_tts_error_code = ''
         self._last_tts_respawn_time = 0.0
         self._tts_retry_notify_count = 0
+        self._tts_done_queued_for_turn = False
 
     async def _teardown_tts_runtime(self, handler_task_ref, thread_ref,
                                      req_queue_ref, resp_queue_ref):
@@ -3119,25 +3120,37 @@ class LLMSessionManager:
                             'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
                         }
                         _parsed_code = None
+                        _keyword_target = error_msg_text  # 用于关键词匹配的文本
                         try:
                             _parsed = json.loads(error_msg_text)
                             if isinstance(_parsed, dict):
+                                # 先检查顶层 code
                                 _candidate = _parsed.get('code', '')
                                 if isinstance(_candidate, str) and _candidate in _known_codes:
                                     _parsed_code = _candidate
+                                # 再检查 data.code（TTS 事件结构）
+                                if not _parsed_code:
+                                    _data = _parsed.get('data', {})
+                                    if isinstance(_data, dict):
+                                        _candidate = _data.get('code', '')
+                                        if isinstance(_candidate, str) and _candidate in _known_codes:
+                                            _parsed_code = _candidate
+                                        # 关键词匹配仅针对 message 字段，避免 UUID/时间戳误匹配
+                                        _msg_field = _data.get('message', '')
+                                        if _msg_field:
+                                            _keyword_target = _msg_field
                         except (json.JSONDecodeError, TypeError):
                             # JSON parsing may fail for free-form error strings from
                             # tts.response.error events; this is expected and harmless —
                             # the keyword-based fallback below will handle classification.
-                            # self._last_tts_error_code is only set when a valid code is parsed.
                             pass
 
                         if _parsed_code:
                             user_msg = json.dumps({"code": _parsed_code, "details": {"msg": error_msg_text}})
                             self._last_tts_error_code = _parsed_code
                         else:
-                            # 回退到关键词匹配
-                            error_msg_lower = error_msg_text.lower()
+                            # 回退到关键词匹配（仅匹配 message 字段，不匹配 UUID/时间戳等元数据）
+                            error_msg_lower = _keyword_target.lower()
                             if '欠费' in error_msg_lower or 'standing' in error_msg_lower:
                                 user_msg = json.dumps({"code": "API_ARREARS"})
                                 self._last_tts_error_code = 'API_ARREARS'
