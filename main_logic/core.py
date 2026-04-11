@@ -54,8 +54,10 @@ import httpx
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
 
-# TTS 错误码中不应自动重试的类型（欠费 / 配额耗尽 / API Key 无效）
-NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_QUOTA_TIME', 'API_KEY_REJECTED'}
+# TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
+NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED'}
+# TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
+IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
 
 # ---------------------------------------------------------------------------
 # 重要通知缓冲池
@@ -1586,7 +1588,9 @@ class LLMSessionManager:
                         await self.send_status(json.dumps({"code": "MEMORY_SERVER_CRASHED", "details": {"port": self.memory_server_port}}))
                     else:
                         await self.send_status(json.dumps({"code": "CONNECTION_REFUSED"}))
-                elif '401' in error_str:
+                elif ('401' in error_str or 'unauthorized' in error_str.lower()
+                        or 'authentication' in error_str.lower()
+                        or ('invalid' in error_str.lower() and 'key' in error_str.lower())):
                     await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
                 elif '429' in error_str:
                     await self.send_status(json.dumps({"code": "API_RATE_LIMIT_SESSION"}))
@@ -3147,7 +3151,7 @@ class LLMSessionManager:
                                 user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
                         # 可重试的错误：前2次静默重试，第3次失败时上报前端
-                        if self._last_tts_error_code not in NO_RETRY_TTS_CODES:
+                        if self._last_tts_error_code not in IMMEDIATE_REPORT_TTS_CODES:
                             self._tts_retry_notify_count += 1
                             if self._tts_retry_notify_count < 3:
                                 logger.info(f"TTS 错误重试 {self._tts_retry_notify_count}/3，暂不通知前端")

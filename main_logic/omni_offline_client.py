@@ -494,11 +494,7 @@ class OmniOfflineClient:
                             await self.on_status_message(json.dumps({"code": "API_ARREARS"}))
                             status_reported = True
                         break
-                    if 'quota' in error_str_lower or 'time limit' in error_str_lower:
-                        logger.warning(f"OmniOfflineClient: 检测到配额错误，上报前端: {e}")
-                        if self.on_status_message:
-                            await self.on_status_message(json.dumps({"code": "API_QUOTA_TIME"}))
-                    if ('401' in error_str_lower or 'unauthorized' in error_str_lower
+                    elif ('401' in error_str_lower or 'unauthorized' in error_str_lower
                             or 'authentication' in error_str_lower
                             or ('invalid' in error_str_lower and 'key' in error_str_lower)):
                         logger.error(f"OmniOfflineClient: 检测到 API Key 错误，直接上报: {e}")
@@ -506,6 +502,10 @@ class OmniOfflineClient:
                             await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
                             status_reported = True
                         break
+                    elif 'quota' in error_str_lower or 'time limit' in error_str_lower:
+                        logger.warning(f"OmniOfflineClient: 检测到配额错误，上报前端: {e}")
+                        if self.on_status_message:
+                            await self.on_status_message(json.dumps({"code": "API_QUOTA_TIME"}))
 
                     if attempt < max_retries - 1:
                         wait_time = retry_delays[attempt]
