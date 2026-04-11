@@ -817,11 +817,15 @@
         ctx.font = bodyFont;
         var segments = [];
         var height = 0;
+        var widthUsed = 0;
 
         if (entry.textContent) {
             var lines = wrapTextLines(ctx, entry.textContent, maxWidth);
             segments.push({ kind: 'text', lines: lines, lineHeight: bodyLineHeight });
             height += lines.length * bodyLineHeight;
+            lines.forEach(function (line) {
+                widthUsed = Math.max(widthUsed, ctx.measureText(line).width);
+            });
         }
 
         if (includeImages && entry.media && entry.media.length > 0) {
@@ -830,15 +834,19 @@
                     var size = fitImageToWidth(item.image, maxWidth, maxImageHeight || 240);
                     segments.push({ kind: 'image', width: size.width, height: size.height, image: item.image });
                     height += size.height + 8;
+                    widthUsed = Math.max(widthUsed, size.width);
                 } else if (item.type === 'note' && item.text) {
                     var noteLines = wrapTextLines(ctx, item.text, maxWidth);
                     segments.push({ kind: 'note', lines: noteLines, lineHeight: bodyLineHeight });
                     height += noteLines.length * bodyLineHeight + 4;
+                    noteLines.forEach(function (line) {
+                        widthUsed = Math.max(widthUsed, ctx.measureText(line).width);
+                    });
                 }
             });
         }
 
-        return { segments: segments, height: height };
+        return { segments: segments, height: height, width: Math.ceil(widthUsed) };
     }
 
     function drawSegments(ctx, segments, x, y, options) {
@@ -1146,16 +1154,28 @@
         var bodyLineHeight = 28;
         var avatarSize = 34;
         var avatarGap = 12;
-        var cardInnerWidth = width - padding * 2 - cardPadding * 2;
-        var contentMaxWidth = Math.floor(cardInnerWidth * 0.76);
+        var maxTrackWidth = width - padding * 2;
+        var cardMaxWidth = Math.floor(maxTrackWidth * 0.8);
+        var cardMinWidth = 200;
+        var cardInnerMaxWidth = cardMaxWidth - cardPadding * 2;
+        var contentMaxWidth = Math.floor(cardInnerMaxWidth * 0.8);
 
         var measureCanvas = document.createElement('canvas');
         var measureCtx = measureCanvas.getContext('2d');
         var measured = resolvedEntries.map(function (entry) {
             measureCtx.font = bodyFont;
             var body = measureEntryBody(measureCtx, entry, bodyFont, bodyLineHeight, contentMaxWidth, true, 240);
+            measureCtx.font = authorFont;
+            var authorWidth = measureCtx.measureText(entry.author || entry.role || '').width;
+            measureCtx.font = metaFont;
+            var metaWidth = measureCtx.measureText([entry.role, entry.time].filter(Boolean).join(' · ')).width;
+            var headerTextWidth = Math.max(authorWidth, metaWidth);
+            var bodyWidth = Math.max(0, body.width || 0);
+            var headerWidth = avatarSize + avatarGap + headerTextWidth;
+            var innerWidth = Math.max(bodyWidth, headerWidth);
+            var cardWidth = Math.max(cardMinWidth, Math.min(cardMaxWidth, Math.ceil(innerWidth + cardPadding * 2)));
             var cardHeight = cardPadding * 2 + 30 + 6 + body.height;
-            return { entry: entry, body: body, cardHeight: cardHeight };
+            return { entry: entry, body: body, cardHeight: cardHeight, cardWidth: cardWidth };
         });
         var cardsHeight = measured.reduce(function (sum, m) { return sum + m.cardHeight + cardGap; }, 0);
         var footerBlock = 50;
@@ -1200,11 +1220,17 @@
         measured.forEach(function (m) {
             var entry = m.entry;
             var isUser = entry.rawRole === 'user';
-            var cardX = padding;
+            var cardX = isUser
+                ? (padding + maxTrackWidth - m.cardWidth)
+                : padding;
             var cardY = y;
-            var cardW = width - padding * 2;
+            var cardW = m.cardWidth;
             var cardH = m.cardHeight;
-            var textMaxWidth = contentMaxWidth;
+            var maxInnerWidth = Math.max(0, cardW - cardPadding * 2);
+            var textMaxWidth = Math.max(64, Math.min(Math.max(0, m.body.width || 0), maxInnerWidth));
+            if (!m.body.width) {
+                textMaxWidth = maxInnerWidth;
+            }
             var textX = isUser
                 ? (cardX + cardW - cardPadding - textMaxWidth)
                 : (cardX + cardPadding);
