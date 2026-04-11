@@ -1685,7 +1685,7 @@
             "AGENT_NOT_INITIALIZED": "Ошибка инициализации Лапки Неко",
             "AGENT_LLM_UNREACHABLE": "LLM Лапки Неко недоступен",
             "AGENT_OPENFANG_DAEMON_UNREACHABLE": "Сервис OpenFang недоступен",
-            "OPENFANG_DAEMON_UNREACHABLE": "Сервис OpenFang недоступен",
+            "OPENFANG_DAEMON_UNREACHABLE": "Демон OpenFang недоступен или не запущен",
             "AGENT_OPENFANG_NOT_LOADED": "Адаптер OpenFang не загружен",
             "AGENT_MODEL_NOT_CONFIGURED": "Модель Лапки Неко не настроена",
             "AGENT_URL_NOT_CONFIGURED": "Agent API URL не настроен",

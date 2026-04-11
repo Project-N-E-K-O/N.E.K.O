@@ -103,6 +103,8 @@ _GENERIC_LATIN_TOPIC_WORDS = {
     "it", "this", "that", "these", "those", "them",
     "this one", "that one", "these ones", "those ones",
     "this thing", "that thing", "these things", "those things",
+    "topic", "topics", "the topic", "the topics",
+    "this topic", "that topic", "these topics", "those topics",
     "anymore",
 }
 _REFERENCE_TOPIC_PATTERNS = (
@@ -228,38 +230,42 @@ def contains_negative_signal(text: str) -> bool:
     return _contains_negative_signal(text)
 
 
+def _topic_token_candidates(token: str) -> set[str]:
+    token = (token or "").strip()
+    if len(token) < 2 or token in _LATIN_TOPIC_TOKEN_STOPWORDS:
+        return set()
+
+    candidates = {token}
+    if len(token) > 3 and token.endswith('ies'):
+        candidates.add(token[:-1])
+    elif (
+        len(token) > 4
+        and token.endswith('es')
+        and (
+            token.endswith(('ches', 'shes', 'xes', 'zes', 'sses'))
+            or (token.endswith('ses') and token[:-2].endswith(('ss', 'us')))
+        )
+    ):
+        candidates.add(token[:-2])
+    elif len(token) > 3 and token.endswith('es'):
+        if token[-3] not in 'aeiou':
+            candidates.add(token[:-2])
+        else:
+            candidates.add(token[:-1])
+    elif len(token) > 3 and token.endswith('s') and not token.endswith(('ss', 'us')):
+        candidates.add(token[:-1])
+
+    return {
+        candidate
+        for candidate in candidates
+        if len(candidate) >= 2 and candidate not in _LATIN_TOPIC_TOKEN_STOPWORDS
+    }
+
+
 def _normalize_topic_tokens(topic: str) -> set[str]:
     tokens: set[str] = set()
     for raw_token in re.split(r'[^a-z0-9]+', (topic or '').casefold()):
-        token = raw_token.strip()
-        if len(token) < 2:
-            continue
-        if token in _LATIN_TOPIC_TOKEN_STOPWORDS:
-            continue
-        if len(token) > 4 and token.endswith('ies'):
-            if token[-4] in 'aeiou':
-                token = token[:-1]
-            else:
-                token = token[:-3] + 'y'
-        elif (
-            len(token) > 4
-            and token.endswith('es')
-            and (
-                token.endswith(('ches', 'shes', 'xes', 'zes', 'sses'))
-                or (token.endswith('ses') and token[:-2].endswith(('ss', 'us')))
-            )
-        ):
-            token = token[:-2]
-        elif len(token) > 3 and token.endswith('es'):
-            if token[-3] not in 'aeiou':
-                token = token[:-2]
-            else:
-                token = token[:-1]
-        elif len(token) > 3 and token.endswith('s') and not token.endswith(('ss', 'us')):
-            token = token[:-1]
-        if len(token) < 2 or token in _LATIN_TOPIC_TOKEN_STOPWORDS:
-            continue
-        tokens.add(token)
+        tokens.update(_topic_token_candidates(raw_token))
     return tokens
 
 

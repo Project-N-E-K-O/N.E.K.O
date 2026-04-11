@@ -131,6 +131,7 @@
             const r = await fetch('/api/agent/openfang/availability');
             if (state[seqKey] !== probeSeq) return undefined;
             if (!r.ok) {
+                if (probeKind === 'background' && state.pending.has('openfang_enabled')) return undefined;
                 state.openfangProbeReady = false;
                 state.openfangProbeReason = `status ${r.status}`;
                 if (state.snapshot) render('openfang-refresh-error');
@@ -138,6 +139,7 @@
             }
             const payload = await r.json();
             if (state[seqKey] !== probeSeq) return undefined;
+            if (probeKind === 'background' && state.pending.has('openfang_enabled')) return undefined;
             state.openfangProbeReady = !!payload.ready;
             if (Array.isArray(payload.reasons)) {
                 state.openfangProbeReason = String(payload.reasons[0] || '');
@@ -148,6 +150,7 @@
             return state.openfangProbeReady;
         } catch (e) {
             if (state[seqKey] !== probeSeq) return undefined;
+            if (probeKind === 'background' && state.pending.has('openfang_enabled')) return undefined;
             state.openfangProbeReady = false;
             state.openfangProbeReason = String(e && e.message ? e.message : e || '');
             if (state.snapshot) render('openfang-refresh-error');
