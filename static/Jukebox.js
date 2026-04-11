@@ -453,6 +453,20 @@ window.Jukebox = {
     isVisible: false,
 
     toggle: function() {
+      if (window.__NEKO_JUKEBOX_STANDALONE__) {
+        // 独立模式：打开/关闭管理器独立窗口
+        if (this._managerWindow && !this._managerWindow.closed) {
+          this._managerWindow.close();
+          this._managerWindow = null;
+        } else {
+          this._managerWindow = window.open(
+            '/jukebox/manager', 'neko-jukebox-manager',
+            'width=480,height=600'
+          );
+        }
+        return;
+      }
+      // Web 模式：切换 DOM 面板
       if (this.isVisible) {
         this.hide();
       } else {
@@ -464,11 +478,9 @@ window.Jukebox = {
       if (this.element) {
         this.element.style.display = 'flex';
         this.isVisible = true;
-        // 如果尚未被拖拽过，定位到点歌台左侧
         if (!this.element.style.left) {
           this.positionNextToJukebox();
         }
-        // 刷新数据
         this.load();
       }
     },
@@ -3317,12 +3329,25 @@ window.Jukebox = {
     });
     
     Jukebox.State.isOpen = true;
-    
+
+    // 监听管理器独立窗口的刷新通知（BroadcastChannel 跨窗口通信）
+    try {
+      if (!Jukebox._broadcastChannel) {
+        Jukebox._broadcastChannel = new BroadcastChannel('neko-jukebox');
+        Jukebox._broadcastChannel.onmessage = function(e) {
+          if (e.data && e.data.type === 'reload' && Jukebox.State.isOpen) {
+            console.log('[Jukebox] 收到管理器刷新通知，重新加载歌曲');
+            Jukebox.loadSongs();
+          }
+        };
+      }
+    } catch (e) {}
+
     const jukeboxButton = document.getElementById('jukeboxButton');
     if (jukeboxButton) {
       jukeboxButton.classList.add('active');
     }
-    
+
     console.log('[Jukebox] 点歌台已打开');
   },
   
@@ -3389,6 +3414,15 @@ window.Jukebox = {
     
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
+    
+    // 清理 BroadcastChannel
+    try {
+      if (Jukebox._broadcastChannel) {
+        Jukebox._broadcastChannel.onmessage = null;
+        Jukebox._broadcastChannel.close();
+        Jukebox._broadcastChannel = null;
+      }
+    } catch (e) {}
     
     // 清空歌曲列表和元素映射，确保下次打开时重新渲染
     Jukebox.State.songs = [];
@@ -3529,10 +3563,12 @@ window.Jukebox = {
     document.body.appendChild(sidePanel);
     Jukebox.State.container = wrapper;
     
-    // 绑定窗口拖拽事件
-    Jukebox.bindWindowDrag(wrapper, jukeboxContainer);
-    // 绑定管理器面板拖拽事件
-    Jukebox.bindPanelDrag(sidePanel);
+    // 独立窗口模式由 preload 注入 -webkit-app-region: drag 处理拖拽，
+    // JS 拖拽会因 preventDefault 与原生拖拽冲突，且 inset:0!important 阻止 wrapper 移动
+    if (!window.__NEKO_JUKEBOX_STANDALONE__) {
+      Jukebox.bindWindowDrag(wrapper, jukeboxContainer);
+      Jukebox.bindPanelDrag(sidePanel);
+    }
     
     Jukebox.injectStyles();
   },
