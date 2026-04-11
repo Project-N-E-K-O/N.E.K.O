@@ -2031,6 +2031,7 @@ class LLMSessionManager:
                 return False
         async with self.lock:
             self.current_speech_id = str(uuid4())
+            self._tts_done_queued_for_turn = False
         return True
 
     async def feed_tts_chunk(self, text: str):
@@ -2140,6 +2141,7 @@ class LLMSessionManager:
                 async with self._proactive_write_lock:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
+                        self._tts_done_queued_for_turn = False
                     logger.debug("[%s] trigger_agent_callbacks: text session ready, calling prompt_ephemeral", self.lanlan_name)
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
@@ -2252,6 +2254,7 @@ class LLMSessionManager:
         async with self._proactive_write_lock:
             async with self.lock:
                 self.current_speech_id = str(uuid4())
+                self._tts_done_queued_for_turn = False
             delivered = await self.session.prompt_ephemeral(instruction)
             logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
 
@@ -2388,6 +2391,7 @@ class LLMSessionManager:
             await self._flush_hot_swap_audio_cache()
             self.session = self.pending_session
             self.current_speech_id = str(uuid4())
+            self._tts_done_queued_for_turn = False
             self.session_start_time = datetime.now()
             self._session_turn_count = 0
             
@@ -2622,6 +2626,7 @@ class LLMSessionManager:
                     # 再为本次新回复生成新的speech_id（用于TTS和lipsync）
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
+                        self._tts_done_queued_for_turn = False
 
                     # 文本模式：在发送用户输入前，将挂起的 agent 任务回调通过
                     # prompt_ephemeral 注入 — 指令不持久化，只保留 AI 回复。
@@ -3120,10 +3125,12 @@ class LLMSessionManager:
                             'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
                         }
                         _parsed_code = None
-                        _keyword_target = error_msg_text  # 用于关键词匹配的文本
+                        _keyword_target = error_msg_text  # 非 JSON 错误时回退使用
                         try:
                             _parsed = json.loads(error_msg_text)
                             if isinstance(_parsed, dict):
+                                # 结构化错误：关键词匹配只看 data.message，避免元数据误判
+                                _keyword_target = ""
                                 # 先检查顶层 code
                                 _candidate = _parsed.get('code', '')
                                 if isinstance(_candidate, str) and _candidate in _known_codes:
@@ -3135,10 +3142,8 @@ class LLMSessionManager:
                                         _candidate = _data.get('code', '')
                                         if isinstance(_candidate, str) and _candidate in _known_codes:
                                             _parsed_code = _candidate
-                                        # 关键词匹配仅针对 message 字段，避免 UUID/时间戳误匹配
-                                        _msg_field = _data.get('message', '')
-                                        if _msg_field:
-                                            _keyword_target = _msg_field
+                                        # 关键词匹配仅针对 message 字段
+                                        _keyword_target = str(_data.get('message', '') or "")
                         except (json.JSONDecodeError, TypeError):
                             # JSON parsing may fail for free-form error strings from
                             # tts.response.error events; this is expected and harmless —
