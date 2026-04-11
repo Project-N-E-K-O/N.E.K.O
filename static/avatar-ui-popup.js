@@ -723,13 +723,13 @@ function createSidePanelMenuItem(manager, prefix, item) {
         } else {
             childWin = window.open(url, name, feat);
         }
+        // 弹窗被拦截或打开失败时不隐藏主页，避免无法恢复
+        if (!childWin) return;
         if (typeof window.handleHideMainUI === 'function') {
             window.handleHideMainUI();
         }
-        if (childWin) {
-            _activeManagerWindows.add(childWin);
-            _startManagerWindowWatcher();
-        }
+        _activeManagerWindows.add(childWin);
+        _startManagerWindowWatcher();
     }
 
     menuItem.addEventListener('click', (e) => {
