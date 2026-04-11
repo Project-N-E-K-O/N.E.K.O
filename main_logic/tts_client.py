@@ -315,14 +315,24 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             response_queue.put(("__ready__", True))
             
             # 初始接收任务
+            _text_done_error_suppressed = False  # 抑制 "tts.text.done already sent" 错误洪泛
+
             async def receive_messages_initial():
                 """初始接收任务"""
+                nonlocal _text_done_error_suppressed
                 try:
                     async for message in ws:
                         event = json.loads(message)
                         event_type = event.get("type")
-                        
+
                         if event_type == "tts.response.error":
+                            # 抑制 "tts.text.done already sent" 错误级联
+                            err_msg = event.get("data", {}).get("message", "")
+                            if "tts.text.done" in err_msg and "already" in err_msg:
+                                if not _text_done_error_suppressed:
+                                    _text_done_error_suppressed = True
+                                    logger.warning("TTS: 服务端报告 tts.text.done 重复，后续同类错误将被静默")
+                                continue
                             _enqueue_error(response_queue, event)
                         elif event_type == "tts.response.audio.delta":
                             try:
@@ -459,13 +469,22 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         await ws.send(json.dumps(create_event))
                         
                         # 启动新的接收任务
+                        _text_done_error_suppressed = False  # 重连后重置错误抑制标记
+
                         async def receive_messages():
+                            nonlocal _text_done_error_suppressed
                             try:
                                 async for message in ws:
                                     event = json.loads(message)
                                     event_type = event.get("type")
-                                    
+
                                     if event_type == "tts.response.error":
+                                        err_msg = event.get("data", {}).get("message", "")
+                                        if "tts.text.done" in err_msg and "already" in err_msg:
+                                            if not _text_done_error_suppressed:
+                                                _text_done_error_suppressed = True
+                                                logger.warning("TTS: 服务端报告 tts.text.done 重复，后续同类错误将被静默")
+                                            continue
                                         _enqueue_error(response_queue, event)
                                     elif event_type == "tts.response.audio.delta":
                                         try:
@@ -505,9 +524,14 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 if not tts_text or not tts_text.strip():
                     continue
 
+                # 已发送 tts.text.done 后，丢弃同一轮次的残余文本（防止服务端报错）
+                if text_done_sent:
+                    logger.debug("TTS: 丢弃 text_done 之后的残余文本 chunk")
+                    continue
+
                 if not ws or not session_id:
                     continue
-                
+
                 # 发送文本
                 try:
                     text_event = {
