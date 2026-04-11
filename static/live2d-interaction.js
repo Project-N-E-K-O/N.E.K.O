@@ -1077,30 +1077,30 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
  * @param {number} priority - 动作优先级 (1=IDLE, 2=NORMAL, 3=FORCE)
  * @param {number} duration - 效果持续时间（毫秒）
  */
+Live2DManager.prototype._restorePersistentAfterResume = async function(reason, forceAll = false) {
+    if ((reason == null && forceAll !== true) || typeof this.resumePersistentExpressions !== 'function') {
+        return;
+    }
+    this.resumePersistentExpressions(reason, forceAll === true);
+    if (typeof this.applyPersistentExpressionsNative === 'function') {
+        try {
+            await this.applyPersistentExpressionsNative(false);
+        } catch (e) {
+            console.warn('[Interaction] 恢复常驻表情失败:', e);
+        }
+    }
+};
+
 Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, priority = 1, duration = 3000) {
     if (!this.currentModel) {
         console.warn('[ClickEffect] 无法播放：模型未加载');
         return;
     }
 
-    const restorePersistentAfterResume = async (reason, forceAll = false) => {
-        if ((reason == null && forceAll !== true) || typeof this.resumePersistentExpressions !== 'function') {
-            return;
-        }
-        this.resumePersistentExpressions(reason, forceAll === true);
-        if (typeof this.applyPersistentExpressionsNative === 'function') {
-            try {
-                await this.applyPersistentExpressionsNative(false);
-            } catch (e) {
-                console.warn('[ClickEffect] 恢复常驻表情失败:', e);
-            }
-        }
-    };
-
     // 清除之前的点击效果恢复定时器
     if (this._clickEffectRestoreTimer) {
         clearTimeout(this._clickEffectRestoreTimer);
-        await restorePersistentAfterResume(this._clickEffectSuspendReason);
+        await this._restorePersistentAfterResume(this._clickEffectSuspendReason);
         this._clickEffectRestoreTimer = null;
         this._clickEffectSuspendReason = null;
         this._currentClickEffectToken = null;
@@ -1111,7 +1111,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             canceledSmoothReset &&
             (canceledSmoothReset.pendingResumeReason != null || canceledSmoothReset.pendingForceAllPersistentResume)
         ) {
-            await restorePersistentAfterResume(
+            await this._restorePersistentAfterResume(
                 canceledSmoothReset.pendingResumeReason,
                 canceledSmoothReset.pendingForceAllPersistentResume === true,
             );
@@ -1786,24 +1786,10 @@ Live2DManager.prototype.playTutorialMotion = async function() {
  * 触发随机表情和动作（用于教程模式和点击空白区域）
  */
 Live2DManager.prototype.triggerRandomEmotion = async function() {
-    const restorePersistentAfterResume = async (reason, forceAll = false) => {
-        if ((reason == null && forceAll !== true) || typeof this.resumePersistentExpressions !== 'function') {
-            return;
-        }
-        this.resumePersistentExpressions(reason, forceAll === true);
-        if (typeof this.applyPersistentExpressionsNative === 'function') {
-            try {
-                await this.applyPersistentExpressionsNative(false);
-            } catch (e) {
-                console.warn('[Interaction] 恢复常驻表情失败:', e);
-            }
-        }
-    };
-
     // 清除之前的点击效果恢复定时器
     if (this._clickEffectRestoreTimer) {
         clearTimeout(this._clickEffectRestoreTimer);
-        await restorePersistentAfterResume(this._clickEffectSuspendReason);
+        await this._restorePersistentAfterResume(this._clickEffectSuspendReason);
         this._clickEffectRestoreTimer = null;
         this._clickEffectSuspendReason = null;
         this._currentClickEffectToken = null;
@@ -1814,7 +1800,7 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
             canceledSmoothReset &&
             (canceledSmoothReset.pendingResumeReason != null || canceledSmoothReset.pendingForceAllPersistentResume)
         ) {
-            await restorePersistentAfterResume(
+            await this._restorePersistentAfterResume(
                 canceledSmoothReset.pendingResumeReason,
                 canceledSmoothReset.pendingForceAllPersistentResume === true,
             );

@@ -21,7 +21,8 @@
         openclawReason: '',
         openfangProbeReady: null,
         openfangProbeReason: '',
-        openfangProbeSeq: 0,
+        openfangBackgroundProbeSeq: 0,
+        openfangUserProbeSeq: 0,
     };
     
     // 暴露状态供 app.js 等外部脚本使用乐观更新检测
@@ -122,12 +123,13 @@
         }
     }
 
-    async function refreshOpenFangAvailability() {
-        const probeSeq = (state.openfangProbeSeq || 0) + 1;
-        state.openfangProbeSeq = probeSeq;
+    async function refreshOpenFangAvailability(probeKind = 'background') {
+        const seqKey = probeKind === 'user' ? 'openfangUserProbeSeq' : 'openfangBackgroundProbeSeq';
+        const probeSeq = (state[seqKey] || 0) + 1;
+        state[seqKey] = probeSeq;
         try {
             const r = await fetch('/api/agent/openfang/availability');
-            if (state.openfangProbeSeq !== probeSeq) return undefined;
+            if (state[seqKey] !== probeSeq) return undefined;
             if (!r.ok) {
                 state.openfangProbeReady = false;
                 state.openfangProbeReason = `status ${r.status}`;
@@ -135,7 +137,7 @@
                 return false;
             }
             const payload = await r.json();
-            if (state.openfangProbeSeq !== probeSeq) return undefined;
+            if (state[seqKey] !== probeSeq) return undefined;
             state.openfangProbeReady = !!payload.ready;
             if (Array.isArray(payload.reasons)) {
                 state.openfangProbeReason = String(payload.reasons[0] || '');
@@ -145,7 +147,7 @@
             if (state.snapshot) render('openfang-refresh');
             return state.openfangProbeReady;
         } catch (e) {
-            if (state.openfangProbeSeq !== probeSeq) return undefined;
+            if (state[seqKey] !== probeSeq) return undefined;
             state.openfangProbeReady = false;
             state.openfangProbeReason = String(e && e.message ? e.message : e || '');
             if (state.snapshot) render('openfang-refresh-error');
@@ -201,7 +203,7 @@
 
         state.snapshot = snapshot;
         if (Number.isFinite(rev)) state.revision = rev;
-        state.openfangProbeSeq = (state.openfangProbeSeq || 0) + 1;
+        state.openfangBackgroundProbeSeq = (state.openfangBackgroundProbeSeq || 0) + 1;
         state.openfangProbeReady = null;
         state.openfangProbeReason = '';
         window._agentStatusSnapshot = snapshot;
@@ -504,7 +506,7 @@
                 setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...');
                 render('command');
                 if (value) {
-                    const ready = await refreshOpenFangAvailability();
+                    const ready = await refreshOpenFangAvailability('user');
                     if (ready == null) {
                         state.pending.delete('openfang_enabled');
                         state.optimistic = {};

@@ -2826,6 +2826,7 @@ class LLMSessionManager:
                         try:
                             ctx = self.drain_agent_callbacks_for_llm()
                             if ctx:
+                                self._reset_assistant_turn_tracking(clear_last=True)
                                 await self.session.prompt_ephemeral(
                                     _loc(AGENT_CALLBACK_NOTIFICATION, normalize_language_code(self.user_language, format='short')) + ctx,
                                 )

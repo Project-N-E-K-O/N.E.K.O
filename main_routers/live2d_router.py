@@ -28,7 +28,7 @@ router = APIRouter(prefix="/api/live2d", tags=["live2d"])
 logger = get_module_logger(__name__, "Main")
 
 
-def _normalize_persistent_expression_group(mapping):
+def _normalize_persistent_expression_group(mapping, *, strict_top_level: bool = False):
     allowed_top_level_keys = {'motions', 'expressions', '常驻'}
 
     def _normalize_persistent_files(value):
@@ -51,7 +51,7 @@ def _normalize_persistent_expression_group(mapping):
         }
     if not isinstance(mapping, dict):
         return mapping
-    if any(key not in allowed_top_level_keys for key in mapping.keys()):
+    if strict_top_level and any(key not in allowed_top_level_keys for key in mapping.keys()):
         return None
     if (
         '常驻' in mapping
@@ -68,7 +68,11 @@ def _normalize_persistent_expression_group(mapping):
             },
         }
 
-    normalized_mapping = dict(mapping)
+    normalized_mapping = {
+        key: mapping[key]
+        for key in allowed_top_level_keys
+        if key in mapping
+    }
     motions = mapping.get('motions')
     expressions = mapping.get('expressions')
     if not isinstance(motions, dict):
@@ -81,7 +85,8 @@ def _normalize_persistent_expression_group(mapping):
         expressions = dict(expressions)
 
     motions.pop('常驻', None)
-    expressions['常驻'] = _normalize_persistent_files(expressions.get('常驻'))
+    if '常驻' in expressions:
+        expressions['常驻'] = _normalize_persistent_files(expressions.get('常驻'))
 
     normalized_mapping['motions'] = motions
     normalized_mapping['expressions'] = expressions
@@ -468,7 +473,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
         if not data:
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的数据"})
 
-        data = _normalize_persistent_expression_group(data)
+        data = _normalize_persistent_expression_group(data, strict_top_level=True)
         if not isinstance(data, dict):
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的常驻表情配置"})
 

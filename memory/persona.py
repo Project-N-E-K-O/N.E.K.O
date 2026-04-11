@@ -933,7 +933,7 @@ class PersonaManager:
         topic = self._topic_key(topic)
         if not _is_specific_topic(topic):
             return 'tone_only'
-        guidance = self._ensure_topic_guidance(persona)
+        guidance = self._get_topic_guidance(persona)
         soft_entry = self._find_topic_entry(guidance.get('soft_avoid', []), topic)
         hard_entry = self._find_topic_entry(guidance.get('hard_avoid', []), topic)
         if hard_entry is not None:
@@ -1053,7 +1053,7 @@ class PersonaManager:
             }
 
         persona = self.ensure_persona(name)
-        guidance = self._get_topic_guidance(persona)
+        guidance = self._ensure_topic_guidance(persona)
         soft_entries = guidance.get('soft_avoid', [])
         hard_entries = guidance.get('hard_avoid', [])
         soft_entry = self._find_topic_entry(soft_entries, normalized_topic)
