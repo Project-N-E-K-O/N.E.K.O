@@ -708,7 +708,13 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 isOpening = true;
-                window.location.href = finalUrl;
+                windowName = `neko_${item.id}_${encodeURIComponent(lanlanName || 'default')}`;
+                if (typeof window.openOrFocusWindow === 'function') {
+                    window.openOrFocusWindow(finalUrl, windowName);
+                } else {
+                    window.open(finalUrl, windowName);
+                }
+                if (typeof window.handleHideMainUI === 'function') window.handleHideMainUI();
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -728,6 +734,7 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 } else {
                     window.open(finalUrl, windowName, features);
                 }
+                if (typeof window.handleHideMainUI === 'function') window.handleHideMainUI();
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.url) {
                 isOpening = true;
@@ -736,6 +743,7 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 } else {
                     window.open(finalUrl, windowName);
                 }
+                if (typeof window.handleHideMainUI === 'function') window.handleHideMainUI();
                 setTimeout(() => { isOpening = false; }, 500);
             }
         }

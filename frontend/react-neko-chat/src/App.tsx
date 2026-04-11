@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import MessageList from './MessageList';
+import { i18n } from './i18n';
 import {
   type ChatMessage,
   type MessageAction,
@@ -21,26 +22,26 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
 const defaultMessages: ChatMessage[] = [];
 
 export default function App({
-  title = 'N.E.K.O Chat',
+  title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
-  inputPlaceholder = '输入消息...',
-  sendButtonLabel = '发送',
-  chatWindowAriaLabel = 'Neko chat window',
-  messageListAriaLabel = 'Chat messages',
-  composerToolsAriaLabel = 'Composer tools',
+  inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
+  sendButtonLabel = i18n('chat.send', 'Send'),
+  chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
+  messageListAriaLabel = i18n('chat.messageListAriaLabel', 'Chat messages'),
+  composerToolsAriaLabel = i18n('chat.composerToolsAriaLabel', 'Composer tools'),
   composerAttachments = [],
-  composerAttachmentsAriaLabel = 'Pending attachments',
-  importImageButtonLabel = '导入图片',
-  screenshotButtonLabel = '截图',
+  composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
+  importImageButtonLabel = i18n('chat.importImage', 'Import Image'),
+  screenshotButtonLabel = i18n('chat.screenshot', 'Screenshot'),
   importImageButtonAriaLabel,
   screenshotButtonAriaLabel,
-  removeAttachmentButtonAriaLabel = '移除图片',
-  failedStatusLabel = '发送失败',
-  jukeboxButtonLabel = '点歌台',
-  jukeboxButtonAriaLabel = '点歌台',
+  removeAttachmentButtonAriaLabel = i18n('chat.removePendingImage', 'Remove image'),
+  failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
+  jukeboxButtonLabel = i18n('chat.jukeboxLabel', 'Jukebox'),
+  jukeboxButtonAriaLabel = i18n('chat.jukebox', 'Jukebox'),
   translateEnabled = false,
-  translateButtonLabel = '字幕翻译',
+  translateButtonLabel = i18n('subtitle.enable', 'Subtitle Translation'),
   translateButtonAriaLabel,
   onMessageAction,
   onComposerImportImage,

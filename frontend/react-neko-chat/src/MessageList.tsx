@@ -1,5 +1,6 @@
 import { useRef, useEffect, useCallback } from 'react';
 import MessageBubble from './MessageBubble';
+import { i18n } from './i18n';
 import { type ChatMessage, type MessageAction } from './message-schema';
 
 type MessageListProps = {
@@ -24,8 +25,8 @@ function shouldGroupWithPrevious(current: ChatMessage, previous?: ChatMessage) {
 
 export default function MessageList({
   messages,
-  ariaLabel = 'Chat messages',
-  failedStatusLabel = '发送失败',
+  ariaLabel = i18n('chat.messageListAriaLabel', 'Chat messages'),
+  failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
   onAction,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
