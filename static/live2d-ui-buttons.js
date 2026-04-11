@@ -398,13 +398,30 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                     triggerBtn.style.background = 'var(--neko-btn-bg)';
                 });
 
+                const isPopupVisible = () => popup.style.display === 'flex' && popup.style.opacity === '1';
+                const repositionPopup = () => {
+                    if (!isPopupVisible()) return;
+                    const popupUi = window.AvatarPopupUI || null;
+                    if (!popupUi || typeof popupUi.positionPopup !== 'function') return;
+                    void popup.offsetHeight;
+                    const pos = popupUi.positionPopup(popup, {
+                        buttonId: config.id,
+                        buttonPrefix: 'live2d-btn-',
+                        triggerPrefix: 'live2d-trigger-icon-',
+                        rightMargin: 20,
+                        bottomMargin: 60,
+                        topMargin: 8,
+                        gap: 8,
+                        sidePanelWidth: (config.id === 'settings' || config.id === 'agent') ? 320 : 0
+                    });
+                    popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
+                };
+
                 triggerBtn.addEventListener('click', async (e) => {
                     console.log(`[Live2D] 小三角被点击: ${config.id}`);
                     e.stopPropagation();
 
-                    const isPopupVisible = popup.style.display === 'flex' || popup.style.opacity === '1';
-
-                    if (isPopupVisible) {
+                    if (isPopupVisible()) {
                         this.showPopup(config.id, popup);
                         return;
                     }
@@ -421,10 +438,12 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
                     if (config.id === 'mic' && window.renderFloatingMicList) {
                         await window.renderFloatingMicList();
+                        repositionPopup();
                     }
 
                     if (config.id === 'screen' && window.renderFloatingScreenSourceList) {
                         await window.renderFloatingScreenSourceList();
+                        repositionPopup();
                     }
                 });
 
