@@ -33,8 +33,12 @@ class TimeIndexedMemory:
                     db_path = os.path.join(ensure_character_dir(config_mgr.memory_dir, lanlan_name), 'time_indexed.db')
                     logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
 
-            engine = create_engine(f"sqlite:///{db_path}")
-            connection_string = f"sqlite:///{db_path}"
+            # 确保数据库文件的父目录存在
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+            # Windows 路径使用反斜杠，SQLite URI 需要正斜杠
+            uri_path = db_path.replace("\\", "/")
+            engine = create_engine(f"sqlite:///{uri_path}")
+            connection_string = f"sqlite:///{uri_path}"
             # 先完成所有初始化/迁移，再注册到 self.engines，
             # 避免失败后引擎被标记为"已初始化"而跳过后续修复
             self._ensure_tables_exist_with(engine, connection_string, lanlan_name)
@@ -108,7 +112,8 @@ class TimeIndexedMemory:
             timestamp = datetime.now()
 
         db_path = self.db_paths[lanlan_name]
-        connection_string = f"sqlite:///{db_path}"
+        uri_path = db_path.replace("\\", "/")
+        connection_string = f"sqlite:///{uri_path}"
         
         original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
         
