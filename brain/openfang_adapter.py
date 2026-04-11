@@ -41,13 +41,13 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
     from urllib.parse import urlsplit
 
     model_lower = model.lower()
-    parsed = urlsplit(base_url)
-    host = (parsed.hostname or "").lower()
-    path = (parsed.path or "").lower()
     try:
-        port = parsed.port
-    except ValueError:
-        port = None
+        parsed = urlsplit(base_url)
+        host = (parsed.hostname or "").lower()
+        path = (parsed.path or "").lower()
+        port = parsed.port  # may raise ValueError for malformed ports
+    except Exception:
+        host, path, port = "", "", None
 
     def _host_matches(*domains: str) -> bool:
         """Check if host exactly matches or is a subdomain of any given domain."""
@@ -97,8 +97,8 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
     _is_google_ai = _host_matches("generativelanguage.googleapis.com")
     _normalized_path = path.rstrip("/")
     if _is_google_ai and (
-        _normalized_path.endswith("/openai")
-        or "/openai/" in path
+        _normalized_path == "/v1beta/openai"
+        or _normalized_path.startswith("/v1beta/openai/")
     ):
         # OpenAI 兼容端点, 直连即可, 不需要 Gemini driver
         return {
