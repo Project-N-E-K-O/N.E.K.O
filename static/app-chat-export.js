@@ -1141,10 +1141,10 @@
     async function renderPosterStyleCanvas(resolvedEntries, now) {
         var theme = getPosterTheme();
         var scale = 2;
-        var width = 900;
-        var padding = 60;
-        var heroHeight = 220;
-        var cardPadding = 26;
+        var width = 760;
+        var padding = 42;
+        var heroHeight = 200;
+        var cardPadding = 22;
         var cardGap = 18;
         var titleFont = '800 42px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
         var kickerFont = '700 14px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
@@ -1155,10 +1155,11 @@
         var avatarSize = 34;
         var avatarGap = 12;
         var maxTrackWidth = width - padding * 2;
-        var cardMaxWidth = Math.floor(maxTrackWidth * 0.8);
+        var cardMaxWidth = Math.floor(maxTrackWidth * 0.82);
         var cardMinWidth = 200;
         var cardInnerMaxWidth = cardMaxWidth - cardPadding * 2;
-        var contentMaxWidth = Math.floor(cardInnerMaxWidth * 0.8);
+        var contentMaxWidth = Math.floor(cardInnerMaxWidth * 0.88);
+        var overlapDepth = 28;
 
         var measureCanvas = document.createElement('canvas');
         var measureCtx = measureCanvas.getContext('2d');
@@ -1177,9 +1178,37 @@
             var cardHeight = cardPadding * 2 + 30 + 6 + body.height;
             return { entry: entry, body: body, cardHeight: cardHeight, cardWidth: cardWidth };
         });
-        var cardsHeight = measured.reduce(function (sum, m) { return sum + m.cardHeight + cardGap; }, 0);
+        var layouts = [];
+        var cursorY = heroHeight;
+        var maxBottom = heroHeight;
+        measured.forEach(function (m, index) {
+            var isUser = m.entry.rawRole === 'user';
+            var cardX = isUser
+                ? (padding + maxTrackWidth - m.cardWidth)
+                : padding;
+            var cardY = cursorY;
+            if (index > 0) {
+                var prev = layouts[index - 1];
+                if (prev && prev.isUser !== isUser) {
+                    var overlap = Math.min(overlapDepth, Math.floor(Math.min(prev.cardH, m.cardHeight) * 0.24));
+                    cardY = Math.max(heroHeight, cardY - overlap);
+                }
+            }
+            var layout = {
+                entry: m.entry,
+                body: m.body,
+                isUser: isUser,
+                cardX: cardX,
+                cardY: cardY,
+                cardW: m.cardWidth,
+                cardH: m.cardHeight
+            };
+            layouts.push(layout);
+            cursorY = cardY + m.cardHeight + cardGap;
+            maxBottom = Math.max(maxBottom, cardY + m.cardHeight);
+        });
         var footerBlock = 50;
-        var totalHeight = heroHeight + cardsHeight + padding + footerBlock;
+        var totalHeight = maxBottom + padding + footerBlock;
 
         var canvas = document.createElement('canvas');
         canvas.width = width * scale;
@@ -1216,19 +1245,16 @@
         ctx.fillText(buildDisplayTimestamp(now), padding, padding + 30 + titleLines.length * 48 + 4);
 
         // cards
-        var y = heroHeight;
-        measured.forEach(function (m) {
-            var entry = m.entry;
-            var isUser = entry.rawRole === 'user';
-            var cardX = isUser
-                ? (padding + maxTrackWidth - m.cardWidth)
-                : padding;
-            var cardY = y;
-            var cardW = m.cardWidth;
-            var cardH = m.cardHeight;
+        layouts.forEach(function (layout) {
+            var entry = layout.entry;
+            var isUser = layout.isUser;
+            var cardX = layout.cardX;
+            var cardY = layout.cardY;
+            var cardW = layout.cardW;
+            var cardH = layout.cardH;
             var maxInnerWidth = Math.max(0, cardW - cardPadding * 2);
-            var textMaxWidth = Math.max(64, Math.min(Math.max(0, m.body.width || 0), maxInnerWidth));
-            if (!m.body.width) {
+            var textMaxWidth = Math.max(64, Math.min(Math.max(0, layout.body.width || 0), maxInnerWidth));
+            if (!layout.body.width) {
                 textMaxWidth = maxInnerWidth;
             }
             var textX = isUser
@@ -1256,8 +1282,8 @@
             ctx.stroke();
 
             drawAvatarCircle(ctx, avatarX, avatarY, avatarSize, {
-                image: m.entry.avatarImage,
-                label: m.entry.avatarLabel || m.entry.author || m.entry.role,
+                image: layout.entry.avatarImage,
+                label: layout.entry.avatarLabel || layout.entry.author || layout.entry.role,
                 background: isUser ? 'rgba(255,232,163,0.95)' : 'rgba(255,210,228,0.95)',
                 textColor: isUser ? '#8a5a00' : '#9f1853',
                 borderColor: isUser ? theme.userBorder : theme.assistantBorder
@@ -1289,7 +1315,7 @@
             ctx.textAlign = 'left';
             drawSegments(
                 ctx,
-                m.body.segments,
+                layout.body.segments,
                 textX,
                 cardY + cardPadding + 40,
                 {
@@ -1298,8 +1324,6 @@
                     maxWidth: textMaxWidth
                 }
             );
-
-            y += cardH + cardGap;
         });
 
         // footer
