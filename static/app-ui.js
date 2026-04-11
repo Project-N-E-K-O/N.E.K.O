@@ -443,6 +443,9 @@
                         imgOff.style.opacity = isActive ? '0' : '1';
                         imgOn.style.opacity = isActive ? '1' : '0';
                     }
+                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                        manager.updateSeparatePopupTriggerIcon('mic');
+                    }
                 }
             }
         }
@@ -462,6 +465,9 @@
                     if (imgOff && imgOn) {
                         imgOff.style.opacity = isActive ? '0' : '1';
                         imgOn.style.opacity = isActive ? '1' : '0';
+                    }
+                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                        manager.updateSeparatePopupTriggerIcon('screen');
                     }
                 }
             }

@@ -1052,9 +1052,17 @@
     window.renderFloatingMicList = async function (popupArg) {
         var micPopup = popupArg || document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
         if (!micPopup) return false;
+        var popupId = micPopup.id;
+        var isPopupAvailable = function () {
+            if (!micPopup || !micPopup.isConnected) return false;
+            if (popupId && document.getElementById(popupId) !== micPopup) return false;
+            return micPopup.style.display === 'flex' && micPopup.style.opacity !== '0';
+        };
+        if (!isPopupAvailable()) return false;
 
         try {
             var audioInputs = await ensureMicrophonePermission();
+            if (!isPopupAvailable()) return false;
             micPopup.innerHTML = '';
 
             if (audioInputs.length === 0) {
@@ -1064,7 +1072,7 @@
                 noMicItem.style.color = 'var(--neko-popup-text-sub)';
                 noMicItem.style.fontSize = '13px';
                 micPopup.appendChild(noMicItem);
-                return false;
+                return true;
             }
 
             // ===== 双栏布局 =====
@@ -1320,13 +1328,14 @@
             startMicVolumeVisualization();
             return true;
         } catch (error) {
+            if (!isPopupAvailable()) return false;
             console.error('渲染麦克风列表失败:', error);
             micPopup.innerHTML = '';
             var errorItem = document.createElement('div');
             errorItem.textContent = window.t ? window.t('microphone.loadFailed') : '获取麦克风列表失败';
             Object.assign(errorItem.style, { padding: '8px 12px', color: '#dc3545', fontSize: '13px' });
             micPopup.appendChild(errorItem);
-            return false;
+            return true;
         }
     };
 
