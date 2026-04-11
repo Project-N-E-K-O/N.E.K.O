@@ -1286,7 +1286,9 @@ function setupMasterFormListeners() {
             const textareaEl = document.createElement('textarea');
             textareaEl.name = key;
             textareaEl.rows = 1;
-            textareaEl.placeholder = '可输入详细描述';
+            textareaEl.placeholder = (window.t && typeof window.t === 'function')
+                ? window.t('character.detailDescriptionPlaceholder')
+                : '可输入详细描述';
             row.appendChild(textareaEl);
 
             // 将field-row添加到wrapper
@@ -1906,7 +1908,9 @@ function showCatgirlForm(key, container) {
             const textareaEl = document.createElement('textarea');
             textareaEl.name = k;
             textareaEl.rows = 1;
-            textareaEl.placeholder = '可输入详细描述';
+            textareaEl.placeholder = (window.t && typeof window.t === 'function')
+                ? window.t('character.detailDescriptionPlaceholder')
+                : '可输入详细描述';
             textareaEl.value = cat[k];
             fieldRow.appendChild(textareaEl);
 
@@ -2289,7 +2293,9 @@ function showCatgirlForm(key, container) {
         const textareaEl = document.createElement('textarea');
         textareaEl.name = key;
         textareaEl.rows = 1;
-        textareaEl.placeholder = '可输入详细描述';
+        textareaEl.placeholder = (window.t && typeof window.t === 'function')
+            ? window.t('character.detailDescriptionPlaceholder')
+            : '可输入详细描述';
         fieldRow.appendChild(textareaEl);
 
         wrapper.appendChild(fieldRow);
