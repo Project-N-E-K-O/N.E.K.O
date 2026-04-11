@@ -1361,7 +1361,6 @@ class LLMSessionManager:
         if self.is_starting_session:
             logger.warning("⚠️ Session正在启动中，忽略重复请求")
             return
-        self._clear_transient_response_instruction_state()
         
         # 标记正在启动
         self.is_starting_session = True
@@ -3069,7 +3068,6 @@ class LLMSessionManager:
             content_committed=False,
             session_override=main_session_ref,
         )
-        self._clear_transient_response_instruction_state()
 
         logger.info("End Session: Starting cleanup...")
         self.sync_message_queue.put({'type': 'system', 'data': 'session end'})

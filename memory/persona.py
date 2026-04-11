@@ -237,7 +237,7 @@ def _topic_token_candidates(token: str) -> set[str]:
 
     candidates = {token}
     if len(token) > 3 and token.endswith('ies'):
-        candidates.add(token[:-1])
+        candidates.add(token[:-3] + 'y')
     elif (
         len(token) > 4
         and token.endswith('es')
