@@ -124,20 +124,22 @@ def test_negative_signal_topicless_emotion_falls_back_to_tone_only() -> None:
         mock_cm = _build_mock_config_manager(tmpdir)
         with patch("utils.config_manager.get_config_manager", return_value=mock_cm), \
              patch("utils.config_manager._config_manager", mock_cm):
-            from memory.persona import PersonaManager
+            import memory.persona as persona_module
+            with patch.object(persona_module, "get_config_manager", return_value=mock_cm):
+                PersonaManager = persona_module.PersonaManager
 
-            pm = PersonaManager()
-            pm._config_manager = mock_cm
+                pm = PersonaManager()
+                pm._config_manager = mock_cm
 
-            result = pm.register_negative_signal("测试猫娘", "我好焦虑")
-            assert result["matched"] is True
-            assert result["topic"] == ""
-            assert result["policy"] == "tone_only"
+                result = pm.register_negative_signal("测试猫娘", "我好焦虑")
+                assert result["matched"] is True
+                assert result["topic"] == ""
+                assert result["policy"] == "tone_only"
 
-            persona = pm.get_persona("测试猫娘")
-            guidance = persona.get("_topic_guidance", {})
-            assert guidance.get("soft_avoid", []) == []
-            assert guidance.get("hard_avoid", []) == []
+                persona = pm.get_persona("测试猫娘")
+                guidance = persona.get("_topic_guidance", {})
+                assert guidance.get("soft_avoid", []) == []
+                assert guidance.get("hard_avoid", []) == []
 
 
 def test_contains_negative_signal_keyword_gate() -> None:

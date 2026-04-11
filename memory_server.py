@@ -1180,7 +1180,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
                 pass
         
         # 启动新的review任务
-        review_messages = input_history if input_history else None
+        review_messages = input_history if input_history else []
         task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
         correction_tasks[lanlan_name] = task
         
@@ -1225,7 +1225,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
                 pass
         
         # 启动新的review任务
-        review_messages = input_history if input_history else None
+        review_messages = input_history if input_history else []
         task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
         correction_tasks[lanlan_name] = task
         
@@ -1263,7 +1263,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
                 await correction_tasks[lanlan_name]
             except asyncio.CancelledError:
                 pass
-        review_messages = input_history if input_history else None
+        review_messages = input_history if input_history else []
         task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
         correction_tasks[lanlan_name] = task
 

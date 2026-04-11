@@ -806,9 +806,11 @@ class PersonaManager:
         return _topics_match(lhs, rhs)
 
     def _get_topic_guidance(self, persona: dict) -> dict:
-        guidance = persona.setdefault('_topic_guidance', {})
-        soft = guidance.setdefault('soft_avoid', [])
-        hard = guidance.setdefault('hard_avoid', [])
+        guidance = persona.get('_topic_guidance')
+        if not isinstance(guidance, dict):
+            guidance = {}
+        soft = guidance.get('soft_avoid', [])
+        hard = guidance.get('hard_avoid', [])
         normalized_soft = []
         for item in soft:
             entry = self._normalize_topic_entry(item, default_state='soft')
@@ -819,8 +821,14 @@ class PersonaManager:
             entry = self._normalize_topic_entry(item, default_state='hard')
             if entry.get('topic'):
                 normalized_hard.append(entry)
-        guidance['soft_avoid'] = normalized_soft
-        guidance['hard_avoid'] = normalized_hard
+        return {
+            'soft_avoid': normalized_soft,
+            'hard_avoid': normalized_hard,
+        }
+
+    def _ensure_topic_guidance(self, persona: dict) -> dict:
+        guidance = self._get_topic_guidance(persona)
+        persona['_topic_guidance'] = guidance
         return guidance
 
     @staticmethod
@@ -848,7 +856,7 @@ class PersonaManager:
         if not _is_specific_topic(topic):
             return 'tone_only', False
 
-        guidance = self._get_topic_guidance(persona)
+        guidance = self._ensure_topic_guidance(persona)
         soft_entries = guidance.get('soft_avoid', [])
         hard_entries = guidance.get('hard_avoid', [])
         soft_entry = self._find_topic_entry(soft_entries, topic)
@@ -925,7 +933,7 @@ class PersonaManager:
         topic = self._topic_key(topic)
         if not _is_specific_topic(topic):
             return 'tone_only'
-        guidance = self._get_topic_guidance(persona)
+        guidance = self._ensure_topic_guidance(persona)
         soft_entry = self._find_topic_entry(guidance.get('soft_avoid', []), topic)
         hard_entry = self._find_topic_entry(guidance.get('hard_avoid', []), topic)
         if hard_entry is not None:

@@ -755,10 +755,8 @@ def _set_capability(name: str, ready: bool, reason: str = "", **metadata: Any) -
     prev = Modules.capability_cache.get(name, {})
     normalized_reason = _normalize_capability_reason(name, reason)
     preserved_metadata = {}
-    for key in ("enabled", "reasons", "provider", "version", "tools_count", "is_free_version"):
+    for key in ("enabled", "provider", "version", "tools_count", "is_free_version"):
         if key not in prev or key in metadata:
-            continue
-        if key == "reasons" and ready:
             continue
         preserved_metadata[key] = prev[key]
     next_value = {
@@ -3090,8 +3088,15 @@ async def openfang_availability():
         if not chosen_reason:
             chosen_reason = "OPENFANG_DAEMON_UNREACHABLE"
     normalized_reason = _normalize_capability_reason("openfang", chosen_reason)
+    openfang_was_enabled = bool(Modules.agent_flags.get("openfang_enabled"))
+    if not ok and openfang_was_enabled:
+        Modules.agent_flags["openfang_enabled"] = False
+        Modules.notification = json.dumps({
+            "code": "AGENT_OPENFANG_CAPABILITY_LOST",
+            "details": {"reason_code": normalized_reason},
+        })
     payload = {
-        "enabled": bool(status.get("enabled", True)) if isinstance(status, dict) else True,
+        "enabled": Modules.agent_flags.get("openfang_enabled", False),
         "ready": bool(ok),
         "reason": normalized_reason if not ok else "",
         "reasons": ([normalized_reason] if (not ok and normalized_reason) else []),
@@ -3109,12 +3114,7 @@ async def openfang_availability():
         enabled=payload["enabled"],
         reasons=list(payload["reasons"]),
     )
-    if not ok and Modules.agent_flags.get("openfang_enabled"):
-        Modules.agent_flags["openfang_enabled"] = False
-        Modules.notification = json.dumps({
-            "code": "AGENT_OPENFANG_CAPABILITY_LOST",
-            "details": {"reason_code": normalized_reason},
-        })
+    if not ok and openfang_was_enabled:
         _bump_state_revision()
         await _emit_agent_status_update()
     return payload

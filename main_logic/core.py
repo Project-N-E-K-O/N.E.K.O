@@ -595,13 +595,25 @@ class LLMSessionManager:
         self._transient_response_instruction_base = None
         self._transient_response_instruction_blocked_session_id = None
 
-    def _rollback_failed_pending_cleanup(self, exc: Exception, context: str) -> None:
+    async def _rollback_failed_pending_cleanup(self, exc: Exception, context: str) -> None:
         logger.debug(f"{context}: {exc}")
         self.pending_session = None
         self.pending_session_warmed_up_event = None
-        if self.background_preparation_task:
-            self.background_preparation_task.cancel()
-        self.background_preparation_task = None
+        self.pending_session_final_prime_complete_event = None
+        self.is_preparing_new_session = False
+        self.summary_triggered_time = None
+        bg_task_ref = self.background_preparation_task
+        if bg_task_ref:
+            bg_task_ref.cancel()
+            try:
+                await bg_task_ref
+            except asyncio.CancelledError:
+                pass
+            except Exception as task_error:
+                logger.debug(f"{context}: background_preparation_task cleanup failed: {task_error}")
+            finally:
+                if self.background_preparation_task is bg_task_ref:
+                    self.background_preparation_task = None
 
     def _reset_assistant_turn_tracking(self, *, clear_last: bool = False) -> None:
         self._current_assistant_turn_text = ""
@@ -664,7 +676,7 @@ class LLMSessionManager:
                     await self._cleanup_pending_session_resources()
                     await self._reset_preparation_state(clear_main_cache=False)
                 except Exception as e:
-                    self._rollback_failed_pending_cleanup(e, "清理临时响应指令关联的 pending session 失败")
+                    await self._rollback_failed_pending_cleanup(e, "清理临时响应指令关联的 pending session 失败")
             return
 
         if not isinstance(self.session, OmniRealtimeClient):
@@ -707,7 +719,7 @@ class LLMSessionManager:
                 await self._cleanup_pending_session_resources()
                 await self._reset_preparation_state(clear_main_cache=False)
             except Exception as e:
-                self._rollback_failed_pending_cleanup(e, "应用临时响应指令后的 pending session 清理失败")
+                await self._rollback_failed_pending_cleanup(e, "应用临时响应指令后的 pending session 清理失败")
 
     async def _restore_transient_response_instruction(self, session_override=None) -> None:
         if not self._transient_response_instruction_active:

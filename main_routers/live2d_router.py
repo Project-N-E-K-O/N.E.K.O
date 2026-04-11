@@ -494,25 +494,27 @@ async def update_emotion_mapping(model_name: str, request: Request):
         file_refs = config_data.setdefault('FileReferences', {})
 
         # 处理 motions: data 结构为 { motions: { emotion: ["motions/xxx.motion3.json", ...] }, expressions: {...} }
-        motions_input = (data.get('motions') if isinstance(data, dict) else None) or {}
-        motions_output = {}
-        for group_name, files in motions_input.items():
-            # 禁止在"常驻"组配置任何motion
-            if group_name == '常驻':
-                logger.info("忽略常驻组中的motion配置（只允许expression）")
-                continue
-            items = []
-            for file_path in _coerce_mapping_group_files(files, group_name, 'motions'):
-                normalized = _sanitize_mapping_file_path(file_path)
-                if not normalized:
+        motions_output = file_refs.get('Motions', {}) if isinstance(file_refs.get('Motions'), dict) else {}
+        if isinstance(data, dict) and 'motions' in data:
+            motions_input = data.get('motions') or {}
+            motions_output = {}
+            for group_name, files in motions_input.items():
+                # 禁止在"常驻"组配置任何motion
+                if group_name == '常驻':
+                    logger.info("忽略常驻组中的motion配置（只允许expression）")
                     continue
+                items = []
+                for file_path in _coerce_mapping_group_files(files, group_name, 'motions'):
+                    normalized = _sanitize_mapping_file_path(file_path)
+                    if not normalized:
+                        continue
 
-                items.append({"File": normalized})
-            motions_output[group_name] = items
-        if any(items for items in motions_output.values()):
-            file_refs['Motions'] = motions_output
-        else:
-            file_refs.pop('Motions', None)
+                    items.append({"File": normalized})
+                motions_output[group_name] = items
+            if any(items for items in motions_output.values()):
+                file_refs['Motions'] = motions_output
+            else:
+                file_refs.pop('Motions', None)
 
         # 处理 expressions: 将按 emotion 前缀生成扁平列表，Name 采用 "{emotion}_{basename}" 的约定
         expressions_input = data.get('expressions') or {}

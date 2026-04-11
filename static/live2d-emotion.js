@@ -71,6 +71,7 @@ Live2DManager.prototype.recordInitialParameters = function() {
 
 // 清除expression到默认状态（使用保存的初始参数）
 Live2DManager.prototype.clearExpression = function(reason = null, forceAll = false) {
+    this._currentExpressionRequestId = (this._currentExpressionRequestId || 0) + 1;
     // 取消正在进行的平滑过渡和手动表情覆盖
     const canceledSmoothReset = this._cancelSmoothReset({ resumePersistent: false });
     this._removeManualExpressionOverride();
@@ -512,6 +513,15 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         this.resumePersistentExpressions(suspendReason);
         try { await this.applyPersistentExpressionsNative(false); } catch (e) {}
     };
+    const expressionRequestId = (this._currentExpressionRequestId || 0) + 1;
+    this._currentExpressionRequestId = expressionRequestId;
+    const abortIfStale = async () => {
+        if (this._currentExpressionRequestId === expressionRequestId) {
+            return false;
+        }
+        await rollbackPersistentSuspend();
+        return true;
+    };
 
     if (suspendPersistent) {
         this.suspendPersistentExpressions(suspendReason, { clearCurrent: true });
@@ -574,6 +584,9 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
             try {
                 console.log(`尝试使用原生API播放expression: ${expressionName} (file: ${canonicalChoiceFile})`);
                 const expression = await this.currentModel.expression(expressionName);
+                if (await abortIfStale()) {
+                    return;
+                }
                 if (expression) {
                     console.log(`成功使用原生API播放expression: ${expressionName}`);
                     playedExpression = true;
@@ -581,6 +594,9 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
                     console.warn(`原生expression API未返回有效结果 (name: ${expressionName})，回退到手动参数设置`);
                 }
             } catch (error) {
+                if (await abortIfStale()) {
+                    return;
+                }
                 console.warn('原生expression API出错:', error);
             }
         } else if (this.currentModel.expression && !expressionName) {
@@ -623,18 +639,30 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
                 try {
                     const expressionPath = this.resolveAssetPath(candidateFile);
                     const response = await fetch(expressionPath);
+                    if (await abortIfStale()) {
+                        return;
+                    }
                     if (!response.ok) {
                         lastFetchError = new Error(`Failed to load expression: ${response.statusText}`);
                         continue;
                     }
                     expressionData = await response.json();
+                    if (await abortIfStale()) {
+                        return;
+                    }
                     loadedExpressionFile = candidateFile;
                     break;
                 } catch (e) {
+                    if (await abortIfStale()) {
+                        return;
+                    }
                     lastFetchError = e;
                 }
             }
 
+            if (await abortIfStale()) {
+                return;
+            }
             if (!expressionData || !loadedExpressionFile) {
                 if (typeof this.markExpressionFileMissing === 'function') {
                     for (const file of candidateFiles) this.markExpressionFileMissing(file);
@@ -645,6 +673,9 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
 
             // 方法2: 回退到手动参数设置（使用每帧应用 + 淡入效果，避免参数被 loadParameters 覆盖）
             if (expressionData.Parameters && expressionData.Parameters.length > 0) {
+                if (await abortIfStale()) {
+                    return;
+                }
                 console.log('使用手动参数设置播放expression（带淡入过渡）');
                 // 使用 _installManualExpressionOverride 在每帧中持续应用参数，并带有淡入效果
                 this._installManualExpressionOverride(expressionData.Parameters, 300);
@@ -658,6 +689,9 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
 
     if (!playedExpression) {
         await rollbackPersistentSuspend();
+        return;
+    }
+    if (await abortIfStale()) {
         return;
     }
 
@@ -963,6 +997,7 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
         console.log('情感切换中，忽略新的情感请求');
         return;
     }
+    this._currentExpressionRequestId = (this._currentExpressionRequestId || 0) + 1;
     
     // 清除点击效果的 ID，这样点击效果的恢复定时器会检测到并跳过恢复
     // 避免点击效果的恢复覆盖正常的情感表达
