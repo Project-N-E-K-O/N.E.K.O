@@ -42,7 +42,7 @@ textarea {
   display: grid;
   grid-template-rows: auto 1fr auto;
   overflow: hidden;
-  background: linear-gradient(180deg, #f7f9fc 0%, #f2f5fa 100%);
+  background: transparent;
 }
 
 .window-topbar {
@@ -52,8 +52,14 @@ textarea {
   gap: 12px;
   min-height: 54px;
   padding: 10px 14px 8px;
-  border-bottom: 1px solid rgba(111, 129, 158, 0.16);
-  background: rgba(255, 255, 255, 0.84);
+  position: relative;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(48px) saturate(180%);
+  -webkit-backdrop-filter: blur(48px) saturate(180%);
+  box-shadow:
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.25),
+    0 1px 4px rgba(100, 120, 160, 0.06);
 }
 
 .window-title-group {
@@ -185,13 +191,23 @@ textarea {
 .chat-body {
   min-height: 0;
   padding: 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(245, 247, 251, 0.98));
+  background: rgba(255, 255, 255, 0.91);
+  position: relative;
+}
+
+/* Jukebox button — floating at top-right of chat-body */
+.topbar-action-icon-img {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  pointer-events: none;
 }
 
 .message-list {
   height: 100%;
   overflow: auto;
-  padding: 12px 12px 16px;
+  padding: 50px 12px 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -476,7 +492,7 @@ textarea {
   width: min(280px, 100%);
   overflow: hidden;
   border-radius: 12px;
-  background: rgba(220, 228, 240, 0.7);
+  background: rgba(220, 228, 240, 0.85);
 }
 
 .message-block-image img {
@@ -495,7 +511,7 @@ textarea {
   border-radius: 12px;
   color: inherit;
   text-decoration: none;
-  background: rgba(248, 250, 252, 0.8);
+  background: rgba(248, 250, 252, 0.85);
   border: 1px solid rgba(123, 139, 166, 0.15);
 }
 
@@ -650,10 +666,15 @@ textarea {
 
 .composer-panel {
   display: grid;
-  gap: 12px;
-  padding: 16px 10px 18px;
-  border-top: 1px solid rgba(111, 129, 158, 0.16);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 249, 252, 1));
+  gap: 4px;
+  padding: 6px;
+  position: relative;
+  background: rgba(255, 255, 255, 0.91);
+}
+
+/* Hide empty music-player-mount so it doesn't occupy a grid row */
+#music-player-mount:empty {
+  display: none;
 }
 
 .composer-attachments {
@@ -711,7 +732,7 @@ textarea {
   min-height: 98px;
   padding: 0 16px;
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.98);
+  background: rgba(255, 255, 255, 0.91);
   border: 1px solid rgba(127, 144, 170, 0.16);
   transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
   box-shadow:
@@ -721,7 +742,7 @@ textarea {
 
 .composer-input-shell:focus-within {
   border-color: rgba(64, 197, 241, 0.55);
-  background: rgba(255, 255, 255, 1);
+  background: rgba(255, 255, 255, 0.91);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.92),
     0 0 0 3px rgba(64, 197, 241, 0.14),
@@ -821,6 +842,36 @@ textarea {
   padding: 0 2px;
 }
 
+/* ===== 翻译开关按钮 ===== */
+.composer-translate-btn {
+  position: relative;
+}
+
+.composer-translate-btn img {
+  opacity: 0.45;
+  transition: opacity 0.18s ease;
+}
+
+.composer-translate-btn:hover img {
+  opacity: 0.7;
+}
+
+.composer-translate-btn.is-active img {
+  opacity: 1;
+}
+
+.composer-translate-btn.is-active::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+  background: #2497d9;
+}
+
 /* ===== 圆形发送按钮 ===== */
 .send-button-circle {
   display: inline-flex;
@@ -868,7 +919,7 @@ textarea {
   }
 
   .composer-panel {
-    padding: 12px 10px 14px;
+    padding: 6px;
   }
 }
 
@@ -892,12 +943,33 @@ textarea {
 
 /* --- 窗口容器 --- */
 [data-theme="dark"] .chat-window {
-  background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
+  background: transparent;
 }
 
 [data-theme="dark"] .window-topbar {
-  background: rgba(35, 35, 50, 0.9);
-  border-bottom-color: rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(50, 50, 72, 0.6) 0%,
+      rgba(38, 38, 58, 0.5) 100%
+    );
+  border-bottom-color: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.04),
+    0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"] .window-topbar::before {
+  background:
+    linear-gradient(
+      105deg,
+      rgba(255, 255, 255, 0)    0%,
+      rgba(255, 255, 255, 0.06) 35%,
+      rgba(255, 255, 255, 0)    50%,
+      rgba(140, 180, 255, 0.04) 70%,
+      rgba(255, 255, 255, 0)    100%
+    );
 }
 
 [data-theme="dark"] .window-title {
@@ -932,7 +1004,7 @@ textarea {
 }
 
 [data-theme="dark"] .chat-body {
-  background: #1c1c2e;
+  background: rgba(28, 28, 46, 0.91);
 }
 
 /* --- 消息列表 --- */
@@ -1038,7 +1110,7 @@ textarea {
 
 /* --- 链接卡片 --- */
 [data-theme="dark"] .message-block-link {
-  background: rgba(35, 35, 48, 0.8);
+  background: rgba(35, 35, 48, 0.85);
   border-color: rgba(255, 255, 255, 0.08);
 }
 
@@ -1056,7 +1128,7 @@ textarea {
 
 /* --- 图片块 --- */
 [data-theme="dark"] .message-block-image {
-  background: rgba(40, 44, 60, 0.7);
+  background: rgba(40, 44, 60, 0.85);
 }
 
 /* --- 状态块 --- */
@@ -1114,8 +1186,7 @@ textarea {
 
 /* --- 输入区域 --- */
 [data-theme="dark"] .composer-panel {
-  border-top-color: rgba(255, 255, 255, 0.08);
-  background: linear-gradient(180deg, rgba(30, 30, 42, 0.96), rgba(26, 26, 38, 1));
+  background: rgba(28, 28, 46, 0.91);
 }
 
 [data-theme="dark"] .composer-attachment-card {
@@ -1131,8 +1202,12 @@ textarea {
   color: rgba(255, 255, 255, 0.15);
 }
 
+[data-theme="dark"] .composer-translate-btn.is-active::after {
+  background: #44b7fe;
+}
+
 [data-theme="dark"] .composer-input-shell {
-  background: #2a2a3c;
+  background: rgba(42, 42, 60, 0.85);
   border-color: rgba(255, 255, 255, 0.08);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
@@ -1141,7 +1216,7 @@ textarea {
 
 [data-theme="dark"] .composer-input-shell:focus-within {
   border-color: rgba(64, 197, 241, 0.4);
-  background: #30304a;
+  background: rgba(48, 48, 74, 0.85);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
     0 0 0 3px rgba(64, 197, 241, 0.1),

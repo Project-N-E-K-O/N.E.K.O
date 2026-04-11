@@ -239,6 +239,8 @@ def _validate_profile_name(name: str) -> str | None:
         return '档案名不能包含点号(.)'
     if result.code == 'reserved_device_name':
         return '档案名不能使用 Windows 保留设备名'
+    if result.code == 'reserved_route_name':
+        return '此名称是系统保留的路由名称，不能用作档案名'
     if result.code == 'invalid_character':
         return '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号'
     if result.code == 'too_long_units':
@@ -870,19 +872,14 @@ async def update_catgirl_l2d(name: str, request: Request):
                 status_code=404
             )
         
-        # 切换模型类型时清理"另一套模型字段"，避免配置残留
+        # 切换模型类型时保留非当前模型配置，避免来回切换后丢失待机动作/光照等设置
         if model_type_str == 'live3d':
-            # Live3D 模式：清理 live2d 字段
-            set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'model_path', '')
-            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live3d')
             
             if vrm_model:
-                # Live3D + VRM：设置 VRM 路径，清空 MMD 路径
+                # Live3D + VRM：更新当前激活的 VRM 配置，保留 MMD 配置便于切回
+                set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'vrm')
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', vrm_model)
-                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', '')
-                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
-                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [])
 
                 # 处理 VRM 动画（复用同样的验证逻辑）
                 if 'vrm_animation' in data:
@@ -922,12 +919,9 @@ async def update_catgirl_l2d(name: str, request: Request):
                 
                 logger.debug(f"已保存角色 {name} 的Live3D(VRM)模型 {vrm_model}")
             elif mmd_model:
-                # Live3D + MMD：设置 MMD 路径，清空 VRM 路径
+                # Live3D + MMD：更新当前激活的 MMD 配置，保留 VRM 配置便于切回
+                set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'mmd')
                 set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', mmd_model)
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', '')
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [])
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)
 
                 # 处理 MMD 动画
                 if 'mmd_animation' in data:
@@ -967,14 +961,6 @@ async def update_catgirl_l2d(name: str, request: Request):
                 
                 logger.debug(f"已保存角色 {name} 的Live3D(MMD)模型 {mmd_model}")
         else:
-            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', '')
-            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
-            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [])
-            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)  # 清理 VRM 打光配置
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', '')
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [])
-            
             # 更新Live2D模型设置，同时保存item_id（如果有）
             live2d_model_path, resolved_item_id, resolved_asset_source = _resolve_live2d_model_binding(
                 live2d_model,

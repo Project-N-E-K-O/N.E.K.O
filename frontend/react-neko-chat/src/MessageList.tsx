@@ -4,7 +4,6 @@ import { type ChatMessage, type MessageAction } from './message-schema';
 
 type MessageListProps = {
   messages: ChatMessage[];
-  emptyText?: string;
   ariaLabel?: string;
   failedStatusLabel?: string;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
@@ -25,7 +24,6 @@ function shouldGroupWithPrevious(current: ChatMessage, previous?: ChatMessage) {
 
 export default function MessageList({
   messages,
-  emptyText = '聊天内容接入后会显示在这里。',
   ariaLabel = 'Chat messages',
   failedStatusLabel = '发送失败',
   onAction,
@@ -82,7 +80,6 @@ export default function MessageList({
   if (messages.length === 0) {
     return (
       <div className="message-list" ref={containerRef} aria-label={ariaLabel}>
-        <div className="message-empty-state">{emptyText}</div>
       </div>
     );
   }

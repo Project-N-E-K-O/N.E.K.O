@@ -405,9 +405,9 @@ window.createChatModeToggle = function(options) {
     Object.assign(wrapper.style, {
         display: 'flex',
         alignItems: 'center',
-        gap: '6px',
+        gap: '4px',
         width: '100%',
-        padding: '8px 12px',
+        padding: '6px 10px',
         marginTop: '0',
         cursor: 'pointer',
         borderRadius: '6px',
@@ -575,7 +575,7 @@ window.createChatModeToggles = function(prefix) {
     Object.assign(container.style, {
         display: 'flex',
         flexDirection: 'column',
-        gap: '0',
+        gap: '1px',
         width: '100%'
     });
 
@@ -622,6 +622,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
     if (buttonId === 'settings') {
         const mergeCheckbox = document.querySelector('#live2d-merge-messages');
         const focusCheckbox = document.querySelector('#live2d-focus-mode');
+        const avatarBubbleCheckbox = document.querySelector('#live2d-avatar-reaction-bubble');
         const proactiveChatCheckbox = popup.querySelector('#live2d-proactive-chat');
         const proactiveVisionCheckbox = popup.querySelector('#live2d-proactive-vision');
 
@@ -634,17 +635,19 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             const indicator = toggleItem.querySelector('.vrm-toggle-indicator');
             const checkmark = indicator?.querySelector('.vrm-toggle-checkmark');
             if (!indicator || !checkmark) return;
+            const alwaysTinted = ['live2d-merge-messages', 'live2d-focus-mode', 'live2d-avatar-reaction-bubble'].includes(checkbox.id);
+            const checkedColor = alwaysTinted ? '#69c5ff' : '#44b7fe';
 
             if (checkbox.checked) {
-                indicator.style.backgroundColor = '#44b7fe';
-                indicator.style.borderColor = '#44b7fe';
+                indicator.style.backgroundColor = checkedColor;
+                indicator.style.borderColor = checkedColor;
                 checkmark.style.opacity = '1';
                 toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
             } else {
                 indicator.style.backgroundColor = 'transparent';
                 indicator.style.borderColor = '#ccc';
                 checkmark.style.opacity = '0';
-                toggleItem.style.background = 'transparent';
+                toggleItem.style.background = alwaysTinted ? 'rgba(68, 183, 254, 0.1)' : 'transparent';
             }
         };
 
@@ -667,6 +670,16 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             }
             requestAnimationFrame(() => {
                 updateCheckboxStyle(focusCheckbox);
+            });
+        }
+
+        if (avatarBubbleCheckbox && typeof window.avatarReactionBubbleEnabled !== 'undefined') {
+            const newChecked = window.avatarReactionBubbleEnabled;
+            if (avatarBubbleCheckbox.checked !== newChecked) {
+                avatarBubbleCheckbox.checked = newChecked;
+            }
+            requestAnimationFrame(() => {
+                updateCheckboxStyle(avatarBubbleCheckbox);
             });
         }
 

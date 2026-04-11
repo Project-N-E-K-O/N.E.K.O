@@ -101,7 +101,7 @@ function injectPopupStyles(prefix) {
             white-space: nowrap;
         }
         .${prefix}-toggle-item:focus-within {
-            outline: 2px solid var(--neko-popup-active, #2a7bc4);
+            outline: 2px solid var(--neko-popup-accent, #44b7fe);
             outline-offset: 2px;
         }
         .${prefix}-toggle-item[aria-disabled="true"] {
@@ -123,8 +123,8 @@ function injectPopupStyles(prefix) {
             justify-content: center;
         }
         .${prefix}-toggle-indicator[aria-checked="true"] {
-            background-color: var(--neko-popup-active, #2a7bc4);
-            border-color: var(--neko-popup-active, #2a7bc4);
+            background-color: var(--neko-popup-accent, #44b7fe);
+            border-color: var(--neko-popup-accent, #44b7fe);
         }
         .${prefix}-toggle-checkmark {
             color: #fff;
@@ -147,6 +147,14 @@ function injectPopupStyles(prefix) {
         }
         .${prefix}-toggle-item:hover:not([aria-disabled="true"]) {
             background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));
+        }
+        .${prefix}-toggle-item.${prefix}-toggle-item-static,
+        .${prefix}-toggle-item.${prefix}-toggle-item-static:hover:not([aria-disabled="true"]) {
+            background: var(--neko-popup-selected-bg, rgba(68, 183, 254, 0.1)) !important;
+        }
+        .${prefix}-toggle-item.${prefix}-toggle-item-static .${prefix}-toggle-indicator[aria-checked="true"] {
+            background-color: #69c5ff;
+            border-color: #69c5ff;
         }
         .${prefix}-settings-menu-item {
             display: flex;
@@ -304,8 +312,8 @@ function createSettingsPopupContent(manager, prefix, popup) {
                 const AUTH_FALLBACK_LABEL = '配置媒体凭证';
                 const authLink = document.createElement('div');
                 Object.assign(authLink.style, {
-                    display: 'flex', alignItems: 'center', gap: '6px',
-                    padding: '8px 12px', marginLeft: '0', fontSize: '12px',
+                    display: 'flex', alignItems: 'center', gap: '4px',
+                    padding: '6px 10px', marginLeft: '0', fontSize: '12px',
                     color: 'var(--neko-popup-text, #333)', cursor: 'pointer',
                     borderRadius: '6px', transition: 'background 0.2s ease', width: '100%', boxSizing: 'border-box'
                 });
@@ -439,9 +447,9 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
     container.style.padding = '4px 4px';
 
     const chatToggles = [
-        { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages' },
-        { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true },
-        { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled' },
+        { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages', alwaysTinted: true },
+        { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
+        { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
     ];
 
     chatToggles.forEach(toggle => {
@@ -451,6 +459,7 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
 
     // 字数限制滑动条
     const textGuardContainer = manager._createTextGuardSlider();
+    textGuardContainer.style.marginTop = '12px';
     container.appendChild(textGuardContainer);
 
     document.body.appendChild(container);
@@ -466,7 +475,9 @@ function createTextGuardSlider(manager, prefix) {
         display: 'flex',
         flexDirection: 'column',
         gap: '4px',
-        padding: '4px 0'
+        padding: '4px 0',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
     });
 
     // 标签和数值行
@@ -484,7 +495,9 @@ function createTextGuardSlider(manager, prefix) {
     Object.assign(label.style, {
         fontSize: '12px',
         color: 'var(--neko-popup-text, #333)',
-        flexShrink: '0'
+        flexShrink: '0',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
     });
 
     const valueDisplay = document.createElement('span');
@@ -493,7 +506,9 @@ function createTextGuardSlider(manager, prefix) {
         color: 'var(--neko-popup-active, #2a7bc4)',
         fontWeight: '500',
         minWidth: '60px',
-        textAlign: 'right'
+        textAlign: 'right',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
     });
 
     labelRow.appendChild(label);
@@ -550,45 +565,9 @@ function createTextGuardSlider(manager, prefix) {
 
     updateDisplay(currentPosition);
 
-    // 警告提示
-    const warningRow = document.createElement('div');
-    Object.assign(warningRow.style, {
-        fontSize: '11px',
-        color: '#ff6b6b',
-        lineHeight: '1.4',
-        minHeight: '16px',
-        opacity: '0',
-        transition: 'opacity 0.2s ease'
-    });
-
-    const updateWarning = (position) => {
-        const pos = parseInt(position);
-        const value = 50 + pos * 150;
-        if (pos === 11) {
-            // 无限制
-            const warningText = (typeof window.t === 'function')
-                ? window.t('settings.toggles.textGuardUnlimitedWarning')
-                : '无限制可能导致模型生成过长回复，消耗较多Token';
-            warningRow.textContent = warningText;
-            warningRow.style.opacity = '1';
-        } else if (value > 500) {
-            // 超过500字显示提示
-            const warningText = (typeof window.t === 'function')
-                ? window.t('settings.toggles.textGuardHighWarning')
-                : '设置过大可能导致回复过长，建议保持在500字以内';
-            warningRow.textContent = warningText;
-            warningRow.style.opacity = '1';
-        } else {
-            warningRow.style.opacity = '0';
-        }
-    };
-
-    updateWarning(currentPosition);
-
     slider.addEventListener('input', () => {
         const position = parseInt(slider.value);
         updateDisplay(position);
-        updateWarning(position);
     });
 
     slider.addEventListener('change', () => {
@@ -615,7 +594,9 @@ function createTextGuardSlider(manager, prefix) {
         fontSize: '10px',
         color: '#888',
         lineHeight: '1.4',
-        marginTop: '4px'
+        marginTop: '0',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
     });
     const noteText = (typeof window.t === 'function')
         ? window.t('settings.toggles.textGuardNote')
@@ -624,7 +605,6 @@ function createTextGuardSlider(manager, prefix) {
 
     container.appendChild(labelRow);
     container.appendChild(sliderRow);
-    container.appendChild(warningRow);
     container.appendChild(noteRow);
 
     return container;
@@ -903,7 +883,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     container.style.gap = '0';
     container.style.width = '200px';
     container.style.minWidth = '0';
-    container.style.padding = '10px 14px';
+    container.style.padding = '10px 14px 2px';
 
     const LABEL_STYLE = { width: '36px', flexShrink: '0', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
     const VALUE_STYLE = { width: '36px', flexShrink: '0', textAlign: 'right', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
@@ -1381,7 +1361,7 @@ function createIntervalControl(manager, prefix, toggle) {
         alignItems: 'stretch',
         flexDirection: 'column',
         gap: toggle.id === 'proactive-chat' ? '0' : '6px',
-        padding: '6px 12px',
+        padding: toggle.id === 'proactive-chat' ? '10px 10px 1px' : '6px 12px',
         fontSize: '12px',
         color: 'var(--neko-popup-text, #333)',
         opacity: '0',
@@ -1407,7 +1387,13 @@ function createIntervalControl(manager, prefix, toggle) {
     container.addEventListener('click', stopEventPropagation);
 
     const sliderRow = document.createElement('div');
-    Object.assign(sliderRow.style, { display: 'flex', alignItems: 'center', gap: '4px', width: 'auto' });
+    Object.assign(sliderRow.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '4px',
+        width: 'auto',
+        marginBottom: toggle.id === 'proactive-chat' ? '8px' : '0'
+    });
 
     const labelKey = toggle.id === 'proactive-chat' ? 'settings.interval.chatIntervalBase' : 'settings.interval.visionInterval';
     const defaultLabel = toggle.id === 'proactive-chat' ? '基础间隔' : '读取间隔';
@@ -1537,8 +1523,8 @@ function createCheckIndicator(manager, prefix) {
 
     const updateStyle = (checked) => {
         if (checked) {
-            indicator.style.backgroundColor = 'var(--neko-popup-active, #2a7bc4)';
-            indicator.style.borderColor = 'var(--neko-popup-active, #2a7bc4)';
+            indicator.style.backgroundColor = 'var(--neko-popup-accent, #44b7fe)';
+            indicator.style.borderColor = 'var(--neko-popup-accent, #44b7fe)';
             checkmark.style.opacity = '1';
         } else {
             indicator.style.backgroundColor = 'transparent';
@@ -1683,6 +1669,9 @@ function createToggleItem(manager, prefix, toggle, popup) {
 function createSettingsToggleItem(manager, prefix, toggle) {
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
+    if (toggle.alwaysTinted) {
+        toggleItem.classList.add(`${prefix}-toggle-item-static`);
+    }
     toggleItem.id = `${prefix}-toggle-${toggle.id}`;
     toggleItem.setAttribute('role', 'switch');
     toggleItem.setAttribute('tabIndex', '0');
@@ -1738,8 +1727,9 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const updateIndicatorStyle = (checked) => {
         if (checked) {
-            indicator.style.backgroundColor = 'var(--neko-popup-active, #2a7bc4)';
-            indicator.style.borderColor = 'var(--neko-popup-active, #2a7bc4)';
+            const activeColor = toggle.alwaysTinted ? '#69c5ff' : 'var(--neko-popup-accent, #44b7fe)';
+            indicator.style.backgroundColor = activeColor;
+            indicator.style.borderColor = activeColor;
             checkmark.style.opacity = '1';
         } else {
             indicator.style.backgroundColor = 'transparent';
@@ -1767,7 +1757,9 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         updateIndicatorStyle(isChecked);
-        toggleItem.style.background = isChecked
+        toggleItem.style.background = toggle.alwaysTinted
+            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
+            : isChecked
             ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
             : 'transparent';
     };
@@ -1778,16 +1770,18 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     toggleItem.appendChild(indicator);
     toggleItem.appendChild(label);
 
-    toggleItem.addEventListener('mouseenter', () => {
-        if (checkbox.checked) {
-            toggleItem.style.background = 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))';
-        } else {
-            toggleItem.style.background = 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
-        }
-    });
-    toggleItem.addEventListener('mouseleave', () => {
-        updateStyle();
-    });
+    if (!toggle.alwaysTinted) {
+        toggleItem.addEventListener('mouseenter', () => {
+            if (checkbox.checked) {
+                toggleItem.style.background = 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))';
+            } else {
+                toggleItem.style.background = 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
+            }
+        });
+        toggleItem.addEventListener('mouseleave', () => {
+            updateStyle();
+        });
+    }
 
     const handleToggleChange = (isChecked) => {
         updateStyle();

@@ -6,11 +6,12 @@
 // ═══════════════════ 默认值 & 常量 ═══════════════════
 
 const MMD_DEBUG_DEFAULTS = {
+    // 与 config/__init__.py DEFAULT_MMD_LIGHTING / DEFAULT_MMD_RENDERING 保持一致
     ambientLightIntensity: 3,
     ambientLightColor: '#aaaaaa',
     directionalLightIntensity: 2,
     directionalLightColor: '#ffffff',
-    toneMapping: 0,       // NoToneMapping (与 hime-display 默认一致)
+    toneMapping: 7,       // NeutralToneMapping（与后端及 mmd-core.js 一致）
     exposure: 1.0,
     pixelRatio: 0,        // 0 = auto (follow performance mode)
     useOutlineEffect: true
@@ -589,13 +590,13 @@ const MMD_RENDER_PRESETS = {
         label: '默认',
         ambientLightIntensity: 3, ambientLightColor: '#aaaaaa',
         directionalLightIntensity: 2, directionalLightColor: '#ffffff',
-        toneMapping: 0, exposure: 1.0, pixelRatio: 0, useOutlineEffect: true
+        toneMapping: 7, exposure: 1.0, pixelRatio: 0, useOutlineEffect: true
     },
     hime: {
         label: 'Hime 风格',
         ambientLightIntensity: 3, ambientLightColor: '#aaaaaa',
         directionalLightIntensity: 2, directionalLightColor: '#ffffff',
-        toneMapping: 0, exposure: 1.0, pixelRatio: 0, useOutlineEffect: true
+        toneMapping: 7, exposure: 1.0, pixelRatio: 0, useOutlineEffect: true
     },
     bright: {
         label: '明亮',

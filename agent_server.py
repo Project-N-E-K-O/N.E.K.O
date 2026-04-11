@@ -2365,6 +2365,10 @@ async def shutdown():
     if bridge is not None:
         try:
             bridge._stop.set()
+            # 等 recv 线程退出（RCVTIMEO=1s，最多等 2s），避免 close 与 recv 竞态
+            for _t in (getattr(bridge, '_recv_thread', None), getattr(bridge, '_analyze_recv_thread', None)):
+                if _t is not None:
+                    await asyncio.to_thread(_t.join, 2.0)
             try:
                 import zmq as _zmq
 
@@ -2380,8 +2384,12 @@ async def shutdown():
                     except Exception as e:
                         logger.debug("[Agent] ZMQ socket %s close error: %s", sock_name, e)
             if bridge.ctx is not None:
+                _ctx = bridge.ctx
+                bridge.ctx = None
                 try:
-                    bridge.ctx.term()
+                    await asyncio.wait_for(asyncio.to_thread(_ctx.term), timeout=3.0)
+                except asyncio.TimeoutError:
+                    logger.warning("[Agent] ZMQ context term timed out, skipping")
                 except Exception as e:
                     logger.debug("[Agent] ZMQ context term error: %s", e)
             bridge.ready = False

@@ -144,10 +144,12 @@ class MainServerAgentBridge:
                 except Exception:
                     pass
         if self.ctx is not None:
+            _ctx = self.ctx
+            self.ctx = None
             try:
-                self.ctx.term()
-            except Exception:
-                pass
+                await asyncio.wait_for(asyncio.to_thread(_ctx.term), timeout=3.0)
+            except (asyncio.TimeoutError, Exception):
+                logger.debug("[EventBus] Main bridge ctx.term timed out or failed, skipping")
         logger.debug("[EventBus] Main bridge stopped")
 
     async def publish_session_event_threadsafe(self, event: Dict[str, Any]) -> bool:

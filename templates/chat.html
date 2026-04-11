@@ -6,6 +6,8 @@
     <meta charset="UTF-8">
     <title>N.E.K.O. Chat</title>
 
+    <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
+    <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
     <!-- 与 index.html 相同的基础 CSS/JS -->
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
@@ -30,13 +32,25 @@
             background: transparent !important;
         }
         #react-chat-window-backdrop { display: none !important; }
-        #react-chat-window-shell {
+        #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
             position: fixed !important; inset: 0 !important;
             width: 100% !important; height: 100% !important;
             max-width: none !important; max-height: none !important;
             left: 0 !important; top: 0 !important;
             transform: none !important;
             border-radius: 8px !important;
+        }
+        /* 折叠/展开动画期间：允许 JS 控制 position/size/transform */
+        #react-chat-window-shell.is-collapsing,
+        #react-chat-window-shell.is-expanding {
+            inset: auto !important;
+            max-width: none !important; max-height: none !important;
+            border-radius: 22px !important;
+        }
+        /* 最小化态 */
+        #react-chat-window-shell.is-minimized {
+            inset: auto !important;
+            max-width: none !important; max-height: none !important;
         }
         /* 隐藏旧版 chat */
         #chat-container { display: none !important; }
@@ -254,6 +268,15 @@
         <div id="react-chat-window-shell" role="dialog" aria-modal="true" aria-labelledby="react-chat-window-title">
             <div id="react-chat-window-drag-handle" aria-hidden="true"></div>
             <div id="react-chat-window-header-actions">
+                <button id="avatarPreviewHeaderButton" type="button"
+                        data-i18n-aria="chat.avatarPreview"
+                        data-i18n-title="chat.avatarPreview"
+                        aria-label="头像" title="头像">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 12a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z" />
+                        <path d="M5.5 19.25a6.5 6.5 0 0 1 13 0" />
+                    </svg>
+                </button>
                 <button id="exportConversationButton" type="button"
                         data-i18n-aria="chat.exportConversation"
                         data-i18n-title="chat.exportConversation"
