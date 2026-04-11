@@ -115,7 +115,7 @@
             if (!_mgrInitDone) {
                 _mgrInitDone = true;
                 if (typeof window.t !== 'function') {
-                    window.t = function(key, fallback) { return fallback || key; };
+                    window.t = function(key, fallback) { return typeof fallback === 'string' ? fallback : key; };
                 }
                 _initManager();
             }
