@@ -355,11 +355,14 @@ class VRMInteraction {
                 canvas.style.cursor = 'default';
                 return;
             }
-            const padding = 10;
-            const isNearModel = e.clientX >= (bounds.minX - padding) &&
-                e.clientX <= (bounds.maxX + padding) &&
-                e.clientY >= (bounds.minY - padding) &&
-                e.clientY <= (bounds.maxY + padding);
+            // 椭圆近似（内切于包围盒），不外扩
+            const cx = (bounds.minX + bounds.maxX) / 2;
+            const cy = (bounds.minY + bounds.maxY) / 2;
+            const rx = (bounds.maxX - bounds.minX) / 2 * 0.6;
+            const ry = (bounds.maxY - bounds.minY) / 2 * 0.95;
+            const nx = rx > 0 ? (e.clientX - cx) / rx : 0;
+            const ny = ry > 0 ? (e.clientY - cy) / ry : 0;
+            const isNearModel = (nx * nx + ny * ny) <= 1;
             canvas.style.cursor = isNearModel ? 'grab' : 'default';
         };
 
@@ -956,10 +959,25 @@ class VRMInteraction {
 
         const applyFade = (forceFade) => {
             if (!vrmContainer) return;
-            const shouldFade = forceFade !== undefined ? forceFade : (ctrlFadeActive || stationaryFadeActive);
+            let shouldFade = forceFade !== undefined ? forceFade : (ctrlFadeActive || stationaryFadeActive);
+            if (window.lockedHoverFadeEnabled === false) shouldFade = false;
             vrmContainer.style.opacity = shouldFade ? '0.12' : '1';
         };
         this._setLockedHoverFade = applyFade;
+
+        // 监听锁定悬停淡化设置变更
+        const onLockedHoverFadeChanged = () => {
+            if (window.lockedHoverFadeEnabled === false) {
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                applyFade();
+            }
+        };
+        if (this._lockedHoverFadeChangedListener) {
+            window.removeEventListener('neko-locked-hover-fade-changed', this._lockedHoverFadeChangedListener);
+        }
+        this._lockedHoverFadeChangedListener = onLockedHoverFadeChanged;
+        window.addEventListener('neko-locked-hover-fade-changed', onLockedHoverFadeChanged);
 
         // 初始化缓存
         this.updateModelBoundsCache();
@@ -1193,7 +1211,12 @@ class VRMInteraction {
             this._isMouseOverButtons = isOverButtons || isOverLock;
 
             // 如果鼠标在按钮或锁图标上，不变淡，直接显示
+            // 同时重置所有淡化状态，防止离开 UI 后残留状态导致立即重新淡化
             if (isOverButtons || isOverLock) {
+                clearStationaryFadeTimer();
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                this._vrmHasEnteredHoverRange = false;
                 applyFade(false);
                 showButtons();
                 return;
@@ -1207,8 +1230,9 @@ class VRMInteraction {
             const ctrlKeyPressed = isCtrlPressed;
             const isNearModel = distance < hoverFadeThreshold;
 
-            // 静止时启动定时器，移出范围时清除
-            if (this.checkLocked() && isNearModel) {
+            // 静止时启动定时器，移出范围时清除（移动端无鼠标悬停，跳过）
+            const isMobileDevice = (window.appUtils && typeof window.appUtils.isMobile === 'function' && window.appUtils.isMobile()) || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            if (!isMobileDevice && this.checkLocked() && isNearModel) {
                 // 首次进入范围：设置标志并启动定时器
                 if (!this._vrmHasEnteredHoverRange) {
                     this._vrmHasEnteredHoverRange = true;
@@ -1230,8 +1254,8 @@ class VRMInteraction {
                 this._vrmHasEnteredHoverRange = false;
             }
 
-            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化）
-            ctrlFadeActive = this.checkLocked() && ctrlKeyPressed && isNearModel;
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化，移动端跳过）
+            ctrlFadeActive = !isMobileDevice && this.checkLocked() && ctrlKeyPressed && isNearModel;
             applyFade();
 
             // 锁定状态下不处理按钮显示/隐藏
@@ -1281,12 +1305,20 @@ class VRMInteraction {
             }
         };
         const onBlur = () => {
+            // blur 时 Ctrl 键事件无法到达，必须主动清除 Ctrl 状态避免卡死
+            isCtrlPressed = false;
+            ctrlFadeActive = false;
+            // 锁定状态下 blur 通常由鼠标穿透点击引起，保留静止淡化状态避免闪烁
+            if (this.checkLocked()) {
+                applyFade();
+                return;
+            }
             clearStationaryFadeTimer();
             // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
             if (stationaryFadeActive) {
                 stationaryFadeActive = false;
-                applyFade();
             }
+            applyFade();
             this._vrmHasEnteredHoverRange = false;
         };
         this._vrmClearStationaryFadeTimer = clearStationaryFadeTimer;
@@ -1307,8 +1339,10 @@ class VRMInteraction {
         window.addEventListener('blur', onBlur);
 
         canvas.addEventListener('mouseenter', onMouseEnter);
-        canvas.addEventListener('pointermove', onPointerMove);
-        canvas.addEventListener('mousemove', onPointerMove);
+        // 监听 window 而非 canvas，使得鼠标穿透模式下 preload 轮询派发的
+        // 合成 pointermove 事件也能到达此处，保持淡化机制正常工作
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('mousemove', onPointerMove);
 
         this._vrmCtrlKeyDownListener = onKeyDown;
         this._vrmCtrlKeyUpListener = onKeyUp;
@@ -1343,8 +1377,8 @@ class VRMInteraction {
             this._floatingButtonsMouseLeave = null;
         }
         if (this._floatingButtonsPointerMove) {
-            canvas.removeEventListener('pointermove', this._floatingButtonsPointerMove);
-            canvas.removeEventListener('mousemove', this._floatingButtonsPointerMove);
+            window.removeEventListener('pointermove', this._floatingButtonsPointerMove);
+            window.removeEventListener('mousemove', this._floatingButtonsPointerMove);
             this._floatingButtonsPointerMove = null;
         }
         // 清理 Ctrl 键 / blur 监听器
@@ -1359,6 +1393,11 @@ class VRMInteraction {
         if (this._vrmWindowBlurListener) {
             window.removeEventListener('blur', this._vrmWindowBlurListener);
             this._vrmWindowBlurListener = null;
+        }
+        // 清理锁定悬停淡化监听器
+        if (this._lockedHoverFadeChangedListener) {
+            window.removeEventListener('neko-locked-hover-fade-changed', this._lockedHoverFadeChangedListener);
+            this._lockedHoverFadeChangedListener = null;
         }
         // 清除变淡状态
         if (typeof this._setLockedHoverFade === 'function') {

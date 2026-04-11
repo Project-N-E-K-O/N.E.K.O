@@ -209,9 +209,12 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
 
 // ======================== 页面加载后的事件 ========================
 
-// 启动提示
+// 启动提示（chat 独立窗口不弹）
 window.addEventListener('load', () => {
+    const _isChatPage = window.location.pathname === '/chat';
+
     setTimeout(() => {
+        if (_isChatPage) return;
         if (typeof window.showStatusToast === 'function' &&
             typeof lanlan_config !== 'undefined' && lanlan_config.lanlan_name) {
             window.showStatusToast(
@@ -222,8 +225,9 @@ window.addEventListener('load', () => {
         }
     }, 1000);
 
-    // 拉取待弹重要通知 + 版本更新日志
+    // 拉取待弹重要通知 + 版本更新日志（chat 独立窗口跳过）
     setTimeout(async () => {
+        if (_isChatPage) return;
         if (typeof window.showProminentNotice !== 'function') return;
         try {
             // 1) 常规 prominent notices
@@ -250,9 +254,12 @@ window.addEventListener('load', () => {
             const cr = await fetch(`/api/changelog?since=${encodeURIComponent(lastVer)}&lang=${encodeURIComponent(lang)}`);
             const cdata = await cr.json();
             let entries = cdata.entries || [];
-            // 全新用户（无历史记录）只展示最新一条，避免堆积过多
-            if (!lastVer && entries.length > 1) {
-                entries = [entries[entries.length - 1]];
+            // 全新用户（无历史记录）跳过版本更新弹窗，直接记录当前版本
+            if (!lastVer) {
+                if (cdata.current_version) {
+                    localStorage.setItem('neko_last_notified_version', cdata.current_version);
+                }
+                entries = [];
             }
             if (entries.length > 0) {
                 const changelogPromises = entries.map(entry => {

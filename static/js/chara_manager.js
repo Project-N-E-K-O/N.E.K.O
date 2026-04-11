@@ -452,6 +452,18 @@ function tOrFallback(key, fallback, params) {
 const PROFILE_NAME_CONTAINS_SLASH_KEY = 'character.profileNameContainsSlash';
 const PROFILE_NAME_CONTAINS_DOT_KEY = 'character.profileNameContainsDot';
 const PROFILE_NAME_INVALID_CHARS_KEY = 'character.profileNameInvalidChars';
+const PROFILE_NAME_RESERVED_ROUTE_KEY = 'character.profileNameReservedRoute';
+
+// 系统保留的一级路由名称，不可用作角色名
+const RESERVED_ROUTE_NAMES = new Set([
+    'l2d', 'model_manager', 'live2d_parameter_editor', 'live2d_emotion_manager',
+    'vrm_emotion_manager', 'mmd_emotion_manager', 'chara_manager', 'voice_clone',
+    'api_key', 'steam_workshop_manager', 'memory_browser', 'cookies_login',
+    'chat', 'subtitle', 'agenthud', 'toast',
+    'static', 'user_live2d', 'user_live2d_local', 'user_vrm', 'user_mmd',
+    'user_mods', 'workshop',
+    'api', 'ws', 'health',
+]);
 const PROFILE_NAME_WINDOWS_FORBIDDEN_CHARS = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*']);
 const PROFILE_NAME_SAFE_EXTRA_CHARS = new Set([' ', '_', '-', '(', ')', '（', '）', '·', '・', '•', "'", '’']);
 
@@ -467,7 +479,9 @@ function getProfileNameCharIssue(ch) {
 }
 
 function findInvalidProfileNameIssue(value) {
-    for (const ch of String(value ?? '')) {
+    const str = String(value ?? '');
+    if (RESERVED_ROUTE_NAMES.has(str)) return 'reserved_route';
+    for (const ch of str) {
         const issue = getProfileNameCharIssue(ch);
         if (issue) return issue;
     }
@@ -514,6 +528,9 @@ function sanitizeProfileNameValue(value, caretPos = null) {
 
 function translateBackendError(errorMessage) {
     if (!errorMessage || typeof errorMessage !== 'string') return errorMessage;
+    if (errorMessage.includes('保留的路由名称')) {
+        return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, errorMessage);
+    }
     if (errorMessage.includes('路径分隔符') || errorMessage.includes('不能包含"/"')) {
         return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, errorMessage);
     }
@@ -595,7 +612,22 @@ function flashProfileNameContainsInvalidChars(inputEl) {
     flashProfileNameError(inputEl, msg);
 }
 
+function flashProfileNameReservedRoute(inputEl) {
+    if (!inputEl) return;
+
+    const msg = tOrFallback(
+        PROFILE_NAME_RESERVED_ROUTE_KEY,
+        '此名称是系统保留的路由名称，不能用作档案名'
+    );
+
+    flashProfileNameError(inputEl, msg);
+}
+
 function flashProfileNameInvalidIssue(inputEl, issue) {
+    if (issue === 'reserved_route') {
+        flashProfileNameReservedRoute(inputEl);
+        return;
+    }
     if (issue === 'slash') {
         flashProfileNameContainsSlash(inputEl);
         return;
@@ -1953,12 +1985,24 @@ function showCatgirlForm(key, container) {
     const normalizedModelType = modelType === 'vrm' ? 'live3d' : modelType;
     let modelDisplayText = '';
 
-    const mmdPath = validateModelPath(cat['mmd']);
-    const vrmPath = validateModelPath(cat['vrm']);
+    const mmdPath = validateModelPath(cat['mmd'])
+        || validateModelPath(cat['_reserved']?.avatar?.mmd?.model_path);
+    const vrmPath = validateModelPath(cat['vrm'])
+        || validateModelPath(cat['_reserved']?.avatar?.vrm?.model_path);
     const live2dPath = validateModelPath(cat['live2d']);
 
-    if (normalizedModelType === 'live3d' && mmdPath) {
-        // live3d 模式下 MMD 优先（VRM 是旧字段，可能遗留非空值，与后端 _get_live3d_sub_type 一致）
+    // 优先使用 live3d_sub_type 判断当前活跃的 3D 模型类型
+    const live3dSubType = String(
+        cat['_reserved']?.avatar?.live3d_sub_type || cat['live3d_sub_type'] || ''
+    ).trim().toLowerCase();
+
+    if (normalizedModelType === 'live3d' && live3dSubType === 'mmd' && mmdPath) {
+        const mmdName = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
+        modelDisplayText = mmdName;
+    } else if (normalizedModelType === 'live3d' && live3dSubType === 'vrm' && vrmPath) {
+        const vrmName = (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '');
+        modelDisplayText = vrmName;
+    } else if (normalizedModelType === 'live3d' && mmdPath && !vrmPath) {
         const mmdName = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
         modelDisplayText = mmdName;
     } else if (normalizedModelType === 'live3d' && vrmPath) {
@@ -2686,6 +2730,9 @@ window.renameMaster = async function (oldName) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
                 }
                 const invalidIssue = findInvalidProfileNameIssue(trimmed);
+                if (invalidIssue === 'reserved_route') {
+                    return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, '此名称是系统保留的路由名称，不能用作档案名');
+                }
                 if (invalidIssue === 'slash') {
                     return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符(/或\\)');
                 }
@@ -2783,6 +2830,9 @@ window.renameCatgirl = async function (oldName) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
                 }
                 const invalidIssue = findInvalidProfileNameIssue(trimmed);
+                if (invalidIssue === 'reserved_route') {
+                    return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, '此名称是系统保留的路由名称，不能用作档案名');
+                }
                 if (invalidIssue === 'slash') {
                     return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符(/或\\)');
                 }
@@ -3199,6 +3249,58 @@ function setupPageEventListeners() {
     }
 }
 
+/**
+ * 从 PNG 文件的 neKo ancillary chunk 中提取 ZIP 数据。
+ * 按照 PNG 规范逐块扫描，找到 type='neKo' 的块并返回其 data 部分。
+ * 如果未找到则返回 null。
+ */
+function _extractNekoChunk(uint8Array) {
+    // PNG 签名: 137 80 78 71 13 10 26 10
+    if (uint8Array.length < 8) return null;
+    if (uint8Array[0] !== 0x89 || uint8Array[1] !== 0x50 || uint8Array[2] !== 0x4E ||
+        uint8Array[3] !== 0x47 || uint8Array[4] !== 0x0D || uint8Array[5] !== 0x0A ||
+        uint8Array[6] !== 0x1A || uint8Array[7] !== 0x0A) {
+        return null;
+    }
+
+    const view = new DataView(uint8Array.buffer, uint8Array.byteOffset, uint8Array.byteLength);
+    let offset = 8; // 跳过 PNG 签名
+
+    while (offset + 12 <= uint8Array.length) {
+        // 读取块长度（4 字节 big-endian，无符号）
+        const chunkLen = view.getUint32(offset, false);
+
+        // PNG 规范：chunk data 最大 2^31-1 字节
+        if (chunkLen > 0x7FFFFFFF) return null;
+
+        // 确保完整的 chunk (length + type + data + CRC) 在缓冲区内
+        const chunkEnd = offset + 12 + chunkLen; // 4(len) + 4(type) + data + 4(CRC)
+        if (chunkEnd > uint8Array.length) return null;
+
+        // 读取块类型（4 字节 ASCII）
+        const t0 = uint8Array[offset + 4];
+        const t1 = uint8Array[offset + 5];
+        const t2 = uint8Array[offset + 6];
+        const t3 = uint8Array[offset + 7];
+
+        // 检查是否为 neKo 块 (0x6E 0x65 0x4B 0x6F)
+        if (t0 === 0x6E && t1 === 0x65 && t2 === 0x4B && t3 === 0x6F) {
+            const dataStart = offset + 8;
+            return uint8Array.slice(dataStart, dataStart + chunkLen);
+        }
+
+        // 遇到 IEND 就停止
+        if (t0 === 0x49 && t1 === 0x45 && t2 === 0x4E && t3 === 0x44) {
+            break;
+        }
+
+        // 跳到下一个块
+        offset = chunkEnd;
+    }
+
+    return null;
+}
+
 // 处理导入角色卡
 async function handleImportCharacterCard(event) {
     const file = event.target.files[0];
@@ -3236,46 +3338,51 @@ async function handleImportCharacterCard(event) {
             // PNG 文件需要提取 ZIP 数据
             const uint8Array = new Uint8Array(arrayBuffer);
 
-            // 查找 NEKOCHARA 标记
-            const marker = new TextEncoder().encode('NEKOCHARA\x00');
-            let markerIndex = -1;
-            for (let i = uint8Array.length - marker.length; i >= 0; i--) {
-                let found = true;
-                for (let j = 0; j < marker.length; j++) {
-                    if (uint8Array[i + j] !== marker[j]) {
-                        found = false;
+            // 优先尝试从 PNG neKo 块中提取（新格式，合法 PNG chunk）
+            fileData = _extractNekoChunk(uint8Array);
+
+            if (!fileData) {
+                // 回退：查找旧版 NEKOCHARA 标记（兼容旧版角色卡）
+                const marker = new TextEncoder().encode('NEKOCHARA\x00');
+                let markerIndex = -1;
+                for (let i = uint8Array.length - marker.length; i >= 0; i--) {
+                    let found = true;
+                    for (let j = 0; j < marker.length; j++) {
+                        if (uint8Array[i + j] !== marker[j]) {
+                            found = false;
+                            break;
+                        }
+                    }
+                    if (found) {
+                        markerIndex = i;
                         break;
                     }
                 }
-                if (found) {
-                    markerIndex = i;
-                    break;
+
+                if (markerIndex === -1) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
                 }
+
+                if (markerIndex < 8) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+
+                // 读取 ZIP 大小（标记前的 8 字节）
+                const zipSizeBytes = uint8Array.slice(markerIndex - 8, markerIndex);
+                const zipSize = new DataView(zipSizeBytes.buffer).getUint32(0, true);
+
+                if (zipSize <= 0 || zipSize > uint8Array.length) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+
+                // 提取 ZIP 数据
+                const zipStart = markerIndex - 8 - zipSize;
+                if (zipStart < 0 || zipStart + zipSize > markerIndex - 8) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+
+                fileData = uint8Array.slice(zipStart, markerIndex - 8);
             }
-
-            if (markerIndex === -1) {
-                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-            }
-
-            if (markerIndex < 8) {
-                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-            }
-
-            // 读取 ZIP 大小（标记前的 8 字节）
-            const zipSizeBytes = uint8Array.slice(markerIndex - 8, markerIndex);
-            const zipSize = new DataView(zipSizeBytes.buffer).getUint32(0, true);
-
-            if (zipSize <= 0 || zipSize > uint8Array.length) {
-                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-            }
-
-            // 提取 ZIP 数据
-            const zipStart = markerIndex - 8 - zipSize;
-            if (zipStart < 0 || zipStart + zipSize > markerIndex - 8) {
-                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-            }
-
-            fileData = uint8Array.slice(zipStart, markerIndex - 8);
         }
 
         // 创建 FormData 发送到后端

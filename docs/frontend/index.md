@@ -1,43 +1,52 @@
 # Frontend Overview
 
-N.E.K.O.'s frontend is built with **vanilla JavaScript** (no framework) with Jinja2 HTML templates. It renders Live2D models via Pixi.js and VRM models via Three.js.
+N.E.K.O.'s frontend consists of three layers: traditional server-rendered pages, a React chat window component, and a Vue plugin manager dashboard.
 
-## Technology stack
+## Architecture
 
-| Component | Technology |
-|-----------|-----------|
-| Templates | Jinja2 (server-rendered) |
-| JavaScript | Vanilla ES6+ |
-| Live2D rendering | Pixi.js + Live2D Cubism SDK |
-| VRM rendering | Three.js + @pixiv/three-vrm |
-| Styling | Custom CSS + dark mode support |
-| i18n | JSON locale files with JS runtime |
+| Layer | Technology | Location |
+|-------|-----------|----------|
+| Main UI pages | Vanilla JS + Jinja2 templates | `static/` + `templates/` |
+| Chat window | React 18 + TypeScript | `frontend/react-neko-chat/` |
+| Plugin manager | Vue 3 + Element Plus | `frontend/plugin-manager/` |
+| Live2D rendering | Pixi.js + Live2D Cubism SDK | `static/` |
+| VRM rendering | Three.js + @pixiv/three-vrm | `static/` |
 
-## File structure
+## Traditional frontend (static/ + templates/)
+
+The main UI is built with **vanilla JavaScript** and Jinja2 HTML templates.
 
 ```
 static/
 ├── app.js                    # Main application logic
 ├── theme-manager.js          # Dark/light mode toggle
-├── css/
-│   ├── index.css             # Main stylesheet
-│   ├── dark-mode.css         # Dark mode overrides
-│   ├── chara_manager.css     # Character manager styles
-│   └── ...
-├── js/
-│   ├── api_key_settings.js   # API key settings page
-│   ├── agent_ui_v2.js        # Agent interface
-│   ├── steam_workshop_manager.js
-│   └── ...
-├── locales/
-│   ├── en.json               # English
-│   ├── zh-CN.json            # Simplified Chinese
-│   ├── zh-TW.json            # Traditional Chinese
-│   ├── ja.json               # Japanese
-│   └── ko.json               # Korean
+├── css/                      # Stylesheets
+├── js/                       # Feature-specific JS modules
+├── locales/                  # i18n JSON files (en, zh-CN, zh-TW, ja, ko)
 ├── live2d-ui-*.js            # Live2D UI components
-└── vrm-ui-*.js               # VRM UI components
+├── vrm-ui-*.js               # VRM UI components
+└── react/neko-chat/          # React chat window build output
 ```
+
+## Chat window (React)
+
+The chat window is built as an IIFE library and embedded in the main page.
+
+- **Source**: `frontend/react-neko-chat/`
+- **Build output**: `static/react/neko-chat/neko-chat-window.iife.js`
+- **Global**: `window.NekoChatWindow`
+- **Dev server**: `npm run dev` (port 5174)
+
+The glue layer `static/app-react-chat-window.js` loads and mounts the React component into the DOM.
+
+## Plugin manager (Vue)
+
+A standalone dashboard for managing plugins, viewing logs, and monitoring metrics.
+
+- **Source**: `frontend/plugin-manager/`
+- **Build output**: `frontend/plugin-manager/dist/`
+- **Served at**: `/ui/` by the plugin server (port 48916)
+- **Dev server**: `npm run dev` (port 5173, proxies API to plugin server)
 
 ## Key concepts
 

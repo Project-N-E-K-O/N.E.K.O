@@ -722,6 +722,7 @@ from main_routers import ( # noqa
     live2d_router,
     vrm_router,
     mmd_router,
+    jukebox_router,
     workshop_router,
     memory_router,
     pages_router,
@@ -783,6 +784,7 @@ app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
 app.include_router(mmd_router)
+app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
@@ -825,7 +827,7 @@ def _sync_preload_modules():
     - aiohttp: 通过 tts_client.py
     
     真正需要预加载的延迟导入模块：
-    - pyrnnoise/audiolab: audio_processor.py 中通过 _get_rnnoise() 延迟加载
+    - pyrnnoise.rnnoise: audio_processor.py 中通过 _get_rnnoise() 延迟加载
     - dashscope: tts_client.py 中仅在 cosyvoice_vc_tts_worker 函数内部导入
     - googletrans/translatepy: language_utils.py 中延迟导入的翻译库
     - translation_service: language_utils.py 中的翻译服务（TranslationService）
@@ -857,14 +859,13 @@ def _sync_preload_modules():
     except Exception as e:
         logger.debug(f"⚠️ 翻译服务预加载失败（不影响使用）: {e}")
     
-    # 3. pyrnnoise/audiolab (音频降噪 - 延迟加载，可能较慢)
+    # 3. pyrnnoise (音频降噪 - 延迟加载，可能较慢)
     try:
-        from utils.audio_processor import _get_rnnoise
-        RNNoise = _get_rnnoise()
-        if RNNoise:
-            # 创建临时实例以预热神经网络权重加载
-            _warmup_instance = RNNoise(sample_rate=48000)
-            del _warmup_instance
+        from utils.audio_processor import _get_rnnoise, _LiteDenoiser
+        rnnoise_mod = _get_rnnoise()
+        if rnnoise_mod:
+            _warmup = _LiteDenoiser(rnnoise_mod)
+            del _warmup
             logger.debug("  ✓ pyrnnoise loaded and warmed up")
         else:
             logger.debug("  ✗ pyrnnoise not available")
@@ -1308,6 +1309,32 @@ if __name__ == "__main__":
     logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT} (or your network IP:{MAIN_SERVER_PORT})")
     logger.info("-----------------------------")
 
+    # ── 前端构建产物检测 ──────────────────────────────────────
+    _frontend_missing = []
+    if not os.path.isfile("frontend/plugin-manager/dist/index.html"):
+        _frontend_missing.append("plugin-manager  (frontend/plugin-manager/dist/index.html)")
+    if not os.path.isfile("static/react/neko-chat/neko-chat-window.iife.js"):
+        _frontend_missing.append("react-neko-chat  (static/react/neko-chat/neko-chat-window.iife.js)")
+    if _frontend_missing:
+        _bar = "!" * 60
+        _msg = (
+            f"\n{_bar}\n{_bar}\n"
+            f"!!  WARNING: 前端资源未构建，以下模块缺失:\n"
+        )
+        for _m in _frontend_missing:
+            _msg += f"!!    - {_m}\n"
+        _msg += (
+            f"!!\n"
+            f"!!  请先运行构建脚本:\n"
+            f"!!    Windows:  .\\build_frontend.bat\n"
+            f"!!    Linux:    ./build_frontend.sh\n"
+            f"!!\n"
+            f"!!  否则部分页面将无法正常显示！\n"
+            f"{_bar}\n{_bar}\n"
+        )
+        print(_msg, flush=True)
+        logger.warning("前端资源未构建，部分页面将无法正常显示！请运行 build_frontend.sh / build_frontend.bat")
+
     # 使用统一的速率限制日志过滤器
     from utils.logger_config import create_main_server_filter, create_httpx_filter
     
@@ -1362,19 +1389,23 @@ if __name__ == "__main__":
     print(f"启动配置: {get_start_config()}")
 
     # 2) 信号处理：Ctrl+C 时快速关闭
+    #    uvicorn 的 install_signal_handlers() 会用 signal.signal(sig, self.handle_exit)
+    #    覆盖我们直接注册的信号处理器。所以这里 monkey-patch server.handle_exit，
+    #    这样无论 uvicorn 何时安装信号处理器，最终调用的都是我们的逻辑。
     _shutdown_state = {"signal_count": 0}
+    _original_handle_exit = server.handle_exit
 
-    def _signal_handler(signum, frame):
+    def _custom_handle_exit(sig, frame):
         _shutdown_state["signal_count"] += 1
         if _shutdown_state["signal_count"] > 1:
-            logger.warning("收到第二次关闭信号，立即强制退出。")
+            logger.warning("收到第二次关闭信号, 立即强制退出.")
+            cleanup()
             os._exit(130)
         logger.info("正在关闭服务器...")
         cleanup()
-        server.should_exit = True
-    
-    signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
+        _original_handle_exit(sig, frame)
+
+    server.handle_exit = _custom_handle_exit
 
     # 4) 启动服务器（阻塞，直到 server.should_exit=True）
     logger.info("--- Starting FastAPI Server ---")

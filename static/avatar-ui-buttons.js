@@ -671,6 +671,33 @@ const AvatarButtonMixin = {
         };
 
         /**
+         * 同步独立弹窗触发器（三角形）方向
+         */
+        ManagerPrototype.updateSeparatePopupTriggerIcon = function(buttonId, expanded) {
+            if (!buttonId) return;
+
+            const buttonData = this._floatingButtons && this._floatingButtons[buttonId];
+            const triggerIcon = buttonData && buttonData.triggerImg
+                ? buttonData.triggerImg
+                : document.querySelector(`.${this._avatarPrefix}-trigger-icon-${buttonId}`);
+            if (!triggerIcon) return;
+
+            if (typeof expanded === 'boolean') {
+                triggerIcon.style.transform = expanded ? 'rotate(180deg)' : 'rotate(0deg)';
+                return;
+            }
+
+            const buttonActive = !!(buttonData && buttonData.button && buttonData.button.dataset.active === 'true');
+            const popup = document.getElementById(`${this._avatarPrefix}-popup-${buttonId}`);
+            const popupExpanded = !!(
+                popup &&
+                popup.style.display === 'flex' &&
+                (popup.style.opacity !== '0' || popup.classList.contains('is-positioning'))
+            );
+            triggerIcon.style.transform = (buttonActive || popupExpanded) ? 'rotate(180deg)' : 'rotate(0deg)';
+        };
+
+        /**
          * 设置按钮激活状态
          */
         ManagerPrototype.setButtonActive = function(buttonId, active) {
@@ -688,6 +715,8 @@ const AvatarButtonMixin = {
             if (buttonData.imgOn) {
                 buttonData.imgOn.style.opacity = active ? '1' : '0';
             }
+
+            this.updateSeparatePopupTriggerIcon(buttonId);
 
             // 同步静音按钮的显示状态
             if (buttonId === 'mic') {
@@ -770,6 +799,25 @@ const AvatarButtonMixin = {
                 clearTimeout(this._physicsRestoreTimer);
                 this._physicsRestoreTimer = null;
             }
+
+            // 清理锁定淡化相关的键盘 / blur 监听器
+            if (this._mmdCtrlKeyDownListener) {
+                window.removeEventListener('keydown', this._mmdCtrlKeyDownListener);
+                this._mmdCtrlKeyDownListener = null;
+            }
+            if (this._mmdCtrlKeyUpListener) {
+                window.removeEventListener('keyup', this._mmdCtrlKeyUpListener);
+                this._mmdCtrlKeyUpListener = null;
+            }
+            if (this._mmdWindowBlurListener) {
+                window.removeEventListener('blur', this._mmdWindowBlurListener);
+                this._mmdWindowBlurListener = null;
+            }
+            if (this._mmdLockedHoverFadeChangedListener) {
+                window.removeEventListener('neko-locked-hover-fade-changed', this._mmdLockedHoverFadeChangedListener);
+                this._mmdLockedHoverFadeChangedListener = null;
+            }
+            this._setMmdLockedHoverFade = null;
 
             // 清理引用
             this._floatingButtons = null;

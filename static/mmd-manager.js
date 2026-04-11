@@ -3,6 +3,8 @@
  * 参考 vrm-manager.js 结构，提供统一 API
  */
 class MMDManager {
+    static DEFAULT_MODEL_PATH = '/static/mmd/Miku/Miku.pmx';
+
     constructor() {
         this.scene = null;
         this.camera = null;
@@ -155,7 +157,50 @@ class MMDManager {
             return modelInfo;
         } catch (error) {
             console.error('[MMD Manager] 模型加载失败:', error);
-            throw error;
+
+            // 尝试回退到默认模型
+            const defaultModelPath = MMDManager.DEFAULT_MODEL_PATH;
+            if (modelPath !== defaultModelPath) {
+                console.warn('[MMD Manager] 模型加载失败，尝试回退到默认模型:', defaultModelPath);
+                try {
+                    const modelInfo = await this.core.loadModel(defaultModelPath);
+
+                    if (this._isDisposed || this._activeLoadToken !== loadToken) {
+                        console.log('[MMD Manager] 回退模型加载已被取代或已销毁');
+                        return null;
+                    }
+
+                    if (this.cursorFollow) {
+                        this.cursorFollow.refresh();
+                    }
+
+                    if (this.expression && modelInfo.name) {
+                        await this.expression.loadMoodMap(modelInfo.name);
+                    }
+
+                    if (this._isDisposed || this._activeLoadToken !== loadToken) {
+                        return null;
+                    }
+
+                    this._isModelReadyForInteraction = true;
+
+                    if (this.cursorFollow) {
+                        this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
+                    }
+
+                    window.dispatchEvent(new CustomEvent('mmd-model-loaded', {
+                        detail: { modelInfo, modelPath: defaultModelPath }
+                    }));
+
+                    console.log('[MMD Manager] 成功回退到默认模型:', defaultModelPath);
+                    return modelInfo;
+                } catch (fallbackError) {
+                    console.error('[MMD Manager] 回退到默认模型也失败:', fallbackError);
+                    throw new Error(`原始模型加载失败: ${error.message}，且回退模型也失败: ${fallbackError.message}`);
+                }
+            } else {
+                throw error;
+            }
         }
     }
 
@@ -537,3 +582,5 @@ class MMDManager {
         console.log('[MMD Manager] 已完全销毁');
     }
 }
+
+window.MMDManager = MMDManager;

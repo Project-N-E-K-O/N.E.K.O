@@ -23,7 +23,6 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
-from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
 import httpx
@@ -31,7 +30,7 @@ from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from config import get_extra_body, MEMORY_SERVER_PORT
+from config import MEMORY_SERVER_PORT
 from config.prompts_sys import _loc
 from config.prompts_emotion import get_outward_emotion_analysis_prompt
 from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
@@ -48,6 +47,8 @@ from config.prompts_proactive import (
     SCREEN_SECTION_HEADER, SCREEN_SECTION_FOOTER,
     SCREEN_WINDOW_TITLE, SCREEN_IMG_HINT,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
+    MUSIC_SECTION_HEADER, MUSIC_SECTION_FOOTER,
+    MEME_SECTION_HEADER, MEME_SECTION_FOOTER,
     PROACTIVE_SOURCE_LABELS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
@@ -1218,9 +1219,9 @@ def _log_music_content(lanlan_name: str, music_content: dict):
         tracks = music_content.get('data', [])
         titles = [f"{t.get('name', '')} - {t.get('artist', '')}" for t in tracks[:5]]
         if titles:
-            logger.info(f"[{lanlan_name}] 成功获取音乐推荐:")
+            logger.debug(f"[{lanlan_name}] 成功获取音乐推荐:")
             for title in titles:
-                logger.info(f"  - {title}")
+                logger.debug(f"  - {title}")
     else:
         logger.warning(f"[{lanlan_name}] 音乐获取失败: {music_content.get('error', '未知错误')}")
 
@@ -1385,29 +1386,23 @@ async def emotion_analysis(request: Request):
             }
         ]
 
-        # 异步调用模型
-        request_params = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.3,
-            # Gemini 模型可能返回 markdown 格式，需要更多 token
-            "max_completion_tokens": 40
-        }
-        
-        # 只有在需要时才添加 extra_body
-        extra_body = get_extra_body(model)
-        if extra_body:
-            request_params["extra_body"] = extra_body
-        
         from utils.token_tracker import set_call_type
         set_call_type("emotion")
-        
-        # 使用异步上下文管理器确保 client 正确关闭
-        async with AsyncOpenAI(api_key=api_key, base_url=emotion_base_url) as client:
-            response = await client.chat.completions.create(**request_params)
+
+        # 异步调用模型（使用统一工厂，自动处理 extra_body / provider 兼容）
+        llm = create_chat_llm(
+            model,
+            emotion_base_url,
+            api_key,
+            temperature=0.3,
+            # Gemini 模型可能返回 markdown 格式，需要更多 token
+            max_completion_tokens=40,
+        )
+        async with llm:
+            result = await llm.ainvoke(messages)
 
         # 解析响应
-        result_text = response.choices[0].message.content.strip()
+        result_text = result.content.strip()
 
         # 处理 markdown 代码块格式（Gemini 可能返回 ```json {...} ``` 格式）
         # 首先尝试使用正则表达式提取第一个代码块
@@ -1435,8 +1430,8 @@ async def emotion_analysis(request: Request):
             return "neutral", 0.5
 
         try:
-            import json
-            result = json.loads(result_text)
+            from utils.file_utils import robust_json_loads
+            result = robust_json_loads(result_text)
             if not isinstance(result, dict):
                 # 有效 JSON 也可能是 null/[]/"text"，此时复用降级启发式处理。
                 emotion, confidence = _apply_degraded_emotion_fallback()
@@ -1471,7 +1466,7 @@ async def emotion_analysis(request: Request):
                 if confidence < 0.2:
                     emotion = "neutral"
                     decision_source = "neutral_fallback"
-        except json.JSONDecodeError:
+        except ValueError:
             emotion, confidence = _apply_degraded_emotion_fallback()
 
         _push_emotion_update(lanlan_name, emotion, confidence)
@@ -1956,113 +1951,6 @@ async def proxy_meme_image(url: str):
         return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
     except Exception as e:
         logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
-        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
-
-
-# ==================== 网易云音乐代理 ====================
-# 解决浏览器无法直接播放网易云外链的问题（需要 Referer 头）
-MUSIC_PROXY_CACHE = TTLCache(maxsize=200, ttl=3600 * 6)  # 6小时缓存
-
-@router.get('/music/proxy-netease')
-async def proxy_netease_music(url: str):
-    """
-    代理网易云音乐外链，解决跨域和 Referer 限制问题
-    
-    网易云音乐的外链 URL 格式为：
-    https://music.163.com/song/media/outer/url?id=xxx.mp3
-    
-    浏览器直接请求会被拒绝，需要带 Referer: https://music.163.com/ 头才能访问
-    """
-    cache_key = url
-    if cache_key in MUSIC_PROXY_CACHE:
-        logger.info(f"[Netease Music Proxy] 命中缓存: {url[:60]}...")
-        cached = MUSIC_PROXY_CACHE[cache_key]
-        return Response(
-            content=cached['body'],
-            media_type='audio/mpeg',
-            headers={
-                'Cache-Control': 'public, max-age=21600',  # 6小时
-                'X-Cache': 'HIT',
-                'Accept-Ranges': 'bytes'
-            }
-        )
-    
-    try:
-        logger.info(f"[Netease Music Proxy] 收到代理请求: {url[:80]}...")
-        
-        if not url:
-            return JSONResponse(content={"success": False, "error": "缺少URL参数"}, status_code=400)
-        
-        decoded_url = unquote(url)
-        if not decoded_url.startswith(('http://', 'https://')):
-            return JSONResponse(content={"success": False, "error": "无效的URL"}, status_code=400)
-        
-        from urllib.parse import urlparse
-        parsed = urlparse(decoded_url)
-        hostname = (parsed.hostname or '').lower()
-        
-        # 只允许网易云音乐的域名
-        allowed_hosts = ['music.163.com']
-        if not any(hostname == host or hostname.endswith('.' + host) for host in allowed_hosts):
-            logger.warning(f"[Netease Music Proxy] 非法域名请求: {hostname}")
-            return JSONResponse(content={"success": False, "error": f"不允许代理该域名: {hostname}"}, status_code=403)
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Referer': 'https://music.163.com/',
-            'Accept': '*/*',
-            'Accept-Encoding': 'identity',  # 不压缩，方便流式传输
-        }
-        
-        MAX_MUSIC_SIZE = 50 * 1024 * 1024  # 50MB 音乐文件限制
-        
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            async with client.stream("GET", decoded_url, headers=headers) as resp:
-                resp.raise_for_status()
-                
-                content_type = resp.headers.get('Content-Type', 'audio/mpeg').split(';', 1)[0].strip()
-                if 'audio' not in content_type and 'video' not in content_type:
-                    logger.warning(f"[Netease Music Proxy] 非音频内容类型: {content_type}")
-                
-                content_length = resp.headers.get('Content-Length')
-                if content_length:
-                    try:
-                        declared_size = int(content_length)
-                        if declared_size > MAX_MUSIC_SIZE:
-                            logger.warning(f"[Netease Music Proxy] 音乐文件过大: {declared_size}")
-                            return JSONResponse(content={"success": False, "error": "音乐文件超过大小限制 (50MB)"}, status_code=413)
-                    except (ValueError, TypeError):
-                        pass
-                
-                body = bytearray()
-                async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
-                    body.extend(chunk)
-                    if len(body) > MAX_MUSIC_SIZE:
-                        logger.warning(f"[Netease Music Proxy] 音乐文件过大 (实际读取): {len(body)}")
-                        return JSONResponse(content={"success": False, "error": "音乐文件超过大小限制 (50MB)"}, status_code=413)
-                
-                MUSIC_PROXY_CACHE[cache_key] = {
-                    'body': bytes(body)
-                }
-                
-                logger.info(f"[Netease Music Proxy] 代理成功，大小: {len(body)} bytes")
-                return Response(
-                    content=bytes(body),
-                    media_type='audio/mpeg',
-                    headers={
-                        'Cache-Control': 'public, max-age=21600',
-                        'X-Cache': 'MISS',
-                        'Accept-Ranges': 'bytes'
-                    }
-                )
-    
-    except httpx.HTTPStatusError as e:
-        logger.error(f"[Netease Music Proxy] HTTP错误: {e.response.status_code}")
-        return JSONResponse(content={"success": False, "error": f"请求失败: {e.response.status_code}"}, status_code=e.response.status_code)
-    except httpx.TimeoutException:
-        return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
-    except Exception as e:
-        logger.error(f"[Netease Music Proxy] 代理失败: {str(e)}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
 
@@ -2747,8 +2635,8 @@ async def proactive_chat(request: Request):
         vision_content = sources.get('vision')  # 仅保留给 Phase 2 使用，Phase 1 不处理
         music_content = sources.get('music')
         meme_content = sources.get('meme')
-        logger.info(f"[{lanlan_name}] 主动搭话-音乐内容: type={type(music_content)}, success={music_content.get('success') if music_content else 'N/A'}")
-        logger.info(f"[{lanlan_name}] 主动搭话-表情包内容: type={type(meme_content)}, success={meme_content.get('success') if meme_content else 'N/A'}")
+        logger.debug(f"[{lanlan_name}] 主动搭话-音乐内容: type={type(music_content)}, success={music_content.get('success') if music_content else 'N/A'}")
+        logger.debug(f"[{lanlan_name}] 主动搭话-表情包内容: type={type(meme_content)}, success={meme_content.get('success') if meme_content else 'N/A'}")
         
         all_web_links: list[dict] = []
         
@@ -2831,7 +2719,7 @@ async def proactive_chat(request: Request):
         if is_playing_music or music_cooldown:
             if music_content:
                 reason = "音乐正在播放" if is_playing_music else "用户连续秒关，音乐冷却中"
-                logger.info(f"[{lanlan_name}]-{reason}，强制屏蔽 Phase 1 搜歌逻辑")
+                logger.debug(f"[{lanlan_name}]-{reason}，强制屏蔽 Phase 1 搜歌逻辑")
             music_content = None
             sources.pop('music', None)
 
@@ -2843,7 +2731,7 @@ async def proactive_chat(request: Request):
             source_weights = _compute_source_weights(lanlan_name, non_vision_modes)
             suppressed = _filter_sources_by_weight(source_weights)
             weight_str = ' '.join(f"{ch}={w:.3f}" for ch, w in source_weights.items())
-            logger.info(f"[{lanlan_name}] 来源权重: {weight_str} | 剔除: {suppressed or '无'}")
+            logger.debug(f"[{lanlan_name}] 来源权重: {weight_str} | 剔除: {suppressed or '无'}")
 
             for ch in suppressed:
                 sources.pop(ch, None)
@@ -2941,7 +2829,7 @@ async def proactive_chat(request: Request):
                 unified_result_text = await _llm_call_with_retry(unified_prompt, "unified_phase1")
                 print(f"[{lanlan_name}] Phase 1 合并 LLM 结果: {unified_result_text[:500]}")
                 unified_parsed = _parse_unified_phase1_result(unified_result_text)
-                logger.info(f"[{lanlan_name}] Phase 1 解析: web={'有' if unified_parsed.get('web') else '无'}, "
+                logger.debug(f"[{lanlan_name}] Phase 1 解析: web={'有' if unified_parsed.get('web') else '无'}, "
                            f"music_kw={unified_parsed.get('music_keyword', 'N/A')}, "
                            f"meme_kw={unified_parsed.get('meme_keyword', 'N/A')}")
             except Exception as e:
@@ -3072,7 +2960,7 @@ async def proactive_chat(request: Request):
                     if _is_recent_topic_used(lanlan_name, music_topic_key):
                         print(f"[{lanlan_name}]- Phase 1 音乐话题去重命中，跳过: {track_name}")
                     else:
-                        logger.info(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                        logger.debug(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
                         selected_music_link = {
                             'title': track_name,
                             'artist': track_artist,
@@ -3084,7 +2972,7 @@ async def proactive_chat(request: Request):
                         selected_music_topic_key = music_topic_key
                         phase1_topics.append(('music', music_topic))
                 else:
-                    logger.info(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                    logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
                     phase1_topics.append(('music', music_topic))
 
         # ============================================================
@@ -3105,10 +2993,10 @@ async def proactive_chat(request: Request):
                         topic_url=meme_url
                     )
                     if meme_topic_key and _is_recent_topic_used(lanlan_name, meme_topic_key):
-                        logger.info(f"[{lanlan_name}]- Phase 1 表情包话题去重命中，跳过: {meme_title[:30]}")
+                        logger.debug(f"[{lanlan_name}]- Phase 1 表情包话题去重命中，跳过: {meme_title[:30]}")
                         continue
                     single_meme_topic = f"发现一个很有意思的[表情包]：'{meme_title}' (来自 {meme_source})"
-                    logger.info(f"[{lanlan_name}]- Phase 1 表情包话题已添加 (限额1张): {single_meme_topic}")
+                    logger.debug(f"[{lanlan_name}]- Phase 1 表情包话题已添加 (限额1张): {single_meme_topic}")
                     phase1_topics.append(('meme', single_meme_topic))
                     selected_meme_link = {
                         'title': meme_title,
@@ -3117,10 +3005,10 @@ async def proactive_chat(request: Request):
                         'type': candidate_meme.get('type', 'meme')
                     }
                     selected_meme_topic_key = meme_topic_key
-                    logger.info(f"[{lanlan_name}] 预选表情包话题: {meme_title[:30]}")
+                    logger.debug(f"[{lanlan_name}] 预选表情包话题: {meme_title[:30]}")
                     break
                 else:
-                    logger.info(f"[{lanlan_name}]- Phase 1 所有表情包候选均被去重，跳过表情包话题")
+                    logger.debug(f"[{lanlan_name}]- Phase 1 所有表情包候选均被去重，跳过表情包话题")
             else:
                 logger.warning(f"[{lanlan_name}] Phase 1 表情包数据为空，跳过表情包话题")
         
@@ -3199,7 +3087,9 @@ async def proactive_chat(request: Request):
         # 如果正在放歌或处于冷却期，强行屏蔽音乐素材推荐，避免 AI 误触
         if music_topic and not is_playing_music and not music_cooldown:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
-            music_section = f"======音乐推荐素材======\n{music_topic}\n======音乐素材结束======"
+            msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
+            msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
+            music_section = f"{msh}\n{music_topic}\n{msf}"
         elif is_playing_music or music_cooldown:
             reason = "正在播放音乐" if is_playing_music else "音乐冷却期"
             print(f"[{lanlan_name}] {reason}，已屏蔽音乐推荐素材（仅保留 playing_hint）")
@@ -3213,7 +3103,9 @@ async def proactive_chat(request: Request):
                 meme_topic = topic
                 break
         if meme_topic:
-            meme_section = f"======表情包素材======\n{meme_topic}\n======表情包素材结束======"
+            meh = _loc(MEME_SECTION_HEADER, proactive_lang)
+            mef = _loc(MEME_SECTION_FOOTER, proactive_lang)
+            meme_section = f"{meh}\n{meme_topic}\n{mef}"
         
         source_instruction, output_format_section = get_proactive_format_sections(
             has_screen=bool(screen_section),
@@ -3380,7 +3272,7 @@ async def proactive_chat(request: Request):
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")
         if aborted or not full_text.strip():
             await mgr.handle_new_message()
-            logger.info(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
+            logger.debug(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
             return JSONResponse({
                 "success": True,
                 "action": "pass",
@@ -3388,7 +3280,7 @@ async def proactive_chat(request: Request):
             })
         
         response_text = full_text.strip()
-        logger.info(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
+        logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
 
         has_music_topic = 'music' in active_channels

@@ -28,7 +28,8 @@
         "fieldSeparator": "、 ",
         "tryAgainLater": "後でもう一度お試しください",
         "user": "ユーザー",
-        "project": "プロジェクト"
+        "project": "プロジェクト",
+        "collapse": "折りたたむ"
     },
     "characterProfile": {
         "gender": "性別",
@@ -478,6 +479,7 @@
         "RESPONSE_INVALID": "AIの回答が要件を満たしていないため、出力を破棄しました",
         "NO_USER_MESSAGE": "⚠️ 会話履歴にユーザーメッセージがないため、応答を生成できません",
         "LLM_RETRY": "⚠️ LLM {{error_type}}、リトライ中（{{attempt}}/{{max_retries}}）...",
+        "LLM_UPSTREAM_ERROR": "⚠️ 申し訳ありませんにゃ、上流AIプロバイダーの内部エラーが発生しました。自動リトライ中...",
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM接続失敗（{{error_type}}）、{{max_retries}}回リトライ済み: {{error}}",
         "TEXT_GEN_ERROR": "💥 テキスト生成エラー: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLMから応答がありませんでした。API接続と設定を確認してください。",
@@ -521,8 +523,12 @@
         "tooltip": "チャットエリア",
         "textInputPlaceholder": "テキストチャットモード... Enterで送信、Shift+Enterで改行",
         "send": "送信",
+        "importImage": "画像を取り込む",
+        "importImageAriaLabel": "画像を取り込む",
         "screenshot": "スクリーンショット",
+        "screenshotAriaLabel": "スクリーンショット",
         "takePhoto": "写真を撮る",
+        "takePhotoAriaLabel": "写真を撮る",
         "screenshotsTitle": "保留中のスクリーンショット",
         "clearAll": "すべてクリア",
         "screenshotAlt": "スクリーンショット {{index}}",
@@ -530,8 +536,79 @@
         "removeScreenshot": "このスクリーンショットを削除",
         "avatarPreview": "現在のアバターを表示",
         "avatarPreviewLabel": "現在のアバター",
+        "avatarPreviewCardTitle": "現在のアバター",
+        "avatarPreviewCardStatus": "上のボタンを押して現在のモデルのアバターを生成します",
+        "avatarPreviewClose": "アバタープレビューを閉じる",
+        "avatarPreviewImageAlt": "現在のアバタープレビュー",
+        "avatarPreviewPlaceholder": "AVATAR",
+        "avatarPreviewCardNote": "現在表示中の Live2D / VRM / MMD モデルからアバターを生成します。",
+        "avatarPreviewRefresh": "アバターを更新",
+        "emptyState": "チャット内容が接続されると、ここに表示されます。",
+        "messageStreaming": "生成中",
+        "messageFailed": "送信失敗",
+        "reactWindowOpen": "新しいチャットウィンドウを開く",
+        "reactWindowLabel": "新しいチャットウィンドウ",
+        "reactWindowClose": "新しいチャットウィンドウを閉じる",
+        "reactWindowMinimize": "新しいチャットウィンドウを最小化",
+        "reactWindowMinimizeShort": "最小化",
+        "reactWindowRestore": "新しいチャットウィンドウを復元",
+        "reactWindowRestoreShort": "復元",
+        "reactWindowMountFailed": "新しいチャットウィンドウのマウントに失敗しました",
+        "reactWindowLoadFailed": "新しいチャットウィンドウのリソース読み込みに失敗しました",
+        "reactWindowAriaLabel": "Neko チャットウィンドウ",
+        "reactWindowInputHint": "Enter で送信、Shift + Enter で改行",
+        "messageListAriaLabel": "チャットメッセージ一覧",
+        "composerToolsAriaLabel": "入力ツールバー",
+        "pendingImagesAriaLabel": "送信待ち画像",
+        "pendingImageAlt": "画像 {{index}}",
+        "removePendingImage": "画像を削除",
+        "emojiButtonAriaLabel": "絵文字",
+        "attachmentButtonAriaLabel": "添付",
         "jukebox": "ジュークボックス",
-        "jukeboxLabel": "ジュークボックス"
+        "jukeboxLabel": "ジュークボックス",
+        "exportConversation": "会話をエクスポート",
+        "exportSelected": "選択項目をエクスポート",
+        "exportPreviewTitle": "エクスポートプレビュー",
+        "exportPreviewSummary": "{{count}} 件を選択中",
+        "exportPreviewEmpty": "プレビューする内容がありません。",
+        "exportFormatLabel": "エクスポート形式",
+        "exportFormatMarkdown": "Markdown",
+        "exportFormatImage": "画像",
+        "exportImageFormatPng": "PNG",
+        "exportImageFormatJpeg": "JPEG",
+        "exportImageFormatWebp": "WebP",
+        "exportImageStyleNeko": "N.E.K.O",
+        "exportImageStyleOriginal": "オリジナル",
+        "exportImageStylePoster": "フレッシュ",
+        "exportImageStyleLyrics": "歌詞",
+        "exportPosterTitle": "会話のハイライト",
+        "exportPosterSubtitle": "N.E.K.O からの共有",
+        "exportImageFormatUnsupported": "{{format}} 形式は現在の環境ではサポートされていません。",
+        "confirmExportAs": "{{format}} としてエクスポート",
+        "exportMarkdownPreviewSubtitle": "エクスポートされる Markdown のレンダリングプレビュー。",
+        "exportPreviewLoading": "プレビューを生成中…",
+        "exportPreviewFailed": "プレビューの生成に失敗しました。",
+        "previewOpenWindow": "新しいウィンドウで開く",
+        "previewClose": "閉じる",
+        "previewOpenBlocked": "新しいプレビューウィンドウを開けませんでした。",
+        "previewOpenFailed": "プレビューウィンドウを開けませんでした。",
+        "copyMarkdown": "Markdown をコピー",
+        "copyMarkdownSuccess": "Markdown をクリップボードにコピーしました。",
+        "copyMarkdownFailed": "Markdown のコピーに失敗しました。",
+        "exportEmpty": "エクスポート可能な会話がまだありません。",
+        "exportSelectionEmpty": "エクスポートするメッセージを 1 件以上選択してください。",
+        "exportSuccess": "会話のエクスポートに成功しました",
+        "exportFileTitle": "Project N.E.K.O 会話エクスポート",
+        "exportGeneratedAt": "エクスポート日時",
+        "exportUser": "ユーザー",
+        "exportAssistant": "N.E.K.O.",
+        "exportImageLabel": "画像",
+        "exportAudioLabel": "音声",
+        "exportVideoLabel": "動画",
+        "exportSelectAll": "すべて選択",
+        "exportSelectNone": "解除",
+        "exportSelectInvert": "反転",
+        "exportSelectionCount": "{{selected}} / {{total}} 件選択中"
     },
     "voiceControl": {
         "startVoice": "音声開始",
@@ -700,6 +777,8 @@
         "keyAutoFilledFromKeyBook": "APIキーブックから自動入力されます。キーブックで設定してください。",
         "goToKeyBook": "キーブックへ",
         "providerLabel": "プロバイダー",
+        "providerSelectPlaceholder": "プロバイダーを選択",
+        "noOptionsAvailable": "利用可能な項目はありません",
         "customModelProviderFollowCore": "コアAPIに従う",
         "customModelProviderFollowAssist": "アシストAPIに従う",
         "customModelProviderCustom": "カスタム",
@@ -777,7 +856,7 @@
         "apiUrl": "API URL",
         "apiKey": "APIキー",
         "modelId": "モデルID",
-        "agentApiConfigTitle": "Agent API 設定",
+        "agentApiConfigTitle": "Agent API 設定（視覚機能対応が必要）",
         "providerPlaceholder": "例: openai, azure, local",
         "apiUrlPlaceholder": "例: https://api.openai.com/v1",
         "modelIdPlaceholder": "例: gpt-5.1-chat-latest",
@@ -1124,9 +1203,12 @@
     },
     "voice": {
         "title": "ボイス登録",
-        "alibabaApiRequired": "⚠️ この機能にはCosyVoiceモデルが必要です。APIキー設定でAlibaba Bailian APIキーを保存してください（Assist APIの有効化は不要）。またはローカル音声サーバーを設定してください",
-        "minimaxApiRequired": "⚠️ この機能にはMiniMaxモデル（China）が必要です。APIキー設定でMiniMax APIキーを保存してください（Assist APIの有効化は不要）",
-        "minimaxIntlApiRequired": "⚠️ この機能にはMiniMaxモデル（国際版）が必要です。APIキー設定でMiniMax国際版APIキーを保存してください（Assist APIの有効化は不要）",
+        "gotoApiSettings": "API設定へ",
+        "noApiKeyPrompt": "クローン機能に使用できるAPIキーがまだ設定されていません。設定しますか？",
+        "dismissNoApiPrompt": "後で",
+        "alibabaApiRequired": "この機能にはCosyVoiceモデルが必要です。APIキー設定でAlibaba Bailian APIキーを保存してください（Assist APIの有効化は不要）。またはローカル音声サーバーを設定してください",
+        "minimaxApiRequired": "この機能にはMiniMaxモデル（China）が必要です。APIキー設定でMiniMax APIキーを保存してください（Assist APIの有効化は不要）",
+        "minimaxIntlApiRequired": "この機能にはMiniMaxモデル（国際版）が必要です。APIキー設定でMiniMax国際版APIキーを保存してください（Assist APIの有効化は不要）",
         "providerLabel": "音声クローンプロバイダー",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
@@ -1144,6 +1226,8 @@
         "prefixFormatError": "プレフィックス形式エラー：最大10文字、数字と英字のみ",
         "registering": "ボイスを登録中です。お待ちください...",
         "registerSuccess": "登録成功！voice_id: {{voiceId}}",
+        "registerSuccessButSaveFailed": "ボイス登録は成功しましたが、ローカル保存に失敗しました",
+        "pleaseCopyVoiceId": "上のvoice_idをコピーして手動で保存してください",
         "reusedExisting": "既存のボイスを再利用しました。アップロードをスキップしました。voice_id: {{voiceId}}",
         "registerFailed": "登録失敗：{{error}}",
         "prefixShouldBeEnglishLetterAndNumber": "接頭辞は英文字と数字である必要があります",
@@ -1285,6 +1369,7 @@
         "profileNameContainsSlash": "プロフィール名にパス区切り文字(/または\\)を含めることはできません",
         "profileNameContainsDot": "プロフィール名にドット(.)を含めることはできません",
         "profileNameInvalidChars": "プロフィール名には文字、数字、空白、アンダースコア、ハイフン、括弧、中黒(·/・)、アポストロフィのみ使えます",
+        "profileNameReservedRoute": "この名前はシステム予約のルート名のため、プロフィール名として使用できません",
         "newProfileNameRequired": "新しいプロフィール名は空にできません",
         "newProfileNameTooLong": "プロフィール名が長すぎます",
         "required": "*",
@@ -1417,6 +1502,8 @@
         "initializingText": "テキストチャットを初期化中...",
         "textChattingShort": "テキストチャット中",
         "capturing": "スクリーンショット中...",
+        "importImageAdded": "{{count}} 枚の画像を追加しました。送信時に一緒に送られます",
+        "importImageFailed": "画像の取り込みに失敗しました",
         "screenshotAdded": "スクリーンショットを追加しました。送信をクリックして一緒に送信",
         "screenshotFailed": "スクリーンショット失敗",
         "screenshotCancelled": "ユーザーがスクリーンショットをキャンセルしました",
@@ -1427,6 +1514,7 @@
         "switchingCatgirl": "{{name}}に切り替え中...",
         "switchedCatgirl": "{{name}}に切り替えました",
         "switchCatgirlFailed": "{{name}}への切り替えに失敗しました",
+        "switchCatgirlError": "切り替えに失敗しました: {{error}}",
         "started": "{{name}}が起動しました",
         "voiceUpdated": "{{name}}の声が更新されました",
         "audioWorkletFailed": "AudioWorkletの読み込みに失敗しました",
@@ -1449,6 +1537,7 @@
         "connectingToServer": "サーバーに接続中...",
         "readyToSpeak": "話す準備ができました！",
         "screenShareRequiresVoice": "画面共有は音声/ビデオ通話専用です",
+        "screenRecordingPermissionDenied": "⚠️ 画面録画の権限が許可されていません。システム設定で画面録画を許可してください",
         "repetitionDetected": "高い繰り返しが検出されました。{{name}}を休ませるために会話を終了することをお勧めします。",
         "modelSwitched": "モデルを切り替えました",
         "screenSource": {
@@ -1534,6 +1623,7 @@
             "browserUse": "ブラウザ制御",
             "focusMode": "割り込み許可",
             "unavailable": "{{name}}は利用できません",
+            "toggleFailed": "{{name}}の切り替えに失敗しました: {{error}}",
             "checking": "確認中...",
             "serverOffline": "ネコクローサーバーがオフラインです",
             "masterRequired": "先にネコクローマスタースイッチを有効にしてください",
@@ -1558,6 +1648,7 @@
             "mouseTracking": "マウス追跡",
             "fullscreenTracking": "フルスクリーン追跡",
             "localTracking": "ローカル追跡",
+            "lockedHoverFade": "ロック時ホバー透過",
             "textGuardMaxLength": "返信文字数制限",
             "unlimited": "無制限",
             "characters": "文字",
@@ -1568,7 +1659,8 @@
     },
     "subtitle": {
         "title": "リアルタイム字幕",
-        "enable": "翻訳を有効にする"
+        "enable": "字幕翻訳",
+        "enableAriaLabel": "字幕翻訳の切り替え"
     },
     "viewer": {
         "title": "ビューアー - Project N.E.K.O."
@@ -1586,7 +1678,8 @@
             "freeModelWarning": "クォータの制限により、無料モデルではネコクローモードがブロックされやすくなります。有料モデルへの切り替えをお勧めします。\n\nすでに有料APIを設定済みの場合は、NEKOを再起動してみてください。",
             "freeModelWarningTitle": "無料モデルのお知らせ",
             "connectivityCheck": "ネコクロー LLM 接続チェック中...",
-            "precheckFailed": "ネコクローのプリチェックに失敗しました：{{reason}}"
+            "precheckFailed": "ネコクローのプリチェックに失敗しました：{{reason}}",
+            "toggleFailed": "Agentの切り替えに失敗しました: {{error}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "接続チェック中...",
@@ -1669,6 +1762,8 @@
         "emotionConfig": "VRM感情設定",
         "idleAnimation": {
             "title": "待機アニメーション",
+            "selectHint": "待機モーションを選択",
+            "selectedCount": "{{count}} 件選択中",
             "changed": "待機アニメーションを切り替えました: {{name}}",
             "changeFailed": "待機アニメーションの切り替えに失敗しました"
         },
@@ -1715,6 +1810,8 @@
         },
         "idleAnimation": {
             "title": "待機アニメーション",
+            "selectHint": "待機モーションを選択",
+            "selectedCount": "{{count}} 件選択中",
             "changed": "待機アニメーションが変更されました: {{name}}",
             "changeFailed": "待機アニメーションの変更に失敗しました"
         }
@@ -2001,6 +2098,24 @@
                 "step9": {
                     "title": "🎞️ トーンマッピング",
                     "desc": "異なるトーンマッピングアルゴリズムを選択して、画像のハイライトとシャドウの表現スタイルを決定してください。"
+                }
+            },
+            "mmd": {
+                "step1": {
+                    "title": "🎭 MMD モデルを選択",
+                    "desc": "Live3D（MMD）モードでは、ここから使用するモデルを選択します。MMD と VRM は同じモデルリストを共有しています。"
+                },
+                "step2": {
+                    "title": "💃 VMD アニメーション",
+                    "desc": "MMD モデルに VMD モーションを選択します。「VMD をインポート」からカスタムモーションファイルを追加できます。"
+                },
+                "step3": {
+                    "title": "🌟 MMD ライティング",
+                    "desc": "「MMD モデル設定」で環境光、メインライト、露出、トーンマッピングを調整し、3D 画面の効果を制御します。"
+                },
+                "step4": {
+                    "title": "😄 エモーション設定",
+                    "desc": "モデルを選択した後、ここからエモーション設定に入ります。Live3D では MMD と VRM がこのボタンを共有しており、Live2D の「エモーション設定」とは別のボタンです。"
                 }
             }
         },
@@ -2434,6 +2549,7 @@
         "weibo": "🌏 微博 (Weibo)",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 网易雲音楽",
         "saveConfig": "設定を保存",
         "encryptStorage": "ローカルファイルに安全に暗号化保存",
         "localMonitoring": "ローカルステータス監視",
@@ -2459,7 +2575,8 @@
             "kuaishou": "📌 <b>対象：</b> <b>kuaishou.com</b> にアクセスして Cookie を取得してください。",
             "weibo": "📌 <b>対象：</b> <b>weibo.com</b> にアクセスして Cookie を取得してください。",
             "twitter": "📌 <b>対象：</b> <b>x.com</b> にアクセスして Cookie を取得してください。",
-            "reddit": "📌 <b>対象：</b> <b>reddit.com</b> にアクセスして Cookie を取得してください。"
+            "reddit": "📌 <b>対象：</b> <b>reddit.com</b> にアクセスして Cookie を取得してください。",
+            "netease": "📌 <b>対象：</b> <b>music.163.com</b> にアクセスして Cookie を取得してください。"
         },
         "guide": {
             "title": "初心者向け共通ガイド",
@@ -2541,6 +2658,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRFトークン"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "コアIDクレデンシャル (必須)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "デバイス識別子 (任意)"
             }
         },
         "status": {
@@ -2564,7 +2689,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "QRログイン成功！Cookieが自動入力されました。「設定を保存」をクリックしてください"
+            "successAlert": "QRログイン成功！Cookieが自動入力されました。「設定を保存」をクリックしてください",
+            "extractFailed": "⚠️ QRログインは成功しましたが、フィールドの自動抽出に失敗しました。手動で確認してください。"
         }
     },
     "music": {
@@ -2583,7 +2709,8 @@
         "playError": "音楽の再生読み込みに失敗しました",
         "loadError": "音楽プレイヤーの読み込みに失敗しました",
         "autoplayBlocked": "ブラウザが自動再生をブロックしました。再生ボタンをクリックしてください",
-        "ended": "終了"
+        "ended": "終了",
+        "unknownState": "不明な状態"
     },
     "Jukebox": {
         "title": "ジュークボックス",
@@ -2637,8 +2764,91 @@
         "idleRestoreFailed": "待機アニメーションの復元に失敗しました",
         "btnNotFoundGiveUp": "ジュークボックスボタンが見つかりません、バインドを中止",
         "minimizeBtnNotFoundGiveUp": "最小化ボタンが見つかりません、監視を中止",
-        "noticeDance": "💃 ダンス機能は MMD アバター読み込み時のみ利用可能です",
-        "noticeMusic": "⚠️ 現在の楽曲はテスト用です。今後のバージョンで著作権楽曲は削除されますので、ご自身でインポートしてください"
+        "noticeDance": "💃 ダンス機能は現在 MMD アバター読み込み時のみ利用可能です。今後さらに多くのインタラクションが追加される予定です",
+        "noticeMusic": "⚠️ 現在の楽曲はテスト用です。今後のバージョンで著作権楽曲は削除されますので、ご自身でインポートしてください",
+        "manager": "マネージャー",
+        "managerTitle": "マネージャー",
+        "songs": "曲",
+        "actions": "アクション",
+        "bindings": "バインド",
+        "import": "インポート",
+        "export": "エクスポート",
+        "exportAll": "すべてエクスポート",
+        "exportAllIgnoreHidden": "すべてエクスポート(非表示を除く)",
+        "exportAllIncludeHidden": "すべてエクスポート(非表示を含む)",
+        "exportSelected": "選択項目をエクスポート",
+        "dragZipHint": "ZIPファイルまたはフォルダをここにドラッグしてインポート",
+        "unifiedDropHint": "曲、アニメーション、インポートパッケージをここにドラッグ＆ドロップ",
+        "clickToAdd": "クリックして追加",
+        "dragMp3Hint": "MP3ファイルをここにドラッグして曲を追加",
+        "dragVmdHint": "VMDファイルをここにドラッグしてアニメーションを追加",
+        "showHiddenSongs": "非表示の曲を表示",
+        "selectAll": "すべて選択",
+        "noActions": "アニメーションがありません",
+        "show": "表示",
+        "hide": "非表示",
+        "delete": "削除",
+        "unknown": "不明",
+        "defaultAction": "デフォルトアニメーション",
+        "clickSetDefault": "クリックしてデフォルトに設定",
+        "format": "フォーマット",
+        "addSong": "曲を追加",
+        "addAction": "アニメーションを追加",
+        "songList": "曲リスト (右にドラッグ)",
+        "actionList": "アニメーションリスト (左にドラッグ)",
+        "unbind": "バインド解除",
+        "addBinding": "手動でバインド追加",
+        "addSongBinding": "手動で曲バインド追加",
+        "addActionBinding": "手動でアニメーションバインド追加",
+        "cancel": "キャンセル",
+        "confirm": "確認",
+        "confirmDeleteSong": "曲「{{name}}」を削除してもよろしいですか？\nこの操作は元に戻せません！",
+        "confirmDeleteAction": "アニメーション「{{name}}」を削除してもよろしいですか？\nこの操作は元に戻せません！",
+        "deleteFailed": "削除に失敗しました",
+        "setDefaultFailed": "デフォルト設定に失敗しました",
+        "exportFailed": "エクスポートに失敗しました",
+        "selectExportFirst": "エクスポートする曲またはアニメーションを選択してください",
+        "notExist": "{{type}}が存在しません",
+        "songNotExist": "曲が存在しません",
+        "actionNotExist": "アニメーションが存在しません",
+        "inputIndexOrName": "番号または名前を入力",
+        "frame": "フレーム",
+        "offset": "オフセット",
+        "selectedSongs": "{{count}}曲選択中",
+        "selectedActions": "{{count}}アニメーション選択中",
+        "selectedSeparator": "、",
+        "selectedInfo": "{{songCount}}曲、{{actionCount}}アニメーション選択中",
+        "missing": "欠落",
+        "unknownError": "不明なエラー",
+        "calibration": "アニメーションをキャリブレーション",
+        "calibrationTitle": "アニメーションキャリブレーション",
+        "fps": "FPS",
+        "currentFrame": "現在のフレーム",
+        "reset": "リセット",
+        "calibrationHint": "ボタンで微調整するか、プログレスバーをドラッグしてキャリブレーション",
+        "calibrateAnimation": "アニメーションをキャリブレーション",
+        "animationCalibration": "アニメーションキャリブレーション",
+        "closeCalibration": "キャリブレーションパネルを閉じる",
+        "advance1s": "アニメーションを1秒進める",
+        "advance10f": "アニメーションを10フレーム進める",
+        "advance1f": "アニメーションを1フレーム進める",
+        "delay1f": "アニメーションを1フレーム遅らせる",
+        "delay10f": "アニメーションを10フレーム遅らせる",
+        "delay1s": "アニメーションを1秒遅らせる",
+        "frames": "フレーム",
+        "operationFailed": "操作に失敗しました",
+        "saveFailed": "保存に失敗しました",
+        "importSuccess": "インポート成功！",
+        "importFailed": "インポートに失敗しました",
+        "importSongsAdded": "{{count}}曲を追加",
+        "importSongsMerged": "{{count}}曲をマージ",
+        "importActionsAdded": "{{count}}アニメーションを追加",
+        "importActionsMerged": "{{count}}アニメーションをマージ",
+        "importBindingsAdded": "{{count}}バインドを追加",
+        "noChanges": "変更なし",
+        "noImportFilesFound": "インポート可能なファイルが見つかりません",
+        "missingConfigJson": "フォルダにconfig.jsonファイルがありません",
+        "folderImportFailed": "フォルダのインポートに失敗しました"
     },
     "notice": {
         "voiceMigration": {
@@ -2654,5 +2864,8 @@
             "title": "ミーム",
             "loadError": "ミームの読み込みに失敗しました"
         }
+    },
+    "achievement": {
+        "unlocked": "🏆 実績解除: {{description}}"
     }
 }

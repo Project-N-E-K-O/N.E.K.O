@@ -15,7 +15,7 @@ from config.prompts_memory import (
 from utils.language_utils import get_global_language
 
 # Setup logger
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, robust_json_loads
 from utils.logger_config import setup_logging
 logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
 
@@ -207,7 +207,7 @@ class CompressedRecentHistoryManager:
                 match = re.search(r'```(?:json)?\s*([\s\S]*?)```', response_content)
                 if match:
                     response_content = match.group(1).strip()
-                summary_json = json.loads(response_content)
+                summary_json = robust_json_loads(response_content)
                 # 从JSON字典中提取对话摘要，假设摘要存储在名为'key'的键下
                 if '对话摘要' in summary_json:
                     print(f"💗摘要结果：{summary_json['对话摘要']}")
@@ -217,7 +217,9 @@ class CompressedRecentHistoryManager:
                         if summary is None:
                             continue
                     # Listen. Here, summary_json['对话摘要'] is not supposed to be anything else than str, but Qwen is shit.
-                    return SystemMessage(content=f"先前对话的备忘录: {summary}"), str(summary_json['对话摘要'])
+                    from config.prompts_sys import _loc, MEMORY_MEMO_WITH_SUMMARY
+                    memo_text = _loc(MEMORY_MEMO_WITH_SUMMARY, get_global_language()).format(summary=summary)
+                    return SystemMessage(content=memo_text), str(summary_json['对话摘要'])
                 else:
                     print('💥 摘要failed: ', response_content)
                     retries += 1
@@ -236,7 +238,8 @@ class CompressedRecentHistoryManager:
                 # 如果解析失败，重试
                 retries += 1
         # 如果所有重试都失败，返回None
-        return SystemMessage(content="先前对话的备忘录: 无。"), ""
+        from config.prompts_sys import _loc, MEMORY_MEMO_EMPTY
+        return SystemMessage(content=_loc(MEMORY_MEMO_EMPTY, get_global_language())), ""
 
     async def further_compress(self, initial_summary):
         retries = 0
@@ -254,7 +257,7 @@ class CompressedRecentHistoryManager:
                 match = re.search(r'```(?:json)?\s*([\s\S]*?)```', response_content)
                 if match:
                     response_content = match.group(1).strip()
-                summary_json = json.loads(response_content)
+                summary_json = robust_json_loads(response_content)
                 # 从JSON字典中提取对话摘要，假设摘要存储在名为'key'的键下
                 if '对话摘要' in summary_json:
                     print(f"💗第二轮摘要结果：{summary_json['对话摘要']}")
@@ -392,7 +395,7 @@ class CompressedRecentHistoryManager:
                     response_content = match.group(1).strip()
 
                 # 解析JSON响应
-                review_result = json.loads(response_content)
+                review_result = robust_json_loads(response_content)
                 
                 if '修正说明' in review_result and '修正后的对话' in review_result:
                     print(f"记忆整理结果：{review_result['修正说明']}")

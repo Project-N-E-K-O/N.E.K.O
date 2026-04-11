@@ -243,11 +243,15 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "avatar",
         "vrm",
         "idle_animation",
-        default="",
-        legacy_keys=("idleAnimation",),
+        default=None,
+        legacy_keys=("idleAnimation", "idleAnimations"),
     )
-    if idle_animation:
-        changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", str(idle_animation))
+    if idle_animation is not None:
+        # 向前兼容: 旧版存的是 string, 迁移为 list; 空值保留 []
+        if isinstance(idle_animation, str):
+            changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", [idle_animation] if idle_animation else [])
+        elif isinstance(idle_animation, list):
+            changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", idle_animation)
 
     lighting = get_reserved(
         catgirl_data,
@@ -288,28 +292,63 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "avatar",
         "mmd",
         "idle_animation",
-        default="",
-        legacy_keys=("mmd_idle_animation",),
+        default=None,
+        legacy_keys=("mmd_idle_animation", "mmd_idle_animations"),
     )
-    if mmd_idle_animation:
-        changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", str(mmd_idle_animation))
+    if mmd_idle_animation is not None:
+        # 向前兼容: 旧版存的是 string, 迁移为 list; 空值保留 []
+        if isinstance(mmd_idle_animation, str):
+            changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", [mmd_idle_animation] if mmd_idle_animation else [])
+        elif isinstance(mmd_idle_animation, list):
+            changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", mmd_idle_animation)
+
+    live3d_sub_type = str(
+        get_reserved(
+            catgirl_data,
+            "avatar",
+            "live3d_sub_type",
+            default="",
+            legacy_keys=("live3d_sub_type",),
+        )
+        or ""
+    ).strip().lower()
+    if live3d_sub_type not in {"vrm", "mmd"}:
+        has_mmd_model = bool(get_reserved(catgirl_data, "avatar", "mmd", "model_path", default=""))
+        has_vrm_model = bool(get_reserved(catgirl_data, "avatar", "vrm", "model_path", default=""))
+        if model_type == "live3d":
+            if has_mmd_model:
+                live3d_sub_type = "mmd"
+            elif has_vrm_model:
+                live3d_sub_type = "vrm"
+            else:
+                live3d_sub_type = ""
+        elif has_mmd_model and not has_vrm_model:
+            live3d_sub_type = "mmd"
+        elif has_vrm_model and not has_mmd_model:
+            live3d_sub_type = "vrm"
+        else:
+            live3d_sub_type = ""
+    changed |= set_reserved(catgirl_data, "avatar", "live3d_sub_type", live3d_sub_type)
 
     # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
     for legacy_key in (
         "voice_id",
         "system_prompt",
         "model_type",
+        "live3d_sub_type",
         "live2d_item_id",
         "item_id",
         "live2d",
         "vrm",
         "vrm_animation",
         "idleAnimation",
+        "idleAnimations",
         "lighting",
         "vrm_rotation",
         "mmd",
         "mmd_animation",
         "mmd_idle_animation",
+        "mmd_idle_animations",
     ):
         if legacy_key in catgirl_data:
             catgirl_data.pop(legacy_key, None)
@@ -335,6 +374,10 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     if model_type:
         result["model_type"] = model_type
 
+    live3d_sub_type = get_reserved(result, "avatar", "live3d_sub_type", default="")
+    if live3d_sub_type:
+        result["live3d_sub_type"] = live3d_sub_type
+
     live2d_model_path = get_reserved(result, "avatar", "live2d", "model_path", default="")
     if live2d_model_path:
         # COMPAT(v1->v2): 旧前端/接口读取 live2d 模型名，继续按历史语义回放目录名。
@@ -352,9 +395,19 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     if vrm_animation is not None:
         result["vrm_animation"] = vrm_animation
 
-    idle_animation = get_reserved(result, "avatar", "vrm", "idle_animation", default="")
-    if idle_animation:
-        result["idleAnimation"] = idle_animation
+    idle_animation = get_reserved(result, "avatar", "vrm", "idle_animation", default=None)
+    if idle_animation is not None:
+        # idleAnimation (string): 供 vrm-init / vrm-manager 等运行时消费
+        # idleAnimations (list): 供 model_manager 多选 UI 消费
+        if isinstance(idle_animation, str):
+            result["idleAnimation"] = idle_animation
+            result["idleAnimations"] = [idle_animation] if idle_animation else []
+        elif isinstance(idle_animation, list):
+            result["idleAnimation"] = idle_animation[0] if idle_animation else ""
+            result["idleAnimations"] = idle_animation
+        else:
+            result["idleAnimation"] = ""
+            result["idleAnimations"] = []
 
     lighting = get_reserved(result, "avatar", "vrm", "lighting", default=None)
     if isinstance(lighting, dict):
@@ -368,9 +421,19 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     if mmd_animation is not None:
         result["mmd_animation"] = mmd_animation
 
-    mmd_idle_animation = get_reserved(result, "avatar", "mmd", "idle_animation", default="")
-    if mmd_idle_animation:
-        result["mmd_idle_animation"] = mmd_idle_animation
+    mmd_idle_animation = get_reserved(result, "avatar", "mmd", "idle_animation", default=None)
+    if mmd_idle_animation is not None:
+        # mmd_idle_animation (string): 供 mmd-init / app-interpage 等运行时消费
+        # mmd_idle_animations (list): 供 model_manager 多选 UI 消费
+        if isinstance(mmd_idle_animation, str):
+            result["mmd_idle_animation"] = mmd_idle_animation
+            result["mmd_idle_animations"] = [mmd_idle_animation] if mmd_idle_animation else []
+        elif isinstance(mmd_idle_animation, list):
+            result["mmd_idle_animation"] = mmd_idle_animation[0] if mmd_idle_animation else ""
+            result["mmd_idle_animations"] = mmd_idle_animation
+        else:
+            result["mmd_idle_animation"] = ""
+            result["mmd_idle_animations"] = []
 
     touch_set = get_reserved(result, 'touch_set', default=None)
     if touch_set:

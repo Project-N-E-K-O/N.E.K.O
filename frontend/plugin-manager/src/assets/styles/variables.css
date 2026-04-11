@@ -1,0 +1,72 @@
+/**
+ * CSS 变量定义
+ */
+
+:root {
+  /* 主色 */
+  --primary-color: #409EFF;
+  --success-color: #67C23A;
+  --warning-color: #E6A23C;
+  --danger-color: #F56C6C;
+  --info-color: #909399;
+
+  /* 布局 */
+  --sidebar-width: 240px;
+  --header-height: 60px;
+  --content-padding: 20px;
+  --card-gap: 16px;
+
+  /* 间距 */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+
+  /* 圆角 */
+  --border-radius-sm: 4px;
+  --border-radius-md: 8px;
+  --border-radius-lg: 12px;
+
+  /* 阴影 */
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.1);
+}
+
+/* 自定义深色模式 - 使用更柔和的灰色 */
+html.dark {
+  /* 背景颜色 - 使用柔和的灰色而不是纯黑 */
+  --el-bg-color-page: #2d2d2d;
+  --el-bg-color: #363636;
+  --el-bg-color-overlay: #404040;
+  
+  /* 文本颜色 */
+  --el-text-color-primary: #e5e5e5;
+  --el-text-color-regular: #d0d0d0;
+  --el-text-color-secondary: #b0b0b0;
+  --el-text-color-placeholder: #909090;
+  --el-text-color-disabled: #707070;
+  
+  /* 边框颜色 */
+  --el-border-color: #4a4a4a;
+  --el-border-color-light: #3d3d3d;
+  --el-border-color-lighter: #353535;
+  --el-border-color-extra-light: #2f2f2f;
+  --el-border-color-dark: #5a5a5a;
+  --el-border-color-darker: #6a6a6a;
+  
+  /* 填充颜色 */
+  --el-fill-color: #404040;
+  --el-fill-color-light: #363636;
+  --el-fill-color-lighter: #2d2d2d;
+  --el-fill-color-extra-light: #252525;
+  --el-fill-color-dark: #4a4a4a;
+  --el-fill-color-darker: #545454;
+  --el-fill-color-blank: transparent;
+  
+  /* 遮罩层 */
+  --el-mask-color: rgba(0, 0, 0, 0.6);
+  --el-mask-color-extra-light: rgba(0, 0, 0, 0.3);
+}
+

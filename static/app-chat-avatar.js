@@ -14,6 +14,9 @@
     let cachedPreview = null;
     let autoCaptureTimer = null;
     let lastScheduledCacheKey = '';
+    // 多窗口模式：由 IPC 从 Pet 窗口注入的头像（/chat 页面无本地模型）
+    let externalAvatarDataUrl = '';
+    let externalAvatarModelType = '';
 
     function translateLabel(key, fallback) {
         if (typeof window.safeT === 'function') {
@@ -156,6 +159,14 @@
             translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
         );
         setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
+        window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+            detail: {
+                cacheKey: cachedPreview.cacheKey,
+                dataUrl: cachedPreview.dataUrl,
+                modelType: cachedPreview.modelType,
+                capturedAt: cachedPreview.capturedAt
+            }
+        }));
     }
 
     function clearCachedPreview() {
@@ -163,7 +174,8 @@
         lastScheduledCacheKey = '';
         setPreviewImage('');
         setPreviewStatus(translateLabel('chat.avatarPreviewWaiting', '等待当前模型头像缓存生成'));
-        setPreviewNote(translateLabel('chat.avatarPreviewHint', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
+        setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
+        window.dispatchEvent(new CustomEvent('chat-avatar-preview-cleared'));
     }
 
     async function captureAvatarPreview() {
@@ -226,7 +238,7 @@
         setPreviewStatus(forceRefresh
             ? translateLabel('chat.avatarPreviewRefreshing', '正在刷新当前头像...')
             : translateLabel('chat.avatarPreviewGenerating', '正在生成当前头像...'));
-        setPreviewNote(translateLabel('chat.avatarPreviewHint', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
+        setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
 
         try {
             const result = await captureAvatarPreview();
@@ -368,5 +380,44 @@
         scheduleAutoCapture('init');
     };
 
+    mod.getCachedPreview = function getCachedPreview() {
+        return cachedPreview ? {
+            cacheKey: cachedPreview.cacheKey,
+            dataUrl: cachedPreview.dataUrl,
+            modelType: cachedPreview.modelType,
+            capturedAt: cachedPreview.capturedAt
+        } : null;
+    };
+
+    mod.getCurrentAvatarDataUrl = function getCurrentAvatarDataUrl() {
+        if (hasUsableCachedPreview()) return cachedPreview.dataUrl || '';
+        // 多窗口 fallback：使用 IPC 注入的头像
+        if (externalAvatarDataUrl) return externalAvatarDataUrl;
+        return '';
+    };
+
+    /**
+     * 多窗口模式：由 preload / IPC 调用，设置从 Pet 窗口获取的头像
+     * @param {string} dataUrl - base64 data URL
+     * @param {string} [modelType] - 'live2d' | 'vrm' | 'mmd'
+     */
+    mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType) {
+        externalAvatarDataUrl = dataUrl || '';
+        externalAvatarModelType = modelType || '';
+        window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+            detail: { dataUrl: externalAvatarDataUrl, modelType: externalAvatarModelType, source: 'ipc' }
+        }));
+    };
+
+    mod.getExternalAvatar = function getExternalAvatar() {
+        return externalAvatarDataUrl ? { dataUrl: externalAvatarDataUrl, modelType: externalAvatarModelType } : null;
+    };
+
     window.appChatAvatar = mod;
+
+    // 消费 IPC 暂存的头像数据（neko:config-injected 可能在本脚本加载前触发）
+    if (window.__nekoPendingAvatar) {
+        mod.setExternalAvatar(window.__nekoPendingAvatar.dataUrl, window.__nekoPendingAvatar.modelType);
+        delete window.__nekoPendingAvatar;
+    }
 })();

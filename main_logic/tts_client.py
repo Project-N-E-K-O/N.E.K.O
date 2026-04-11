@@ -13,6 +13,7 @@ import wave
 import aiohttp
 import asyncio
 from functools import partial
+from urllib.parse import urlparse, urlunparse
 from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
@@ -146,6 +147,37 @@ def _adjust_free_tts_url(url: str) -> str:
         return url
 
 
+def _get_minimax_tts_ws_url(base_url: str | None = None) -> str:
+    """将 MiniMax API base URL 规范化为 TTS WebSocket 地址。"""
+    raw_url = (base_url or "https://api.minimaxi.com").strip().rstrip("/")
+    if raw_url.startswith("http://"):
+        raw_url = "ws://" + raw_url[7:]
+    elif raw_url.startswith("https://"):
+        raw_url = "wss://" + raw_url[8:]
+    elif not raw_url.startswith(("ws://", "wss://")):
+        raw_url = "wss://" + raw_url
+
+    parsed = urlparse(raw_url)
+    if not parsed.netloc:
+        raise ValueError(f"无效的 MiniMax base_url: {base_url!r}")
+    return urlunparse((parsed.scheme, parsed.netloc, "/ws/v1/t2a_v2", "", "", ""))
+
+
+try:
+    from websockets.connection import State as _WsState
+except (ImportError, AttributeError):
+    _WsState = None
+
+
+def _ws_is_open(ws_conn) -> bool:
+    """兼容不同 websockets 版本的连接状态检查。"""
+    if ws_conn is None:
+        return False
+    if _WsState is not None:
+        return getattr(ws_conn, "state", None) is _WsState.OPEN
+    return not getattr(ws_conn, "closed", True)
+
+
 _TTS_LANGUAGE_CODE_MAP = {
     'zh':    'cmn-CN',
     'zh-CN': 'cmn-CN',
@@ -192,7 +224,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     async def async_worker():
         """异步TTS worker主循环"""
         if free_mode:
-            tts_url = _adjust_free_tts_url("wss://lanlan.tech/tts")
+            tts_url = _adjust_free_tts_url("wss://api.lanlan.tech/tts")
         else:
             tts_url = "wss://api.stepfun.com/v1/realtime/audio?model=step-tts-2"
         ws = None
@@ -283,14 +315,24 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             response_queue.put(("__ready__", True))
             
             # 初始接收任务
+            _text_done_error_suppressed = False  # 抑制 "tts.text.done already sent" 错误洪泛
+
             async def receive_messages_initial():
                 """初始接收任务"""
+                nonlocal _text_done_error_suppressed
                 try:
                     async for message in ws:
                         event = json.loads(message)
                         event_type = event.get("type")
-                        
+
                         if event_type == "tts.response.error":
+                            # 抑制 "tts.text.done already sent" 错误级联
+                            err_msg = event.get("data", {}).get("message", "")
+                            if "tts.text.done" in err_msg and "already" in err_msg:
+                                if not _text_done_error_suppressed:
+                                    _text_done_error_suppressed = True
+                                    logger.warning("TTS: 服务端报告 tts.text.done 重复，后续同类错误将被静默")
+                                continue
                             _enqueue_error(response_queue, event)
                         elif event_type == "tts.response.audio.delta":
                             try:
@@ -427,13 +469,22 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         await ws.send(json.dumps(create_event))
                         
                         # 启动新的接收任务
+                        _text_done_error_suppressed = False  # 重连后重置错误抑制标记
+
                         async def receive_messages():
+                            nonlocal _text_done_error_suppressed
                             try:
                                 async for message in ws:
                                     event = json.loads(message)
                                     event_type = event.get("type")
-                                    
+
                                     if event_type == "tts.response.error":
+                                        err_msg = event.get("data", {}).get("message", "")
+                                        if "tts.text.done" in err_msg and "already" in err_msg:
+                                            if not _text_done_error_suppressed:
+                                                _text_done_error_suppressed = True
+                                                logger.warning("TTS: 服务端报告 tts.text.done 重复，后续同类错误将被静默")
+                                            continue
                                         _enqueue_error(response_queue, event)
                                     elif event_type == "tts.response.audio.delta":
                                         try:
@@ -473,9 +524,14 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 if not tts_text or not tts_text.strip():
                     continue
 
+                # 已发送 tts.text.done 后，丢弃同一轮次的残余文本（防止服务端报错）
+                if text_done_sent:
+                    logger.debug("TTS: 丢弃 text_done 之后的残余文本 chunk")
+                    continue
+
                 if not ws or not session_id:
                     continue
-                
+
                 # 发送文本
                 try:
                     text_event = {
@@ -1893,7 +1949,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
     """
     MiniMax TTS worker（国服 / 国际服，用于 MiniMax 克隆音色）
-    使用 MiniMax 的 T2A v2 API，累积文本后一次性合成，返回 PCM 音频
+    使用 MiniMax 的 T2A v2 WebSocket API，按文本 chunk 流式发送并接收 PCM 音频
     
     Args:
         request_queue: 多进程请求队列，接收(speech_id, text)元组
@@ -1903,103 +1959,452 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         base_url: MiniMax API base URL（国服 / 国际服），为 None 时使用国服默认值
     """
     import asyncio
-    import httpx
-
-    _base = (base_url or "https://api.minimaxi.com").rstrip('/')
-    MINIMAX_TTS_URL = f"{_base}/v1/t2a_v2"
+    import binascii
+    import queue as stdlib_queue
 
     async def async_worker():
+        ws_url = _get_minimax_tts_ws_url(base_url)
+        headers = {"Authorization": f"Bearer {audio_api_key}"}
+        model_name = "speech-2.8-turbo"
+        min_buffer_chars = 6
+        agg_flush_bytes = 4096
+        connect_timeout = 10.0
+        task_start_timeout = 10.0
+        task_finish_timeout = 10.0
+        idle_auto_finish_seconds = 105.0
+
+        ws = None
+        receive_task = None
         current_speech_id = None
-        text_buffer = []
+        pending_text = ""
+        task_started = False
+        accepted_speech_id = None
+        expected_close = False
+        task_started_event = None
+        task_finished_event = None
+        disconnect_event = None
+        disconnect_reason = None
+        audio_chunk_buffer = bytearray()
+        resampler = None
+        last_send_monotonic = None
+
+        def _reset_protocol_events():
+            nonlocal task_started_event, task_finished_event, disconnect_event
+            task_started_event = asyncio.Event()
+            task_finished_event = asyncio.Event()
+            disconnect_event = asyncio.Event()
+
+        def _reset_task_state(*, clear_sid: bool, clear_pending: bool = True) -> None:
+            nonlocal current_speech_id, pending_text, task_started, accepted_speech_id
+            nonlocal audio_chunk_buffer, resampler, last_send_monotonic
+            if clear_sid:
+                current_speech_id = None
+            if clear_pending:
+                pending_text = ""
+            task_started = False
+            accepted_speech_id = None
+            audio_chunk_buffer = bytearray()
+            resampler = None
+            last_send_monotonic = None
+
+        def _flush_audio(force: bool = False) -> None:
+            nonlocal audio_chunk_buffer
+            if not accepted_speech_id:
+                audio_chunk_buffer.clear()
+                return
+            while len(audio_chunk_buffer) >= agg_flush_bytes:
+                chunk = bytes(audio_chunk_buffer[:agg_flush_bytes])
+                del audio_chunk_buffer[:agg_flush_bytes]
+                response_queue.put(("__audio__", accepted_speech_id, chunk))
+            if force and audio_chunk_buffer:
+                response_queue.put(("__audio__", accepted_speech_id, bytes(audio_chunk_buffer)))
+                audio_chunk_buffer.clear()
+
+        async def _wait_for_event(target_event: asyncio.Event, timeout_s: float) -> bool:
+            target_task = asyncio.create_task(target_event.wait())
+            disconnect_task = asyncio.create_task(disconnect_event.wait())
+            try:
+                done, pending = await asyncio.wait(
+                    {target_task, disconnect_task},
+                    timeout=timeout_s,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for pending_task in pending:
+                    pending_task.cancel()
+                if target_task in done and target_task.result():
+                    return True
+                return False
+            finally:
+                for task in (target_task, disconnect_task):
+                    if not task.done():
+                        task.cancel()
+
+        async def _close_connection(*, expect_close: bool) -> None:
+            nonlocal ws, receive_task, expected_close
+            expected_close = expect_close
+            current_receive_task = receive_task
+            current_ws = ws
+            ws = None
+            receive_task = None
+            if current_ws and _ws_is_open(current_ws):
+                try:
+                    await current_ws.close()
+                except Exception:
+                    pass
+            if current_receive_task and not current_receive_task.done():
+                try:
+                    await asyncio.wait_for(current_receive_task, timeout=2.0)
+                except asyncio.TimeoutError:
+                    current_receive_task.cancel()
+                    try:
+                        await current_receive_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                except (asyncio.CancelledError, Exception):
+                    pass
+            expected_close = False
+
+        async def _receive_loop(ws_conn):
+            nonlocal disconnect_reason, resampler
+            try:
+                while True:
+                    raw_message = await ws_conn.recv()
+                    if isinstance(raw_message, bytes):
+                        continue
+
+                    try:
+                        message = json.loads(raw_message)
+                    except json.JSONDecodeError:
+                        logger.warning("MiniMax TTS 收到非JSON消息: %r", raw_message[:200])
+                        continue
+
+                    event_type = message.get("event") or message.get("type") or ""
+                    if event_type == "task_started":
+                        task_started_event.set()
+                        continue
+
+                    if event_type == "task_continued":
+                        data = message.get("data") or {}
+                        audio_hex = data.get("audio", "")
+                        if accepted_speech_id and audio_hex:
+                            try:
+                                pcm_bytes = binascii.unhexlify(audio_hex)
+                                if pcm_bytes:
+                                    audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
+                                    if resampler is None:
+                                        resampler = soxr.ResampleStream(24000, 48000, 1, dtype="float32")
+                                    audio_chunk_buffer.extend(
+                                        _resample_audio(audio_array, 24000, 48000, resampler)
+                                    )
+                                    _flush_audio(force=bool(message.get("is_final")))
+                            except (binascii.Error, ValueError) as exc:
+                                _enqueue_error(response_queue, f"MiniMax TTS 音频解码失败: {exc}")
+                        elif message.get("is_final"):
+                            _flush_audio(force=True)
+                        continue
+
+                    if event_type == "task_finished":
+                        _flush_audio(force=True)
+                        task_finished_event.set()
+                        continue
+
+                    if event_type == "task_failed":
+                        base_resp = message.get("base_resp") or {}
+                        status_code = base_resp.get("status_code")
+                        status_msg = base_resp.get("status_msg") or ""
+                        if status_code == 2201:
+                            logger.info("MiniMax TTS 连接因空闲超时被服务端关闭: %s", status_msg or message)
+                            disconnect_reason = "idle_timeout"
+                        else:
+                            disconnect_reason = "task_failed"
+                            _enqueue_error(response_queue, f"MiniMax TTS task_failed: {message}")
+                        task_finished_event.set()
+                        disconnect_event.set()
+                        continue
+
+                    if event_type == "connected_success":
+                        logger.debug("MiniMax TTS 收到冗余 connected_success")
+                        continue
+
+                    logger.debug("MiniMax TTS 忽略未处理事件: %s", event_type or message)
+            except asyncio.CancelledError:
+                raise
+            except websockets.exceptions.ConnectionClosed:
+                if not expected_close and disconnect_reason is None:
+                    disconnect_reason = "unexpected_disconnect"
+                    disconnect_event.set()
+            except Exception as exc:
+                if getattr(ws_conn, "closed", False) or not _ws_is_open(ws_conn):
+                    if not expected_close and disconnect_reason is None:
+                        disconnect_reason = "unexpected_disconnect"
+                        disconnect_event.set()
+                else:
+                    _enqueue_error(response_queue, f"MiniMax TTS 接收循环异常: {exc}")
+                    disconnect_reason = "task_failed"
+                    disconnect_event.set()
+            finally:
+                _flush_audio(force=True)
+
+        async def _connect_with_handshake():
+            logger.debug("MiniMax TTS 建立连接: %s", ws_url)
+            ws_conn = await websockets.connect(
+                ws_url,
+                additional_headers=headers,
+                ping_interval=None,
+                max_size=10 * 1024 * 1024,
+            )
+            try:
+                handshake_raw = await asyncio.wait_for(ws_conn.recv(), timeout=connect_timeout)
+            except Exception:
+                try:
+                    await ws_conn.close()
+                except Exception:
+                    pass
+                raise
+            try:
+                handshake = json.loads(handshake_raw)
+            except json.JSONDecodeError as exc:
+                try:
+                    await ws_conn.close()
+                except Exception:
+                    pass
+                raise RuntimeError(f"MiniMax 握手返回非JSON: {exc}") from exc
+            handshake_event = handshake.get("event") or handshake.get("type") or ""
+            if handshake_event != "connected_success":
+                try:
+                    await ws_conn.close()
+                except Exception:
+                    pass
+                raise RuntimeError(f"MiniMax 握手失败: {handshake}")
+            return ws_conn
+
+        async def _probe_connection() -> None:
+            probe_ws = await _connect_with_handshake()
+            try:
+                await probe_ws.close()
+            except Exception:
+                pass
+
+        async def _open_task_connection() -> None:
+            nonlocal ws, receive_task, disconnect_reason
+            _reset_protocol_events()
+            disconnect_reason = None
+            ws = await _connect_with_handshake()
+            receive_task = asyncio.create_task(_receive_loop(ws))
+
+        async def _handle_disconnect(*, notify_status: bool) -> None:
+            nonlocal disconnect_reason
+            preserve_pending = current_speech_id is not None and not task_started and bool(pending_text.strip())
+            if notify_status:
+                response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+            try:
+                await _close_connection(expect_close=True)
+            finally:
+                if preserve_pending:
+                    # 仅保留尚未发出的首段缓冲文本；已开始任务的文本不重放
+                    _reset_task_state(clear_sid=False, clear_pending=False)
+                else:
+                    _reset_task_state(clear_sid=True)
+                if preserve_pending:
+                    logger.debug("MiniMax TTS 连接恢复：保留未发送缓冲文本")
+            _reset_protocol_events()
+            disconnect_reason = None
+
+        async def _ensure_started() -> bool:
+            nonlocal task_started, accepted_speech_id, resampler, audio_chunk_buffer
+            nonlocal disconnect_reason, last_send_monotonic
+            if task_started:
+                return True
+            if not _ws_is_open(ws):
+                try:
+                    await _open_task_connection()
+                except Exception as exc:
+                    _enqueue_error(response_queue, f"MiniMax TTS 建立连接失败: {exc}")
+                    disconnect_reason = "unexpected_disconnect"
+                    disconnect_event.set()
+                    return False
+
+            payload = {
+                "event": "task_start",
+                "model": model_name,
+                "voice_setting": {
+                    "voice_id": voice_id,
+                    "speed": 1.0,
+                    "vol": 1.0,
+                    "pitch": 0,
+                },
+                "audio_setting": {
+                    "sample_rate": 24000,
+                    "bitrate": 128000,
+                    "format": "pcm",
+                    "channel": 1,
+                },
+            }
+
+            task_started_event.clear()
+            task_finished_event.clear()
+            try:
+                await ws.send(json.dumps(payload))
+                last_send_monotonic = time.monotonic()
+            except Exception as exc:
+                _enqueue_error(response_queue, f"MiniMax TTS task_start 发送失败: {exc}")
+                disconnect_reason = "unexpected_disconnect"
+                disconnect_event.set()
+                return False
+
+            if not await _wait_for_event(task_started_event, task_start_timeout):
+                if disconnect_reason is None:
+                    _enqueue_error(response_queue, "MiniMax TTS task_start 超时")
+                    disconnect_reason = "task_failed"
+                    disconnect_event.set()
+                return False
+
+            task_started = True
+            accepted_speech_id = current_speech_id
+            audio_chunk_buffer = bytearray()
+            resampler = soxr.ResampleStream(24000, 48000, 1, dtype="float32")
+            return True
+
+        async def _send_text_chunk(text: str) -> bool:
+            nonlocal disconnect_reason, last_send_monotonic
+            if not text or not text.strip():
+                return True
+            payload = {"event": "task_continue", "text": text}
+            try:
+                await ws.send(json.dumps(payload))
+                _record_tts_telemetry("minimax", text)
+                last_send_monotonic = time.monotonic()
+                return True
+            except Exception as exc:
+                _enqueue_error(response_queue, f"MiniMax TTS task_continue 发送失败: {exc}")
+                disconnect_reason = "unexpected_disconnect"
+                disconnect_event.set()
+                return False
+
+        async def _finish_current_task() -> None:
+            nonlocal current_speech_id, pending_text, task_started
+            nonlocal disconnect_reason, last_send_monotonic
+            if current_speech_id is None:
+                pending_text = ""
+                return
+
+            if disconnect_event.is_set():
+                notify = disconnect_reason == "unexpected_disconnect" and (task_started or bool(pending_text.strip()))
+                await _handle_disconnect(notify_status=notify)
+                return
+
+            if not task_started and pending_text.strip():
+                if not await _ensure_started():
+                    return
+                buffered_text = pending_text
+                pending_text = ""
+                if not await _send_text_chunk(buffered_text):
+                    return
+
+            if not task_started:
+                await _close_connection(expect_close=True)
+                _reset_task_state(clear_sid=True)
+                return
+
+            task_finished_event.clear()
+            try:
+                await ws.send(json.dumps({"event": "task_finish"}))
+                last_send_monotonic = None
+            except Exception as exc:
+                _enqueue_error(response_queue, f"MiniMax TTS task_finish 发送失败: {exc}")
+                disconnect_reason = "unexpected_disconnect"
+                disconnect_event.set()
+                return
+
+            await _wait_for_event(task_finished_event, task_finish_timeout)
+            await _close_connection(expect_close=True)
+            _reset_task_state(clear_sid=True)
+
+        async def _interrupt_current_task(*, clear_sid: bool) -> bool:
+            try:
+                await _close_connection(expect_close=True)
+            finally:
+                _reset_task_state(clear_sid=clear_sid)
+            return True
+
+        try:
+            await _probe_connection()
+        except Exception as exc:
+            _enqueue_error(response_queue, f"MiniMax TTS 握手失败: {exc}")
+            response_queue.put(("__ready__", False))
+            return
 
         logger.info("MiniMax TTS 已就绪，发送就绪信号 (voice_id=%s)", voice_id)
         response_queue.put(("__ready__", True))
 
         try:
             loop = asyncio.get_running_loop()
+            _reset_protocol_events()
 
             while True:
+                if disconnect_event.is_set():
+                    notify_status = disconnect_reason == "unexpected_disconnect" and (
+                        task_started or bool(pending_text.strip())
+                    )
+                    await _handle_disconnect(notify_status=notify_status)
+
                 try:
-                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                    sid, tts_text = await loop.run_in_executor(
+                        None,
+                        partial(request_queue.get, timeout=0.1),
+                    )
+                except stdlib_queue.Empty:
+                    if (
+                        task_started
+                        and last_send_monotonic is not None
+                        and time.monotonic() - last_send_monotonic > idle_auto_finish_seconds
+                    ):
+                        logger.debug("MiniMax TTS 空闲 >%.1fs，主动 task_finish", idle_auto_finish_seconds)
+                        await _finish_current_task()
+                    continue
                 except Exception:
                     break
 
                 if sid == "__interrupt__":
-                    # 打断：丢弃已累积文本，不调用 TTS API
-                    text_buffer = []
-                    current_speech_id = None
+                    if not await _interrupt_current_task(clear_sid=True):
+                        return
                     continue
-
-                if current_speech_id != sid and sid is not None:
-                    current_speech_id = sid
-                    text_buffer = []
 
                 if sid is None:
-                    # 收到终止信号，合成累积的文本
-                    if text_buffer and current_speech_id is not None:
-                        full_text = "".join(text_buffer)
-                        if full_text.strip():
-                            try:
-                                payload = {
-                                    "model": "speech-01-turbo",
-                                    "text": full_text,
-                                    "stream": False,
-                                    "voice_setting": {
-                                        "voice_id": voice_id,
-                                        "speed": 1.0,
-                                        "vol": 1.0,
-                                        "pitch": 0,
-                                    },
-                                    "audio_setting": {
-                                        "sample_rate": 24000,
-                                        "bitrate": 128000,
-                                        "format": "pcm",
-                                        "channel": 1,
-                                    },
-                                }
-                                headers = {
-                                    'Authorization': f'Bearer {audio_api_key}',
-                                    'Content-Type': 'application/json',
-                                }
-                                async with httpx.AsyncClient(timeout=30) as client:
-                                    resp = await client.post(MINIMAX_TTS_URL, headers=headers, json=payload)
-
-                                if resp.status_code == 200:
-                                    result = resp.json()
-                                    base_resp = result.get('base_resp') or {}
-                                    if base_resp.get('status_code', 0) != 0:
-                                        _enqueue_error(response_queue, f"MiniMax TTS 错误: {base_resp.get('status_msg')}")
-                                    else:
-                                        audio_hex = result.get('data', {}).get('audio', '')
-                                        if audio_hex:
-                                            _record_tts_telemetry("minimax", full_text)
-                                            import binascii
-                                            pcm_bytes = binascii.unhexlify(audio_hex)
-                                            # MiniMax 返回 PCM 24kHz 16bit mono → 重采样到 48kHz
-                                            audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
-                                            resampled = _resample_audio(audio_array, 24000, 48000)
-                                            # 分块发送，每块 4096 bytes
-                                            for i in range(0, len(resampled), 4096):
-                                                chunk = resampled[i:i+4096]
-                                                if chunk:
-                                                    response_queue.put(("__audio__", current_speech_id, chunk))
-                                else:
-                                    _enqueue_error(response_queue, f"MiniMax TTS HTTP {resp.status_code}: {resp.text[:200]}")
-
-                            except Exception as e:
-                                _enqueue_error(response_queue, f"MiniMax TTS 合成失败: {e}")
-
-                    text_buffer = []
-                    current_speech_id = None
+                    await _finish_current_task()
                     continue
 
-                # 累积文本
-                if tts_text and tts_text.strip():
-                    text_buffer.append(tts_text)
+                if current_speech_id is None:
+                    current_speech_id = sid
+                elif current_speech_id != sid:
+                    if not await _interrupt_current_task(clear_sid=False):
+                        return
+                    current_speech_id = sid
+
+                if not tts_text or not tts_text.strip():
+                    continue
+
+                if not task_started:
+                    pending_text += tts_text
+                    if len(pending_text) < min_buffer_chars:
+                        continue
+                    if not await _ensure_started():
+                        continue
+                    buffered_text = pending_text
+                    pending_text = ""
+                    if not await _send_text_chunk(buffered_text):
+                        continue
+                    continue
+
+                if not await _send_text_chunk(tts_text):
+                    continue
 
         except Exception as e:
             _enqueue_error(response_queue, f"MiniMax TTS Worker 错误: {e}")
             response_queue.put(("__ready__", False))
+        finally:
+            accepted_speech_id = None
+            await _close_connection(expect_close=True)
 
     try:
         asyncio.run(async_worker())

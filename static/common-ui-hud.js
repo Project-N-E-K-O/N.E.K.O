@@ -108,6 +108,8 @@ try {
 
 // 创建Agent弹出框内容
 window.AgentHUD._createAgentPopupContent = function (popup) {
+    popup.style.gap = '0';
+
     // 添加状态显示栏 - Fluent Design
     const statusDiv = document.createElement('div');
     statusDiv.id = 'live2d-agent-status';
@@ -117,7 +119,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
         padding: '6px 8px',
         borderRadius: '4px',
         background: 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05))',
-        marginBottom: '8px',
+        marginBottom: '0',
         minHeight: '20px',
         textAlign: 'center'
     });
@@ -598,14 +600,18 @@ window.AgentHUD.showAgentTaskHUD = function () {
 
 // 隐藏任务 HUD
 window.AgentHUD.hideAgentTaskHUD = function () {
-    console.log('[AgentHUD] hideAgentTaskHUD called');
-    let hud = document.getElementById('agent-task-hud');
+    const hud = document.getElementById('agent-task-hud');
     if (!hud) {
-        console.log('[AgentHUD] HUD element not found, creating it first to hide it properly');
-        hud = this.createAgentTaskHUD();
+        // HUD 不存在时无需创建再隐藏，直接返回
+        return;
     }
-    
-    console.log('[AgentHUD] HUD element found, starting fade out');
+
+    // 已经处于隐藏状态时跳过重复操作
+    if (hud.style.display === 'none') {
+        return;
+    }
+
+    console.log('[AgentHUD] hideAgentTaskHUD: starting fade out');
     hud.style.opacity = '0';
     const savedPos = localStorage.getItem('agent-task-hud-position');
     if (!savedPos) {
@@ -614,16 +620,13 @@ window.AgentHUD.hideAgentTaskHUD = function () {
 
     // 如果之前有正在等待的隐藏定时器，先清理掉
     if (this._hideTimeout) {
-        console.log('[AgentHUD][TimeoutTrace] hideAgentTaskHUD clearing previous timeout ID:', this._hideTimeout);
         clearTimeout(this._hideTimeout);
     }
 
     this._hideTimeout = setTimeout(() => {
-        console.log('[AgentHUD][TimeoutTrace] HUD element display set to none. Timeout ID was:', this._hideTimeout);
         hud.style.display = 'none';
         this._hideTimeout = null;
     }, 300);
-    console.log('[AgentHUD][TimeoutTrace] hideAgentTaskHUD set new timeout ID:', this._hideTimeout);
 };
 
 // 更新任务 HUD 内容
@@ -1533,6 +1536,7 @@ window.AgentHUD._setupDragging = function (hud) {
         
         #live2d-btn-return {
             animation: returnButtonBreathing 2s ease-in-out infinite;
+            will-change: box-shadow;
         }
         
         #live2d-btn-return:hover {

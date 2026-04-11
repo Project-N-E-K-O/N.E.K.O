@@ -10,6 +10,8 @@ from typing import Dict, List, Optional
 class PermissionManager:
     """权限管理器"""
 
+    VALID_LEVELS = {"admin", "trusted", "normal"}
+
     def __init__(self, trusted_users: List[Dict[str, str]] = None):
         """
         初始化权限管理器
@@ -22,13 +24,22 @@ class PermissionManager:
 
         if trusted_users:
             for user in trusted_users:
-                qq = user.get("qq", "")
-                level = user.get("level", "trusted")
+                qq = self._normalize_qq(user.get("qq", ""))
+                level = self._normalize_level(user.get("level", "trusted"))
                 nickname = user.get("nickname", "")
                 if qq:
                     self._users[qq] = level
                     if nickname:
                         self._nicknames[qq] = nickname
+
+    @staticmethod
+    def _normalize_qq(qq_number: str) -> str:
+        return str(qq_number or "").strip()
+
+    @classmethod
+    def _normalize_level(cls, level: str) -> str:
+        level_text = str(level or "trusted").strip().lower()
+        return level_text if level_text in cls.VALID_LEVELS else "trusted"
 
     def add_user(self, qq_number: str, level: str = "trusted", nickname: str = ""):
         """
@@ -39,18 +50,22 @@ class PermissionManager:
             level: 权限等级 (admin, trusted, normal)
             nickname: 用户昵称（可选）
         """
-        if level not in ["admin", "trusted", "normal"]:
-            level = "trusted"
-        self._users[qq_number] = level
+        qq_str = self._normalize_qq(qq_number)
+        if not qq_str:
+            return
+        self._users[qq_str] = self._normalize_level(level)
         if nickname:
-            self._nicknames[qq_number] = nickname
+            self._nicknames[qq_str] = nickname
+        elif qq_str in self._nicknames:
+            del self._nicknames[qq_str]
 
     def remove_user(self, qq_number: str):
         """移除用户"""
-        if qq_number in self._users:
-            del self._users[qq_number]
-        if qq_number in self._nicknames:
-            del self._nicknames[qq_number]
+        qq_str = self._normalize_qq(qq_number)
+        if qq_str in self._users:
+            del self._users[qq_str]
+        if qq_str in self._nicknames:
+            del self._nicknames[qq_str]
 
     def get_permission_level(self, qq_number: str) -> str:
         """
@@ -62,7 +77,7 @@ class PermissionManager:
         Returns:
             权限等级: admin, trusted, normal, none
         """
-        qq_str = str(qq_number)
+        qq_str = self._normalize_qq(qq_number)
         return self._users.get(qq_str, "none")
 
     def list_users(self) -> List[Dict[str, str]]:
@@ -77,16 +92,15 @@ class PermissionManager:
 
     def get_nickname(self, qq_number: str) -> Optional[str]:
         """获取用户昵称"""
-        return self._nicknames.get(str(qq_number))
+        return self._nicknames.get(self._normalize_qq(qq_number))
 
     def set_nickname(self, qq_number: str, nickname: str):
         """设置用户昵称"""
-        qq_str = str(qq_number)
+        qq_str = self._normalize_qq(qq_number)
         if qq_str in self._users:
             if nickname:
                 self._nicknames[qq_str] = nickname
             else:
-                # 如果昵称为空，删除昵称
                 if qq_str in self._nicknames:
                     del self._nicknames[qq_str]
             return True
@@ -94,9 +108,9 @@ class PermissionManager:
 
     def is_admin(self, qq_number: str) -> bool:
         """检查是否是管理员"""
-        return self.get_permission_level(str(qq_number)) == "admin"
+        return self.get_permission_level(qq_number) == "admin"
 
     def is_trusted(self, qq_number: str) -> bool:
         """检查是否是信任用户（包括管理员）"""
-        level = self.get_permission_level(str(qq_number))
+        level = self.get_permission_level(qq_number)
         return level in ["admin", "trusted"]

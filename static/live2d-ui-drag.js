@@ -85,7 +85,8 @@
     // 挂载到全局 window 对象，供其他脚本使用
     window.DragHelpers = {
         disableButtonPointerEvents: disableButtonPointerEvents,
-        restoreButtonPointerEvents: restoreButtonPointerEvents
+        restoreButtonPointerEvents: restoreButtonPointerEvents,
+        isDragging: false  // 全局拖拽状态，供 preload 跳过 elementFromPoint 等开销
     };
 })();
 
@@ -200,94 +201,150 @@ Live2DManager.prototype.closeAllSettingsWindows = function (exceptUrl = null) {
 };
 
 // 为"请她回来"按钮容器设置拖动功能
+// 性能优化：使用 RAF 批处理 + transform 走 GPU 合成，避免每帧 layout 抖动
 Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonContainer) {
     let isDragging = false;
     let dragStartX = 0;
     let dragStartY = 0;
     let containerStartX = 0;
     let containerStartY = 0;
-    let isClick = false; // 标记是否为点击操作
+    let cachedContainerWidth = 64;
+    let cachedContainerHeight = 64;
+    let dragRAFId = null;
+    let pendingClientX = 0;
+    let pendingClientY = 0;
+
+    // 拖拽开始的公共逻辑
+    function handleDragStart(clientX, clientY) {
+        isDragging = true;
+        dragStartX = clientX;
+        dragStartY = clientY;
+        // 同步初始化 pending 坐标，防止 click-without-move 时
+        // commitDragPosition() 使用过期值产生错误位移
+        pendingClientX = clientX;
+        pendingClientY = clientY;
+
+        // 设置全局拖拽标志，供 preload 等跳过昂贵操作
+        if (window.DragHelpers) window.DragHelpers.isDragging = true;
+
+        const currentLeft = parseInt(returnButtonContainer.style.left) || 0;
+        const currentTop = parseInt(returnButtonContainer.style.top) || 0;
+        containerStartX = currentLeft;
+        containerStartY = currentTop;
+
+        // 在拖拽开始时缓存尺寸，避免每帧读取触发 layout
+        cachedContainerWidth = returnButtonContainer.offsetWidth || 64;
+        cachedContainerHeight = returnButtonContainer.offsetHeight || 64;
+
+        returnButtonContainer.setAttribute('data-dragging', 'false');
+        returnButtonContainer.style.cursor = 'grabbing';
+
+        // 禁用昂贵的视觉效果：backdrop-filter（每帧重算高斯模糊）、transition（与 RAF 打架）、animation（呼吸灯重绘）
+        const returnBtn = returnButtonContainer.querySelector('#live2d-btn-return');
+        if (returnBtn) {
+            returnBtn.style.transition = 'none';
+            returnBtn.style.backdropFilter = 'none';
+            returnBtn.style.webkitBackdropFilter = 'none';
+            returnBtn.style.animation = 'none';
+        }
+    }
+
+    // 计算并应用拖拽位置（在 RAF 回调中执行，使用 transform 走 GPU 合成）
+    function applyDragPosition() {
+        dragRAFId = null;
+        const deltaX = pendingClientX - dragStartX;
+        const deltaY = pendingClientY - dragStartY;
+
+        if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
+            returnButtonContainer.setAttribute('data-dragging', 'true');
+        }
+
+        const newX = containerStartX + deltaX;
+        const newY = containerStartY + deltaY;
+        const boundedX = Math.max(0, Math.min(newX, window.innerWidth - cachedContainerWidth));
+        const boundedY = Math.max(0, Math.min(newY, window.innerHeight - cachedContainerHeight));
+
+        // 使用 transform 移动，仅走 GPU 合成，跳过 layout + paint
+        const tx = boundedX - containerStartX;
+        const ty = boundedY - containerStartY;
+        returnButtonContainer.style.transform = `translate(${tx}px, ${ty}px)`;
+    }
+
+    // 将 transform 位移落实到 left/top，并清除 transform
+    function commitDragPosition() {
+        const deltaX = pendingClientX - dragStartX;
+        const deltaY = pendingClientY - dragStartY;
+        const newX = containerStartX + deltaX;
+        const newY = containerStartY + deltaY;
+        const boundedX = Math.max(0, Math.min(newX, window.innerWidth - cachedContainerWidth));
+        const boundedY = Math.max(0, Math.min(newY, window.innerHeight - cachedContainerHeight));
+
+        returnButtonContainer.style.transform = '';
+        returnButtonContainer.style.left = `${boundedX}px`;
+        returnButtonContainer.style.top = `${boundedY}px`;
+    }
+
+    // 拖拽结束的公共逻辑
+    function handleDragEnd() {
+        if (!isDragging) return;
+
+        // 取消待执行的 RAF，将 transform 落实到 left/top
+        if (dragRAFId) {
+            cancelAnimationFrame(dragRAFId);
+            dragRAFId = null;
+        }
+        commitDragPosition();
+
+        setTimeout(() => {
+            returnButtonContainer.setAttribute('data-dragging', 'false');
+        }, 10);
+
+        isDragging = false;
+        returnButtonContainer.style.cursor = 'grab';
+
+        // 清除全局拖拽标志
+        if (window.DragHelpers) window.DragHelpers.isDragging = false;
+
+        // 恢复拖拽期间禁用的视觉效果
+        const returnBtn = returnButtonContainer.querySelector('#live2d-btn-return');
+        if (returnBtn) {
+            returnBtn.style.transition = '';
+            returnBtn.style.backdropFilter = '';
+            returnBtn.style.webkitBackdropFilter = '';
+            returnBtn.style.animation = '';
+        }
+    }
 
     // 鼠标按下事件
     returnButtonContainer.addEventListener('mousedown', (e) => {
-        // 允许在按钮容器本身和按钮元素上都能开始拖动
-        // 这样就能在按钮正中心位置进行拖拽操作
         if (e.target === returnButtonContainer || e.target.classList.contains('live2d-return-btn')) {
-            isDragging = true;
-            isClick = true;
-            dragStartX = e.clientX;
-            dragStartY = e.clientY;
-
-            const currentLeft = parseInt(returnButtonContainer.style.left) || 0;
-            const currentTop = parseInt(returnButtonContainer.style.top) || 0;
-            containerStartX = currentLeft;
-            containerStartY = currentTop;
-
-            returnButtonContainer.setAttribute('data-dragging', 'false');
-            returnButtonContainer.style.cursor = 'grabbing';
+            handleDragStart(e.clientX, e.clientY);
             e.preventDefault();
         }
     });
 
-    // 鼠标移动事件
+    // 鼠标移动事件 — 仅记录坐标，通过 RAF 合并更新
     document.addEventListener('mousemove', (e) => {
         if (isDragging) {
-            const deltaX = e.clientX - dragStartX;
-            const deltaY = e.clientY - dragStartY;
-
-            const dragThreshold = 5;
-            if (Math.abs(deltaX) > dragThreshold || Math.abs(deltaY) > dragThreshold) {
-                isClick = false;
-                returnButtonContainer.setAttribute('data-dragging', 'true');
+            pendingClientX = e.clientX;
+            pendingClientY = e.clientY;
+            if (!dragRAFId) {
+                dragRAFId = requestAnimationFrame(applyDragPosition);
             }
-
-            const newX = containerStartX + deltaX;
-            const newY = containerStartY + deltaY;
-
-            // 边界检查 - 使用窗口尺寸（窗口只覆盖当前屏幕）
-            const containerWidth = returnButtonContainer.offsetWidth || 64;
-            const containerHeight = returnButtonContainer.offsetHeight || 64;
-
-            const boundedX = Math.max(0, Math.min(newX, window.innerWidth - containerWidth));
-            const boundedY = Math.max(0, Math.min(newY, window.innerHeight - containerHeight));
-
-            returnButtonContainer.style.left = `${boundedX}px`;
-            returnButtonContainer.style.top = `${boundedY}px`;
         }
     });
 
     // 鼠标释放事件
-    document.addEventListener('mouseup', (e) => {
-        if (isDragging) {
-            setTimeout(() => {
-                returnButtonContainer.setAttribute('data-dragging', 'false');
-            }, 10);
-
-            isDragging = false;
-            isClick = false;
-            returnButtonContainer.style.cursor = 'grab';
-        }
-    });
+    document.addEventListener('mouseup', handleDragEnd);
 
     // 设置初始鼠标样式
     returnButtonContainer.style.cursor = 'grab';
 
     // 触摸事件支持
     returnButtonContainer.addEventListener('touchstart', (e) => {
-        // 允许在按钮容器本身和按钮元素上都能开始拖动
         if (e.target === returnButtonContainer || e.target.classList.contains('live2d-return-btn')) {
-            isDragging = true;
-            isClick = true;
             const touch = e.touches[0];
-            dragStartX = touch.clientX;
-            dragStartY = touch.clientY;
-
-            const currentLeft = parseInt(returnButtonContainer.style.left) || 0;
-            const currentTop = parseInt(returnButtonContainer.style.top) || 0;
-            containerStartX = currentLeft;
-            containerStartY = currentTop;
-
-            returnButtonContainer.setAttribute('data-dragging', 'false');
+            handleDragStart(touch.clientX, touch.clientY);
             e.preventDefault();
         }
     });
@@ -295,41 +352,16 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
     document.addEventListener('touchmove', (e) => {
         if (isDragging) {
             const touch = e.touches[0];
-            const deltaX = touch.clientX - dragStartX;
-            const deltaY = touch.clientY - dragStartY;
-
-            const dragThreshold = 5;
-            if (Math.abs(deltaX) > dragThreshold || Math.abs(deltaY) > dragThreshold) {
-                isClick = false;
-                returnButtonContainer.setAttribute('data-dragging', 'true');
+            pendingClientX = touch.clientX;
+            pendingClientY = touch.clientY;
+            if (!dragRAFId) {
+                dragRAFId = requestAnimationFrame(applyDragPosition);
             }
-
-            const newX = containerStartX + deltaX;
-            const newY = containerStartY + deltaY;
-
-            // 边界检查 - 使用窗口尺寸
-            const containerWidth = returnButtonContainer.offsetWidth || 64;
-            const containerHeight = returnButtonContainer.offsetHeight || 64;
-
-            const boundedX = Math.max(0, Math.min(newX, window.innerWidth - containerWidth));
-            const boundedY = Math.max(0, Math.min(newY, window.innerHeight - containerHeight));
-
-            returnButtonContainer.style.left = `${boundedX}px`;
-            returnButtonContainer.style.top = `${boundedY}px`;
             e.preventDefault();
         }
     });
 
-    document.addEventListener('touchend', (e) => {
-        if (isDragging) {
-            setTimeout(() => {
-                returnButtonContainer.setAttribute('data-dragging', 'false');
-            }, 10);
-
-            isDragging = false;
-            isClick = false;
-        }
-    });
+    document.addEventListener('touchend', handleDragEnd);
 };
 
 // 全局函数：更新圆形指示器样式
@@ -349,6 +381,15 @@ window.updateChatModeStyle = function(checkbox) {
         indicator.style.borderColor = '#ccc';
         checkmark.style.opacity = '0';
     }
+
+    const hovered = wrapper.matches(':hover');
+    wrapper.style.background = checkbox.checked
+        ? (hovered
+            ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+            : 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))')
+        : (hovered
+            ? 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))'
+            : 'transparent');
 };
 
 // 兼容旧函数名
@@ -364,10 +405,14 @@ window.createChatModeToggle = function(options) {
     Object.assign(wrapper.style, {
         display: 'flex',
         alignItems: 'center',
-        gap: '6px',
+        gap: '4px',
         width: '100%',
-        paddingLeft: '0',
-        marginTop: '2px'
+        padding: '6px 10px',
+        marginTop: '0',
+        cursor: 'pointer',
+        borderRadius: '6px',
+        boxSizing: 'border-box',
+        transition: 'background 0.2s ease'
     });
 
     const checkbox = document.createElement('input');
@@ -459,6 +504,18 @@ window.createChatModeToggle = function(options) {
     });
 
     checkbox.addEventListener('click', (e) => e.stopPropagation());
+    wrapper.addEventListener('mouseenter', () => {
+        window.updateChatModeStyle(checkbox);
+    });
+    wrapper.addEventListener('mouseleave', () => {
+        window.updateChatModeStyle(checkbox);
+    });
+    wrapper.addEventListener('click', (e) => {
+        if (e.target === checkbox) return;
+        e.preventDefault();
+        e.stopPropagation();
+        checkbox.click();
+    });
     label.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -518,7 +575,7 @@ window.createChatModeToggles = function(prefix) {
     Object.assign(container.style, {
         display: 'flex',
         flexDirection: 'column',
-        gap: '2px',
+        gap: '1px',
         width: '100%'
     });
 
@@ -565,6 +622,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
     if (buttonId === 'settings') {
         const mergeCheckbox = document.querySelector('#live2d-merge-messages');
         const focusCheckbox = document.querySelector('#live2d-focus-mode');
+        const avatarBubbleCheckbox = document.querySelector('#live2d-avatar-reaction-bubble');
         const proactiveChatCheckbox = popup.querySelector('#live2d-proactive-chat');
         const proactiveVisionCheckbox = popup.querySelector('#live2d-proactive-vision');
 
@@ -577,17 +635,19 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             const indicator = toggleItem.querySelector('.vrm-toggle-indicator');
             const checkmark = indicator?.querySelector('.vrm-toggle-checkmark');
             if (!indicator || !checkmark) return;
+            const alwaysTinted = ['live2d-merge-messages', 'live2d-focus-mode', 'live2d-avatar-reaction-bubble'].includes(checkbox.id);
+            const checkedColor = alwaysTinted ? '#69c5ff' : '#44b7fe';
 
             if (checkbox.checked) {
-                indicator.style.backgroundColor = '#44b7fe';
-                indicator.style.borderColor = '#44b7fe';
+                indicator.style.backgroundColor = checkedColor;
+                indicator.style.borderColor = checkedColor;
                 checkmark.style.opacity = '1';
                 toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
             } else {
                 indicator.style.backgroundColor = 'transparent';
                 indicator.style.borderColor = '#ccc';
                 checkmark.style.opacity = '0';
-                toggleItem.style.background = 'transparent';
+                toggleItem.style.background = alwaysTinted ? 'rgba(68, 183, 254, 0.1)' : 'transparent';
             }
         };
 
@@ -610,6 +670,16 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             }
             requestAnimationFrame(() => {
                 updateCheckboxStyle(focusCheckbox);
+            });
+        }
+
+        if (avatarBubbleCheckbox && typeof window.avatarReactionBubbleEnabled !== 'undefined') {
+            const newChecked = window.avatarReactionBubbleEnabled;
+            if (avatarBubbleCheckbox.checked !== newChecked) {
+                avatarBubbleCheckbox.checked = newChecked;
+            }
+            requestAnimationFrame(() => {
+                updateCheckboxStyle(avatarBubbleCheckbox);
             });
         }
 

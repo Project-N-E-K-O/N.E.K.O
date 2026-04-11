@@ -1,0 +1,100 @@
+import { useRef, useEffect, useCallback } from 'react';
+import MessageBubble from './MessageBubble';
+import { type ChatMessage, type MessageAction } from './message-schema';
+
+type MessageListProps = {
+  messages: ChatMessage[];
+  ariaLabel?: string;
+  failedStatusLabel?: string;
+  onAction?: (message: ChatMessage, action: MessageAction) => void;
+};
+
+function shouldGroupWithPrevious(current: ChatMessage, previous?: ChatMessage) {
+  if (!previous) return false;
+  if (current.role !== previous.role) return false;
+  if (current.author !== previous.author) return false;
+  if (current.role === 'system') return false;
+  if (typeof current.createdAt === 'number' && typeof previous.createdAt === 'number') {
+    if (Math.abs(current.createdAt - previous.createdAt) > 5 * 60 * 1000) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export default function MessageList({
+  messages,
+  ariaLabel = 'Chat messages',
+  failedStatusLabel = '发送失败',
+  onAction,
+}: MessageListProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const shouldScrollRef = useRef(true);
+
+  const isStreaming = messages.some(m => m.status === 'streaming');
+
+  const scrollToBottom = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || !shouldScrollRef.current) return;
+
+    if (isStreaming) {
+      container.scrollTop = container.scrollHeight;
+    } else {
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
+  }, [isStreaming]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const observer = new ResizeObserver(() => {
+      if (shouldScrollRef.current) {
+        container.scrollTop = container.scrollHeight;
+      }
+    });
+
+    for (const child of container.children) {
+      observer.observe(child);
+    }
+
+    return () => observer.disconnect();
+  }, [messages.length]);
+
+  const handleScroll = () => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const isNearBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+    shouldScrollRef.current = isNearBottom;
+  };
+
+  if (messages.length === 0) {
+    return (
+      <div className="message-list" ref={containerRef} aria-label={ariaLabel}>
+      </div>
+    );
+  }
+
+  return (
+    <div className="message-list" ref={containerRef} aria-label={ariaLabel} onScroll={handleScroll}>
+      {messages.map((message, index) => (
+        <MessageBubble
+          key={message.id}
+          message={message}
+          isGroupedWithPrevious={shouldGroupWithPrevious(message, messages[index - 1])}
+          failedStatusLabel={failedStatusLabel}
+          onAction={onAction}
+        />
+      ))}
+    </div>
+  );
+}

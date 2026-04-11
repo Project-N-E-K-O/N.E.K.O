@@ -2,8 +2,11 @@
 id = "bilibili-danmaku"
 name = "B站弹幕监听"
 description = "实时监听B站直播间弹幕，过滤后推送给AI分析和回复"
+short_description = "Monitor Bilibili live stream danmaku. 无需主动调用。"
+keywords = []
+passive = true
 version = "1.0.0"
-entry = "plugins.bilibili_danmaku:BiliDanmakuPlugin"
+entry = "plugin.plugins.bilibili_danmaku:BiliDanmakuPlugin"
 
 [plugin.author]
 name = "N.E.K.O Team"

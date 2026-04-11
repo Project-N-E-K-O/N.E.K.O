@@ -20,6 +20,19 @@
     to { opacity: 0; transform: translateY(8px); }
 }
 
+@keyframes musicBarTitleMarquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+}
+
+/* React 聊天 composer 内挂载点：允许在 grid 内收缩，避免播放器视觉上宽过聊天区域 */
+#music-player-mount {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
 /* --- 音乐条主容器 (.music-player-bar) --- */
 .music-player-bar {
     display: flex;
@@ -35,6 +48,13 @@
     flex-shrink: 0;
     position: relative;
     animation: musicBarSlideIn 0.3s ease;
+}
+
+/* 挂载在 React 聊天窗口 composer-panel 内的专用挂载点时，宽度擑满 */
+#music-player-mount > .music-player-bar {
+    width: 100%;
+    margin: 0;
+    border-radius: 12px 12px 0 0;
 }
 
 .music-player-bar.fading-out {
@@ -74,15 +94,63 @@
     text-align: center;
 }
 
-.music-bar-title {
+/* 标题区：默认省略；超长时由 JS 加 .is-marquee 双段无缝滚动 */
+.music-bar-title-wrap {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    margin-bottom: 2px;
+}
+
+.music-bar-title-track {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    white-space: nowrap;
+    will-change: transform;
+}
+
+.music-bar-title-seg {
     color: var(--music-text-main);
     font-size: 13px;
     font-weight: 600;
-    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.music-bar-title-wrap:not(.is-marquee) .music-bar-title-track {
+    display: block;
+    max-width: 100%;
+}
+
+.music-bar-title-wrap:not(.is-marquee) .music-bar-title-seg-primary {
+    display: block;
     overflow: hidden;
     text-overflow: ellipsis;
-    margin-bottom: 2px;
-    width: 100%;
+    white-space: nowrap;
+}
+
+.music-bar-title-wrap:not(.is-marquee) .music-bar-title-seg-dup {
+    display: none !important;
+}
+
+.music-bar-title-wrap.is-marquee .music-bar-title-track {
+    animation: musicBarTitleMarquee var(--marquee-duration, 12s) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .music-bar-title-wrap.is-marquee .music-bar-title-track {
+        animation: none;
+    }
+    .music-bar-title-wrap.is-marquee .music-bar-title-seg-dup {
+        display: none !important;
+    }
+    .music-bar-title-wrap.is-marquee .music-bar-title-seg-primary {
+        display: block;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
 }
 
 /* --- 进度条系统 --- */

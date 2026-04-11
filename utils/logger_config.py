@@ -622,6 +622,29 @@ AGENT_SERVER_RATE_LIMITED_ENDPOINTS = [
 HTTPX_SUPPRESSED_PATTERNS = [
     "/computer_use/availability",
     "/mcp/availability",
+    # Crawler domains — music (music_crawlers.py)
+    "music.163.com",
+    "soundcloud.com",
+    "itunes.apple.com",
+    "musopen.org",
+    "freemusicarchive.org",
+    "bandcamp.com",
+    # Crawler domains — memes (meme_fetcher.py)
+    "imgflip.com",
+    "doutub.com",
+    "fabiaoqing.com",
+    # Crawler domains — web scraper (web_scraper.py)
+    "bilibili.com",
+    "reddit.com",
+    "weibo.com",
+    "weibo.cn",
+    "twitter.com",
+    "google.com/search",
+    "baidu.com",
+    "douyin.com",
+    "kuaishou.com",
+    "trends24.in",
+    "getdaytrends.com",
 ]
 
 # HTTPX 客户端的速率限制配置（每 N 秒显示一次）

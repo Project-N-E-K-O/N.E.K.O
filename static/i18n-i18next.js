@@ -452,6 +452,9 @@
         window.updateLive2DDynamicTexts = function () {
             console.warn('[i18n] Fallback updateLive2DDynamicTexts() called - no-op');
         };
+
+        // 通知所有 localechange 监听者（与正常初始化路径一致）
+        window.dispatchEvent(new CustomEvent('localechange'));
     }
 
     /**

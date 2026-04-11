@@ -326,7 +326,33 @@
 
                     // Load the new model
                     if (window.vrmManager) {
+                        // 停止旧的待机轮换
+                        if (typeof window._stopVrmIdleRotation === 'function') window._stopVrmIdleRotation();
+                        if (typeof window._stopMmdIdleRotation === 'function') window._stopMmdIdleRotation();
+
                         await window.vrmManager.loadModel(newModelPath);
+
+                        // 获取角色待机动作列表并启动轮换
+                        if (nameForConfig && typeof window._startVrmIdleRotation === 'function') {
+                            try {
+                                const charRes = await fetch('/api/characters/');
+                                if (charRes.ok) {
+                                    const charData = await charRes.json();
+                                    const catData = charData?.['猫娘']?.[nameForConfig];
+                                    let idleList = catData?.idleAnimations;
+                                    if (!Array.isArray(idleList)) {
+                                        const single = catData?.idleAnimation;
+                                        idleList = single ? [single] : [];
+                                    }
+                                    window.lanlan_config.vrmIdleAnimations = idleList;
+                                    if (idleList.length > 0) {
+                                        window._startVrmIdleRotation(idleList);
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn('[Model] 获取VRM待机动作列表失败:', e);
+                            }
+                        }
 
                         // Apply lighting config if available
                         if (window.lanlan_config?.lighting && typeof window.applyVRMLighting === 'function') {
@@ -411,6 +437,10 @@
                         } catch (settingsErr) {
                             console.warn('[Model] 获取MMD设置失败:', settingsErr);
                         }
+                        // 停止旧的待机轮换
+                        if (typeof window._stopVrmIdleRotation === 'function') window._stopVrmIdleRotation();
+                        if (typeof window._stopMmdIdleRotation === 'function') window._stopMmdIdleRotation();
+
                         await window.mmdManager.loadModel(newModelPath);
 
                         // 应用完整设置（光照、渲染、物理、鼠标跟踪）
@@ -418,18 +448,26 @@
                             window.mmdManager.applySettings(savedSettings);
                         }
 
-                        // 播放待机动作（使用已确定的 nameForConfig，确保目标一致）
+                        // 播放待机动作 & 启动轮换
                         if (nameForConfig) {
                             try {
                                 const charRes = await fetch('/api/characters/');
                                 if (charRes.ok) {
                                     const charData = await charRes.json();
-                                    const mmdIdleAnimation = charData?.['猫娘']?.[nameForConfig]?.mmd_idle_animation;
-                                    if (mmdIdleAnimation) {
+                                    const catData = charData?.['猫娘']?.[nameForConfig];
+                                    let idleList = catData?.mmd_idle_animations;
+                                    if (!Array.isArray(idleList)) {
+                                        const single = catData?.mmd_idle_animation;
+                                        idleList = single ? [single] : [];
+                                    }
+                                    if (idleList.length > 0) {
                                         try {
-                                            await window.mmdManager.loadAnimation(mmdIdleAnimation);
+                                            await window.mmdManager.loadAnimation(idleList[0]);
                                             window.mmdManager.playAnimation();
-                                            console.log('[Model] 已播放待机动作:', mmdIdleAnimation);
+                                            console.log('[Model] 已播放待机动作:', idleList[0]);
+                                            if (typeof window._startMmdIdleRotation === 'function') {
+                                                window._startMmdIdleRotation(idleList);
+                                            }
                                         } catch (idleErr) {
                                             console.warn('[Model] 播放待机动作失败:', idleErr);
                                         }
@@ -795,11 +833,83 @@
                     case 'memory_edited':
                         await handleMemoryEdited(event.data.catgirl_name);
                         break;
+                    case 'avatar_updated': {
+                        // 从 Pet 窗口接收头像数据，注入到 Chat 窗口
+                        // 校验 lanlan_name：多角色场景下避免串头像
+                        // 本地角色名未就绪时也跳过，等 config 注入后由 request_avatar 回填
+                        const currentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        if (event.data.lanlan_name && (!currentName || event.data.lanlan_name !== currentName)) break;
+                        const incomingDataUrl = event.data.dataUrl || '';
+                        const incomingModelType = event.data.modelType || '';
+                        if (window.appChatAvatar && typeof window.appChatAvatar.setExternalAvatar === 'function') {
+                            window.appChatAvatar.setExternalAvatar(incomingDataUrl, incomingModelType);
+                        } else if (incomingDataUrl) {
+                            window.__nekoPendingAvatar = { dataUrl: incomingDataUrl, modelType: incomingModelType };
+                        }
+                        break;
+                    }
+                    case 'request_avatar': {
+                        // 仅 Pet 主窗口（/index）应答，Chat 窗口不回传
+                        if (window.location.pathname === '/chat') break;
+                        // 校验 lanlan_name：与 avatar_updated 对称，本地名未就绪或不匹配时不回包
+                        const reqCurrentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        if (event.data.lanlan_name && (!reqCurrentName || event.data.lanlan_name !== reqCurrentName)) break;
+                        if (window.appChatAvatar && typeof window.appChatAvatar.getCachedPreview === 'function') {
+                            const cached = window.appChatAvatar.getCachedPreview();
+                            if (cached && cached.dataUrl && nekoBroadcastChannel) {
+                                nekoBroadcastChannel.postMessage({
+                                    action: 'avatar_updated',
+                                    lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                                    dataUrl: cached.dataUrl,
+                                    modelType: cached.modelType || '',
+                                    timestamp: Date.now()
+                                });
+                            }
+                        }
+                        break;
+                    }
                 }
             };
         }
     } catch (e) {
         console.log('[BroadcastChannel] 初始化失败，将使用 postMessage 后备方案:', e);
+    }
+
+    // =====================================================================
+    // Cross-window avatar forwarding via BroadcastChannel
+    // =====================================================================
+
+    // Pet 窗口（/index）捕获头像后，通过 BC 广播给 Chat 窗口
+    window.addEventListener('chat-avatar-preview-updated', function (evt) {
+        // source === 'ipc' 表示此事件来自 BC 注入（setExternalAvatar），不回传避免循环
+        if (evt.detail && evt.detail.source === 'ipc') return;
+        if (!nekoBroadcastChannel) return;
+        var dataUrl = evt.detail && evt.detail.dataUrl;
+        if (!dataUrl) return;
+        nekoBroadcastChannel.postMessage({
+            action: 'avatar_updated',
+            lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+            dataUrl: dataUrl,
+            modelType: (evt.detail && evt.detail.modelType) || '',
+            timestamp: Date.now()
+        });
+    });
+
+    // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
+    if (window.location.pathname === '/chat' && nekoBroadcastChannel) {
+        var initialLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        var postAvatarRequest = function () {
+            nekoBroadcastChannel.postMessage({
+                action: 'request_avatar',
+                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                timestamp: Date.now()
+            });
+        };
+        postAvatarRequest();
+        // 配置可能尚未注入（lanlan_name 为空），等 IPC 注入后补发一次
+        if (!initialLanlanName) {
+            window.addEventListener('neko:config-injected', postAvatarRequest, { once: true });
+        }
     }
 
     // =====================================================================

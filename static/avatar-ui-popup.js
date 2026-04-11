@@ -101,7 +101,7 @@ function injectPopupStyles(prefix) {
             white-space: nowrap;
         }
         .${prefix}-toggle-item:focus-within {
-            outline: 2px solid var(--neko-popup-active, #2a7bc4);
+            outline: 2px solid var(--neko-popup-accent, #44b7fe);
             outline-offset: 2px;
         }
         .${prefix}-toggle-item[aria-disabled="true"] {
@@ -123,8 +123,8 @@ function injectPopupStyles(prefix) {
             justify-content: center;
         }
         .${prefix}-toggle-indicator[aria-checked="true"] {
-            background-color: var(--neko-popup-active, #2a7bc4);
-            border-color: var(--neko-popup-active, #2a7bc4);
+            background-color: var(--neko-popup-accent, #44b7fe);
+            border-color: var(--neko-popup-accent, #44b7fe);
         }
         .${prefix}-toggle-checkmark {
             color: #fff;
@@ -147,6 +147,14 @@ function injectPopupStyles(prefix) {
         }
         .${prefix}-toggle-item:hover:not([aria-disabled="true"]) {
             background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));
+        }
+        .${prefix}-toggle-item.${prefix}-toggle-item-static,
+        .${prefix}-toggle-item.${prefix}-toggle-item-static:hover:not([aria-disabled="true"]) {
+            background: var(--neko-popup-selected-bg, rgba(68, 183, 254, 0.1)) !important;
+        }
+        .${prefix}-toggle-item.${prefix}-toggle-item-static .${prefix}-toggle-indicator[aria-checked="true"] {
+            background-color: #69c5ff;
+            border-color: #69c5ff;
         }
         .${prefix}-settings-menu-item {
             display: flex;
@@ -213,7 +221,7 @@ function createPopup(manager, prefix, buttonId) {
     if (buttonId === 'mic') {
         popup.setAttribute('data-legacy-id', `${prefix}-mic-popup`);
         popup.style.minWidth = '400px';
-        popup.style.maxHeight = '320px';
+        popup.style.maxHeight = '420px';
         popup.style.flexDirection = 'row';
         popup.style.gap = '0';
         popup.style.overflowY = 'hidden';
@@ -224,9 +232,13 @@ function createPopup(manager, prefix, buttonId) {
         popup.style.overflowY = 'auto';
     } else if (buttonId === 'agent') {
         popup.classList.add(`${prefix}-popup-agent`);
+        popup.style.gap = '0';
+        popup.style.cursor = 'pointer';
         window.AgentHUD._createAgentPopupContent.call(manager, popup);
     } else if (buttonId === 'settings') {
         popup.classList.add(`${prefix}-popup-settings`);
+        popup.style.gap = '0';
+        popup.style.cursor = 'pointer';
         manager._createSettingsPopupContent(popup);
     }
 
@@ -300,10 +312,10 @@ function createSettingsPopupContent(manager, prefix, popup) {
                 const AUTH_FALLBACK_LABEL = '配置媒体凭证';
                 const authLink = document.createElement('div');
                 Object.assign(authLink.style, {
-                    display: 'flex', alignItems: 'center', gap: '6px',
-                    padding: '4px 8px', marginLeft: '-6px', fontSize: '12px',
+                    display: 'flex', alignItems: 'center', gap: '4px',
+                    padding: '6px 10px', marginLeft: '0', fontSize: '12px',
                     color: 'var(--neko-popup-text, #333)', cursor: 'pointer',
-                    borderRadius: '6px', transition: 'background 0.2s ease', width: '100%'
+                    borderRadius: '6px', transition: 'background 0.2s ease', width: '100%', boxSizing: 'border-box'
                 });
 
                 const authIcon = document.createElement('img');
@@ -429,15 +441,15 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
     const container = manager._createSidePanelContainer();
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
-    container.style.gap = '2px';
+    container.style.gap = '0';
     container.style.width = '200px';
     container.style.minWidth = '0';
     container.style.padding = '4px 4px';
 
     const chatToggles = [
-        { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages' },
-        { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true },
-        { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled' },
+        { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages', alwaysTinted: true },
+        { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
+        { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
     ];
 
     chatToggles.forEach(toggle => {
@@ -447,6 +459,7 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
 
     // 字数限制滑动条
     const textGuardContainer = manager._createTextGuardSlider();
+    textGuardContainer.style.marginTop = '12px';
     container.appendChild(textGuardContainer);
 
     document.body.appendChild(container);
@@ -462,7 +475,9 @@ function createTextGuardSlider(manager, prefix) {
         display: 'flex',
         flexDirection: 'column',
         gap: '4px',
-        padding: '4px 0'
+        padding: '4px 0',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
     });
 
     // 标签和数值行
@@ -480,7 +495,9 @@ function createTextGuardSlider(manager, prefix) {
     Object.assign(label.style, {
         fontSize: '12px',
         color: 'var(--neko-popup-text, #333)',
-        flexShrink: '0'
+        flexShrink: '0',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
     });
 
     const valueDisplay = document.createElement('span');
@@ -489,7 +506,9 @@ function createTextGuardSlider(manager, prefix) {
         color: 'var(--neko-popup-active, #2a7bc4)',
         fontWeight: '500',
         minWidth: '60px',
-        textAlign: 'right'
+        textAlign: 'right',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
     });
 
     labelRow.appendChild(label);
@@ -546,45 +565,9 @@ function createTextGuardSlider(manager, prefix) {
 
     updateDisplay(currentPosition);
 
-    // 警告提示
-    const warningRow = document.createElement('div');
-    Object.assign(warningRow.style, {
-        fontSize: '11px',
-        color: '#ff6b6b',
-        lineHeight: '1.4',
-        minHeight: '16px',
-        opacity: '0',
-        transition: 'opacity 0.2s ease'
-    });
-
-    const updateWarning = (position) => {
-        const pos = parseInt(position);
-        const value = 50 + pos * 150;
-        if (pos === 11) {
-            // 无限制
-            const warningText = (typeof window.t === 'function')
-                ? window.t('settings.toggles.textGuardUnlimitedWarning')
-                : '无限制可能导致模型生成过长回复，消耗较多Token';
-            warningRow.textContent = warningText;
-            warningRow.style.opacity = '1';
-        } else if (value > 500) {
-            // 超过500字显示提示
-            const warningText = (typeof window.t === 'function')
-                ? window.t('settings.toggles.textGuardHighWarning')
-                : '设置过大可能导致回复过长，建议保持在500字以内';
-            warningRow.textContent = warningText;
-            warningRow.style.opacity = '1';
-        } else {
-            warningRow.style.opacity = '0';
-        }
-    };
-
-    updateWarning(currentPosition);
-
     slider.addEventListener('input', () => {
         const position = parseInt(slider.value);
         updateDisplay(position);
-        updateWarning(position);
     });
 
     slider.addEventListener('change', () => {
@@ -611,7 +594,9 @@ function createTextGuardSlider(manager, prefix) {
         fontSize: '10px',
         color: '#888',
         lineHeight: '1.4',
-        marginTop: '4px'
+        marginTop: '0',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
     });
     const noteText = (typeof window.t === 'function')
         ? window.t('settings.toggles.textGuardNote')
@@ -620,7 +605,6 @@ function createTextGuardSlider(manager, prefix) {
 
     container.appendChild(labelRow);
     container.appendChild(sliderRow);
-    container.appendChild(warningRow);
     container.appendChild(noteRow);
 
     return container;
@@ -896,10 +880,10 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const container = manager._createSidePanelContainer();
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
-    container.style.gap = '8px';
-    container.style.width = '168px';
+    container.style.gap = '0';
+    container.style.width = '200px';
     container.style.minWidth = '0';
-    container.style.padding = '10px 14px';
+    container.style.padding = '10px 14px 2px';
 
     const LABEL_STYLE = { width: '36px', flexShrink: '0', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
     const VALUE_STYLE = { width: '36px', flexShrink: '0', textAlign: 'right', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
@@ -1002,10 +986,23 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     fpsRow.appendChild(fpsValue);
     container.appendChild(fpsRow);
 
-    // 鼠标跟踪切换
+    // ── 跟踪相关开关（统一三行间距） ──
     const trackingRow = document.createElement('div');
-    Object.assign(trackingRow.style, { display: 'flex', alignItems: 'center', gap: '8px', width: '100%', marginTop: '4px' });
+    Object.assign(trackingRow.style, { display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '0', width: '100%', marginTop: '0' });
 
+    const trackingToggleRowStyle = {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        cursor: 'pointer',
+        width: '100%',
+        padding: '8px 12px',
+        borderRadius: '6px',
+        boxSizing: 'border-box',
+        transition: 'background 0.2s ease'
+    };
+
+    // 鼠标跟踪复选框
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.id = `${prefix}-mouse-tracking-toggle`;
@@ -1018,59 +1015,51 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const updateRowStyle = () => {
         const isChecked = checkbox.checked;
         updateIndicatorStyle(isChecked);
-        trackingRow.setAttribute('aria-checked', String(isChecked));
     };
     checkbox.updateStyle = updateRowStyle;
     updateRowStyle();
-
     checkbox.addEventListener('change', updateRowStyle);
 
     const label = document.createElement('span');
     label.textContent = window.t ? window.t('settings.toggles.mouseTracking') : '跟踪鼠标';
     label.setAttribute('data-i18n', 'settings.toggles.mouseTracking');
-    Object.assign(label.style, { userSelect: 'none', fontSize: '12px', flex: '1' });
+    Object.assign(label.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
 
-    trackingRow.appendChild(checkbox);
-    trackingRow.appendChild(indicator);
-    trackingRow.appendChild(label);
-    Object.assign(trackingRow.style, { cursor: 'pointer' });
+    // 鼠标跟踪点击区域（左半部分）
+    const trackingClickArea = document.createElement('div');
+    Object.assign(trackingClickArea.style, trackingToggleRowStyle);
+    trackingClickArea.appendChild(checkbox);
+    trackingClickArea.appendChild(indicator);
+    trackingClickArea.appendChild(label);
 
-    // 鼠标跟踪切换事件处理
     const handleTrackingChange = () => {
         const enabled = !checkbox.checked;
         checkbox.checked = enabled;
         updateRowStyle();
         updateTrackingModeToggleState();
+        trackingClickArea.setAttribute('aria-checked', String(enabled));
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
         if (typeof manager._onMouseTrackingToggle === 'function') {
             manager._onMouseTrackingToggle(enabled);
         }
     };
 
-    trackingRow.addEventListener('click', (e) => {
+    trackingClickArea.addEventListener('click', (e) => {
         e.stopPropagation();
         handleTrackingChange();
-        trackingRow.setAttribute('aria-checked', String(checkbox.checked));
     });
-
-    trackingRow.setAttribute('role', 'switch');
-    trackingRow.setAttribute('aria-checked', String(checkbox.checked));
-    trackingRow.tabIndex = 0;
-    trackingRow.addEventListener('keydown', (e) => {
+    trackingClickArea.setAttribute('role', 'switch');
+    trackingClickArea.setAttribute('aria-checked', String(checkbox.checked));
+    trackingClickArea.tabIndex = 0;
+    trackingClickArea.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             e.stopPropagation();
             handleTrackingChange();
-            trackingRow.setAttribute('aria-checked', String(checkbox.checked));
         }
     });
 
-    container.appendChild(trackingRow);
-
-    // Live2D 全屏跟踪 / VRM/MMD 局部跟踪切换
-    const trackingModeToggle = document.createElement('div');
-    Object.assign(trackingModeToggle.style, { display: 'flex', alignItems: 'center', gap: '8px', width: '100%', marginTop: '4px' });
-
+    // 全屏/局部跟踪复选框（右半部分）
     const modeCheckbox = document.createElement('input');
     modeCheckbox.type = 'checkbox';
     modeCheckbox.style.display = 'none';
@@ -1078,43 +1067,28 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const { indicator: modeIndicator, updateStyle: updateModeIndicatorStyle } = manager._createCheckIndicator();
     Object.assign(modeIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
 
-    // 鼠标跟踪切换时更新跟踪模式按钮状态
     const updateTrackingModeToggleState = () => {
         const isEnabled = checkbox.checked;
-        trackingModeToggle.style.opacity = isEnabled ? '1' : '0.4';
-        trackingModeToggle.style.pointerEvents = isEnabled ? 'auto' : 'none';
-        trackingModeToggle.tabIndex = isEnabled ? 0 : -1;
-        if (!isEnabled) {
-            trackingModeToggle.setAttribute('aria-disabled', 'true');
-        } else {
-            trackingModeToggle.removeAttribute('aria-disabled');
-        }
+        modeClickArea.style.opacity = isEnabled ? '1' : '0.4';
+        modeClickArea.style.pointerEvents = isEnabled ? 'auto' : 'none';
+        modeClickArea.tabIndex = isEnabled ? 0 : -1;
     };
 
     const updateModeRowStyle = () => {
         updateModeIndicatorStyle(modeCheckbox.checked);
-        trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
     };
 
-    // 根据模型类型设置复选框状态（从 window 变量读取，保持同类型模型切换时状态不变）
     const getTrackingModeState = () => {
         if (prefix === 'live2d') {
             return window.live2dFullscreenTrackingEnabled === true;
         } else if (prefix === 'vrm' || prefix === 'mmd') {
-            // VRM 和 MMD 共用同一个局部跟踪设置
             return window.humanoidLocalTrackingEnabled === true;
         }
         return false;
     };
     modeCheckbox.checked = getTrackingModeState();
-
     modeCheckbox.updateStyle = updateModeRowStyle;
     updateModeRowStyle();
-
-    // 初始化跟踪模式按钮状态（根据鼠标跟踪按钮的状态）
-    updateTrackingModeToggleState();
-
-    checkbox.addEventListener('change', updateModeRowStyle);
 
     const modeLabel = document.createElement('span');
     if (prefix === 'live2d') {
@@ -1124,20 +1098,23 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         modeLabel.textContent = window.t ? window.t('settings.toggles.localTracking') : '局部跟踪';
         modeLabel.setAttribute('data-i18n', 'settings.toggles.localTracking');
     }
-    Object.assign(modeLabel.style, { userSelect: 'none', fontSize: '12px', flex: '1' });
+    Object.assign(modeLabel.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
 
-    trackingModeToggle.appendChild(modeCheckbox);
-    trackingModeToggle.appendChild(modeIndicator);
-    trackingModeToggle.appendChild(modeLabel);
-    Object.assign(trackingModeToggle.style, { cursor: 'pointer' });
+    const modeClickArea = document.createElement('div');
+    Object.assign(modeClickArea.style, trackingToggleRowStyle);
+    modeClickArea.appendChild(modeCheckbox);
+    modeClickArea.appendChild(modeIndicator);
+    modeClickArea.appendChild(modeLabel);
+
+    // 初始化跟踪模式按钮状态
+    updateTrackingModeToggleState();
 
     const handleModeChange = () => {
-        if (checkbox.checked !== true) {
-            return;
-        }
+        if (checkbox.checked !== true) return;
         const enabled = !modeCheckbox.checked;
         modeCheckbox.checked = enabled;
         updateModeRowStyle();
+        modeClickArea.setAttribute('aria-checked', String(enabled));
 
         if (prefix === 'live2d') {
             window.live2dFullscreenTrackingEnabled = enabled;
@@ -1153,31 +1130,84 @@ function createAnimationSettingsSidePanel(manager, prefix) {
             }
         }
 
-        if (typeof window.saveNEKOSettings === 'function') {
-            window.saveNEKOSettings();
-        }
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
     };
 
-    trackingModeToggle.addEventListener('click', (e) => {
+    modeClickArea.addEventListener('click', (e) => {
         e.stopPropagation();
         handleModeChange();
-        trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
     });
-
-    trackingModeToggle.setAttribute('role', 'switch');
-    trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
-    trackingModeToggle.addEventListener('keydown', (e) => {
+    modeClickArea.setAttribute('role', 'switch');
+    modeClickArea.setAttribute('aria-checked', String(modeCheckbox.checked));
+    modeClickArea.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             e.stopPropagation();
-            if (checkbox.checked === true) {
-                handleModeChange();
-                trackingModeToggle.setAttribute('aria-checked', String(modeCheckbox.checked));
-            }
+            if (checkbox.checked === true) handleModeChange();
         }
     });
 
-    container.appendChild(trackingModeToggle);
+    trackingRow.appendChild(trackingClickArea);
+    trackingRow.appendChild(modeClickArea);
+    container.appendChild(trackingRow);
+
+    // ── 取消隐藏（锁定悬停淡化）开关 ──
+    const hoverFadeRow = document.createElement('div');
+    Object.assign(hoverFadeRow.style, trackingToggleRowStyle);
+
+    const hoverFadeCheckbox = document.createElement('input');
+    hoverFadeCheckbox.type = 'checkbox';
+    hoverFadeCheckbox.style.display = 'none';
+    hoverFadeCheckbox.checked = window.lockedHoverFadeEnabled !== false; // 默认开启
+
+    const { indicator: hoverFadeIndicator, updateStyle: updateHoverFadeIndicatorStyle } = manager._createCheckIndicator();
+    Object.assign(hoverFadeIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
+
+    const updateHoverFadeRowStyle = () => {
+        updateHoverFadeIndicatorStyle(hoverFadeCheckbox.checked);
+        hoverFadeRow.setAttribute('aria-checked', String(hoverFadeCheckbox.checked));
+    };
+    hoverFadeCheckbox.updateStyle = updateHoverFadeRowStyle;
+    updateHoverFadeRowStyle();
+
+    const hoverFadeLabel = document.createElement('span');
+    hoverFadeLabel.textContent = window.t ? window.t('settings.toggles.lockedHoverFade') : '锁定悬停淡化';
+    hoverFadeLabel.setAttribute('data-i18n', 'settings.toggles.lockedHoverFade');
+    Object.assign(hoverFadeLabel.style, { userSelect: 'none', fontSize: '12px', flex: '1' });
+
+    hoverFadeRow.appendChild(hoverFadeCheckbox);
+    hoverFadeRow.appendChild(hoverFadeIndicator);
+    hoverFadeRow.appendChild(hoverFadeLabel);
+    Object.assign(hoverFadeRow.style, { cursor: 'pointer' });
+
+    const handleHoverFadeChange = () => {
+        const enabled = !hoverFadeCheckbox.checked;
+        hoverFadeCheckbox.checked = enabled;
+        window.lockedHoverFadeEnabled = enabled;
+        updateHoverFadeRowStyle();
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        // 如果关闭，立即移除当前的淡化效果
+        if (!enabled) {
+            window.dispatchEvent(new CustomEvent('neko-locked-hover-fade-changed', { detail: { enabled } }));
+        }
+    };
+
+    hoverFadeRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleHoverFadeChange();
+    });
+    hoverFadeRow.setAttribute('role', 'switch');
+    hoverFadeRow.setAttribute('aria-checked', String(hoverFadeCheckbox.checked));
+    hoverFadeRow.tabIndex = 0;
+    hoverFadeRow.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            handleHoverFadeChange();
+        }
+    });
+
+    trackingRow.appendChild(hoverFadeRow);
 
     document.body.appendChild(container);
     return container;
@@ -1208,6 +1238,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
         transform: 'translateX(-6px)',
         pointerEvents: 'auto',
+        cursor: 'pointer',
         flexWrap: options.flexWrap || 'wrap',
         width: options.width || 'auto',
         maxWidth: '300px'
@@ -1329,8 +1360,8 @@ function createIntervalControl(manager, prefix, toggle) {
         display: 'none',
         alignItems: 'stretch',
         flexDirection: 'column',
-        gap: '6px',
-        padding: '6px 12px',
+        gap: toggle.id === 'proactive-chat' ? '0' : '6px',
+        padding: toggle.id === 'proactive-chat' ? '10px 10px 1px' : '6px 12px',
         fontSize: '12px',
         color: 'var(--neko-popup-text, #333)',
         opacity: '0',
@@ -1343,6 +1374,7 @@ function createIntervalControl(manager, prefix, toggle) {
         transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
         transform: 'translateX(-6px)',
         pointerEvents: 'auto',
+        cursor: 'pointer',
         flexWrap: 'nowrap',
         width: 'max-content',
         maxWidth: 'min(320px, calc(100vw - 24px))'
@@ -1355,7 +1387,13 @@ function createIntervalControl(manager, prefix, toggle) {
     container.addEventListener('click', stopEventPropagation);
 
     const sliderRow = document.createElement('div');
-    Object.assign(sliderRow.style, { display: 'flex', alignItems: 'center', gap: '4px', width: 'auto' });
+    Object.assign(sliderRow.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '4px',
+        width: 'auto',
+        marginBottom: toggle.id === 'proactive-chat' ? '8px' : '0'
+    });
 
     const labelKey = toggle.id === 'proactive-chat' ? 'settings.interval.chatIntervalBase' : 'settings.interval.visionInterval';
     const defaultLabel = toggle.id === 'proactive-chat' ? '基础间隔' : '读取间隔';
@@ -1485,8 +1523,8 @@ function createCheckIndicator(manager, prefix) {
 
     const updateStyle = (checked) => {
         if (checked) {
-            indicator.style.backgroundColor = 'var(--neko-popup-active, #2a7bc4)';
-            indicator.style.borderColor = 'var(--neko-popup-active, #2a7bc4)';
+            indicator.style.backgroundColor = 'var(--neko-popup-accent, #44b7fe)';
+            indicator.style.borderColor = 'var(--neko-popup-accent, #44b7fe)';
             checkmark.style.opacity = '1';
         } else {
             indicator.style.backgroundColor = 'transparent';
@@ -1631,6 +1669,9 @@ function createToggleItem(manager, prefix, toggle, popup) {
 function createSettingsToggleItem(manager, prefix, toggle) {
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
+    if (toggle.alwaysTinted) {
+        toggleItem.classList.add(`${prefix}-toggle-item-static`);
+    }
     toggleItem.id = `${prefix}-toggle-${toggle.id}`;
     toggleItem.setAttribute('role', 'switch');
     toggleItem.setAttribute('tabIndex', '0');
@@ -1686,8 +1727,9 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const updateIndicatorStyle = (checked) => {
         if (checked) {
-            indicator.style.backgroundColor = 'var(--neko-popup-active, #2a7bc4)';
-            indicator.style.borderColor = 'var(--neko-popup-active, #2a7bc4)';
+            const activeColor = toggle.alwaysTinted ? '#69c5ff' : 'var(--neko-popup-accent, #44b7fe)';
+            indicator.style.backgroundColor = activeColor;
+            indicator.style.borderColor = activeColor;
             checkmark.style.opacity = '1';
         } else {
             indicator.style.backgroundColor = 'transparent';
@@ -1715,7 +1757,9 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         updateIndicatorStyle(isChecked);
-        toggleItem.style.background = isChecked
+        toggleItem.style.background = toggle.alwaysTinted
+            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
+            : isChecked
             ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
             : 'transparent';
     };
@@ -1726,16 +1770,18 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     toggleItem.appendChild(indicator);
     toggleItem.appendChild(label);
 
-    toggleItem.addEventListener('mouseenter', () => {
-        if (checkbox.checked) {
-            toggleItem.style.background = 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))';
-        } else {
-            toggleItem.style.background = 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
-        }
-    });
-    toggleItem.addEventListener('mouseleave', () => {
-        updateStyle();
-    });
+    if (!toggle.alwaysTinted) {
+        toggleItem.addEventListener('mouseenter', () => {
+            if (checkbox.checked) {
+                toggleItem.style.background = 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))';
+            } else {
+                toggleItem.style.background = 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
+            }
+        });
+        toggleItem.addEventListener('mouseleave', () => {
+            updateStyle();
+        });
+    }
 
     const handleToggleChange = (isChecked) => {
         updateStyle();
@@ -2071,8 +2117,9 @@ const AvatarPopupMixin = {
                 popup.style.opacity = '0';
                 const closingOpensLeft = popup.dataset.opensLeft === 'true';
                 popup.style.transform = closingOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
-                const triggerIcon = document.querySelector(`.${prefix}-trigger-icon-${buttonId}`);
-                if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
+                if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                    this.updateSeparatePopupTriggerIcon(buttonId, false);
+                }
                 if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
 
                 // 关闭该 popup 所属的所有侧面板
@@ -2111,6 +2158,9 @@ const AvatarPopupMixin = {
                 popup.style.opacity = '0';
                 popup.style.visibility = 'visible';
                 popup.classList.add('is-positioning');
+                if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                    this.updateSeparatePopupTriggerIcon(buttonId, true);
+                }
 
                 const hasSeparatePopupTrigger = this._buttonConfigs && this._buttonConfigs.find(c => c.id === buttonId && c.separatePopupTrigger);
                 if (!hasSeparatePopupTrigger && typeof this.setButtonActive === 'function') {
@@ -2142,8 +2192,9 @@ const AvatarPopupMixin = {
                         popup.style.visibility = 'visible';
                         popup.style.opacity = '1';
                         popup.classList.remove('is-positioning');
-                        const triggerIcon = document.querySelector(`.${prefix}-trigger-icon-${buttonId}`);
-                        if (triggerIcon) triggerIcon.style.transform = 'rotate(180deg)';
+                        if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                            this.updateSeparatePopupTriggerIcon(buttonId);
+                        }
                         requestAnimationFrame(() => {
                             if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
                             popup.style.transform = 'translateX(0)';
@@ -2184,8 +2235,9 @@ const AvatarPopupMixin = {
                 });
             }
 
-            const triggerIcon = document.querySelector(`.${prefix}-trigger-icon-${buttonId}`);
-            if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
+            if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                this.updateSeparatePopupTriggerIcon(buttonId, false);
+            }
 
             popup._hideTimeoutId = setTimeout(() => {
                 finalizePopupClosedState(popup);
@@ -2251,7 +2303,14 @@ const AvatarPopupMixin = {
         };
 
         ManagerProto.renderScreenSourceList = async function (popup) {
-            if (!popup) return;
+            if (!popup) return false;
+            const popupId = popup.id;
+            const isPopupAvailable = () => {
+                if (!popup || !popup.isConnected) return false;
+                if (popupId && document.getElementById(popupId) !== popup) return false;
+                return popup.style.display === 'flex' && popup.style.opacity !== '0';
+            };
+            if (!isPopupAvailable()) return false;
             popup.innerHTML = '';
 
             if (!window.electronDesktopCapturer || typeof window.electronDesktopCapturer.getSources !== 'function') {
@@ -2259,7 +2318,7 @@ const AvatarPopupMixin = {
                 noElectron.textContent = window.t ? window.t('app.screenSource.notAvailable') : '屏幕捕获不可用';
                 Object.assign(noElectron.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
                 popup.appendChild(noElectron);
-                return;
+                return true;
             }
 
             const loading = document.createElement('div');
@@ -2269,6 +2328,7 @@ const AvatarPopupMixin = {
 
             try {
                 const sources = await window.electronDesktopCapturer.getSources({ types: ['window', 'screen'] });
+                if (!isPopupAvailable()) return false;
                 popup.innerHTML = '';
 
                 if (!sources || sources.length === 0) {
@@ -2276,7 +2336,7 @@ const AvatarPopupMixin = {
                     noSrc.textContent = window.t ? window.t('app.screenSource.noSources') : '未找到可用源';
                     Object.assign(noSrc.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
                     popup.appendChild(noSrc);
-                    return;
+                    return true;
                 }
 
                 const screens = sources.filter(s => s.id.startsWith('screen:'));
@@ -2349,12 +2409,15 @@ const AvatarPopupMixin = {
 
                 createGrid(window.t ? window.t('app.screenSource.screens') : '屏幕', screens);
                 createGrid(window.t ? window.t('app.screenSource.windows') : '窗口', windows);
+                return true;
             } catch (err) {
+                if (!isPopupAvailable()) return false;
                 popup.innerHTML = '';
                 const errDiv = document.createElement('div');
                 errDiv.textContent = window.t ? window.t('app.screenSource.loadFailed') : '获取屏幕源失败';
                 Object.assign(errDiv.style, { padding: '12px', fontSize: '13px', color: '#ff4d4f', textAlign: 'center' });
                 popup.appendChild(errDiv);
+                return true;
             }
         };
 

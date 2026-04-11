@@ -73,6 +73,10 @@
         }
     }
 
+    function supportsLocalModelRuntime() {
+        return !/^\/chat(?:\/|$)/.test(window.location.pathname || '');
+    }
+
     function emitAssistantSpeechCancel(source) {
         var turnId = S.assistantTurnId || S.assistantSpeechActiveTurnId || null;
         S.assistantTurnId = null;
@@ -149,26 +153,45 @@
 
             const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
 
-            // 检测 live3d 子类型（优先检查 MMD，与后端 _get_live3d_sub_type 保持一致）
-            const _sanitize = v => (typeof v === 'string' && v.trim() && v !== 'undefined' && v !== 'null') ? v : '';
+            // 检测 live3d 子类型：优先使用 live3d_sub_type（后端权威来源）
+            const _sanitize = (v) => {
+                if (v === undefined || v === null) return '';
+                const s = String(v).trim();
+                const lower = s.toLowerCase();
+                if (!s || lower === 'undefined' || lower === 'null') return '';
+                return s;
+            };
             let mmdPath = '';
             let vrmPath = '';
             let effectiveModelType = modelType;
             if (modelType === 'live3d') {
-                mmdPath = _sanitize(catgirlConfig.mmd)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
-                    || '';
-                vrmPath = _sanitize(catgirlConfig.vrm)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
-                    || '';
-                if (mmdPath) {
-                    effectiveModelType = 'mmd';
-                } else if (vrmPath) {
+                const subType = (
+                    catgirlConfig._reserved?.avatar?.live3d_sub_type
+                    || catgirlConfig.live3d_sub_type
+                    || ''
+                ).toString().trim().toLowerCase();
+
+                if (subType === 'vrm') {
                     effectiveModelType = 'vrm';
+                } else if (subType === 'mmd') {
+                    effectiveModelType = 'mmd';
                 } else {
-                    effectiveModelType = 'live2d'; // fallback
+                    // sub_type 缺失时回退到路径探测
+                    mmdPath = _sanitize(catgirlConfig.mmd)
+                        || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
+                        || '';
+                    vrmPath = _sanitize(catgirlConfig.vrm)
+                        || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
+                        || '';
+                    if (mmdPath && !vrmPath) {
+                        effectiveModelType = 'mmd';
+                    } else if (vrmPath) {
+                        effectiveModelType = 'vrm';
+                    } else {
+                        effectiveModelType = 'live2d';
+                    }
                 }
-                console.log('[猫娘切换] live3d 子类型检测:', effectiveModelType, '(mmd:', !!mmdPath, 'vrm:', !!vrmPath, ')');
+                console.log('[猫娘切换] live3d 子类型检测:', effectiveModelType, '(subType:', subType, 'mmd:', !!mmdPath, 'vrm:', !!vrmPath, ')');
             }
             console.log('[猫娘切换] effectiveModelType:', effectiveModelType);
 
@@ -406,7 +429,9 @@
 
             // 4. 根据模型类型加载相应的模型
             console.log('[猫娘切换] 检测到模型类型:', modelType, '有效类型:', effectiveModelType);
-            if (effectiveModelType === 'vrm') {
+            if (!supportsLocalModelRuntime()) {
+                console.log('[猫娘切换] 当前页面不加载本地模型，跳过模型热切换');
+            } else if (effectiveModelType === 'vrm') {
                 // 加载 VRM 模型
                 console.log('[猫娘切换] 进入VRM加载分支');
 
@@ -660,14 +685,10 @@
 
                         if (window.vrmManager?.ambientLight && window.vrmManager?.mainLight &&
                             window.vrmManager?.fillLight && window.vrmManager?.rimLight) {
-                            // VRoid Hub 风格：极高环境光，柔和主光，无辅助光
-                            const defaultLighting = {
-                                ambient: 1.0,      // 极高环境光，消除所有暗部
-                                main: 0.6,         // 适中主光，配合跟随相机
-                                fill: 0.0,         // 不需要补光
-                                rim: 0.0,          // 不需要外部轮廓光
-                                top: 0.0,          // 不需要顶光
-                                bottom: 0.0        // 不需要底光
+                            // 引用全局唯一默认值（定义于 vrm-core.js）
+                            const defaultLighting = window.VRM_DEFAULT_LIGHTING || {
+                                ambient: 0.83, main: 1.91, fill: 0.0,
+                                rim: 0.0, top: 0.0, bottom: 0.0
                             };
 
                             if (window.vrmManager.ambientLight) {
@@ -687,6 +708,11 @@
                             }
                             if (window.vrmManager.bottomLight) {
                                 window.vrmManager.bottomLight.intensity = lighting.bottom ?? defaultLighting.bottom;
+                            }
+
+                            // 应用描边粗细设置
+                            if (lighting.outlineWidthScale !== undefined && typeof applyVRMOutlineWidth === 'function') {
+                                applyVRMOutlineWidth(lighting.outlineWidthScale, window.vrmManager);
                             }
 
                             // 强制渲染一次，确保光照立即生效
@@ -824,10 +850,12 @@
                     || catgirlConfig._reserved?.avatar?.mmd?.model_path
                     || '';
 
-                if (!mmdModelPath) {
-                    throw new Error('MMD 模型路径未配置');
+                if (!mmdModelPath || mmdModelPath === 'undefined' || mmdModelPath === 'null') {
+                    mmdModelPath = '/static/mmd/Miku/Miku.pmx';
+                    console.warn('[猫娘切换] MMD 模型路径未配置或无效，使用默认模型:', mmdModelPath);
+                } else {
+                    console.log('[猫娘切换] MMD 模型路径:', mmdModelPath);
                 }
-                console.log('[猫娘切换] MMD 模型路径:', mmdModelPath);
 
                 // 处理路径格式
                 let mmdModelUrl = mmdModelPath;
@@ -974,11 +1002,14 @@
                     window.live2dManager = new window.Live2DManager();
                 }
 
+                if (!window.live2dManager) {
+                    console.error('[猫娘切换] Live2DManager 不可用，无法加载模型');
+                    throw new Error('Live2DManager unavailable');
+                }
+
                 // 初始化或重用 PIXI
-                if (window.live2dManager) {
-                    if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.renderer) {
-                        await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
-                    }
+                if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.renderer) {
+                    await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
                 }
 
                 // 加载新模型
@@ -1171,7 +1202,7 @@
 
         } catch (error) {
             console.error('[猫娘切换] 失败:', error);
-            showStatusToast(`切换失败: ${error.message}`, 4000);
+            showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
         } finally {
             S.isSwitchingCatgirl = false;
             // 清理切换标识，取消所有 pending 的 applyLighting 定时器

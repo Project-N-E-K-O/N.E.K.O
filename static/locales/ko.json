@@ -28,7 +28,8 @@
         "fieldSeparator": ", ",
         "tryAgainLater": "나중에 다시 시도해 주세요.",
         "user": "사용자",
-        "project": "프로젝트"
+        "project": "프로젝트",
+        "collapse": "접기"
     },
     "characterProfile": {
         "gender": "성별",
@@ -478,6 +479,7 @@
         "RESPONSE_INVALID": "AI 응답이 요구사항을 충족하지 않아 출력이 폐기되었습니다",
         "NO_USER_MESSAGE": "⚠️ 대화 기록에 사용자 메시지가 없어 응답을 생성할 수 없습니다",
         "LLM_RETRY": "⚠️ LLM {{error_type}}, 재시도 중 ({{attempt}}/{{max_retries}})...",
+        "LLM_UPSTREAM_ERROR": "⚠️ 죄송합니다냥, 상위 AI 서비스 제공자 내부 오류가 발생했습니다. 자동 재시도 중...",
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM 연결 실패 ({{error_type}}), {{max_retries}}회 재시도 완료: {{error}}",
         "TEXT_GEN_ERROR": "💥 텍스트 생성 오류: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM이 응답을 반환하지 않았습니다. API 연결 및 설정을 확인하세요.",
@@ -521,8 +523,12 @@
         "tooltip": "채팅 영역",
         "textInputPlaceholder": "텍스트 채팅 모드...보내려면 Enter를 누르고, 줄을 바꾸려면 Shift+Enter를 누르세요.",
         "send": "보내기",
+        "importImage": "이미지 가져오기",
+        "importImageAriaLabel": "이미지 가져오기",
         "screenshot": "스크린샷",
+        "screenshotAriaLabel": "스크린샷",
         "takePhoto": "사진 찍기",
+        "takePhotoAriaLabel": "사진 찍기",
         "screenshotsTitle": "보류 중인 스크린샷",
         "clearAll": "모두 지우기",
         "screenshotAlt": "스크린샷 {{index}}",
@@ -530,8 +536,79 @@
         "removeScreenshot": "이 스크린샷 삭제",
         "avatarPreview": "현재 아바타 표시",
         "avatarPreviewLabel": "현재 아바타",
+        "avatarPreviewCardTitle": "현재 아바타",
+        "avatarPreviewCardStatus": "위 버튼을 눌러 현재 모델 아바타를 생성하세요",
+        "avatarPreviewClose": "아바타 미리보기 닫기",
+        "avatarPreviewImageAlt": "현재 아바타 미리보기",
+        "avatarPreviewPlaceholder": "AVATAR",
+        "avatarPreviewCardNote": "현재 표시 중인 Live2D / VRM / MMD 모델을 기반으로 아바타를 생성합니다.",
+        "avatarPreviewRefresh": "아바타 새로고침",
+        "emptyState": "채팅 내용이 연결되면 여기에 표시됩니다.",
+        "messageStreaming": "생성 중",
+        "messageFailed": "전송 실패",
+        "reactWindowOpen": "새 채팅 창 열기",
+        "reactWindowLabel": "새 채팅 창",
+        "reactWindowClose": "새 채팅 창 닫기",
+        "reactWindowMinimize": "새 채팅 창 최소화",
+        "reactWindowMinimizeShort": "최소화",
+        "reactWindowRestore": "새 채팅 창 복원",
+        "reactWindowRestoreShort": "복원",
+        "reactWindowMountFailed": "새 채팅 창 마운트에 실패했습니다",
+        "reactWindowLoadFailed": "새 채팅 창 리소스를 불러오지 못했습니다",
+        "reactWindowAriaLabel": "Neko 채팅 창",
+        "reactWindowInputHint": "Enter 로 전송하고 Shift + Enter 로 줄바꿈",
+        "messageListAriaLabel": "채팅 메시지 목록",
+        "composerToolsAriaLabel": "입력 도구 모음",
+        "pendingImagesAriaLabel": "전송 대기 이미지",
+        "pendingImageAlt": "이미지 {{index}}",
+        "removePendingImage": "이미지 제거",
+        "emojiButtonAriaLabel": "이모지",
+        "attachmentButtonAriaLabel": "첨부",
         "jukebox": "주크박스",
-        "jukeboxLabel": "주크박스"
+        "jukeboxLabel": "주크박스",
+        "exportConversation": "대화 내보내기",
+        "exportSelected": "선택 항목 내보내기",
+        "exportPreviewTitle": "내보내기 미리보기",
+        "exportPreviewSummary": "{{count}}개 선택됨",
+        "exportPreviewEmpty": "미리볼 내용이 없습니다.",
+        "exportFormatLabel": "내보내기 형식",
+        "exportFormatMarkdown": "Markdown",
+        "exportFormatImage": "이미지",
+        "exportImageFormatPng": "PNG",
+        "exportImageFormatJpeg": "JPEG",
+        "exportImageFormatWebp": "WebP",
+        "exportImageStyleNeko": "N.E.K.O",
+        "exportImageStyleOriginal": "기본",
+        "exportImageStylePoster": "프레시",
+        "exportImageStyleLyrics": "가사",
+        "exportPosterTitle": "대화 하이라이트",
+        "exportPosterSubtitle": "N.E.K.O에서 공유됨",
+        "exportImageFormatUnsupported": "현재 환경에서는 {{format}} 내보내기를 지원하지 않습니다.",
+        "confirmExportAs": "{{format}}(으)로 내보내기",
+        "exportMarkdownPreviewSubtitle": "내보낼 Markdown 콘텐츠의 렌더링 미리보기입니다.",
+        "exportPreviewLoading": "미리보기를 생성하는 중…",
+        "exportPreviewFailed": "미리보기 생성에 실패했습니다.",
+        "previewOpenWindow": "새 창에서 열기",
+        "previewClose": "닫기",
+        "previewOpenBlocked": "새 미리보기 창을 열 수 없습니다.",
+        "previewOpenFailed": "미리보기 창을 열지 못했습니다.",
+        "copyMarkdown": "Markdown 복사",
+        "copyMarkdownSuccess": "Markdown을 클립보드에 복사했습니다.",
+        "copyMarkdownFailed": "Markdown 복사에 실패했습니다.",
+        "exportEmpty": "아직 내보낼 대화가 없습니다.",
+        "exportSelectionEmpty": "내보낼 메시지를 하나 이상 선택하세요.",
+        "exportSuccess": "대화를 성공적으로 내보냈습니다",
+        "exportFileTitle": "Project N.E.K.O 대화 내보내기",
+        "exportGeneratedAt": "내보낸 시각",
+        "exportUser": "사용자",
+        "exportAssistant": "N.E.K.O.",
+        "exportImageLabel": "이미지",
+        "exportAudioLabel": "오디오",
+        "exportVideoLabel": "비디오",
+        "exportSelectAll": "모두 선택",
+        "exportSelectNone": "해제",
+        "exportSelectInvert": "반전",
+        "exportSelectionCount": "{{selected}} / {{total}} 선택됨"
     },
     "voiceControl": {
         "startVoice": "음성 시작",
@@ -700,6 +777,8 @@
         "keyAutoFilledFromKeyBook": "API 관리 대장에서 자동 입력됩니다. 관리 대장에서 설정하세요.",
         "goToKeyBook": "관리 대장으로 이동",
         "providerLabel": "제공업체",
+        "providerSelectPlaceholder": "제공업체를 선택하세요",
+        "noOptionsAvailable": "사용 가능한 항목이 없습니다",
         "customModelProviderFollowCore": "코어 API 따르기",
         "customModelProviderFollowAssist": "보조 API 따르기",
         "customModelProviderCustom": "사용자 정의",
@@ -777,7 +856,7 @@
         "apiUrl": "API URL",
         "apiKey": "API 키",
         "modelId": "모델 ID",
-        "agentApiConfigTitle": "에이전트 API 설정",
+        "agentApiConfigTitle": "에이전트 API 설정(시각 기능 지원 필요)",
         "providerPlaceholder": "예: openai, azure, 로컬",
         "apiUrlPlaceholder": "예: https://api.openai.com/v1",
         "modelIdPlaceholder": "예: gpt-5.1-chat-latest, qwen-flash",
@@ -1124,9 +1203,12 @@
     },
     "voice": {
         "title": "음성 등록",
-        "alibabaApiRequired": "⚠️ 이 기능에는 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Bailian API 키를 저장하세요 (Assist API 활성화 불필요). 또는 로컬 음성 서버를 구성하세요.",
-        "minimaxApiRequired": "⚠️ 이 기능에는 MiniMax 모델 (China)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
-        "minimaxIntlApiRequired": "⚠️ 이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
+        "gotoApiSettings": "API 설정으로 이동",
+        "noApiKeyPrompt": "복제 기능에 사용할 수 있는 API 키가 아직 설정되지 않았습니다. 설정하시겠습니까?",
+        "dismissNoApiPrompt": "나중에",
+        "alibabaApiRequired": "이 기능에는 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Bailian API 키를 저장하세요 (Assist API 활성화 불필요). 또는 로컬 음성 서버를 구성하세요.",
+        "minimaxApiRequired": "이 기능에는 MiniMax 모델 (China)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
+        "minimaxIntlApiRequired": "이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
@@ -1144,6 +1226,8 @@
         "prefixFormatError": "접두사 형식 오류: 최대 10자, 숫자, 영문만 가능",
         "registering": "음성을 등록하는 중입니다. 잠시 기다려 주세요!",
         "registerSuccess": "등록이 완료되었습니다! voice_id: {{voiceId}}",
+        "registerSuccessButSaveFailed": "음성 등록은 성공했지만 로컬 저장에 실패했습니다",
+        "pleaseCopyVoiceId": "위의 voice_id를 복사하여 수동으로 저장하세요",
         "reusedExisting": "기존 음색을 재사용했습니다. 업로드를 건너뛰었습니다. voice_id: {{voiceId}}",
         "registerFailed": "등록 실패: {{error}}",
         "prefixShouldBeEnglishLetterAndNumber": "접두사는 영어 문자와 숫자여야 합니다",
@@ -1285,6 +1369,7 @@
         "profileNameContainsSlash": "프로필 이름에 경로 구분 기호(/ 또는 \\)를 포함할 수 없습니다",
         "profileNameContainsDot": "프로필 이름에 점(.)을 포함할 수 없습니다",
         "profileNameInvalidChars": "프로필 이름에는 문자, 숫자, 공백, 밑줄, 하이픈, 괄호, 가운데점(·/・), 아포스트로피만 사용할 수 있습니다",
+        "profileNameReservedRoute": "이 이름은 시스템 예약 경로 이름이므로 프로필 이름으로 사용할 수 없습니다",
         "newProfileNameRequired": "새 프로필 이름은 비워둘 수 없습니다.",
         "newProfileNameTooLong": "프로필 이름이 너무 깁니다.",
         "required": "*",
@@ -1417,6 +1502,8 @@
         "initializingText": "문자 채팅 초기화 중...",
         "textChattingShort": "텍스트 채팅",
         "capturing": "캡처 중...",
+        "importImageAdded": "이미지 {{count}}개를 추가했습니다. 전송 시 함께 보내집니다",
+        "importImageFailed": "이미지 가져오기에 실패했습니다",
         "screenshotAdded": "스크린샷이 추가되었습니다. 함께 보내려면 보내기를 클릭하세요.",
         "screenshotFailed": "스크린샷 실패",
         "screenshotCancelled": "사용자가 취소한 스크린샷",
@@ -1427,6 +1514,7 @@
         "switchingCatgirl": "{{name}}(으)로 전환 중...",
         "switchedCatgirl": "{{name}}로 전환됨",
         "switchCatgirlFailed": "{{name}}로 전환하지 못했습니다.",
+        "switchCatgirlError": "전환 실패: {{error}}",
         "started": "{{name}} 시작됨",
         "voiceUpdated": "{{name}}의 음성이 업데이트되었습니다.",
         "audioWorkletFailed": "AudioWorklet을 로드하지 못했습니다.",
@@ -1449,6 +1537,7 @@
         "connectingToServer": "서버에 연결하는 중...",
         "readyToSpeak": "말할 준비가 되었습니다!",
         "screenShareRequiresVoice": "화면 공유는 음성/영상 통화에만 사용됩니다.",
+        "screenRecordingPermissionDenied": "⚠️ 화면 녹화 권한이 승인되지 않았습니다. 시스템 설정에서 화면 녹화를 허용해 주세요",
         "repetitionDetected": "높은 반복이 감지되었습니다. {{name}}이(가) 쉴 수 있도록 대화 종료를 제안하세요.",
         "modelSwitched": "모델 전환",
         "screenSource": {
@@ -1534,6 +1623,7 @@
             "browserUse": "브라우저 제어",
             "focusMode": "인터럽트 허용",
             "unavailable": "{{name}} 사용할 수 없음",
+            "toggleFailed": "{{name}} 전환 실패: {{error}}",
             "checking": "확인 중...",
             "serverOffline": "네코클로 서버 오프라인",
             "masterRequired": "먼저 네코클로 마스터 스위치를 활성화하십시오.",
@@ -1558,6 +1648,7 @@
             "mouseTracking": "마우스 추적",
             "fullscreenTracking": "전체 화면 추적",
             "localTracking": "로컬 추적",
+            "lockedHoverFade": "잠금 호버 페이드",
             "textGuardMaxLength": "응답 글자 수 제한",
             "unlimited": "무제한",
             "characters": "자",
@@ -1568,7 +1659,8 @@
     },
     "subtitle": {
         "title": "실시간 자막",
-        "enable": "번역 활성화"
+        "enable": "자막 번역",
+        "enableAriaLabel": "자막 번역 전환"
     },
     "viewer": {
         "title": "뷰어 - 프로젝트 N.E.K.O."
@@ -1586,7 +1678,8 @@
             "freeModelWarning": "할당량 제한으로 인해 무료 모델은 네코클로 모드에서 차단되기 쉽습니다. 유료 모델로 전환하는 것을 권장합니다.\n\n이미 유료 API를 설정한 경우 NEKO를 재시작해 보세요.",
             "freeModelWarningTitle": "무료 모델 안내",
             "connectivityCheck": "네코클로 LLM 연결 확인 중...",
-            "precheckFailed": "네코클로 사전 검사 실패: {{reason}}"
+            "precheckFailed": "네코클로 사전 검사 실패: {{reason}}",
+            "toggleFailed": "Agent 전환 실패: {{error}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "연결 확인 중...",
@@ -1669,6 +1762,8 @@
         "emotionConfig": "VRM 감정 설정",
         "idleAnimation": {
             "title": "대기 애니메이션",
+            "selectHint": "대기 동작 선택",
+            "selectedCount": "{{count}}개 선택됨",
             "changed": "대기 애니메이션이 변경되었습니다: {{name}}",
             "changeFailed": "대기 애니메이션 변경 실패"
         },
@@ -1715,6 +1810,8 @@
         },
         "idleAnimation": {
             "title": "대기 애니메이션",
+            "selectHint": "대기 동작 선택",
+            "selectedCount": "{{count}}개 선택됨",
             "changed": "대기 애니메이션이 변경되었습니다",
             "changeFailed": "대기 애니메이션 변경에 실패했습니다"
         }
@@ -2001,6 +2098,24 @@
                 "step9": {
                     "title": "🎞️ 톤 매핑",
                     "desc": "다양한 톤 매핑 알고리즘을 선택하여 하이라이트 및 그림자 렌더링을 제어합니다."
+                }
+            },
+            "mmd": {
+                "step1": {
+                    "title": "🎭 MMD 모델 선택",
+                    "desc": "Live3D(MMD) 모드에서 여기에서 사용할 모델을 선택합니다. MMD와 VRM은 동일한 모델 목록을 공유합니다."
+                },
+                "step2": {
+                    "title": "💃 VMD 애니메이션",
+                    "desc": "MMD 모델에 VMD 모션을 선택합니다. 'VMD 가져오기'를 사용하여 사용자 정의 모션 파일을 추가할 수 있습니다."
+                },
+                "step3": {
+                    "title": "🌟 MMD 조명",
+                    "desc": "'MMD 모델 설정'에서 환경광, 주 광원, 노출 및 톤 매핑을 조정하여 3D 화면 효과를 제어합니다."
+                },
+                "step4": {
+                    "title": "😄 감정 설정",
+                    "desc": "모델을 선택한 후 여기에서 감정 설정으로 들어갑니다. Live3D에서 MMD와 VRM은 이 버튼을 공유하며, Live2D의 '감정 설정' 버튼과는 다릅니다."
                 }
             }
         },
@@ -2434,6 +2549,7 @@
         "weibo": "🌏 위보 (Weibo)",
         "twitter": "🐦 트위터/X (Twitter/X)",
         "reddit": "👽 레딧 (Reddit)",
+        "netease": "🎶 넷이즈 뮤직 (NetEase)",
         "saveConfig": "설정 저장",
         "encryptStorage": "로컬 파일에 안전하게 암호화 저장",
         "localMonitoring": "로컬 상태 모니터링",
@@ -2459,7 +2575,8 @@
             "kuaishou": "📌 <b>대상:</b> <b>kuaishou.com</b>에 접속하여 해당 쿠키를 가져오세요.",
             "weibo": "📌 <b>대상:</b> <b>weibo.com</b>에 접속하여 해당 쿠키를 가져오세요.",
             "twitter": "📌 <b>대상:</b> <b>x.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "reddit": "📌 <b>대상:</b> <b>reddit.com</b>에 접속하여 해당 쿠키를 가져오세요."
+            "reddit": "📌 <b>대상:</b> <b>reddit.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "netease": "📌 <b>대상:</b> <b>music.163.com</b>에 접속하여 해당 쿠키를 가져오세요."
         },
         "guide": {
             "title": "초보자를 위한 공통 가이드",
@@ -2541,6 +2658,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF 토큰"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "핵심 신원 증명 (필수)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "장치 식별자 (선택)"
             }
         },
         "status": {
@@ -2564,7 +2689,8 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "QR 로그인 성공! 쿠키가 자동으로 입력되었습니다. 설정 저장을 클릭하세요"
+            "successAlert": "QR 로그인 성공! 쿠키가 자동으로 입력되었습니다. 설정 저장을 클릭하세요",
+            "extractFailed": "⚠️ QR 로그인은 성공했지만 필드를 자동으로 추출하지 못했습니다. 수동으로 확인해 주세요."
         }
     },
     "music": {
@@ -2583,7 +2709,8 @@
         "playError": "음악 재생을 로드하지 못했습니다",
         "loadError": "음악 플레이어를 로드하지 못했습니다",
         "autoplayBlocked": "브라우저에서 자동 재생이 차단되었습니다. 재생 버튼을 클릭하세요",
-        "ended": "종료"
+        "ended": "종료",
+        "unknownState": "알 수 없는 상태"
     },
     "Jukebox": {
         "title": "주크박스",
@@ -2637,8 +2764,91 @@
         "idleRestoreFailed": "대기 애니메이션 복원 실패",
         "btnNotFoundGiveUp": "주크박스 버튼을 찾을 수 없습니다, 바인딩 포기",
         "minimizeBtnNotFoundGiveUp": "최소화 버튼을 찾을 수 없습니다, 모니터링 포기",
-        "noticeDance": "💃 댄스 기능은 MMD 아바타를 로드한 경우에만 사용할 수 있습니다",
-        "noticeMusic": "⚠️ 현재 곡은 테스트용입니다. 향후 버전에서 저작권 음악이 제거되오니 직접 가져오세요"
+        "noticeDance": "💃 댄스 기능은 현재 MMD 아바타를 로드한 경우에만 사용할 수 있으며, 향후 더 많은 인터랙션이 추가될 예정입니다",
+        "noticeMusic": "⚠️ 현재 곡은 테스트용입니다. 향후 버전에서 저작권 음악이 제거되오니 직접 가져오세요",
+        "manager": "관리자",
+        "managerTitle": "관리자",
+        "songs": "노래",
+        "actions": "액션",
+        "bindings": "바인딩",
+        "import": "가져오기",
+        "export": "낼볂내기",
+        "exportAll": "모두 낼볂내기",
+        "exportAllIgnoreHidden": "모두 낼볂내기(숨김 제외)",
+        "exportAllIncludeHidden": "모두 낼볂내기(숨김 포함)",
+        "exportSelected": "선택 항목 낼볂내기",
+        "dragZipHint": "ZIP 파일이나 폴더를 여기로 끌어와 가져오기",
+        "unifiedDropHint": "노래, 애니메이션 또는 가져오기 패키지를 여기로 끌어오기",
+        "clickToAdd": "클릭하여 추가",
+        "dragMp3Hint": "MP3 파일을 여기로 끌어와 노래 추가",
+        "dragVmdHint": "VMD 파일을 여기로 끌어와 애니메이션 추가",
+        "showHiddenSongs": "숨김 노래 표시",
+        "selectAll": "모두 선택",
+        "noActions": "애니메이션이 없습니다",
+        "show": "표시",
+        "hide": "숨김",
+        "delete": "삭제",
+        "unknown": "알 수 없음",
+        "defaultAction": "기본 애니메이션",
+        "clickSetDefault": "클릭하여 기본으로 설정",
+        "format": "형식",
+        "addSong": "노래 추가",
+        "addAction": "애니메이션 추가",
+        "songList": "노래 목록 (오른쪽으로 끌기)",
+        "actionList": "애니메이션 목록 (왼쪽으로 끌기)",
+        "unbind": "바인딩 해제",
+        "addBinding": "수동으로 바인딩 추가",
+        "addSongBinding": "수동으로 노래 바인딩 추가",
+        "addActionBinding": "수동으로 애니메이션 바인딩 추가",
+        "cancel": "취소",
+        "confirm": "확인",
+        "confirmDeleteSong": "노래 \"{{name}}\"을(를) 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다!",
+        "confirmDeleteAction": "애니메이션 \"{{name}}\"을(를) 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다!",
+        "deleteFailed": "삭제 실패",
+        "setDefaultFailed": "기본 설정 실패",
+        "exportFailed": "낼볂내기 실패",
+        "selectExportFirst": "낳아낼 노래나 애니메이션을 먼저 선택하세요",
+        "notExist": "{{type}}이(가) 존재하지 않습니다",
+        "songNotExist": "노래가 존재하지 않습니다",
+        "actionNotExist": "애니메이션이 존재하지 않습니다",
+        "inputIndexOrName": "번호나 이름 입력",
+        "frame": "프레임",
+        "offset": "오프셋",
+        "selectedSongs": "{{count}}개 노래 선택됨",
+        "selectedActions": "{{count}}개 애니메이션 선택됨",
+        "selectedSeparator": ", ",
+        "selectedInfo": "{{songCount}}개 노래, {{actionCount}}개 애니메이션 선택됨",
+        "missing": "누락",
+        "unknownError": "알 수 없는 오류",
+        "calibration": "애니메이션 보정",
+        "calibrationTitle": "애니메이션 보정",
+        "fps": "FPS",
+        "currentFrame": "현재 프레임",
+        "reset": "재설정",
+        "calibrationHint": "버튼으로 미세 조정하거나 진행 표시줄을 끌어 보정",
+        "calibrateAnimation": "애니메이션 보정",
+        "animationCalibration": "애니메이션 보정",
+        "closeCalibration": "보정 패널 닫기",
+        "advance1s": "애니메이션 1초 앞당기기",
+        "advance10f": "애니메이션 10프레임 앞당기기",
+        "advance1f": "애니메이션 1프레임 앞당기기",
+        "delay1f": "애니메이션 1프레임 뒤로 미루기",
+        "delay10f": "애니메이션 10프레임 뒤로 미루기",
+        "delay1s": "애니메이션 1초 뒤로 미루기",
+        "frames": "프레임",
+        "operationFailed": "작업 실패",
+        "saveFailed": "저장 실패",
+        "importSuccess": "가져오기 성공!",
+        "importFailed": "가져오기 실패",
+        "importSongsAdded": "{{count}}개 노래 추가",
+        "importSongsMerged": "{{count}}개 노래 병합",
+        "importActionsAdded": "{{count}}개 애니메이션 추가",
+        "importActionsMerged": "{{count}}개 애니메이션 병합",
+        "importBindingsAdded": "{{count}}개 바인딩 추가",
+        "noChanges": "변경 없음",
+        "noImportFilesFound": "가져올 파일을 찾을 수 없습니다",
+        "missingConfigJson": "폴더에 config.json 파일이 없습니다",
+        "folderImportFailed": "폴더 가져오기 실패"
     },
     "notice": {
         "voiceMigration": {
@@ -2654,5 +2864,8 @@
             "title": "밈",
             "loadError": "밈을 불러오지 못했습니다"
         }
+    },
+    "achievement": {
+        "unlocked": "🏆 업적 달성: {{description}}"
     }
 }

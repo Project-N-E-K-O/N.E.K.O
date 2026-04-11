@@ -16,6 +16,8 @@ import asyncio
 import copy
 import base64
 import hashlib
+import struct
+import zlib
 from datetime import datetime
 from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse, Response
@@ -55,6 +57,27 @@ logger = get_module_logger(__name__, "Main")
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
 
 
+def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
+    """将 ZIP 数据嵌入 PNG 的 ancillary private chunk（neKo 块），插在 IEND 之前。
+
+    生成的文件仍是合法 PNG，任何图片查看器 / Electron 都可以正常预览。
+    """
+    # PNG IEND 块固定 12 字节: 00 00 00 00  49 45 4E 44  AE 42 60 82
+    if len(png_data) < 12 or png_data[-12:-4] != b'\x00\x00\x00\x00IEND':
+        raise ValueError("Invalid PNG: IEND chunk not found at end of file")
+
+    iend = png_data[-12:]
+    before_iend = png_data[:-12]
+
+    # 构建 neKo 块: length(4B, big-endian) + type(4B) + data + CRC32(4B)
+    chunk_type = b'neKo'
+    chunk_length = struct.pack('>I', len(zip_data))
+    chunk_crc = struct.pack('>I', zlib.crc32(chunk_type + zip_data) & 0xFFFFFFFF)
+
+    neko_chunk = chunk_length + chunk_type + zip_data + chunk_crc
+    return before_iend + neko_chunk + iend
+
+
 def _profile_name_units(name: str) -> int:
     # 计数规则与前端保持一致：ASCII(<=0x7F) 计 1，其它字符计 2
     return sum(1 if ord(ch) <= 0x7F else 2 for ch in name)
@@ -70,6 +93,8 @@ def _validate_profile_name(name: str) -> str | None:
         return '档案名不能包含点号(.)'
     if result.code == 'reserved_device_name':
         return '档案名不能使用 Windows 保留设备名'
+    if result.code == 'reserved_route_name':
+        return '此名称是系统保留的路由名称，不能用作档案名'
     if result.code == 'invalid_character':
         return '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号'
     if result.code == 'too_long_units':
@@ -443,9 +468,9 @@ async def update_catgirl_l2d(name: str, request: Request):
                     return JSONResponse(content={'success': False, 'error': 'VRM模型路径不能包含URL方案'}, status_code=400)
                 if '..' in vrm_model_str:
                     return JSONResponse(content={'success': False, 'error': 'VRM模型路径不能包含路径遍历（..）'}, status_code=400)
-                allowed_prefixes = ['/user_vrm/', '/static/vrm/']
+                allowed_prefixes = ['/user_vrm/', '/static/vrm/', '/workshop/']
                 if not any(vrm_model_str.startswith(prefix) for prefix in allowed_prefixes):
-                    return JSONResponse(content={'success': False, 'error': 'VRM模型路径必须以 /user_vrm/ 或 /static/vrm/ 开头'}, status_code=400)
+                    return JSONResponse(content={'success': False, 'error': 'VRM模型路径必须以 /user_vrm/、/static/vrm/ 或 /workshop/ 开头'}, status_code=400)
                 vrm_model = vrm_model_str
             elif mmd_model:
                 # 验证 MMD 路径
@@ -454,9 +479,9 @@ async def update_catgirl_l2d(name: str, request: Request):
                     return JSONResponse(content={'success': False, 'error': 'MMD模型路径不能包含URL方案'}, status_code=400)
                 if '..' in mmd_model_str:
                     return JSONResponse(content={'success': False, 'error': 'MMD模型路径不能包含路径遍历（..）'}, status_code=400)
-                allowed_mmd_prefixes = ['/user_mmd/', '/static/mmd/']
+                allowed_mmd_prefixes = ['/user_mmd/', '/static/mmd/', '/workshop/']
                 if not any(mmd_model_str.startswith(prefix) for prefix in allowed_mmd_prefixes):
-                    return JSONResponse(content={'success': False, 'error': 'MMD模型路径必须以 /user_mmd/ 或 /static/mmd/ 开头'}, status_code=400)
+                    return JSONResponse(content={'success': False, 'error': 'MMD模型路径必须以 /user_mmd/、/static/mmd/ 或 /workshop/ 开头'}, status_code=400)
                 mmd_model = mmd_model_str
             else:
                 return JSONResponse(content={'success': False, 'error': '未提供VRM或MMD模型路径'}, status_code=400)
@@ -485,20 +510,15 @@ async def update_catgirl_l2d(name: str, request: Request):
                 status_code=404
             )
         
-        # 切换模型类型时清理"另一套模型字段"，避免配置残留
+        # 切换模型类型时保留非当前模型配置，避免来回切换后丢失待机动作/光照等设置
         if model_type_str == 'live3d':
-            # Live3D 模式：清理 live2d 字段
-            set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'model_path', '')
-            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live3d')
             
             if vrm_model:
-                # Live3D + VRM：设置 VRM 路径，清空 MMD 路径
+                # Live3D + VRM：更新当前激活的 VRM 配置，保留 MMD 配置便于切回
+                set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'vrm')
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', vrm_model)
-                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', '')
-                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
-                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', '')
-                
+
                 # 处理 VRM 动画（复用同样的验证逻辑）
                 if 'vrm_animation' in data:
                     if vrm_animation is None or vrm_animation == '':
@@ -515,28 +535,32 @@ async def update_catgirl_l2d(name: str, request: Request):
                         set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', vrm_animation_str)
                 
                 if 'idle_animation' in data:
-                    if idle_animation is None or idle_animation == '':
-                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', None)
+                    if idle_animation is None or idle_animation == '' or idle_animation == []:
+                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [])
+                    elif isinstance(idle_animation, str):
+                        idle_list = [idle_animation]
+                    elif isinstance(idle_animation, list):
+                        idle_list = idle_animation
                     else:
-                        idle_animation_str = str(idle_animation).strip()
-                        if '://' in idle_animation_str or idle_animation_str.startswith('data:'):
-                            return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含URL方案'}, status_code=400)
-                        if '..' in idle_animation_str:
-                            return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                        return JSONResponse(content={'success': False, 'error': 'idle_animation must be a string or list of strings'}, status_code=400)
+                    if isinstance(idle_animation, (str, list)) and idle_animation:
                         allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
-                        if not any(idle_animation_str.startswith(prefix) for prefix in allowed_animation_prefixes):
-                            return JSONResponse(content={'success': False, 'error': '待机动作路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
-                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', idle_animation_str)
+                        for item in idle_list:
+                            item_str = str(item).strip()
+                            if '://' in item_str or item_str.startswith('data:'):
+                                return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含URL方案'}, status_code=400)
+                            if '..' in item_str:
+                                return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                            if not any(item_str.startswith(prefix) for prefix in allowed_animation_prefixes):
+                                return JSONResponse(content={'success': False, 'error': '待机动作路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [str(x).strip() for x in idle_list])
                 
                 logger.debug(f"已保存角色 {name} 的Live3D(VRM)模型 {vrm_model}")
             elif mmd_model:
-                # Live3D + MMD：设置 MMD 路径，清空 VRM 路径
+                # Live3D + MMD：更新当前激活的 MMD 配置，保留 VRM 配置便于切回
+                set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'mmd')
                 set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', mmd_model)
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', '')
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', None)
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)
-                
+
                 # 处理 MMD 动画
                 if 'mmd_animation' in data:
                     if mmd_animation is None or mmd_animation == '':
@@ -553,28 +577,28 @@ async def update_catgirl_l2d(name: str, request: Request):
                         set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', mmd_animation_str)
                 
                 if 'mmd_idle_animation' in data:
-                    if mmd_idle_animation is None or mmd_idle_animation == '':
-                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', '')
+                    if mmd_idle_animation is None or mmd_idle_animation == '' or mmd_idle_animation == []:
+                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [])
+                    elif isinstance(mmd_idle_animation, str):
+                        mmd_idle_list = [mmd_idle_animation]
+                    elif isinstance(mmd_idle_animation, list):
+                        mmd_idle_list = mmd_idle_animation
                     else:
-                        mmd_idle_str = str(mmd_idle_animation).strip()
-                        if '://' in mmd_idle_str or mmd_idle_str.startswith('data:'):
-                            return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含URL方案'}, status_code=400)
-                        if '..' in mmd_idle_str:
-                            return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                        return JSONResponse(content={'success': False, 'error': 'mmd_idle_animation must be a string or list of strings'}, status_code=400)
+                    if isinstance(mmd_idle_animation, (str, list)) and mmd_idle_animation:
                         allowed_mmd_anim_prefixes = ['/user_mmd/animation/', '/static/mmd/animation/']
-                        if not any(mmd_idle_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
-                            return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
-                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', mmd_idle_str)
+                        for item in mmd_idle_list:
+                            mmd_idle_str = str(item).strip()
+                            if '://' in mmd_idle_str or mmd_idle_str.startswith('data:'):
+                                return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含URL方案'}, status_code=400)
+                            if '..' in mmd_idle_str:
+                                return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                            if not any(mmd_idle_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
+                                return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [str(x).strip() for x in mmd_idle_list])
                 
                 logger.debug(f"已保存角色 {name} 的Live3D(MMD)模型 {mmd_model}")
         else:
-            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', '')
-            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
-            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)  # 清理 VRM 打光配置
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', '')
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', '')
-            
             # 更新Live2D模型设置，同时保存item_id（如果有）
             normalized_live2d = str(live2d_model).strip().replace('\\', '/')
             if normalized_live2d.endswith('.model3.json'):
@@ -3165,20 +3189,14 @@ async def export_catgirl_card(name: str):
             png_path = temp_path / 'character_card.png'
             img.save(png_path, 'PNG')
 
-            # 5. 将压缩包数据拼接到PNG图片
-            # 使用PNG的尾部追加数据的方式（类似某些图片隐写技术）
+            # 5. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
             with open(png_path, 'rb') as f:
                 png_data = f.read()
 
             with open(zip_path, 'rb') as f:
                 zip_data = f.read()
 
-            # 组合数据：PNG数据 + ZIP数据 + 8字节ZIP大小（用于解析时定位）
-            combined_data = png_data + zip_data + len(zip_data).to_bytes(8, 'little')
-
-            # 添加标记，方便识别这是一个角色卡图片
-            marker = b'NEKOCHARA\x00'
-            combined_data = combined_data + marker
+            combined_data = _embed_zip_in_png_chunk(png_data, zip_data)
 
             # 6. 返回图片文件
             # 使用档案名作为文件名，并进行安全编码
@@ -3917,16 +3935,14 @@ async def export_catgirl_with_portrait(
         png_path = temp_path / 'character_card.png'
         final_img.save(png_path, 'PNG')
 
-        # 6. 将压缩包数据拼接到PNG图片
+        # 6. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
         with open(png_path, 'rb') as f:
             png_data = f.read()
 
         with open(zip_path, 'rb') as f:
             zip_data = f.read()
 
-        combined_data = png_data + zip_data + len(zip_data).to_bytes(8, 'little')
-        marker = b'NEKOCHARA\x00'
-        combined_data = combined_data + marker
+        combined_data = _embed_zip_in_png_chunk(png_data, zip_data)
 
         # 7. 返回图片文件
         safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '·', '•') or '\u4e00' <= c <= '\u9fff').strip()
