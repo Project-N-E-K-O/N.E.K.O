@@ -181,8 +181,8 @@
             translateEnabled: (window.appState && typeof window.appState.subtitleEnabled !== 'undefined')
                 ? !!window.appState.subtitleEnabled
                 : localStorage.getItem('subtitleEnabled') === 'true',
-            translateButtonLabel: getI18nText('subtitle.enable', '翻译'),
-            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '翻译开关')
+            translateButtonLabel: getI18nText('subtitle.enable', '字幕翻译'),
+            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关')
         };
     }
 
@@ -600,7 +600,10 @@
 
     function handleJukeboxClick() {
         try {
-            if (typeof window.Jukebox !== 'undefined' && typeof window.Jukebox.toggle === 'function') {
+            if (typeof window.__nekoJukeboxToggle === 'function') {
+                // Electron 多窗口模式：通过 IPC 打开独立 Jukebox 窗口
+                window.__nekoJukeboxToggle();
+            } else if (typeof window.Jukebox !== 'undefined' && typeof window.Jukebox.toggle === 'function') {
                 window.Jukebox.toggle();
             } else {
                 console.warn('[ReactChatWindow] Jukebox not available');

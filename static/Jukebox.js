@@ -3197,16 +3197,19 @@ window.Jukebox = {
   
   init: function() {
     console.log('[Jukebox]', window.t('Jukebox.initialized', '初始化点歌台...'));
-    
+
     window.Jukebox_playSong = Jukebox.playSong;
     window.Jukebox_close = Jukebox.close;
     window.Jukebox_hide = Jukebox.hide;
     window.Jukebox_updateVolume = Jukebox.updateVolume;
     window.Jukebox_logVolumeChange = Jukebox.logVolumeChange;
     window.Jukebox_togglePause = Jukebox.togglePause;
-    
-    Jukebox.setupButton();
-    Jukebox.setupCloseListener();
+
+    // 独立窗口模式：不需要绑定按钮和监听聊天框关闭
+    if (!window.__NEKO_JUKEBOX_STANDALONE__) {
+      Jukebox.setupButton();
+      Jukebox.setupCloseListener();
+    }
   },
   
   setupButton: function(retries = 0) {
@@ -3278,6 +3281,11 @@ window.Jukebox = {
   },
   
   toggle: function() {
+    // Electron Pet 窗口：委托给主进程打开独立 Jukebox 窗口
+    if (!window.__NEKO_JUKEBOX_STANDALONE__ && typeof window.__nekoJukeboxToggle === 'function') {
+      window.__nekoJukeboxToggle();
+      return;
+    }
     if (Jukebox.State.isHidden) {
       Jukebox.show();
     } else if (Jukebox.State.isOpen) {
@@ -3470,7 +3478,7 @@ window.Jukebox = {
         </div>
       </div>
       <div class="jukebox-notice">
-        <div class="jukebox-notice-item">${window.t('Jukebox.noticeDance', '💃 伴舞服务仅在载入 MMD 形象时可用')}</div>
+        <div class="jukebox-notice-item">${window.t('Jukebox.noticeDance', '💃 伴舞服务目前仅在载入 MMD 形象时可用，后续会增加更多互动')}</div>
         <div class="jukebox-notice-item">${window.t('Jukebox.noticeMusic', '⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入')}</div>
       </div>
       <div class="jukebox-content">
@@ -4629,6 +4637,14 @@ window.Jukebox = {
   },
   
   playVMD: async function(vmdPath) {
+    // 独立窗口模式：通过 IPC 桥接到 Pet 窗口执行
+    if (window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge) {
+      window.nekoJukeboxBridge.playVMD(vmdPath);
+      Jukebox.State.isVMDPlaying = true;
+      console.log('[Jukebox]', window.t('Jukebox.vmdPlayed', 'VMD 动画已播放'), '(IPC)', vmdPath);
+      return;
+    }
+
     if (!window.mmdManager || !window.mmdManager.animationModule) {
       console.warn('[Jukebox]', window.t('Jukebox.vmdNotInit', 'MMD Manager 未初始化，跳过动画'));
       return;
@@ -4656,6 +4672,12 @@ window.Jukebox = {
   
   // 播放 VRMA 动画（VRM 模型）
   playVRMA: async function(vrmaPath) {
+    // 独立窗口模式：复用 VMD 桥接通道发送到 Pet（Pet 侧根据模型类型分发）
+    if (window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge) {
+      window.nekoJukeboxBridge.playVMD(vrmaPath);
+      console.log('[Jukebox] VRMA 动画已发送 (IPC):', vrmaPath);
+      return;
+    }
     if (!window.vrmManager) {
       console.warn('[Jukebox] VRM Manager 未初始化，跳过动画');
       return;
@@ -4901,6 +4923,16 @@ window.Jukebox = {
   },
   
   stopVMD: function(skipIdleRestore) {
+    // 独立窗口模式：通过 IPC 桥接到 Pet 窗口执行
+    if (window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge) {
+      if (Jukebox.State.isVMDPlaying) {
+        window.nekoJukeboxBridge.stopVMD(skipIdleRestore);
+        Jukebox.State.isVMDPlaying = false;
+        Jukebox.State.isPaused = false;
+      }
+      return;
+    }
+
     if (!window.mmdManager?.animationModule) return;
 
     // 没有在播放舞蹈 VMD 时，不要停止当前动画（可能是 idle 待机）
@@ -4918,6 +4950,7 @@ window.Jukebox = {
   },
 
   _resetToNoneMode: function() {
+    if (window.__NEKO_JUKEBOX_STANDALONE__) return;
     const mesh = window.mmdManager.currentModel?.mesh;
     if (mesh?.skeleton) {
       mesh.skeleton.pose();
@@ -4928,6 +4961,8 @@ window.Jukebox = {
   },
 
   restoreIdleAnimation: async function() {
+    // 独立窗口模式：Pet 侧在 stopVMD 时自动恢复，此处无需操作
+    if (window.__NEKO_JUKEBOX_STANDALONE__) return;
     if (!window.mmdManager) return;
 
     const restoreRequestId = Jukebox.State.playRequestId;
@@ -4976,11 +5011,14 @@ window.Jukebox = {
     if (!Jukebox.State.currentSong) return;
 
     const player = Jukebox.getPlayer();
+    var isStandalone = window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge;
 
     if (Jukebox.State.isPaused) {
       // 恢复播放
       if (player) player.play();
-      if (window.mmdManager?.animationModule) {
+      if (isStandalone) {
+        window.nekoJukeboxBridge.resumeVMD();
+      } else if (window.mmdManager?.animationModule) {
         // 直接恢复动画模块（不通过 playAnimation 避免重置动画进度）
         window.mmdManager.animationModule.play();
         if (window.mmdManager.cursorFollow) {
@@ -4994,7 +5032,9 @@ window.Jukebox = {
     } else if (Jukebox.State.isPlaying) {
       // 暂停
       if (player) player.pause();
-      if (window.mmdManager?.animationModule) {
+      if (isStandalone) {
+        window.nekoJukeboxBridge.pauseVMD();
+      } else if (window.mmdManager?.animationModule) {
         window.mmdManager.animationModule.pause();
         // 暂停时提升跟踪权重，让视线追踪更明显
         if (window.mmdManager.cursorFollow) {
@@ -5082,25 +5122,27 @@ window.Jukebox = {
     // 同步音频
     player.seek(seekTime);
 
-    // 同步 VMD 动画（考虑 offset）
-    const song = Jukebox.State.currentSong;
-    const action = song ? Jukebox.getActionForModel(song) : null;
-    const fps = Jukebox.getAnimationFps(action);
-    const offset = Jukebox.getCurrentOffset();
-    const animFrame = seekTime * fps + offset;
-    const animTime = Math.max(0, animFrame / fps);
+    // 同步 VMD 动画（考虑 offset）—— 独立窗口无法直接操作动画模块
+    if (!window.__NEKO_JUKEBOX_STANDALONE__) {
+      const song = Jukebox.State.currentSong;
+      const action = song ? Jukebox.getActionForModel(song) : null;
+      const fps = Jukebox.getAnimationFps(action);
+      const offset = Jukebox.getCurrentOffset();
+      const animFrame = seekTime * fps + offset;
+      const animTime = Math.max(0, animFrame / fps);
 
-    const anim = window.mmdManager?.animationModule;
-    if (anim && anim.mixer && anim.currentClip) {
-      anim.mixer.setTime(animTime);
-      // 手动执行一帧更新让姿态同步
-      anim._restoreBones(window.mmdManager.currentModel?.mesh);
-      anim.mixer.update(0);
-      anim._saveBones(window.mmdManager.currentModel?.mesh);
-      const mesh = window.mmdManager.currentModel?.mesh;
-      if (mesh) mesh.updateMatrixWorld(true);
-      if (anim.ikSolver) anim.ikSolver.update();
-      if (anim.grantSolver) anim.grantSolver.update();
+      const anim = window.mmdManager?.animationModule;
+      if (anim && anim.mixer && anim.currentClip) {
+        anim.mixer.setTime(animTime);
+        // 手动执行一帧更新让姿态同步
+        anim._restoreBones(window.mmdManager.currentModel?.mesh);
+        anim.mixer.update(0);
+        anim._saveBones(window.mmdManager.currentModel?.mesh);
+        const mesh = window.mmdManager.currentModel?.mesh;
+        if (mesh) mesh.updateMatrixWorld(true);
+        if (anim.ikSolver) anim.ikSolver.update();
+        if (anim.grantSolver) anim.grantSolver.update();
+      }
     }
 
     Jukebox.State.isSeeking = false;
@@ -5304,6 +5346,9 @@ window.Jukebox = {
 
   // 根据offset同步动画
   syncAnimationToOffset: function(offset) {
+    // 独立窗口模式：校准需要直接访问动画模块，无法通过 IPC 操作
+    if (window.__NEKO_JUKEBOX_STANDALONE__) return;
+
     const song = Jukebox.State.currentSong;
     const action = Jukebox.getActionForModel(song);
     const fps = Jukebox.getAnimationFps(action);

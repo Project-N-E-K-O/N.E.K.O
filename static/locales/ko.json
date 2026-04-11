@@ -1656,8 +1656,8 @@
     },
     "subtitle": {
         "title": "실시간 자막",
-        "enable": "번역 활성화",
-        "enableAriaLabel": "번역 전환"
+        "enable": "자막 번역",
+        "enableAriaLabel": "자막 번역 전환"
     },
     "viewer": {
         "title": "뷰어 - 프로젝트 N.E.K.O."
@@ -2742,7 +2742,7 @@
         "idleRestoreFailed": "대기 애니메이션 복원 실패",
         "btnNotFoundGiveUp": "주크박스 버튼을 찾을 수 없습니다, 바인딩 포기",
         "minimizeBtnNotFoundGiveUp": "최소화 버튼을 찾을 수 없습니다, 모니터링 포기",
-        "noticeDance": "💃 댄스 기능은 MMD 아바타를 로드한 경우에만 사용할 수 있습니다",
+        "noticeDance": "💃 댄스 기능은 현재 MMD 아바타를 로드한 경우에만 사용할 수 있으며, 향후 더 많은 인터랙션이 추가될 예정입니다",
         "noticeMusic": "⚠️ 현재 곡은 테스트용입니다. 향후 버전에서 저작권 음악이 제거되오니 직접 가져오세요",
         "manager": "관리자",
         "managerTitle": "관리자",

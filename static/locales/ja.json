@@ -1656,8 +1656,8 @@
     },
     "subtitle": {
         "title": "リアルタイム字幕",
-        "enable": "翻訳を有効にする",
-        "enableAriaLabel": "翻訳の切り替え"
+        "enable": "字幕翻訳",
+        "enableAriaLabel": "字幕翻訳の切り替え"
     },
     "viewer": {
         "title": "ビューアー - Project N.E.K.O."
@@ -2742,7 +2742,7 @@
         "idleRestoreFailed": "待機アニメーションの復元に失敗しました",
         "btnNotFoundGiveUp": "ジュークボックスボタンが見つかりません、バインドを中止",
         "minimizeBtnNotFoundGiveUp": "最小化ボタンが見つかりません、監視を中止",
-        "noticeDance": "💃 ダンス機能は MMD アバター読み込み時のみ利用可能です",
+        "noticeDance": "💃 ダンス機能は現在 MMD アバター読み込み時のみ利用可能です。今後さらに多くのインタラクションが追加される予定です",
         "noticeMusic": "⚠️ 現在の楽曲はテスト用です。今後のバージョンで著作権楽曲は削除されますので、ご自身でインポートしてください",
         "manager": "マネージャー",
         "managerTitle": "マネージャー",
