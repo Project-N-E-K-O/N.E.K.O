@@ -4,103 +4,212 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>N.E.K.O. Subtitle</title>
-    <link rel="stylesheet" href="/static/css/index.css">
-    <link rel="stylesheet" href="/static/css/dark-mode.css">
     <style>
+        /* 与 index.css body 一致 */
         html, body {
             margin: 0; padding: 0;
             width: 100%; height: 100%;
-            background: transparent;
             overflow: hidden;
+            font-family: 'Segoe UI', Arial, sans-serif;
         }
 
-        #subtitle-container {
+        /* 与 index.css #subtitle-display 完全一致 */
+        #subtitle-display {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            padding: 10px 18px;
+            background: linear-gradient(135deg, rgba(68, 183, 254, 0.95) 0%, rgba(68, 183, 254, 0.9) 50%, rgba(100, 200, 255, 0.95) 100%);
+            color: #fff;
+            border-radius: 12px;
+            font-size: 17px;
+            font-weight: 500;
+            line-height: 1.5;
+            text-align: center;
+            overflow-wrap: break-word;
+            white-space: normal;
+            box-shadow: 0 6px 24px rgba(68, 183, 254, 0.35),
+                0 0 0 1px rgba(255, 255, 255, 0.3) inset;
+            border: 1.5px solid rgba(255, 255, 255, 0.4);
+            text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-sizing: border-box;
+        }
+
+        /* 与 index.css #subtitle-text 一致 */
+        #subtitle-text {
+            display: block;
+            margin-right: 24px;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+        }
+
+        /* 与 index.css #subtitle-drag-handle 一致 */
+        #subtitle-drag-handle {
+            position: absolute;
+            top: 50%;
+            right: 4px;
+            transform: translateY(-50%);
+            width: 26px;
+            height: 26px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: grab;
+            border-radius: 6px;
+            transition: all 0.2s ease;
+            pointer-events: auto;
+            background: rgba(255, 255, 255, 0.18);
+            backdrop-filter: blur(4px);
+        }
+        #subtitle-drag-handle:hover {
+            background: rgba(255, 255, 255, 0.32);
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6);
+        }
+        #subtitle-drag-handle:active {
+            cursor: grabbing;
+            background: rgba(255, 255, 255, 0.42);
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+        }
+        #subtitle-drag-arrows {
             width: 100%; height: 100%;
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 4px 16px;
-            cursor: grab;
+        }
+        #subtitle-drag-arrows svg {
+            width: 14px; height: 14px;
         }
 
-        #subtitle-text {
-            background: rgba(0, 0, 0, 0.7);
-            color: #fff;
-            padding: 6px 18px;
-            border-radius: 8px;
-            font-size: 1rem;
-            line-height: 1.4;
-            text-align: center;
-            max-width: 100%;
-            word-break: break-word;
-            backdrop-filter: blur(8px);
-            transition: opacity 0.3s ease;
-            opacity: 0;
-            pointer-events: none;
-        }
-
-        #subtitle-text.visible {
-            opacity: 1;
-        }
-
-        [data-theme="dark"] #subtitle-text {
-            background: rgba(20, 20, 30, 0.85);
+        /* 与 dark-mode.css [data-theme="dark"] #subtitle-display 一致 */
+        [data-theme="dark"] #subtitle-display {
+            background: linear-gradient(135deg, rgba(42, 123, 196, 0.92) 0%, rgba(42, 123, 196, 0.88) 50%, rgba(60, 145, 220, 0.92) 100%);
+            border-color: rgba(255, 255, 255, 0.25);
+            box-shadow: 0 8px 32px rgba(42, 123, 196, 0.5),
+                0 0 0 1px rgba(255, 255, 255, 0.2) inset;
         }
     </style>
 </head>
 <body>
-    <div id="subtitle-container">
+    <!-- 与 index.html 中 #subtitle-display 结构完全一致 -->
+    <div id="subtitle-display">
         <span id="subtitle-text"></span>
+        <div id="subtitle-drag-handle">
+            <div id="subtitle-drag-arrows">
+                <svg viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 3L8.5 8H10.5V10.5H13.5V8H15.5L12 3Z"/>
+                    <path d="M12 21L15.5 16H13.5V13.5H10.5V16H8.5L12 21Z"/>
+                    <path d="M3 12L8 8.5V10.5H10.5V13.5H8V15.5L3 12Z"/>
+                    <path d="M21 12L16 15.5V13.5H13.5V10.5H16V8.5L21 12Z"/>
+                    <circle cx="12" cy="12" r="1.2"/>
+                </svg>
+            </div>
+        </div>
     </div>
 
     <script>
         var subtitleText = document.getElementById('subtitle-text');
-        var container = document.getElementById('subtitle-container');
-        var hideTimer = null;
+        var dragHandle = document.getElementById('subtitle-drag-handle');
+        var api = window.nekoSubtitle;
 
-        // 监听转写消息和翻译消息
+        // ===== 监听转写消息 =====
         window.addEventListener('neko-ws-transcript', function(e) {
             var data = e.detail;
             if (data && data.transcript) {
                 subtitleText.textContent = data.transcript;
-                subtitleText.classList.add('visible');
-                if (hideTimer) clearTimeout(hideTimer);
-                // 翻译文本显示更久
-                var duration = data.translated ? 8000 : (data.is_final ? 3000 : 2500);
-                if (duration > 0) {
-                    hideTimer = setTimeout(function() {
-                        subtitleText.classList.remove('visible');
-                    }, duration);
-                }
+                autoResize();
             }
         });
 
-        // JS 拖拽窗口
-        if (window.nekoSubtitle && window.nekoSubtitle.getBounds) {
+        // ===== 自动缩放窗口 =====
+        function autoResize() {
+            if (!api || !api.setSize) return;
+            var text = subtitleText.textContent || '';
+            if (!text.trim()) return;
+
+            // 用隐藏元素测量：先测单行宽度
+            var m = document.createElement('div');
+            m.style.cssText = 'position:absolute;visibility:hidden;left:-9999px;top:-9999px;' +
+                'font-size:17px;font-weight:500;line-height:1.5;font-family:Segoe UI,Arial,sans-serif;' +
+                'padding:10px 18px;box-sizing:border-box;white-space:nowrap;';
+            m.textContent = text;
+            document.body.appendChild(m);
+
+            // 单行宽度 + drag handle 余量
+            var singleW = m.offsetWidth + 30;
+            var finalW = Math.max(200, Math.min(singleW, 800));
+
+            // 用最终宽度测量换行后的高度
+            m.style.whiteSpace = 'normal';
+            m.style.overflowWrap = 'break-word';
+            m.style.width = finalW + 'px';
+            var finalH = Math.max(40, m.offsetHeight + 4);
+
+            document.body.removeChild(m);
+            api.setSize(finalW, finalH);
+        }
+
+        // ===== 拖拽交互（配合 setIgnoreMouseEvents forward 模式）=====
+        // 窗口默认 setIgnoreMouseEvents(true, {forward:true})
+        // mousemove 能收到，但 mousedown 收不到
+        // 进入 drag handle 区域时取消穿透，离开时恢复
+        if (api) {
+            var overHandle = false;
             var isDragging = false;
             var ready = false;
             var sx = 0, sy = 0, ox = 0, oy = 0;
 
-            container.addEventListener('mousedown', function(e) {
+            document.addEventListener('mousemove', function(e) {
+                if (isDragging) {
+                    // 拖拽中：移动窗口
+                    if (ready) {
+                        api.setPosition(ox + e.screenX - sx, oy + e.screenY - sy);
+                    }
+                    return;
+                }
+                // 检测是否在 drag handle 上
+                var el = document.elementFromPoint(e.clientX, e.clientY);
+                var isOnHandle = dragHandle.contains(el);
+                if (isOnHandle && !overHandle) {
+                    overHandle = true;
+                    api.enableInteraction();
+                } else if (!isOnHandle && overHandle) {
+                    overHandle = false;
+                    api.disableInteraction();
+                }
+            });
+
+            dragHandle.addEventListener('mousedown', function(e) {
                 isDragging = true; ready = false;
                 sx = e.screenX; sy = e.screenY;
-                window.nekoSubtitle.enableInteraction();
-                window.nekoSubtitle.getBounds().then(function(b) {
+                api.getBounds().then(function(b) {
                     if (b) { ox = b.x; oy = b.y; }
                     ready = true;
                 });
-                container.style.cursor = 'grabbing';
+                dragHandle.style.cursor = 'grabbing';
                 e.preventDefault();
             });
 
-            document.addEventListener('mousemove', function(e) {
-                if (!isDragging || !ready) return;
-                window.nekoSubtitle.setPosition(ox + e.screenX - sx, oy + e.screenY - sy);
+            document.addEventListener('mouseup', function() {
+                if (isDragging) {
+                    dragHandle.style.cursor = 'grab';
+                    isDragging = false; ready = false;
+                }
+                if (overHandle) {
+                    // 鼠标还在 handle 上，保持交互
+                } else {
+                    api.disableInteraction();
+                }
             });
 
-            document.addEventListener('mouseup', function() {
-                if (isDragging) container.style.cursor = 'grab';
-                isDragging = false; ready = false;
+            // 鼠标离开窗口时恢复穿透
+            document.addEventListener('mouseleave', function() {
+                if (!isDragging) {
+                    overHandle = false;
+                    api.disableInteraction();
+                }
             });
         }
     </script>

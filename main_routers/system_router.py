@@ -1430,8 +1430,8 @@ async def emotion_analysis(request: Request):
             return "neutral", 0.5
 
         try:
-            import json
-            result = json.loads(result_text)
+            from utils.file_utils import robust_json_loads
+            result = robust_json_loads(result_text)
             if not isinstance(result, dict):
                 # 有效 JSON 也可能是 null/[]/"text"，此时复用降级启发式处理。
                 emotion, confidence = _apply_degraded_emotion_fallback()

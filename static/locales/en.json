@@ -1369,6 +1369,7 @@
         "profileNameContainsSlash": "Profile name cannot contain path separators (/ or \\)",
         "profileNameContainsDot": "Profile name cannot contain dots (.)",
         "profileNameInvalidChars": "Profile name can only contain letters, numbers, spaces, underscores, hyphens, parentheses, middle dots (·/・), and apostrophes",
+        "profileNameReservedRoute": "This name is a reserved system route and cannot be used as a profile name",
         "newProfileNameRequired": "New profile name cannot be empty",
         "newProfileNameTooLong": "Profile name is too long",
         "required": "*",
@@ -1655,7 +1656,8 @@
     },
     "subtitle": {
         "title": "Real-time Subtitles",
-        "enable": "Enable Translation"
+        "enable": "Subtitle Translation",
+        "enableAriaLabel": "Toggle subtitle translation"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -2740,7 +2742,7 @@
         "idleRestoreFailed": "Failed to restore idle animation",
         "btnNotFoundGiveUp": "Jukebox button not found after retries, giving up",
         "minimizeBtnNotFoundGiveUp": "Minimize button not found after retries, giving up",
-        "noticeDance": "💃 Dance service is only available when an MMD avatar is loaded",
+        "noticeDance": "💃 Dance service is currently only available when an MMD avatar is loaded. More interactions coming soon",
         "noticeMusic": "⚠️ Current songs are for testing only — copyrighted tracks will be removed in future versions, please import your own",
         "manager": "Manager",
         "managerTitle": "Manager",

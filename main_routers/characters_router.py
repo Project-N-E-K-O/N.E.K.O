@@ -93,6 +93,8 @@ def _validate_profile_name(name: str) -> str | None:
         return '档案名不能包含点号(.)'
     if result.code == 'reserved_device_name':
         return '档案名不能使用 Windows 保留设备名'
+    if result.code == 'reserved_route_name':
+        return '此名称是系统保留的路由名称，不能用作档案名'
     if result.code == 'invalid_character':
         return '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号'
     if result.code == 'too_long_units':

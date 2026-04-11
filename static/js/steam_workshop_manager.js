@@ -2710,7 +2710,12 @@ function expandCharacterCardSection(card) {
         };
         const vrmPath = normalizeModelPath(rawData['vrm']);
         const mmdPath = normalizeModelPath(rawData['mmd']);
-    const explicitLive3dSubType = String(rawData['live3d_sub_type'] || '').toLowerCase();
+    // 优先使用 live3d_sub_type（后端权威来源，含 _reserved 迁移路径）
+    const explicitLive3dSubType = String(
+        rawData['_reserved']?.avatar?.live3d_sub_type
+        || rawData['live3d_sub_type']
+        || ''
+    ).trim().toLowerCase();
 
     // 判断实际模型类型：优先使用显式 live3d_sub_type，缺失时再根据路径区分 VRM/MMD
     let effectiveModelType = 'live2d';
@@ -2722,7 +2727,7 @@ function expandCharacterCardSection(card) {
         } else if (explicitLive3dSubType === 'vrm') {
             effectiveModelType = 'vrm';
             effectiveModelPath = vrmPath;
-        } else if (mmdPath) {
+        } else if (mmdPath && !vrmPath) {
             effectiveModelType = 'mmd';
             effectiveModelPath = mmdPath;
         } else if (vrmPath) {

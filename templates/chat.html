@@ -6,6 +6,8 @@
     <meta charset="UTF-8">
     <title>N.E.K.O. Chat</title>
 
+    <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
+    <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
     <!-- 与 index.html 相同的基础 CSS/JS -->
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
