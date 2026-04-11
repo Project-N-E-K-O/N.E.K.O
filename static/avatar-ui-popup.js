@@ -2117,8 +2117,9 @@ const AvatarPopupMixin = {
                 popup.style.opacity = '0';
                 const closingOpensLeft = popup.dataset.opensLeft === 'true';
                 popup.style.transform = closingOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
-                const triggerIcon = document.querySelector(`.${prefix}-trigger-icon-${buttonId}`);
-                if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
+                if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                    this.updateSeparatePopupTriggerIcon(buttonId, false);
+                }
                 if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
 
                 // 关闭该 popup 所属的所有侧面板
@@ -2157,6 +2158,9 @@ const AvatarPopupMixin = {
                 popup.style.opacity = '0';
                 popup.style.visibility = 'visible';
                 popup.classList.add('is-positioning');
+                if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                    this.updateSeparatePopupTriggerIcon(buttonId, true);
+                }
 
                 const hasSeparatePopupTrigger = this._buttonConfigs && this._buttonConfigs.find(c => c.id === buttonId && c.separatePopupTrigger);
                 if (!hasSeparatePopupTrigger && typeof this.setButtonActive === 'function') {
@@ -2188,8 +2192,9 @@ const AvatarPopupMixin = {
                         popup.style.visibility = 'visible';
                         popup.style.opacity = '1';
                         popup.classList.remove('is-positioning');
-                        const triggerIcon = document.querySelector(`.${prefix}-trigger-icon-${buttonId}`);
-                        if (triggerIcon) triggerIcon.style.transform = 'rotate(180deg)';
+                        if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                            this.updateSeparatePopupTriggerIcon(buttonId);
+                        }
                         requestAnimationFrame(() => {
                             if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
                             popup.style.transform = 'translateX(0)';
@@ -2230,8 +2235,9 @@ const AvatarPopupMixin = {
                 });
             }
 
-            const triggerIcon = document.querySelector(`.${prefix}-trigger-icon-${buttonId}`);
-            if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
+            if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                this.updateSeparatePopupTriggerIcon(buttonId, false);
+            }
 
             popup._hideTimeoutId = setTimeout(() => {
                 finalizePopupClosedState(popup);
@@ -2297,7 +2303,14 @@ const AvatarPopupMixin = {
         };
 
         ManagerProto.renderScreenSourceList = async function (popup) {
-            if (!popup) return;
+            if (!popup) return false;
+            const popupId = popup.id;
+            const isPopupAvailable = () => {
+                if (!popup || !popup.isConnected) return false;
+                if (popupId && document.getElementById(popupId) !== popup) return false;
+                return popup.style.display === 'flex' && popup.style.opacity !== '0';
+            };
+            if (!isPopupAvailable()) return false;
             popup.innerHTML = '';
 
             if (!window.electronDesktopCapturer || typeof window.electronDesktopCapturer.getSources !== 'function') {
@@ -2305,7 +2318,7 @@ const AvatarPopupMixin = {
                 noElectron.textContent = window.t ? window.t('app.screenSource.notAvailable') : '屏幕捕获不可用';
                 Object.assign(noElectron.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
                 popup.appendChild(noElectron);
-                return;
+                return true;
             }
 
             const loading = document.createElement('div');
@@ -2315,6 +2328,7 @@ const AvatarPopupMixin = {
 
             try {
                 const sources = await window.electronDesktopCapturer.getSources({ types: ['window', 'screen'] });
+                if (!isPopupAvailable()) return false;
                 popup.innerHTML = '';
 
                 if (!sources || sources.length === 0) {
@@ -2322,7 +2336,7 @@ const AvatarPopupMixin = {
                     noSrc.textContent = window.t ? window.t('app.screenSource.noSources') : '未找到可用源';
                     Object.assign(noSrc.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
                     popup.appendChild(noSrc);
-                    return;
+                    return true;
                 }
 
                 const screens = sources.filter(s => s.id.startsWith('screen:'));
@@ -2395,12 +2409,15 @@ const AvatarPopupMixin = {
 
                 createGrid(window.t ? window.t('app.screenSource.screens') : '屏幕', screens);
                 createGrid(window.t ? window.t('app.screenSource.windows') : '窗口', windows);
+                return true;
             } catch (err) {
+                if (!isPopupAvailable()) return false;
                 popup.innerHTML = '';
                 const errDiv = document.createElement('div');
                 errDiv.textContent = window.t ? window.t('app.screenSource.loadFailed') : '获取屏幕源失败';
                 Object.assign(errDiv.style, { padding: '12px', fontSize: '13px', color: '#ff4d4f', textAlign: 'center' });
                 popup.appendChild(errDiv);
+                return true;
             }
         };
 
