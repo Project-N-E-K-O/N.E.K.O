@@ -264,6 +264,7 @@ class LLMSessionManager:
         self._tts_respawn_task: Optional[asyncio.Task] = None  # 延迟重试 Task，end_session 时取消
         self._last_tts_error_code: str = ''  # 上次 TTS 错误码
         self._tts_retry_notify_count: int = 0  # TTS 重试通知计数，前3次不通知前端
+        self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -341,9 +342,10 @@ class LLMSessionManager:
         # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
         self.audio_resampler.clear()
         await self._clear_tts_pipeline()
-        
+        self._tts_done_queued_for_turn = False  # 新轮次重置 TTS 结束信号标记
+
         await self.send_user_activity()
-        
+
         # 立即生成新的 speech_id，确保新回复不会使用被打断的 ID
         # 这样即使 handle_input_transcript 先于 handle_new_message 执行，
         # 新回复的 audio_chunk 也不会被错误丢弃
@@ -397,10 +399,14 @@ class LLMSessionManager:
         exclusively to user-initiated conversation turns.
         """
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            try:
-                self.tts_request_queue.put((None, None))
-            except Exception as e:
-                logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
+            if self._tts_done_queued_for_turn:
+                logger.debug("handle_proactive_complete: TTS done 已排入队列，跳过重复信号")
+            else:
+                try:
+                    self.tts_request_queue.put((None, None))
+                    self._tts_done_queued_for_turn = True
+                except Exception as e:
+                    logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
         if self.sync_message_queue:
             self.sync_message_queue.put({'type': 'system', 'data': 'turn end agent_callback'})
         try:
@@ -416,11 +422,15 @@ class LLMSessionManager:
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            logger.info("📨 Response complete (LLM 回复结束)")
-            try:
-                self.tts_request_queue.put((None, None))
-            except Exception as e:
-                logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
+            if self._tts_done_queued_for_turn:
+                logger.debug("📨 Response complete: TTS done 已排入队列，跳过重复信号")
+            else:
+                logger.info("📨 Response complete (LLM 回复结束)")
+                try:
+                    self.tts_request_queue.put((None, None))
+                    self._tts_done_queued_for_turn = True
+                except Exception as e:
+                    logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
         self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
 
         # 直接向前端发送turn end消息
@@ -2047,9 +2057,10 @@ class LLMSessionManager:
             if self.session and hasattr(self.session, '_conversation_history'):
                 self.session._conversation_history.append(_AIMsg(content=full_text))
 
-            if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+            if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
                     self.tts_request_queue.put((None, None))
+                    self._tts_done_queued_for_turn = True
                 except Exception:
                     pass
 
