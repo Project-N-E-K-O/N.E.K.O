@@ -93,17 +93,19 @@
         toolbar.appendChild(btnGroup);
         overlay.appendChild(toolbar);
 
-        // Store references for confirm button toggling
+        // Store references for confirm button toggling and layout
         overlay._confirmBtn = confirmBtn;
         overlay._hint = hint;
+        overlay._toolbar = toolbar;
 
-        // Events
+        // Events — mousedown on canvas to start, but move/up on document
+        // so dragging outside the canvas still finalizes the selection
         canvas.addEventListener('mousedown', onPointerDown);
-        canvas.addEventListener('mousemove', onPointerMove);
-        canvas.addEventListener('mouseup', onPointerUp);
+        document.addEventListener('mousemove', onPointerMove);
+        document.addEventListener('mouseup', onPointerUp);
         canvas.addEventListener('touchstart', onTouchStart, { passive: false });
-        canvas.addEventListener('touchmove', onTouchMove, { passive: false });
-        canvas.addEventListener('touchend', onTouchEnd);
+        document.addEventListener('touchmove', onTouchMove, { passive: false });
+        document.addEventListener('touchend', onTouchEnd);
 
         // Escape to cancel
         overlay.addEventListener('keydown', function (e) {
@@ -114,11 +116,15 @@
     }
 
     // ======================== Coordinate helpers ========================
+    function getToolbarHeight() {
+        return (overlay._toolbar && overlay._toolbar.offsetHeight) || 52;
+    }
+
     function computeImgMetrics() {
         // The image is displayed with object-fit:contain style.
         // Compute its actual rendered position within the overlay.
         var overlayW = overlay.clientWidth;
-        var overlayH = overlay.clientHeight - 52; // subtract toolbar height
+        var overlayH = overlay.clientHeight - getToolbarHeight();
         var natW = imgEl.naturalWidth;
         var natH = imgEl.naturalHeight;
         imgNaturalWidth = natW;
@@ -409,7 +415,7 @@
 
     function sizeCanvas() {
         canvas.width = overlay.clientWidth;
-        canvas.height = overlay.clientHeight - 52; // subtract toolbar
+        canvas.height = overlay.clientHeight - getToolbarHeight();
     }
 
     // ======================== Public API ========================
