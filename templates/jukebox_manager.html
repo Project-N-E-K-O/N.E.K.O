@@ -70,15 +70,25 @@
             document.head.appendChild(style);
 
             // 覆盖 hide：关闭窗口而非隐藏 DOM
+            var _prevHide = SAM.hide;
             SAM.hide = function() {
-                window.close();
+                try {
+                    window.close();
+                } catch (e) {
+                    if (typeof _prevHide === 'function') _prevHide.call(SAM);
+                }
             };
 
-            // 覆盖 Jukebox.loadSongs：通过 BroadcastChannel 通知点歌台窗口刷新
-            Jukebox.loadSongs = function() {
+            // 覆盖 Jukebox.loadSongs：保留原始行为，完成后通过 BroadcastChannel 通知点歌台窗口刷新
+            var _origLoadSongs = Jukebox.loadSongs;
+            var _jukeboxBC;
+            try { _jukeboxBC = new BroadcastChannel('neko-jukebox'); } catch (e) {}
+            Jukebox.loadSongs = async function() {
+                var result = await _origLoadSongs.apply(Jukebox, arguments);
                 try {
-                    new BroadcastChannel('neko-jukebox').postMessage({ type: 'reload' });
+                    if (_jukeboxBC) _jukeboxBC.postMessage({ type: 'reload' });
                 } catch (e) {}
+                return result;
             };
 
             // 显示并加载数据
