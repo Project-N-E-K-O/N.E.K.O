@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8">
+    <title>N.E.K.O. Jukebox Manager</title>
+
+    <!-- i18n -->
+    <script src="/static/i18n-i18next.js"></script>
+    <!-- 暗色模式 -->
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <script src="/static/theme-manager.js"></script>
+
+    <style>
+        html, body {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            overflow: hidden;
+            background: rgba(0, 0, 0, 0.85);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        /* 管理器面板覆盖全窗口 */
+        .jukebox-sam-panel {
+            position: fixed !important;
+            inset: 0 !important;
+            width: 100% !important;
+            height: 100% !important;
+            max-height: 100% !important;
+            border-radius: 0 !important;
+            box-sizing: border-box !important;
+        }
+
+        /* 整个面板可拖拽，内容区域和交互按钮排除 */
+        .jukebox-sam-panel {
+            -webkit-app-region: drag;
+        }
+        .sam-content,
+        .sam-footer,
+        .sam-close-btn,
+        .sam-tab {
+            -webkit-app-region: no-drag;
+        }
+    </style>
+</head>
+<body>
+    <script>
+        // 标记为管理器独立窗口模式
+        window.__NEKO_JUKEBOX_MANAGER_STANDALONE__ = true;
+    </script>
+    <!-- Jukebox.js 包含 SongActionManager 定义 -->
+    <script src="/static/Jukebox.js"></script>
+    <script>
+        // 管理器独立窗口初始化
+        async function _initManager() {
+            if (!window.Jukebox || !window.Jukebox.SongActionManager) return;
+
+            var SAM = Jukebox.SongActionManager;
+
+            // 创建管理器面板 DOM
+            var panel = SAM.create();
+            document.body.appendChild(panel);
+
+            // 注入管理器样式
+            var style = document.createElement('style');
+            style.textContent = SAM.getStyles();
+            document.head.appendChild(style);
+
+            // 覆盖 hide：关闭窗口而非隐藏 DOM
+            var _prevHide = SAM.hide;
+            SAM.hide = function() {
+                try {
+                    window.close();
+                    if (!window.closed && typeof _prevHide === 'function') {
+                        _prevHide.call(SAM);
+                    }
+                } catch (e) {
+                    if (typeof _prevHide === 'function') _prevHide.call(SAM);
+                }
+            };
+
+            // 覆盖 Jukebox.loadSongs：保留原始行为，完成后通过 BroadcastChannel 通知点歌台窗口刷新
+            var _origLoadSongs = Jukebox.loadSongs;
+            var _jukeboxBC;
+            try { _jukeboxBC = new BroadcastChannel('neko-jukebox'); } catch (e) {}
+            Jukebox.loadSongs = async function() {
+                var result = await _origLoadSongs.apply(Jukebox, arguments);
+                try {
+                    if (_jukeboxBC) _jukeboxBC.postMessage({ type: 'reload' });
+                } catch (e) {}
+                return result;
+            };
+
+            // 显示管理器（SAM.create() 已调用 load，无需重复加载）
+            SAM.element.style.display = 'flex';
+            SAM.isVisible = true;
+        }
+
+        // 等待 i18n 就绪
+        var _mgrInitDone = false;
+        function _tryInitManager() {
+            if (_mgrInitDone) return;
+            if (typeof window.t === 'function' && window.i18n && window.i18n.isInitialized === true) {
+                _mgrInitDone = true;
+                clearInterval(_mgrPoll);
+                _initManager().catch(function(e) { console.error('[JukeboxManager] init failed:', e); });
+            }
+        }
+        var _mgrPoll = setInterval(function() { _tryInitManager(); }, 100);
+        setTimeout(function() {
+            clearInterval(_mgrPoll);
+            if (!_mgrInitDone) {
+                _mgrInitDone = true;
+                if (typeof window.t !== 'function') {
+                    window.t = function(key, fallback) { return typeof fallback === 'string' ? fallback : key; };
+                }
+                _initManager().catch(function(e) { console.error('[JukeboxManager] init failed:', e); });
+            }
+        }, 3000);
+    </script>
+</body>
+</html>

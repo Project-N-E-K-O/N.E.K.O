@@ -1,5 +1,6 @@
 import clsx from 'clsx';
 import SmartTextBlock from './SmartTextBlock';
+import { i18n } from './i18n';
 import {
   type ChatMessage,
   type MessageAction,
@@ -121,7 +122,7 @@ function MessageBlockView({
 export default function MessageBubble({
   message,
   isGroupedWithPrevious = false,
-  failedStatusLabel = '发送失败',
+  failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
   onAction,
 }: MessageBubbleProps) {
   const bubbleClassName = getBubbleClassName(message);
