@@ -844,10 +844,12 @@
                     || catgirlConfig._reserved?.avatar?.mmd?.model_path
                     || '';
 
-                if (!mmdModelPath) {
-                    throw new Error('MMD 模型路径未配置');
+                if (!mmdModelPath || mmdModelPath === 'undefined' || mmdModelPath === 'null') {
+                    mmdModelPath = '/static/mmd/Miku/Miku.pmx';
+                    console.warn('[猫娘切换] MMD 模型路径未配置或无效，使用默认模型:', mmdModelPath);
+                } else {
+                    console.log('[猫娘切换] MMD 模型路径:', mmdModelPath);
                 }
-                console.log('[猫娘切换] MMD 模型路径:', mmdModelPath);
 
                 // 处理路径格式
                 let mmdModelUrl = mmdModelPath;
