@@ -3332,13 +3332,15 @@ window.Jukebox = {
 
     // 监听管理器独立窗口的刷新通知（BroadcastChannel 跨窗口通信）
     try {
-      var bc = new BroadcastChannel('neko-jukebox');
-      bc.onmessage = function(e) {
-        if (e.data && e.data.type === 'reload' && Jukebox.State.isOpen) {
-          console.log('[Jukebox] 收到管理器刷新通知，重新加载歌曲');
-          Jukebox.loadSongs();
-        }
-      };
+      if (!Jukebox._broadcastChannel) {
+        Jukebox._broadcastChannel = new BroadcastChannel('neko-jukebox');
+        Jukebox._broadcastChannel.onmessage = function(e) {
+          if (e.data && e.data.type === 'reload' && Jukebox.State.isOpen) {
+            console.log('[Jukebox] 收到管理器刷新通知，重新加载歌曲');
+            Jukebox.loadSongs();
+          }
+        };
+      }
     } catch (e) {}
 
     const jukeboxButton = document.getElementById('jukeboxButton');
@@ -3412,6 +3414,15 @@ window.Jukebox = {
     
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
+    
+    // 清理 BroadcastChannel
+    try {
+      if (Jukebox._broadcastChannel) {
+        Jukebox._broadcastChannel.onmessage = null;
+        Jukebox._broadcastChannel.close();
+        Jukebox._broadcastChannel = null;
+      }
+    } catch (e) {}
     
     // 清空歌曲列表和元素映射，确保下次打开时重新渲染
     Jukebox.State.songs = [];

@@ -93,6 +93,7 @@
             if (_mgrInitDone) return;
             if (typeof window.t === 'function' && window.i18n && window.i18n.isInitialized !== false) {
                 _mgrInitDone = true;
+                clearInterval(_mgrPoll);
                 _initManager();
             }
         }

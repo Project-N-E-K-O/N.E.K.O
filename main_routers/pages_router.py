@@ -157,7 +157,7 @@ async def get_jukebox_page(request: Request):
 
 @router.get("/jukebox/manager", response_class=HTMLResponse)
 async def get_jukebox_manager_page(request: Request):
-    """Jukebox 管理器独立窗口页面（从点歌台打开）"""
+    """Jukebox 管理器独立窗口页面 (从点歌台打开)"""
     templates = get_templates()
     return templates.TemplateResponse("templates/jukebox_manager.html", {"request": request})
 
