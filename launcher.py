@@ -10,10 +10,26 @@ import os
 import io
 import signal
 
-# 强制 UTF-8 编码
-if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+def _configure_utf8_stdio():
+    """Prefer reconfiguring existing stdio streams without replacing them."""
+    if sys.platform != 'win32':
+        return
+
+    for name in ('stdout', 'stderr'):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        try:
+            reconfigure = getattr(stream, 'reconfigure', None)
+            if callable(reconfigure):
+                reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            # Keep the original stream object for compatibility with pytest
+            # capture, IDE consoles, and other embedded hosts.
+            pass
+
+
+_configure_utf8_stdio()
     
 # 处理 PyInstaller 和 Nuitka 打包后的路径
 if getattr(sys, 'frozen', False):

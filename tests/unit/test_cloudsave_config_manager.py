@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -122,19 +123,49 @@ def test_get_documents_directory_preserves_first_readable_legacy_candidate(tmp_p
 
     standard_dir = tmp_path / "standard"
     legacy_dir = tmp_path / "legacy"
+    docs_dir = tmp_path / "Documents"
     standard_dir.mkdir(parents=True, exist_ok=True)
     legacy_dir.mkdir(parents=True, exist_ok=True)
+    docs_dir.mkdir(parents=True, exist_ok=True)
 
     cm = object.__new__(ConfigManager)
     cm._log = lambda *_args, **_kwargs: None
     cm._get_standard_data_directory_candidates = lambda: [standard_dir]
-    cm._get_legacy_storage_candidates = lambda: [legacy_dir]
+    cm._get_legacy_storage_candidates = lambda: [legacy_dir, docs_dir]
+    cm._get_legacy_document_candidates = lambda: [docs_dir]
     cm._dedupe_paths = lambda paths: list(dict.fromkeys(paths))
 
     chosen = ConfigManager._get_documents_directory(cm)
 
     assert chosen == standard_dir
-    assert cm._first_readable_candidate == legacy_dir
+    assert cm._first_readable_candidate == docs_dir
+    assert cm._first_non_writable_readable_candidate is None
+
+
+@pytest.mark.unit
+def test_get_documents_directory_ignores_non_document_legacy_roots_for_cfa_detection(tmp_path):
+    from utils.config_manager import ConfigManager
+
+    standard_dir = tmp_path / "standard"
+    docs_dir = tmp_path / "Documents"
+    exe_dir = tmp_path / "bundle"
+    standard_dir.mkdir(parents=True, exist_ok=True)
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    exe_dir.mkdir(parents=True, exist_ok=True)
+
+    cm = object.__new__(ConfigManager)
+    cm._log = lambda *_args, **_kwargs: None
+    cm._get_standard_data_directory_candidates = lambda: [standard_dir]
+    cm._get_legacy_storage_candidates = lambda: [docs_dir, exe_dir]
+    cm._get_legacy_document_candidates = lambda: [docs_dir]
+    cm._dedupe_paths = lambda paths: list(dict.fromkeys(paths))
+    cm._can_write_existing_directory = lambda path: Path(path) != exe_dir
+
+    chosen = ConfigManager._get_documents_directory(cm)
+
+    assert chosen == standard_dir
+    assert cm._first_readable_candidate == docs_dir
+    assert cm._first_non_writable_readable_candidate is None
 
 
 @pytest.mark.unit

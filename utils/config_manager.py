@@ -464,12 +464,12 @@ class ConfigManager:
 
         # CFA (Windows 受控文件夹访问/反勒索防护) 检测：
         # 如果原始 Documents 路径可读但不可写，记住它以便从中读取用户数据（模型等）
-        first_readable = getattr(self, '_first_readable_candidate', None)
-        if (first_readable is not None
-                and first_readable != self.docs_dir):
-            self._readable_docs_dir = first_readable
+        first_readable_non_writable = getattr(self, '_first_non_writable_readable_candidate', None)
+        if (first_readable_non_writable is not None
+                and first_readable_non_writable != self.docs_dir):
+            self._readable_docs_dir = first_readable_non_writable
             print("⚠ WARNING [ConfigManager] 文档目录不可写（可能受Windows安全策略/反勒索防护保护）!", file=sys.stderr)
-            print(f"⚠ WARNING [ConfigManager] 原始文档路径(只读): {first_readable}", file=sys.stderr)
+            print(f"⚠ WARNING [ConfigManager] 原始文档路径(只读): {first_readable_non_writable}", file=sys.stderr)
             print(f"⚠ WARNING [ConfigManager] 回退写入路径: {self.docs_dir}", file=sys.stderr)
             print("⚠ WARNING [ConfigManager] 用户数据将从原始路径读取，写入操作将使用回退路径", file=sys.stderr)
         else:
@@ -564,6 +564,22 @@ class ConfigManager:
         if self._verbose:
             print(msg, file=sys.stderr)
 
+    def _can_write_existing_directory(self, directory):
+        """Check whether an existing directory accepts a real write probe."""
+        try:
+            directory = Path(directory)
+            if not directory.exists():
+                return False
+            if not os.access(str(directory), os.R_OK | os.W_OK):
+                return False
+
+            test_path = directory / f".test_neko_write.{uuid.uuid4().hex}.tmp"
+            test_path.touch()
+            test_path.unlink()
+            return True
+        except Exception:
+            return False
+
     @staticmethod
     def _dedupe_paths(paths):
         unique = []
@@ -652,6 +668,58 @@ class ConfigManager:
         candidates.append(Path.cwd())
         return self._dedupe_paths(candidates)
 
+    def _get_legacy_document_candidates(self):
+        """Return legacy document-folder candidates only."""
+        candidates = []
+
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import windll, wintypes
+
+                CSIDL_PERSONAL = 5
+                SHGFP_TYPE_CURRENT = 0
+
+                buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+                windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
+                api_path = Path(buf.value)
+                candidates.append(api_path)
+
+                if not api_path.exists() and api_path.drive:
+                    drive = api_path.drive
+                    for name in ("文档", "Documents", "My Documents"):
+                        alt_path = Path(drive) / name
+                        if alt_path.exists():
+                            candidates.append(alt_path)
+            except Exception:
+                pass
+
+            try:
+                import winreg
+
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+                )
+                reg_path_str = winreg.QueryValueEx(key, "Personal")[0]
+                winreg.CloseKey(key)
+                reg_path = Path(os.path.expandvars(reg_path_str))
+                candidates.append(reg_path)
+            except Exception:
+                pass
+
+            candidates.append(Path.home() / "Documents")
+            candidates.append(Path.home() / "文档")
+        elif sys.platform == "darwin":
+            candidates.append(Path.home() / "Documents")
+        else:
+            xdg_docs = os.getenv("XDG_DOCUMENTS_DIR", "").strip()
+            if xdg_docs:
+                candidates.append(Path(xdg_docs))
+            candidates.append(Path.home() / "Documents")
+
+        return self._dedupe_paths(candidates)
+
     def get_legacy_app_root_candidates(self):
         """返回旧版用户根目录候选（带 app_name），用于阶段 0 启动导入。"""
         roots = []
@@ -671,28 +739,36 @@ class ConfigManager:
         """
         primary_candidates = self._get_standard_data_directory_candidates()
         legacy_candidates = self._get_legacy_storage_candidates()
+        legacy_document_candidates = self._get_legacy_document_candidates()
         candidates = self._dedupe_paths(primary_candidates + legacy_candidates)
         first_readable = next(
             (
                 path
-                for path in legacy_candidates
+                for path in legacy_document_candidates
                 if path.exists() and os.access(str(path), os.R_OK)
+            ),
+            None,
+        )
+        first_readable_non_writable = next(
+            (
+                path
+                for path in legacy_document_candidates
+                if path.exists()
+                and os.access(str(path), os.R_OK)
+                and not self._can_write_existing_directory(path)
             ),
             None,
         )
         for docs_dir in candidates:
             try:
-                if docs_dir.exists() and os.access(str(docs_dir), os.R_OK | os.W_OK):
-                    test_path = docs_dir / ".test_neko_write"
-                    try:
-                        test_path.touch()
-                        test_path.unlink()
+                if docs_dir.exists():
+                    if self._can_write_existing_directory(docs_dir):
                         self._log(f"[ConfigManager] ✓ Using app data directory: {docs_dir}")
                         self._first_readable_candidate = first_readable
+                        self._first_non_writable_readable_candidate = first_readable_non_writable
                         return docs_dir
-                    except Exception as e:
-                        self._log(f"[ConfigManager] Path exists but not writable: {docs_dir} - {e}")
-                        continue
+                    self._log(f"[ConfigManager] Path exists but not writable: {docs_dir}")
+                    continue
 
                 if not docs_dir.exists():
                     dirs_to_create = []
@@ -712,12 +788,14 @@ class ConfigManager:
                     test_path.unlink()
                     self._log(f"[ConfigManager] ✓ Using app data directory (created): {docs_dir}")
                     self._first_readable_candidate = first_readable
+                    self._first_non_writable_readable_candidate = first_readable_non_writable
                     return docs_dir
             except Exception as e:
                 self._log(f"[ConfigManager] Failed to use path {docs_dir}: {e}")
                 continue
 
         self._first_readable_candidate = first_readable
+        self._first_non_writable_readable_candidate = first_readable_non_writable
         fallback = Path.cwd()
         self._log(f"[ConfigManager] ⚠ All app data directories failed, using fallback: {fallback}")
         return fallback

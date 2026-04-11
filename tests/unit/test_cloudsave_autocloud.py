@@ -242,3 +242,66 @@ def test_cloudsave_manager_import_deadline_exceeded_before_apply_preserves_local
             )
 
         assert target_cm.load_characters()["当前猫娘"] == "本地角色"
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_import_downloads_source_launch_bundle_before_local_import():
+    with TemporaryDirectory() as td:
+        source_cm = _make_config_manager(Path(td) / "source")
+        target_cm = _make_config_manager(Path(td) / "target")
+        bootstrap_local_cloudsave_environment(source_cm)
+        bootstrap_local_cloudsave_environment(target_cm)
+        _write_runtime_state(source_cm, character_name="云端Bundle角色")
+        export_result = export_local_cloudsave_snapshot(source_cm)
+
+        def _fake_download_bundle(config_manager, *, steamworks=None, deadline_monotonic=None):
+            shutil.copytree(source_cm.cloudsave_dir, config_manager.cloudsave_dir, dirs_exist_ok=True)
+            return {
+                "success": True,
+                "action": "downloaded",
+                "meta": {
+                    "manifest_fingerprint": export_result["manifest"]["fingerprint"],
+                },
+            }
+
+        with patch("utils.cloudsave_autocloud.download_cloudsave_bundle_from_steam", side_effect=_fake_download_bundle):
+            manager = CloudSaveManager(target_cm)
+            result = manager.import_if_needed(reason="source_launch_remote_bundle")
+
+        assert result["success"] is True
+        assert result["action"] == "imported"
+        assert result["remote_bundle_result"]["action"] == "downloaded"
+        assert target_cm.load_characters()["当前猫娘"] == "云端Bundle角色"
+        assert target_cm.load_cloudsave_local_state()["last_applied_manifest_fingerprint"] == export_result["manifest"]["fingerprint"]
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_export_uploads_source_launch_bundle_after_local_export():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        _write_runtime_state(cm, character_name="Bundle上传角色")
+
+        observed = {}
+
+        def _fake_upload_bundle(config_manager, *, steamworks=None, deadline_monotonic=None):
+            manifest = json.loads((config_manager.cloudsave_dir / "manifest.json").read_text(encoding="utf-8"))
+            observed["fingerprint"] = manifest.get("fingerprint")
+            observed["sequence_number"] = manifest.get("sequence_number")
+            return {
+                "success": True,
+                "action": "uploaded",
+                "meta": {
+                    "manifest_fingerprint": manifest.get("fingerprint"),
+                },
+            }
+
+        with patch("utils.cloudsave_autocloud.upload_cloudsave_bundle_to_steam", side_effect=_fake_upload_bundle):
+            manager = CloudSaveManager(cm)
+            result = manager.export_snapshot(reason="source_launch_remote_bundle_upload")
+
+        assert result["success"] is True
+        assert result["action"] == "exported"
+        assert result["remote_bundle_result"]["action"] == "uploaded"
+        assert observed["fingerprint"] == result["result"]["manifest"]["fingerprint"]
+        assert observed["sequence_number"] == result["result"]["manifest"]["sequence_number"]

@@ -11,6 +11,10 @@ from utils.cloudsave_runtime import (
     import_local_cloudsave_snapshot,
     load_cloudsave_manifest,
 )
+from utils.steam_cloud_bundle import (
+    download_cloudsave_bundle_from_steam,
+    upload_cloudsave_bundle_to_steam,
+)
 
 
 STEAM_AUTO_CLOUD_SYNC_BACKEND = "steam_auto_cloud"
@@ -130,6 +134,36 @@ class CloudSaveManager:
     def __init__(self, config_manager):
         self.config_manager = config_manager
 
+    def _try_download_remote_bundle(self, *, steamworks=None, deadline_monotonic: float | None = None) -> dict[str, Any]:
+        try:
+            return download_cloudsave_bundle_from_steam(
+                self.config_manager,
+                steamworks=steamworks,
+                deadline_monotonic=deadline_monotonic,
+            )
+        except Exception as exc:
+            return {
+                "success": False,
+                "action": "failed",
+                "reason": "remote_bundle_download_failed",
+                "message": str(exc),
+            }
+
+    def _try_upload_remote_bundle(self, *, steamworks=None, deadline_monotonic: float | None = None) -> dict[str, Any]:
+        try:
+            return upload_cloudsave_bundle_to_steam(
+                self.config_manager,
+                steamworks=steamworks,
+                deadline_monotonic=deadline_monotonic,
+            )
+        except Exception as exc:
+            return {
+                "success": False,
+                "action": "failed",
+                "reason": "remote_bundle_upload_failed",
+                "message": str(exc),
+            }
+
     def build_status(self, *, steamworks=None) -> dict[str, Any]:
         bootstrap_local_cloudsave_environment(self.config_manager)
         cloud_state = self.config_manager.load_cloudsave_local_state()
@@ -181,6 +215,10 @@ class CloudSaveManager:
         steamworks=None,
         deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
+        remote_bundle_result = self._try_download_remote_bundle(
+            steamworks=steamworks,
+            deadline_monotonic=deadline_monotonic,
+        )
         status = self.build_status(steamworks=steamworks)
         if not status["has_snapshot"]:
             return {
@@ -189,6 +227,7 @@ class CloudSaveManager:
                 "reason": "no_snapshot",
                 "requested_reason": str(reason or ""),
                 "hint": _build_missing_snapshot_hint(status),
+                "remote_bundle_result": remote_bundle_result,
                 "status": status,
             }
         if not force and not status["startup_import_required"]:
@@ -197,6 +236,7 @@ class CloudSaveManager:
                 "action": "skipped",
                 "reason": "already_applied",
                 "requested_reason": str(reason or ""),
+                "remote_bundle_result": remote_bundle_result,
                 "status": status,
             }
         result = import_local_cloudsave_snapshot(
@@ -208,6 +248,7 @@ class CloudSaveManager:
             "action": "imported",
             "requested_reason": str(reason or ""),
             "result": result,
+            "remote_bundle_result": remote_bundle_result,
             "status": self.build_status(steamworks=steamworks),
         }
 
@@ -222,11 +263,16 @@ class CloudSaveManager:
             self.config_manager,
             deadline_monotonic=deadline_monotonic,
         )
+        remote_bundle_result = self._try_upload_remote_bundle(
+            steamworks=steamworks,
+            deadline_monotonic=deadline_monotonic,
+        )
         return {
             "success": True,
             "action": "exported",
             "requested_reason": str(reason or ""),
             "result": result,
+            "remote_bundle_result": remote_bundle_result,
             "status": self.build_status(steamworks=steamworks),
         }
 

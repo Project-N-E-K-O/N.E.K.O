@@ -16,6 +16,7 @@ def _make_cfa_config_manager(tmp_path: Path):
 
     def _fake_get_docs(self):
         self._first_readable_candidate = docs_dir
+        self._first_non_writable_readable_candidate = docs_dir
         return appdata_dir
 
     with patch.object(ConfigManager, "_get_documents_directory", _fake_get_docs):
