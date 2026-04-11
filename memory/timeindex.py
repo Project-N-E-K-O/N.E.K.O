@@ -33,8 +33,9 @@ class TimeIndexedMemory:
                     db_path = os.path.join(ensure_character_dir(config_mgr.memory_dir, lanlan_name), 'time_indexed.db')
                     logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
 
-            # 确保数据库文件的父目录存在
-            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+            # 确保数据库文件的父目录存在（兼容相对文件名路径）
+            db_dir = os.path.dirname(os.path.abspath(db_path))
+            os.makedirs(db_dir, exist_ok=True)
             # Windows 路径使用反斜杠，SQLite URI 需要正斜杠
             uri_path = db_path.replace("\\", "/")
             engine = create_engine(f"sqlite:///{uri_path}")
