@@ -2165,6 +2165,7 @@ class LLMSessionManager:
                     async with self._proactive_write_lock:
                         async with self.lock:
                             self.current_speech_id = str(uuid4())
+                            self._tts_done_queued_for_turn = False
                         # 更新字数限制（可能用户在对话期间修改了设置）
                         if hasattr(self.session, 'update_max_response_length'):
                             self.session.update_max_response_length(self._get_text_guard_max_length())
