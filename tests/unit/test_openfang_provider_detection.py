@@ -201,7 +201,8 @@ class TestSyncConfigKeyFreeProvider:
 
         # Mock httpx to avoid real HTTP calls — make it raise to short-circuit
         # but the key point is: we should NOT return False before reaching HTTP
-        with patch("brain.openfang_adapter.httpx.AsyncClient") as mock_client_cls:
+        with patch("brain.openfang_adapter.httpx.AsyncClient") as mock_client_cls, \
+             patch.object(OpenFangAdapter, "_write_openfang_model_config"):
             mock_client = AsyncMock()
             mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -249,7 +250,8 @@ class TestSyncConfigKeyFreeProvider:
 
         adapter = OpenFangAdapter(base_url="http://127.0.0.1:12345")
 
-        with patch("brain.openfang_adapter.httpx.AsyncClient") as mock_client_cls:
+        with patch("brain.openfang_adapter.httpx.AsyncClient") as mock_client_cls, \
+             patch.object(OpenFangAdapter, "_write_openfang_model_config"):
             mock_client = AsyncMock()
             mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)

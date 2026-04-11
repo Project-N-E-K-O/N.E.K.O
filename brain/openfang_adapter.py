@@ -95,7 +95,11 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
     #   /v1beta/openai/ -- OpenAI 兼容 (Bearer token + OpenAI tools 格式) -> 用 openai provider
     #   /v1beta         -- 原生 Gemini API (?key= 认证 + functionDeclarations) -> 用 gemini provider
     _is_google_ai = _host_matches("generativelanguage.googleapis.com")
-    if _is_google_ai and "/openai" in path:
+    _normalized_path = path.rstrip("/")
+    if _is_google_ai and (
+        _normalized_path.endswith("/openai")
+        or "/openai/" in path
+    ):
         # OpenAI 兼容端点, 直连即可, 不需要 Gemini driver
         return {
             "provider": "openai",
