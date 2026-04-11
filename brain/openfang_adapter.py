@@ -85,12 +85,12 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": "GROQ_API_KEY",
         }
 
-    # Gemini / Google AI
+    # Gemini / Google AI -- 仅通过 hostname 白名单判定, 不用 model name 启发式
+    # (model 名含 "gemini" 但 host 不是 Google 的情况 = OpenAI-compatible 代理, 应走 fallback)
     # Google 提供两种端点:
     #   /v1beta/openai/ -- OpenAI 兼容 (Bearer token + OpenAI tools 格式) -> 用 openai provider
     #   /v1beta         -- 原生 Gemini API (?key= 认证 + functionDeclarations) -> 用 gemini provider
     _is_google_ai = _host_matches("generativelanguage.googleapis.com")
-    _is_gemini_model = "gemini" in model_lower
     if _is_google_ai and "/openai" in path:
         # OpenAI 兼容端点, 直连即可, 不需要 Gemini driver
         return {
@@ -99,7 +99,7 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "effective_url": base_url,
             "api_key_env": "GEMINI_API_KEY",
         }
-    if _is_google_ai or _is_gemini_model:
+    if _is_google_ai:
         return {
             "provider": "gemini",
             "needs_proxy": False,

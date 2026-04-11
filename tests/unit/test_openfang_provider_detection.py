@@ -63,10 +63,11 @@ class TestDetectProviderInfo:
         assert r["needs_proxy"] is False
         assert r["api_key_env"] == "GEMINI_API_KEY"
 
-    def test_gemini_by_model(self):
+    def test_gemini_model_on_unknown_host_falls_through(self):
+        """Non-Google host + gemini model name → NOT native Gemini, falls to proxy fallback."""
         r = _detect_provider_info("https://custom-endpoint.example.com/v1", "gemini-2.5-pro")
-        assert r["provider"] == "gemini"
-        assert r["needs_proxy"] is False
+        assert r["provider"] == "openai"
+        assert r["needs_proxy"] is True
 
     def test_deepseek_by_url(self):
         r = _detect_provider_info("https://api.deepseek.com/v1", "deepseek-chat")
