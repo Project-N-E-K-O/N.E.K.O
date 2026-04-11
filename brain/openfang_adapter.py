@@ -44,6 +44,10 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
     parsed = urlsplit(base_url)
     host = (parsed.hostname or "").lower()
     path = (parsed.path or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
 
     def _host_matches(*domains: str) -> bool:
         """Check if host exactly matches or is a subdomain of any given domain."""
@@ -130,9 +134,10 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
         or any(host.startswith(f"172.{i}.") for i in range(16, 32))
     )
     _is_local = _is_loopback or _is_lan
-    _has_ollama_port = parsed.port == 11434
-    _has_ollama_hint = "ollama" in model_lower or "/ollama" in path
-    if _has_ollama_port or (_is_local and _has_ollama_hint):
+    _has_ollama_port = port == 11434
+    _has_ollama_path = "/ollama" in path
+    _has_ollama_model = "ollama" in model_lower
+    if _has_ollama_port or _has_ollama_path or (_is_local and _has_ollama_model):
         return {
             "provider": "ollama",
             "needs_proxy": False,
@@ -589,8 +594,8 @@ class OpenFangAdapter:
         key_pushed = False
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # (1) Push API key — 本地 provider (Ollama 等) 无需推送 key
-                if api_key:
+                # (1) Push API key — 本地 provider (api_key_env 为空) 跳过
+                if api_key and pinfo.get("api_key_env"):
                     provider_key_url = f"{self.base_url}/api/providers/{provider}/key"
                     for payload in [
                         {"key": api_key},

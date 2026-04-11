@@ -140,10 +140,21 @@ class TestDetectProviderInfo:
         r = _detect_provider_info("https://192.168.1.100:11434/v1", "llama3")
         assert r["provider"] == "ollama"
 
-    def test_ollama_reverse_proxy_path(self):
-        """URL path containing '/ollama' → Ollama (reverse-proxy setup)."""
+    def test_ollama_reverse_proxy_path_local(self):
+        """LAN + URL path containing '/ollama' → Ollama (reverse-proxy setup)."""
         r = _detect_provider_info("http://192.168.1.1:8080/ollama/v1", "llama3")
         assert r["provider"] == "ollama"
+
+    def test_ollama_reverse_proxy_path_remote(self):
+        """Remote host + URL path containing '/ollama' → still Ollama."""
+        r = _detect_provider_info("https://example.com/ollama/v1", "llama3")
+        assert r["provider"] == "ollama"
+        assert r["needs_proxy"] is False
+
+    def test_malformed_port_does_not_crash(self):
+        """Malformed port in URL should not raise, falls to fallback."""
+        r = _detect_provider_info("http://localhost:abc/v1", "llama3")
+        assert r["provider"] == "openai"
 
     def test_ollama_remote_default_port(self):
         """Remote host (not LAN/loopback) with :11434 → still Ollama (strong signal)."""
