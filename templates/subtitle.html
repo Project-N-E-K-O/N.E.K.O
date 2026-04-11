@@ -117,8 +117,8 @@
         // ===== 监听转写消息 =====
         window.addEventListener('neko-ws-transcript', function(e) {
             var data = e.detail;
-            if (data && data.transcript) {
-                subtitleText.textContent = data.transcript;
+            if (data && data.transcript != null) {
+                subtitleText.textContent = data.transcript || '';
                 autoResize();
             }
         });
