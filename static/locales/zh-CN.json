@@ -1514,6 +1514,7 @@
         "switchingCatgirl": "正在切换到 {{name}}...",
         "switchedCatgirl": "已切换到 {{name}}",
         "switchCatgirlFailed": "切换到 {{name}} 失败",
+        "switchCatgirlError": "切换失败: {{error}}",
         "started": "{{name}} 已启动",
         "voiceUpdated": "{{name}} 的语音已更新",
         "audioWorkletFailed": "AudioWorklet加载失败",
@@ -1536,6 +1537,7 @@
         "connectingToServer": "正在连接服务器...",
         "readyToSpeak": "可以说话了！",
         "screenShareRequiresVoice": "屏幕分享仅用于音视频通话",
+        "screenRecordingPermissionDenied": "⚠️ 屏幕录制权限未授权，请在系统设置中允许屏幕录制",
         "repetitionDetected": "检测到高重复度对话。建议您终止对话，让{{name}}休息片刻。",
         "modelSwitched": "模型已切换",
         "screenSource": {
@@ -1621,6 +1623,7 @@
             "browserUse": "浏览器控制",
             "focusMode": "允许打断",
             "unavailable": "{{name}}不可用",
+            "toggleFailed": "{{name}}切换失败: {{error}}",
             "checking": "查询中...",
             "serverOffline": "猫爪服务器未启动",
             "masterRequired": "请先开启猫爪总开关",
@@ -1675,7 +1678,8 @@
             "freeModelWarning": "由于限额问题，免费模型使用猫爪模式容易阻塞，建议您切换至自费模型。\n\n如果您已经配置好自费API，请尝试重启NEKO。",
             "freeModelWarningTitle": "免费模型提示",
             "connectivityCheck": "猫爪 LLM 连接检查中...",
-            "precheckFailed": "猫爪预检失败：{{reason}}"
+            "precheckFailed": "猫爪预检失败：{{reason}}",
+            "toggleFailed": "Agent切换失败: {{error}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "连接检查中...",
@@ -2094,6 +2098,24 @@
                 "step9": {
                     "title": "🎞️ 色调映射",
                     "desc": "选择不同的色调映射算法，决定画面亮部和暗部的呈现风格。"
+                }
+            },
+            "mmd": {
+                "step1": {
+                    "title": "🎭 选择 MMD 模型",
+                    "desc": "在 Live3D（MMD）模式下从这里选择要使用的模型。MMD 与 VRM 共用同一模型列表。"
+                },
+                "step2": {
+                    "title": "💃 VMD 动画",
+                    "desc": "为 MMD 模型选择 VMD 动作。也可使用「导入 VMD 动画」添加自定义动作文件。"
+                },
+                "step3": {
+                    "title": "🌟 MMD 光照",
+                    "desc": "在「MMD 模型设置」中调节环境光、主光源、曝光与色调映射等，控制 3D 画面效果。"
+                },
+                "step4": {
+                    "title": "😄 情感配置",
+                    "desc": "先选好模型后，可由此进入情感配置。Live3D 下 MMD 与 VRM 共用此入口，与 Live2D 的「情感配置」不是同一个按钮。"
                 }
             }
         },
@@ -2842,5 +2864,8 @@
             "title": "表情包",
             "loadError": "表情包加载失败"
         }
+    },
+    "achievement": {
+        "unlocked": "🏆 成就解锁: {{description}}"
     }
 }

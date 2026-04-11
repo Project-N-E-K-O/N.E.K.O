@@ -453,6 +453,7 @@ function initProviderSelectDropdown(select) {
 
     if (select.id) {
         menu.id = `${select.id}-menu`;
+        trigger.id = `${select.id}-dropdown-trigger`;
         trigger.setAttribute('aria-controls', menu.id);
     }
 

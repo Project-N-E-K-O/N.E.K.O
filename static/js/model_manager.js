@@ -1875,6 +1875,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentLive3dSubType = '';
         }
         localStorage.setItem('modelType', type);
+
+        // 无论后续初始化是否成功，都保证派发教程事件
+        const _dispatchTutorialEvent = () => {
+            try {
+                let tutorialMode = 'live2d';
+                if (currentModelType === 'live3d') {
+                    tutorialMode = (currentLive3dSubType === 'mmd') ? 'mmd' : 'vrm';
+                }
+                window.dispatchEvent(new CustomEvent('neko-model-manager-mode-set', {
+                    detail: { mode: tutorialMode, modelType: currentModelType, subType: currentLive3dSubType || '' }
+                }));
+            } catch (err) {
+                console.warn('[模型管理] 分发 neko-model-manager-mode-set 失败:', err);
+            }
+        };
+        try {
         if (currentLive3dSubType) {
             localStorage.setItem('live3dSubType', currentLive3dSubType);
         }
@@ -2371,12 +2387,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                     } catch (error) {
                         console.error('加载MMD动画列表失败:', error);
                     }
-                    // 加载MMD待机动作选项
-                    await loadMmdIdleAnimationOptions();
-                    // 恢复MMD待机动作选择器的值（从角色配置读取）
-                    await restoreMmdIdleAnimation();
-                    // 从服务器加载MMD设置并应用
-                    await loadMmdSettingsFromServer();
+                    try {
+                        await loadMmdIdleAnimationOptions();
+                    } catch (error) {
+                        console.error('加载MMD待机动作选项失败:', error);
+                    }
+                    try {
+                        await restoreMmdIdleAnimation();
+                    } catch (error) {
+                        console.error('恢复MMD待机动作失败:', error);
+                    }
+                    try {
+                        await loadMmdSettingsFromServer();
+                    } catch (error) {
+                        console.error('加载MMD服务器设置失败:', error);
+                    }
                     // 隐藏 VRM 专属控件
                     const vrmLightingGroup = document.getElementById('vrm-lighting-group');
                     if (vrmLightingGroup) vrmLightingGroup.style.display = 'none';
@@ -2408,6 +2433,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // 显示 VRM 专属控件（已在上方设置）
                 }
             }
+        }
+
+        } finally {
+            _dispatchTutorialEvent();
         }
     }
 

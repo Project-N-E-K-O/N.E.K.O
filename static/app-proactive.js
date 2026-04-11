@@ -898,7 +898,7 @@
                 if (backendResult.status === 403 && !S.screenRecordingPermissionHintShown) {
                     S.screenRecordingPermissionHintShown = true;
                     if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast('\u26A0\uFE0F 屏幕录制权限未授权，请在系统设置中允许屏幕录制', 6000);
+                        window.showStatusToast(window.t ? window.t('app.screenRecordingPermissionDenied') : '\u26A0\uFE0F 屏幕录制权限未授权，请在系统设置中允许屏幕录制', 6000);
                     }
                     console.warn('[ProactiveVision] 后端截图返回 403，请在"系统设置 → 隐私与安全性 → 屏幕录制"中授权 N.E.K.O');
                 }

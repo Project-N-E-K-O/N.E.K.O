@@ -1202,7 +1202,7 @@
 
         } catch (error) {
             console.error('[猫娘切换] 失败:', error);
-            showStatusToast(`切换失败: ${error.message}`, 4000);
+            showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
         } finally {
             S.isSwitchingCatgirl = false;
             // 清理切换标识，取消所有 pending 的 applyLighting 定时器
