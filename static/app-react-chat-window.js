@@ -22,6 +22,7 @@
     var resizeState = null;
     var minimized = false;
     var savedShellSize = null;
+    var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
 
     var state = {
         viewProps: null,
@@ -172,7 +173,16 @@
                 : getI18nText('chat.screenshotAriaLabel', '截图'),
             removeAttachmentButtonAriaLabel: getI18nText('chat.removePendingImage', '移除图片'),
             failedStatusLabel: getI18nText('chat.messageFailed', '发送失败'),
-            inputHint: getI18nText('chat.reactWindowInputHint', 'Enter 发送，Shift + Enter 换行')
+            inputHint: getI18nText('chat.reactWindowInputHint', 'Enter 发送，Shift + Enter 换行'),
+            jukeboxButtonLabel: getI18nText('chat.jukeboxLabel', '点歌台'),
+            jukeboxButtonAriaLabel: getI18nText('chat.jukebox', '点歌台'),
+            avatarGeneratorButtonLabel: getI18nText('chat.avatarPreviewLabel', '头像'),
+            avatarGeneratorButtonAriaLabel: getI18nText('chat.avatarPreview', '生成头像'),
+            translateEnabled: (window.appState && typeof window.appState.subtitleEnabled !== 'undefined')
+                ? !!window.appState.subtitleEnabled
+                : localStorage.getItem('subtitleEnabled') === 'true',
+            translateButtonLabel: getI18nText('subtitle.enable', '字幕翻译'),
+            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关')
         };
     }
 
@@ -276,7 +286,10 @@
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
             onComposerRemoveAttachment: handleComposerRemoveAttachment,
-            onComposerSubmit: handleComposerSubmit
+            onComposerSubmit: handleComposerSubmit,
+            onJukeboxClick: handleJukeboxClick,
+            onAvatarGeneratorClick: handleAvatarGeneratorClick,
+            onTranslateToggle: handleTranslateToggle
         });
     }
 
@@ -585,6 +598,143 @@
         dispatchHostEvent('remove-attachment', { attachmentId: attachmentId });
     }
 
+    function handleJukeboxClick() {
+        try {
+            if (typeof window.__nekoJukeboxToggle === 'function') {
+                // Electron 多窗口模式：通过 IPC 打开独立 Jukebox 窗口
+                window.__nekoJukeboxToggle();
+            } else if (typeof window.Jukebox !== 'undefined' && typeof window.Jukebox.toggle === 'function') {
+                window.Jukebox.toggle();
+            } else {
+                console.warn('[ReactChatWindow] Jukebox not available');
+            }
+        } finally {
+            dispatchHostEvent('jukebox-click', {});
+        }
+    }
+
+    function captureAvatarDirect() {
+        if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
+            // Electron 多窗口模式：通过 IPC 请求 Pet 窗口截取头像
+            if (window.__NEKO_MULTI_WINDOW__ && typeof window.__nekoRequestAvatarPreview === 'function') {
+                // 优先使用已缓存的外部头像
+                if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
+                    var cached = window.appChatAvatar.getCurrentAvatarDataUrl();
+                    if (cached) {
+                        window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+                            detail: { dataUrl: cached, source: 'cached' }
+                        }));
+                        showToast(getI18nText('chat.avatarPreviewReady', '头像已更新'), 2500);
+                        return;
+                    }
+                }
+                showToast(getI18nText('chat.avatarPreviewGenerating', '正在生成当前头像...'), 2000);
+                var finished = false;
+                var timerId = null;
+                var finish = function (success) {
+                    if (finished) return;
+                    finished = true;
+                    window.removeEventListener('neko:avatar-preview-ipc-result', onResult);
+                    if (timerId) { clearTimeout(timerId); timerId = null; }
+                    if (success) {
+                        showToast(getI18nText('chat.avatarPreviewReady', '头像已更新'), 2500);
+                    } else {
+                        showToast(getI18nText('chat.avatarPreviewFailed', '生成头像失败'), 3000);
+                    }
+                };
+                var onResult = function (e) {
+                    finish(!!(e.detail && e.detail.dataUrl));
+                };
+                window.addEventListener('neko:avatar-preview-ipc-result', onResult);
+                timerId = setTimeout(function () { finish(false); }, 10000);
+                try {
+                    window.__nekoRequestAvatarPreview();
+                } catch (err) {
+                    console.error('[ReactChatWindow] __nekoRequestAvatarPreview threw:', err);
+                    finish(false);
+                }
+                return;
+            }
+            showToast(getI18nText('chat.avatarPreviewUnavailable', '头像预览功能尚未就绪。'), 3000);
+            return;
+        }
+
+        showToast(getI18nText('chat.avatarPreviewGenerating', '正在生成当前头像...'), 2000);
+
+        window.avatarPortrait.capture({
+            width: 320, height: 320, padding: 0.035,
+            shape: 'rounded', radius: 40,
+            background: 'rgba(255, 255, 255, 0.96)',
+            includeDataUrl: true
+        }).then(function (result) {
+            if (result && result.dataUrl) {
+                // Dispatch the same event that app-chat-adapter.js already listens to
+                window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+                    detail: {
+                        dataUrl: result.dataUrl,
+                        modelType: result.modelType || '',
+                        source: 'react-chat-window'
+                    }
+                }));
+                showToast(getI18nText('chat.avatarPreviewReady', '头像已更新'), 2500);
+            } else {
+                console.warn('[ReactChatWindow] Avatar capture completed without dataUrl');
+                showToast(getI18nText('chat.avatarPreviewFailed', '生成头像失败'), 3000);
+            }
+        }).catch(function (error) {
+            console.error('[ReactChatWindow] Avatar capture failed:', error);
+            showToast(getI18nText('chat.avatarPreviewFailed', '生成头像失败'), 3000);
+        });
+    }
+
+    function handleAvatarGeneratorClick() {
+        try {
+            // Prefer legacy button if it exists (index.html); absent in chat.html
+            var legacyBtn = document.getElementById('avatarPreviewButton');
+            if (legacyBtn) {
+                legacyBtn.click();
+                return;
+            }
+            // React-first mode or standalone chat window — capture directly
+            captureAvatarDirect();
+        } finally {
+            dispatchHostEvent('avatar-generator-click', {});
+        }
+    }
+
+    function handleTranslateToggle() {
+        var bridge = window.subtitleBridge;
+        var next;
+
+        try {
+            if (bridge && typeof bridge.toggle === 'function') {
+                // Use full toggle with runtime side effects (hide/show subtitle, clear timers, re-translate)
+                next = bridge.toggle();
+            } else {
+                throw new Error('subtitleBridge.toggle unavailable');
+            }
+        } catch (err) {
+            console.warn('[ReactChatWindow] bridge.toggle failed, using fallback:', err);
+            // Fallback: flip flag manually if bridge not loaded or threw
+            var appSt = window.appState;
+            var current = (appSt && typeof appSt.subtitleEnabled !== 'undefined')
+                ? appSt.subtitleEnabled
+                : localStorage.getItem('subtitleEnabled') === 'true';
+            next = !current;
+            if (appSt) appSt.subtitleEnabled = next;
+            localStorage.setItem('subtitleEnabled', String(next));
+            if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                window.appSettings.saveSettings();
+            }
+        }
+
+        // Update React prop to reflect new state
+        state.viewProps = Object.assign({}, ensureViewProps(), { translateEnabled: next });
+        renderWindow();
+
+        dispatchHostEvent('translate-toggle', { enabled: next });
+    }
+
     function setViewProps(nextViewProps) {
         state.viewProps = Object.assign({}, ensureViewProps(), nextViewProps || {});
         renderWindow();
@@ -667,54 +817,263 @@
         };
     }
 
+    var MINIMIZED_SIZE = 50;
+    var isMinimizeTransitioning = false;
+    var activeAnimationCleanup = null; // 当前进行中动画的清理函数
+
+    function cancelActiveAnimation() {
+        if (activeAnimationCleanup) {
+            activeAnimationCleanup();
+            activeAnimationCleanup = null;
+        }
+        isMinimizeTransitioning = false;
+    }
+
+    function ensureMinimizedBallIcon() {
+        var shell = getShell();
+        if (!shell) return null;
+        var icon = shell.querySelector('.react-chat-minimized-icon');
+        if (!icon) {
+            icon = document.createElement('img');
+            icon.className = 'react-chat-minimized-icon';
+            icon.src = '/static/icons/expand_icon_off.png';
+            icon.alt = '';
+            icon.draggable = false;
+            var handle = getHeader();
+            if (handle) {
+                handle.appendChild(icon);
+            } else {
+                shell.appendChild(icon);
+            }
+        }
+        return icon;
+    }
+
     function setMinimized(nextMinimized) {
         var shell = getShell();
         if (!shell) return;
 
-        minimized = !!nextMinimized;
+        var wasMinimized = minimized;
+        var willMinimize = !!nextMinimized;
+        if (wasMinimized === willMinimize) return;
+        if (isMinimizeTransitioning) return; // 防止动画期间重复触发
+        isMinimizeTransitioning = true;
 
-        if (minimized) {
-            // 保存当前的内联尺寸（restoreSize/updateResize 设置的），
-            // 并清除它们，让 .is-minimized 的 CSS 规则生效（220x56）。
-            // 内联样式的优先级高于类选择器，所以必须先 removeProperty。
+        minimized = willMinimize;
+
+        if (willMinimize) {
+            // ---- 折叠动画：向对话框左下角缩放 ----
+            var rect = shell.getBoundingClientRect();
+
+            // 1. 保存当前位置和尺寸，展开时用
+            //    如果没有内联宽高（如 chat.html 全屏模式），
+            //    使用计算后的像素值，确保展开时能正确恢复
             savedShellSize = {
-                width: shell.style.width,
-                height: shell.style.height
+                width: shell.style.width || (rect.width + 'px'),
+                height: shell.style.height || (rect.height + 'px')
             };
-            shell.style.removeProperty('width');
-            shell.style.removeProperty('height');
-        } else if (savedShellSize) {
-            // 恢复用户之前调整的尺寸
-            if (savedShellSize.width) {
-                shell.style.width = savedShellSize.width;
+            savedShellPosition = {
+                left: rect.left,
+                top: rect.top
+            };
+
+            // 1b. 锁定当前像素几何到内联样式，防止切类后尺寸跳变
+            //     （chat.html 全屏规则退出后 shell 会回落到默认尺寸）
+            shell.style.width = rect.width + 'px';
+            shell.style.height = rect.height + 'px';
+            shell.style.left = rect.left + 'px';
+            shell.style.top = rect.top + 'px';
+
+            // 2. 球的目标位置 = 对话框自身的左下角（clamp 到视口内）
+            var targetLeft = Math.max(0, Math.min(rect.left, window.innerWidth - MINIMIZED_SIZE));
+            var targetTop = Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE, window.innerHeight - MINIMIZED_SIZE));
+
+            // 3. 计算缩放比（transform-origin 为 0% 100% 即左下角，无需 translate）
+            var sx = rect.width > 0 ? MINIMIZED_SIZE / rect.width : 1;
+            var sy = rect.height > 0 ? MINIMIZED_SIZE / rect.height : 1;
+
+            // 4. 初始 transform = identity，添加过渡类
+            shell.style.transform = 'scale(1, 1)';
+            shell.classList.add('is-collapsing');
+            void shell.offsetHeight; // 强制 reflow
+
+            // 5. 设置目标 transform，触发动画
+            requestAnimationFrame(function () {
+                requestAnimationFrame(function () {
+                    shell.style.transform = 'scale(' + sx + ', ' + sy + ')';
+                });
+            });
+
+            // 6. 过渡结束后切换到最终的 minimized 状态
+            var handled = false;
+            var collapseTimer = null;
+            var finishCollapse = function () {
+                if (handled) return;
+                handled = true;
+                clearTimeout(collapseTimer);
+                shell.removeEventListener('transitionend', onEnd);
+                activeAnimationCleanup = null;
+                shell.classList.remove('is-collapsing');
+                shell.style.transform = 'none';
+                // 清除内联尺寸，让 .is-minimized 的 CSS 生效
+                shell.style.removeProperty('width');
+                shell.style.removeProperty('height');
+                // 将位置设为对话框左下角
+                shell.style.left = targetLeft + 'px';
+                shell.style.top = targetTop + 'px';
+                shell.classList.add('is-minimized');
+                isMinimizeTransitioning = false;
+            };
+            var onEnd = function (e) {
+                if (e.target !== shell || e.propertyName !== 'transform') return;
+                finishCollapse();
+            };
+            shell.addEventListener('transitionend', onEnd);
+            collapseTimer = setTimeout(finishCollapse, 420); // 兜底
+
+            // 注册清理句柄，供 closeWindow / 下次动画调用
+            activeAnimationCleanup = function () {
+                clearTimeout(collapseTimer);
+                shell.removeEventListener('transitionend', onEnd);
+                shell.classList.remove('is-collapsing');
+                shell.style.transform = 'none';
+                handled = true;
+            };
+
+        } else {
+            // ---- 展开动画：从球位置向右上角展开 ----
+            var curRect = shell.getBoundingClientRect();
+            var ballLeft = curRect.left;
+            var ballBottom = curRect.top + (curRect.height || MINIMIZED_SIZE);
+
+            // 恢复保存的尺寸
+            shell.classList.remove('is-minimized');
+            if (savedShellSize) {
+                if (savedShellSize.width) shell.style.width = savedShellSize.width;
+                if (savedShellSize.height) shell.style.height = savedShellSize.height;
             }
-            if (savedShellSize.height) {
-                shell.style.height = savedShellSize.height;
-            }
-            savedShellSize = null;
+
+            // 以球的位置为展开后对话框的左下角来计算展开位置
+            // 先设临时位置以获取真实尺寸
+            shell.style.left = '0px';
+            shell.style.top = '0px';
+            shell.style.transform = 'none';
+            void shell.offsetHeight;
+            var expandedRect = shell.getBoundingClientRect();
+
+            // 尺寸无效时（overlay 仍隐藏等边界情况）跳过动画，直接恢复
+            if (!expandedRect.width || !expandedRect.height) {
+                shell.style.transform = 'none';
+                // 尝试恢复到保存的位置
+                if (savedShellPosition) {
+                    shell.style.left = savedShellPosition.left + 'px';
+                    shell.style.top = savedShellPosition.top + 'px';
+                }
+                savedShellSize = null;
+                savedShellPosition = null;
+                isMinimizeTransitioning = false;
+                requestAnimationFrame(function () {
+                    var r = shell.getBoundingClientRect();
+                    var clamped = clampPosition(r.left, r.top);
+                    if (clamped.left !== r.left || clamped.top !== r.top) {
+                        applyPosition(clamped.left, clamped.top);
+                    }
+                });
+            } else {
+
+            // 球的左下角 = 展开后对话框的左下角
+            var expandedLeft = ballLeft;
+            var expandedTop = ballBottom - expandedRect.height;
+
+            // 先不 clamp，让动画从球位置自然展开，动画结束后再 clamp
+            shell.style.left = expandedLeft + 'px';
+            shell.style.top = expandedTop + 'px';
+            shell.style.transform = 'none';
+            void shell.offsetHeight;
+
+            // 重新获取展开后的真实 rect（位置可能已改变）
+            expandedRect = shell.getBoundingClientRect();
+
+            // 计算初始缩放：transform-origin 为左下角 (0% 100%)
+            // 缩放到 MINIMIZED_SIZE 时，视觉上的左下角保持不变
+            var sx2 = MINIMIZED_SIZE / expandedRect.width;
+            var sy2 = MINIMIZED_SIZE / expandedRect.height;
+
+            // 设置初始 transform（看起来还是左下角的小圆）
+            shell.style.transform = 'scale(' + sx2 + ', ' + sy2 + ')';
+            shell.classList.add('is-expanding');
+            void shell.offsetHeight; // 强制 reflow
+
+            // 动画到 identity（展开到完整尺寸）
+            requestAnimationFrame(function () {
+                requestAnimationFrame(function () {
+                    shell.style.transform = 'scale(1, 1)';
+                });
+            });
+
+            // 动画结束后清理
+            var expandHandled = false;
+            var expandTimer = null;
+            var finishExpand = function () {
+                if (expandHandled) return;
+                expandHandled = true;
+                clearTimeout(expandTimer);
+                shell.removeEventListener('transitionend', onExpandEnd);
+                activeAnimationCleanup = null;
+                shell.classList.remove('is-expanding');
+                shell.style.transform = 'none';
+                savedShellSize = null;
+                savedShellPosition = null;
+                isMinimizeTransitioning = false;
+                // 确保位置不溢出；全屏模式（/chat）不持久化，
+                // 否则 (0,0) 会覆盖 index.html 中用户保存的窗口位置
+                requestAnimationFrame(function () {
+                    var r = shell.getBoundingClientRect();
+                    var clamped = clampPosition(r.left, r.top);
+                    applyPosition(clamped.left, clamped.top);
+                    if (!window._chatAdapterActive) {
+                        persistPosition(clamped.left, clamped.top);
+                    }
+                });
+            };
+            var onExpandEnd = function (e) {
+                if (e.target !== shell || e.propertyName !== 'transform') return;
+                finishExpand();
+            };
+            shell.addEventListener('transitionend', onExpandEnd);
+            expandTimer = setTimeout(finishExpand, 420); // 兜底
+
+            // 注册清理句柄
+            activeAnimationCleanup = function () {
+                clearTimeout(expandTimer);
+                shell.removeEventListener('transitionend', onExpandEnd);
+                shell.classList.remove('is-expanding');
+                shell.style.transform = 'none';
+                expandHandled = true;
+            };
+
+            } // end of else (valid dimensions)
         }
 
-        shell.classList.toggle('is-minimized', minimized);
+        // 更新按钮图标和 aria
+        syncMinimizeUI();
+    }
 
-        // 折叠/展开后，盒子尺寸变化可能导致它溢出视窗 —— 重新夹取位置
-        // 在下一帧执行，等待 CSS 应用新尺寸后再读取 boundingRect
-        requestAnimationFrame(function () {
-            var rect = shell.getBoundingClientRect();
-            var clamped = clampPosition(rect.left, rect.top);
-            if (clamped.left !== rect.left || clamped.top !== rect.top) {
-                applyPosition(clamped.left, clamped.top);
-            }
-        });
-
+    function syncMinimizeUI() {
         var button = getMinimizeButton();
-        var icon = getMinimizeIcon();
+        var btnIcon = getMinimizeIcon();
+        var ballIcon = ensureMinimizedBallIcon();
         if (button) {
             button.setAttribute('aria-label', minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框'));
             button.title = minimized ? getI18nText('chat.reactWindowRestoreShort', '恢复') : getI18nText('chat.reactWindowMinimizeShort', '最小化');
         }
-        if (icon) {
-            icon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
-            icon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框');
+        if (btnIcon) {
+            btnIcon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
+            btnIcon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框');
+        }
+        // 重置悬浮球图标到默认态（清除可能残留的 hover 图标）
+        if (ballIcon) {
+            ballIcon.src = '/static/icons/expand_icon_off.png';
         }
     }
 
@@ -732,10 +1091,19 @@
                     showToast(getI18nText('chat.reactWindowMountFailed', '新版聊天框挂载失败'), 3000);
                     return;
                 }
-                setMinimized(false);
-                overlay.hidden = false;
-                document.body.classList.add('react-chat-window-open');
-                restorePosition();
+                // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
+                // 但如果外部直接调用 openWindow（未经 closeWindow），仍需处理
+                var wasMinimized = minimized;
+                if (wasMinimized) {
+                    // overlay 可能还隐藏，先显示再做展开动画
+                    overlay.hidden = false;
+                    document.body.classList.add('react-chat-window-open');
+                    setMinimized(false);
+                } else {
+                    overlay.hidden = false;
+                    document.body.classList.add('react-chat-window-open');
+                    restorePosition();
+                }
             })
             .catch(function (error) {
                 console.error('[ReactChatWindow] open failed:', error);
@@ -746,9 +1114,34 @@
     function closeWindow() {
         var overlay = getOverlay();
         if (!overlay) return;
+        cancelActiveAnimation(); // 清理进行中的折叠/展开回调
+
+        // 如果当前处于最小化状态，恢复 shell 到正常态
+        if (minimized) {
+            var shell = getShell();
+            if (shell) {
+                shell.classList.remove('is-minimized');
+                if (savedShellSize) {
+                    if (savedShellSize.width) shell.style.width = savedShellSize.width;
+                    if (savedShellSize.height) shell.style.height = savedShellSize.height;
+                }
+                if (savedShellPosition) {
+                    shell.style.left = savedShellPosition.left + 'px';
+                    shell.style.top = savedShellPosition.top + 'px';
+                }
+                shell.style.transform = 'none';
+            }
+            minimized = false;
+            savedShellSize = null;
+            savedShellPosition = null;
+            syncMinimizeUI();
+        }
+
         overlay.hidden = true;
         document.body.classList.remove('react-chat-window-open');
     }
+
+    var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
     function startDrag(clientX, clientY) {
         var shell = getShell();
@@ -757,7 +1150,10 @@
         var rect = shell.getBoundingClientRect();
         dragState = {
             pointerOffsetX: clientX - rect.left,
-            pointerOffsetY: clientY - rect.top
+            pointerOffsetY: clientY - rect.top,
+            startClientX: clientX,
+            startClientY: clientY,
+            moved: false
         };
 
         shell.classList.add('is-dragging');
@@ -766,6 +1162,12 @@
 
     function updateDrag(clientX, clientY) {
         if (!dragState) return;
+
+        var dx = clientX - dragState.startClientX;
+        var dy = clientY - dragState.startClientY;
+        if (Math.abs(dx) > CLICK_THRESHOLD || Math.abs(dy) > CLICK_THRESHOLD) {
+            dragState.moved = true;
+        }
 
         var left = clientX - dragState.pointerOffsetX;
         var top = clientY - dragState.pointerOffsetY;
@@ -776,15 +1178,26 @@
     function stopDrag() {
         if (!dragState) return;
 
+        var wasMoved = dragState.moved;
+
         var shell = getShell();
         if (shell) {
             shell.classList.remove('is-dragging');
             var rect = shell.getBoundingClientRect();
-            persistPosition(rect.left, rect.top);
+            // 最小化态下不持久化悬浮球坐标到展开态存储，
+            // 否则 restorePosition 会把完整窗口放到悬浮球位置
+            if (!minimized) {
+                persistPosition(rect.left, rect.top);
+            }
         }
 
         dragState = null;
         document.body.classList.remove('react-chat-window-dragging');
+
+        // 最小化状态下，未发生拖拽移动 → 视为点击，恢复窗口
+        if (minimized && !wasMoved) {
+            toggleMinimized();
+        }
     }
 
     function bindDragging() {
@@ -796,6 +1209,8 @@
             if (closeButton && closeButton.contains(event.target)) return;
             var minimizeButton = $('reactChatWindowMinimizeButton');
             if (minimizeButton && minimizeButton.contains(event.target)) return;
+            var avatarHeaderBtn = $('avatarPreviewHeaderButton');
+            if (avatarHeaderBtn && avatarHeaderBtn.contains(event.target)) return;
             startDrag(event.clientX, event.clientY);
             event.preventDefault();
         });
@@ -805,6 +1220,8 @@
             if (closeButton && closeButton.contains(event.target)) return;
             var minimizeButton = $('reactChatWindowMinimizeButton');
             if (minimizeButton && minimizeButton.contains(event.target)) return;
+            var avatarHeaderBtn = $('avatarPreviewHeaderButton');
+            if (avatarHeaderBtn && avatarHeaderBtn.contains(event.target)) return;
             if (!event.touches || event.touches.length === 0) return;
             startDrag(event.touches[0].clientX, event.touches[0].clientY);
         }, { passive: true });
@@ -996,6 +1413,7 @@
         var closeButton = $('reactChatWindowCloseButton');
         var minimizeButton = getMinimizeButton();
         var backdrop = $('react-chat-window-backdrop');
+        var avatarHeaderButton = $('avatarPreviewHeaderButton');
 
         ensureViewProps();
 
@@ -1009,6 +1427,16 @@
             minimizeButton.addEventListener('click', function (event) {
                 event.stopPropagation();
                 toggleMinimized();
+            });
+        }
+        if (avatarHeaderButton) {
+            avatarHeaderButton.addEventListener('click', function (event) {
+                event.stopPropagation();
+                // Notify external listeners/analytics/extensions first
+                dispatchHostEvent('avatar-generator-click', {});
+                // Always use direct capture — the legacy avatarPreviewButton opens
+                // the old-chat preview card which is hidden behind the React overlay.
+                captureAvatarDirect();
             });
         }
         if (backdrop) {
@@ -1026,6 +1454,23 @@
         bindResizing();
         bindBridgeEvents();
 
+        // 悬浮球 hover 效果（参考原版 #chat-container 实现）
+        var header = getHeader();
+        if (header) {
+            header.addEventListener('mouseenter', function () {
+                if (!minimized) return;
+                var shell = getShell();
+                var ico = shell && shell.querySelector('.react-chat-minimized-icon');
+                if (ico) ico.src = '/static/icons/expand_icon_on.png';
+            });
+            header.addEventListener('mouseleave', function () {
+                if (!minimized) return;
+                var shell = getShell();
+                var ico = shell && shell.querySelector('.react-chat-minimized-icon');
+                if (ico) ico.src = '/static/icons/expand_icon_off.png';
+            });
+        }
+
         window.addEventListener('keydown', function (event) {
             if (window._chatAdapterActive) return;
             var overlay = getOverlay();
@@ -1037,7 +1482,21 @@
         window.addEventListener('resize', function () {
             var overlay = getOverlay();
             if (overlay && !overlay.hidden) {
-                restorePosition();
+                if (minimized) {
+                    // 球留在当前位置，只需确保不溢出屏幕
+                    var shell = getShell();
+                    if (shell) {
+                        var r = shell.getBoundingClientRect();
+                        var safeLeft = Math.max(0, Math.min(r.left, window.innerWidth - MINIMIZED_SIZE));
+                        var safeTop = Math.max(0, Math.min(r.top, window.innerHeight - MINIMIZED_SIZE));
+                        if (safeLeft !== r.left || safeTop !== r.top) {
+                            shell.style.left = safeLeft + 'px';
+                            shell.style.top = safeTop + 'px';
+                        }
+                    }
+                } else {
+                    restorePosition();
+                }
             }
         });
 

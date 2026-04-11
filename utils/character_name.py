@@ -26,6 +26,40 @@ SAFE_CHARACTER_NAME_EXTRA_CHARS = frozenset({
 WINDOWS_RESERVED_DEVICE_NAMES = frozenset({"CON", "PRN", "AUX", "NUL", "CLOCK$"})
 WINDOWS_RESERVED_DEVICE_NAME_PATTERN = re.compile(r"^(COM[1-9]|LPT[1-9])$", re.IGNORECASE)
 
+# 一级路由保留名称：如果角色名与这些路由冲突，会导致 /{lanlan_name} 无法正确匹配。
+# 包含 pages_router 中的页面路由、静态资源挂载路径和其他顶层路径。
+RESERVED_ROUTE_NAMES = frozenset({
+    # pages_router 页面路由
+    "l2d",
+    "model_manager",
+    "live2d_parameter_editor",
+    "live2d_emotion_manager",
+    "vrm_emotion_manager",
+    "mmd_emotion_manager",
+    "chara_manager",
+    "voice_clone",
+    "api_key",
+    "steam_workshop_manager",
+    "memory_browser",
+    "cookies_login",
+    "chat",
+    "subtitle",
+    "agenthud",
+    "toast",
+    # 静态资源 / 挂载路径
+    "static",
+    "user_live2d",
+    "user_live2d_local",
+    "user_vrm",
+    "user_mmd",
+    "user_mods",
+    "workshop",
+    # API / WebSocket / 系统
+    "api",
+    "ws",
+    "health",
+})
+
 
 @dataclass(frozen=True)
 class CharacterNameValidationResult:
@@ -116,6 +150,8 @@ def validate_character_name(
         return CharacterNameValidationResult(normalized=normalized, code="contains_dot")
     if is_reserved_device_name(normalized):
         return CharacterNameValidationResult(normalized=normalized, code="reserved_device_name")
+    if normalized in RESERVED_ROUTE_NAMES:
+        return CharacterNameValidationResult(normalized=normalized, code="reserved_route_name")
     invalid_char = find_invalid_character_name_char(normalized, allow_dots=allow_dots)
     if invalid_char is not None:
         return CharacterNameValidationResult(

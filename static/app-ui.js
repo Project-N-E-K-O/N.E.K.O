@@ -443,6 +443,9 @@
                         imgOff.style.opacity = isActive ? '0' : '1';
                         imgOn.style.opacity = isActive ? '1' : '0';
                     }
+                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                        manager.updateSeparatePopupTriggerIcon('mic');
+                    }
                 }
             }
         }
@@ -462,6 +465,9 @@
                     if (imgOff && imgOn) {
                         imgOff.style.opacity = isActive ? '0' : '1';
                         imgOn.style.opacity = isActive ? '1' : '0';
+                    }
+                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                        manager.updateSeparatePopupTriggerIcon('screen');
                     }
                 }
             }
@@ -724,9 +730,23 @@
         }
 
         try {
+            // 运行时检测当前已加载且可见的模型，用于 API 失败时的回退
+            // 需同时检查模型引用和容器可见性（goodbye 流程中模型引用存在但容器已隐藏）
+            const _vrmEl = document.getElementById('vrm-container');
+            const _mmdEl = document.getElementById('mmd-container');
+            const isVrmCurrentlyActive = window.vrmManager && window.vrmManager.currentModel
+                && _vrmEl && _vrmEl.style.display !== 'none' && !_vrmEl.classList.contains('hidden');
+            const isMmdCurrentlyActive = window.mmdManager && window.mmdManager.currentModel
+                && _mmdEl && _mmdEl.style.display !== 'none' && !_mmdEl.classList.contains('hidden');
+
             const charResponse = await fetch('/api/characters');
             if (!charResponse.ok) {
-                console.warn('[showCurrentModel] 无法获取角色配置，默认显示Live2D');
+                console.warn('[showCurrentModel] 无法获取角色配置');
+                // 如果当前已有 VRM/MMD 模型在运行，保持当前状态而非回退到 Live2D
+                if (isVrmCurrentlyActive || isMmdCurrentlyActive) {
+                    console.log('[showCurrentModel] 保持当前已加载的模型');
+                    return;
+                }
                 showLive2d();
                 return;
             }
@@ -736,27 +756,53 @@
             const catgirlConfig = charactersData['猫娘']?.[currentCatgirl];
 
             if (!catgirlConfig) {
-                console.warn('[showCurrentModel] 未找到角色配置，默认显示Live2D');
+                console.warn('[showCurrentModel] 未找到角色配置');
+                if (isVrmCurrentlyActive || isMmdCurrentlyActive) {
+                    console.log('[showCurrentModel] 保持当前已加载的模型');
+                    return;
+                }
                 showLive2d();
                 return;
             }
 
             const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
 
-            // 解析 live3d 子类型（与 app-character.js 保持一致）
+            // 解析 live3d 子类型
+            // 优先使用 live3d_sub_type（后端权威来源），与 vrm-init.js / live2d-init.js 保持一致
+            // 旧逻辑仅通过 mmd/vrm 路径字段猜测，当两个字段同时存在时会误判
             let effectiveModelType = modelType;
             if (modelType === 'live3d') {
-                const _sanitize = v => (typeof v === 'string' && v.trim() && v !== 'undefined' && v !== 'null') ? v : '';
-                const mmdPath = _sanitize(catgirlConfig.mmd)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
-                    || '';
-                const vrmPath = _sanitize(catgirlConfig.vrm)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
-                    || '';
-                if (mmdPath) {
-                    effectiveModelType = 'mmd';
-                } else if (vrmPath) {
+                const subType = (
+                    window.lanlan_config?.live3d_sub_type
+                    || catgirlConfig._reserved?.avatar?.live3d_sub_type
+                    || catgirlConfig.live3d_sub_type
+                    || ''
+                ).toString().trim().toLowerCase();
+
+                if (subType === 'vrm') {
                     effectiveModelType = 'vrm';
+                } else if (subType === 'mmd') {
+                    effectiveModelType = 'mmd';
+                } else {
+                    // sub_type 缺失时回退到路径探测
+                    const _sanitize = (v) => {
+                        if (v === undefined || v === null) return '';
+                        const s = String(v).trim();
+                        const lower = s.toLowerCase();
+                        if (!s || lower === 'undefined' || lower === 'null') return '';
+                        return s;
+                    };
+                    const mmdPath = _sanitize(catgirlConfig.mmd)
+                        || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
+                        || '';
+                    const vrmPath = _sanitize(catgirlConfig.vrm)
+                        || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
+                        || '';
+                    if (mmdPath && !vrmPath) {
+                        effectiveModelType = 'mmd';
+                    } else if (vrmPath) {
+                        effectiveModelType = 'vrm';
+                    }
                 }
             }
             console.log('[showCurrentModel] 当前角色模型类型:', modelType, '有效类型:', effectiveModelType);
@@ -1058,7 +1104,18 @@
             }
         } catch (error) {
             console.error('[showCurrentModel] 失败:', error);
-            showLive2d(); // 出错时默认显示Live2D
+            // 出错时检查是否有 VRM/MMD 正在运行且可见，如果有则保持当前状态
+            const vrmEl = document.getElementById('vrm-container');
+            const mmdEl = document.getElementById('mmd-container');
+            const isVrmRunning = window.vrmManager && window.vrmManager.currentModel
+                && vrmEl && vrmEl.style.display !== 'none' && !vrmEl.classList.contains('hidden');
+            const isMmdRunning = window.mmdManager && window.mmdManager.currentModel
+                && mmdEl && mmdEl.style.display !== 'none' && !mmdEl.classList.contains('hidden');
+            if (isVrmRunning || isMmdRunning) {
+                console.log('[showCurrentModel] 保持当前已加载的模型');
+                return;
+            }
+            showLive2d();
         }
     }
 

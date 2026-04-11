@@ -355,11 +355,14 @@ class VRMInteraction {
                 canvas.style.cursor = 'default';
                 return;
             }
-            const padding = 10;
-            const isNearModel = e.clientX >= (bounds.minX - padding) &&
-                e.clientX <= (bounds.maxX + padding) &&
-                e.clientY >= (bounds.minY - padding) &&
-                e.clientY <= (bounds.maxY + padding);
+            // 椭圆近似（内切于包围盒），不外扩
+            const cx = (bounds.minX + bounds.maxX) / 2;
+            const cy = (bounds.minY + bounds.maxY) / 2;
+            const rx = (bounds.maxX - bounds.minX) / 2 * 0.6;
+            const ry = (bounds.maxY - bounds.minY) / 2 * 0.95;
+            const nx = rx > 0 ? (e.clientX - cx) / rx : 0;
+            const ny = ry > 0 ? (e.clientY - cy) / ry : 0;
+            const isNearModel = (nx * nx + ny * ny) <= 1;
             canvas.style.cursor = isNearModel ? 'grab' : 'default';
         };
 

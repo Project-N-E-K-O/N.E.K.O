@@ -1369,6 +1369,7 @@
         "profileNameContainsSlash": "Profile name cannot contain path separators (/ or \\)",
         "profileNameContainsDot": "Profile name cannot contain dots (.)",
         "profileNameInvalidChars": "Profile name can only contain letters, numbers, spaces, underscores, hyphens, parentheses, middle dots (·/・), and apostrophes",
+        "profileNameReservedRoute": "This name is a reserved system route and cannot be used as a profile name",
         "newProfileNameRequired": "New profile name cannot be empty",
         "newProfileNameTooLong": "Profile name is too long",
         "required": "*",
@@ -1513,6 +1514,7 @@
         "switchingCatgirl": "Switching to {{name}}...",
         "switchedCatgirl": "Switched to {{name}}",
         "switchCatgirlFailed": "Failed to switch to {{name}}",
+        "switchCatgirlError": "Switch failed: {{error}}",
         "started": "{{name}} started",
         "voiceUpdated": "{{name}}'s voice updated",
         "audioWorkletFailed": "AudioWorklet failed to load",
@@ -1535,6 +1537,7 @@
         "connectingToServer": "Connecting to server...",
         "readyToSpeak": "Ready to speak!",
         "screenShareRequiresVoice": "Screen share is only for audio/video calls",
+        "screenRecordingPermissionDenied": "⚠️ Screen recording permission denied. Please allow screen recording in System Settings",
         "repetitionDetected": "High repetition detected. Suggest ending conversation to let {{name}} rest.",
         "modelSwitched": "Model switched",
         "screenSource": {
@@ -1620,6 +1623,7 @@
             "browserUse": "Browser Control",
             "focusMode": "Allow Interrupt",
             "unavailable": "{{name}} Unavailable",
+            "toggleFailed": "{{name}} toggle failed: {{error}}",
             "checking": "Checking...",
             "serverOffline": "NekoClaw Server Offline",
             "masterRequired": "Please enable NekoClaw Master Switch first",
@@ -1655,7 +1659,8 @@
     },
     "subtitle": {
         "title": "Real-time Subtitles",
-        "enable": "Enable Translation"
+        "enable": "Subtitle Translation",
+        "enableAriaLabel": "Toggle subtitle translation"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -1673,7 +1678,8 @@
             "freeModelWarning": "Due to quota limitations, free models are prone to blocking in NekoClaw mode. It is recommended to switch to a paid model.\n\nIf you have already configured a paid API, please try restarting NEKO.",
             "freeModelWarningTitle": "Free Model Notice",
             "connectivityCheck": "NekoClaw LLM connectivity check in progress...",
-            "precheckFailed": "NekoClaw precheck failed: {{reason}}"
+            "precheckFailed": "NekoClaw precheck failed: {{reason}}",
+            "toggleFailed": "Agent toggle failed: {{error}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "Connectivity check in progress...",
@@ -2686,7 +2692,7 @@
         "loadError": "Music player failed to load",
         "autoplayBlocked": "Browser blocked autoplay, please click the play button",
         "ended": "Ended",
-        "nowPlayingCard": "🎵 Now Playing"
+        "unknownState": "Unknown state"
     },
     "Jukebox": {
         "title": "Jukebox",
@@ -2740,7 +2746,7 @@
         "idleRestoreFailed": "Failed to restore idle animation",
         "btnNotFoundGiveUp": "Jukebox button not found after retries, giving up",
         "minimizeBtnNotFoundGiveUp": "Minimize button not found after retries, giving up",
-        "noticeDance": "💃 Dance service is only available when an MMD avatar is loaded",
+        "noticeDance": "💃 Dance service is currently only available when an MMD avatar is loaded. More interactions coming soon",
         "noticeMusic": "⚠️ Current songs are for testing only — copyrighted tracks will be removed in future versions, please import your own",
         "manager": "Manager",
         "managerTitle": "Manager",
@@ -2840,5 +2846,8 @@
             "title": "Meme",
             "loadError": "Failed to load meme"
         }
+    },
+    "achievement": {
+        "unlocked": "🏆 Achievement unlocked: {{description}}"
     }
 }

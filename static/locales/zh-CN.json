@@ -1369,6 +1369,7 @@
         "profileNameContainsSlash": "档案名不能包含路径分隔符(/或\\)",
         "profileNameContainsDot": "档案名不能包含点号(.)",
         "profileNameInvalidChars": "档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号",
+        "profileNameReservedRoute": "此名称是系统保留的路由名称，不能用作档案名",
         "newProfileNameRequired": "新档案名不能为空",
         "newProfileNameTooLong": "档案名过长",
         "required": "*",
@@ -1513,6 +1514,7 @@
         "switchingCatgirl": "正在切换到 {{name}}...",
         "switchedCatgirl": "已切换到 {{name}}",
         "switchCatgirlFailed": "切换到 {{name}} 失败",
+        "switchCatgirlError": "切换失败: {{error}}",
         "started": "{{name}} 已启动",
         "voiceUpdated": "{{name}} 的语音已更新",
         "audioWorkletFailed": "AudioWorklet加载失败",
@@ -1535,6 +1537,7 @@
         "connectingToServer": "正在连接服务器...",
         "readyToSpeak": "可以说话了！",
         "screenShareRequiresVoice": "屏幕分享仅用于音视频通话",
+        "screenRecordingPermissionDenied": "⚠️ 屏幕录制权限未授权，请在系统设置中允许屏幕录制",
         "repetitionDetected": "检测到高重复度对话。建议您终止对话，让{{name}}休息片刻。",
         "modelSwitched": "模型已切换",
         "screenSource": {
@@ -1620,6 +1623,7 @@
             "browserUse": "浏览器控制",
             "focusMode": "允许打断",
             "unavailable": "{{name}}不可用",
+            "toggleFailed": "{{name}}切换失败: {{error}}",
             "checking": "查询中...",
             "serverOffline": "猫爪服务器未启动",
             "masterRequired": "请先开启猫爪总开关",
@@ -1655,7 +1659,8 @@
     },
     "subtitle": {
         "title": "实时字幕",
-        "enable": "开启字幕翻译"
+        "enable": "字幕翻译",
+        "enableAriaLabel": "字幕翻译开关"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -1673,7 +1678,8 @@
             "freeModelWarning": "由于限额问题，免费模型使用猫爪模式容易阻塞，建议您切换至自费模型。\n\n如果您已经配置好自费API，请尝试重启NEKO。",
             "freeModelWarningTitle": "免费模型提示",
             "connectivityCheck": "猫爪 LLM 连接检查中...",
-            "precheckFailed": "猫爪预检失败：{{reason}}"
+            "precheckFailed": "猫爪预检失败：{{reason}}",
+            "toggleFailed": "Agent切换失败: {{error}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "连接检查中...",
@@ -2686,7 +2692,7 @@
         "loadError": "音乐播放器加载失败",
         "autoplayBlocked": "浏览器限制了自动播放，请点击播放按钮",
         "ended": "已结束",
-        "nowPlayingCard": "🎵 正在播放"
+        "unknownState": "未知状态"
     },
     "Jukebox": {
         "title": "点歌台",
@@ -2740,7 +2746,7 @@
         "idleRestoreFailed": "恢复待机动画失败",
         "btnNotFoundGiveUp": "点歌台按钮在重试后仍未找到，放弃绑定",
         "minimizeBtnNotFoundGiveUp": "最小化按钮在重试后仍未找到，放弃监听",
-        "noticeDance": "💃 伴舞服务仅在载入 MMD 形象时可用",
+        "noticeDance": "💃 伴舞服务目前仅在载入 MMD 形象时可用，后续会增加更多互动",
         "noticeMusic": "⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入",
         "manager": "管理器",
         "managerTitle": "管理器",
@@ -2840,5 +2846,8 @@
             "title": "表情包",
             "loadError": "表情包加载失败"
         }
+    },
+    "achievement": {
+        "unlocked": "🏆 成就解锁: {{description}}"
     }
 }

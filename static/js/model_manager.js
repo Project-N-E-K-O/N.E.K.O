@@ -972,6 +972,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     let isMmdAnimationPlaying = false; // 跟踪MMD手动预览动画播放状态
     let isMmdIdlePlaying = false; // 跟踪MMD待机动画播放状态（与手动预览分离）
     let isMmdAnimationUploading = false; // 防止VMD动画重复上传
+    const _idleRotationTimers = { vrm: null, mmd: null };
+    const _idleRotationLast = { vrm: null, mmd: null };
+    const _idleLoopCleanup = { vrm: null, mmd: null };
 
     // 更新模型类型按钮文字的函数（使用统一管理器）
     function updateModelTypeButtonText() {
@@ -1757,16 +1760,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             const ambient = document.getElementById('ambient-light-slider');
             const main = document.getElementById('main-light-slider');
 
-            // 4. 如果是 VRM/Live3D 模式，单独保存光照设置（仅光照部分独立保存）
-            if ((currentModelType === 'live3d') && ambient && main) {
+            // 4. 如果是 VRM/Live3D 模式且当前子类型为 VRM，单独保存光照设置
+            const isVrmSubTypeForSave = !currentLive3dSubType || currentLive3dSubType === 'vrm';
+            if ((currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main) {
+                const fillSlider = document.getElementById('fill-light-slider');
+                const rimSlider = document.getElementById('rim-light-slider');
+                const topSlider = document.getElementById('top-light-slider');
+                const bottomSlider = document.getElementById('bottom-light-slider');
                 const lightingData = {
                     lighting: {
                         ambient: parseFloat(ambient.value),
                         main: parseFloat(main.value),
-                        fill: 0.0,
-                        rim: 0.0,
-                        top: 0.0,
-                        bottom: 0.0
+                        fill: fillSlider ? parseFloat(fillSlider.value) : 0.0,
+                        rim: rimSlider ? parseFloat(rimSlider.value) : 0.0,
+                        top: topSlider ? parseFloat(topSlider.value) : 0.0,
+                        bottom: bottomSlider ? parseFloat(bottomSlider.value) : 0.0,
                     }
                 };
 
@@ -1831,7 +1839,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ? modelName.split(/[\\/]/).pop().replace(/\.(vrm|pmx|pmd)$/i, '') 
                 : modelName;
             let saveMessage;
-            const lightingFailed = (currentModelType === 'live3d') && ambient && main && (!lightingResult || !lightingResult.success);
+            const lightingFailed = (currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main && (!lightingResult || !lightingResult.success);
             const mmdSettingsFailed = mmdSettingsResult && !mmdSettingsResult.success;
 
             if (lightingFailed && mmdSettingsFailed) {
@@ -1840,7 +1848,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 saveMessage = t('live2d.modelSavedMmdSettingsFailed', `已保存模型设置，MMD设置保存失败`, { name: modelDisplayName });
             } else if (lightingFailed) {
                 saveMessage = t('live2d.modelSavedLightingFailed', `已保存模型设置，光照设置保存失败`, { name: modelDisplayName });
-            } else if ((currentModelType === 'live3d') && ambient && main) {
+            } else if ((currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main) {
                 saveMessage = t('live2d.modelSettingsSavedWithLighting', `已保存模型和光照设置`, { name: modelDisplayName });
             } else if (currentModelType === 'live3d') {
                 saveMessage = t('live2d.modelSettingsSaved', `已保存模型设置`, { name: modelDisplayName });
@@ -2213,7 +2221,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 切换到 VRM 模式时立即加载待机动作列表
             if (isVrmSubType) {
                 console.log('[VRM IdleAnimation] 切换到 VRM 模式，开始加载待机动作列表');
-                loadIdleAnimationOptions();
+                await loadIdleAnimationOptions();
+                await restoreVrmIdleAnimation();
             }
             // 更新上传按钮提示文本（VRM模式）
             if (uploadBtn) {
@@ -2299,10 +2308,25 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 3. 检查并初始化 Three.js 场景（移到 if 块外部，每次切换都会检查）
                 if (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer) {
                     console.log('[模型管理] VRM 场景未完全初始化，正在初始化...');
-                    await vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                    // 获取已保存的光照配置，避免用错误的默认值初始化场景
+                    let savedLightingConfig = null;
+                    try {
+                        const _lanlanName = await getLanlanName();
+                        if (_lanlanName) {
+                            const _charData = await RequestHelper.fetchJson('/api/characters/');
+                            savedLightingConfig = _charData['猫娘']?.[_lanlanName]?.lighting || null;
+                        }
+                    } catch (e) {
+                        console.warn('[模型管理] 获取光照配置失败，使用默认值:', e);
+                    }
+                    await vrmManager.initThreeJS('vrm-canvas', 'vrm-container', savedLightingConfig);
                     // 再次验证初始化是否成功
                     if (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer) {
                         throw new Error('场景初始化后仍缺少必要组件');
+                    }
+                    // 同步光照值到 UI 滑块
+                    if (savedLightingConfig) {
+                        applyLightingValues(savedLightingConfig);
                     }
                     console.log('[模型管理] VRM 场景初始化成功');
                     showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
@@ -2456,13 +2480,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const charactersData = await RequestHelper.fetchJson('/api/characters');
                         const catgirlConfig = charactersData['猫娘']?.[lanlanName];
                         if (vrmModelSelect) {
+                            // 使用 live3d_sub_type 决定优先匹配哪种模型，避免 PR#702 保留双模型路径后总是选到 MMD
+                            const activeSubType = String(catgirlConfig?.live3d_sub_type || '').toLowerCase();
+
                             const _mmdPathSwitch = catgirlConfig && catgirlConfig.mmd
                                 ? (typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path)
                                 : '';
-                            if (_mmdPathSwitch) {
+                            const _vrmPathSwitch = catgirlConfig?.vrm || '';
+
+                            // 根据 live3d_sub_type 决定优先匹配顺序
+                            const tryMatchMmd = () => {
+                                if (!_mmdPathSwitch) return false;
                                 const mmdPath = _mmdPathSwitch;
                                 const mmdFilename = mmdPath.split(/[/\\]/).pop();
-                                // 优先完整路径匹配，其次文件名匹配
                                 const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
                                     if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
                                     return opt.value === mmdPath;
@@ -2473,13 +2503,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
                                     vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
-                                    matched = true;
+                                    return true;
                                 }
-                            }
-                            if (!matched && catgirlConfig && catgirlConfig.vrm) {
-                                const vrmPath = catgirlConfig.vrm;
+                                return false;
+                            };
+
+                            const tryMatchVrm = () => {
+                                if (!_vrmPathSwitch) return false;
+                                const vrmPath = _vrmPathSwitch;
                                 const vrmFilename = vrmPath.split(/[/\\]/).pop();
-                                // 优先完整路径匹配，其次文件名匹配
                                 const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
                                     if (!opt.value) return false;
                                     return opt.value === vrmPath;
@@ -2491,8 +2523,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
                                     vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
-                                    matched = true;
+                                    return true;
                                 }
+                                return false;
+                            };
+
+                            if (activeSubType === 'mmd') {
+                                matched = tryMatchMmd() || tryMatchVrm();
+                            } else {
+                                // vrm 优先（包括 activeSubType 为空的情况）
+                                matched = tryMatchVrm() || tryMatchMmd();
                             }
                         }
                     }
@@ -3869,6 +3909,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } catch (e) {
                     console.warn('[MMD] 播放 wait03 待机动作失败:', e);
                 }
+
+                await loadCharacterLighting();
             } catch (error) {
                 console.error('加载MMD模型失败:', error);
                 showStatus(`MMD模型加载失败: ${error.message}`, 3000);
@@ -4289,11 +4331,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // ===== 待机动作多选：工具函数 =====
 
-    /** 待机动作轮换定时器 */
-    const _idleRotationTimers = { vrm: null, mmd: null };
-    /** 上一次播放的 URL（避免连续播放同一个） */
-    const _idleRotationLast = { vrm: null, mmd: null };
-
     /** 从多选容器中获取所有已勾选的动画 URL 列表 */
     function getSelectedIdleAnimations(containerId) {
         const container = document.getElementById(containerId);
@@ -4371,13 +4408,35 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     });
 
+    /** 清理 loop 事件监听器 */
+    function _cleanupIdleLoopListener(type) {
+        if (_idleLoopCleanup[type]) {
+            _idleLoopCleanup[type]();
+            _idleLoopCleanup[type] = null;
+        }
+    }
+
     /** 停止待机动作轮换 */
     function stopIdleRotation(type) {
         if (_idleRotationTimers[type]) {
             clearTimeout(_idleRotationTimers[type]);
             _idleRotationTimers[type] = null;
         }
+        _cleanupIdleLoopListener(type);
         _idleRotationLast[type] = null;
+    }
+
+    function _attachMmdIdleLoopListener() {
+        const mixer = window.mmdManager?.animationModule?.mixer;
+        if (!mixer) return false;
+
+        const handler = () => {
+            console.debug('[MMD IdleAnimation] 动画循环完成，切换下一个');
+            _triggerIdleSwitch('mmd');
+        };
+        mixer.addEventListener('loop', handler);
+        _idleLoopCleanup.mmd = () => mixer.removeEventListener('loop', handler);
+        return true;
     }
 
     /** 启动/重启待机动作轮换 */
@@ -4385,35 +4444,53 @@ document.addEventListener('DOMContentLoaded', async () => {
         stopIdleRotation(type);
         if (!urls || urls.length === 0) return;
 
-        // 立即播放一个
-        const firstUrl = urls.length === 1 ? urls[0] : _pickRandomDifferent(urls, _idleRotationLast[type]);
+        const currentMmdIdleUrl = type === 'mmd' && !isMmdAnimationPlaying && isMmdIdlePlaying
+            ? window.mmdManager?.currentAnimationUrl
+            : null;
+
+        if (type === 'mmd' && currentMmdIdleUrl && urls.includes(currentMmdIdleUrl)) {
+            _idleRotationLast[type] = currentMmdIdleUrl;
+            if (urls.length > 1) {
+                _attachMmdIdleLoopListener();
+                _scheduleNextIdle(type);
+            }
+            return;
+        }
+
+        // 立即播放一个（回退定时器和 loop 监听器在 await 成功后由 _playIdleAnimation 内部注册）
+        const firstUrl = urls.length === 1 ? urls[0] : _pickRandomDifferent(urls, currentMmdIdleUrl);
         _playIdleAnimation(type, firstUrl);
         _idleRotationLast[type] = firstUrl;
-
-        // 多于 1 个才定时轮换
-        if (urls.length > 1) {
-            _scheduleNextIdle(type, urls);
-        }
     }
 
-    function _scheduleNextIdle(type, urls) {
+    /** 触发一次待机动作切换（loop 完成或回退定时器都走这里） */
+    function _triggerIdleSwitch(type) {
+        // 清理当前的定时器和 loop 监听器
+        if (_idleRotationTimers[type]) {
+            clearTimeout(_idleRotationTimers[type]);
+            _idleRotationTimers[type] = null;
+        }
+        _cleanupIdleLoopListener(type);
+
+        // 模式不匹配时停止轮换
+        if (!_isIdleTypeActive(type)) return;
+
+        // 重新获取当前已选列表（用户可能在期间改了勾选）
+        const containerId = type === 'vrm' ? 'vrm-idle-animation-multiselect' : 'mmd-idle-animation-multiselect';
+        const currentUrls = getSelectedIdleAnimations(containerId);
+        if (currentUrls.length < 2) return;
+
+        const nextUrl = _pickRandomDifferent(currentUrls, _idleRotationLast[type]);
+        _playIdleAnimation(type, nextUrl); // loop 监听器和回退定时器在 await 成功后注册
+        _idleRotationLast[type] = nextUrl;
+    }
+
+    /** 设置回退定时器（仅当动画过长未触发 loop 事件时强制切换） */
+    function _scheduleNextIdle(type) {
+        if (_idleRotationTimers[type]) clearTimeout(_idleRotationTimers[type]);
         _idleRotationTimers[type] = setTimeout(() => {
-            // 模式不匹配时停止轮换
-            if (!_isIdleTypeActive(type)) {
-                _idleRotationTimers[type] = null;
-                return;
-            }
-            // 重新获取当前已选列表（用户可能在期间改了勾选）
-            const containerId = type === 'vrm' ? 'vrm-idle-animation-multiselect' : 'mmd-idle-animation-multiselect';
-            const currentUrls = getSelectedIdleAnimations(containerId);
-            if (currentUrls.length < 2) {
-                _idleRotationTimers[type] = null;
-                return;
-            }
-            const nextUrl = _pickRandomDifferent(currentUrls, _idleRotationLast[type]);
-            _playIdleAnimation(type, nextUrl);
-            _idleRotationLast[type] = nextUrl;
-            _scheduleNextIdle(type, currentUrls);
+            console.debug(`[${type.toUpperCase()} IdleAnimation] 回退定时器触发，强制切换`);
+            _triggerIdleSwitch(type);
         }, 20000);
     }
 
@@ -4443,6 +4520,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (type === 'vrm' && isVrmAnimationPlaying) return;
         if (type === 'mmd' && isMmdAnimationPlaying) return;
 
+        // 播放新动画前先清理旧的 loop 监听器
+        _cleanupIdleLoopListener(type);
+
         try {
             if (type === 'vrm') {
                 if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
@@ -4451,17 +4531,35 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                     await vrmManager.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
                     console.log('[VRM IdleAnimation] 待机动作已切换:', url.split('/').pop());
+
+                    // 注册 loop 事件监听：动画一轮播完时自动切换
+                    const mixer = vrmManager.animation?.vrmaMixer;
+                    if (mixer) {
+                        const handler = () => {
+                            console.debug('[VRM IdleAnimation] 动画循环完成，切换下一个');
+                            _triggerIdleSwitch('vrm');
+                        };
+                        mixer.addEventListener('loop', handler);
+                        _idleLoopCleanup['vrm'] = () => mixer.removeEventListener('loop', handler);
+                    }
+
+                    // 动画加载成功后再启动回退定时器（从实际播放开始计时）
+                    const vrmUrls = getSelectedIdleAnimations('vrm-idle-animation-multiselect');
+                    if (vrmUrls.length > 1) _scheduleNextIdle('vrm');
                 }
             } else {
                 if (window.mmdManager && window.mmdManager.currentModel) {
-                    if (isMmdIdlePlaying) {
-                        window.mmdManager.stopAnimation();
-                        isMmdIdlePlaying = false;
-                    }
                     await window.mmdManager.loadAnimation(url);
                     window.mmdManager.playAnimation();
                     isMmdIdlePlaying = true;
                     console.log('[MMD IdleAnimation] 待机动作已切换:', url.split('/').pop());
+
+                    // 注册 loop 事件监听：动画一轮播完时自动切换
+                    _attachMmdIdleLoopListener();
+
+                    // 动画加载成功后再启动回退定时器（从实际播放开始计时）
+                    const mmdUrls = getSelectedIdleAnimations('mmd-idle-animation-multiselect');
+                    if (mmdUrls.length > 1) _scheduleNextIdle('mmd');
                 }
             }
         } catch (err) {
@@ -4586,6 +4684,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // ===== MMD 待机动作加载 =====
+
+    async function restoreVrmIdleAnimation() {
+        try {
+            const lanlanName = await getLanlanName();
+            if (!lanlanName) return;
+
+            const data = await RequestHelper.fetchJson('/api/characters/');
+            const charData = data['猫娘']?.[lanlanName];
+            let vrmIdleAnimation = charData?.idle_animation;
+            if (vrmIdleAnimation == null) {
+                vrmIdleAnimation = charData?.idleAnimations ?? charData?.idleAnimation;
+            }
+
+            if (vrmIdleAnimation == null) return;
+            if (typeof vrmIdleAnimation === 'string') vrmIdleAnimation = vrmIdleAnimation ? [vrmIdleAnimation] : [];
+            if (!Array.isArray(vrmIdleAnimation)) return;
+
+            console.log('[VRM] restoreVrmIdleAnimation - vrmIdleAnimation:', vrmIdleAnimation);
+            setSelectedIdleAnimations('vrm-idle-animation-multiselect', vrmIdleAnimation);
+        } catch (error) {
+            console.error('[VRM] 恢复待机动作失败:', error);
+        }
+    }
 
     async function loadMmdIdleAnimationOptions() {
         if (loadMmdIdleAnimationOptions._promise) return loadMmdIdleAnimationOptions._promise;
@@ -4914,6 +5035,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 应用打光值到UI和场景
     function applyLightingValues(lighting) {
+        const ui = {
+            ambientLightSlider: document.getElementById('ambient-light-slider'),
+            mainLightSlider: document.getElementById('main-light-slider'),
+            exposureSlider: document.getElementById('exposure-slider'),
+            tonemappingSelect: document.getElementById('tonemapping-select'),
+            ambientLightValue: document.getElementById('ambient-light-value'),
+            mainLightValue: document.getElementById('main-light-value'),
+            exposureValue: document.getElementById('exposure-value'),
+            fillLightSlider: document.getElementById('fill-light-slider'),
+            rimLightSlider: document.getElementById('rim-light-slider'),
+            topLightSlider: document.getElementById('top-light-slider'),
+            bottomLightSlider: document.getElementById('bottom-light-slider'),
+            fillLightValue: document.getElementById('fill-light-value'),
+            rimLightValue: document.getElementById('rim-light-value'),
+            topLightValue: document.getElementById('top-light-value'),
+            bottomLightValue: document.getElementById('bottom-light-value'),
+            vrmOutlineWidthSlider: document.getElementById('vrm-outline-width-slider')
+        };
+
         // 确保光照已经初始化，如果没有则等待一小段时间
         if (!vrmManager?.ambientLight || !vrmManager?.mainLight || !vrmManager?.fillLight || !vrmManager?.rimLight) {
             // 如果光照未初始化，延迟重试
@@ -4923,87 +5063,82 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        if (ambientLightSlider && ambientLightValue) {
-            ambientLightSlider.value = lighting.ambient;
-            ambientLightValue.textContent = lighting.ambient.toFixed(2);
+        if (ui.ambientLightSlider && ui.ambientLightValue) {
+            ui.ambientLightSlider.value = lighting.ambient;
+            ui.ambientLightValue.textContent = lighting.ambient.toFixed(2);
             if (vrmManager.ambientLight) {
                 vrmManager.ambientLight.intensity = lighting.ambient;
             }
         }
-        if (mainLightSlider && mainLightValue) {
-            mainLightSlider.value = lighting.main;
-            mainLightValue.textContent = lighting.main.toFixed(2);
+        if (ui.mainLightSlider && ui.mainLightValue) {
+            ui.mainLightSlider.value = lighting.main;
+            ui.mainLightValue.textContent = lighting.main.toFixed(2);
             if (vrmManager.mainLight) {
                 vrmManager.mainLight.intensity = lighting.main;
             }
         }
-        if (fillLightSlider && fillLightValue) {
-            // 简化模式下，补光强制归零
-            const fillValue = 0.0;
-            fillLightSlider.value = fillValue;
-            fillLightValue.textContent = fillValue.toFixed(2);
+        if (ui.fillLightSlider && ui.fillLightValue) {
+            const fillValue = lighting.fill ?? 0.0;
+            ui.fillLightSlider.value = fillValue;
+            ui.fillLightValue.textContent = fillValue.toFixed(2);
             if (vrmManager.fillLight) {
                 vrmManager.fillLight.intensity = fillValue;
             }
         }
-        if (rimLightSlider && rimLightValue) {
-            // 简化模式下，轮廓光强制归零
-            const rimValue = 0.0;
-            rimLightSlider.value = rimValue;
-            rimLightValue.textContent = rimValue.toFixed(2);
+        if (ui.rimLightSlider && ui.rimLightValue) {
+            const rimValue = lighting.rim ?? 0.0;
+            ui.rimLightSlider.value = rimValue;
+            ui.rimLightValue.textContent = rimValue.toFixed(2);
             if (vrmManager.rimLight) {
                 vrmManager.rimLight.intensity = rimValue;
             }
         }
-        if (topLightSlider && topLightValue) {
-            // 简化模式下，顶光强制归零
-            const topValue = 0.0;
-            topLightSlider.value = topValue;
-            topLightValue.textContent = topValue.toFixed(2);
+        if (ui.topLightSlider && ui.topLightValue) {
+            const topValue = lighting.top ?? 0.0;
+            ui.topLightSlider.value = topValue;
+            ui.topLightValue.textContent = topValue.toFixed(2);
             if (vrmManager.topLight) {
                 vrmManager.topLight.intensity = topValue;
             }
         }
-        if (bottomLightSlider && bottomLightValue) {
-            // 简化模式下，底光强制归零
-            const bottomValue = 0.0;
-            bottomLightSlider.value = bottomValue;
-            bottomLightValue.textContent = bottomValue.toFixed(2);
+        if (ui.bottomLightSlider && ui.bottomLightValue) {
+            const bottomValue = lighting.bottom ?? 0.0;
+            ui.bottomLightSlider.value = bottomValue;
+            ui.bottomLightValue.textContent = bottomValue.toFixed(2);
             if (vrmManager.bottomLight) {
                 vrmManager.bottomLight.intensity = bottomValue;
             }
         }
-        if (exposureSlider && exposureValue && lighting.exposure !== undefined) {
-            exposureSlider.value = lighting.exposure;
-            exposureValue.textContent = lighting.exposure.toFixed(2);
+        if (ui.exposureSlider && ui.exposureValue && lighting.exposure !== undefined) {
+            ui.exposureSlider.value = lighting.exposure;
+            ui.exposureValue.textContent = lighting.exposure.toFixed(2);
             if (vrmManager.renderer) {
                 vrmManager.renderer.toneMappingExposure = lighting.exposure;
             }
         }
-        if (tonemappingSelect && lighting.toneMapping !== undefined) {
+        if (ui.tonemappingSelect && lighting.toneMapping !== undefined) {
             // 统一使用数值类型，避免字符串和数字混用
             const toneMappingValue = Number(lighting.toneMapping);
-            tonemappingSelect.value = toneMappingValue.toString();
+            ui.tonemappingSelect.value = toneMappingValue.toString();
             if (vrmManager.renderer) {
                 vrmManager.renderer.toneMapping = toneMappingValue;
             }
             // 根据色调映射设置曝光滑块禁用状态
             const isNoToneMapping = toneMappingValue === 0;
-            if (exposureSlider) {
-                exposureSlider.disabled = isNoToneMapping;
-                exposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+            if (ui.exposureSlider) {
+                ui.exposureSlider.disabled = isNoToneMapping;
+                ui.exposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
             }
-            if (exposureValue) {
-                exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+            if (ui.exposureValue) {
+                ui.exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
             }
         }
 
         // 恢复描边粗细
-        const vrmOutlineWidthSlider = document.getElementById('vrm-outline-width-slider');
-        if (vrmOutlineWidthSlider && lighting.outlineWidthScale !== undefined) {
+        if (ui.vrmOutlineWidthSlider && lighting.outlineWidthScale !== undefined) {
             const scale = Number(lighting.outlineWidthScale);
             if (!Number.isNaN(scale)) {
-                vrmOutlineWidthSlider.value = scale;
+                ui.vrmOutlineWidthSlider.value = scale;
                 applyVrmOutlineWidth(scale);
             }
         }
@@ -5050,7 +5185,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // 加载MMD待机动作选项并恢复保存的选择（仅对 MMD 角色生效）
-            const isMmdCharacter = charData?.live3d_sub_type === 'mmd' || !!charData?.mmd;
+            const activeLive3dSubType = String(charData?.live3d_sub_type || '').toLowerCase();
+            const currentCharacterModelType = String(charData?.model_type || '').toLowerCase();
+            const isMmdCharacter = (currentCharacterModelType === 'live3d' || currentCharacterModelType === 'vrm')
+                ? (activeLive3dSubType ? activeLive3dSubType === 'mmd' : !!charData?.mmd)
+                : false;
             if (isMmdCharacter) {
                 await loadMmdIdleAnimationOptions();
                 let mmdIdleAnims = charData?.mmd_idle_animations ?? charData?.mmd_idle_animation;
@@ -7102,39 +7241,38 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // 检查模型类型
-            // 首先安全地检查 VRM 模型路径是否存在且有效
-            let hasValidVRMPath = false;
-            if (catgirlConfig.vrm !== undefined && catgirlConfig.vrm !== null) {
-                const rawValue = catgirlConfig.vrm;
-                if (typeof rawValue === 'string') {
-                    const trimmed = rawValue.trim();
-                    if (trimmed !== '' &&
-                        trimmed !== 'undefined' &&
-                        trimmed !== 'null' &&
-                        !trimmed.includes('undefined') &&
-                        !trimmed.includes('null')) {
-                        hasValidVRMPath = true;
-                    }
-                } else {
-                    const strValue = String(rawValue);
-                    if (strValue !== 'undefined' && strValue !== 'null' && !strValue.includes('undefined')) {
-                        hasValidVRMPath = true;
-                    }
-                }
-            }
+            // 安全地检查 VRM / MMD 模型路径是否存在且有效（含 _reserved 迁移路径）
+            const _isValidPath = (v) => {
+                if (v === undefined || v === null) return false;
+                const s = String(typeof v === 'object' && v.model_path ? v.model_path : v).trim();
+                const lower = s.toLowerCase();
+                return s !== '' && lower !== 'undefined' && lower !== 'null'
+                    && !s.includes('undefined') && !s.includes('null');
+            };
+            const hasValidVRMPath = _isValidPath(catgirlConfig._reserved?.avatar?.vrm?.model_path)
+                || _isValidPath(catgirlConfig.vrm);
+            const hasValidMMDPath = _isValidPath(catgirlConfig._reserved?.avatar?.mmd?.model_path)
+                || _isValidPath(catgirlConfig.mmd);
+            // 优先使用 live3d_sub_type（后端权威来源，含 _reserved 迁移路径）
+            const storedLive3dSubType = String(
+                catgirlConfig._reserved?.avatar?.live3d_sub_type
+                || catgirlConfig.live3d_sub_type
+                || ''
+            ).trim().toLowerCase();
 
-            // 确定模型类型：优先使用 model_type，如果没有则根据是否有有效的 VRM 路径判断
-            let modelType = catgirlConfig.model_type || (hasValidVRMPath ? 'live3d' : 'live2d');
+            // 确定模型类型：优先使用 model_type，如果没有则根据是否有有效的 Live3D 路径判断
+            let modelType = catgirlConfig.model_type || ((hasValidVRMPath || hasValidMMDPath) ? 'live3d' : 'live2d');
             // 兼容旧配置：'vrm' 统一为 'live3d'
             if (modelType === 'vrm') modelType = 'live3d';
 
             // 如果模型类型是 Live3D 但没有任何有效模型路径（VRM/MMD），自动修复配置
-            const hasValidMMDPath = !!(catgirlConfig.mmd && (typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path));
 
             // 确定 Live3D 子类型（VRM 或 MMD）
             let live3dSubType = '';
             if (modelType === 'live3d') {
-                if (hasValidMMDPath) {
+                if (storedLive3dSubType === 'vrm' || storedLive3dSubType === 'mmd') {
+                    live3dSubType = storedLive3dSubType;
+                } else if (hasValidMMDPath && !hasValidVRMPath) {
                     live3dSubType = 'mmd';
                 } else if (hasValidVRMPath) {
                     live3dSubType = 'vrm';
@@ -7184,7 +7322,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Live3D 模型
                 // 注意：switchModelDisplay 已经等待 loadLive3DModels() 完成，此时合并列表已就绪
 
-                if (hasValidMMDPath && vrmModelSelect) {
+                if (live3dSubType === 'mmd' && hasValidMMDPath && vrmModelSelect) {
                     // MMD 模型：在合并列表中查找 [MMD] 选项
                     const mmdPath = typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path;
                     const mmdFilename = mmdPath.split(/[/\\]/).pop();
@@ -7201,8 +7339,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
                     } else {
                         console.warn('[模型管理] 未找到匹配的 MMD 选项:', mmdPath);
+                        selectDefaultLive3DModel();
                     }
-                } else if (hasValidVRMPath && vrmModelSelect) {
+                } else if (live3dSubType === 'vrm' && hasValidVRMPath && vrmModelSelect) {
                     // VRM 模型：安全获取路径并在合并列表中查找 [VRM] 选项
                     let vrmModelPath = null;
                     if (catgirlConfig.vrm !== undefined && catgirlConfig.vrm !== null) {

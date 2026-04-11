@@ -41,7 +41,7 @@ function getWorkshopReservedFields() {
 
 function getWorkshopHiddenFields() {
     const cfg = _getReservedConfigOrFallback();
-    const keySystemFields = ['live2d', 'system_prompt', 'voice_id', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations', 'mmd_idle_animation', 'mmd_idle_animations'];
+    const keySystemFields = ['live2d', 'system_prompt', 'voice_id', 'live3d_sub_type', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations', 'mmd_idle_animation', 'mmd_idle_animations'];
     const presentSystemFields = cfg.all_reserved_fields.length > 0
         ? keySystemFields.filter(field => cfg.all_reserved_fields.includes(field))
         : keySystemFields;
@@ -2702,14 +2702,32 @@ function expandCharacterCardSection(card) {
     // 处理模型默认值 - 兼容 Live2D / VRM / MMD 三种模型类型
     let live2d = rawData['live2d'] || (rawData['model'] && rawData['model']['name']) || '';
     const modelType = rawData['model_type'] || 'live2d';
-    const vrmPath = rawData['vrm'] || '';
-    const mmdPath = rawData['mmd'] || '';
+        const normalizeModelPath = value => {
+            if (value && typeof value === 'object' && 'model_path' in value) {
+                return String(value.model_path || '');
+            }
+            return String(value || '');
+        };
+        const vrmPath = normalizeModelPath(rawData['vrm']);
+        const mmdPath = normalizeModelPath(rawData['mmd']);
+    // 优先使用 live3d_sub_type（后端权威来源，含 _reserved 迁移路径）
+    const explicitLive3dSubType = String(
+        rawData['_reserved']?.avatar?.live3d_sub_type
+        || rawData['live3d_sub_type']
+        || ''
+    ).trim().toLowerCase();
 
-    // 判断实际模型类型：如果 model_type 是 live3d 或 vrm，根据路径区分 VRM/MMD
+    // 判断实际模型类型：优先使用显式 live3d_sub_type，缺失时再根据路径区分 VRM/MMD
     let effectiveModelType = 'live2d';
     let effectiveModelPath = '';
     if (modelType === 'live3d' || modelType === 'vrm') {
-        if (mmdPath) {
+        if (explicitLive3dSubType === 'mmd') {
+            effectiveModelType = 'mmd';
+            effectiveModelPath = mmdPath;
+        } else if (explicitLive3dSubType === 'vrm') {
+            effectiveModelType = 'vrm';
+            effectiveModelPath = vrmPath;
+        } else if (mmdPath && !vrmPath) {
             effectiveModelType = 'mmd';
             effectiveModelPath = mmdPath;
         } else if (vrmPath) {
