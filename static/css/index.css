@@ -1629,7 +1629,7 @@ body.react-chat-window-dragging {
     /* 高度精确等于按钮组总高度，确保上沿和下沿对齐 */
     /* 发送按钮: padding 8px上下 + border 2px上下(透明) + 内容高度(图标28px) = 48px */
     /* 由于现在按钮横向排列，输入框高度只需匹配单个按钮的高度 (48px) */
-    height: 102px;
+    height: 48px;
     box-sizing: border-box;
     cursor: text;
     caret-color: #222;
