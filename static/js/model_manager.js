@@ -1883,14 +1883,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             clearTimeout(window._motionPreviewRestoreTimer);
             window._motionPreviewRestoreTimer = null;
         }
-        window._currentMotionPreviewId = null;
+        const hasMotionPreview = Boolean(window._currentMotionPreviewId) || isMotionPlaying;
         if (window._motionPreviewFetchController) {
             try {
                 window._motionPreviewFetchController.abort();
             } catch (_) {}
             window._motionPreviewFetchController = null;
         }
-        if ((window._currentMotionPreviewId || isMotionPlaying) && live2dModel && typeof live2dModel.motion === 'function') {
+        if (hasMotionPreview && live2dModel && typeof live2dModel.motion === 'function') {
             try {
                 live2dModel.motion('PreviewAll', -1, 0);
             } catch (error) {

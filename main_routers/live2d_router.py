@@ -85,6 +85,8 @@ def _normalize_persistent_expression_group(mapping, *, strict_top_level: bool = 
         expressions = dict(expressions)
 
     motions.pop('常驻', None)
+    if '常驻' in mapping:
+        expressions['常驻'] = _normalize_persistent_files(mapping.get('常驻'))
     if '常驻' in expressions:
         expressions['常驻'] = _normalize_persistent_files(expressions.get('常驻'))
 
@@ -564,9 +566,9 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 continue
             name = str(item.get("Name") or "")
             file_path = _sanitize_mapping_file_path(item.get("File"))
-            if not name or not file_path or "_" not in name:
+            if not name or not file_path:
                 continue
-            emotion = name.split("_", 1)[0]
+            emotion = name.split("_", 1)[0] if "_" in name else "neutral"
             sanitized_expressions.setdefault(emotion, []).append(file_path)
         resident_files = list(sanitized_expressions.get('常驻') or [])
         resident_files = resident_files[-1:] if resident_files else []

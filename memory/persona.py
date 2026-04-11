@@ -48,7 +48,9 @@ _GENERIC_AVOID_SIGNAL_RE = re.compile(
     r'(?:^|[，。！？!?、,\s])(?:不要|别)(?:再)?(?P<topic>[^，。！？!?]{2,24}?)(?:了|啦|呀|啊|吧|嘛|呢|哦|喔|$)'
 )
 _EMOTION_STATE_RE = re.compile(
-    r'^(?:生气|难过|伤心|委屈|焦虑|害怕|紧张|烦|烦躁|不开心|不高兴|不舒服|难受|沮丧|失落|emo|sad|angry|upset|anxious)$',
+    r'^(?:(?:别|不要)(?:太|很|非常|这么|有点(?:儿)?)?|太|很|非常|这么|有点(?:儿)?)?'
+    r'(?:生气|难过|伤心|委屈|焦虑|害怕|紧张|烦|烦躁|不开心|不高兴|不舒服|难受|沮丧|失落|emo|sad|angry|upset|anxious)'
+    r'(?:了|吗|吧|呀)?$',
     re.IGNORECASE,
 )
 
@@ -235,10 +237,7 @@ def _normalize_topic_tokens(topic: str) -> set[str]:
         if token in _LATIN_TOPIC_TOKEN_STOPWORDS:
             continue
         if len(token) > 4 and token.endswith('ies'):
-            if token[-4] in 'aeiou':
-                token = token[:-1]
-            else:
-                token = token[:-3] + 'y'
+            token = token[:-3] + 'ie'
         elif (
             len(token) > 4
             and token.endswith('es')

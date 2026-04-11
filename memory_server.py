@@ -140,6 +140,7 @@ enable_shutdown = False
 # 全局变量用于管理correction任务
 correction_tasks = {}  # {lanlan_name: asyncio.Task}
 correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
+_recent_round_tails: dict[str, list] = {}
 # 每角色结算锁：首轮摘要期间阻塞 /new_dialog，确保热切换后读到最新数据
 _settle_locks: dict[str, asyncio.Lock] = {}
 # 强引用注册表：防止 fire-and-forget task 被 GC
@@ -196,6 +197,14 @@ def _spawn_background_task(coro) -> asyncio.Task:
 
     task.add_done_callback(_on_done)
     return task
+
+
+def _set_recent_round_tail(lanlan_name: str, messages: list) -> None:
+    _recent_round_tails[lanlan_name] = list(messages or [])
+
+
+def _get_recent_round_tail(lanlan_name: str) -> list:
+    return list(_recent_round_tails.get(lanlan_name) or [])
 
 @app.post("/shutdown")
 async def shutdown_memory_server():
@@ -936,7 +945,7 @@ async def _run_review_in_background(lanlan_name: str, review_messages: list | No
     try:
         # 直接异步调用review_history方法
         await recent_history_manager.review_history(lanlan_name, cancel_event)
-        messages = review_messages if review_messages is not None else recent_history_manager.get_recent_history(lanlan_name)
+        messages = review_messages if review_messages is not None else _get_recent_round_tail(lanlan_name)
         applied = await _review_and_apply_negative_preferences(messages, lanlan_name)
         if applied:
             logger.info(f"[MemoryServer] {lanlan_name}: 后台负面偏好审查应用 {applied} 条")
@@ -1138,6 +1147,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
         async with _get_settle_lock(lanlan_name):
             await recent_history_manager.update_history(input_history, lanlan_name, compress=False)
+        _set_recent_round_tail(lanlan_name, input_history)
         return {"status": "cached", "count": len(input_history)}
     except Exception as e:
         logger.error(f"[MemoryServer] cache 失败: {e}")
@@ -1162,6 +1172,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         input_history = convert_to_messages(json.loads(request.input_history))
         logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
         await recent_history_manager.update_history(input_history, lanlan_name)
+        _set_recent_round_tail(lanlan_name, input_history)
         # 旧模块已禁用（性能不足）：
         # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
         # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
@@ -1210,6 +1221,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
         async with _get_settle_lock(lanlan_name):
             await recent_history_manager.update_history(input_history, lanlan_name, detailed=True)
             await time_manager.store_conversation(uid, input_history, lanlan_name)
+        _set_recent_round_tail(lanlan_name, input_history)
 
         # 以下操作在锁外执行，不阻塞 /new_dialog
         # 异步事实提取
@@ -1254,8 +1266,10 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
                 await time_manager.store_conversation(uid, input_history, lanlan_name)
             await recent_history_manager.update_history([], lanlan_name, detailed=True)
 
-        if input_history:
-            _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
+        round_messages = input_history if input_history else _get_recent_round_tail(lanlan_name)
+
+        if round_messages:
+            _spawn_background_task(_extract_facts_and_check_feedback(round_messages, lanlan_name))
 
         if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
             correction_tasks[lanlan_name].cancel()
@@ -1263,7 +1277,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
                 await correction_tasks[lanlan_name]
             except asyncio.CancelledError:
                 pass
-        review_messages = input_history if input_history else None
+        review_messages = round_messages if round_messages else None
         task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
         correction_tasks[lanlan_name] = task
 

@@ -1684,7 +1684,7 @@
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use not installed",
             "AGENT_NOT_INITIALIZED": "NekoClaw initialization failed",
             "AGENT_LLM_UNREACHABLE": "NekoClaw LLM unreachable",
-            "AGENT_OPENFANG_DAEMON_UNREACHABLE": "OpenFang service is unreachable",
+            "AGENT_OPENFANG_DAEMON_UNREACHABLE": "Agent cannot reach the OpenFang backend",
             "OPENFANG_DAEMON_UNREACHABLE": "OpenFang service is unreachable",
             "AGENT_OPENFANG_NOT_LOADED": "OpenFang adapter is not loaded",
             "AGENT_MODEL_NOT_CONFIGURED": "NekoClaw model not configured",

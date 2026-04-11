@@ -812,13 +812,13 @@ NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
 - 重点识别具体对象：食物、活动、地点、题材、称呼方式等
 - 如果用户否定的是上一条回复里的某个子项，只提取那个子项，不要提取整串列表
 - 如果用户只是在抱怨语气、时机、表达方式，而不是反感某个具体对象，返回空数组
-- 如果只是轻微烦躁、并非明确拒绝，可用 de_emphasize
+- 如果只是轻微烦躁、短暂不适或偏向语气层面的不满，返回空数组 []
 - 如果是明确不喜欢、明确拒绝，但还没有要求彻底回避，使用 soft_avoid
 - 如果明确要求别再提、别再推荐、别再说，使用 hard_avoid
 
 严格要求：
 - topic 必须是具体、可单独识别的话题，不能是整句总结，不能是多个并列推荐项拼成的大串
-- policy 只能是 de_emphasize、soft_avoid、hard_avoid 之一
+- policy 只能是 soft_avoid、hard_avoid 之一
 - confidence 取 0 到 1 的小数；只有你非常确定时才给 >= 0.85
 - 最多返回 3 条
 
@@ -848,13 +848,13 @@ NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
 - 食べ物、活動、場所、題材、呼び方などの具体的対象を重視する
 - ユーザーが直前の返答内の一部項目を拒否している場合は、その一部項目だけを抽出し、一覧全体は抽出しない
 - 口調、タイミング、言い回しへの不満だけで、具体的対象への拒否でないなら []
-- 軽い嫌悪感なら de_emphasize を使用する
+- 軽い苛立ち・一時的な不快感・口調への不満だけなら [] を返す
 - 明確な嫌悪や拒否だが、完全な回避要求まではない場合は soft_avoid を使用する
 - もう触れないで／勧めないで／言わないでという明示要求なら hard_avoid を使用する
 
 厳格な要件:
 - topic は単独で識別できる具体的対象でなければならず、文全体の要約や長い連結リストは不可
-- policy は de_emphasize / soft_avoid / hard_avoid のいずれかのみ
+- policy は soft_avoid / hard_avoid のいずれかのみ
 - confidence は 0 から 1 の小数で、非常に確信できるときだけ >= 0.85
 - 最大 3 件まで返す
 
@@ -884,13 +884,13 @@ NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
 - 음식, 활동, 장소, 장르, 호칭 같은 구체적인 대상을 우선 식별
 - 사용자가 직전 답변의 하위 항목만 거부한 경우 전체 목록이 아니라 그 하위 항목만 추출
 - 말투, 타이밍, 표현 방식에 대한 불만일 뿐 구체적 대상 거부가 아니면 []
-- 가벼운 회피 성향이면 de_emphasize 사용
+- 가벼운 짜증, 일시적 불편, 말투에 대한 불만만 있으면 [] 반환
 - 명확한 비선호나 거부지만 완전 회피 요청까지는 아니면 soft_avoid 사용
 - 다시 언급/추천/말하지 말라는 명시적 요구면 hard_avoid 사용
 
 엄격한 요구:
 - topic 은 독립적으로 식별 가능한 구체 대상이어야 하며, 문장 요약이나 긴 나열 문자열이면 안 됨
-- policy 는 de_emphasize, soft_avoid, hard_avoid 중 하나만 사용
+- policy 는 soft_avoid, hard_avoid 중 하나만 사용
 - confidence 는 0~1 사이 소수이며, 매우 확실할 때만 >= 0.85
 - 최대 3개까지만 반환
 
@@ -920,13 +920,13 @@ NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
 - Ищите конкретные цели: еда, занятия, места, жанры, формы обращения и т.п.
 - Если пользователь отвергает подпункт из предыдущего ответа ассистента, извлекайте только этот подпункт, а не весь список
 - Если пользователь недоволен только тоном, моментом или формулировкой, а не конкретным объектом, верните []
-- Для слабого избегания используйте de_emphasize
+- Если это лишь лёгкое раздражение, временный дискомфорт или недовольство тоном, верните []
 - Для явной неприязни или отказа без требования полного табу используйте soft_avoid
 - Для прямой просьбы больше не упоминать/не рекомендовать/не говорить используйте hard_avoid
 
 Строгие требования:
 - topic должен быть конкретной самостоятельной целью, а не пересказом предложения и не длинной склеенной строкой из списка
-- policy должен быть только одним из: de_emphasize, soft_avoid, hard_avoid
+- policy должен быть только одним из: soft_avoid, hard_avoid
 - confidence — число от 0 до 1; используйте >= 0.85 только при очень высокой уверенности
 - Верните не более 3 элементов
 
@@ -956,13 +956,13 @@ Goal:
 - Focus on concrete targets such as foods, activities, places, themes, or forms of address
 - If the user is rejecting a sub-item from the assistant's previous reply, extract only that sub-item, not the whole list
 - If the user is only complaining about tone, timing, or phrasing rather than rejecting a concrete target, return []
-- Use de_emphasize for mild aversion
+- Return [] for mild irritation, temporary discomfort, or complaints about tone only
 - Use soft_avoid for explicit dislike or rejection that does not clearly demand a full ban
 - Use hard_avoid for explicit requests not to mention, recommend, or bring it up again
 
 Strict requirements:
 - topic must be a concrete standalone target, not a sentence summary and not a long concatenated list
-- policy must be exactly one of de_emphasize, soft_avoid, hard_avoid
+- policy must be exactly one of soft_avoid, hard_avoid
 - confidence must be a decimal between 0 and 1; only use >= 0.85 when you are very certain
 - Return at most 3 items
 

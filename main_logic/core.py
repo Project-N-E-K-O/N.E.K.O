@@ -57,6 +57,7 @@ logger = get_module_logger(__name__, "Main")
 # TTS 错误码中不应自动重试的类型（欠费 / 配额耗尽）
 NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_QUOTA_TIME'}
 NEGATIVE_SIGNAL_FAILURE_BACKOFF_SECONDS = 3.0
+BACKGROUND_TASK_CANCEL_TIMEOUT = 2.0
 
 # ---------------------------------------------------------------------------
 # 重要通知缓冲池
@@ -606,9 +607,16 @@ class LLMSessionManager:
         if bg_task_ref:
             bg_task_ref.cancel()
             try:
-                await bg_task_ref
+                await asyncio.wait_for(bg_task_ref, timeout=BACKGROUND_TASK_CANCEL_TIMEOUT)
             except asyncio.CancelledError:
                 pass
+            except asyncio.TimeoutError:
+                logger.warning(f"{context}: background_preparation_task cancel timed out")
+                bg_task_ref.cancel()
+                try:
+                    await asyncio.wait_for(bg_task_ref, timeout=0.2)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
             except Exception as task_error:
                 logger.debug(f"{context}: background_preparation_task cleanup failed: {task_error}")
             finally:
@@ -2261,10 +2269,9 @@ class LLMSessionManager:
                         logger.error("[%s] proactive websocket turn_end send failed: %s", self.lanlan_name, e)
                         turn_closed = False
 
-                    if text_delivered:
-                        from utils.llm_client import AIMessage as _AIMsg
-                        if self.session and hasattr(self.session, '_conversation_history'):
-                            self.session._conversation_history.append(_AIMsg(content=full_text))
+                    from utils.llm_client import AIMessage as _AIMsg
+                    if self.session and hasattr(self.session, '_conversation_history'):
+                        self.session._conversation_history.append(_AIMsg(content=full_text))
         finally:
             await self._finalize_or_discard_current_assistant_turn(content_committed=text_delivered)
         if text_delivered:
