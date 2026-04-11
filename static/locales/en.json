@@ -1369,6 +1369,7 @@
         "profileNameContainsSlash": "Profile name cannot contain path separators (/ or \\)",
         "profileNameContainsDot": "Profile name cannot contain dots (.)",
         "profileNameInvalidChars": "Profile name can only contain letters, numbers, spaces, underscores, hyphens, parentheses, middle dots (·/・), and apostrophes",
+        "profileNameReservedRoute": "This name is a reserved system route and cannot be used as a profile name",
         "newProfileNameRequired": "New profile name cannot be empty",
         "newProfileNameTooLong": "Profile name is too long",
         "required": "*",
@@ -1655,7 +1656,8 @@
     },
     "subtitle": {
         "title": "Real-time Subtitles",
-        "enable": "Enable Translation"
+        "enable": "Enable Translation",
+        "enableAriaLabel": "Toggle translation"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -2686,7 +2688,7 @@
         "loadError": "Music player failed to load",
         "autoplayBlocked": "Browser blocked autoplay, please click the play button",
         "ended": "Ended",
-        "nowPlayingCard": "🎵 Now Playing"
+        "unknownState": "Unknown state"
     },
     "Jukebox": {
         "title": "Jukebox",

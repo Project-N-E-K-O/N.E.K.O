@@ -1369,6 +1369,7 @@
         "profileNameContainsSlash": "프로필 이름에 경로 구분 기호(/ 또는 \\)를 포함할 수 없습니다",
         "profileNameContainsDot": "프로필 이름에 점(.)을 포함할 수 없습니다",
         "profileNameInvalidChars": "프로필 이름에는 문자, 숫자, 공백, 밑줄, 하이픈, 괄호, 가운데점(·/・), 아포스트로피만 사용할 수 있습니다",
+        "profileNameReservedRoute": "이 이름은 시스템 예약 경로 이름이므로 프로필 이름으로 사용할 수 없습니다",
         "newProfileNameRequired": "새 프로필 이름은 비워둘 수 없습니다.",
         "newProfileNameTooLong": "프로필 이름이 너무 깁니다.",
         "required": "*",
@@ -1655,7 +1656,8 @@
     },
     "subtitle": {
         "title": "실시간 자막",
-        "enable": "번역 활성화"
+        "enable": "번역 활성화",
+        "enableAriaLabel": "번역 전환"
     },
     "viewer": {
         "title": "뷰어 - 프로젝트 N.E.K.O."
@@ -2686,7 +2688,7 @@
         "loadError": "음악 플레이어를 로드하지 못했습니다",
         "autoplayBlocked": "브라우저에서 자동 재생이 차단되었습니다. 재생 버튼을 클릭하세요",
         "ended": "종료",
-        "nowPlayingCard": "🎵 재생 중"
+        "unknownState": "알 수 없는 상태"
     },
     "Jukebox": {
         "title": "주크박스",

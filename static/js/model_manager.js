@@ -1769,16 +1769,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             const ambient = document.getElementById('ambient-light-slider');
             const main = document.getElementById('main-light-slider');
 
-            // 4. 如果是 VRM/Live3D 模式，单独保存光照设置（仅光照部分独立保存）
-            if ((currentModelType === 'live3d') && ambient && main) {
+            // 4. 如果是 VRM/Live3D 模式且当前子类型为 VRM，单独保存光照设置
+            const isVrmSubTypeForSave = !currentLive3dSubType || currentLive3dSubType === 'vrm';
+            if ((currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main) {
+                const fillSlider = document.getElementById('fill-light-slider');
+                const rimSlider = document.getElementById('rim-light-slider');
+                const topSlider = document.getElementById('top-light-slider');
+                const bottomSlider = document.getElementById('bottom-light-slider');
                 const lightingData = {
                     lighting: {
                         ambient: parseFloat(ambient.value),
                         main: parseFloat(main.value),
-                        fill: 0.0,
-                        rim: 0.0,
-                        top: 0.0,
-                        bottom: 0.0
+                        fill: fillSlider ? parseFloat(fillSlider.value) : 0.0,
+                        rim: rimSlider ? parseFloat(rimSlider.value) : 0.0,
+                        top: topSlider ? parseFloat(topSlider.value) : 0.0,
+                        bottom: bottomSlider ? parseFloat(bottomSlider.value) : 0.0,
                     }
                 };
 
@@ -1843,7 +1848,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ? modelName.split(/[\\/]/).pop().replace(/\.(vrm|pmx|pmd)$/i, '') 
                 : modelName;
             let saveMessage;
-            const lightingFailed = (currentModelType === 'live3d') && ambient && main && (!lightingResult || !lightingResult.success);
+            const lightingFailed = (currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main && (!lightingResult || !lightingResult.success);
             const mmdSettingsFailed = mmdSettingsResult && !mmdSettingsResult.success;
 
             if (lightingFailed && mmdSettingsFailed) {
@@ -1852,7 +1857,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 saveMessage = t('live2d.modelSavedMmdSettingsFailed', `已保存模型设置，MMD设置保存失败`, { name: modelDisplayName });
             } else if (lightingFailed) {
                 saveMessage = t('live2d.modelSavedLightingFailed', `已保存模型设置，光照设置保存失败`, { name: modelDisplayName });
-            } else if ((currentModelType === 'live3d') && ambient && main) {
+            } else if ((currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main) {
                 saveMessage = t('live2d.modelSettingsSavedWithLighting', `已保存模型和光照设置`, { name: modelDisplayName });
             } else if (currentModelType === 'live3d') {
                 saveMessage = t('live2d.modelSettingsSaved', `已保存模型设置`, { name: modelDisplayName });
@@ -2263,7 +2268,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 切换到 VRM 模式时立即加载待机动作列表
             if (isVrmSubType) {
                 console.log('[VRM IdleAnimation] 切换到 VRM 模式，开始加载待机动作列表');
-                loadIdleAnimationOptions();
+                await loadIdleAnimationOptions();
+                await restoreVrmIdleAnimation();
             }
             // 更新上传按钮提示文本（VRM模式）
             if (uploadBtn) {
@@ -2349,10 +2355,25 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 3. 检查并初始化 Three.js 场景（移到 if 块外部，每次切换都会检查）
                 if (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer) {
                     console.log('[模型管理] VRM 场景未完全初始化，正在初始化...');
-                    await vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                    // 获取已保存的光照配置，避免用错误的默认值初始化场景
+                    let savedLightingConfig = null;
+                    try {
+                        const _lanlanName = await getLanlanName();
+                        if (_lanlanName) {
+                            const _charData = await RequestHelper.fetchJson('/api/characters/');
+                            savedLightingConfig = _charData['猫娘']?.[_lanlanName]?.lighting || null;
+                        }
+                    } catch (e) {
+                        console.warn('[模型管理] 获取光照配置失败，使用默认值:', e);
+                    }
+                    await vrmManager.initThreeJS('vrm-canvas', 'vrm-container', savedLightingConfig);
                     // 再次验证初始化是否成功
                     if (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer) {
                         throw new Error('场景初始化后仍缺少必要组件');
+                    }
+                    // 同步光照值到 UI 滑块
+                    if (savedLightingConfig) {
+                        applyLightingValues(savedLightingConfig);
                     }
                     console.log('[模型管理] VRM 场景初始化成功');
                     showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
@@ -2506,13 +2527,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const charactersData = await RequestHelper.fetchJson('/api/characters');
                         const catgirlConfig = charactersData['猫娘']?.[lanlanName];
                         if (vrmModelSelect) {
+                            // 使用 live3d_sub_type 决定优先匹配哪种模型，避免 PR#702 保留双模型路径后总是选到 MMD
+                            const activeSubType = String(catgirlConfig?.live3d_sub_type || '').toLowerCase();
+
                             const _mmdPathSwitch = catgirlConfig && catgirlConfig.mmd
                                 ? (typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path)
                                 : '';
-                            if (_mmdPathSwitch) {
+                            const _vrmPathSwitch = catgirlConfig?.vrm || '';
+
+                            // 根据 live3d_sub_type 决定优先匹配顺序
+                            const tryMatchMmd = () => {
+                                if (!_mmdPathSwitch) return false;
                                 const mmdPath = _mmdPathSwitch;
                                 const mmdFilename = mmdPath.split(/[/\\]/).pop();
-                                // 优先完整路径匹配，其次文件名匹配
                                 const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
                                     if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
                                     return opt.value === mmdPath;
@@ -2523,13 +2550,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
                                     vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
-                                    matched = true;
+                                    return true;
                                 }
-                            }
-                            if (!matched && catgirlConfig && catgirlConfig.vrm) {
-                                const vrmPath = catgirlConfig.vrm;
+                                return false;
+                            };
+
+                            const tryMatchVrm = () => {
+                                if (!_vrmPathSwitch) return false;
+                                const vrmPath = _vrmPathSwitch;
                                 const vrmFilename = vrmPath.split(/[/\\]/).pop();
-                                // 优先完整路径匹配，其次文件名匹配
                                 const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
                                     if (!opt.value) return false;
                                     return opt.value === vrmPath;
@@ -2541,8 +2570,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
                                     vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
-                                    matched = true;
+                                    return true;
                                 }
+                                return false;
+                            };
+
+                            if (activeSubType === 'mmd') {
+                                matched = tryMatchMmd() || tryMatchVrm();
+                            } else {
+                                // vrm 优先（包括 activeSubType 为空的情况）
+                                matched = tryMatchVrm() || tryMatchMmd();
                             }
                         }
                     }
@@ -4686,6 +4723,29 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // ===== MMD 待机动作加载 =====
 
+    async function restoreVrmIdleAnimation() {
+        try {
+            const lanlanName = await getLanlanName();
+            if (!lanlanName) return;
+
+            const data = await RequestHelper.fetchJson('/api/characters/');
+            const charData = data['猫娘']?.[lanlanName];
+            let vrmIdleAnimation = charData?.idle_animation;
+            if (vrmIdleAnimation == null) {
+                vrmIdleAnimation = charData?.idleAnimations ?? charData?.idleAnimation;
+            }
+
+            if (vrmIdleAnimation == null) return;
+            if (typeof vrmIdleAnimation === 'string') vrmIdleAnimation = vrmIdleAnimation ? [vrmIdleAnimation] : [];
+            if (!Array.isArray(vrmIdleAnimation)) return;
+
+            console.log('[VRM] restoreVrmIdleAnimation - vrmIdleAnimation:', vrmIdleAnimation);
+            setSelectedIdleAnimations('vrm-idle-animation-multiselect', vrmIdleAnimation);
+        } catch (error) {
+            console.error('[VRM] 恢复待机动作失败:', error);
+        }
+    }
+
     async function loadMmdIdleAnimationOptions() {
         if (loadMmdIdleAnimationOptions._promise) return loadMmdIdleAnimationOptions._promise;
         loadMmdIdleAnimationOptions._promise = _doLoadMmdIdleAnimationOptions().finally(() => {
@@ -5037,8 +5097,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         if (fillLightSlider && fillLightValue) {
-            // 简化模式下，补光强制归零
-            const fillValue = 0.0;
+            const fillValue = lighting.fill ?? 0.0;
             fillLightSlider.value = fillValue;
             fillLightValue.textContent = fillValue.toFixed(2);
             if (vrmManager.fillLight) {
@@ -5046,8 +5105,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         if (rimLightSlider && rimLightValue) {
-            // 简化模式下，轮廓光强制归零
-            const rimValue = 0.0;
+            const rimValue = lighting.rim ?? 0.0;
             rimLightSlider.value = rimValue;
             rimLightValue.textContent = rimValue.toFixed(2);
             if (vrmManager.rimLight) {
@@ -5055,8 +5113,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         if (topLightSlider && topLightValue) {
-            // 简化模式下，顶光强制归零
-            const topValue = 0.0;
+            const topValue = lighting.top ?? 0.0;
             topLightSlider.value = topValue;
             topLightValue.textContent = topValue.toFixed(2);
             if (vrmManager.topLight) {
@@ -5064,8 +5121,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         if (bottomLightSlider && bottomLightValue) {
-            // 简化模式下，底光强制归零
-            const bottomValue = 0.0;
+            const bottomValue = lighting.bottom ?? 0.0;
             bottomLightSlider.value = bottomValue;
             bottomLightValue.textContent = bottomValue.toFixed(2);
             if (vrmManager.bottomLight) {
@@ -5149,7 +5205,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // 加载MMD待机动作选项并恢复保存的选择（仅对 MMD 角色生效）
-            const isMmdCharacter = charData?.live3d_sub_type === 'mmd' || !!charData?.mmd;
+            const activeLive3dSubType = String(charData?.live3d_sub_type || '').toLowerCase();
+            const currentCharacterModelType = String(charData?.model_type || '').toLowerCase();
+            const isMmdCharacter = (currentCharacterModelType === 'live3d' || currentCharacterModelType === 'vrm')
+                ? (activeLive3dSubType ? activeLive3dSubType === 'mmd' : !!charData?.mmd)
+                : false;
             if (isMmdCharacter) {
                 await loadMmdIdleAnimationOptions();
                 let mmdIdleAnims = charData?.mmd_idle_animations ?? charData?.mmd_idle_animation;
@@ -7265,39 +7325,38 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // 检查模型类型
-            // 首先安全地检查 VRM 模型路径是否存在且有效
-            let hasValidVRMPath = false;
-            if (catgirlConfig.vrm !== undefined && catgirlConfig.vrm !== null) {
-                const rawValue = catgirlConfig.vrm;
-                if (typeof rawValue === 'string') {
-                    const trimmed = rawValue.trim();
-                    if (trimmed !== '' &&
-                        trimmed !== 'undefined' &&
-                        trimmed !== 'null' &&
-                        !trimmed.includes('undefined') &&
-                        !trimmed.includes('null')) {
-                        hasValidVRMPath = true;
-                    }
-                } else {
-                    const strValue = String(rawValue);
-                    if (strValue !== 'undefined' && strValue !== 'null' && !strValue.includes('undefined')) {
-                        hasValidVRMPath = true;
-                    }
-                }
-            }
+            // 安全地检查 VRM / MMD 模型路径是否存在且有效（含 _reserved 迁移路径）
+            const _isValidPath = (v) => {
+                if (v === undefined || v === null) return false;
+                const s = String(typeof v === 'object' && v.model_path ? v.model_path : v).trim();
+                const lower = s.toLowerCase();
+                return s !== '' && lower !== 'undefined' && lower !== 'null'
+                    && !s.includes('undefined') && !s.includes('null');
+            };
+            const hasValidVRMPath = _isValidPath(catgirlConfig._reserved?.avatar?.vrm?.model_path)
+                || _isValidPath(catgirlConfig.vrm);
+            const hasValidMMDPath = _isValidPath(catgirlConfig._reserved?.avatar?.mmd?.model_path)
+                || _isValidPath(catgirlConfig.mmd);
+            // 优先使用 live3d_sub_type（后端权威来源，含 _reserved 迁移路径）
+            const storedLive3dSubType = String(
+                catgirlConfig._reserved?.avatar?.live3d_sub_type
+                || catgirlConfig.live3d_sub_type
+                || ''
+            ).trim().toLowerCase();
 
-            // 确定模型类型：优先使用 model_type，如果没有则根据是否有有效的 VRM 路径判断
-            let modelType = catgirlConfig.model_type || (hasValidVRMPath ? 'live3d' : 'live2d');
+            // 确定模型类型：优先使用 model_type，如果没有则根据是否有有效的 Live3D 路径判断
+            let modelType = catgirlConfig.model_type || ((hasValidVRMPath || hasValidMMDPath) ? 'live3d' : 'live2d');
             // 兼容旧配置：'vrm' 统一为 'live3d'
             if (modelType === 'vrm') modelType = 'live3d';
 
             // 如果模型类型是 Live3D 但没有任何有效模型路径（VRM/MMD），自动修复配置
-            const hasValidMMDPath = !!(catgirlConfig.mmd && (typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path));
 
             // 确定 Live3D 子类型（VRM 或 MMD）
             let live3dSubType = '';
             if (modelType === 'live3d') {
-                if (hasValidMMDPath) {
+                if (storedLive3dSubType === 'vrm' || storedLive3dSubType === 'mmd') {
+                    live3dSubType = storedLive3dSubType;
+                } else if (hasValidMMDPath && !hasValidVRMPath) {
                     live3dSubType = 'mmd';
                 } else if (hasValidVRMPath) {
                     live3dSubType = 'vrm';
@@ -7347,7 +7406,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Live3D 模型
                 // 注意：switchModelDisplay 已经等待 loadLive3DModels() 完成，此时合并列表已就绪
 
-                if (hasValidMMDPath && vrmModelSelect) {
+                if (live3dSubType === 'mmd' && hasValidMMDPath && vrmModelSelect) {
                     // MMD 模型：在合并列表中查找 [MMD] 选项
                     const mmdPath = typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path;
                     const mmdFilename = mmdPath.split(/[/\\]/).pop();
@@ -7364,8 +7423,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
                     } else {
                         console.warn('[模型管理] 未找到匹配的 MMD 选项:', mmdPath);
+                        selectDefaultLive3DModel();
                     }
-                } else if (hasValidVRMPath && vrmModelSelect) {
+                } else if (live3dSubType === 'vrm' && hasValidVRMPath && vrmModelSelect) {
                     // VRM 模型：安全获取路径并在合并列表中查找 [VRM] 选项
                     let vrmModelPath = null;
                     if (catgirlConfig.vrm !== undefined && catgirlConfig.vrm !== null) {

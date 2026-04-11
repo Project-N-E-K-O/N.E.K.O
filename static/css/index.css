@@ -652,19 +652,65 @@ body.react-chat-adapter-active #chat-container {
     display: block;
     border-radius: 22px;
     overflow: hidden;
-    background: rgba(248, 250, 255, 0.96);
+    background: transparent;
     box-shadow: 0 30px 100px rgba(12, 20, 34, 0.3);
     pointer-events: auto;
 }
 
+/* ---- 最小化：50px 圆形悬浮窗 + 呼吸灯 ---- */
 #react-chat-window-shell.is-minimized {
-    width: 220px;
-    height: 56px;
-    border-radius: 16px;
+    width: 50px !important;
+    height: 50px !important;
+    border-radius: 50%;
+    background: rgba(68, 183, 254, 0.15);
+    box-shadow: 0 0 8px rgba(68, 183, 254, 0.6);
+    animation: breathingGlow 2s ease-in-out infinite;
+    will-change: box-shadow;
+    cursor: pointer;
+    overflow: hidden;
 }
 
-#react-chat-window-shell.is-minimized #react-chat-window-root {
+#react-chat-window-shell.is-minimized #react-chat-window-root,
+#react-chat-window-shell.is-minimized #react-chat-window-header-actions {
     display: none;
+}
+
+/* 拖拽手柄撑满圆形，充当点击恢复区域 */
+#react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+}
+
+/* 最小化悬浮球内图标 */
+#react-chat-window-shell .react-chat-minimized-icon {
+    display: none;
+}
+#react-chat-window-shell.is-minimized .react-chat-minimized-icon {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+}
+
+/* 隐藏 resize 边缘 */
+#react-chat-window-shell.is-minimized .react-chat-resize-edge {
+    display: none;
+}
+
+/* ---- 折叠动画（向左下角缩放） ---- */
+#react-chat-window-shell.is-collapsing {
+    transform-origin: 0% 100%;
+    transition: transform 0.38s cubic-bezier(0.4, 0, 0.2, 1);
+    will-change: transform;
+}
+
+/* ---- 展开动画（从左下角放大） ---- */
+#react-chat-window-shell.is-expanding {
+    transform-origin: 0% 100%;
+    transition: transform 0.35s cubic-bezier(0.2, 0, 0, 1);
+    will-change: transform;
 }
 
 #react-chat-window-shell.is-dragging {
@@ -727,7 +773,7 @@ body.react-chat-adapter-active #chat-container {
 #react-chat-window-root {
     width: 100%;
     height: 100%;
-    background: #eef3fb;
+    background: transparent;
     pointer-events: auto;
 }
 
@@ -815,7 +861,7 @@ body.react-chat-window-resizing {
 
 /* ===== React Chat Window Dark Mode ===== */
 [data-theme="dark"] #react-chat-window-shell {
-    background: rgba(30, 30, 42, 0.96);
+    background: transparent;
     box-shadow: 0 30px 100px rgba(0, 0, 0, 0.5);
 }
 
@@ -823,11 +869,17 @@ body.react-chat-window-resizing {
     box-shadow: 0 36px 110px rgba(0, 0, 0, 0.6);
 }
 
+[data-theme="dark"] #react-chat-window-shell.is-minimized {
+    background: rgba(68, 183, 254, 0.2);
+}
+
+[data-theme="dark"] #avatarPreviewHeaderButton,
 [data-theme="dark"] #reactChatWindowMinimizeButton,
 [data-theme="dark"] #reactChatWindowCloseButton {
     color: #aab0bc;
 }
 
+[data-theme="dark"] #avatarPreviewHeaderButton:hover,
 [data-theme="dark"] #reactChatWindowMinimizeButton:hover,
 [data-theme="dark"] #reactChatWindowCloseButton:hover {
     background: rgba(200, 210, 230, 0.12);
@@ -835,7 +887,7 @@ body.react-chat-window-resizing {
 }
 
 [data-theme="dark"] #react-chat-window-root {
-    background: #1c1c2e;
+    background: transparent;
 }
 
 [data-theme="dark"] .react-chat-resize-se {
@@ -2060,6 +2112,7 @@ body.react-chat-window-dragging {
 /* Chat Export — header button + preview modal                  */
 /* ============================================================ */
 
+#avatarPreviewHeaderButton,
 #exportConversationButton {
     width: 32px;
     height: 32px;
@@ -2076,16 +2129,19 @@ body.react-chat-window-dragging {
     transition: background 0.18s ease, color 0.18s ease;
 }
 
+#avatarPreviewHeaderButton:hover,
 #exportConversationButton:hover {
     background: rgba(88, 108, 145, 0.12);
     color: #2b3851;
 }
 
+#avatarPreviewHeaderButton:focus-visible,
 #exportConversationButton:focus-visible {
     outline: 2px solid rgba(88, 108, 145, 0.55);
     outline-offset: 2px;
 }
 
+#avatarPreviewHeaderButton svg,
 #exportConversationButton svg {
     pointer-events: none;
     display: block;
