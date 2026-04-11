@@ -630,7 +630,7 @@ body.react-chat-adapter-active #chat-container {
 #react-chat-window-overlay {
     position: fixed;
     inset: 0;
-    z-index: 30;
+    z-index: 100000;
     pointer-events: none;
 }
 
