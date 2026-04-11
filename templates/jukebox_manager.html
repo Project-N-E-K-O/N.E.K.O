@@ -106,7 +106,7 @@
             if (typeof window.t === 'function' && window.i18n && window.i18n.isInitialized === true) {
                 _mgrInitDone = true;
                 clearInterval(_mgrPoll);
-                _initManager();
+                _initManager().catch(function(e) { console.error('[JukeboxManager] init failed:', e); });
             }
         }
         var _mgrPoll = setInterval(function() { _tryInitManager(); }, 100);
@@ -117,7 +117,7 @@
                 if (typeof window.t !== 'function') {
                     window.t = function(key, fallback) { return typeof fallback === 'string' ? fallback : key; };
                 }
-                _initManager();
+                _initManager().catch(function(e) { console.error('[JukeboxManager] init failed:', e); });
             }
         }, 3000);
     </script>
