@@ -54,8 +54,8 @@ import httpx
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
 
-# TTS 错误码中不应自动重试的类型（欠费 / 配额耗尽）
-NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_QUOTA_TIME'}
+# TTS 错误码中不应自动重试的类型（欠费 / 配额耗尽 / API Key 无效）
+NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_QUOTA_TIME', 'API_KEY_REJECTED'}
 
 # ---------------------------------------------------------------------------
 # 重要通知缓冲池
@@ -725,6 +725,10 @@ class LLMSessionManager:
                 await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
             elif '429' in message_text_lower or 'too many' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_RATE_LIMIT"}))
+            elif ('401' in message_text_lower or 'unauthorized' in message_text_lower
+                    or 'authentication' in message_text_lower
+                    or ('invalid' in message_text_lower and 'key' in message_text_lower)):
+                await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
             elif 'policy violation' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": message_text}}))
             elif '1008' in message_text_lower:
@@ -3095,8 +3099,9 @@ class LLMSessionManager:
 
                         # 优先尝试从结构化 JSON 中提取明确的 code 字段
                         _known_codes = {
-                            'API_ARREARS', 'API_QUOTA_TIME', 'API_RATE_LIMIT',
-                            'API_POLICY_VIOLATION', 'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
+                            'API_ARREARS', 'API_QUOTA_TIME', 'API_KEY_REJECTED',
+                            'API_RATE_LIMIT', 'API_POLICY_VIOLATION',
+                            'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
                         }
                         _parsed_code = None
                         try:
@@ -3133,6 +3138,11 @@ class LLMSessionManager:
                             elif '1008' in error_msg_lower:
                                 user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'API_1008_FALLBACK'
+                            elif ('401' in error_msg_lower or 'unauthorized' in error_msg_lower
+                                    or 'authentication' in error_msg_lower
+                                    or ('invalid' in error_msg_lower and 'key' in error_msg_lower)):
+                                user_msg = json.dumps({"code": "API_KEY_REJECTED", "details": {"msg": error_msg_text}})
+                                self._last_tts_error_code = 'API_KEY_REJECTED'
                             else:
                                 user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
