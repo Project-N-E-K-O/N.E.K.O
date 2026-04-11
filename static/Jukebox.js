@@ -486,12 +486,16 @@ window.Jukebox = {
       const wrapperRect = wrapper.getBoundingClientRect();
       const panelWidth = 450;
       const gap = 10;
+      const viewportWidth = document.documentElement.clientWidth;
+      const maxLeft = Math.max(0, viewportWidth - panelWidth);
       let left = wrapperRect.left - panelWidth - gap;
       let top = wrapperRect.bottom - this.element.offsetHeight;
       // 如果左侧空间不够，放到右侧
       if (left < 0) {
         left = wrapperRect.right + gap;
       }
+      // 限制在视口内
+      left = Math.min(Math.max(0, left), maxLeft);
       top = Math.max(0, top);
       this.element.style.left = left + 'px';
       this.element.style.top = top + 'px';
@@ -2160,7 +2164,7 @@ window.Jukebox = {
       return `
         .jukebox-sam-panel {
           position: fixed;
-          z-index: 100000;
+          z-index: 100010;
           background: ${C.panel.background};
           color: ${C.panel.color};
           padding: 15px;
@@ -3355,6 +3359,15 @@ window.Jukebox = {
   close: function() {
     Jukebox.stopPlayback();
     
+    // 销毁管理器面板（移除 DOM 节点 + 清理拖拽监听）
+    Jukebox.SongActionManager.destroy();
+    
+    // 清理点歌台拖拽事件监听
+    if (Jukebox.State._dragCleanup) {
+      Jukebox.State._dragCleanup();
+      Jukebox.State._dragCleanup = null;
+    }
+    
     if (Jukebox.State.container) {
       Jukebox.State.container.remove();
       Jukebox.State.container = null;
@@ -3376,9 +3389,6 @@ window.Jukebox = {
     if (jukeboxButton) {
       jukeboxButton.classList.remove('active');
     }
-    
-    // 同时关闭管理器UI
-    Jukebox.SongActionManager.hide();
     
     console.log('[Jukebox] 点歌台已关闭');
   },
@@ -3678,6 +3688,7 @@ window.Jukebox = {
     Jukebox.State.styleElement = style;
     
     style.textContent = `
+      /* z-index 层级: 悬浮按钮 99999 < 对话框 100000 < 点歌台/管理器 100010 < 导出预览 100020 < tooltip 100030 */
       .jukebox-wrapper {
         position: fixed;
         bottom: 20px;
@@ -3685,7 +3696,7 @@ window.Jukebox = {
         display: flex;
         align-items: flex-end;
         gap: 10px;
-        z-index: 100000;
+        z-index: 100010;
         pointer-events: none;
       }
 
@@ -4311,7 +4322,7 @@ window.Jukebox = {
         border-radius: 4px;
         font-size: 12px;
         pointer-events: none;
-        z-index: 100000;
+        z-index: 100030;
         white-space: nowrap;
         opacity: 0;
         transition: opacity 0.15s ease;
