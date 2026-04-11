@@ -125,8 +125,18 @@ class TestDetectProviderInfo:
         assert r["provider"] == "ollama"
 
     def test_ollama_lan_172_network(self):
-        """172.x.x.x LAN + default port → Ollama."""
+        """172.16-31.x.x (RFC1918) + default port → Ollama."""
         r = _detect_provider_info("http://172.16.0.10:11434/v1", "llama3")
+        assert r["provider"] == "ollama"
+
+    def test_172_non_rfc1918_not_lan(self):
+        """172.15.x.x is NOT RFC1918 private range, should not be detected as LAN Ollama."""
+        r = _detect_provider_info("http://172.15.0.1:8080/v1", "llama3")
+        assert r["provider"] != "ollama"
+
+    def test_ollama_lan_https(self):
+        """HTTPS LAN address + default port → Ollama (not just HTTP)."""
+        r = _detect_provider_info("https://192.168.1.100:11434/v1", "llama3")
         assert r["provider"] == "ollama"
 
     def test_ollama_reverse_proxy_path(self):

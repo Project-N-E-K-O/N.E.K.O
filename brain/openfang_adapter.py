@@ -38,12 +38,19 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": str,       # 环境变量名 (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
         }
     """
-    url_lower = base_url.lower()
-    model_lower = model.lower()
+    from urllib.parse import urlsplit
 
-    # 已知的 OpenAI-compatible 代理/中转 — 必须走 proxy，跳过后续 model-name 启发式匹配
-    _proxy_hosts = ("openrouter.ai",)
-    if any(h in url_lower for h in _proxy_hosts):
+    model_lower = model.lower()
+    parsed = urlsplit(base_url)
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").lower()
+
+    def _host_matches(*domains: str) -> bool:
+        """Check if host exactly matches or is a subdomain of any given domain."""
+        return any(host == d or host.endswith(f".{d}") for d in domains)
+
+    # 已知的 OpenAI-compatible 代理/中转 -- 必须走 proxy, 跳过后续 model-name 启发式匹配
+    if _host_matches("openrouter.ai"):
         return {
             "provider": "openai",
             "needs_proxy": True,
@@ -51,8 +58,8 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": "OPENAI_API_KEY",
         }
 
-    # Anthropic 原生 API — OpenFang 直接支持，无需 proxy
-    if "anthropic.com" in url_lower or "api.anthropic" in url_lower:
+    # Anthropic 原生 API -- OpenFang 直接支持, 无需 proxy
+    if _host_matches("anthropic.com", "api.anthropic.com"):
         return {
             "provider": "anthropic",
             "needs_proxy": False,
@@ -60,8 +67,8 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": "ANTHROPIC_API_KEY",
         }
 
-    # OpenAI 原生 API — OpenFang 直接支持，无需 proxy
-    if "api.openai.com" in url_lower:
+    # OpenAI 原生 API -- OpenFang 直接支持, 无需 proxy
+    if _host_matches("api.openai.com"):
         return {
             "provider": "openai",
             "needs_proxy": False,
@@ -70,7 +77,7 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
         }
 
     # Groq
-    if "groq.com" in url_lower or "groq" in model_lower:
+    if _host_matches("groq.com", "api.groq.com") or "groq" in model_lower:
         return {
             "provider": "groq",
             "needs_proxy": False,
@@ -79,13 +86,13 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
         }
 
     # Gemini / Google AI
-    # Google 提供两种端点：
-    #   /v1beta/openai/ — OpenAI 兼容（Bearer token + OpenAI tools 格式）→ 用 openai provider
-    #   /v1beta         — 原生 Gemini API（?key= 认证 + functionDeclarations）→ 用 gemini provider
-    _is_google_ai = "generativelanguage.googleapis.com" in url_lower
+    # Google 提供两种端点:
+    #   /v1beta/openai/ -- OpenAI 兼容 (Bearer token + OpenAI tools 格式) -> 用 openai provider
+    #   /v1beta         -- 原生 Gemini API (?key= 认证 + functionDeclarations) -> 用 gemini provider
+    _is_google_ai = _host_matches("generativelanguage.googleapis.com")
     _is_gemini_model = "gemini" in model_lower
-    if _is_google_ai and "/openai" in url_lower:
-        # OpenAI 兼容端点，直连即可，不需要 Gemini driver
+    if _is_google_ai and "/openai" in path:
+        # OpenAI 兼容端点, 直连即可, 不需要 Gemini driver
         return {
             "provider": "openai",
             "needs_proxy": False,
@@ -101,7 +108,7 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
         }
 
     # DeepSeek
-    if "deepseek.com" in url_lower or "deepseek" in model_lower:
+    if _host_matches("deepseek.com", "api.deepseek.com") or "deepseek" in model_lower:
         return {
             "provider": "deepseek",
             "needs_proxy": False,
@@ -109,17 +116,22 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": "DEEPSEEK_API_KEY",
         }
 
-    # Ollama — detect by:
+    # Ollama -- detect by:
     #   1. Loopback/LAN address + default port 11434
     #   2. Loopback/LAN address + "ollama" in model name
     #   3. URL path containing "/ollama" (reverse-proxy setups)
     #   4. Default port 11434 on any host (strong Ollama signal)
-    _loopback_hosts = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]")
-    _is_loopback = any(h in url_lower for h in _loopback_hosts)
-    _is_lan = any(url_lower.startswith(f"http://{p}") for p in ("10.", "172.", "192.168."))
+    _loopback_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+    _is_loopback = host in _loopback_hosts
+    # RFC1918 private ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+    _is_lan = (
+        host.startswith("10.")
+        or host.startswith("192.168.")
+        or any(host.startswith(f"172.{i}.") for i in range(16, 32))
+    )
     _is_local = _is_loopback or _is_lan
-    _has_ollama_port = ":11434" in url_lower
-    _has_ollama_hint = "ollama" in model_lower or "/ollama" in url_lower
+    _has_ollama_port = parsed.port == 11434
+    _has_ollama_hint = "ollama" in model_lower or "/ollama" in path
     if _has_ollama_port or (_is_local and _has_ollama_hint):
         return {
             "provider": "ollama",
@@ -633,8 +645,7 @@ class OpenFangAdapter:
                     if not key_pushed:
                         logger.warning("[OpenFang] All key push formats failed, relying on config.toml")
                 else:
-                    # 本地 provider 不需要 key，跳过 key push
-                    key_pushed = True
+                    # 本地 provider 不需要 key, 跳过 key push
                     logger.info("[OpenFang] Local provider %s, skipping API key push", provider)
 
                 # (2) Override provider base_url
