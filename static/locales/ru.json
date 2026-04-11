@@ -40,7 +40,7 @@
         "toneMappingCineon": "Cineon",
         "toneMappingACESFilmic": "ACES Filmic",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Neutral"
+        "toneMappingNeutral": "Нейтральная"
     },
     "characterProfile": {
         "gender": "Пол",

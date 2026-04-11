@@ -226,7 +226,7 @@ function handleLocaleChange() {
 
     initPlatformConfig();
     renderStaticHtmlI18n(); 
-    switchTab(currentPlatform, document.querySelector('.tab-btn.active'), true);
+    switchTab(currentPlatform, document.querySelector('.tab-btn.active') || document.querySelector('.tab-btn'), true);
     refreshStatusList();
 }
 // DOM 加载完成后，初始化平台配置、渲染静态 HTML 翻译并监听语言变化事件

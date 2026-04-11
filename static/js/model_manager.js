@@ -206,20 +206,14 @@ class DropdownManager {
 
     getDefaultLabel() {
         if (this.config.defaultTextKey && window.t && typeof window.t === 'function') {
-            const translated = window.t(this.config.defaultTextKey);
-            if (translated && translated !== this.config.defaultTextKey) {
-                return translated;
-            }
+            return window.t(this.config.defaultTextKey);
         }
         return this.config.defaultText;
     }
 
     getIconAltText() {
         if (this.config.iconAltKey && window.t && typeof window.t === 'function') {
-            const translated = window.t(this.config.iconAltKey);
-            if (translated && translated !== this.config.iconAltKey) {
-                return translated;
-            }
+            return window.t(this.config.iconAltKey);
         }
         return this.config.iconAlt;
     }
@@ -231,13 +225,21 @@ class DropdownManager {
         if (!this.textSpan || !icon) {
             const defaultText = this.getDefaultLabel();
             const iconAlt = this.getIconAltText();
-            this.button.innerHTML = `
-                <img src="${this.config.iconSrc}" alt="${iconAlt}" 
-                     class="${this.config.iconClass}" 
-                     style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
-                <span class="round-stroke-text" id="${this.config.textSpanId}" data-text="${defaultText}">${defaultText}</span>
-            `;
-            this.textSpan = document.getElementById(this.config.textSpanId);
+
+            const iconElement = document.createElement('img');
+            iconElement.src = this.config.iconSrc;
+            iconElement.alt = iconAlt;
+            iconElement.className = this.config.iconClass;
+            iconElement.style.cssText = 'height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;';
+
+            const textElement = document.createElement('span');
+            textElement.className = 'round-stroke-text';
+            textElement.id = this.config.textSpanId;
+            textElement.textContent = defaultText;
+            textElement.setAttribute('data-text', defaultText);
+
+            this.button.replaceChildren(iconElement, textElement);
+            this.textSpan = textElement;
         }
     }
 
@@ -276,17 +278,32 @@ class DropdownManager {
 
         const maxVisualWidth = this.config.maxVisualWidth || 13;
         const displayText = DropdownManager.truncateText(text, maxVisualWidth);
+        const hasFullTextLabel = !!(fullText && fullText !== defaultText);
+        const accessibleLabel = hasFullTextLabel ? fullText : this.getIconAltText();
 
         this.textSpan.textContent = displayText;
         this.textSpan.setAttribute('data-text', displayText);
 
         if (this.button) {
-            if (fullText && fullText !== defaultText) {
-                this.button.title = fullText;
+            this.button.title = accessibleLabel;
+            this.button.setAttribute('aria-label', accessibleLabel);
+
+            const imageIcon = this.button.querySelector('img');
+            if (imageIcon) {
+                imageIcon.alt = accessibleLabel;
+                if (hasFullTextLabel) {
+                    imageIcon.removeAttribute('data-i18n-alt');
+                }
+            }
+
+            const svgIcon = this.button.querySelector('svg');
+            if (svgIcon) {
+                svgIcon.setAttribute('aria-label', accessibleLabel);
+            }
+
+            if (hasFullTextLabel) {
                 this.button.removeAttribute('data-i18n-title');
-            } else {
-                const titleText = this.getIconAltText();
-                this.button.title = titleText;
+                this.button.removeAttribute('data-i18n-aria');
             }
         }
     }

@@ -2026,10 +2026,10 @@ function viewItemDetails(itemId) {
                 lastUpdated: new Date(item.timeUpdated * 1000).toLocaleDateString(),
                 size: formatFileSize(item.fileSize),
                 previewUrl: item.previewUrl || item.previewImageUrl || '../static/icons/Steam_icon_logo.png',
-                    description: item.description || (window.t ? window.t('steam.noDescription') : '暂无描述'),
+                description: escapeHtml(item.description || (window.t ? window.t('steam.noDescription') : '暂无描述')),
                 downloadCount: 'N/A',
                 rating: 'N/A',
-                    tags: [window.t ? window.t('steam.defaultTagMod') : '模组'], // 默认标签，实际应用中应该从API获取
+                tags: [window.t ? window.t('steam.defaultTagMod') : '模组'], // 默认标签，实际应用中应该从API获取
                 state: item.state || {} // 添加state属性，确保后续代码可以正常访问
             };
 
@@ -4792,21 +4792,34 @@ document.addEventListener('DOMContentLoaded', function () {
     // 渲染标签
     function renderTags() {
         tagsContainer.innerHTML = '';
-            const removeTagTitle = window.t ? window.t('steam.removeTag') : '删除标签';
+        const removeTagTitle = window.t ? window.t('steam.removeTag') : '删除标签';
         notesTags.forEach((tag, index) => {
             const tagElement = document.createElement('span');
             tagElement.className = 'tag';
-            tagElement.innerHTML = `
-                <span>${tag}</span>
-                    <button class="tag-remove" onclick="removeNotesTag(${index})" data-i18n-title="steam.removeTag" title="${removeTagTitle}">
-                    <span>×</span>
-                </button>
-            `;
+
+            const tagText = document.createElement('span');
+            tagText.textContent = tag;
+
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'tag-remove';
+            removeButton.title = removeTagTitle;
+            removeButton.setAttribute('aria-label', removeTagTitle);
+            removeButton.setAttribute('data-i18n-title', 'steam.removeTag');
+            removeButton.setAttribute('data-i18n-aria', 'steam.removeTag');
+            removeButton.addEventListener('click', () => removeNotesTag(index));
+
+            const removeIcon = document.createElement('span');
+            removeIcon.textContent = '×';
+            removeButton.appendChild(removeIcon);
+
+            tagElement.appendChild(tagText);
+            tagElement.appendChild(removeButton);
             tagsContainer.appendChild(tagElement);
         });
-            if (window.updatePageTexts) {
-                window.updatePageTexts();
-            }
+        if (window.updatePageTexts) {
+            window.updatePageTexts();
+        }
         updateNotesPreview(); // 更新预览，移到循环外部确保无论是否有标签都会执行
     }
 
@@ -4836,10 +4849,12 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // 删除标签
-    window.removeNotesTag = function (index) {
+    function removeNotesTag(index) {
         notesTags.splice(index, 1);
         renderTags();
     }
+
+    window.removeNotesTag = removeNotesTag;
 
     // 处理输入框变化
     function handleInput() {
