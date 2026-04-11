@@ -46,7 +46,8 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
         host = (parsed.hostname or "").lower()
         path = (parsed.path or "").lower()
         port = parsed.port  # may raise ValueError for malformed ports
-    except Exception:
+    except Exception as exc:
+        logger.debug("[OpenFang] Failed to parse base_url %r: %s", base_url, exc)
         host, path, port = "", "", None
 
     def _host_matches(*domains: str) -> bool:
