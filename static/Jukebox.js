@@ -2037,6 +2037,7 @@ window.Jukebox = {
         this.element.remove();
         this.element = null;
       }
+      this.isVisible = false;
       this.data = { songs: {}, actions: {}, bindings: {} };
     },
 
@@ -3601,6 +3602,8 @@ window.Jukebox = {
       document.removeEventListener('touchmove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.removeEventListener('touchend', onMouseUp);
+      Jukebox.State.isDragging = false;
+      document.body.classList.remove('jukebox-dragging');
     };
   },
   
@@ -3675,6 +3678,8 @@ window.Jukebox = {
       document.removeEventListener('touchmove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.removeEventListener('touchend', onMouseUp);
+      isDragging = false;
+      document.body.classList.remove('sam-panel-dragging');
     };
   },
   
