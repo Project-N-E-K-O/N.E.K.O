@@ -487,7 +487,7 @@ class OmniOfflineClient:
                     is_internal_error = isinstance(e, InternalServerError)
                     logger.info(f"ℹ️ 捕获到 {error_type} 错误")
 
-                    # 欠费/配额/API Key 错误立即上报，不重试
+                    # 欠费/API Key 错误立即上报并终止；配额错误上报但继续重试
                     if '欠费' in error_str_lower or 'standing' in error_str_lower:
                         logger.error(f"OmniOfflineClient: 检测到欠费错误，直接上报: {e}")
                         if self.on_status_message:
@@ -495,11 +495,9 @@ class OmniOfflineClient:
                             status_reported = True
                         break
                     if 'quota' in error_str_lower or 'time limit' in error_str_lower:
-                        logger.error(f"OmniOfflineClient: 检测到配额错误，直接上报: {e}")
+                        logger.warning(f"OmniOfflineClient: 检测到配额错误，上报前端: {e}")
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_QUOTA_TIME"}))
-                            status_reported = True
-                        break
                     if ('401' in error_str_lower or 'unauthorized' in error_str_lower
                             or 'authentication' in error_str_lower
                             or ('invalid' in error_str_lower and 'key' in error_str_lower)):
