@@ -627,8 +627,8 @@ class OpenFangAdapter:
                                     key_pushed = True
                                     logger.info("[OpenFang] API key synced to openai fallback")
                                     break
-                            except Exception:
-                                pass
+                            except Exception as ep:
+                                logger.debug("[OpenFang] Fallback key push attempt failed: %s", ep)
 
                     if not key_pushed:
                         logger.warning("[OpenFang] All key push formats failed, relying on config.toml")
