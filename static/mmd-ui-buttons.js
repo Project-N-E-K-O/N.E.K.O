@@ -189,22 +189,45 @@ MMDManager.prototype.setupFloatingButtons = function() {
             const stopTriggerEvent = (e) => { e.stopPropagation(); };
             ['pointerdown', 'mousedown', 'touchstart'].forEach(evt => triggerBtn.addEventListener(evt, stopTriggerEvent));
 
+            const isPopupVisible = () => popup.style.display === 'flex' && popup.style.opacity === '1';
+            const repositionPopup = () => {
+                if (!isPopupVisible()) return;
+                const popupUi = window.AvatarPopupUI || null;
+                if (!popupUi || typeof popupUi.positionPopup !== 'function') return;
+                void popup.offsetHeight;
+                const pos = popupUi.positionPopup(popup, {
+                    buttonId: config.id,
+                    buttonPrefix: 'mmd-btn-',
+                    triggerPrefix: 'mmd-trigger-icon-',
+                    rightMargin: 20,
+                    bottomMargin: 60,
+                    topMargin: 8,
+                    gap: 8,
+                    sidePanelWidth: (config.id === 'settings' || config.id === 'agent') ? 320 : 0
+                });
+                popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
+            };
+
             triggerBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
-                const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
-                if (isPopupVisible) {
+                if (isPopupVisible()) {
                     this.showPopup(config.id, popup);
                     return;
                 }
 
                 this.showPopup(config.id, popup);
                 await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                if (!isPopupVisible()) return;
 
                 if (config.id === 'mic') {
-                    if (typeof window.renderFloatingMicList === 'function') await window.renderFloatingMicList(popup);
+                    if (typeof window.renderFloatingMicList === 'function') {
+                        await window.renderFloatingMicList(popup);
+                        repositionPopup();
+                    }
                 }
                 if (config.id === 'screen') {
                     await this.renderScreenSourceList(popup);
+                    repositionPopup();
                 }
             });
 

@@ -402,7 +402,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                     console.log(`[Live2D] 小三角被点击: ${config.id}`);
                     e.stopPropagation();
 
-                    const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
+                    const isPopupVisible = popup.style.display === 'flex' || popup.style.opacity === '1';
 
                     if (isPopupVisible) {
                         this.showPopup(config.id, popup);
@@ -410,7 +410,14 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                     }
 
                     this.showPopup(config.id, popup);
+                    const expectedShowToken = typeof popup._showToken === 'number' ? popup._showToken : null;
                     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+                    const isSameOpenInstance = expectedShowToken === null || popup._showToken === expectedShowToken;
+                    const isStillOpen = popup.style.display === 'flex' || popup.style.opacity === '1';
+                    if (!isSameOpenInstance || !isStillOpen) {
+                        return;
+                    }
 
                     if (config.id === 'mic' && window.renderFloatingMicList) {
                         await window.renderFloatingMicList();

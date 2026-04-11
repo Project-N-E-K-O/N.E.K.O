@@ -225,6 +225,28 @@ VRMManager.prototype.setupFloatingButtons = function() {
 
             triggerBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
+                const isCurrentPopupVisible = (showToken = popup._showToken) => {
+                    const currentPopup = document.getElementById(`${prefix}-popup-${config.id}`);
+                    return currentPopup === popup &&
+                        popup.isConnected &&
+                        popup._showToken === showToken &&
+                        popup.style.display === 'flex' &&
+                        popup.style.opacity === '1';
+                };
+                const repositionPopup = () => {
+                    const popupUi = window.AvatarPopupUI || null;
+                    if (!popupUi || typeof popupUi.positionPopup !== 'function') return;
+                    popupUi.positionPopup(popup, {
+                        buttonId: config.id,
+                        buttonPrefix: `${prefix}-btn-`,
+                        triggerPrefix: `${prefix}-trigger-icon-`,
+                        rightMargin: 20,
+                        bottomMargin: 60,
+                        topMargin: 8,
+                        gap: 8,
+                        sidePanelWidth: (config.id === 'settings' || config.id === 'agent') ? 320 : 0
+                    });
+                };
                 const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
                 if (isPopupVisible) {
                     this.showPopup(config.id, popup);
@@ -232,15 +254,27 @@ VRMManager.prototype.setupFloatingButtons = function() {
                 }
 
                 this.showPopup(config.id, popup);
+                const showToken = popup._showToken;
                 await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                if (!isCurrentPopupVisible(showToken)) {
+                    return;
+                }
 
                 if (config.id === 'mic') {
                     if (typeof window.renderFloatingMicList === 'function') {
-                        await window.renderFloatingMicList(popup);
+                        const didRender = await window.renderFloatingMicList(popup);
+                        if (didRender === false || !isCurrentPopupVisible(showToken)) {
+                            return;
+                        }
+                        repositionPopup();
                     }
                 }
                 if (config.id === 'screen') {
-                    await this.renderScreenSourceList(popup);
+                    const didRender = await this.renderScreenSourceList(popup);
+                    if (didRender === false || !isCurrentPopupVisible(showToken)) {
+                        return;
+                    }
+                    repositionPopup();
                 }
             });
 
