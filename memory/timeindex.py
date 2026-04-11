@@ -34,17 +34,18 @@ class TimeIndexedMemory:
                     logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
 
             # 确保数据库文件的父目录存在（兼容相对文件名路径）
-            db_dir = os.path.dirname(os.path.abspath(db_path))
+            normalized_db_path = os.path.abspath(db_path)
+            db_dir = os.path.dirname(normalized_db_path)
             os.makedirs(db_dir, exist_ok=True)
             # Windows 路径使用反斜杠，SQLite URI 需要正斜杠
-            uri_path = db_path.replace("\\", "/")
+            uri_path = normalized_db_path.replace("\\", "/")
             engine = create_engine(f"sqlite:///{uri_path}")
             connection_string = f"sqlite:///{uri_path}"
             # 先完成所有初始化/迁移，再注册到 self.engines，
             # 避免失败后引擎被标记为"已初始化"而跳过后续修复
             self._ensure_tables_exist_with(engine, connection_string, lanlan_name)
             self._check_and_migrate_schema(engine, lanlan_name)
-            self.db_paths[lanlan_name] = db_path
+            self.db_paths[lanlan_name] = normalized_db_path
             self.engines[lanlan_name] = engine
             return True
         except Exception:
