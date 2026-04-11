@@ -232,6 +232,7 @@ class LLMSessionManager:
         self._transient_response_instruction_blocked_session_id: int | None = None
         self._last_assistant_turn_text: str = ""
         self._current_assistant_turn_text: str = ""
+        self._pre_injection_assistant_text: str | None = None
         # 防止 trigger_agent_callbacks 重入
         self._agent_delivery_in_progress: bool = False
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
@@ -404,30 +405,25 @@ class LLMSessionManager:
         analyze_request, or agent-callback re-delivery — those belong
         exclusively to user-initiated conversation turns.
         """
-        turn_closed = bool(content_committed)
-        if turn_closed and self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+        if content_committed and self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             try:
                 self.tts_request_queue.put((None, None))
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
-                turn_closed = False
-        if turn_closed and self.sync_message_queue:
+        if content_committed and self.sync_message_queue:
             try:
                 self.sync_message_queue.put({'type': 'system', 'data': 'turn end agent_callback'})
             except Exception as e:
                 logger.warning("[%s] handle_proactive_complete: sync turn_end error: %s", self.lanlan_name, e)
-                turn_closed = False
-        if turn_closed:
+        if content_committed:
             try:
                 if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                     await self.websocket.send_json({'type': 'system', 'data': 'turn end agent_callback'})
                     logger.debug("[%s] handle_proactive_complete: turn_end (agent_callback) sent to frontend", self.lanlan_name)
                 else:
                     logger.warning("[%s] handle_proactive_complete: websocket not connected, turn_end NOT sent", self.lanlan_name)
-                    turn_closed = False
             except Exception as e:
                 logger.warning("[%s] handle_proactive_complete: WS send turn_end error: %s", self.lanlan_name, e)
-                turn_closed = False
         await self._finalize_or_discard_current_assistant_turn(content_committed=content_committed)
 
     async def handle_response_complete(self):
@@ -651,13 +647,18 @@ class LLMSessionManager:
             return ""
         if (time.monotonic() - self._last_negative_signal_failure) < NEGATIVE_SIGNAL_FAILURE_BACKOFF_SECONDS:
             return ""
+        referenced_topic = (
+            self._pre_injection_assistant_text
+            if self._pre_injection_assistant_text is not None
+            else self._get_recent_assistant_utterance()
+        )
         try:
             async with httpx.AsyncClient(timeout=1.2, proxy=None, trust_env=False) as client:
                 resp = await client.post(
                     f"http://127.0.0.1:{self.memory_server_port}/negative_signal/{self.lanlan_name}",
                     json={
                         "message": transcript,
-                        "referenced_topic": self._get_recent_assistant_utterance(),
+                        "referenced_topic": referenced_topic,
                     },
                 )
                 if not resp.is_success:
@@ -671,6 +672,8 @@ class LLMSessionManager:
         except Exception:
             self._last_negative_signal_failure = time.monotonic()
             return ""
+        finally:
+            self._pre_injection_assistant_text = None
 
     async def _apply_transient_response_instruction(self, instruction: str) -> None:
         instruction = (instruction or "").strip()
@@ -2832,6 +2835,7 @@ class LLMSessionManager:
                         try:
                             ctx = self.drain_agent_callbacks_for_llm()
                             if ctx:
+                                self._pre_injection_assistant_text = self._get_recent_assistant_utterance()
                                 self._reset_assistant_turn_tracking()
                                 await self.session.prompt_ephemeral(
                                     _loc(AGENT_CALLBACK_NOTIFICATION, normalize_language_code(self.user_language, format='short')) + ctx,

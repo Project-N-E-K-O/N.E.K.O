@@ -815,6 +815,7 @@ NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
 - 如果只是轻微烦躁、短暂不适或偏向语气层面的不满，返回空数组 []
 - 如果是明确不喜欢、明确拒绝，但还没有要求彻底回避，使用 soft_avoid
 - 如果明确要求别再提、别再推荐、别再说，使用 hard_avoid
+- 如果某个话题在当前已有约束中已标记为 soft_avoid，且这次互动里又再次命中同一话题，则升级为 hard_avoid
 
 严格要求：
 - topic 必须是具体、可单独识别的话题，不能是整句总结，不能是多个并列推荐项拼成的大串
@@ -851,6 +852,7 @@ NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
 - 軽い苛立ち・一時的な不快感・口調への不満だけなら [] を返す
 - 明確な嫌悪や拒否だが、完全な回避要求まではない場合は soft_avoid を使用する
 - もう触れないで／勧めないで／言わないでという明示要求なら hard_avoid を使用する
+- ある話題が現在の制約ですでに soft_avoid とされており、今回のやり取りでも同じ話題が再度ヒットした場合は hard_avoid に引き上げる
 
 厳格な要件:
 - topic は単独で識別できる具体的対象でなければならず、文全体の要約や長い連結リストは不可
@@ -887,6 +889,7 @@ NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
 - 가벼운 짜증, 일시적 불편, 말투에 대한 불만만 있으면 [] 반환
 - 명확한 비선호나 거부지만 완전 회피 요청까지는 아니면 soft_avoid 사용
 - 다시 언급/추천/말하지 말라는 명시적 요구면 hard_avoid 사용
+- 어떤 주제가 현재 제약에서 이미 soft_avoid 로 표시되어 있고 이번 상호작용에서도 같은 주제가 다시 감지되면 hard_avoid 로 승격
 
 엄격한 요구:
 - topic 은 독립적으로 식별 가능한 구체 대상이어야 하며, 문장 요약이나 긴 나열 문자열이면 안 됨
@@ -923,6 +926,7 @@ NEGATIVE_PREFERENCE_REVIEW_PROMPT = {
 - Если это лишь лёгкое раздражение, временный дискомфорт или недовольство тоном, верните []
 - Для явной неприязни или отказа без требования полного табу используйте soft_avoid
 - Для прямой просьбы больше не упоминать/не рекомендовать/не говорить используйте hard_avoid
+- Если тема уже помечена в текущих ограничениях как soft_avoid и снова совпала в текущем взаимодействии, повышайте её до hard_avoid
 
 Строгие требования:
 - topic должен быть конкретной самостоятельной целью, а не пересказом предложения и не длинной склеенной строкой из списка
@@ -959,6 +963,7 @@ Goal:
 - Return [] for mild irritation, temporary discomfort, or complaints about tone only
 - Use soft_avoid for explicit dislike or rejection that does not clearly demand a full ban
 - Use hard_avoid for explicit requests not to mention, recommend, or bring it up again
+- If a topic is already marked soft_avoid in the current guidance and is matched again in the current interaction, escalate it to hard_avoid
 
 Strict requirements:
 - topic must be a concrete standalone target, not a sentence summary and not a long concatenated list

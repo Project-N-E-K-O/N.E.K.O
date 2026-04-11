@@ -1255,7 +1255,6 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
         async with _get_settle_lock(lanlan_name):
             await recent_history_manager.update_history(input_history, lanlan_name, compress=False)
-        _clear_recent_round_referenced_topic(lanlan_name)
         _set_recent_round_tail(lanlan_name, input_history, include_referenced_topic=False)
         return {"status": "cached", "count": len(input_history)}
     except Exception as e:
