@@ -972,6 +972,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     let isMmdAnimationPlaying = false; // 跟踪MMD手动预览动画播放状态
     let isMmdIdlePlaying = false; // 跟踪MMD待机动画播放状态（与手动预览分离）
     let isMmdAnimationUploading = false; // 防止VMD动画重复上传
+    const _idleRotationTimers = { vrm: null, mmd: null };
+    const _idleRotationLast = { vrm: null, mmd: null };
+    const _idleLoopCleanup = { vrm: null, mmd: null };
 
     // 更新模型类型按钮文字的函数（使用统一管理器）
     function updateModelTypeButtonText() {
@@ -3906,6 +3909,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } catch (e) {
                     console.warn('[MMD] 播放 wait03 待机动作失败:', e);
                 }
+
+                await loadCharacterLighting();
             } catch (error) {
                 console.error('加载MMD模型失败:', error);
                 showStatus(`MMD模型加载失败: ${error.message}`, 3000);
@@ -4326,13 +4331,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // ===== 待机动作多选：工具函数 =====
 
-    /** 待机动作轮换定时器（回退用，防止动画过长不切换） */
-    const _idleRotationTimers = { vrm: null, mmd: null };
-    /** 上一次播放的 URL（避免连续播放同一个） */
-    const _idleRotationLast = { vrm: null, mmd: null };
-    /** loop 事件监听器清理函数（动画一轮播完时自动切换） */
-    const _idleLoopCleanup = { vrm: null, mmd: null };
-
     /** 从多选容器中获取所有已勾选的动画 URL 列表 */
     function getSelectedIdleAnimations(containerId) {
         const container = document.getElementById(containerId);
@@ -4428,13 +4426,39 @@ document.addEventListener('DOMContentLoaded', async () => {
         _idleRotationLast[type] = null;
     }
 
+    function _attachMmdIdleLoopListener() {
+        const mixer = window.mmdManager?.animationModule?.mixer;
+        if (!mixer) return false;
+
+        const handler = () => {
+            console.debug('[MMD IdleAnimation] 动画循环完成，切换下一个');
+            _triggerIdleSwitch('mmd');
+        };
+        mixer.addEventListener('loop', handler);
+        _idleLoopCleanup.mmd = () => mixer.removeEventListener('loop', handler);
+        return true;
+    }
+
     /** 启动/重启待机动作轮换 */
     function startIdleRotation(type, urls) {
         stopIdleRotation(type);
         if (!urls || urls.length === 0) return;
 
+        const currentMmdIdleUrl = type === 'mmd' && !isMmdAnimationPlaying && isMmdIdlePlaying
+            ? window.mmdManager?.currentAnimationUrl
+            : null;
+
+        if (type === 'mmd' && currentMmdIdleUrl && urls.includes(currentMmdIdleUrl)) {
+            _idleRotationLast[type] = currentMmdIdleUrl;
+            if (urls.length > 1) {
+                _attachMmdIdleLoopListener();
+                _scheduleNextIdle(type);
+            }
+            return;
+        }
+
         // 立即播放一个（回退定时器和 loop 监听器在 await 成功后由 _playIdleAnimation 内部注册）
-        const firstUrl = urls.length === 1 ? urls[0] : _pickRandomDifferent(urls, _idleRotationLast[type]);
+        const firstUrl = urls.length === 1 ? urls[0] : _pickRandomDifferent(urls, currentMmdIdleUrl);
         _playIdleAnimation(type, firstUrl);
         _idleRotationLast[type] = firstUrl;
     }
@@ -4525,25 +4549,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             } else {
                 if (window.mmdManager && window.mmdManager.currentModel) {
-                    if (isMmdIdlePlaying) {
-                        window.mmdManager.stopAnimation();
-                        isMmdIdlePlaying = false;
-                    }
                     await window.mmdManager.loadAnimation(url);
                     window.mmdManager.playAnimation();
                     isMmdIdlePlaying = true;
                     console.log('[MMD IdleAnimation] 待机动作已切换:', url.split('/').pop());
 
                     // 注册 loop 事件监听：动画一轮播完时自动切换
-                    const mixer = window.mmdManager.animationModule?.mixer;
-                    if (mixer) {
-                        const handler = () => {
-                            console.debug('[MMD IdleAnimation] 动画循环完成，切换下一个');
-                            _triggerIdleSwitch('mmd');
-                        };
-                        mixer.addEventListener('loop', handler);
-                        _idleLoopCleanup['mmd'] = () => mixer.removeEventListener('loop', handler);
-                    }
+                    _attachMmdIdleLoopListener();
 
                     // 动画加载成功后再启动回退定时器（从实际播放开始计时）
                     const mmdUrls = getSelectedIdleAnimations('mmd-idle-animation-multiselect');
@@ -5023,6 +5035,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 应用打光值到UI和场景
     function applyLightingValues(lighting) {
+        const ui = {
+            ambientLightSlider: document.getElementById('ambient-light-slider'),
+            mainLightSlider: document.getElementById('main-light-slider'),
+            exposureSlider: document.getElementById('exposure-slider'),
+            tonemappingSelect: document.getElementById('tonemapping-select'),
+            ambientLightValue: document.getElementById('ambient-light-value'),
+            mainLightValue: document.getElementById('main-light-value'),
+            exposureValue: document.getElementById('exposure-value'),
+            fillLightSlider: document.getElementById('fill-light-slider'),
+            rimLightSlider: document.getElementById('rim-light-slider'),
+            topLightSlider: document.getElementById('top-light-slider'),
+            bottomLightSlider: document.getElementById('bottom-light-slider'),
+            fillLightValue: document.getElementById('fill-light-value'),
+            rimLightValue: document.getElementById('rim-light-value'),
+            topLightValue: document.getElementById('top-light-value'),
+            bottomLightValue: document.getElementById('bottom-light-value'),
+            vrmOutlineWidthSlider: document.getElementById('vrm-outline-width-slider')
+        };
+
         // 确保光照已经初始化，如果没有则等待一小段时间
         if (!vrmManager?.ambientLight || !vrmManager?.mainLight || !vrmManager?.fillLight || !vrmManager?.rimLight) {
             // 如果光照未初始化，延迟重试
@@ -5032,83 +5063,82 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        if (ambientLightSlider && ambientLightValue) {
-            ambientLightSlider.value = lighting.ambient;
-            ambientLightValue.textContent = lighting.ambient.toFixed(2);
+        if (ui.ambientLightSlider && ui.ambientLightValue) {
+            ui.ambientLightSlider.value = lighting.ambient;
+            ui.ambientLightValue.textContent = lighting.ambient.toFixed(2);
             if (vrmManager.ambientLight) {
                 vrmManager.ambientLight.intensity = lighting.ambient;
             }
         }
-        if (mainLightSlider && mainLightValue) {
-            mainLightSlider.value = lighting.main;
-            mainLightValue.textContent = lighting.main.toFixed(2);
+        if (ui.mainLightSlider && ui.mainLightValue) {
+            ui.mainLightSlider.value = lighting.main;
+            ui.mainLightValue.textContent = lighting.main.toFixed(2);
             if (vrmManager.mainLight) {
                 vrmManager.mainLight.intensity = lighting.main;
             }
         }
-        if (fillLightSlider && fillLightValue) {
+        if (ui.fillLightSlider && ui.fillLightValue) {
             const fillValue = lighting.fill ?? 0.0;
-            fillLightSlider.value = fillValue;
-            fillLightValue.textContent = fillValue.toFixed(2);
+            ui.fillLightSlider.value = fillValue;
+            ui.fillLightValue.textContent = fillValue.toFixed(2);
             if (vrmManager.fillLight) {
                 vrmManager.fillLight.intensity = fillValue;
             }
         }
-        if (rimLightSlider && rimLightValue) {
+        if (ui.rimLightSlider && ui.rimLightValue) {
             const rimValue = lighting.rim ?? 0.0;
-            rimLightSlider.value = rimValue;
-            rimLightValue.textContent = rimValue.toFixed(2);
+            ui.rimLightSlider.value = rimValue;
+            ui.rimLightValue.textContent = rimValue.toFixed(2);
             if (vrmManager.rimLight) {
                 vrmManager.rimLight.intensity = rimValue;
             }
         }
-        if (topLightSlider && topLightValue) {
+        if (ui.topLightSlider && ui.topLightValue) {
             const topValue = lighting.top ?? 0.0;
-            topLightSlider.value = topValue;
-            topLightValue.textContent = topValue.toFixed(2);
+            ui.topLightSlider.value = topValue;
+            ui.topLightValue.textContent = topValue.toFixed(2);
             if (vrmManager.topLight) {
                 vrmManager.topLight.intensity = topValue;
             }
         }
-        if (bottomLightSlider && bottomLightValue) {
+        if (ui.bottomLightSlider && ui.bottomLightValue) {
             const bottomValue = lighting.bottom ?? 0.0;
-            bottomLightSlider.value = bottomValue;
-            bottomLightValue.textContent = bottomValue.toFixed(2);
+            ui.bottomLightSlider.value = bottomValue;
+            ui.bottomLightValue.textContent = bottomValue.toFixed(2);
             if (vrmManager.bottomLight) {
                 vrmManager.bottomLight.intensity = bottomValue;
             }
         }
-        if (exposureSlider && exposureValue && lighting.exposure !== undefined) {
-            exposureSlider.value = lighting.exposure;
-            exposureValue.textContent = lighting.exposure.toFixed(2);
+        if (ui.exposureSlider && ui.exposureValue && lighting.exposure !== undefined) {
+            ui.exposureSlider.value = lighting.exposure;
+            ui.exposureValue.textContent = lighting.exposure.toFixed(2);
             if (vrmManager.renderer) {
                 vrmManager.renderer.toneMappingExposure = lighting.exposure;
             }
         }
-        if (tonemappingSelect && lighting.toneMapping !== undefined) {
+        if (ui.tonemappingSelect && lighting.toneMapping !== undefined) {
             // 统一使用数值类型，避免字符串和数字混用
             const toneMappingValue = Number(lighting.toneMapping);
-            tonemappingSelect.value = toneMappingValue.toString();
+            ui.tonemappingSelect.value = toneMappingValue.toString();
             if (vrmManager.renderer) {
                 vrmManager.renderer.toneMapping = toneMappingValue;
             }
             // 根据色调映射设置曝光滑块禁用状态
             const isNoToneMapping = toneMappingValue === 0;
-            if (exposureSlider) {
-                exposureSlider.disabled = isNoToneMapping;
-                exposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+            if (ui.exposureSlider) {
+                ui.exposureSlider.disabled = isNoToneMapping;
+                ui.exposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
             }
-            if (exposureValue) {
-                exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+            if (ui.exposureValue) {
+                ui.exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
             }
         }
 
         // 恢复描边粗细
-        const vrmOutlineWidthSlider = document.getElementById('vrm-outline-width-slider');
-        if (vrmOutlineWidthSlider && lighting.outlineWidthScale !== undefined) {
+        if (ui.vrmOutlineWidthSlider && lighting.outlineWidthScale !== undefined) {
             const scale = Number(lighting.outlineWidthScale);
             if (!Number.isNaN(scale)) {
-                vrmOutlineWidthSlider.value = scale;
+                ui.vrmOutlineWidthSlider.value = scale;
                 applyVrmOutlineWidth(scale);
             }
         }
