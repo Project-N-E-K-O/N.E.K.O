@@ -74,7 +74,7 @@
     }
 
     function supportsLocalModelRuntime() {
-        return window.location.pathname !== '/chat';
+        return !/^\/chat(?:\/|$)/.test(window.location.pathname || '');
     }
 
     function emitAssistantSpeechCancel(source) {
