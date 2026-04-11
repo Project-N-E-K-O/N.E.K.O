@@ -1091,13 +1091,7 @@ Live2DManager.prototype._restorePersistentAfterResume = async function(reason, f
     }
 };
 
-Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, priority = 1, duration = 3000) {
-    if (!this.currentModel) {
-        console.warn('[ClickEffect] 无法播放：模型未加载');
-        return;
-    }
-
-    // 清除之前的点击效果恢复定时器
+Live2DManager.prototype._clearPreviousClickEffect = async function() {
     if (this._clickEffectRestoreTimer) {
         clearTimeout(this._clickEffectRestoreTimer);
         await this._restorePersistentAfterResume(this._clickEffectSuspendReason);
@@ -1117,6 +1111,15 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             );
         }
     }
+};
+
+Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, priority = 1, duration = 3000) {
+    if (!this.currentModel) {
+        console.warn('[ClickEffect] 无法播放：模型未加载');
+        return;
+    }
+
+    await this._clearPreviousClickEffect();
     const clickEffectSuspendReason = window.isInTutorial
         ? 'tutorial-click-expression'
         : 'click-effect';
@@ -1786,26 +1789,7 @@ Live2DManager.prototype.playTutorialMotion = async function() {
  * 触发随机表情和动作（用于教程模式和点击空白区域）
  */
 Live2DManager.prototype.triggerRandomEmotion = async function() {
-    // 清除之前的点击效果恢复定时器
-    if (this._clickEffectRestoreTimer) {
-        clearTimeout(this._clickEffectRestoreTimer);
-        await this._restorePersistentAfterResume(this._clickEffectSuspendReason);
-        this._clickEffectRestoreTimer = null;
-        this._clickEffectSuspendReason = null;
-        this._currentClickEffectToken = null;
-    }
-    if (typeof this._cancelSmoothReset === 'function') {
-        const canceledSmoothReset = this._cancelSmoothReset({ resumePersistent: false });
-        if (
-            canceledSmoothReset &&
-            (canceledSmoothReset.pendingResumeReason != null || canceledSmoothReset.pendingForceAllPersistentResume)
-        ) {
-            await this._restorePersistentAfterResume(
-                canceledSmoothReset.pendingResumeReason,
-                canceledSmoothReset.pendingForceAllPersistentResume === true,
-            );
-        }
-    }
+    await this._clearPreviousClickEffect();
     const clickEffectSuspendReason = window.isInTutorial
         ? 'tutorial-click-expression'
         : 'click-effect';

@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, JSONResponse
 import json
 import uvicorn
-from utils.llm_client import convert_to_messages
+from utils.llm_client import convert_to_messages, AIMessage
 from uuid import uuid4
 from config import MEMORY_SERVER_PORT
 from config.prompts_sys import _loc
@@ -141,6 +141,8 @@ enable_shutdown = False
 correction_tasks = {}  # {lanlan_name: asyncio.Task}
 correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
 _recent_round_tails: dict[str, list] = {}
+_recent_round_referenced_topics: dict[str, str] = {}
+_persistence_tasks: dict[str, set[asyncio.Task]] = {}
 # 每角色结算锁：首轮摘要期间阻塞 /new_dialog，确保热切换后读到最新数据
 _settle_locks: dict[str, asyncio.Lock] = {}
 # 强引用注册表：防止 fire-and-forget task 被 GC
@@ -199,12 +201,73 @@ def _spawn_background_task(coro) -> asyncio.Task:
     return task
 
 
+def _set_recent_round_referenced_topic(lanlan_name: str, referenced_topic: str) -> None:
+    cleaned = str(referenced_topic or "").strip()
+    if cleaned:
+        _recent_round_referenced_topics[lanlan_name] = cleaned
+    else:
+        _recent_round_referenced_topics.pop(lanlan_name, None)
+
+
+def _clear_recent_round_referenced_topic(lanlan_name: str) -> None:
+    _recent_round_referenced_topics.pop(lanlan_name, None)
+
+
+def _build_round_review_messages(lanlan_name: str, messages: list | None = None) -> list:
+    enriched_messages = list(messages or [])
+    referenced_topic = str(_recent_round_referenced_topics.get(lanlan_name) or "").strip()
+    if not referenced_topic:
+        return enriched_messages
+    for msg in enriched_messages:
+        if getattr(msg, 'type', '') != 'ai':
+            continue
+        if str(getattr(msg, 'content', '') or '').strip() == referenced_topic:
+            return enriched_messages
+    insert_at = 0
+    for idx, msg in enumerate(enriched_messages):
+        if getattr(msg, 'type', '') == 'human':
+            insert_at = idx
+            break
+        insert_at = idx + 1
+    enriched_messages.insert(insert_at, AIMessage(content=referenced_topic))
+    return enriched_messages
+
+
 def _set_recent_round_tail(lanlan_name: str, messages: list) -> None:
-    _recent_round_tails[lanlan_name] = list(messages or [])
+    _recent_round_tails[lanlan_name] = _build_round_review_messages(lanlan_name, messages)
 
 
 def _get_recent_round_tail(lanlan_name: str) -> list:
-    return list(_recent_round_tails.get(lanlan_name) or [])
+    return _build_round_review_messages(lanlan_name, _recent_round_tails.get(lanlan_name) or [])
+
+
+async def _persist_negative_preferences(lanlan_name: str, messages: list) -> None:
+    try:
+        applied = await _review_and_apply_negative_preferences(messages, lanlan_name)
+        if applied:
+            logger.info(f"[MemoryServer] {lanlan_name}: 后台负面偏好审查应用 {applied} 条")
+    except Exception as e:
+        logger.warning(f"[MemoryServer] {lanlan_name}: 负面偏好持久化失败: {e}")
+
+
+def _spawn_persistence_task(lanlan_name: str, messages: list) -> asyncio.Task | None:
+    payload = list(messages or [])
+    if not payload:
+        return None
+    task = _spawn_background_task(_persist_negative_preferences(lanlan_name, payload))
+    task_set = _persistence_tasks.setdefault(lanlan_name, set())
+    task_set.add(task)
+
+    def _cleanup(_task: asyncio.Task) -> None:
+        tasks = _persistence_tasks.get(lanlan_name)
+        if not tasks:
+            return
+        tasks.discard(_task)
+        if not tasks:
+            _persistence_tasks.pop(lanlan_name, None)
+
+    task.add_done_callback(_cleanup)
+    return task
 
 @app.post("/shutdown")
 async def shutdown_memory_server():
@@ -943,12 +1006,10 @@ async def _run_review_in_background(lanlan_name: str, review_messages: list | No
         correction_cancel_flags[lanlan_name] = cancel_event
     
     try:
+        messages = list(review_messages) if review_messages is not None else _get_recent_round_tail(lanlan_name)
+        _spawn_persistence_task(lanlan_name, messages)
         # 直接异步调用review_history方法
         await recent_history_manager.review_history(lanlan_name, cancel_event)
-        messages = review_messages if review_messages is not None else _get_recent_round_tail(lanlan_name)
-        applied = await _review_and_apply_negative_preferences(messages, lanlan_name)
-        if applied:
-            logger.info(f"[MemoryServer] {lanlan_name}: 后台负面偏好审查应用 {applied} 条")
         logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
@@ -1111,6 +1172,9 @@ async def handle_negative_signal(request: NegativeSignalRequest, lanlan_name: st
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
+        _set_recent_round_referenced_topic(lanlan_name, request.referenced_topic)
+        if request.referenced_topic:
+            _set_recent_round_tail(lanlan_name, _recent_round_tails.get(lanlan_name) or [])
         result = persona_manager.analyze_negative_signal(
             lanlan_name,
             request.message,
@@ -1191,7 +1255,9 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
                 pass
         
         # 启动新的review任务
-        review_messages = input_history if input_history else None
+        review_messages = _build_round_review_messages(lanlan_name, input_history) if input_history else None
+        if review_messages is not None:
+            _clear_recent_round_referenced_topic(lanlan_name)
         task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
         correction_tasks[lanlan_name] = task
         
@@ -1237,7 +1303,9 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
                 pass
         
         # 启动新的review任务
-        review_messages = input_history if input_history else None
+        review_messages = _build_round_review_messages(lanlan_name, input_history) if input_history else None
+        if review_messages is not None:
+            _clear_recent_round_referenced_topic(lanlan_name)
         task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
         correction_tasks[lanlan_name] = task
         
@@ -1266,7 +1334,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
                 await time_manager.store_conversation(uid, input_history, lanlan_name)
             await recent_history_manager.update_history([], lanlan_name, detailed=True)
 
-        round_messages = input_history if input_history else _get_recent_round_tail(lanlan_name)
+        round_messages = _build_round_review_messages(lanlan_name, input_history) if input_history else _get_recent_round_tail(lanlan_name)
 
         if round_messages:
             _spawn_background_task(_extract_facts_and_check_feedback(round_messages, lanlan_name))
@@ -1278,6 +1346,8 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             except asyncio.CancelledError:
                 pass
         review_messages = round_messages if round_messages else None
+        if review_messages is not None:
+            _clear_recent_round_referenced_topic(lanlan_name)
         task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
         correction_tasks[lanlan_name] = task
 

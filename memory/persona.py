@@ -237,7 +237,10 @@ def _normalize_topic_tokens(topic: str) -> set[str]:
         if token in _LATIN_TOPIC_TOKEN_STOPWORDS:
             continue
         if len(token) > 4 and token.endswith('ies'):
-            token = token[:-3] + 'ie'
+            if token[-4] in 'aeiou':
+                token = token[:-1]
+            else:
+                token = token[:-3] + 'y'
         elif (
             len(token) > 4
             and token.endswith('es')
@@ -247,7 +250,7 @@ def _normalize_topic_tokens(topic: str) -> set[str]:
             )
         ):
             token = token[:-2]
-        elif len(token) > 3 and token.endswith('s') and not token.endswith('ss'):
+        elif len(token) > 3 and token.endswith('s') and not token.endswith(('ss', 'us')):
             token = token[:-1]
         if len(token) < 2 or token in _LATIN_TOPIC_TOKEN_STOPWORDS:
             continue

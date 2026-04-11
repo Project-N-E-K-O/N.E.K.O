@@ -634,6 +634,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
             let expressionData = null;
             let loadedExpressionFile = null;
             let lastFetchError = null;
+            const definitivelyMissingFiles = new Set();
 
             for (const candidateFile of candidateFiles) {
                 try {
@@ -643,7 +644,13 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
                         return;
                     }
                     if (!response.ok) {
-                        lastFetchError = new Error(`Failed to load expression: ${response.statusText}`);
+                        if (response.status === 404 || response.status === 410) {
+                            definitivelyMissingFiles.add(candidateFile);
+                            if (typeof this.markExpressionFileMissing === 'function') {
+                                this.markExpressionFileMissing(candidateFile);
+                            }
+                        }
+                        lastFetchError = new Error(`Failed to load expression: ${response.status} ${response.statusText}`.trim());
                         continue;
                     }
                     expressionData = await response.json();
@@ -665,7 +672,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
             }
             if (!expressionData || !loadedExpressionFile) {
                 if (typeof this.markExpressionFileMissing === 'function') {
-                    for (const file of candidateFiles) this.markExpressionFileMissing(file);
+                    for (const file of definitivelyMissingFiles) this.markExpressionFileMissing(file);
                 }
                 throw lastFetchError || new Error('Failed to load expression');
             }

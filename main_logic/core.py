@@ -598,11 +598,6 @@ class LLMSessionManager:
 
     async def _rollback_failed_pending_cleanup(self, exc: Exception, context: str) -> None:
         logger.debug(f"{context}: {exc}")
-        self.pending_session = None
-        self.pending_session_warmed_up_event = None
-        self.pending_session_final_prime_complete_event = None
-        self.is_preparing_new_session = False
-        self.summary_triggered_time = None
         bg_task_ref = self.background_preparation_task
         if bg_task_ref:
             bg_task_ref.cancel()
@@ -622,6 +617,11 @@ class LLMSessionManager:
             finally:
                 if self.background_preparation_task is bg_task_ref:
                     self.background_preparation_task = None
+        self.pending_session = None
+        self.pending_session_warmed_up_event = None
+        self.pending_session_final_prime_complete_event = None
+        self.is_preparing_new_session = False
+        self.summary_triggered_time = None
 
     def _reset_assistant_turn_tracking(self, *, clear_last: bool = False) -> None:
         self._current_assistant_turn_text = ""

@@ -755,7 +755,7 @@ def _set_capability(name: str, ready: bool, reason: str = "", **metadata: Any) -
     prev = Modules.capability_cache.get(name, {})
     normalized_reason = _normalize_capability_reason(name, reason)
     preserved_metadata = {}
-    for key in ("enabled", "provider", "version", "tools_count", "is_free_version"):
+    for key in ("provider", "version", "tools_count", "is_free_version"):
         if key not in prev or key in metadata:
             continue
         preserved_metadata[key] = prev[key]
