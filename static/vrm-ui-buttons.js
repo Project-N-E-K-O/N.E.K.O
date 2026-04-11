@@ -183,21 +183,23 @@ VRMManager.prototype.setupFloatingButtons = function() {
         }
 
         // 处理弹窗
+        let triggerBtn = null;
+        let triggerImg = null;
         if (config.hasPopup && config.separatePopupTrigger) {
             if (window.isMobileWidth() && config.id === 'mic') {
                 buttonsContainer.appendChild(btnWrapper);
-                this._floatingButtons[config.id] = { button: btn, imgOff, imgOn };
+                this._floatingButtons[config.id] = { button: btn, imgOff, imgOn, triggerButton: null, triggerImg: null };
                 return;
             }
 
             const popup = this.createPopup(config.id);
-            const triggerBtn = document.createElement('button');
+            triggerBtn = document.createElement('button');
             triggerBtn.type = 'button';
             triggerBtn.className = 'vrm-trigger-btn';
             triggerBtn.setAttribute('aria-label', 'Open popup');
 
             const iconVersion = window.APP_VERSION ? `?v=${window.APP_VERSION}` : '?v=1.0.0';
-            const triggerImg = document.createElement('img');
+            triggerImg = document.createElement('img');
             triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
             triggerImg.alt = '';
             triggerImg.className = `vrm-trigger-icon-${config.id}`;
@@ -292,7 +294,13 @@ VRMManager.prototype.setupFloatingButtons = function() {
         }
 
         buttonsContainer.appendChild(btnWrapper);
-        this._floatingButtons[config.id] = { button: btn, imgOff, imgOn };
+        this._floatingButtons[config.id] = {
+            button: btn,
+            imgOff,
+            imgOn,
+            triggerButton: (config.hasPopup && config.separatePopupTrigger && !window.isMobileWidth()) ? triggerBtn : null,
+            triggerImg: (config.hasPopup && config.separatePopupTrigger && !window.isMobileWidth()) ? triggerImg : null
+        };
     });
 
     // 处理"请她离开"事件

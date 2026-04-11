@@ -2117,8 +2117,9 @@ const AvatarPopupMixin = {
                 popup.style.opacity = '0';
                 const closingOpensLeft = popup.dataset.opensLeft === 'true';
                 popup.style.transform = closingOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
-                const triggerIcon = document.querySelector(`.${prefix}-trigger-icon-${buttonId}`);
-                if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
+                if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                    this.updateSeparatePopupTriggerIcon(buttonId);
+                }
                 if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
 
                 // 关闭该 popup 所属的所有侧面板
@@ -2188,8 +2189,9 @@ const AvatarPopupMixin = {
                         popup.style.visibility = 'visible';
                         popup.style.opacity = '1';
                         popup.classList.remove('is-positioning');
-                        const triggerIcon = document.querySelector(`.${prefix}-trigger-icon-${buttonId}`);
-                        if (triggerIcon) triggerIcon.style.transform = 'rotate(180deg)';
+                        if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                            this.updateSeparatePopupTriggerIcon(buttonId);
+                        }
                         requestAnimationFrame(() => {
                             if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
                             popup.style.transform = 'translateX(0)';
@@ -2230,8 +2232,9 @@ const AvatarPopupMixin = {
                 });
             }
 
-            const triggerIcon = document.querySelector(`.${prefix}-trigger-icon-${buttonId}`);
-            if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
+            if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                this.updateSeparatePopupTriggerIcon(buttonId);
+            }
 
             popup._hideTimeoutId = setTimeout(() => {
                 finalizePopupClosedState(popup);

@@ -332,6 +332,8 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         }
 
         // 处理弹窗
+        let triggerBtn = null;
+        let triggerImg = null;
         if (config.hasPopup && config.separatePopupTrigger) {
             if (isMobileWidth() && config.id === 'mic') {
                 buttonsContainer.appendChild(btnWrapper);
@@ -339,7 +341,9 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                     button: btn,
                     wrapper: btnWrapper,
                     imgOff: imgOff,
-                    imgOn: imgOn
+                    imgOn: imgOn,
+                    triggerButton: null,
+                    triggerImg: null
                 };
                 return;
             }
@@ -347,9 +351,9 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             if (!isMobileWidth()) {
                 const popup = this.createPopup(config.id);
 
-                const triggerBtn = document.createElement('div');
+                triggerBtn = document.createElement('div');
                 triggerBtn.className = 'live2d-trigger-btn';
-                const triggerImg = document.createElement('img');
+                triggerImg = document.createElement('img');
                 triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
                 triggerImg.alt = '▶';
                 triggerImg.className = `live2d-trigger-icon-${config.id}`;
@@ -480,7 +484,9 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             button: btn,
             wrapper: btnWrapper,
             imgOff: imgOff,
-            imgOn: imgOn
+            imgOn: imgOn,
+            triggerButton: (config.hasPopup && config.separatePopupTrigger && !isMobileWidth()) ? triggerBtn : null,
+            triggerImg: (config.hasPopup && config.separatePopupTrigger && !isMobileWidth()) ? triggerImg : null
         };
         console.log(`[Live2D] 按钮已创建: ${config.id}, hasPopup: ${config.hasPopup}, toggle: ${config.toggle}`);
     });

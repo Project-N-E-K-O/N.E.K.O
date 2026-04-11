@@ -671,6 +671,24 @@ const AvatarButtonMixin = {
         };
 
         /**
+         * 同步独立弹窗触发器（三角形）方向
+         */
+        ManagerPrototype.updateSeparatePopupTriggerIcon = function(buttonId) {
+            if (!buttonId) return;
+
+            const buttonData = this._floatingButtons && this._floatingButtons[buttonId];
+            const triggerIcon = buttonData && buttonData.triggerImg
+                ? buttonData.triggerImg
+                : document.querySelector(`.${this._avatarPrefix}-trigger-icon-${buttonId}`);
+            if (!triggerIcon) return;
+
+            const buttonActive = !!(buttonData && buttonData.button && buttonData.button.dataset.active === 'true');
+            const popup = document.getElementById(`${this._avatarPrefix}-popup-${buttonId}`);
+            const popupVisible = !!(popup && popup.style.display === 'flex' && popup.style.opacity !== '0');
+            triggerIcon.style.transform = (buttonActive || popupVisible) ? 'rotate(180deg)' : 'rotate(0deg)';
+        };
+
+        /**
          * 设置按钮激活状态
          */
         ManagerPrototype.setButtonActive = function(buttonId, active) {
@@ -688,6 +706,8 @@ const AvatarButtonMixin = {
             if (buttonData.imgOn) {
                 buttonData.imgOn.style.opacity = active ? '1' : '0';
             }
+
+            this.updateSeparatePopupTriggerIcon(buttonId);
 
             // 同步静音按钮的显示状态
             if (buttonId === 'mic') {
