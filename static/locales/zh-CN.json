@@ -1656,8 +1656,8 @@
     },
     "subtitle": {
         "title": "实时字幕",
-        "enable": "开启字幕翻译",
-        "enableAriaLabel": "翻译开关"
+        "enable": "字幕翻译",
+        "enableAriaLabel": "字幕翻译开关"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -2742,7 +2742,7 @@
         "idleRestoreFailed": "恢复待机动画失败",
         "btnNotFoundGiveUp": "点歌台按钮在重试后仍未找到，放弃绑定",
         "minimizeBtnNotFoundGiveUp": "最小化按钮在重试后仍未找到，放弃监听",
-        "noticeDance": "💃 伴舞服务仅在载入 MMD 形象时可用",
+        "noticeDance": "💃 伴舞服务目前仅在载入 MMD 形象时可用，后续会增加更多互动",
         "noticeMusic": "⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入",
         "manager": "管理器",
         "managerTitle": "管理器",

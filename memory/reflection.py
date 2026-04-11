@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 from config import SETTING_PROPOSER_MODEL
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, robust_json_loads
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 from memory.persona import PersonaManager
@@ -206,7 +206,7 @@ class ReflectionEngine:
             raw = resp.content.strip()
             if raw.startswith("```"):
                 raw = raw.replace("```json", "").replace("```", "").strip()
-            result = json.loads(raw)
+            result = robust_json_loads(raw)
             if not isinstance(result, dict):
                 logger.warning(f"[Reflection] LLM 返回非 dict: {type(result)}")
                 return []
@@ -370,7 +370,7 @@ class ReflectionEngine:
             raw = resp.content.strip()
             if raw.startswith("```"):
                 raw = raw.replace("```json", "").replace("```", "").strip()
-            feedbacks = json.loads(raw)
+            feedbacks = robust_json_loads(raw)
             if not isinstance(feedbacks, list):
                 feedbacks = [feedbacks]
         except Exception as e:
@@ -432,7 +432,7 @@ class ReflectionEngine:
             raw = resp.content.strip()
             if raw.startswith("```"):
                 raw = raw.replace("```json", "").replace("```", "").strip()
-            feedbacks = json.loads(raw)
+            feedbacks = robust_json_loads(raw)
             if not isinstance(feedbacks, list):
                 feedbacks = [feedbacks]
             return feedbacks

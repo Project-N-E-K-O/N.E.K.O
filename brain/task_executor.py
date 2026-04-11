@@ -22,6 +22,7 @@ from config.prompts_agent import (
     USER_PLUGIN_COARSE_SCREEN_PROMPT,
 )
 from config.prompts_sys import _loc
+from utils.file_utils import robust_json_loads
 from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
@@ -637,7 +638,7 @@ class DirectTaskExecutor:
             text = (response.content or "").strip()
             if text.startswith("```"):
                 text = text.replace("```json", "").replace("```", "").strip()
-            ids = json.loads(text)
+            ids = robust_json_loads(text)
             if isinstance(ids, list):
                 return [str(i) for i in ids if isinstance(i, (str, int))]
         except Exception as e:

@@ -627,10 +627,11 @@ body.react-chat-adapter-active #chat-container {
     line-height: 1;
 }
 
+/* z-index 层级: 悬浮按钮 99999 < 对话框 100000 < 点歌台/管理器 100010 < 导出预览 100020 < tooltip 100030 */
 #react-chat-window-overlay {
     position: fixed;
     inset: 0;
-    z-index: 30;
+    z-index: 100000;
     pointer-events: none;
 }
 
@@ -2155,7 +2156,7 @@ body.react-chat-window-dragging {
     background: rgba(17, 24, 39, 0.45);
     backdrop-filter: blur(2px);
     -webkit-backdrop-filter: blur(2px);
-    z-index: 100000;
+    z-index: 100020;
     opacity: 0;
     transition: opacity 0.2s ease;
     pointer-events: auto;
@@ -2183,7 +2184,7 @@ body.react-chat-window-dragging {
     flex-direction: column;
     overflow: hidden;
     overflow-y: auto;
-    z-index: 100001;
+    z-index: 100021;
     opacity: 0;
     transition: opacity 0.2s ease, transform 0.2s ease;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
