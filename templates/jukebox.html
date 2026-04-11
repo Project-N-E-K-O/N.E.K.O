@@ -22,6 +22,8 @@
             overflow: hidden;
             background: #87CEEB;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
         }
 
         /* Electron 独立窗口：Jukebox 覆盖全窗口 */
@@ -38,15 +40,6 @@
             height: 100% !important;
             border-radius: 0 !important;
             box-sizing: border-box !important;
-        }
-        /* 独立窗口不需要 SongActionManager 侧面板浮动 */
-        .sam-panel {
-            position: fixed !important;
-            right: 0 !important;
-            top: 0 !important;
-            height: 100% !important;
-            border-radius: 0 !important;
-            z-index: 100 !important;
         }
     </style>
 </head>
