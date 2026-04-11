@@ -3084,7 +3084,7 @@ class LLMSessionManager:
                     elif data[0] == "__reconnecting__":
                         self._tts_retry_notify_count += 1
                         logger.info(f"🌊 TTS 正在自动重连 (retry {self._tts_retry_notify_count})")
-                        if self._tts_retry_notify_count > 3:
+                        if self._tts_retry_notify_count >= 3:
                             user_msg = json.dumps({"code": "TTS_RECONNECTING", "level": "info"})
                             self._fire_task(self.send_status(user_msg))
                         continue
@@ -3136,10 +3136,10 @@ class LLMSessionManager:
                             else:
                                 user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
-                        # 可重试的错误：前3次不通知前端，第3次失败后再发
+                        # 可重试的错误：前2次静默重试，第3次失败时上报前端
                         if self._last_tts_error_code not in NO_RETRY_TTS_CODES:
                             self._tts_retry_notify_count += 1
-                            if self._tts_retry_notify_count <= 3:
+                            if self._tts_retry_notify_count < 3:
                                 logger.info(f"TTS 错误重试 {self._tts_retry_notify_count}/3，暂不通知前端")
                                 continue
                         self._fire_task(self.send_status(user_msg))
