@@ -282,10 +282,9 @@
         curY = pos.y;
         drawOverlay();
 
-        // Check if selection is big enough (at least 10px in each direction)
-        var sw = Math.abs(curX - startX);
-        var sh = Math.abs(curY - startY);
-        if (sw >= 10 && sh >= 10) {
+        // Check if clamped selection is big enough (at least 10px in each direction)
+        var sel = getSelectionRect();
+        if (sel && sel.w >= 10 && sel.h >= 10) {
             updateConfirmBtnState(true);
         } else {
             // Too small, reset
@@ -323,7 +322,7 @@
         if (hasSelection) {
             btn.disabled = false;
             btn.classList.add('active');
-            hint.textContent = '\u62D6\u62FD\u8C03\u6574\u9009\u533A\uFF0C\u6216\u70B9\u51FB\u201C\u786E\u8BA4\u88C1\u5207\u201D';
+            hint.textContent = '\u91CD\u65B0\u62D6\u62FD\u53EF\u66F4\u6362\u9009\u533A\uFF0C\u6216\u70B9\u51FB\u201C\u786E\u8BA4\u88C1\u5207\u201D';
         } else {
             btn.disabled = true;
             btn.classList.remove('active');
@@ -427,6 +426,10 @@
     mod.cropImage = function cropImage(dataUrl) {
         return new Promise(function (resolve) {
             ensureOverlay();
+            // If a previous crop session is still open, close it first
+            if (resolvePromise) {
+                close(null);
+            }
             sourceDataUrl = dataUrl;
             resolvePromise = resolve;
 
