@@ -5,6 +5,7 @@ from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
+from utils.file_utils import robust_json_loads
 import json
 
 logger = get_module_logger(__name__, "Agent")
@@ -69,7 +70,7 @@ class TaskDeduper:
                 try:
                     if text.startswith("```"):
                         text = text.replace("```json", "").replace("```", "").strip()
-                    data = json.loads(text)
+                    data = robust_json_loads(text)
                     # Preferred contract: JSON array [matched_id_or_null, duplicate_boolean]
                     if isinstance(data, list) and len(data) >= 2:
                         matched_id = data[0]
