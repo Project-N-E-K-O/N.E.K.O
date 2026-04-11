@@ -1673,6 +1673,7 @@ Live2DManager.prototype.clearTransientExpressions = function () {
         });
         this._touchsetExpressionTimers.clear();
     }
+    this._currentTouchsetTouchToken = null;
 };
 
 /**
@@ -1819,56 +1820,56 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
                 } else {
                     console.warn('[Interaction] 教程模式 - 表情文件缺失，跳过表情播放');
                 }
+            }
 
-                const playedMotion = await this.playTutorialMotion();
-                if (playedMotion) {
+            const playedMotion = await this.playTutorialMotion();
+            if (playedMotion) {
+                playedAnyEffect = true;
+            }
+
+            if (!playedMotion) {
+                // 动作不可用时，回退到参数动画模拟效果
+                const model = this.currentModel.internalModel;
+                if (model && model.coreModel) {
+                    // 随机晃动头部
+                    const angleXIndex = model.coreModel.getParameterIndex('ParamAngleX');
+                    const angleYIndex = model.coreModel.getParameterIndex('ParamAngleY');
+                    const bodyAngleXIndex = model.coreModel.getParameterIndex('ParamBodyAngleX');
+
+                    const duration = 1000 + Math.random() * 1000; // 1-2秒
+                    const startTime = Date.now();
+
+                    const setParamByIndex = (index, value) => {
+                        if (index < 0) return;
+                        if (typeof model.coreModel.setParameterValueByIndex === 'function') {
+                            model.coreModel.setParameterValueByIndex(index, value);
+                        } else {
+                            model.coreModel.setParameterValueById(index, value);
+                        }
+                    };
+
+                    const animate = () => {
+                        const elapsed = Date.now() - startTime;
+                        const progress = Math.min(elapsed / duration, 1);
+                        const t = progress * Math.PI * 2; // 一个完整周期
+
+                        setParamByIndex(angleXIndex, Math.sin(t) * 15); // -15 到 15 度
+                        setParamByIndex(angleYIndex, Math.cos(t) * 10); // -10 到 10 度
+                        setParamByIndex(bodyAngleXIndex, Math.sin(t * 0.5) * 5); // 更慢的身体晃动
+
+                        if (progress < 1) {
+                            requestAnimationFrame(animate);
+                        } else {
+                            // 动画结束，恢复默认值
+                            setParamByIndex(angleXIndex, 0);
+                            setParamByIndex(angleYIndex, 0);
+                            setParamByIndex(bodyAngleXIndex, 0);
+                        }
+                    };
+
+                    animate();
                     playedAnyEffect = true;
-                }
-
-                if (!playedMotion) {
-                    // 动作不可用时，回退到参数动画模拟效果
-                    const model = this.currentModel.internalModel;
-                    if (model && model.coreModel) {
-                        // 随机晃动头部
-                        const angleXIndex = model.coreModel.getParameterIndex('ParamAngleX');
-                        const angleYIndex = model.coreModel.getParameterIndex('ParamAngleY');
-                        const bodyAngleXIndex = model.coreModel.getParameterIndex('ParamBodyAngleX');
-
-                        const duration = 1000 + Math.random() * 1000; // 1-2秒
-                        const startTime = Date.now();
-
-                        const setParamByIndex = (index, value) => {
-                            if (index < 0) return;
-                            if (typeof model.coreModel.setParameterValueByIndex === 'function') {
-                                model.coreModel.setParameterValueByIndex(index, value);
-                            } else {
-                                model.coreModel.setParameterValueById(index, value);
-                            }
-                        };
-
-                        const animate = () => {
-                            const elapsed = Date.now() - startTime;
-                            const progress = Math.min(elapsed / duration, 1);
-                            const t = progress * Math.PI * 2; // 一个完整周期
-
-                            setParamByIndex(angleXIndex, Math.sin(t) * 15); // -15 到 15 度
-                            setParamByIndex(angleYIndex, Math.cos(t) * 10); // -10 到 10 度
-                            setParamByIndex(bodyAngleXIndex, Math.sin(t * 0.5) * 5); // 更慢的身体晃动
-
-                            if (progress < 1) {
-                                requestAnimationFrame(animate);
-                            } else {
-                                // 动画结束，恢复默认值
-                                setParamByIndex(angleXIndex, 0);
-                                setParamByIndex(angleYIndex, 0);
-                                setParamByIndex(bodyAngleXIndex, 0);
-                            }
-                        };
-
-                        animate();
-                        playedAnyEffect = true;
-                        console.log('[Interaction] 教程模式 - 播放参数动画');
-                    }
+                    console.log('[Interaction] 教程模式 - 播放参数动画');
                 }
             }
         } catch (error) {
@@ -2134,13 +2135,17 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                         suspendPersistent: true,
                         suspendReason: token
                     });
+                    this._currentTouchsetTouchToken = token;
                     console.log(`[TouchSet] 播放表情成功: ${randomExpressionName}, 持续时间: ${faceHoldingTime}ms`);
 
                     if (!(this._touchsetExpressionTimers instanceof Map)) {
                         this._touchsetExpressionTimers = new Map();
                     }
                     const timer = setTimeout(() => {
-                        this.clearExpression?.(token);
+                        if (this._currentTouchsetTouchToken === token) {
+                            this._currentTouchsetTouchToken = null;
+                            this.clearExpression?.(token);
+                        }
                         this._touchsetExpressionTimers?.delete(token);
                     }, faceHoldingTime);
                     this._touchsetExpressionTimers.set(token, timer);

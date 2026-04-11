@@ -134,8 +134,10 @@ def _coerce_mapping_group_files(files, group_name: str, mapping_name: str):
         return files
     if hasattr(files, '__iter__') and not isinstance(files, dict):
         return list(files)
-    logger.warning("忽略无效的 %s 分组 %s: %r", mapping_name, group_name, type(files).__name__)
-    return []
+    raise ValueError(
+        f"无效的 {mapping_name} 分组 {group_name}: "
+        f"期望字符串、列表、可迭代对象或 null，实际为 {type(files).__name__}"
+    )
 
 
 def _sanitize_mapping_file_path(file_path):
@@ -595,6 +597,9 @@ async def update_emotion_mapping(model_name: str, request: Request):
         
         logger.info(f"模型 {model_name} 的情绪映射配置已更新（已同步到 FileReferences）")
         return {"success": True, "message": "情绪映射配置已保存"}
+    except ValueError as e:
+        logger.warning(f"更新情绪映射配置请求非法: {e}")
+        return JSONResponse(status_code=400, content={"success": False, "error": str(e)})
     except Exception as e:
         logger.error(f"更新情绪映射配置失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})

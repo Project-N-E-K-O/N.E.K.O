@@ -2483,19 +2483,15 @@ class LLMSessionManager:
         except Exception:
             pass
 
-    def drain_agent_callbacks_for_llm(self) -> str:
-        """Drain pending_agent_callbacks and format as a system context string.
-
-        Clears pending_agent_callbacks (NOT pending_extra_replies, which is
-        consumed separately by the voice-mode hot-swap path).
-        Returns an empty string if there are no callbacks.
-        """
-        if not self.pending_agent_callbacks:
+    def _format_agent_callbacks_for_llm(self, callbacks: list[dict] | None = None) -> str:
+        """Format agent callbacks as a system context string without consuming them."""
+        callback_items = callbacks if callbacks is not None else self.pending_agent_callbacks
+        if not callback_items:
             return ""
         try:
             _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
             lines: list[str] = []
-            for cb in self.pending_agent_callbacks:
+            for cb in callback_items:
                 status = cb.get("status", "completed")
                 summary = (cb.get("summary") or "").strip()
                 detail = (cb.get("detail") or "").strip()
@@ -2510,6 +2506,31 @@ class LLMSessionManager:
                     prefix = _loc(RESULT_PARSER_PHRASES['detail_prefix'], _lang)
                     lines.append(f"{prefix}{detail[:300]}")
             return "\n".join(lines)
+
+    def _consume_pending_agent_callbacks(self, callbacks: list[dict]) -> None:
+        """Remove the provided callback objects from the pending queue if still present."""
+        if not callbacks or not self.pending_agent_callbacks:
+            return
+
+        remaining = list(self.pending_agent_callbacks)
+        for target in callbacks:
+            for idx, cb in enumerate(remaining):
+                if cb is target:
+                    remaining.pop(idx)
+                    break
+        self.pending_agent_callbacks = remaining
+
+    def drain_agent_callbacks_for_llm(self) -> str:
+        """Drain pending_agent_callbacks and format as a system context string.
+
+        Clears pending_agent_callbacks (NOT pending_extra_replies, which is
+        consumed separately by the voice-mode hot-swap path).
+        Returns an empty string if there are no callbacks.
+        """
+        if not self.pending_agent_callbacks:
+            return ""
+        try:
+            return self._format_agent_callbacks_for_llm(self.pending_agent_callbacks)
         finally:
             self.pending_agent_callbacks.clear()
 
@@ -2839,13 +2860,17 @@ class LLMSessionManager:
                     # prompt_ephemeral 注入 — 指令不持久化，只保留 AI 回复。
                     if self.pending_agent_callbacks:
                         try:
-                            ctx = self.drain_agent_callbacks_for_llm()
+                            callbacks_snapshot = list(self.pending_agent_callbacks)
+                            ctx = self._format_agent_callbacks_for_llm(callbacks_snapshot)
                             if ctx:
-                                self._pre_injection_assistant_text = self._get_recent_assistant_utterance()
-                                self._reset_assistant_turn_tracking()
-                                await self.session.prompt_ephemeral(
+                                pre_injection_assistant_text = self._get_recent_assistant_utterance()
+                                delivered = await self.session.prompt_ephemeral(
                                     _loc(AGENT_CALLBACK_NOTIFICATION, normalize_language_code(self.user_language, format='short')) + ctx,
                                 )
+                                if delivered:
+                                    self._pre_injection_assistant_text = pre_injection_assistant_text
+                                    self._reset_assistant_turn_tracking()
+                                    self._consume_pending_agent_callbacks(callbacks_snapshot)
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
 
