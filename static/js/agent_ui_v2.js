@@ -442,7 +442,7 @@
                     setGlobalBusy(false);
                     fetchSnapshot().catch(() => { });
                     if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(`Agent切换失败: ${e.message}`, 2500);
+                        window.showStatusToast(window.t ? window.t('agent.status.toggleFailed', { error: e.message }) : `Agent切换失败: ${e.message}`, 2500);
                     }
                 }
                 return;
@@ -482,7 +482,7 @@
                         setGlobalBusy(false);
                         fetchSnapshot().catch(() => { });
                         if (typeof window.showStatusToast === 'function') {
-                            window.showStatusToast(`${getName(key)}切换失败: ${err.message}`, 2500);
+                            window.showStatusToast(window.t ? window.t('settings.toggles.toggleFailed', { name: getName(key), error: err.message }) : `${getName(key)}切换失败: ${err.message}`, 2500);
                         }
                         return;
                     } finally {
@@ -588,7 +588,7 @@
                     setGlobalBusy(false);
                     fetchSnapshot().catch(() => {});
                     if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(`${openclawName}\u5207\u6362\u5931\u8d25: ${err.message}`, 2500);
+                        window.showStatusToast(window.t ? window.t('settings.toggles.toggleFailed', { name: openclawName, error: err.message }) : `${openclawName}切换失败: ${err.message}`, 2500);
                     }
                     return;
                 } finally {

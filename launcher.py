@@ -15,8 +15,11 @@ if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
     
+# 检测打包环境（PyInstaller 设 sys.frozen，Nuitka 设 __compiled__）
+IS_FROZEN = getattr(sys, 'frozen', False) or '__compiled__' in globals()
+
 # 处理 PyInstaller 和 Nuitka 打包后的路径
-if getattr(sys, 'frozen', False):
+if IS_FROZEN:
     # 运行在打包后的环境
     if hasattr(sys, '_MEIPASS'):
         # PyInstaller
@@ -214,7 +217,7 @@ def report_startup_failure(message: str, show_dialog: bool = True):
     """统一报告启动失败信息：终端 + （可选）弹窗。"""
     print(message, flush=True)
     emit_frontend_event("startup_failure", {"message": message})
-    if show_dialog and getattr(sys, 'frozen', False):
+    if show_dialog and IS_FROZEN:
         _show_error_dialog(message)
 
 
@@ -373,7 +376,7 @@ def run_merged_servers() -> int:
     _reload_runtime_config_from_env()
 
     # frozen 环境通用设置
-    if getattr(sys, 'frozen', False):
+    if IS_FROZEN:
         if hasattr(sys, '_MEIPASS'):
             os.chdir(sys._MEIPASS)
         else:
@@ -496,7 +499,7 @@ def run_memory_server(
     try:
         _reload_runtime_config_from_env()
         # 确保工作目录正确
-        if getattr(sys, 'frozen', False):
+        if IS_FROZEN:
             if hasattr(sys, '_MEIPASS'):
                 # PyInstaller
                 os.chdir(sys._MEIPASS)
@@ -581,7 +584,7 @@ def run_agent_server(
     try:
         _reload_runtime_config_from_env()
         # 确保工作目录正确
-        if getattr(sys, 'frozen', False):
+        if IS_FROZEN:
             if hasattr(sys, '_MEIPASS'):
                 # PyInstaller
                 os.chdir(sys._MEIPASS)
@@ -643,7 +646,7 @@ def run_main_server(
     try:
         _reload_runtime_config_from_env()
         # 确保工作目录正确
-        if getattr(sys, 'frozen', False):
+        if IS_FROZEN:
             if hasattr(sys, '_MEIPASS'):
                 # PyInstaller
                 os.chdir(sys._MEIPASS)
@@ -1239,7 +1242,7 @@ def _ensure_playwright_browsers():
         return
 
     try:
-        if getattr(sys, "frozen", False):
+        if IS_FROZEN:
             if hasattr(sys, "_MEIPASS"):
                 _bundle = sys._MEIPASS
             else:
@@ -1326,7 +1329,7 @@ def main():
         elif _merged_env in ("0", "false", "no"):
             _use_merged = False
         else:
-            _use_merged = getattr(sys, 'frozen', False)
+            _use_merged = IS_FROZEN
 
         if _use_merged:
             print("\n[Launcher] 合并进程模式\n", flush=True)

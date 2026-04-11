@@ -113,6 +113,7 @@ Live2DManager.prototype.closePopupById = function (buttonId) {
         window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
     }
 
+    popup._showToken = (popup._showToken || 0) + 1;
     popup.style.opacity = '0';
     const closeOpensLeft = popup.dataset.opensLeft === 'true';
     popup.style.transform = closeOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
@@ -584,9 +585,10 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
     // 确保 _popupTimers 已初始化
     this._popupTimers = this._popupTimers || {};
     const popupUi = window.AvatarPopupUI || null;
+    if (typeof popup._showToken !== 'number') popup._showToken = 0;
 
     // 检查当前状态
-    const isVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
+    const isVisible = popup.style.display === 'flex' || popup.style.opacity === '1';
 
     // 清除之前的定时器
     if (this._popupTimers[buttonId]) {
@@ -726,6 +728,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         }
 
         // 如果已经显示，则隐藏
+        popup._showToken += 1;
         popup.style.opacity = '0';
         const closingOpensLeft = popup.dataset.opensLeft === 'true';
         popup.style.transform = closingOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
@@ -772,6 +775,8 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         }, 200);
     } else {
         // 全局互斥：打开前关闭其他弹出框
+        const showToken = popup._showToken + 1;
+        popup._showToken = showToken;
         this.closeAllPopupsExcept(buttonId);
 
         // 如果隐藏，则显示
@@ -780,6 +785,12 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         popup.style.opacity = '0';
         popup.style.visibility = 'visible';
         popup.style.pointerEvents = 'none'; // 阻止 positionPopup 完成前的 hover 事件
+
+        // 点击后立刻反转小三角，不等待弹窗定位 / 展开动画完成
+        const openingTriggerIcon = document.querySelector(`.live2d-trigger-icon-${buttonId}`);
+        if (openingTriggerIcon) {
+            openingTriggerIcon.style.transform = 'rotate(180deg)';
+        }
 
         // 关键：在计算位置之前，先移除高度限制，确保获取真实尺寸
         const isMobile = typeof isMobileWidth === 'function' && isMobileWidth();
@@ -814,37 +825,40 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         });
 
         Promise.all(imageLoadPromises).then(() => {
+            if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
             // 强制触发reflow，确保布局完全更新
             void popup.offsetHeight;
 
             // 再次使用RAF确保布局稳定
-        requestAnimationFrame(() => {
-            if (popupUi && typeof popupUi.positionPopup === 'function') {
-                const pos = popupUi.positionPopup(popup, {
-                    buttonId,
-                    buttonPrefix: 'live2d-btn-',
-                    triggerPrefix: 'live2d-trigger-icon-',
-                    rightMargin: 20,
-                    bottomMargin: 60,
-                    topMargin: 8,
-                    gap: 8,
-                    sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') && !isMobile ? 320 : 0
-                });
-                popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
-            }
+            requestAnimationFrame(() => {
+                if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
+                if (popupUi && typeof popupUi.positionPopup === 'function') {
+                    const pos = popupUi.positionPopup(popup, {
+                        buttonId,
+                        buttonPrefix: 'live2d-btn-',
+                        triggerPrefix: 'live2d-trigger-icon-',
+                        rightMargin: 20,
+                        bottomMargin: 60,
+                        topMargin: 8,
+                        gap: 8,
+                        sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') && !isMobile ? 320 : 0
+                    });
+                    popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
+                }
 
-            // 显示弹出框
-            popup.style.visibility = 'visible';
-            popup.style.opacity = '1';
-            popup.style.pointerEvents = ''; // positionPopup 完成，恢复交互
-            popup.style.transform = 'translateX(0)';
-            
-            // 设置小三角图标的旋转状态（旋转180度）
-            const triggerIcon = document.querySelector(`.live2d-trigger-icon-${buttonId}`);
-            if (triggerIcon) {
-                triggerIcon.style.transform = 'rotate(180deg)';
-            }
-        });
+                if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
+                // 显示弹出框
+                popup.style.visibility = 'visible';
+                popup.style.opacity = '1';
+                popup.style.pointerEvents = ''; // positionPopup 完成，恢复交互
+                popup.style.transform = 'translateX(0)';
+
+                // 设置小三角图标的旋转状态（旋转180度）
+                const triggerIcon = document.querySelector(`.live2d-trigger-icon-${buttonId}`);
+                if (triggerIcon) {
+                    triggerIcon.style.transform = 'rotate(180deg)';
+                }
+            });
         });
 
         // 设置、agent、麦克风、屏幕源弹出框不自动隐藏，其他的1秒后隐藏

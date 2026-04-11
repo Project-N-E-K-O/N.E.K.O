@@ -73,6 +73,10 @@
         }
     }
 
+    function supportsLocalModelRuntime() {
+        return !/^\/chat(?:\/|$)/.test(window.location.pathname || '');
+    }
+
     function emitAssistantSpeechCancel(source) {
         var turnId = S.assistantTurnId || S.assistantSpeechActiveTurnId || null;
         S.assistantTurnId = null;
@@ -425,7 +429,9 @@
 
             // 4. 根据模型类型加载相应的模型
             console.log('[猫娘切换] 检测到模型类型:', modelType, '有效类型:', effectiveModelType);
-            if (effectiveModelType === 'vrm') {
+            if (!supportsLocalModelRuntime()) {
+                console.log('[猫娘切换] 当前页面不加载本地模型，跳过模型热切换');
+            } else if (effectiveModelType === 'vrm') {
                 // 加载 VRM 模型
                 console.log('[猫娘切换] 进入VRM加载分支');
 
@@ -1196,7 +1202,7 @@
 
         } catch (error) {
             console.error('[猫娘切换] 失败:', error);
-            showStatusToast(`切换失败: ${error.message}`, 4000);
+            showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
         } finally {
             S.isSwitchingCatgirl = false;
             // 清理切换标识，取消所有 pending 的 applyLighting 定时器
