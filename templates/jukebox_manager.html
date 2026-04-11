@@ -74,6 +74,9 @@
             SAM.hide = function() {
                 try {
                     window.close();
+                    if (!window.closed && typeof _prevHide === 'function') {
+                        _prevHide.call(SAM);
+                    }
                 } catch (e) {
                     if (typeof _prevHide === 'function') _prevHide.call(SAM);
                 }
@@ -91,10 +94,9 @@
                 return result;
             };
 
-            // 显示并加载数据
+            // 显示管理器（SAM.create() 已调用 load，无需重复加载）
             SAM.element.style.display = 'flex';
             SAM.isVisible = true;
-            SAM.load();
         }
 
         // 等待 i18n 就绪
