@@ -550,7 +550,9 @@ class UniversalTutorialManager {
                     this.startTutorialWhenI18nReady(500);
                 });
             } else if (this.currentPage === 'model_manager') {
-                // 由 switchModelDisplay 结束时的 neko-model-manager-mode-set 触发，避免 MMD/VRM 与默认 select 竞态
+                // 首次加载由 neko-model-manager-mode-set 事件触发；restartCurrentTutorial 等
+                // 清完存储键后重新走到这里时事件不会再次派发，需主动尝试启动
+                this.maybeStartModelManagerTutorial(400, 'checkAndStart', null);
             } else {
                 // 其他页面延迟启动，并等待 i18n 准备完成
                 this.startTutorialWhenI18nReady(1500);
@@ -609,7 +611,7 @@ class UniversalTutorialManager {
     setupModelManagerModeListener() {
         if (this._modelManagerModeListenerAttached) return;
         this._modelManagerModeListenerAttached = true;
-        window.addEventListener('neko-model-manager-mode-set', (ev) => {
+        this._modelManagerModeHandler = (ev) => {
             if (this.currentPage !== 'model_manager') return;
             const mode = ev.detail && ev.detail.mode;
             console.log('[Tutorial] 收到 neko-model-manager-mode-set 事件, mode:', mode);
@@ -620,8 +622,26 @@ class UniversalTutorialManager {
             setTimeout(() => {
                 this.maybeStartModelManagerTutorial(200, 'mode-set', mode);
             }, 80);
-        });
+        };
+        window.addEventListener('neko-model-manager-mode-set', this._modelManagerModeHandler);
         console.log('[Tutorial] neko-model-manager-mode-set 监听器已设置');
+    }
+
+    /**
+     * 清理模型管理页相关的事件监听和定时器，防止实例替换后幽灵回调
+     */
+    teardownModelManagerListeners() {
+        if (this._modelManagerModeHandler) {
+            window.removeEventListener('neko-model-manager-mode-set', this._modelManagerModeHandler);
+            this._modelManagerModeHandler = null;
+        }
+        this._modelManagerModeListenerAttached = false;
+        this._modelManagerReceivedModeEvent = false;
+        this.clearModelManagerTutorialRecheckTimer();
+        if (this._modelManagerTutorialDebounceTimer) {
+            clearTimeout(this._modelManagerTutorialDebounceTimer);
+            this._modelManagerTutorialDebounceTimer = null;
+        }
     }
 
     /**
@@ -3167,6 +3187,7 @@ function initUniversalTutorialManager() {
             if (window.universalTutorialManager.driver) {
                 window.universalTutorialManager.driver.destroy();
             }
+            window.universalTutorialManager.teardownModelManagerListeners();
             // 创建新实例
             window.universalTutorialManager = new UniversalTutorialManager();
             console.log('[Tutorial] 通用教程管理器已重新初始化，页面:', currentPageType);
