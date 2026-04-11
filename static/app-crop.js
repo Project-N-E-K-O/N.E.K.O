@@ -442,6 +442,9 @@
                 drawOverlay();
                 overlay.focus();
             };
+            imgEl.onerror = function () {
+                close(null);
+            };
             imgEl.src = dataUrl;
 
             overlay.style.display = 'flex';

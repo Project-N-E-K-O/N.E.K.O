@@ -1590,6 +1590,7 @@ body.react-chat-window-dragging {
     display: flex;
     flex-direction: column;
     background: #111;
+    pointer-events: auto;
     animation: crop-fade-in 0.2s ease;
 }
 
