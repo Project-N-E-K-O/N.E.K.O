@@ -40,7 +40,9 @@ async function InitializationTouchSet(characterJson) {
     }
 
     const modelType = localStorage.getItem('modelType') || 'live2d';
-    if (modelType !== 'live2d') {
+    const isVRMActive = window.vrmManager && window.vrmManager.currentModel;
+    const isMMDActive = window.mmdManager && window.mmdManager.currentModel;
+    if (modelType !== 'live2d' || isVRMActive || isMMDActive) {
         console.log('[TouchSet] 当前模型类型不是 Live2D，跳过触摸配置初始化');
         return;
     }

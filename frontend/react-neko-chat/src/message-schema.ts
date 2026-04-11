@@ -80,7 +80,7 @@ export const chatWindowPropsSchema = z.object({
   messages: z.array(chatMessageSchema).optional(),
   inputPlaceholder: z.string().optional(),
   sendButtonLabel: z.string().optional(),
-  emptyText: z.string().optional(),
+
   chatWindowAriaLabel: z.string().optional(),
   messageListAriaLabel: z.string().optional(),
   composerToolsAriaLabel: z.string().optional(),
@@ -97,6 +97,9 @@ export const chatWindowPropsSchema = z.object({
   jukeboxButtonAriaLabel: z.string().optional(),
   avatarGeneratorButtonLabel: z.string().optional(),
   avatarGeneratorButtonAriaLabel: z.string().optional(),
+  translateEnabled: z.boolean().optional(),
+  translateButtonLabel: z.string().optional(),
+  translateButtonAriaLabel: z.string().optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())
@@ -122,6 +125,10 @@ export const chatWindowPropsSchema = z.object({
     .returns(z.void())
     .optional(),
   onAvatarGeneratorClick: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
+  onTranslateToggle: z.function()
     .args()
     .returns(z.void())
     .optional(),

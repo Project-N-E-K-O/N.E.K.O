@@ -335,14 +335,15 @@ DEFAULT_LANLAN_TEMPLATE = {
 }
 
 _DEFAULT_VRM_LIGHTING_MUTABLE = {
-    "ambient": 0.4,  # HemisphereLight 强度
-    "main": 1.2,     # 主光源强度
-    "fill": 0.5,     # 补光强度
-    "rim": 0.8,      # 轮廓光强度
-    "top": 0.3,      # 顶光强度
-    "bottom": 0.15,  # 底光强度
-    "exposure": 0.0, # 曝光值
-    "toneMapping": 7, # 色调映射类型 (7 = Neutral)
+    # 与前端 vrm-core.js defaultLighting 保持一致
+    "ambient": 0.83,  # HemisphereLight 强度
+    "main": 1.91,     # 主光源强度
+    "fill": 0.0,      # 补光强度（简化模式下禁用）
+    "rim": 0.0,       # 轮廓光强度（简化模式下禁用，MToon 内建处理）
+    "top": 0.0,       # 顶光强度（简化模式下禁用）
+    "bottom": 0.0,    # 底光强度（简化模式下禁用）
+    "exposure": 1.1,  # 曝光值
+    "toneMapping": 7, # 色调映射类型 (7 = NeutralToneMapping)
     "outlineWidthScale": 1.0, # 描边粗细倍率
 }
 

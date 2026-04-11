@@ -149,26 +149,45 @@
 
             const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
 
-            // 检测 live3d 子类型（优先检查 MMD，与后端 _get_live3d_sub_type 保持一致）
-            const _sanitize = v => (typeof v === 'string' && v.trim() && v !== 'undefined' && v !== 'null') ? v : '';
+            // 检测 live3d 子类型：优先使用 live3d_sub_type（后端权威来源）
+            const _sanitize = (v) => {
+                if (v === undefined || v === null) return '';
+                const s = String(v).trim();
+                const lower = s.toLowerCase();
+                if (!s || lower === 'undefined' || lower === 'null') return '';
+                return s;
+            };
             let mmdPath = '';
             let vrmPath = '';
             let effectiveModelType = modelType;
             if (modelType === 'live3d') {
-                mmdPath = _sanitize(catgirlConfig.mmd)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
-                    || '';
-                vrmPath = _sanitize(catgirlConfig.vrm)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
-                    || '';
-                if (mmdPath) {
-                    effectiveModelType = 'mmd';
-                } else if (vrmPath) {
+                const subType = (
+                    catgirlConfig._reserved?.avatar?.live3d_sub_type
+                    || catgirlConfig.live3d_sub_type
+                    || ''
+                ).toString().trim().toLowerCase();
+
+                if (subType === 'vrm') {
                     effectiveModelType = 'vrm';
+                } else if (subType === 'mmd') {
+                    effectiveModelType = 'mmd';
                 } else {
-                    effectiveModelType = 'live2d'; // fallback
+                    // sub_type 缺失时回退到路径探测
+                    mmdPath = _sanitize(catgirlConfig.mmd)
+                        || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
+                        || '';
+                    vrmPath = _sanitize(catgirlConfig.vrm)
+                        || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
+                        || '';
+                    if (mmdPath && !vrmPath) {
+                        effectiveModelType = 'mmd';
+                    } else if (vrmPath) {
+                        effectiveModelType = 'vrm';
+                    } else {
+                        effectiveModelType = 'live2d';
+                    }
                 }
-                console.log('[猫娘切换] live3d 子类型检测:', effectiveModelType, '(mmd:', !!mmdPath, 'vrm:', !!vrmPath, ')');
+                console.log('[猫娘切换] live3d 子类型检测:', effectiveModelType, '(subType:', subType, 'mmd:', !!mmdPath, 'vrm:', !!vrmPath, ')');
             }
             console.log('[猫娘切换] effectiveModelType:', effectiveModelType);
 
@@ -660,14 +679,10 @@
 
                         if (window.vrmManager?.ambientLight && window.vrmManager?.mainLight &&
                             window.vrmManager?.fillLight && window.vrmManager?.rimLight) {
-                            // VRoid Hub 风格：极高环境光，柔和主光，无辅助光
-                            const defaultLighting = {
-                                ambient: 1.0,      // 极高环境光，消除所有暗部
-                                main: 0.6,         // 适中主光，配合跟随相机
-                                fill: 0.0,         // 不需要补光
-                                rim: 0.0,          // 不需要外部轮廓光
-                                top: 0.0,          // 不需要顶光
-                                bottom: 0.0        // 不需要底光
+                            // 引用全局唯一默认值（定义于 vrm-core.js）
+                            const defaultLighting = window.VRM_DEFAULT_LIGHTING || {
+                                ambient: 0.83, main: 1.91, fill: 0.0,
+                                rim: 0.0, top: 0.0, bottom: 0.0
                             };
 
                             if (window.vrmManager.ambientLight) {

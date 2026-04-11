@@ -15,6 +15,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
   onJukeboxClick?: () => void;
+  onTranslateToggle?: () => void;
 };
 
 const defaultMessages: ChatMessage[] = [];
@@ -25,7 +26,6 @@ export default function App({
   messages = defaultMessages,
   inputPlaceholder = '输入消息...',
   sendButtonLabel = '发送',
-  emptyText = '聊天内容接入后会显示在这里。',
   chatWindowAriaLabel = 'Neko chat window',
   messageListAriaLabel = 'Chat messages',
   composerToolsAriaLabel = 'Composer tools',
@@ -39,17 +39,22 @@ export default function App({
   failedStatusLabel = '发送失败',
   jukeboxButtonLabel = '点歌台',
   jukeboxButtonAriaLabel = '点歌台',
+  translateEnabled = false,
+  translateButtonLabel = '翻译',
+  translateButtonAriaLabel,
   onMessageAction,
   onComposerImportImage,
   onComposerScreenshot,
   onComposerRemoveAttachment,
   onComposerSubmit,
   onJukeboxClick,
+  onTranslateToggle,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
+  const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
 
   function submitDraft() {
     const text = draft.trim();
@@ -85,7 +90,6 @@ export default function App({
           </button>
           <MessageList
             messages={messages}
-            emptyText={emptyText}
             ariaLabel={messageListAriaLabel}
             failedStatusLabel={failedStatusLabel}
             onAction={onMessageAction}
@@ -156,6 +160,17 @@ export default function App({
                     onClick={() => onComposerScreenshot?.()}
                   >
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
+                  </button>
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  <button
+                    className={`composer-tool-btn composer-translate-btn${translateEnabled ? ' is-active' : ''}`}
+                    type="button"
+                    aria-label={resolvedTranslateAriaLabel}
+                    aria-pressed={translateEnabled}
+                    title={translateButtonLabel}
+                    onClick={() => onTranslateToggle?.()}
+                  >
+                    <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
                   </button>
                   {/* TODO: 表情按钮，下个版本启用 */}
                 </div>
