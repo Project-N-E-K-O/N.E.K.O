@@ -46,11 +46,21 @@ class TestDetectProviderInfo:
         r = _detect_provider_info("https://custom-endpoint.example.com/v1", "groq-llama-70b")
         assert r["provider"] == "groq"
 
-    def test_gemini_by_url(self):
+    def test_gemini_native_api(self):
+        """Native Gemini API (no /openai/) → provider=gemini for native driver."""
         r = _detect_provider_info(
             "https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-flash"
         )
         assert r["provider"] == "gemini"
+        assert r["needs_proxy"] is False
+        assert r["api_key_env"] == "GEMINI_API_KEY"
+
+    def test_gemini_openai_compat_endpoint(self):
+        """Gemini /openai/ endpoint → provider=openai (Bearer token + OpenAI tools)."""
+        r = _detect_provider_info(
+            "https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-3-flash-preview"
+        )
+        assert r["provider"] == "openai"
         assert r["needs_proxy"] is False
         assert r["api_key_env"] == "GEMINI_API_KEY"
 
@@ -206,12 +216,12 @@ class TestSyncConfigKeyFreeProvider:
         assert result is False
 
     @patch("brain.openfang_adapter.get_config_manager")
-    def test_gemini_with_key_proceeds(self, mock_get_cm):
-        """Gemini with a valid API key should proceed normally."""
+    def test_gemini_openai_compat_with_key_proceeds(self, mock_get_cm):
+        """Gemini OpenAI-compat endpoint with valid API key should proceed as openai provider."""
         cm = MagicMock()
         cm.get_model_api_config.return_value = {
-            "model": "gemini-2.5-flash",
-            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "model": "gemini-3-flash-preview",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
             "api_key": "AIza-test-key-12345",
         }
         mock_get_cm.return_value = cm
@@ -232,7 +242,7 @@ class TestSyncConfigKeyFreeProvider:
             result = self._run(adapter.sync_config())
 
         assert result is True
-        assert adapter._provider_info["provider"] == "gemini"
+        assert adapter._provider_info["provider"] == "openai"
 
     @patch("brain.openfang_adapter.get_config_manager")
     def test_no_model_returns_false(self, mock_get_cm):

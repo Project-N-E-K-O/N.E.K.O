@@ -79,7 +79,20 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
         }
 
     # Gemini / Google AI
-    if "generativelanguage.googleapis.com" in url_lower or "gemini" in model_lower:
+    # Google 提供两种端点：
+    #   /v1beta/openai/ — OpenAI 兼容（Bearer token + OpenAI tools 格式）→ 用 openai provider
+    #   /v1beta         — 原生 Gemini API（?key= 认证 + functionDeclarations）→ 用 gemini provider
+    _is_google_ai = "generativelanguage.googleapis.com" in url_lower
+    _is_gemini_model = "gemini" in model_lower
+    if _is_google_ai and "/openai" in url_lower:
+        # OpenAI 兼容端点，直连即可，不需要 Gemini driver
+        return {
+            "provider": "openai",
+            "needs_proxy": False,
+            "effective_url": base_url,
+            "api_key_env": "GEMINI_API_KEY",
+        }
+    if _is_google_ai or _is_gemini_model:
         return {
             "provider": "gemini",
             "needs_proxy": False,
