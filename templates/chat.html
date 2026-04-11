@@ -253,6 +253,16 @@
         <div id="neko-resize-handle"></div>
     </div>
 
+    <!-- 旧的按钮面板已迁移到浮动按钮系统，保留隐藏的旧按钮元素供功能触发使用 -->
+    <div id="sidebar" style="display:none;">
+        <button id="micButton">开始语音</button>
+        <button id="muteButton" disabled>暂停</button>
+        <button id="screenButton" disabled>屏幕</button>
+        <button id="stopButton" disabled>停止</button>
+        <button id="resetSessionButton">重置</button>
+        <button id="returnSessionButton">返回</button>
+    </div>
+
     <!-- React Chat（与 index.html 完全相同的 DOM 结构）-->
     <div id="react-chat-window-overlay">
         <div id="react-chat-window-backdrop"></div>
