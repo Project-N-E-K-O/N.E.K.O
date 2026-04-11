@@ -3095,8 +3095,13 @@ async def openfang_availability():
             "code": "AGENT_OPENFANG_CAPABILITY_LOST",
             "details": {"reason_code": normalized_reason},
         })
+    availability_enabled = (
+        bool(status.get("enabled", Modules.agent_flags.get("openfang_enabled", False)))
+        if isinstance(status, dict)
+        else bool(Modules.agent_flags.get("openfang_enabled", False))
+    )
     payload = {
-        "enabled": Modules.agent_flags.get("openfang_enabled", False),
+        "enabled": availability_enabled,
         "ready": bool(ok),
         "reason": normalized_reason if not ok else "",
         "reasons": ([normalized_reason] if (not ok and normalized_reason) else []),

@@ -1876,6 +1876,7 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
             if (typeof this.clearExpression === 'function') {
                 this.clearExpression(clickEffectSuspendReason);
             }
+            playedAnyEffect = false;
         }
         if (!playedAnyEffect) {
             return;

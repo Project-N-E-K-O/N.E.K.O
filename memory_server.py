@@ -138,11 +138,10 @@ shutdown_event = asyncio.Event()
 # 全局变量控制是否响应退出请求
 enable_shutdown = False
 # 全局变量用于管理correction任务
-correction_tasks = {}  # {lanlan_name: asyncio.Task}
+correction_tasks: dict[str, set[asyncio.Task]] = {}
 correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
 _recent_round_tails: dict[str, list] = {}
 _recent_round_referenced_topics: dict[str, str] = {}
-_persistence_tasks: dict[str, set[asyncio.Task]] = {}
 # 每角色结算锁：首轮摘要期间阻塞 /new_dialog，确保热切换后读到最新数据
 _settle_locks: dict[str, asyncio.Lock] = {}
 # 强引用注册表：防止 fire-and-forget task 被 GC
@@ -233,12 +232,62 @@ def _build_round_review_messages(lanlan_name: str, messages: list | None = None)
     return enriched_messages
 
 
-def _set_recent_round_tail(lanlan_name: str, messages: list) -> None:
-    _recent_round_tails[lanlan_name] = _build_round_review_messages(lanlan_name, messages)
+def _set_recent_round_tail(
+    lanlan_name: str,
+    messages: list,
+    *,
+    include_referenced_topic: bool = False,
+) -> None:
+    if include_referenced_topic:
+        _recent_round_tails[lanlan_name] = _build_round_review_messages(lanlan_name, messages)
+    else:
+        _recent_round_tails[lanlan_name] = list(messages or [])
 
 
 def _get_recent_round_tail(lanlan_name: str) -> list:
     return _build_round_review_messages(lanlan_name, _recent_round_tails.get(lanlan_name) or [])
+
+
+def _register_correction_task(lanlan_name: str, task: asyncio.Task) -> asyncio.Task:
+    task_set = correction_tasks.setdefault(lanlan_name, set())
+    task_set.add(task)
+
+    def _cleanup(_task: asyncio.Task) -> None:
+        tasks = correction_tasks.get(lanlan_name)
+        if tasks is not None:
+            tasks.discard(_task)
+            if not tasks:
+                correction_tasks.pop(lanlan_name, None)
+        cancel_event = correction_cancel_flags.get(lanlan_name)
+        if cancel_event is not None and lanlan_name not in correction_tasks:
+            cancel_event.clear()
+
+    task.add_done_callback(_cleanup)
+    return task
+
+
+def _get_active_correction_tasks(lanlan_name: str) -> list[asyncio.Task]:
+    return [
+        task
+        for task in correction_tasks.get(lanlan_name, set())
+        if task is not None and not task.done()
+    ]
+
+
+async def _cancel_correction_tasks(lanlan_name: str) -> bool:
+    active_tasks = _get_active_correction_tasks(lanlan_name)
+    if not active_tasks:
+        return False
+    cancel_event = correction_cancel_flags.get(lanlan_name)
+    if cancel_event is not None:
+        cancel_event.set()
+    for task in active_tasks:
+        task.cancel()
+    results = await asyncio.gather(*active_tasks, return_exceptions=True)
+    for result in results:
+        if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
+            logger.warning(f"⚠️ 中断 correction 任务时出现异常: {result}")
+    return True
 
 
 async def _persist_negative_preferences(lanlan_name: str, messages: list) -> None:
@@ -255,19 +304,7 @@ def _spawn_persistence_task(lanlan_name: str, messages: list) -> asyncio.Task | 
     if not payload:
         return None
     task = _spawn_background_task(_persist_negative_preferences(lanlan_name, payload))
-    task_set = _persistence_tasks.setdefault(lanlan_name, set())
-    task_set.add(task)
-
-    def _cleanup(_task: asyncio.Task) -> None:
-        tasks = _persistence_tasks.get(lanlan_name)
-        if not tasks:
-            return
-        tasks.discard(_task)
-        if not tasks:
-            _persistence_tasks.pop(lanlan_name, None)
-
-    task.add_done_callback(_cleanup)
-    return task
+    return _register_correction_task(lanlan_name, task)
 
 @app.post("/shutdown")
 async def shutdown_memory_server():
@@ -795,33 +832,18 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
         ),
         reverse=True,
     )
-    limited_candidates = sorted_candidates[:3]
-    if len(limited_candidates) != len(deduped_candidates):
-        logger.info(
-            "[MemoryServer] %s: 负面偏好候选已截断 deduped=%s limited=%s",
-            lanlan_name,
-            len(deduped_candidates),
-            len(limited_candidates),
-        )
-    applied = 0
-    for item in limited_candidates:
+    validated_candidates: dict[str, dict] = {}
+    for item in sorted_candidates:
         topic = str(item.get('topic', '')).strip()
         policy = _normalize_negative_preference_policy(item.get('policy', ''))
         try:
             confidence = float(item.get('confidence', 0))
         except (TypeError, ValueError):
             confidence = 0.0
-        normalized_topic = _normalize_topic_key(topic)
         if not _is_valid_negative_preference_candidate(policy, confidence):
             logger.info(
                 f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={topic or '∅'} "
                 f"policy={policy or '∅'} confidence={confidence:.2f} reason=invalid_policy_or_confidence"
-            )
-            continue
-        if normalized_topic in already_signaled_topics:
-            logger.info(
-                f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={topic or '∅'} "
-                f"policy={policy or '∅'} confidence={confidence:.2f} reason=already_signaled_this_round"
             )
             continue
         validation = await _validate_negative_topic_candidate(
@@ -838,15 +860,40 @@ async def _review_and_apply_negative_preferences(messages: list, lanlan_name: st
             continue
         validated_topic = str(validation.get("normalized_topic", "")).strip() or topic
         normalized_validated_topic = _normalize_topic_key(validated_topic)
-        if normalized_validated_topic in already_signaled_topics:
+        if not normalized_validated_topic or normalized_validated_topic in validated_candidates:
+            continue
+        validated_candidates[normalized_validated_topic] = {
+            **item,
+            'topic': validated_topic,
+            '_normalized_validated_topic': normalized_validated_topic,
+            '_validated_confidence_value': float(validation.get('confidence', 0.0) or 0.0),
+        }
+    limited_candidates = list(validated_candidates.values())[:3]
+    if len(limited_candidates) != len(validated_candidates):
+        logger.info(
+            "[MemoryServer] %s: 负面偏好候选已截断 validated=%s limited=%s",
+            lanlan_name,
+            len(validated_candidates),
+            len(limited_candidates),
+        )
+    applied = 0
+    for item in limited_candidates:
+        topic = str(item.get('topic', '')).strip()
+        policy = _normalize_negative_preference_policy(item.get('policy', ''))
+        try:
+            confidence = float(item.get('confidence', 0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        normalized_topic = str(item.get('_normalized_validated_topic') or _normalize_topic_key(topic))
+        if normalized_topic in already_signaled_topics:
             logger.info(
-                f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={validated_topic or '∅'} "
-                f"policy={policy or '∅'} confidence={confidence:.2f} reason=already_signaled_after_validation"
+                f"[MemoryServer] {lanlan_name}: 负面偏好候选跳过 topic={topic or '∅'} "
+                f"policy={policy or '∅'} confidence={confidence:.2f} reason=already_signaled_this_round"
             )
             continue
         result = persona_manager.apply_negative_preference_review(
             lanlan_name,
-            topic=validated_topic,
+            topic=topic,
             policy=policy,
         )
         if result.get('matched'):
@@ -997,7 +1044,7 @@ async def shutdown_event_handler():
 
 async def _run_review_in_background(lanlan_name: str, review_messages: list | None = None):
     """在后台运行 review_history，并在同阶段审查负面偏好。"""
-    global correction_tasks, correction_cancel_flags
+    global correction_cancel_flags
     
     # 获取该角色的取消标志
     cancel_event = correction_cancel_flags.get(lanlan_name)
@@ -1015,13 +1062,6 @@ async def _run_review_in_background(lanlan_name: str, review_messages: list | No
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:
         logger.error(f"❌ {lanlan_name} 的记忆整理任务出错: {e}")
-    finally:
-        # 清理任务记录
-        if lanlan_name in correction_tasks:
-            del correction_tasks[lanlan_name]
-        # 重置取消标志
-        if lanlan_name in correction_cancel_flags:
-            correction_cancel_flags[lanlan_name].clear()
 
 def _extract_ai_response(messages: list) -> str:
     """从消息列表中提取最后一条 AI 回复的文本。"""
@@ -1174,7 +1214,11 @@ async def handle_negative_signal(request: NegativeSignalRequest, lanlan_name: st
     try:
         _set_recent_round_referenced_topic(lanlan_name, request.referenced_topic)
         if request.referenced_topic:
-            _set_recent_round_tail(lanlan_name, _recent_round_tails.get(lanlan_name) or [])
+            _set_recent_round_tail(
+                lanlan_name,
+                _recent_round_tails.get(lanlan_name) or [],
+                include_referenced_topic=True,
+            )
         result = persona_manager.analyze_negative_signal(
             lanlan_name,
             request.message,
@@ -1211,7 +1255,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
         async with _get_settle_lock(lanlan_name):
             await recent_history_manager.update_history(input_history, lanlan_name, compress=False)
-        _set_recent_round_tail(lanlan_name, input_history)
+        _set_recent_round_tail(lanlan_name, input_history, include_referenced_topic=False)
         return {"status": "cached", "count": len(input_history)}
     except Exception as e:
         logger.error(f"[MemoryServer] cache 失败: {e}")
@@ -1236,7 +1280,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         input_history = convert_to_messages(json.loads(request.input_history))
         logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
         await recent_history_manager.update_history(input_history, lanlan_name)
-        _set_recent_round_tail(lanlan_name, input_history)
+        _set_recent_round_tail(lanlan_name, input_history, include_referenced_topic=False)
         # 旧模块已禁用（性能不足）：
         # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
         # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
@@ -1246,20 +1290,17 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
 
         # 在后台启动review_history任务
-        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
-            # 如果已有任务在运行，取消它
-            correction_tasks[lanlan_name].cancel()
-            try:
-                await correction_tasks[lanlan_name]
-            except asyncio.CancelledError:
-                pass
+        if await _cancel_correction_tasks(lanlan_name):
+            logger.info(f"🛑 收到新处理请求，中断 {lanlan_name} 的correction任务")
         
         # 启动新的review任务
         review_messages = _build_round_review_messages(lanlan_name, input_history) if input_history else None
         if review_messages is not None:
             _clear_recent_round_referenced_topic(lanlan_name)
-        task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
-        correction_tasks[lanlan_name] = task
+        task = _register_correction_task(
+            lanlan_name,
+            asyncio.create_task(_run_review_in_background(lanlan_name, review_messages)),
+        )
         
         return {"status": "processed"}
     except Exception as e:
@@ -1287,27 +1328,24 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
         async with _get_settle_lock(lanlan_name):
             await recent_history_manager.update_history(input_history, lanlan_name, detailed=True)
             await time_manager.store_conversation(uid, input_history, lanlan_name)
-        _set_recent_round_tail(lanlan_name, input_history)
+        _set_recent_round_tail(lanlan_name, input_history, include_referenced_topic=False)
 
         # 以下操作在锁外执行，不阻塞 /new_dialog
         # 异步事实提取
         _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
 
         # 在后台启动review_history任务
-        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
-            # 如果已有任务在运行，取消它
-            correction_tasks[lanlan_name].cancel()
-            try:
-                await correction_tasks[lanlan_name]
-            except asyncio.CancelledError:
-                pass
+        if await _cancel_correction_tasks(lanlan_name):
+            logger.info(f"🛑 收到renew请求，中断 {lanlan_name} 的correction任务")
         
         # 启动新的review任务
         review_messages = _build_round_review_messages(lanlan_name, input_history) if input_history else None
         if review_messages is not None:
             _clear_recent_round_referenced_topic(lanlan_name)
-        task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
-        correction_tasks[lanlan_name] = task
+        task = _register_correction_task(
+            lanlan_name,
+            asyncio.create_task(_run_review_in_background(lanlan_name, review_messages)),
+        )
         
         return {"status": "processed"}
     except Exception as e:
@@ -1339,17 +1377,15 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
         if round_messages:
             _spawn_background_task(_extract_facts_and_check_feedback(round_messages, lanlan_name))
 
-        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
-            correction_tasks[lanlan_name].cancel()
-            try:
-                await correction_tasks[lanlan_name]
-            except asyncio.CancelledError:
-                pass
+        if await _cancel_correction_tasks(lanlan_name):
+            logger.info(f"🛑 收到settle请求，中断 {lanlan_name} 的correction任务")
         review_messages = round_messages if round_messages else None
         if review_messages is not None:
             _clear_recent_round_referenced_topic(lanlan_name)
-        task = asyncio.create_task(_run_review_in_background(lanlan_name, review_messages))
-        correction_tasks[lanlan_name] = task
+        task = _register_correction_task(
+            lanlan_name,
+            asyncio.create_task(_run_review_in_background(lanlan_name, review_messages)),
+        )
 
         return {"status": "settled"}
     except Exception as e:
@@ -1449,20 +1485,11 @@ async def cancel_correction(lanlan_name: str):
     """中断指定角色的记忆整理任务（用于记忆编辑后立即生效）"""
     global correction_tasks, correction_cancel_flags
     
-    if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
+    if _get_active_correction_tasks(lanlan_name):
         logger.info(f"🛑 收到取消请求，中断 {lanlan_name} 的correction任务")
-        
-        if lanlan_name in correction_cancel_flags:
-            correction_cancel_flags[lanlan_name].set()
-        
-        correction_tasks[lanlan_name].cancel()
-        try:
-            await correction_tasks[lanlan_name]
-        except asyncio.CancelledError:
-            logger.info(f"✅ {lanlan_name} 的correction任务已成功中断")
-        except Exception as e:
-            logger.warning(f"⚠️ 中断 {lanlan_name} 的correction任务时出现异常: {e}")
-        
+
+        await _cancel_correction_tasks(lanlan_name)
+        logger.info(f"✅ {lanlan_name} 的correction任务已成功中断")
         return {"status": "cancelled"}
     
     return {"status": "no_task"}
@@ -1486,19 +1513,10 @@ async def new_dialog(lanlan_name: str):
     # 等待 /renew 或 /settle 的首轮摘要完成，确保读到最新数据
     async with _get_settle_lock(lanlan_name):
         # 中断正在进行的correction任务
-        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
+        if _get_active_correction_tasks(lanlan_name):
             logger.info(f"🛑 收到new_dialog请求，中断 {lanlan_name} 的correction任务")
-
-            if lanlan_name in correction_cancel_flags:
-                correction_cancel_flags[lanlan_name].set()
-
-            correction_tasks[lanlan_name].cancel()
-            try:
-                await correction_tasks[lanlan_name]
-            except asyncio.CancelledError:
-                logger.info(f"✅ {lanlan_name} 的correction任务已成功中断")
-            except Exception as e:
-                logger.warning(f"⚠️ 中断 {lanlan_name} 的correction任务时出现异常: {e}")
+            await _cancel_correction_tasks(lanlan_name)
+            logger.info(f"✅ {lanlan_name} 的correction任务已成功中断")
 
         # 正则表达式：删除所有类型括号及其内容（包括[]、()、{}、<>、【】、（）等）
         brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')

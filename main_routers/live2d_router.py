@@ -533,7 +533,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
         for item in existing_expressions:
             try:
                 name = (item.get('Name') or '') if isinstance(item, dict) else ''
-                prefix = name.split('_', 1)[0] if '_' in name else None
+                prefix = name.split('_', 1)[0] if '_' in name else 'neutral'
                 if not prefix or prefix not in emotion_prefixes:
                     preserved_expressions.append(item)
             except Exception:

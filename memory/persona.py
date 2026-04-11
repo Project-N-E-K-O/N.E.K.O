@@ -250,6 +250,11 @@ def _normalize_topic_tokens(topic: str) -> set[str]:
             )
         ):
             token = token[:-2]
+        elif len(token) > 3 and token.endswith('es'):
+            if token[-3] not in 'aeiou':
+                token = token[:-2]
+            else:
+                token = token[:-1]
         elif len(token) > 3 and token.endswith('s') and not token.endswith(('ss', 'us')):
             token = token[:-1]
         if len(token) < 2 or token in _LATIN_TOPIC_TOKEN_STOPWORDS:
