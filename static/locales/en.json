@@ -2095,6 +2095,24 @@
                     "title": "🎞️ Tone Mapping",
                     "desc": "Select different tone mapping algorithms to control highlight and shadow rendering."
                 }
+            },
+            "mmd": {
+                "step1": {
+                    "title": "🎭 Select MMD Model",
+                    "desc": "In Live3D (MMD) mode, choose your model here. MMD shares the same model list as VRM."
+                },
+                "step2": {
+                    "title": "💃 VMD Animation",
+                    "desc": "Pick a VMD motion for your MMD model. Use \"Import VMD\" to add custom motion files."
+                },
+                "step3": {
+                    "title": "🌟 MMD Lighting",
+                    "desc": "Under \"MMD Model Settings\", adjust ambient and main lights, exposure, and tone mapping for the 3D look."
+                },
+                "step4": {
+                    "title": "😄 Emotion Config",
+                    "desc": "After selecting a model, open emotion settings here. MMD and VRM share this Live3D button (not the Live2D one)."
+                }
             }
         },
         "parameter_editor": {
