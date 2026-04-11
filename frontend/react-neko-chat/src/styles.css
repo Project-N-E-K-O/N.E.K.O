@@ -489,7 +489,7 @@ textarea {
 
 .message-block-image {
   margin: 0;
-  width: min(280px, 100%);
+  max-width: 280px;
   overflow: hidden;
   border-radius: 12px;
   background: rgba(220, 228, 240, 0.85);

@@ -1514,6 +1514,7 @@
         "switchingCatgirl": "{{name}}(으)로 전환 중...",
         "switchedCatgirl": "{{name}}로 전환됨",
         "switchCatgirlFailed": "{{name}}로 전환하지 못했습니다.",
+        "switchCatgirlError": "전환 실패: {{error}}",
         "started": "{{name}} 시작됨",
         "voiceUpdated": "{{name}}의 음성이 업데이트되었습니다.",
         "audioWorkletFailed": "AudioWorklet을 로드하지 못했습니다.",
@@ -1536,6 +1537,7 @@
         "connectingToServer": "서버에 연결하는 중...",
         "readyToSpeak": "말할 준비가 되었습니다!",
         "screenShareRequiresVoice": "화면 공유는 음성/영상 통화에만 사용됩니다.",
+        "screenRecordingPermissionDenied": "⚠️ 화면 녹화 권한이 승인되지 않았습니다. 시스템 설정에서 화면 녹화를 허용해 주세요",
         "repetitionDetected": "높은 반복이 감지되었습니다. {{name}}이(가) 쉴 수 있도록 대화 종료를 제안하세요.",
         "modelSwitched": "모델 전환",
         "screenSource": {
@@ -1621,6 +1623,7 @@
             "browserUse": "브라우저 제어",
             "focusMode": "인터럽트 허용",
             "unavailable": "{{name}} 사용할 수 없음",
+            "toggleFailed": "{{name}} 전환 실패: {{error}}",
             "checking": "확인 중...",
             "serverOffline": "네코클로 서버 오프라인",
             "masterRequired": "먼저 네코클로 마스터 스위치를 활성화하십시오.",
@@ -1675,7 +1678,8 @@
             "freeModelWarning": "할당량 제한으로 인해 무료 모델은 네코클로 모드에서 차단되기 쉽습니다. 유료 모델로 전환하는 것을 권장합니다.\n\n이미 유료 API를 설정한 경우 NEKO를 재시작해 보세요.",
             "freeModelWarningTitle": "무료 모델 안내",
             "connectivityCheck": "네코클로 LLM 연결 확인 중...",
-            "precheckFailed": "네코클로 사전 검사 실패: {{reason}}"
+            "precheckFailed": "네코클로 사전 검사 실패: {{reason}}",
+            "toggleFailed": "Agent 전환 실패: {{error}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "연결 확인 중...",
@@ -2842,5 +2846,8 @@
             "title": "밈",
             "loadError": "밈을 불러오지 못했습니다"
         }
+    },
+    "achievement": {
+        "unlocked": "🏆 업적 달성: {{description}}"
     }
 }

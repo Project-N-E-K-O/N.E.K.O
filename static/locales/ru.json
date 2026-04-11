@@ -1514,6 +1514,7 @@
         "switchingCatgirl": "Переключение на {{name}}...",
         "switchedCatgirl": "Переключено на {{name}}",
         "switchCatgirlFailed": "Не удалось переключиться на {{name}}",
+        "switchCatgirlError": "Ошибка переключения: {{error}}",
         "started": "{{name}} запущена",
         "voiceUpdated": "Голос {{name}} обновлён",
         "audioWorkletFailed": "AudioWorklet не загрузился",
@@ -1536,6 +1537,7 @@
         "connectingToServer": "Подключение к серверу...",
         "readyToSpeak": "Готово к разговору!",
         "screenShareRequiresVoice": "Демонстрация экрана только для аудио/видео звонков",
+        "screenRecordingPermissionDenied": "⚠️ Разрешение на запись экрана не предоставлено. Разрешите запись экрана в системных настройках",
         "repetitionDetected": "Обнаружено повторение. Рекомендуем завершить разговор, чтобы {{name}} отдохнула.",
         "modelSwitched": "Модель переключена",
         "screenSource": {
@@ -1621,6 +1623,7 @@
             "browserUse": "Управление браузером",
             "focusMode": "Разрешить прерывание",
             "unavailable": "{{name}} Недоступен",
+            "toggleFailed": "Ошибка переключения {{name}}: {{error}}",
             "checking": "Проверка...",
             "serverOffline": "Сервер Лапки Неко оффлайн",
             "masterRequired": "Сначала включите главный переключатель Лапки Неко",
@@ -1675,7 +1678,8 @@
             "freeModelWarning": "Из-за ограничений квоты использование бесплатной модели в режиме Лапки Неко может вызвать блокировку. Рекомендуется перейти на платную модель.\n\nЕсли вы уже настроили платный API, попробуйте перезапустить NEKO.",
             "freeModelWarningTitle": "Уведомление о бесплатной модели",
             "connectivityCheck": "Проверка подключения LLM Лапки Неко...",
-            "precheckFailed": "Предварительная проверка Лапки Неко не удалась: {{reason}}"
+            "precheckFailed": "Предварительная проверка Лапки Неко не удалась: {{reason}}",
+            "toggleFailed": "Ошибка переключения Agent: {{error}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "Проверка подключения...",
@@ -2842,5 +2846,8 @@
             "title": "Мем",
             "loadError": "Не удалось загрузить мем"
         }
+    },
+    "achievement": {
+        "unlocked": "🏆 Достижение разблокировано: {{description}}"
     }
 }

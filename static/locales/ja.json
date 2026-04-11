@@ -1514,6 +1514,7 @@
         "switchingCatgirl": "{{name}}に切り替え中...",
         "switchedCatgirl": "{{name}}に切り替えました",
         "switchCatgirlFailed": "{{name}}への切り替えに失敗しました",
+        "switchCatgirlError": "切り替えに失敗しました: {{error}}",
         "started": "{{name}}が起動しました",
         "voiceUpdated": "{{name}}の声が更新されました",
         "audioWorkletFailed": "AudioWorkletの読み込みに失敗しました",
@@ -1536,6 +1537,7 @@
         "connectingToServer": "サーバーに接続中...",
         "readyToSpeak": "話す準備ができました！",
         "screenShareRequiresVoice": "画面共有は音声/ビデオ通話専用です",
+        "screenRecordingPermissionDenied": "⚠️ 画面録画の権限が許可されていません。システム設定で画面録画を許可してください",
         "repetitionDetected": "高い繰り返しが検出されました。{{name}}を休ませるために会話を終了することをお勧めします。",
         "modelSwitched": "モデルを切り替えました",
         "screenSource": {
@@ -1621,6 +1623,7 @@
             "browserUse": "ブラウザ制御",
             "focusMode": "割り込み許可",
             "unavailable": "{{name}}は利用できません",
+            "toggleFailed": "{{name}}の切り替えに失敗しました: {{error}}",
             "checking": "確認中...",
             "serverOffline": "ネコクローサーバーがオフラインです",
             "masterRequired": "先にネコクローマスタースイッチを有効にしてください",
@@ -1675,7 +1678,8 @@
             "freeModelWarning": "クォータの制限により、無料モデルではネコクローモードがブロックされやすくなります。有料モデルへの切り替えをお勧めします。\n\nすでに有料APIを設定済みの場合は、NEKOを再起動してみてください。",
             "freeModelWarningTitle": "無料モデルのお知らせ",
             "connectivityCheck": "ネコクロー LLM 接続チェック中...",
-            "precheckFailed": "ネコクローのプリチェックに失敗しました：{{reason}}"
+            "precheckFailed": "ネコクローのプリチェックに失敗しました：{{reason}}",
+            "toggleFailed": "Agentの切り替えに失敗しました: {{error}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "接続チェック中...",
@@ -2842,5 +2846,8 @@
             "title": "ミーム",
             "loadError": "ミームの読み込みに失敗しました"
         }
+    },
+    "achievement": {
+        "unlocked": "🏆 実績解除: {{description}}"
     }
 }

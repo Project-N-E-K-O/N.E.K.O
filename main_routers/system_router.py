@@ -1466,7 +1466,7 @@ async def emotion_analysis(request: Request):
                 if confidence < 0.2:
                     emotion = "neutral"
                     decision_source = "neutral_fallback"
-        except json.JSONDecodeError:
+        except ValueError:
             emotion, confidence = _apply_degraded_emotion_fallback()
 
         _push_emotion_update(lanlan_name, emotion, confidence)

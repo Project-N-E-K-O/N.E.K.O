@@ -1514,6 +1514,7 @@
         "switchingCatgirl": "正在切換到 {{name}}...",
         "switchedCatgirl": "已切換到 {{name}}",
         "switchCatgirlFailed": "切換到 {{name}} 失敗",
+        "switchCatgirlError": "切換失敗: {{error}}",
         "started": "{{name}} 已啓動",
         "voiceUpdated": "{{name}} 的語音已更新",
         "audioWorkletFailed": "AudioWorklet加載失敗",
@@ -1536,6 +1537,7 @@
         "connectingToServer": "正在連接服務器...",
         "readyToSpeak": "可以說話瞭！",
         "screenShareRequiresVoice": "屏幕分享僅用於音視頻通話",
+        "screenRecordingPermissionDenied": "⚠️ 螢幕錄製權限未授權，請在系統設定中允許螢幕錄製",
         "repetitionDetected": "檢測到高重復度對話。建議您終止對話，讓{{name}}休息片刻。",
         "modelSwitched": "模型已切換",
         "screenSource": {
@@ -1621,6 +1623,7 @@
             "browserUse": "瀏覽器控制",
             "focusMode": "允許打斷",
             "unavailable": "{{name}}不可用",
+            "toggleFailed": "{{name}}切換失敗: {{error}}",
             "checking": "查詢中...",
             "serverOffline": "貓爪服務器未啓動",
             "masterRequired": "請先開啓貓爪總開關",
@@ -1675,7 +1678,8 @@
             "freeModelWarning": "由於限額問題，免費模型使用貓爪模式容易阻塞，建議您切換至自費模型。\n\n如果您已經配置好自費API，請嘗試重啟NEKO。",
             "freeModelWarningTitle": "免費模型提示",
             "connectivityCheck": "貓爪 LLM 連接檢查中...",
-            "precheckFailed": "貓爪預檢失敗：{{reason}}"
+            "precheckFailed": "貓爪預檢失敗：{{reason}}",
+            "toggleFailed": "Agent切換失敗: {{error}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "連接檢查中...",
@@ -2842,5 +2846,8 @@
             "title": "表情包",
             "loadError": "表情包加載失敗"
         }
+    },
+    "achievement": {
+        "unlocked": "🏆 成就解鎖: {{description}}"
     }
 }
