@@ -21,7 +21,7 @@ from config import SETTING_PROPOSER_MODEL
 from config.prompts_memory import get_fact_extraction_prompt
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, robust_json_loads
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -29,34 +29,6 @@ if TYPE_CHECKING:
     from memory.timeindex import TimeIndexedMemory
 
 logger = get_module_logger(__name__, "Memory")
-
-
-def _sanitize_json(raw: str) -> str:
-    """尝试修复 LLM 输出中常见的 JSON 格式问题。
-
-    处理：双花括号→单花括号、单引号→双引号、尾部逗号、Python 字面值等。
-    仅在标准 json.loads 失败后调用。
-    """
-    # LLM 模仿 prompt 模板中的 {{ }} 转义 → 还原为正常花括号
-    s = raw.replace("{{", "{").replace("}}", "}")
-    # Python 风格 True/False/None → JSON
-    s = s.replace("True", "true").replace("False", "false").replace("None", "null")
-    # 尾部逗号：,] 或 ,}
-    s = re.sub(r',\s*([}\]])', r'\1', s)
-    # 单引号→双引号（简单替换，适用于大多数 LLM 输出）
-    # 只在整个字符串不含双引号 key 时才做替换，避免破坏已正确的 JSON
-    if '"' not in s:
-        s = s.replace("'", '"')
-    else:
-        # 混合引号情况：逐步替换单引号 key/value
-        # 1) key: 'xxx': → "xxx":
-        s = re.sub(r"'([^']*?)'\s*:", r'"\1":', s)
-        # 2) value: : 'xxx' → : "xxx"
-        s = re.sub(r":\s*'([^']*?)'", r': "\1"', s)
-        # 3) 数组内单引号元素: ['a', 'b'] → ["a", "b"]
-        s = re.sub(r"'\s*([,\]\}])", r'"\1', s)
-        s = re.sub(r"([,\[\{])\s*'", r'\1"', s)
-    return s
 
 
 _ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
@@ -266,12 +238,7 @@ class FactStore:
                         raw = match.group(1).strip()
                     else:
                         raw = raw.replace("```json", "").replace("```", "").strip()
-                try:
-                    extracted = json.loads(raw)
-                except json.JSONDecodeError:
-                    # 尝试修复常见 LLM 格式问题后重新解析
-                    sanitized = _sanitize_json(raw)
-                    extracted = json.loads(sanitized)
+                extracted = robust_json_loads(raw)
                 if not isinstance(extracted, list):
                     logger.warning(f"[FactStore] {lanlan_name}: LLM 返回非数组类型 {type(extracted).__name__}，重试")
                     retries += 1

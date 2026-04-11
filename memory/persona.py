@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 
 from config import SETTING_PROPOSER_MODEL
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, robust_json_loads
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Memory")
@@ -599,7 +599,7 @@ class PersonaManager:
             raw = resp.content
             if raw.startswith("```"):
                 raw = raw.replace("```json", "").replace("```", "").strip()
-            results = json.loads(raw)
+            results = robust_json_loads(raw)
             if not isinstance(results, list):
                 results = [results]
         except Exception as e:
