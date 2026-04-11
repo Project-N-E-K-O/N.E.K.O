@@ -781,6 +781,12 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         popup.style.visibility = 'visible';
         popup.style.pointerEvents = 'none'; // 阻止 positionPopup 完成前的 hover 事件
 
+        // 点击后立刻反转小三角，不等待弹窗定位 / 展开动画完成
+        const openingTriggerIcon = document.querySelector(`.live2d-trigger-icon-${buttonId}`);
+        if (openingTriggerIcon) {
+            openingTriggerIcon.style.transform = 'rotate(180deg)';
+        }
+
         // 关键：在计算位置之前，先移除高度限制，确保获取真实尺寸
         const isMobile = typeof isMobileWidth === 'function' && isMobileWidth();
         if (buttonId === 'settings' || buttonId === 'agent') {

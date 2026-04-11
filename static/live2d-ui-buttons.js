@@ -404,15 +404,21 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
                     const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
 
-                    if (config.id === 'mic' && window.renderFloatingMicList && !isPopupVisible) {
-                        await window.renderFloatingMicList();
-                    }
-
-                    if (config.id === 'screen' && window.renderFloatingScreenSourceList && !isPopupVisible) {
-                        await window.renderFloatingScreenSourceList();
+                    if (isPopupVisible) {
+                        this.showPopup(config.id, popup);
+                        return;
                     }
 
                     this.showPopup(config.id, popup);
+                    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+                    if (config.id === 'mic' && window.renderFloatingMicList) {
+                        await window.renderFloatingMicList();
+                    }
+
+                    if (config.id === 'screen' && window.renderFloatingScreenSourceList) {
+                        await window.renderFloatingScreenSourceList();
+                    }
                 });
 
                 const triggerWrapper = document.createElement('div');

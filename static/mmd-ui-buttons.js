@@ -192,13 +192,20 @@ MMDManager.prototype.setupFloatingButtons = function() {
             triggerBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
-                if (config.id === 'mic' && !isPopupVisible) {
+                if (isPopupVisible) {
+                    this.showPopup(config.id, popup);
+                    return;
+                }
+
+                this.showPopup(config.id, popup);
+                await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+                if (config.id === 'mic') {
                     if (typeof window.renderFloatingMicList === 'function') await window.renderFloatingMicList(popup);
                 }
-                if (config.id === 'screen' && !isPopupVisible) {
+                if (config.id === 'screen') {
                     await this.renderScreenSourceList(popup);
                 }
-                this.showPopup(config.id, popup);
             });
 
             const triggerWrapper = document.createElement('div');
