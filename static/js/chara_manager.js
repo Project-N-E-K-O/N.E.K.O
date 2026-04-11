@@ -3155,6 +3155,11 @@ async function handleCloudsaveCharacterSync(payload) {
         return;
     }
 
+    if (hasUnsavedNewCatgirlDraft()) {
+        await showAlert('检测到未保存的新猫娘草稿，请先保存或取消后再同步刷新');
+        return;
+    }
+
     if (hasUnsavedChanges()) {
         try {
             await saveAllUnsavedChanges();
@@ -3703,6 +3708,24 @@ function hasUnsavedChanges() {
         }
     }
 
+    return false;
+}
+
+function hasUnsavedNewCatgirlDraft() {
+    const newDraftForm = document.getElementById('catgirl-form-new');
+    if (!newDraftForm) {
+        return false;
+    }
+
+    const inputs = newDraftForm.querySelectorAll('input, textarea, select');
+    for (const input of inputs) {
+        if (hasInputChanged(input)) {
+            return true;
+        }
+        if ((input.name || input.id) && String(input.value || '').trim()) {
+            return true;
+        }
+    }
     return false;
 }
 

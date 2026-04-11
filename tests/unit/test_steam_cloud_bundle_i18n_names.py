@@ -1,6 +1,7 @@
 import io
 import json
 import shutil
+import contextlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -16,7 +17,12 @@ from utils.cloudsave_runtime import (
 )
 from utils.config_manager import ConfigManager, set_reserved
 from utils.file_utils import atomic_write_json
-from utils.steam_cloud_bundle import _apply_bundle_to_local_cloudsave, _write_remote_bundle
+from utils.steam_cloud_bundle import (
+    _apply_bundle_to_local_cloudsave,
+    _write_remote_bundle,
+    download_cloudsave_bundle_from_steam,
+    upload_cloudsave_bundle_to_steam,
+)
 
 
 VALID_I18N_CASES = [
@@ -118,9 +124,102 @@ def test_multilingual_character_names_roundtrip_through_local_snapshot(character
         restored_recent = json.loads(
             (Path(target_cm.memory_dir) / character_name / "recent.json").read_text(encoding="utf-8")
         )
-
         assert restored_characters["当前猫娘"] == character_name
         assert restored_recent[0]["content"] == recent_message
+
+
+@pytest.mark.unit
+def test_download_cloudsave_bundle_skips_on_unsupported_platform_even_for_source_launch():
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", "darwin"
+    ):
+        result = download_cloudsave_bundle_from_steam(object())
+
+    assert result["success"] is True
+    assert result["action"] == "skipped"
+    assert result["reason"] == "unsupported_platform"
+    assert result["platform"] == "darwin"
+
+
+@pytest.mark.unit
+def test_download_cloudsave_bundle_skips_on_linux_source_launch():
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", "linux"
+    ):
+        result = download_cloudsave_bundle_from_steam(object())
+
+    assert result["success"] is True
+    assert result["action"] == "skipped"
+    assert result["reason"] == "unsupported_platform"
+    assert result["platform"] == "linux"
+
+
+@pytest.mark.unit
+def test_download_cloudsave_bundle_skips_on_windows_frozen_launch():
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=False), patch(
+        "utils.steam_cloud_bundle.sys.platform", "win32"
+    ):
+        result = download_cloudsave_bundle_from_steam(object())
+
+    assert result["success"] is True
+    assert result["action"] == "skipped"
+    assert result["reason"] == "not_source_launch"
+
+
+@pytest.mark.unit
+def test_download_cloudsave_bundle_uses_bridge_on_windows_source_launch(tmp_path):
+    cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(cm)
+    observed = {"entered": False}
+
+    class _DummyBridge:
+        def cloud_enabled(self):
+            observed["entered"] = True
+            return False
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
+
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge):
+        result = download_cloudsave_bundle_from_steam(cm)
+
+    assert observed["entered"] is True
+    assert result["success"] is True
+    assert result["action"] == "skipped"
+    assert result["reason"] == "cloud_disabled"
+
+
+@pytest.mark.unit
+def test_upload_cloudsave_bundle_skips_on_unsupported_platform_even_for_source_launch():
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", "darwin"
+    ):
+        result = upload_cloudsave_bundle_to_steam(object())
+
+    assert result["success"] is True
+    assert result["action"] == "skipped"
+    assert result["reason"] == "unsupported_platform"
+    assert result["platform"] == "darwin"
+
+
+@pytest.mark.unit
+def test_upload_cloudsave_bundle_skips_on_windows_frozen_launch(tmp_path):
+    cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(cm)
+    _write_runtime_state(cm, character_name="冻结上传角色", recent_message="hello")
+    export_local_cloudsave_snapshot(cm)
+
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=False), patch(
+        "utils.steam_cloud_bundle.sys.platform", "win32"
+    ):
+        result = upload_cloudsave_bundle_to_steam(cm)
+
+    assert result["success"] is True
+    assert result["action"] == "skipped"
+    assert result["reason"] == "not_source_launch"
 
 
 @pytest.mark.unit

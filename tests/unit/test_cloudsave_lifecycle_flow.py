@@ -239,3 +239,63 @@ async def test_main_server_shutdown_releases_live_sessions_and_exports_cloudsave
     mock_release.assert_any_await("角色A", reason="Steam Auto-Cloud export before shutdown: 角色A")
     mock_release.assert_any_await("角色B", reason="Steam Auto-Cloud export before shutdown: 角色B")
     fake_tracker.save.assert_called_once_with()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_shutdown_server_async_defers_memory_server_stop_until_main_shutdown():
+    import main_server
+
+    server = SimpleNamespace(should_exit=False)
+    start_config = {
+        "browser_mode_enabled": True,
+        "browser_page": "",
+        "shutdown_memory_server_on_exit": False,
+        "server": server,
+    }
+    workshop_state = SimpleNamespace(_ugc_warmup_task=None, _ugc_sync_task=None)
+
+    with patch.object(main_server.asyncio, "sleep", AsyncMock(return_value=None)), \
+         patch.object(main_server, "get_start_config", Mock(return_value=start_config)), \
+         patch.object(main_server.importlib, "import_module", return_value=workshop_state):
+        await main_server.shutdown_server_async()
+
+    assert start_config["shutdown_memory_server_on_exit"] is True
+    assert server.should_exit is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_shutdown_requests_memory_server_stop_after_export_when_deferred():
+    import main_server
+
+    fake_tracker = SimpleNamespace(save=Mock())
+    call_order = []
+    start_config = {
+        "browser_mode_enabled": True,
+        "browser_page": "",
+        "shutdown_memory_server_on_exit": True,
+        "server": None,
+    }
+
+    async def _fake_export(*args, **kwargs):
+        call_order.append("export")
+        return {"success": True, "action": "exported"}
+
+    async def _fake_request_shutdown():
+        call_order.append("memory_shutdown")
+
+    with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
+         patch.object(main_server, "_preload_task", None), \
+         patch.object(main_server, "agent_event_bridge", None), \
+         patch.object(main_server, "session_manager", {}), \
+         patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock(side_effect=_fake_export)), \
+         patch.object(main_server, "get_start_config", Mock(return_value=start_config)), \
+         patch.object(main_server, "_request_memory_server_shutdown", AsyncMock(side_effect=_fake_request_shutdown)) as mock_request_shutdown, \
+         patch("utils.music_crawlers.close_all_crawlers", AsyncMock(return_value=None)), \
+         patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker):
+        await main_server.on_shutdown()
+
+    assert call_order == ["export", "memory_shutdown"]
+    assert start_config["shutdown_memory_server_on_exit"] is False
+    mock_request_shutdown.assert_awaited_once_with()

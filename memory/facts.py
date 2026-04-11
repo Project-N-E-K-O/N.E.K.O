@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from config import SETTING_PROPOSER_MODEL
 from config.prompts_memory import get_fact_extraction_prompt
-from utils.cloudsave_runtime import assert_cloudsave_writable
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_json, robust_json_loads
@@ -77,13 +77,16 @@ class FactStore:
                         data = json.load(f)
                     if isinstance(data, list):
                         if self._migrate_v1_entity_values(data):
-                            assert_cloudsave_writable(
-                                self._config_manager,
-                                operation="migrate",
-                                target=f"memory/{name}/facts.json",
-                            )
-                            atomic_write_json(path, data, indent=2, ensure_ascii=False)
-                            logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
+                            try:
+                                assert_cloudsave_writable(
+                                    self._config_manager,
+                                    operation="migrate",
+                                    target=f"memory/{name}/facts.json",
+                                )
+                                atomic_write_json(path, data, indent=2, ensure_ascii=False)
+                                logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
+                            except MaintenanceModeError as exc:
+                                logger.debug(f"[FactStore] {name}: 维护态跳过 facts.json 迁移落盘: {exc}")
                         self._facts[name] = data
                         return data
                 except (json.JSONDecodeError, OSError) as e:

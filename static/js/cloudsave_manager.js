@@ -1589,7 +1589,13 @@
         const emptyState = document.getElementById('cloudsave-empty-state');
 
         if (providerStatus) {
-            if (isSteamAutoCloudBackend(summary) && isSteamAutoCloudConnected(summary)) {
+            if (!summary.provider_available) {
+                setTranslatedText(
+                    providerStatus,
+                    'cloudsave.providerUnavailable',
+                    'Cloud save is currently unavailable. This page only shows local summaries.',
+                );
+            } else if (isSteamAutoCloudBackend(summary) && isSteamAutoCloudConnected(summary)) {
                 setTranslatedText(
                     providerStatus,
                     'cloudsave.providerSteamAutoCloudReady',
@@ -1601,17 +1607,11 @@
                     'cloudsave.providerSteamAutoCloudOffline',
                     'Local cloud snapshots are available, but Steam Cloud is not currently connected. Start the game from Steam while logged in if you want Steam to upload or download snapshots automatically.',
                 );
-            } else if (summary.provider_available) {
+            } else {
                 setTranslatedText(
                     providerStatus,
                     'cloudsave.providerAvailable',
                     'Cloud save is available. You can prepare or restore individual character snapshots manually.',
-                );
-            } else {
-                setTranslatedText(
-                    providerStatus,
-                    'cloudsave.providerUnavailable',
-                    'Cloud save is currently unavailable. This page only shows local summaries.',
                 );
             }
         }

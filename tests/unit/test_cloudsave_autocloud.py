@@ -109,7 +109,7 @@ def test_cloudsave_manager_skips_import_when_manifest_was_already_applied():
 
 
 @pytest.mark.unit
-def test_cloudsave_manager_imports_new_snapshot_even_when_runtime_already_has_user_content():
+def test_cloudsave_manager_imports_new_snapshot_when_runtime_has_stale_user_content():
     with TemporaryDirectory() as td:
         source_cm = _make_config_manager(Path(td) / "source")
         target_cm = _make_config_manager(Path(td) / "target")
@@ -184,6 +184,27 @@ def test_cloudsave_manager_status_includes_autocloud_configuration_hints():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("platform_name", "expected_platform", "expected_root"),
+    [
+        ("win32", "Windows", "WinAppDataLocal"),
+        ("linux", "Linux", "LinuxXdgDataHome"),
+    ],
+)
+def test_cloudsave_manager_status_reports_current_platform_rule(platform_name: str, expected_platform: str, expected_root: str):
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        manager = CloudSaveManager(cm)
+        with patch("utils.cloudsave_autocloud.sys.platform", platform_name):
+            status = manager.build_status()
+
+        assert status["current_platform_rule"]["platform"] == expected_platform
+        assert status["current_platform_rule"]["root"] == expected_root
+
+
+@pytest.mark.unit
 def test_cloudsave_manager_no_snapshot_result_includes_diagnostic_hint():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
@@ -242,6 +263,37 @@ def test_cloudsave_manager_import_deadline_exceeded_before_apply_preserves_local
             )
 
         assert target_cm.load_characters()["当前猫娘"] == "本地角色"
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_reraises_remote_bundle_download_deadline_exceeded():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        manager = CloudSaveManager(cm)
+        with patch(
+            "utils.cloudsave_autocloud.download_cloudsave_bundle_from_steam",
+            side_effect=CloudsaveDeadlineExceeded("steam_remote_download", stage="initialize"),
+        ):
+            with pytest.raises(CloudsaveDeadlineExceeded):
+                manager.import_if_needed(reason="deadline_propagation_check", force=True)
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_reraises_remote_bundle_upload_deadline_exceeded():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        _write_runtime_state(cm, character_name="超时上传角色")
+
+        manager = CloudSaveManager(cm)
+        with patch(
+            "utils.cloudsave_autocloud.upload_cloudsave_bundle_to_steam",
+            side_effect=CloudsaveDeadlineExceeded("steam_remote_upload", stage="write_remote"),
+        ):
+            with pytest.raises(CloudsaveDeadlineExceeded):
+                manager.export_snapshot(reason="deadline_propagation_check")
 
 
 @pytest.mark.unit

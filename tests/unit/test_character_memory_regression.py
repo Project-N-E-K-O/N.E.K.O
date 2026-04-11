@@ -512,11 +512,11 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
         assert payload["昵称"] == "来自创意工坊"
         assert get_reserved(payload, "avatar", "asset_source", default="") == "steam_workshop"
         assert get_reserved(payload, "avatar", "asset_source_id", default="") == "3671939765"
-        assert get_reserved(payload, "avatar", "live2d", "model_path", default="") == "Blue cat/Blue cat.model3.json"
+        assert get_reserved(payload, "avatar", "live2d", "model_path", default="") == "/workshop/3671939765/Blue cat.model3.json"
         assert get_reserved(payload, "character_origin", "source", default="") == "steam_workshop"
         assert get_reserved(payload, "character_origin", "source_id", default="") == "3671939765"
         assert get_reserved(payload, "character_origin", "display_name", default="") == "Blue cat"
-        assert get_reserved(payload, "character_origin", "model_ref", default="") == "Blue cat/Blue cat.model3.json"
+        assert get_reserved(payload, "character_origin", "model_ref", default="") == "/workshop/3671939765/Blue cat.model3.json"
 
 
 @pytest.mark.unit

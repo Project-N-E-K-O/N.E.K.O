@@ -1342,7 +1342,7 @@ def test_local_cloudsave_snapshot_roundtrip_supports_embedded_dot_character_name
     import_local_cloudsave_snapshot(target_cm)
 
     imported_characters = target_cm.load_characters()
-    assert "N.E.K.O" in (imported_characters.get("鐚") or {})
+    assert "N.E.K.O" in (imported_characters.get("猫娘") or {})
     assert (Path(target_cm.memory_dir) / "N.E.K.O" / "recent.json").is_file()
 
 
@@ -1366,7 +1366,7 @@ def test_single_character_cloudsave_operations_support_embedded_dot_names(tmp_pa
     import_result = import_cloudsave_character_unit(target_cm, "N.E.K.O")
 
     assert import_result["character_name"] == "N.E.K.O"
-    assert "N.E.K.O" in (target_cm.load_characters().get("鐚") or {})
+    assert "N.E.K.O" in (target_cm.load_characters().get("猫娘") or {})
     assert (Path(target_cm.memory_dir) / "N.E.K.O" / "recent.json").is_file()
 
 

@@ -53,6 +53,41 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
     assert result["import_result"]["action"] == "imported"
     assert emitted_events[-1][0] == "cloudsave_bootstrap_ready"
     assert emitted_events[-1][1]["import_result"]["requested_reason"] == "launcher_phase0_prelaunch_import"
+    assert emitted_events[-1][1]["manifest_name"] == "manifest.json"
+    assert emitted_events[-1][1]["manifest_exists"] is False
+
+
+@pytest.mark.unit
+def test_launcher_uses_multi_process_mode_by_default_in_source(monkeypatch):
+    import launcher
+
+    monkeypatch.delenv("NEKO_MERGED", raising=False)
+    monkeypatch.setattr(launcher, "IS_FROZEN", False)
+
+    assert launcher._should_use_merged_mode() is False
+
+
+@pytest.mark.unit
+def test_launcher_uses_merged_mode_by_default_when_frozen(monkeypatch):
+    import launcher
+
+    monkeypatch.delenv("NEKO_MERGED", raising=False)
+    monkeypatch.setattr(launcher, "IS_FROZEN", True)
+
+    assert launcher._should_use_merged_mode() is True
+
+
+@pytest.mark.unit
+def test_launcher_env_override_beats_default_process_mode(monkeypatch):
+    import launcher
+
+    monkeypatch.setattr(launcher, "IS_FROZEN", False)
+    monkeypatch.setenv("NEKO_MERGED", "1")
+    assert launcher._should_use_merged_mode() is True
+
+    monkeypatch.setattr(launcher, "IS_FROZEN", True)
+    monkeypatch.setenv("NEKO_MERGED", "0")
+    assert launcher._should_use_merged_mode() is False
 
 
 @pytest.mark.unit
@@ -152,3 +187,135 @@ def test_launcher_cleanup_waits_for_main_server_shutdown_completion(monkeypatch)
     assert process.join_calls == [2]
     assert process.terminate_called is False
     assert process.kill_called is False
+
+
+@pytest.mark.unit
+def test_launcher_cleanup_requests_main_before_memory(monkeypatch):
+    import launcher
+
+    call_order = []
+
+    class _DummyEvent:
+        def __init__(self, name: str):
+            self.name = name
+
+        def set(self):
+            call_order.append(self.name)
+
+        def wait(self, timeout=None):
+            return True
+
+    class _DummyProcess:
+        def __init__(self, pid: int):
+            self.alive = True
+            self.pid = pid
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout=None):
+            if timeout == 2:
+                self.alive = False
+
+        def terminate(self):
+            self.alive = False
+
+        def kill(self):
+            self.alive = False
+
+    monkeypatch.setattr(launcher, "_cleanup_done", False)
+    monkeypatch.setattr(launcher, "JOB_HANDLE", None)
+    monkeypatch.setattr(
+        launcher,
+        "SERVERS",
+        [
+            {
+                "name": "Memory Server",
+                "module": "memory_server",
+                "port": launcher.MEMORY_SERVER_PORT,
+                "process": _DummyProcess(1001),
+                "shutdown_event": _DummyEvent("memory"),
+                "shutdown_complete_event": _DummyEvent("memory_complete"),
+                "graceful_shutdown_timeout": 12,
+            },
+            {
+                "name": "Main Server",
+                "module": "main_server",
+                "port": launcher.MAIN_SERVER_PORT,
+                "process": _DummyProcess(1002),
+                "shutdown_event": _DummyEvent("main"),
+                "shutdown_complete_event": _DummyEvent("main_complete"),
+                "graceful_shutdown_timeout": 20,
+            },
+            {
+                "name": "Agent Server",
+                "module": "agent_server",
+                "port": launcher.TOOL_SERVER_PORT,
+                "process": _DummyProcess(1003),
+                "shutdown_event": _DummyEvent("agent"),
+                "shutdown_complete_event": _DummyEvent("agent_complete"),
+                "graceful_shutdown_timeout": 8,
+            },
+        ],
+        raising=False,
+    )
+
+    launcher.cleanup_servers()
+
+    assert call_order[:3] == ["main", "memory", "agent"]
+
+
+@pytest.mark.unit
+def test_launcher_cleanup_survives_keyboardinterrupt_during_shutdown_wait(monkeypatch):
+    import launcher
+
+    class _InterruptingEvent:
+        def set(self):
+            return None
+
+        def wait(self, timeout=None):
+            raise KeyboardInterrupt()
+
+    class _DummyProcess:
+        def __init__(self):
+            self.alive = True
+            self.pid = 24680
+            self.terminate_called = False
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout=None):
+            return None
+
+        def terminate(self):
+            self.terminate_called = True
+            self.alive = False
+
+        def kill(self):
+            self.alive = False
+
+    process = _DummyProcess()
+
+    monkeypatch.setattr(launcher, "_cleanup_done", False)
+    monkeypatch.setattr(launcher, "JOB_HANDLE", None)
+    monkeypatch.setattr(
+        launcher,
+        "SERVERS",
+        [
+            {
+                "name": "Main Server",
+                "module": "main_server",
+                "port": launcher.MAIN_SERVER_PORT,
+                "process": process,
+                "shutdown_event": _InterruptingEvent(),
+                "shutdown_complete_event": _InterruptingEvent(),
+                "graceful_shutdown_timeout": 20,
+            }
+        ],
+        raising=False,
+    )
+
+    launcher.cleanup_servers()
+
+    assert process.terminate_called is True

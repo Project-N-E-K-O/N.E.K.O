@@ -1,4 +1,5 @@
 import importlib
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -10,6 +11,13 @@ from main_routers.shared_state import init_shared_state
 from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
 from utils.config_manager import ConfigManager
 from utils.file_utils import atomic_write_json
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cloudsave_router_module():
+    sys.modules.pop("main_routers.cloudsave_router", None)
+    yield
+    sys.modules.pop("main_routers.cloudsave_router", None)
 
 
 def _make_config_manager(tmp_root: Path):

@@ -38,7 +38,7 @@ This path bootstraps local `cloudsave/`, applies any staged snapshot, and only
 then starts the backend services, so it is closer to the real Steam / desktop
 startup path.
 
-Start the required servers in separate terminals:
+Alternatively, start the required servers manually in separate terminals:
 
 ```bash
 # Terminal 1 — Memory server (required)

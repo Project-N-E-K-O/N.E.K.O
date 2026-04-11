@@ -64,6 +64,7 @@ import logging
 import uuid
 import importlib
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
 import config as config_module
@@ -129,6 +130,11 @@ MODULE_TO_PORT_KEY: dict[str, str] = {
     "agent_server": "TOOL_SERVER_PORT",
     "main_server": "MAIN_SERVER_PORT",
 }
+SHUTDOWN_MODULE_ORDER = (
+    "main_server",
+    "memory_server",
+    "agent_server",
+)
 
 
 def _sync_runtime_config_globals(
@@ -137,10 +143,11 @@ def _sync_runtime_config_globals(
 ) -> None:
     """Keep the already-imported ``config`` module aligned with launcher choices.
 
-    On Linux/macOS, ``multiprocessing`` defaults to ``fork``. Child processes then
-    inherit the parent's already-imported ``config`` module object, so only writing
-    ``os.environ`` is insufficient: any later ``from config import TOOL_SERVER_PORT``
-    inside forked children would still see the stale pre-launcher values.
+    On Linux, ``multiprocessing`` often defaults to ``fork`` while macOS/Windows
+    commonly use ``spawn``. Either way, only writing ``os.environ`` is not enough:
+    forked children can inherit the parent's already-imported ``config`` module
+    object, and spawned children can still observe stale globals if imports happen
+    before launcher-selected overrides are reloaded.
 
     Syncing the module globals here ensures forked children and modules imported
     after forking observe the negotiated runtime ports and shared instance id.
@@ -252,6 +259,29 @@ def _get_last_error() -> int:
     if sys.platform != 'win32':
         return 0
     return ctypes.windll.kernel32.GetLastError()
+
+
+def _detach_child_process_session() -> None:
+    """Keep launcher-managed child servers out of the launcher's Ctrl+C process group.
+
+    Without this on macOS/Linux, terminal SIGINT reaches the launcher and all child
+    servers at once. That lets ``memory_server`` exit before ``main_server`` finishes
+    its shutdown export/release sequence, which defeats the cloudsave cleanup order.
+    """
+    if os.name != "posix":
+        return
+    try:
+        os.setsid()
+    except Exception as e:
+        print(f"[Launcher] Warning: failed to detach child process session: {e}", flush=True)
+
+
+def _iter_servers_for_shutdown():
+    order = {module_name: index for index, module_name in enumerate(SHUTDOWN_MODULE_ORDER)}
+    return sorted(
+        SERVERS,
+        key=lambda server: (order.get(server.get("module", ""), len(order)), server.get("name", "")),
+    )
 
 
 def setup_job_object():
@@ -530,6 +560,7 @@ def run_memory_server(
 ):
     """运行 Memory Server"""
     try:
+        _detach_child_process_session()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
         if IS_FROZEN:
@@ -626,6 +657,7 @@ def run_agent_server(
 ):
     """运行 Agent Server (不需要等待初始化)"""
     try:
+        _detach_child_process_session()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
         if IS_FROZEN:
@@ -699,6 +731,7 @@ def run_main_server(
 ):
     """运行 Main Server"""
     try:
+        _detach_child_process_session()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
         if IS_FROZEN:
@@ -1214,7 +1247,7 @@ def cleanup_servers():
         _cleanup_done = True
 
     print("\n正在关闭服务器...", flush=True)
-    for server in SERVERS:
+    for server in _iter_servers_for_shutdown():
         proc = server.get('process')
         if not proc:
             continue
@@ -1229,20 +1262,35 @@ def cleanup_servers():
                 if shutdown_evt is not None:
                     shutdown_evt.set()
                 if shutdown_complete_evt is not None:
-                    shutdown_complete_evt.wait(timeout=graceful_timeout)
-                    proc.join(timeout=2)
+                    try:
+                        shutdown_complete_evt.wait(timeout=graceful_timeout)
+                    except KeyboardInterrupt:
+                        print(f"[Launcher] {server['name']} shutdown wait interrupted, continuing cleanup", flush=True)
+                    try:
+                        proc.join(timeout=2)
+                    except KeyboardInterrupt:
+                        print(f"[Launcher] {server['name']} join interrupted, escalating shutdown", flush=True)
                 else:
-                    proc.join(timeout=graceful_timeout)
+                    try:
+                        proc.join(timeout=graceful_timeout)
+                    except KeyboardInterrupt:
+                        print(f"[Launcher] {server['name']} join interrupted, escalating shutdown", flush=True)
 
             # 第二步：仍存活则发送终止信号
             if proc.is_alive():
                 proc.terminate()
-                proc.join(timeout=5)
+                try:
+                    proc.join(timeout=5)
+                except KeyboardInterrupt:
+                    print(f"[Launcher] {server['name']} terminate wait interrupted, forcing shutdown", flush=True)
 
             # 第三步：仍存活则 kill
             if proc.is_alive():
                 proc.kill()
-                proc.join(timeout=2)
+                try:
+                    proc.join(timeout=2)
+                except KeyboardInterrupt:
+                    print(f"[Launcher] {server['name']} kill wait interrupted, moving on", flush=True)
 
             # 第四步：仅在父进程仍存活时兜底强杀整个进程树，避免 PID 复用误杀
             if proc.is_alive():
@@ -1366,6 +1414,16 @@ def _ensure_playwright_browsers():
         emit_frontend_event("playwright_check", {"status": "skipped", "message": str(e)})
 
 
+def _should_use_merged_mode() -> bool:
+    """Choose merged vs multi-process mode from env override + runtime shape."""
+    merged_env = os.environ.get("NEKO_MERGED", "").strip().lower()
+    if merged_env in ("1", "true", "yes"):
+        return True
+    if merged_env in ("0", "false", "no"):
+        return False
+    return IS_FROZEN
+
+
 def _prepare_cloudsave_runtime_for_launch() -> dict:
     """Bootstrap local cloudsave state and apply any staged snapshot before services start."""
     print("[Launcher] 初始化本地 cloudsave 基础设施...", flush=True)
@@ -1390,7 +1448,8 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
     )
     event_payload = {
         "root_state": root_state,
-        "manifest_path": str(config_manager.cloudsave_manifest_path),
+        "manifest_name": Path(config_manager.cloudsave_manifest_path).name,
+        "manifest_exists": bool(Path(config_manager.cloudsave_manifest_path).exists()),
         "import_result": import_result,
     }
     emit_frontend_event("cloudsave_bootstrap_ready", event_payload)
@@ -1457,15 +1516,7 @@ def main():
         # ── 合并 / 多进程模式选择 ──
         # 打包环境默认合并（省内存），开发环境默认分离（方便调试）。
         # 可通过环境变量 NEKO_MERGED=1/0 强制覆盖。
-        _merged_env = os.environ.get("NEKO_MERGED", "").strip().lower()
-        if _merged_env in ("1", "true", "yes"):
-            _use_merged = True
-        elif _merged_env in ("0", "false", "no"):
-            _use_merged = False
-        else:
-            _use_merged = IS_FROZEN
-
-        if _use_merged:
+        if _should_use_merged_mode():
             print("\n[Launcher] 合并进程模式\n", flush=True)
             return run_merged_servers()
 
@@ -1588,18 +1639,11 @@ def main():
             break
 
     except KeyboardInterrupt:
-        print("\n\n收到中断信号，等待子进程退出...", flush=True)
-        # 子进程已经收到了 SIGINT，给它们一点时间自己退出
-        start_wait = time.time()
-        while time.time() - start_wait < 3:
-            all_dead = True
-            for server in SERVERS:
-                if server.get('process') and server['process'].is_alive():
-                    all_dead = False
-                    break
-            if all_dead:
-                break
-            time.sleep(0.1)
+        try:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+        except Exception:
+            pass
+        print("\n\n收到中断信号，准备优雅关闭子进程...", flush=True)
             
     except Exception as e:
         print(f"\n发生错误: {e}", flush=True)

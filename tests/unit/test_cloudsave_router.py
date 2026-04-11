@@ -1,4 +1,5 @@
 import importlib
+import sys
 import json
 import shutil
 from pathlib import Path
@@ -17,6 +18,13 @@ from utils.cloudsave_runtime import (
     export_local_cloudsave_snapshot,
 )
 from utils.file_utils import atomic_write_json
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cloudsave_router_module():
+    sys.modules.pop("main_routers.cloudsave_router", None)
+    yield
+    sys.modules.pop("main_routers.cloudsave_router", None)
 
 
 def _make_config_manager(tmp_root: Path):
@@ -291,7 +299,12 @@ async def test_cloudsave_router_summary_enriches_workshop_origin_status_for_loca
 
         local_model_dir = Path(cm.live2d_dir) / "猫娘-YUI-洛丽塔-导出03"
         local_model_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(local_model_dir / "0313YUI03.model3.json", {"Version": 3}, ensure_ascii=False, indent=2)
+        atomic_write_json(
+            local_model_dir / "猫娘-YUI-洛丽塔-导出03.model3.json",
+            {"Version": 3},
+            ensure_ascii=False,
+            indent=2,
+        )
 
         async def _noop_init():
             return None

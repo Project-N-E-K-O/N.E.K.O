@@ -119,53 +119,120 @@ def test_ensure_cloudsave_state_files_raises_when_local_state_directory_init_fai
 
 @pytest.mark.unit
 def test_get_documents_directory_preserves_first_readable_legacy_candidate(tmp_path):
+    import utils.config_manager as config_manager_module
     from utils.config_manager import ConfigManager
 
+    home_dir = tmp_path / "home"
     standard_dir = tmp_path / "standard"
-    legacy_dir = tmp_path / "legacy"
     docs_dir = tmp_path / "Documents"
-    standard_dir.mkdir(parents=True, exist_ok=True)
-    legacy_dir.mkdir(parents=True, exist_ok=True)
-    docs_dir.mkdir(parents=True, exist_ok=True)
+    cwd_dir = tmp_path / "cwd"
+    project_root = tmp_path / "project_root"
+    for path in (home_dir, standard_dir, docs_dir, cwd_dir, project_root):
+        path.mkdir(parents=True, exist_ok=True)
 
-    cm = object.__new__(ConfigManager)
-    cm._log = lambda *_args, **_kwargs: None
-    cm._get_standard_data_directory_candidates = lambda: [standard_dir]
-    cm._get_legacy_storage_candidates = lambda: [legacy_dir, docs_dir]
-    cm._get_legacy_document_candidates = lambda: [docs_dir]
-    cm._dedupe_paths = lambda paths: list(dict.fromkeys(paths))
+    with patch.object(config_manager_module.sys, "platform", "linux"), patch.dict(
+        config_manager_module.os.environ,
+        {
+            "XDG_DATA_HOME": str(standard_dir),
+            "XDG_DOCUMENTS_DIR": str(docs_dir),
+        },
+        clear=False,
+    ), patch.object(config_manager_module.Path, "home", return_value=home_dir), patch.object(
+        config_manager_module.Path,
+        "cwd",
+        return_value=cwd_dir,
+    ), patch.object(
+        ConfigManager,
+        "_get_project_root",
+        return_value=project_root,
+    ):
+        cm = ConfigManager("N.E.K.O")
 
-    chosen = ConfigManager._get_documents_directory(cm)
-
-    assert chosen == standard_dir
+    assert cm.docs_dir == standard_dir
     assert cm._first_readable_candidate == docs_dir
     assert cm._first_non_writable_readable_candidate is None
 
 
 @pytest.mark.unit
 def test_get_documents_directory_ignores_non_document_legacy_roots_for_cfa_detection(tmp_path):
+    import utils.config_manager as config_manager_module
     from utils.config_manager import ConfigManager
 
+    home_dir = tmp_path / "home"
     standard_dir = tmp_path / "standard"
     docs_dir = tmp_path / "Documents"
     exe_dir = tmp_path / "bundle"
-    standard_dir.mkdir(parents=True, exist_ok=True)
-    docs_dir.mkdir(parents=True, exist_ok=True)
-    exe_dir.mkdir(parents=True, exist_ok=True)
+    cwd_dir = tmp_path / "cwd"
+    project_root = tmp_path / "project_root"
+    for path in (home_dir, standard_dir, docs_dir, exe_dir, cwd_dir, project_root):
+        path.mkdir(parents=True, exist_ok=True)
+    exe_binary = exe_dir / "N.E.K.O"
+    exe_binary.write_text("", encoding="utf-8")
 
-    cm = object.__new__(ConfigManager)
-    cm._log = lambda *_args, **_kwargs: None
-    cm._get_standard_data_directory_candidates = lambda: [standard_dir]
-    cm._get_legacy_storage_candidates = lambda: [docs_dir, exe_dir]
-    cm._get_legacy_document_candidates = lambda: [docs_dir]
-    cm._dedupe_paths = lambda paths: list(dict.fromkeys(paths))
-    cm._can_write_existing_directory = lambda path: Path(path) != exe_dir
+    with patch.object(config_manager_module.sys, "platform", "linux"), patch.object(
+        config_manager_module.sys,
+        "frozen",
+        True,
+        create=True,
+    ), patch.object(
+        config_manager_module.sys,
+        "executable",
+        str(exe_binary),
+    ), patch.dict(
+        config_manager_module.os.environ,
+        {
+            "XDG_DATA_HOME": str(standard_dir),
+            "XDG_DOCUMENTS_DIR": str(docs_dir),
+        },
+        clear=False,
+    ), patch.object(config_manager_module.Path, "home", return_value=home_dir), patch.object(
+        config_manager_module.Path,
+        "cwd",
+        return_value=cwd_dir,
+    ), patch.object(
+        ConfigManager,
+        "_get_project_root",
+        return_value=project_root,
+    ):
+        cm = ConfigManager("N.E.K.O")
 
-    chosen = ConfigManager._get_documents_directory(cm)
-
-    assert chosen == standard_dir
+    assert cm.docs_dir == standard_dir
     assert cm._first_readable_candidate == docs_dir
     assert cm._first_non_writable_readable_candidate is None
+
+
+@pytest.mark.unit
+def test_get_documents_directory_uses_linux_xdg_fallback_when_xdg_data_home_missing(tmp_path):
+    import utils.config_manager as config_manager_module
+    from utils.config_manager import ConfigManager
+
+    home_dir = tmp_path / "home"
+    docs_dir = home_dir / "Documents"
+    cwd_dir = tmp_path / "cwd"
+    project_root = tmp_path / "project_root"
+    for path in (home_dir, docs_dir, cwd_dir, project_root):
+        path.mkdir(parents=True, exist_ok=True)
+
+    with patch.object(config_manager_module.sys, "platform", "linux"), patch.dict(
+        config_manager_module.os.environ,
+        {
+            "XDG_DATA_HOME": "",
+            "XDG_DOCUMENTS_DIR": str(docs_dir),
+        },
+        clear=False,
+    ), patch.object(config_manager_module.Path, "home", return_value=home_dir), patch.object(
+        config_manager_module.Path,
+        "cwd",
+        return_value=cwd_dir,
+    ), patch.object(
+        ConfigManager,
+        "_get_project_root",
+        return_value=project_root,
+    ):
+        cm = ConfigManager("N.E.K.O")
+
+    assert cm.docs_dir == home_dir / ".local" / "share"
+    assert cm._first_readable_candidate == docs_dir
 
 
 @pytest.mark.unit
@@ -195,17 +262,43 @@ def test_load_workshop_config_does_not_delete_invalid_file_on_read(tmp_path):
     cm = _make_config_manager(tmp_path)
     config_path = cm.config_dir / "workshop_config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("{not-valid-json", encoding="utf-8")
+
+    loaded = cm.load_workshop_config()
+
+    assert isinstance(loaded, dict)
+    assert config_path.is_file()
+    assert config_path.read_text(encoding="utf-8") == "{not-valid-json"
+
+
+@pytest.mark.unit
+def test_load_user_preferences_prefers_runtime_path_when_present(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    runtime_preferences_path = cm.config_dir / "user_preferences.json"
+    project_preferences_path = cm.project_config_dir / "user_preferences.json"
+    runtime_preferences_path.parent.mkdir(parents=True, exist_ok=True)
+    project_preferences_path.parent.mkdir(parents=True, exist_ok=True)
+
     atomic_write_json(
-        config_path,
-        {"default_workshop_folder": str(tmp_path / "missing-workshop")},
+        project_preferences_path,
+        [{"model_path": "/legacy.model3.json", "position": {"x": 1}, "scale": {"x": 1}}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    atomic_write_json(
+        runtime_preferences_path,
+        [{"model_path": "/runtime.model3.json", "position": {"x": 2}, "scale": {"x": 2}}],
         ensure_ascii=False,
         indent=2,
     )
 
-    loaded = cm.load_workshop_config()
+    with patch("utils.config_manager._config_manager", cm):
+        from utils import preferences as preferences_module
 
-    assert loaded["default_workshop_folder"] == str(tmp_path / "missing-workshop")
-    assert config_path.is_file()
+        with patch.object(preferences_module, "_config_manager", cm):
+            loaded = preferences_module.load_user_preferences()
+
+    assert loaded[0]["model_path"] == "/runtime.model3.json"
 
 
 @pytest.mark.unit
@@ -254,6 +347,45 @@ def test_save_json_config_writes_runtime_root_even_when_project_fallback_exists(
     assert runtime_core_config_path.is_file()
     assert json.loads(runtime_core_config_path.read_text(encoding="utf-8"))["coreApi"] == "runtime"
     assert json.loads(project_core_config_path.read_text(encoding="utf-8"))["coreApi"] == "legacy"
+
+
+@pytest.mark.unit
+def test_load_characters_keeps_in_memory_migration_when_write_fence_blocks_persist(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    characters_path = cm.config_dir / "characters.json"
+    characters_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        characters_path,
+        {
+            "猫娘": {
+                "旧角色": {
+                    "名字": "旧角色",
+                    "live2d": "legacy_model",
+                    "item_id": "123456",
+                }
+            },
+            "主人": {},
+            "当前猫娘": "旧角色",
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    maintenance_error = MaintenanceModeError("bootstrap_importing", operation="save", target="characters.json")
+
+    with patch("utils.cloudsave_runtime.assert_cloudsave_writable", side_effect=maintenance_error), patch(
+        "utils.config_manager.logger.warning"
+    ) as mock_warning:
+        loaded = cm.load_characters()
+
+    reserved = loaded["猫娘"]["旧角色"]["_reserved"]
+    assert reserved["avatar"]["asset_source"] == "steam_workshop"
+    assert reserved["avatar"]["asset_source_id"] == "123456"
+    assert reserved["avatar"]["live2d"]["model_path"] == "legacy_model/legacy_model.model3.json"
+    assert "_reserved" not in json.loads(characters_path.read_text(encoding="utf-8"))["猫娘"]["旧角色"]
+    mock_warning.assert_not_called()
 
 
 @pytest.mark.unit

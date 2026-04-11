@@ -15,6 +15,7 @@ import time
 import asyncio
 import threading
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Request
@@ -88,6 +89,19 @@ def _derive_workshop_origin_display_name(raw_model_name: str, fallback_name: str
 
 def _normalize_workshop_model_ref(raw_value: str) -> str:
     return str(raw_value or "").strip().replace("\\", "/")
+
+
+def _build_subscriber_workshop_model_ref(item_id: str | int, raw_model_ref: str) -> str:
+    normalized_ref = _normalize_workshop_model_ref(raw_model_ref)
+    normalized_item_id = str(item_id or "").strip()
+    if not normalized_ref or not normalized_item_id:
+        return normalized_ref
+    if normalized_ref.startswith("/workshop/"):
+        return normalized_ref
+    model_name = Path(normalized_ref).name
+    if not model_name:
+        return f"/workshop/{normalized_item_id}"
+    return f"/workshop/{normalized_item_id}/{model_name}"
 
 
 def _derive_workshop_model_binding(chara_data: dict) -> dict[str, str]:
@@ -2989,6 +3003,10 @@ async def sync_workshop_character_cards() -> dict:
                             # - character_origin 表示该角色最初来自哪个 Workshop 物品
                             # - avatar.asset_source 表示当前实际绑定的模型来源
                             model_binding = _derive_workshop_model_binding(chara_data)
+                            subscriber_model_ref = _build_subscriber_workshop_model_ref(
+                                item_id,
+                                model_binding.get('model_ref', ''),
+                            )
                             origin_display_name = _derive_workshop_origin_display_name(
                                 model_binding.get('display_name_source', ''),
                                 chara_name,
@@ -3007,12 +3025,12 @@ async def sync_workshop_character_cards() -> dict:
                                     catgirl_data,
                                     'character_origin',
                                     'model_ref',
-                                    model_binding.get('model_ref', ''),
+                                    subscriber_model_ref,
                                 )
 
                             # 如果角色卡带有可识别的模型路径，同时保存当前 avatar 绑定信息
                             # COMPAT(v1->v2): 旧字段 live2d_item_id 已迁移，不再写回平铺 key。
-                            if model_binding.get('model_ref') and item_id:
+                            if subscriber_model_ref and item_id:
                                 set_reserved(catgirl_data, 'avatar', 'asset_source_id', str(item_id))
                                 set_reserved(catgirl_data, 'avatar', 'asset_source', 'steam_workshop')
                                 set_reserved(
@@ -3023,17 +3041,17 @@ async def sync_workshop_character_cards() -> dict:
                                 )
 
                                 if model_binding.get('binding_model_type') == 'live2d':
-                                    set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', model_binding.get('model_ref', ''))
+                                    set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', subscriber_model_ref)
                                     set_reserved(catgirl_data, 'avatar', 'vrm', 'model_path', '')
                                     set_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', '')
                                 elif model_binding.get('binding_model_type') == 'vrm':
                                     set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', '')
-                                    set_reserved(catgirl_data, 'avatar', 'vrm', 'model_path', model_binding.get('model_ref', ''))
+                                    set_reserved(catgirl_data, 'avatar', 'vrm', 'model_path', subscriber_model_ref)
                                     set_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', '')
                                 elif model_binding.get('binding_model_type') == 'mmd':
                                     set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', '')
                                     set_reserved(catgirl_data, 'avatar', 'vrm', 'model_path', '')
-                                    set_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', model_binding.get('model_ref', ''))
+                                    set_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', subscriber_model_ref)
                             
                             characters['猫娘'][chara_name] = catgirl_data
                             need_save = True

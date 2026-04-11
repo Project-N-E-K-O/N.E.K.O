@@ -6,7 +6,7 @@ import pytest
 
 characters_router_module = importlib.import_module('main_routers.characters_router')
 from main_routers.config_router import _get_live3d_sub_type
-from utils.config_manager import flatten_reserved, get_reserved
+from utils.config_manager import delete_reserved, flatten_reserved, get_reserved, migrate_catgirl_reserved
 
 
 class DummyRequest:
@@ -185,3 +185,26 @@ def test_flatten_reserved_exposes_live3d_sub_type_for_frontend_consumers():
 
     assert flattened['model_type'] == 'live3d'
     assert flattened['live3d_sub_type'] == 'vrm'
+
+
+def test_migrate_catgirl_reserved_does_not_persist_empty_live3d_sub_type():
+    catgirl = _build_characters_fixture()['猫娘']['测试角色']
+    avatar = catgirl['_reserved']['avatar']
+    avatar['model_type'] = 'live2d'
+    avatar['vrm']['model_path'] = ''
+    avatar['mmd']['model_path'] = ''
+    avatar.pop('live3d_sub_type', None)
+
+    migrate_catgirl_reserved(catgirl)
+
+    assert get_reserved(catgirl, 'avatar', 'live3d_sub_type', default='') == ''
+    assert 'live3d_sub_type' not in catgirl['_reserved']['avatar']
+
+
+def test_delete_reserved_prunes_empty_parent_nodes():
+    catgirl = {'_reserved': {'avatar': {'live3d_sub_type': 'vrm'}}}
+
+    deleted = delete_reserved(catgirl, 'avatar', 'live3d_sub_type')
+
+    assert deleted is True
+    assert '_reserved' not in catgirl

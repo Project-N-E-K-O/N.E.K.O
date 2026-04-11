@@ -1505,10 +1505,20 @@ async def rename_catgirl(old_name: str, request: Request):
         target=f"characters/{old_name} -> {new_name}",
     )
 
-    await release_memory_server_character(
+    released_memory_handle = await release_memory_server_character(
         old_name,
         reason=f"角色重命名前释放 SQLite 句柄: {old_name} -> {new_name}",
     )
+    if not released_memory_handle:
+        logger.warning("角色重命名前释放记忆服务器句柄失败，已阻止重命名: %s -> %s", old_name, new_name)
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "释放角色记忆句柄失败，已阻止重命名，请稍后重试",
+                "memory_server_released": False,
+            },
+            status_code=503,
+        )
 
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, old_name)
@@ -1534,13 +1544,15 @@ async def rename_catgirl(old_name: str, request: Request):
             memory_server_reloaded = await notify_memory_server_reload(
                 reason=f"角色重命名: {old_name} -> {new_name}",
             )
-        except MaintenanceModeError:
-            await _rollback_character_operation(
+        except MaintenanceModeError as exc:
+            rollback_error = await _rollback_character_operation(
                 _config_manager,
                 characters_snapshot=characters_snapshot,
                 memory_snapshot_records=memory_snapshot_records,
                 reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
             )
+            if rollback_error is not None:
+                raise exc from rollback_error
             raise
         except Exception as exc:
             rollback_error = await _rollback_character_operation(
@@ -2004,14 +2016,16 @@ async def delete_catgirl(name: str):
             initialize_character_data = get_initialize_character_data()
             await initialize_character_data()
             memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
-        except MaintenanceModeError:
-            await _rollback_character_operation(
+        except MaintenanceModeError as exc:
+            rollback_error = await _rollback_character_operation(
                 _config_manager,
                 characters_snapshot=characters_snapshot,
                 memory_snapshot_records=memory_snapshot_records,
                 tombstone_snapshot=tombstone_snapshot,
                 reason=f"维护模式：删除角色回滚 {name}",
             )
+            if rollback_error is not None:
+                raise exc from rollback_error
             raise
         except Exception as exc:
             rollback_error = await _rollback_character_operation(

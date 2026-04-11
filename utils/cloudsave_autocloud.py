@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from utils.cloudsave_runtime import (
+    CloudsaveDeadlineExceeded,
     _runtime_root_has_user_content,
     bootstrap_local_cloudsave_environment,
     export_local_cloudsave_snapshot,
@@ -19,13 +20,18 @@ from utils.steam_cloud_bundle import (
 
 STEAM_AUTO_CLOUD_SYNC_BACKEND = "steam_auto_cloud"
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-STEAM_APP_ID_PATH = PROJECT_ROOT / "steam_appid.txt"
+
+def _get_app_root() -> Path:
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            return Path(sys._MEIPASS)
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parents[1]
 
 
 def _load_steam_app_id() -> str:
     try:
-        return STEAM_APP_ID_PATH.read_text(encoding="utf-8").strip()
+        return (_get_app_root() / "steam_appid.txt").read_text(encoding="utf-8").strip()
     except Exception:
         return ""
 
@@ -64,7 +70,7 @@ def _build_current_platform_rule_preview(config_manager) -> dict[str, str]:
     subdirectory = f"{app_name}/cloudsave"
     if sys.platform == "win32":
         return {
-            "platform": "windows",
+            "platform": "Windows",
             "root": "WinAppDataLocal",
             "subdirectory": subdirectory,
         }
@@ -75,7 +81,7 @@ def _build_current_platform_rule_preview(config_manager) -> dict[str, str]:
             "subdirectory": subdirectory,
         }
     return {
-        "platform": "linux",
+        "platform": "Linux",
         "root": "LinuxXdgDataHome",
         "subdirectory": subdirectory,
     }
@@ -141,6 +147,8 @@ class CloudSaveManager:
                 steamworks=steamworks,
                 deadline_monotonic=deadline_monotonic,
             )
+        except CloudsaveDeadlineExceeded:
+            raise
         except Exception as exc:
             return {
                 "success": False,
@@ -156,6 +164,8 @@ class CloudSaveManager:
                 steamworks=steamworks,
                 deadline_monotonic=deadline_monotonic,
             )
+        except CloudsaveDeadlineExceeded:
+            raise
         except Exception as exc:
             return {
                 "success": False,

@@ -75,9 +75,6 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
     mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
 
     # The list should show our seeded catgirl
-    cat_btn = mock_page.locator("#memory-file-list button.cat-btn")
-    mock_page.wait_for_timeout(500)
-    assert cat_btn.count() >= 1
     expect(mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘")).to_have_count(1, timeout=5000)
 
 
@@ -92,8 +89,9 @@ def test_memory_browser_select_file(mock_page: Page, running_server: str, seed_m
     mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
     
     # Click the cat button to load the memory file
-    cat_btn = mock_page.locator("#memory-file-list button.cat-btn").first
-    cat_btn.click()
+    target_cat_btn = mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘")
+    expect(target_cat_btn).to_have_count(1, timeout=5000)
+    target_cat_btn.first.click()
     
     # Wait for the chat content to render in the editor area
     # The chat items should appear in #memory-chat-edit

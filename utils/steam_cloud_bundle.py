@@ -7,8 +7,9 @@ import shutil
 import sys
 import tempfile
 import zipfile
+import ctypes
 from contextlib import contextmanager
-from ctypes import POINTER, WinDLL, byref, c_bool, c_char_p, c_int32, c_void_p, create_string_buffer
+from ctypes import POINTER, c_bool, c_char_p, c_int32, c_void_p, create_string_buffer
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -27,13 +28,20 @@ from utils.cloudsave_runtime import (
 REMOTE_BUNDLE_FILENAME = "__neko_cloudsave_bundle__.zip"
 REMOTE_META_FILENAME = "__neko_cloudsave_bundle_meta__.json"
 REMOTE_META_SCHEMA_VERSION = 1
+_SOURCE_SCRIPT_SUFFIXES = {".py", ".pyw"}
+
+
+def _steam_remote_bundle_supported_platform() -> bool:
+    # The direct RemoteStorage bridge below is currently implemented against
+    # the Windows steam_api64.dll entry points only.
+    return sys.platform == "win32"
 
 
 def is_source_launch() -> bool:
     argv0 = Path(sys.argv[0]).name.lower()
     if "pytest" in argv0 or os.environ.get("PYTEST_CURRENT_TEST"):
         return False
-    return not getattr(sys, "frozen", False) and Path(sys.argv[0]).suffix.lower() == ".py"
+    return not getattr(sys, "frozen", False) and Path(sys.argv[0]).suffix.lower() in _SOURCE_SCRIPT_SUFFIXES
 
 
 def _managed_cloudsave_relative_paths(config_manager) -> list[str]:
@@ -144,14 +152,16 @@ def _apply_bundle_to_local_cloudsave(config_manager, bundle_bytes: bytes, meta_p
 
     manifest_files = stage_manifest.get("files") if isinstance(stage_manifest.get("files"), dict) else {}
     managed_relative_paths = {"manifest.json", *(str(path) for path in manifest_files.keys())}
+    payload_relative_paths = sorted(path for path in managed_relative_paths if path != "manifest.json")
 
     for relative_path in managed_relative_paths:
         staged_file = stage_cloudsave_root / relative_path
         if not staged_file.is_file():
             raise FileNotFoundError(f"remote cloudsave bundle is missing {relative_path}")
 
-    for relative_path in managed_relative_paths:
+    for relative_path in payload_relative_paths:
         _atomic_copy_file(stage_cloudsave_root / relative_path, config_manager.cloudsave_dir / relative_path)
+    _atomic_copy_file(stage_manifest_path, config_manager.cloudsave_dir / "manifest.json")
 
     stale_relative_paths = existing_relative_paths - managed_relative_paths
     stale_relative_paths.discard("manifest.json")
@@ -185,6 +195,10 @@ class SteamCloudBundleBridge:
         return bridge
 
     def _initialize(self) -> None:
+        if not _steam_remote_bundle_supported_platform():
+            raise RuntimeError(
+                f"Steam RemoteStorage bundle bridge is not supported on platform={sys.platform}"
+            )
         if self.steamworks is None:
             from steamworks import STEAMWORKS
 
@@ -192,7 +206,7 @@ class SteamCloudBundleBridge:
             self._owned_steamworks.initialize()
             self.steamworks = self._owned_steamworks
 
-        self._api = WinDLL(str(_steam_api_dll_path().resolve()))
+        self._api = ctypes.WinDLL(str(_steam_api_dll_path().resolve()))
         self._api.SteamAPI_SteamRemoteStorage_v016.restype = c_void_p
         self._api.SteamAPI_ISteamRemoteStorage_IsCloudEnabledForAccount.argtypes = [c_void_p]
         self._api.SteamAPI_ISteamRemoteStorage_IsCloudEnabledForAccount.restype = c_bool
@@ -288,6 +302,13 @@ def download_cloudsave_bundle_from_steam(
             "action": "skipped",
             "reason": "not_source_launch",
         }
+    if not _steam_remote_bundle_supported_platform():
+        return {
+            "success": True,
+            "action": "skipped",
+            "reason": "unsupported_platform",
+            "platform": sys.platform,
+        }
 
     _assert_deadline_not_exceeded(
         deadline_monotonic,
@@ -345,6 +366,13 @@ def upload_cloudsave_bundle_to_steam(
             "action": "skipped",
             "reason": "not_source_launch",
         }
+    if not _steam_remote_bundle_supported_platform():
+        return {
+            "success": True,
+            "action": "skipped",
+            "reason": "unsupported_platform",
+            "platform": sys.platform,
+        }
 
     _assert_deadline_not_exceeded(
         deadline_monotonic,
@@ -378,7 +406,14 @@ def upload_cloudsave_bundle_to_steam(
                     "reason": "cloud_disabled",
                 }
             bridge.write_file(REMOTE_BUNDLE_FILENAME, bundle_bytes)
-            bridge.write_file(REMOTE_META_FILENAME, meta_bytes)
+            try:
+                bridge.write_file(REMOTE_META_FILENAME, meta_bytes)
+            except Exception:
+                try:
+                    bridge.delete_file(REMOTE_BUNDLE_FILENAME)
+                except Exception:
+                    pass
+                raise
             return {
                 "success": True,
                 "action": "uploaded",

@@ -42,6 +42,17 @@ def _get_app_root():
         # 脚本运行：固定使用项目根目录，避免 IDE / 外部 cwd 导致加载到错误位置的本地库
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+
+def _prepend_env_path(name: str, entry: str) -> None:
+    """Prepend a runtime library search path without clobbering existing values."""
+    if not entry:
+        return
+    existing = os.environ.get(name, "")
+    parts = [part for part in existing.split(os.pathsep) if part]
+    if entry not in parts:
+        parts.insert(0, entry)
+    os.environ[name] = os.pathsep.join(parts)
+
 from steamworks.interfaces.apps         import SteamApps
 from steamworks.interfaces.friends      import SteamFriends
 from steamworks.interfaces.matchmaking  import SteamMatchmaking
@@ -54,8 +65,9 @@ from steamworks.interfaces.workshop     import SteamWorkshop
 from steamworks.interfaces.microtxn     import SteamMicroTxn
 from steamworks.interfaces.input        import SteamInput
 
-# 设置 LD_LIBRARY_PATH（Linux）使用应用根目录
-os.environ['LD_LIBRARY_PATH'] = _get_app_root()
+# Linux 源码/打包模式都优先从应用根目录查找 Steam 依赖，但保留现有搜索路径。
+if sys.platform in ('linux', 'linux2'):
+    _prepend_env_path('LD_LIBRARY_PATH', _get_app_root())
 
 
 class STEAMWORKS(object):

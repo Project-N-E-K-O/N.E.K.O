@@ -206,6 +206,22 @@ async def _run_cloudsave_manager_action(
         kwargs["deadline_monotonic"] = time.monotonic() + float(budget_seconds)
     return await asyncio.to_thread(action, **kwargs)
 
+
+async def _request_memory_server_shutdown() -> None:
+    """Request memory_server shutdown after main_server has finished its own cleanup."""
+    try:
+        from config import MEMORY_SERVER_PORT
+
+        shutdown_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/shutdown"
+        async with httpx.AsyncClient(timeout=1, proxy=None, trust_env=False) as client:
+            response = await client.post(shutdown_url)
+        if response.status_code == 200:
+            logger.info("已向memory_server发送关闭信号")
+        else:
+            logger.warning(f"向memory_server发送关闭信号失败，状态码: {response.status_code}")
+    except Exception as e:
+        logger.warning(f"向memory_server发送关闭信号时出错: {e}")
+
 def cleanup():
     """通知所有同步线程停止"""
     for k in sync_shutdown_event:
@@ -1011,8 +1027,6 @@ async def on_startup():
             )
         except Exception as e:
             logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
-        await initialize_character_data()
-        await _sync_memory_server_after_startup_import(import_result)
         try:
             set_root_mode(
                 _config_manager,
@@ -1023,6 +1037,8 @@ async def on_startup():
             )
         except Exception as e:
             logger.warning(f"写入 main_server 启动成功标记失败: {e}")
+        await initialize_character_data()
+        await _sync_memory_server_after_startup_import(import_result)
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         
@@ -1206,6 +1222,11 @@ async def on_shutdown():
         except Exception as e:
             logger.warning(f"Steam Auto-Cloud shutdown export failed: {e}")
 
+        current_config = get_start_config()
+        if current_config.get("shutdown_memory_server_on_exit"):
+            current_config["shutdown_memory_server_on_exit"] = False
+            await _request_memory_server_shutdown()
+
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
     """从 app.state 获取启动配置"""
@@ -1214,6 +1235,7 @@ def get_start_config():
     return {
         "browser_mode_enabled": False,
         "browser_page": "chara_manager",
+        "shutdown_memory_server_on_exit": False,
         'server': None
     }
 
@@ -1290,22 +1312,10 @@ async def shutdown_server_async():
                         logger.debug(f"后台任务 {task_attr} 取消时异常: {e}")
         except Exception as e:
             logger.debug(f"取消创意工坊后台任务时出错: {e}")
-        
-        # 向memory_server发送关闭信号
-        try:
-            from config import MEMORY_SERVER_PORT
-            shutdown_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/shutdown"
-            async with httpx.AsyncClient(timeout=1, proxy=None, trust_env=False) as client:
-                response = await client.post(shutdown_url)
-                if response.status_code == 200:
-                    logger.info("已向memory_server发送关闭信号")
-                else:
-                    logger.warning(f"向memory_server发送关闭信号失败，状态码: {response.status_code}")
-        except Exception as e:
-            logger.warning(f"向memory_server发送关闭信号时出错: {e}")
-        
+
         # 通知服务器退出
         current_config = get_start_config()
+        current_config["shutdown_memory_server_on_exit"] = True
         if current_config['server'] is not None:
             current_config['server'].should_exit = True
     except Exception as e:
@@ -1503,6 +1513,7 @@ if __name__ == "__main__":
         start_config = {
             "browser_mode_enabled": True,
             "browser_page": args.page if args.page!='index' else '',
+            "shutdown_memory_server_on_exit": False,
             'server': server
         }
         set_start_config(start_config)
@@ -1511,6 +1522,7 @@ if __name__ == "__main__":
         start_config = {
             "browser_mode_enabled": False,
             "browser_page": "",
+            "shutdown_memory_server_on_exit": False,
             'server': server
         }
         set_start_config(start_config)

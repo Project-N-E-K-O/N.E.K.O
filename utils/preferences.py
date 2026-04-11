@@ -17,8 +17,15 @@ def _get_preferences_write_path() -> str:
     return str(_config_manager.get_runtime_config_path('user_preferences.json'))
 
 
+def _get_active_preferences_path() -> str:
+    write_path = _get_preferences_write_path()
+    if os.path.exists(write_path):
+        return write_path
+    return _get_preferences_read_path()
+
+
 # 用户偏好文件路径（从配置管理器获取）
-PREFERENCES_FILE = _get_preferences_read_path()
+PREFERENCES_FILE = _get_active_preferences_path()
 
 def load_user_preferences() -> List[Dict[str, Any]]:
     """
@@ -29,7 +36,7 @@ def load_user_preferences() -> List[Dict[str, Any]]:
     """
     try:
         global PREFERENCES_FILE
-        PREFERENCES_FILE = _get_preferences_read_path()
+        PREFERENCES_FILE = _get_active_preferences_path()
         if os.path.exists(PREFERENCES_FILE):
             with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -172,6 +179,8 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         # 保存更新后的偏好
         return save_user_preferences(current_preferences)
     except Exception as e:
+        if isinstance(e, MaintenanceModeError):
+            raise
         print(f"更新模型偏好失败: {e}")
         return False
 
@@ -275,6 +284,8 @@ def move_model_to_top(model_path: str) -> bool:
             # 如果模型不存在，返回False
             return False
     except Exception as e:
+        if isinstance(e, MaintenanceModeError):
+            raise
         print(f"移动模型到顶部失败: {e}")
         return False
 
@@ -304,7 +315,7 @@ def load_global_conversation_settings() -> Dict[str, Any]:
     """
     try:
         global PREFERENCES_FILE
-        PREFERENCES_FILE = _get_preferences_read_path()
+        PREFERENCES_FILE = _get_active_preferences_path()
         if os.path.exists(PREFERENCES_FILE):
             with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)

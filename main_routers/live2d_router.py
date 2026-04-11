@@ -98,7 +98,7 @@ def _dedupe_live2d_models_for_display(models: list[dict]) -> list[dict]:
     workshop_actual_groups: dict[tuple[str, str], list[int]] = {}
     workshop_export_groups: dict[tuple[str, str], list[int]] = {}
 
-    for index, model in enumerate(models or []):
+    for model in models or []:
         if not isinstance(model, dict):
             continue
 

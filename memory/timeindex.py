@@ -1,7 +1,7 @@
 from utils.llm_client import SQLChatMessageHistory, SystemMessage
 from sqlalchemy import create_engine, text
 from config import TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME
-from utils.cloudsave_runtime import assert_cloudsave_writable
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from datetime import datetime
@@ -16,12 +16,23 @@ class TimeIndexedMemory:
         self.recent_history_manager = recent_history_manager
         _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
         for name in time_store:
-            self._ensure_engine_exists(name, time_store[name])
+            try:
+                self._ensure_engine_exists(name, time_store[name])
+            except MaintenanceModeError as exc:
+                logger.debug(f"[TimeIndexedMemory] 维护态跳过预热角色 {name} 的 SQLite 引擎: {exc}")
+
+    def _assert_timeindex_writable(self, lanlan_name: str) -> None:
+        assert_cloudsave_writable(
+            get_config_manager(),
+            operation="save",
+            target=f"memory/{lanlan_name}/time_indexed.db",
+        )
 
     def _ensure_engine_exists(self, lanlan_name: str, db_path: str | None = None) -> bool:
         """确保指定角色的数据库引擎已初始化喵~"""
         if lanlan_name in self.engines and lanlan_name in self.db_paths:
             return True
+        self._assert_timeindex_writable(lanlan_name)
 
         try:
             if not db_path:
@@ -61,7 +72,8 @@ class TimeIndexedMemory:
             engine.dispose()
             logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
         if db_path:
-            connection_string = f"sqlite:///{db_path}"
+            normalized_db_path = str(db_path).replace("\\", "/")
+            connection_string = f"sqlite:///{normalized_db_path}"
             cached_engine = SQLChatMessageHistory._engine_cache.pop(connection_string, None)
             if cached_engine and cached_engine is not engine:
                 cached_engine.dispose()
@@ -111,11 +123,7 @@ class TimeIndexedMemory:
                 logger.exception(f"[TimeIndexedMemory] 迁移 {lanlan_name} 表 {table} 失败")
 
     async def store_conversation(self, event_id, messages, lanlan_name, timestamp=None):
-        assert_cloudsave_writable(
-            get_config_manager(),
-            operation="save",
-            target=f"memory/{lanlan_name}/time_indexed.db",
-        )
+        self._assert_timeindex_writable(lanlan_name)
         # 确保数据库引擎和路径存在
         if not self._ensure_engine_exists(lanlan_name):
             logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")
@@ -155,7 +163,11 @@ class TimeIndexedMemory:
 
     def get_last_conversation_time(self, lanlan_name: str) -> datetime | None:
         """查询指定角色最后一次对话的时间戳。无记录时返回 None。"""
-        if not self._ensure_engine_exists(lanlan_name):
+        try:
+            if not self._ensure_engine_exists(lanlan_name):
+                return None
+        except MaintenanceModeError as exc:
+            logger.debug(f"[TimeIndexedMemory] 维护态跳过初始化 {lanlan_name} 的 time_indexed.db: {exc}")
             return None
         table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
         try:
@@ -199,6 +211,7 @@ class TimeIndexedMemory:
 
     def _ensure_fts_table(self, lanlan_name: str) -> None:
         """确保 FTS5 虚拟表存在。unicode61 分词器对中文做字级别索引，零依赖。"""
+        self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             return
         try:
@@ -213,6 +226,7 @@ class TimeIndexedMemory:
 
     def index_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
         """将事实插入 FTS5 索引。"""
+        self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             return
         self._ensure_fts_table(lanlan_name)
@@ -238,9 +252,13 @@ class TimeIndexedMemory:
 
         BM25 分数为负值，越接近 0 越相关。
         """
-        if not self._ensure_engine_exists(lanlan_name):
+        try:
+            if not self._ensure_engine_exists(lanlan_name):
+                return []
+            self._ensure_fts_table(lanlan_name)
+        except MaintenanceModeError as exc:
+            logger.debug(f"[TimeIndexedMemory] 维护态跳过搜索 {lanlan_name} 的 FTS 索引初始化: {exc}")
             return []
-        self._ensure_fts_table(lanlan_name)
         try:
             # 转义 FTS5 特殊字符
             safe_query = query.replace('"', '""')
@@ -261,6 +279,7 @@ class TimeIndexedMemory:
 
     def delete_fact_from_index(self, lanlan_name: str, fact_id: str) -> None:
         """从 FTS5 索引中移除事实。"""
+        self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             return
         self._ensure_fts_table(lanlan_name)

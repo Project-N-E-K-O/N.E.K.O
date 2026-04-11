@@ -97,6 +97,43 @@ def set_reserved(data: dict, *path_and_value) -> bool:
     return True
 
 
+def delete_reserved(data: dict, *path) -> bool:
+    """删除 `_reserved` 下的嵌套字段，并尽量清理空的中间层。"""
+    if not isinstance(data, dict) or not path:
+        return False
+
+    reserved = data.get("_reserved")
+    if not isinstance(reserved, dict):
+        return False
+
+    current = reserved
+    parents: list[tuple[dict, str]] = []
+    for key in path[:-1]:
+        if not isinstance(current, dict) or key not in current:
+            return False
+        parents.append((current, key))
+        current = current.get(key)
+
+    last_key = path[-1]
+    if not isinstance(current, dict) or last_key not in current:
+        return False
+
+    current.pop(last_key, None)
+
+    while parents:
+        parent, key = parents.pop()
+        child = parent.get(key)
+        if isinstance(child, dict) and not child:
+            parent.pop(key, None)
+            continue
+        break
+
+    if isinstance(data.get("_reserved"), dict) and not data["_reserved"]:
+        data.pop("_reserved", None)
+
+    return True
+
+
 def _legacy_live2d_to_model_path(legacy_live2d: str) -> str:
     """将旧 live2d 目录名转为 model3 文件路径。"""
     if not legacy_live2d:
@@ -329,7 +366,12 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
             live3d_sub_type = "vrm"
         else:
             live3d_sub_type = ""
-    changed |= set_reserved(catgirl_data, "avatar", "live3d_sub_type", live3d_sub_type)
+    if live3d_sub_type:
+        changed |= set_reserved(catgirl_data, "avatar", "live3d_sub_type", live3d_sub_type)
+    else:
+        # 非 3D 角色或没有明确活动 3D 子类型时，不要强行写回空字符串，
+        # 否则会让导出/导入后的角色配置出现无意义的额外字段。
+        changed |= delete_reserved(catgirl_data, "avatar", "live3d_sub_type")
 
     # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
     for legacy_key in (
@@ -801,7 +843,11 @@ class ConfigManager:
         return fallback
     
     def _get_project_root(self):
-        """获取项目根目录（私有方法）"""
+        """获取项目根目录（私有方法）。
+
+        源码模式固定基于本文件位置回溯到仓库根目录，避免 IDE / 外部 cwd
+        导致 static、config、memory/store 等项目资源解析到错误位置。
+        """
         if getattr(sys, 'frozen', False):
             # 如果是打包后的exe（PyInstaller）
             if hasattr(sys, '_MEIPASS'):
@@ -811,8 +857,8 @@ class ConfigManager:
                 # 多文件模式：使用 exe 同目录
                 return Path(sys.executable).parent
         else:
-            # 开发模式：使用当前工作目录
-            return Path.cwd()
+            # 开发模式：固定使用仓库根目录
+            return Path(__file__).resolve().parents[1]
     
     @property
     def project_root(self):
@@ -825,21 +871,7 @@ class ConfigManager:
     
     def _get_project_memory_directory(self):
         """获取项目的memory/store目录"""
-        if getattr(sys, 'frozen', False):
-            # 如果是打包后的exe（PyInstaller）
-            # 单文件模式：数据文件在 _MEIPASS 临时目录
-            # 多文件模式：数据文件在 exe 同目录
-            if hasattr(sys, '_MEIPASS'):
-                # 单文件模式：使用临时解压目录
-                app_dir = Path(sys._MEIPASS)
-            else:
-                # 多文件模式：使用 exe 同目录
-                app_dir = Path(sys.executable).parent
-        else:
-            # 如果是脚本运行
-            app_dir = Path.cwd()
-        
-        return app_dir / "memory" / "store"
+        return self._get_project_root() / "memory" / "store"
     
     def _ensure_app_docs_directory(self):
         """确保应用文档目录存在（N.E.K.O目录本身）"""
@@ -1343,7 +1375,15 @@ class ConfigManager:
                     self.save_characters(character_data, character_json_path=character_json_path)
                 logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
             except Exception as migrate_err:
-                logger.warning("自动迁移角色保留字段后写回失败: %s", migrate_err)
+                try:
+                    from utils.cloudsave_runtime import MaintenanceModeError
+                except Exception:
+                    MaintenanceModeError = None
+
+                if MaintenanceModeError is not None and isinstance(migrate_err, MaintenanceModeError):
+                    logger.debug("角色保留字段迁移在只读阶段跳过持久化: %s", migrate_err)
+                else:
+                    logger.warning("自动迁移角色保留字段后写回失败: %s", migrate_err)
         return character_data
 
     def save_characters(self, data, character_json_path=None, *, bypass_write_fence: bool = False):

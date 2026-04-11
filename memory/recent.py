@@ -434,6 +434,11 @@ class CompressedRecentHistoryManager:
                     self.user_histories[lanlan_name] = corrected_messages
                     
                     # 保存到文件
+                    assert_cloudsave_writable(
+                        self._config_manager,
+                        operation="save",
+                        target=f"memory/{lanlan_name}/recent.json",
+                    )
                     atomic_write_json(
                         self.log_file_path[lanlan_name],
                         messages_to_dict(corrected_messages),

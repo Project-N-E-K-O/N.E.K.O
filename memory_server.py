@@ -141,6 +141,15 @@ async def reload_memory_components():
 @app.post("/release_character/{lanlan_name}")
 async def release_character_resources(lanlan_name: str):
     """在角色重命名/删除前主动释放对应 SQLite 句柄。"""
+    try:
+        lanlan_name = validate_lanlan_name(lanlan_name)
+    except HTTPException as exc:
+        logger.warning("[MemoryServer] 拒绝释放非法角色名的 SQLite 引擎: %s", lanlan_name)
+        return JSONResponse(
+            {"status": "error", "character_name": lanlan_name, "message": str(exc.detail)},
+            status_code=exc.status_code,
+        )
+
     async with _reload_lock:
         try:
             time_manager.dispose_engine(lanlan_name)

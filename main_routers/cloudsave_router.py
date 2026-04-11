@@ -143,7 +143,7 @@ async def _build_workshop_status_map(items: list[dict]) -> dict[str, dict]:
             *(_fetch_workshop_status_payload(item_id) for item_id in missing_item_ids),
             return_exceptions=True,
         )
-        for item_id, result in zip(missing_item_ids, results):
+        for item_id, result in zip(missing_item_ids, results, strict=True):
             if isinstance(result, Exception):
                 status_map[item_id] = _default_workshop_status_payload(item_id, "unknown")
             else:
