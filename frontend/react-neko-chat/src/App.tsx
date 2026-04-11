@@ -40,7 +40,7 @@ export default function App({
   jukeboxButtonLabel = '点歌台',
   jukeboxButtonAriaLabel = '点歌台',
   translateEnabled = false,
-  translateButtonLabel = '翻译',
+  translateButtonLabel = '字幕翻译',
   translateButtonAriaLabel,
   onMessageAction,
   onComposerImportImage,
@@ -77,17 +77,6 @@ export default function App({
         </header>
 
         <section className="chat-body">
-          <button
-            id="reactJukeboxButton"
-            className="topbar-action-btn jukebox-floating"
-            type="button"
-            aria-label={jukeboxButtonAriaLabel}
-            title={jukeboxButtonLabel}
-            onClick={() => onJukeboxClick?.()}
-          >
-            <img className="topbar-action-icon-img" src="/static/icons/音符0.png" alt="" aria-hidden="true" />
-            <span className="topbar-action-label">{jukeboxButtonLabel}</span>
-          </button>
           <MessageList
             messages={messages}
             ariaLabel={messageListAriaLabel}
@@ -172,7 +161,16 @@ export default function App({
                   >
                     <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
                   </button>
-                  {/* TODO: 表情按钮，下个版本启用 */}
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  <button
+                    className="composer-tool-btn"
+                    type="button"
+                    aria-label={jukeboxButtonAriaLabel}
+                    title={jukeboxButtonLabel}
+                    onClick={() => onJukeboxClick?.()}
+                  >
+                    <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
+                  </button>
                 </div>
                 <button className="send-button-circle" type="submit" aria-label={sendButtonLabel} disabled={!canSubmit}>
                   <img src="/static/icons/send_new_icon.png" alt="" aria-hidden="true" />

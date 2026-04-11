@@ -181,8 +181,8 @@
             translateEnabled: (window.appState && typeof window.appState.subtitleEnabled !== 'undefined')
                 ? !!window.appState.subtitleEnabled
                 : localStorage.getItem('subtitleEnabled') === 'true',
-            translateButtonLabel: getI18nText('subtitle.enable', '翻译'),
-            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '翻译开关')
+            translateButtonLabel: getI18nText('subtitle.enable', '字幕翻译'),
+            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关')
         };
     }
 
@@ -600,7 +600,10 @@
 
     function handleJukeboxClick() {
         try {
-            if (typeof window.Jukebox !== 'undefined' && typeof window.Jukebox.toggle === 'function') {
+            if (typeof window.__nekoJukeboxToggle === 'function') {
+                // Electron 多窗口模式：通过 IPC 打开独立 Jukebox 窗口
+                window.__nekoJukeboxToggle();
+            } else if (typeof window.Jukebox !== 'undefined' && typeof window.Jukebox.toggle === 'function') {
                 window.Jukebox.toggle();
             } else {
                 console.warn('[ReactChatWindow] Jukebox not available');
@@ -612,6 +615,46 @@
 
     function captureAvatarDirect() {
         if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
+            // Electron 多窗口模式：通过 IPC 请求 Pet 窗口截取头像
+            if (window.__NEKO_MULTI_WINDOW__ && typeof window.__nekoRequestAvatarPreview === 'function') {
+                // 优先使用已缓存的外部头像
+                if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
+                    var cached = window.appChatAvatar.getCurrentAvatarDataUrl();
+                    if (cached) {
+                        window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+                            detail: { dataUrl: cached, source: 'cached' }
+                        }));
+                        showToast(getI18nText('chat.avatarPreviewReady', '头像已更新'), 2500);
+                        return;
+                    }
+                }
+                showToast(getI18nText('chat.avatarPreviewGenerating', '正在生成当前头像...'), 2000);
+                var finished = false;
+                var timerId = null;
+                var finish = function (success) {
+                    if (finished) return;
+                    finished = true;
+                    window.removeEventListener('neko:avatar-preview-ipc-result', onResult);
+                    if (timerId) { clearTimeout(timerId); timerId = null; }
+                    if (success) {
+                        showToast(getI18nText('chat.avatarPreviewReady', '头像已更新'), 2500);
+                    } else {
+                        showToast(getI18nText('chat.avatarPreviewFailed', '生成头像失败'), 3000);
+                    }
+                };
+                var onResult = function (e) {
+                    finish(!!(e.detail && e.detail.dataUrl));
+                };
+                window.addEventListener('neko:avatar-preview-ipc-result', onResult);
+                timerId = setTimeout(function () { finish(false); }, 10000);
+                try {
+                    window.__nekoRequestAvatarPreview();
+                } catch (err) {
+                    console.error('[ReactChatWindow] __nekoRequestAvatarPreview threw:', err);
+                    finish(false);
+                }
+                return;
+            }
             showToast(getI18nText('chat.avatarPreviewUnavailable', '头像预览功能尚未就绪。'), 3000);
             return;
         }

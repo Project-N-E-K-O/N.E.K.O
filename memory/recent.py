@@ -15,7 +15,7 @@ from config.prompts_memory import (
 from utils.language_utils import get_global_language
 
 # Setup logger
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, robust_json_loads
 from utils.logger_config import setup_logging
 logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
 
@@ -207,7 +207,7 @@ class CompressedRecentHistoryManager:
                 match = re.search(r'```(?:json)?\s*([\s\S]*?)```', response_content)
                 if match:
                     response_content = match.group(1).strip()
-                summary_json = json.loads(response_content)
+                summary_json = robust_json_loads(response_content)
                 # 从JSON字典中提取对话摘要，假设摘要存储在名为'key'的键下
                 if '对话摘要' in summary_json:
                     print(f"💗摘要结果：{summary_json['对话摘要']}")
@@ -257,7 +257,7 @@ class CompressedRecentHistoryManager:
                 match = re.search(r'```(?:json)?\s*([\s\S]*?)```', response_content)
                 if match:
                     response_content = match.group(1).strip()
-                summary_json = json.loads(response_content)
+                summary_json = robust_json_loads(response_content)
                 # 从JSON字典中提取对话摘要，假设摘要存储在名为'key'的键下
                 if '对话摘要' in summary_json:
                     print(f"💗第二轮摘要结果：{summary_json['对话摘要']}")
@@ -395,7 +395,7 @@ class CompressedRecentHistoryManager:
                     response_content = match.group(1).strip()
 
                 # 解析JSON响应
-                review_result = json.loads(response_content)
+                review_result = robust_json_loads(response_content)
                 
                 if '修正说明' in review_result and '修正后的对话' in review_result:
                     print(f"记忆整理结果：{review_result['修正说明']}")

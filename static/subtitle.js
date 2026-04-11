@@ -465,11 +465,11 @@ function showSubtitlePrompt() {
     // 使用i18n翻译，如果i18n未加载或翻译不存在则根据浏览器语言提供fallback
     const browserLang = normalizeLanguageCode(navigator.language);
     const fallbacks = {
-        'zh': '开启字幕翻译',
-        'en': 'Enable Subtitle Translation',
-        'ja': '字幕翻訳を有効にする',
-        'ko': '자막 번역 켜기',
-        'ru': 'Включить перевод субтитров'
+        'zh': '字幕翻译',
+        'en': 'Subtitle Translation',
+        'ja': '字幕翻訳',
+        'ko': '자막 번역',
+        'ru': 'Перевод субтитров'
     };
     if (window.t) {
         const translated = window.t('subtitle.enable');
