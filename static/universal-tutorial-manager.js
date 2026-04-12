@@ -890,7 +890,7 @@ class UniversalTutorialManager {
                     description: `
                         <div class="neko-systray-menu">
                             <div class="neko-systray-menu__hint">
-                                <strong>${this.safeEscapeHtml(t('tutorial.systray.menu.important', '重要：'))}</strong>
+                                <strong>${this.safeEscapeHtml(t('tutorial.systray.important', '重要：'))}</strong>
                                 ${this.safeEscapeHtml(t('tutorial.systray.menu.desc', '右键点击系统托盘（见上一步提示）中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：'))}
                             </div>
                             <div class="neko-systray-menu__panel">

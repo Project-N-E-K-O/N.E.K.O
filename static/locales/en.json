@@ -1992,7 +1992,7 @@
         },
         "step9": {
             "title": "💤 Ask Her to Leave",
-            "desc": "Let your Neko leave temporarily. Click \"Ask Her Back\" to restore~ <strong>When she's having issues, letting her leave for a break often fixes the problem.</strong>"
+            "desc": "Let your Neko leave temporarily. Click \"Ask Her to Return\" to restore~ <strong>When she's having issues, letting her leave for a break often fixes the problem.</strong>"
         },
         "step10": {
             "title": "⚙️ Settings",
@@ -2034,7 +2034,7 @@
                 "desc": "Right-click the N.E.K.O icon in the system tray (see the previous hint) to access the menu. Here are some commonly used features:"
             },
             "reset": {
-                "title": "🔄 Reset Model Position",
+                "title": "🔄 Reset Avatar Position",
                 "desc": "If your catgirl moves off-screen or to an undesirable position, click this option to return her to the default position~"
             },
             "switchMode": "Switch Desktop/Mobile Mode",
