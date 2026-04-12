@@ -545,7 +545,7 @@
         "title": "Чат",
         "viewerTitle": "Чат (Режим просмотра)",
         "tooltip": "Область чата",
-        "textInputPlaceholder": "Режим текстового чата... Нажмите Enter для отправки, Shift+Enter для новой строки",
+        "textInputPlaceholder": "Нажмите Enter для отправки, Shift+Enter для новой строки",
         "send": "Отправить",
         "importImage": "Импортировать изображение",
         "importImageAriaLabel": "Импортировать изображение",

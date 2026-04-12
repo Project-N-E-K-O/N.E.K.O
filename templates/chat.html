@@ -39,7 +39,117 @@
             max-width: none !important; max-height: none !important;
             transform: none !important;
             border-radius: 22px !important;
-            box-shadow: 0 4px 16px rgba(12, 20, 34, 0.18), 0 1px 4px rgba(12, 20, 34, 0.1) !important;
+            background: transparent !important;
+            /* 液态边缘反光 — 顶部最亮，左次之，模拟顶光 */
+            border-top: 2px solid rgba(255, 255, 255, 0.7) !important;
+            border-left: 1px solid rgba(255, 255, 255, 0.35) !important;
+            border-right: 1px solid rgba(255, 255, 255, 0.15) !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+            /* 外阴影 + 内高光带 */
+            box-shadow:
+                0 4px 16px rgba(12, 20, 34, 0.18),
+                0 1px 4px rgba(12, 20, 34, 0.1),
+                inset 0 2px 4px rgba(255, 255, 255, 0.5),
+                inset 0 -1px 2px rgba(255, 255, 255, 0.08) !important;
+        }
+        /* 顶栏：降低透明度 + 减小高度（原 min-height:54px + padding:10px 14px 8px） */
+        .window-topbar {
+            background: rgba(255, 255, 255, 0.35) !important;
+            min-height: 45px !important;
+            height: 45px !important;
+            padding: 0 12px !important;
+            box-sizing: border-box !important;
+        }
+        .window-topbar-actions,
+        .window-topbar-actions > * {
+            display: flex !important;
+            align-items: center !important;
+        }
+        /* 右上角四个按钮居中对齐 topbar（原 top:10px 基于 54px 高度，现适配 45px） */
+        #react-chat-window-header-actions {
+            top: 5px !important;
+        }
+        #reactChatWindowCloseButton {
+            position: relative !important;
+            top: -2px !important;
+        }
+        /* Chat 字体优化（覆盖 6 语：中简/繁/英/日/韩/俄） */
+        #react-chat-window-root {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter',
+                         'Noto Sans', 'PingFang SC', 'Microsoft YaHei',
+                         'Hiragino Sans', 'Malgun Gothic', sans-serif !important;
+            font-weight: 400 !important;
+        }
+        [data-theme="dark"] .window-topbar {
+            background: rgba(50, 50, 72, 0.35) !important;
+        }
+        /* 四边透明度渐变带：窄边（~10px），让边缘内容淡出露出高光 */
+        #react-chat-window-root {
+            -webkit-mask-image:
+                linear-gradient(to bottom, rgba(0,0,0,0.3) 0px, black 10px, black calc(100% - 10px), rgba(0,0,0,0.6) 100%),
+                linear-gradient(to right, rgba(0,0,0,0.4) 0px, black 8px, black calc(100% - 8px), rgba(0,0,0,0.4) 100%) !important;
+            -webkit-mask-composite: source-in !important;
+        }
+        @keyframes liquidFlow {
+            0%    { background-position:   0%   0%,  80%  10%,  40%  30%,  90%  50%,  20%  70%,  60%  85%,  95%  90%; }
+            12%   { background-position:  50%  15%,  20%  60%,  80%  10%,  40%  80%,  70%   5%,  10%  50%,  55%  35%; }
+            25%   { background-position:  90%  55%,  50%  90%,  15%  65%,  75%  20%,  45%  85%,  85%  15%,  20%  70%; }
+            38%   { background-position:  30%  85%,  85%  30%,  60%  95%,  10%  45%,  90%  40%,  40%  70%,  70%  10%; }
+            50%   { background-position:  70%  40%,  10%  75%,  95%  20%,  55%  90%,  15%  30%,  75%  55%,  35%  80%; }
+            63%   { background-position:  15%  70%,  65%  15%,  30%  50%,  85%  65%,  55%  95%,  25%  25%,  80%  50%; }
+            75%   { background-position:  80%  25%,  35%  85%,  70%  40%,  20%  10%,  85%  60%,  50%  90%,  10%  30%; }
+            88%   { background-position:  45%  90%,  90%  45%,  10%  75%,  60%  35%,  30%  50%,  80%  10%,  50%  65%; }
+            100%  { background-position:   0%   0%,  80%  10%,  40%  30%,  90%  50%,  20%  70%,  60%  85%,  95%  90%; }
+        }
+        /* 对角光带扫过 */
+        @keyframes lightSweep {
+            0%   { background-position: -150% -150%; }
+            100% { background-position: 250% 250%; }
+        }
+        /* 静态边缘高光层 — 在内容之下 */
+        #react-chat-window-shell:not(.is-minimized)::before {
+            content: '' !important;
+            position: absolute !important;
+            inset: 0 !important;
+            border-radius: 22px !important;
+            pointer-events: none !important;
+            z-index: 0 !important;
+            /* 边缘高光 */
+            box-shadow:
+                inset 0 2px 6px rgba(255, 255, 255, 0.5),
+                inset 0 -1px 3px rgba(255, 255, 255, 0.1),
+                inset 2px 0 4px rgba(255, 255, 255, 0.15),
+                inset -2px 0 4px rgba(255, 255, 255, 0.08) !important;
+            /* 顶部弧形高光（静态） */
+            background: linear-gradient(
+                180deg,
+                rgba(255, 255, 255, 0.25) 0%,
+                rgba(255, 255, 255, 0.08) 8%,
+                transparent 20%,
+                transparent 85%,
+                rgba(255, 255, 255, 0.04) 100%
+            ) !important;
+        }
+        /* 流动光斑层 — 三色径向渐变缓慢漂移，模拟玻璃折射
+           用 background-image 而非 background 简写，避免 !important 锁死 background-position */
+        #react-chat-window-shell:not(.is-minimized)::after {
+            content: '' !important;
+            position: absolute !important;
+            inset: 0 !important;
+            border-radius: 22px !important;
+            pointer-events: none !important;
+            z-index: 10 !important;
+            background-image:
+                radial-gradient(circle at 15% 10%, rgba(100,180,255,0.14) 0%, transparent 22%),
+                radial-gradient(circle at 75% 15%, rgba(180,140,255,0.11) 0%, transparent 20%),
+                radial-gradient(circle at 40% 35%, rgba(220,140,240,0.12) 0%, transparent 18%),
+                radial-gradient(circle at 85% 50%, rgba(120,200,255,0.13) 0%, transparent 20%),
+                radial-gradient(circle at 25% 65%, rgba(200,160,255,0.10) 0%, transparent 19%),
+                radial-gradient(circle at 60% 80%, rgba(100,190,255,0.12) 0%, transparent 21%),
+                radial-gradient(circle at 90% 85%, rgba(240,150,200,0.10) 0%, transparent 17%) !important;
+            background-size: 200% 200%, 200% 200%, 200% 200%, 200% 200%, 200% 200%, 200% 200%, 200% 200% !important;
+            background-repeat: no-repeat !important;
+            animation: liquidFlow 20s ease-in-out infinite !important;
         }
         /* 折叠/展开动画期间：允许 JS 控制 position/size/transform */
         #react-chat-window-shell.is-collapsing,
@@ -52,6 +162,35 @@
         #react-chat-window-shell.is-minimized {
             inset: auto !important;
             max-width: none !important; max-height: none !important;
+        }
+        /* 输入区提到光晕层之上，保持原始不透明度 */
+        .composer-panel {
+            position: relative !important;
+            z-index: 15 !important;
+        }
+        /* 输入框描边加粗 */
+        .composer-input-shell {
+            border: 1.5px solid rgba(127, 144, 170, 0.25) !important;
+        }
+        /* placeholder 样式：淡色小字 */
+        .composer-input::placeholder {
+            color: rgba(102, 117, 141, 0.5) !important;
+            font-size: 0.85em !important;
+        }
+        /* 消息气泡进场动效 */
+        @keyframes slideFromLeft {
+            from { opacity: 0; transform: translateX(-20px); }
+            to   { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes slideFromRight {
+            from { opacity: 0; transform: translateX(20px); }
+            to   { opacity: 1; transform: translateX(0); }
+        }
+        .message-row-assistant {
+            animation: slideFromLeft 0.3s ease-out both !important;
+        }
+        .message-row-user {
+            animation: slideFromRight 0.3s ease-out both !important;
         }
         /* 隐藏旧版 chat */
         #chat-container { display: none !important; }

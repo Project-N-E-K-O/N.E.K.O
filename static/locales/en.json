@@ -545,7 +545,7 @@
         "title": "Chat",
         "viewerTitle": "Chat (Viewer Mode)",
         "tooltip": "Chat Area",
-        "textInputPlaceholder": "Text chat mode...Press Enter to send, Shift+Enter for new line",
+        "textInputPlaceholder": "Press Enter to send, Shift+Enter for new line",
         "send": "Send",
         "importImage": "Import Image",
         "importImageAriaLabel": "Import image",

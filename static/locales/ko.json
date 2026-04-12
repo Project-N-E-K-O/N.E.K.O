@@ -545,7 +545,7 @@
         "title": "채팅",
         "viewerTitle": "채팅(뷰어 모드)",
         "tooltip": "채팅 영역",
-        "textInputPlaceholder": "텍스트 채팅 모드...보내려면 Enter를 누르고, 줄을 바꾸려면 Shift+Enter를 누르세요.",
+        "textInputPlaceholder": "보내려면 Enter를 누르고, 줄을 바꾸려면 Shift+Enter를 누르세요.",
         "send": "보내기",
         "importImage": "이미지 가져오기",
         "importImageAriaLabel": "이미지 가져오기",
