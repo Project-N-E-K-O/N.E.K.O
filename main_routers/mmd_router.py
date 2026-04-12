@@ -128,7 +128,7 @@ def _detect_zip_encoding(zf: zipfile.ZipFile) -> str | None:
     except UnicodeDecodeError:
         pass
 
-    # 3. 核心修改：给探测器戴上“紧箍咒”，只允许中日韩常见编码，坚决不要泰文
+    # 3. 核心修改：给探测器戴上“紧箍咒”，只允许中日韩常见编码
     ALLOWED_ENCODINGS = {'cp932', 'shift_jis', 'gbk', 'gb18030', 'gb2312', 'big5', 'euc-kr'}
     
     results = charset_normalizer.from_bytes(raw_bytes_blob)
@@ -136,22 +136,28 @@ def _detect_zip_encoding(zf: zipfile.ZipFile) -> str | None:
         if result.encoding and result.encoding.lower() in ALLOWED_ENCODINGS:
             return result.encoding.lower()
 
-    # 4. 降级安全网：如果探测器还是懵了，按 MMD 圈子最常见的概率强行试错
-    for fallback_enc in ('gbk', 'cp932', 'big5', 'euc-kr'):
+    # 4. 降级安全网：调整顺序为日文优先，并加入严格的“往返校验”
+    for fallback_enc in ('cp932', 'gbk', 'big5', 'euc-kr'):
         try:
-            raw_bytes_blob.decode(fallback_enc)
-            return fallback_enc
-        except UnicodeDecodeError:
+            test_decoded = raw_bytes_blob.decode(fallback_enc)
+            # 往返校验：解码后再编码回去，看是否与原始字节一致，防止强行解码成乱码
+            if test_decoded.encode(fallback_enc) == raw_bytes_blob:
+                return fallback_enc
+        except (UnicodeDecodeError, UnicodeEncodeError):
             continue
 
     return None
 
 
 def _sanitize_filename(filename: str) -> str:
-    """清理文件名，仅移除操作系统不允许的非法字符，保留中日文和路径结构。"""
-    # 移除非法字符: < > : " \ | ? *
-    # 注意：保留了斜杠 /，因为 zip 内的目录树依赖此字符分割
-    return re.sub(r'[<>:"\\|?*]', '_', filename)
+    """清理文件名，将反斜杠转为正斜杠保留目录结构，并移除非法字符。"""
+    # 接受 CodeRabbit 建议：先将 Windows 风格的反斜杠统一转为 Web/Linux 标准的正斜杠
+    normalized = filename.replace('\\', '/')
+    # 按目录层级拆分，清理每一层，再拼装回去
+    return '/'.join(
+        re.sub(r'[<>:"|?*]', '_', part)
+        for part in normalized.split('/')
+    )
 
 
 def _build_zip_name_map(zf: zipfile.ZipFile) -> dict[str, str]:
@@ -159,8 +165,8 @@ def _build_zip_name_map(zf: zipfile.ZipFile) -> dict[str, str]:
     global_encoding = _detect_zip_encoding(zf)
     name_map = {}
 
-    # MMD 常用的兜底编码列表
-    FALLBACK_ENCODINGS = ['gbk', 'cp932', 'big5']
+    # MMD 常用的兜底编码列表，日文优先
+    FALLBACK_ENCODINGS = ['cp932', 'gbk', 'big5', 'euc-kr']
 
     for info in zf.infolist():
         if not (info.flag_bits & 0x800):  # 非标记为 UTF-8 的条目
@@ -171,17 +177,21 @@ def _build_zip_name_map(zf: zipfile.ZipFile) -> dict[str, str]:
                 # 尝试应用全局编码
                 if global_encoding:
                     try:
-                        decoded = raw_bytes.decode(global_encoding)
-                    except UnicodeDecodeError:
+                        test_decoded = raw_bytes.decode(global_encoding)
+                        if test_decoded.encode(global_encoding) == raw_bytes:
+                            decoded = test_decoded
+                    except (UnicodeDecodeError, UnicodeEncodeError):
                         pass
                 
-                # 如果全局编码在这个具体文件上失败，暴力尝试备选列表（放弃单文件 AI 推断）
+                # 如果全局编码在这个具体文件上失败，暴力尝试备选列表，加入往返校验
                 if not decoded:
                     for enc in FALLBACK_ENCODINGS:
                         try:
-                            decoded = raw_bytes.decode(enc)
-                            break
-                        except UnicodeDecodeError:
+                            test_decoded = raw_bytes.decode(enc)
+                            if test_decoded.encode(enc) == raw_bytes:
+                                decoded = test_decoded
+                                break
+                        except (UnicodeDecodeError, UnicodeEncodeError):
                             continue
                             
                 # 终极兜底：强行 utf-8 替换错误字符，至少保证程序不崩溃
