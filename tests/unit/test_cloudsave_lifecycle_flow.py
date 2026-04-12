@@ -417,7 +417,7 @@ async def test_main_server_shutdown_continues_when_memory_release_returns_false(
         budget_seconds=5.0,
     )
     mock_warning.assert_any_call(
-        "Steam Auto-Cloud pre-shutdown release failed for %s: returned False",
+        "Steam Auto-Cloud pre-shutdown release failed for %s: returned False; uploaded snapshot may be stale/incomplete",
         "角色B",
     )
     fake_tracker.save.assert_called_once_with()

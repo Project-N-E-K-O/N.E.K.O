@@ -31,10 +31,15 @@ class TimeIndexedMemory:
 
     def _build_sqlite_connection_string(self, db_path: str, *, readonly: bool) -> tuple[str, str]:
         normalized_db_path = os.path.abspath(db_path)
+        uri_path = normalized_db_path.replace("\\", "/")
+        if readonly:
+            sqlite_file_uri = f"file:{uri_path}"
+            if os.name == "nt" and not uri_path.startswith("/"):
+                sqlite_file_uri = f"file:/{uri_path}"
+            return normalized_db_path, f"sqlite:///{sqlite_file_uri}?mode=ro&uri=true"
         if not readonly:
             db_dir = os.path.dirname(normalized_db_path)
             os.makedirs(db_dir, exist_ok=True)
-        uri_path = normalized_db_path.replace("\\", "/")
         return normalized_db_path, f"sqlite:///{uri_path}"
 
     def _ensure_engine_exists(
@@ -141,10 +146,16 @@ class TimeIndexedMemory:
             engine.dispose()
             logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
         if db_path:
-            _, connection_string = self._build_sqlite_connection_string(str(db_path), readonly=True)
-            cached_engine = SQLChatMessageHistory._engine_cache.pop(connection_string, None)
-            if cached_engine and cached_engine is not engine:
-                cached_engine.dispose()
+            normalized_db_path, readonly_connection_string = self._build_sqlite_connection_string(
+                str(db_path),
+                readonly=True,
+            )
+            uri_path = normalized_db_path.replace("\\", "/")
+            writable_connection_string = f"sqlite:///{uri_path}"
+            for connection_string in {readonly_connection_string, writable_connection_string}:
+                cached_engine = SQLChatMessageHistory._engine_cache.pop(connection_string, None)
+                if cached_engine and cached_engine is not engine:
+                    cached_engine.dispose()
 
     def cleanup(self):
         """清理所有引擎资源喵~"""
@@ -177,6 +188,7 @@ class TimeIndexedMemory:
 
     def _check_and_migrate_schema(self, engine, lanlan_name: str) -> None:
         """逐表检查并补齐 timestamp 列，每张表独立处理避免互相影响。"""
+        migration_errors = []
         for table_name in [TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME]:
             table = self._validate_table_name(table_name)
             try:
@@ -187,8 +199,13 @@ class TimeIndexedMemory:
                         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN timestamp DATETIME"))
                         conn.commit()
                         logger.info(f"[TimeIndexedMemory] 已为 {lanlan_name} 的表 {table} 补齐 timestamp 列")
-            except Exception:
+            except Exception as exc:
                 logger.exception(f"[TimeIndexedMemory] 迁移 {lanlan_name} 表 {table} 失败")
+                migration_errors.append(f"{table}: {exc}")
+        if migration_errors:
+            raise RuntimeError(
+                f"[TimeIndexedMemory] 角色 {lanlan_name} schema 迁移失败: {'; '.join(migration_errors)}"
+            )
 
     async def store_conversation(self, event_id, messages, lanlan_name, timestamp=None):
         self._assert_timeindex_writable(lanlan_name)
@@ -335,7 +352,7 @@ class TimeIndexedMemory:
     def search_facts(self, lanlan_name: str, query: str, limit: int = 10) -> list[tuple[str, float]]:
         """通过 FTS5 BM25 搜索事实。返回 [(fact_id, bm25_score), ...]。
 
-        BM25 分数为负值，越接近 0 越相关。
+        FTS5 bm25() 分数通常为负值，分数越小（越负）代表相关性越高。
         """
         try:
             if not self._ensure_engine_exists(lanlan_name, readonly=True):

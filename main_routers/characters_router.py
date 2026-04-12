@@ -1596,6 +1596,7 @@ async def rename_catgirl(old_name: str, request: Request):
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
     memory_targets.append(Path(_config_manager.memory_dir) / new_name)
+    memory_server_reloaded = False
 
     with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
         memory_snapshot_records = _snapshot_existing_paths(memory_targets, Path(temp_dir))
@@ -1616,6 +1617,28 @@ async def rename_catgirl(old_name: str, request: Request):
             memory_server_reloaded = await notify_memory_server_reload(
                 reason=f"角色重命名: {old_name} -> {new_name}",
             )
+            if not memory_server_reloaded:
+                rollback_error = await _rollback_character_operation(
+                    _config_manager,
+                    characters_snapshot=characters_snapshot,
+                    memory_snapshot_records=memory_snapshot_records,
+                    reason=f"角色重命名回滚（memory_server 重载失败）: {old_name} -> {new_name}",
+                )
+                logger.error(
+                    "重命名角色后 notify_memory_server_reload 返回 False，已尝试回滚: %s -> %s",
+                    old_name,
+                    new_name,
+                )
+                error_message = "重命名角色失败: notify_memory_server_reload returned False"
+                if rollback_error:
+                    error_message = f"{error_message}; 回滚失败: {rollback_error}"
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "error": error_message,
+                    },
+                    status_code=500,
+                )
         except MaintenanceModeError as exc:
             rollback_error = await _rollback_character_operation(
                 _config_manager,
@@ -1639,7 +1662,7 @@ async def rename_catgirl(old_name: str, request: Request):
                 error_message = f"{error_message}; 回滚失败: {rollback_error}"
             return JSONResponse({"success": False, "error": error_message}, status_code=500)
 
-    if rename_notification_ws and rename_notification_message:
+    if memory_server_reloaded and rename_notification_ws and rename_notification_message:
         try:
             await rename_notification_ws.send_text(rename_notification_message)
             logger.info(f"已向 {old_name} 发送重命名通知")

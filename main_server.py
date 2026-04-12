@@ -1242,13 +1242,19 @@ async def on_shutdown():
                     )
                     if not released:
                         logger.warning(
-                            "Steam Auto-Cloud pre-shutdown release failed for %s: returned False",
+                            "Steam Auto-Cloud pre-shutdown release failed for %s: returned False; uploaded snapshot may be stale/incomplete",
                             character_name,
                         )
                 except Exception as e:
-                    logger.warning("Steam Auto-Cloud pre-shutdown release failed for %s: %s", character_name, e)
+                    logger.warning(
+                        "Steam Auto-Cloud pre-shutdown release failed for %s: %s; uploaded snapshot may be stale/incomplete",
+                        character_name,
+                        e,
+                    )
         except Exception as e:
-            logger.warning(f"Steam Auto-Cloud pre-shutdown release phase failed: {e}")
+            logger.warning(
+                f"Steam Auto-Cloud pre-shutdown release phase failed: {e}; uploaded snapshot may be stale/incomplete"
+            )
 
         try:
             upload_action_kwargs = {
