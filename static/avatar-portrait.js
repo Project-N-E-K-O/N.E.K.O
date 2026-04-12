@@ -392,6 +392,55 @@
         };
     }
 
+    function makeContainedPortraitRect(subjectRect, options, config = {}) {
+        const aspect = Math.max(0.1, options.width / options.height);
+        const safeX = finiteOr(subjectRect?.x, 0);
+        const safeY = finiteOr(subjectRect?.y, 0);
+        const safeWidth = Math.max(1, finiteOr(subjectRect?.width, 0));
+        const safeHeight = Math.max(1, finiteOr(subjectRect?.height, 0));
+        const sidePadding = safeWidth * finiteOr(config.sidePaddingRatio, 0.08);
+        const topPadding = safeHeight * finiteOr(config.topPaddingRatio, 0.08);
+        const bottomPadding = safeHeight * finiteOr(config.bottomPaddingRatio, 0.04);
+        const minLeft = safeX - sidePadding;
+        const minRight = safeX + safeWidth + sidePadding;
+        const minTop = safeY - topPadding;
+        const minBottom = safeY + safeHeight + bottomPadding;
+        const requestedCenterX = finiteOr(config.centerX, safeX + safeWidth / 2);
+
+        let width = Math.max(1, minRight - minLeft);
+        let height = Math.max(1, minBottom - minTop);
+        if ((width / height) < aspect) {
+            width = height * aspect;
+        } else {
+            height = width / aspect;
+        }
+
+        let x = requestedCenterX - width / 2;
+        if (x > minLeft) {
+            x = minLeft;
+        }
+        if ((x + width) < minRight) {
+            x = minRight - width;
+        }
+
+        const extraHeight = Math.max(0, height - (minBottom - minTop));
+        const topBias = clamp(finiteOr(config.extraHeightTopBias, 0.72), 0, 1);
+        let y = minTop - extraHeight * topBias;
+        if (y > minTop) {
+            y = minTop;
+        }
+        if ((y + height) < minBottom) {
+            y = minBottom - height;
+        }
+
+        return {
+            x,
+            y,
+            width,
+            height
+        };
+    }
+
     function makeSubjectFallbackHeadshotRect(subjectRect, options, config = {}) {
         const subjectWidth = Math.max(1, subjectRect.width);
         const subjectHeight = Math.max(1, subjectRect.height);
@@ -415,15 +464,17 @@
     }
 
     function clampRectToCanvas(rect, metrics) {
-        const x = clamp(rect.x, 0, metrics.cssWidth - 1);
-        const y = clamp(rect.y, 0, metrics.cssHeight - 1);
-        const right = clamp(rect.x + rect.width, x + 1, metrics.cssWidth);
-        const bottom = clamp(rect.y + rect.height, y + 1, metrics.cssHeight);
+        const maxWidth = Math.max(1, finiteOr(metrics?.cssWidth, 0));
+        const maxHeight = Math.max(1, finiteOr(metrics?.cssHeight, 0));
+        const width = clamp(Math.max(1, finiteOr(rect?.width, 0)), 1, maxWidth);
+        const height = clamp(Math.max(1, finiteOr(rect?.height, 0)), 1, maxHeight);
+        const x = clamp(finiteOr(rect?.x, 0), 0, Math.max(0, maxWidth - width));
+        const y = clamp(finiteOr(rect?.y, 0), 0, Math.max(0, maxHeight - height));
         return {
             x,
             y,
-            width: Math.max(1, right - x),
-            height: Math.max(1, bottom - y)
+            width,
+            height
         };
     }
 
@@ -827,6 +878,22 @@
         });
     }
 
+    function buildLive2dPortraitRect(model, metrics, options) {
+        const bounds = sanitizeCssRect(model.getBounds(), metrics);
+        const headInfo = getLive2dHeadRectInfo(model, metrics);
+        const centerX = headInfo?.rect
+            ? (headInfo.rect.x + headInfo.rect.width / 2)
+            : (bounds.x + bounds.width / 2);
+
+        return makeContainedPortraitRect(bounds, options, {
+            centerX,
+            sidePaddingRatio: 0.06,
+            topPaddingRatio: 0.08,
+            bottomPaddingRatio: 0.03,
+            extraHeightTopBias: 0.72
+        });
+    }
+
     function renderLive2dPortraitSource(ctx, options) {
         const PIXI = global.PIXI;
         const renderer = ctx.app?.renderer;
@@ -841,6 +908,7 @@
             : -1;
         const savedState = savePixiDisplayState(model);
         const tempStage = new PIXI.Container();
+        const isPortraitMode = options.cropMode === 'portrait';
         const scaleSignX = savedState.scaleX < 0 ? -1 : 1;
         const scaleSignY = savedState.scaleY < 0 ? -1 : 1;
         let renderTexture = null;
@@ -865,7 +933,7 @@
             };
 
             model.x = viewportWidth * 0.5;
-            model.y = viewportHeight * 0.62;
+            model.y = isPortraitMode ? (viewportHeight * 0.94) : (viewportHeight * 0.62);
             if (model.scale) {
                 model.scale.set(scaleSignX, scaleSignY);
             }
@@ -873,36 +941,69 @@
                 model.anchor.set(savedState.anchorX ?? 0.5, savedState.anchorY ?? 0.5);
             }
 
-            const targetHeadHeight = viewportHeight * 0.6;
-            const targetHeadCenterX = viewportWidth * 0.5;
-            const targetHeadCenterY = viewportHeight * 0.35;
+            if (isPortraitMode) {
+                const targetBodyWidth = viewportWidth * 0.82;
+                const targetBodyHeight = viewportHeight * 0.94;
+                const targetBodyCenterX = viewportWidth * 0.5;
+                const targetBodyBottomY = viewportHeight * 0.98;
 
-            for (let pass = 0; pass < 3; pass += 1) {
-                renderer.render(tempStage);
-
-                const headRect = getLive2dHeadRectInfo(model, viewportMetrics)?.rect || null;
-                const bounds = sanitizeCssRect(model.getBounds(), viewportMetrics);
-                const activeHeadRect = headRect || {
-                    x: bounds.x + bounds.width * 0.28,
-                    y: bounds.y + bounds.height * 0.08,
-                    width: Math.max(1, bounds.width * 0.42),
-                    height: Math.max(1, bounds.height * 0.3)
-                };
-
-                const currentHeadHeight = Math.max(activeHeadRect.height, activeHeadRect.width * 0.92, 1);
-                const scaleAdjust = clamp(targetHeadHeight / currentHeadHeight, 0.35, 3.2);
-
-                if (Math.abs(scaleAdjust - 1) > 0.02 && model.scale) {
-                    model.scale.set(model.scale.x * scaleAdjust, model.scale.y * scaleAdjust);
+                for (let pass = 0; pass < 3; pass += 1) {
                     renderer.render(tempStage);
+
+                    const bounds = sanitizeCssRect(model.getBounds(), viewportMetrics);
+                    const scaleAdjust = clamp(
+                        Math.min(
+                            targetBodyWidth / Math.max(bounds.width, 1),
+                            targetBodyHeight / Math.max(bounds.height, 1)
+                        ),
+                        0.3,
+                        3.2
+                    );
+
+                    if (Math.abs(scaleAdjust - 1) > 0.02 && model.scale) {
+                        model.scale.set(model.scale.x * scaleAdjust, model.scale.y * scaleAdjust);
+                        renderer.render(tempStage);
+                    }
+
+                    const adjustedBounds = sanitizeCssRect(model.getBounds(), viewportMetrics);
+                    const adjustedBodyCenterX = adjustedBounds.x + adjustedBounds.width / 2;
+                    const adjustedBodyBottomY = adjustedBounds.y + adjustedBounds.height;
+
+                    model.x += targetBodyCenterX - adjustedBodyCenterX;
+                    model.y += targetBodyBottomY - adjustedBodyBottomY;
                 }
+            } else {
+                const targetHeadHeight = viewportHeight * 0.6;
+                const targetHeadCenterX = viewportWidth * 0.5;
+                const targetHeadCenterY = viewportHeight * 0.35;
 
-                const adjustedHeadRect = getLive2dHeadRectInfo(model, viewportMetrics)?.rect || activeHeadRect;
-                const adjustedHeadCenterX = adjustedHeadRect.x + adjustedHeadRect.width / 2;
-                const adjustedHeadCenterY = adjustedHeadRect.y + adjustedHeadRect.height * 0.42;
+                for (let pass = 0; pass < 3; pass += 1) {
+                    renderer.render(tempStage);
 
-                model.x += targetHeadCenterX - adjustedHeadCenterX;
-                model.y += targetHeadCenterY - adjustedHeadCenterY;
+                    const headRect = getLive2dHeadRectInfo(model, viewportMetrics)?.rect || null;
+                    const bounds = sanitizeCssRect(model.getBounds(), viewportMetrics);
+                    const activeHeadRect = headRect || {
+                        x: bounds.x + bounds.width * 0.28,
+                        y: bounds.y + bounds.height * 0.08,
+                        width: Math.max(1, bounds.width * 0.42),
+                        height: Math.max(1, bounds.height * 0.3)
+                    };
+
+                    const currentHeadHeight = Math.max(activeHeadRect.height, activeHeadRect.width * 0.92, 1);
+                    const scaleAdjust = clamp(targetHeadHeight / currentHeadHeight, 0.35, 3.2);
+
+                    if (Math.abs(scaleAdjust - 1) > 0.02 && model.scale) {
+                        model.scale.set(model.scale.x * scaleAdjust, model.scale.y * scaleAdjust);
+                        renderer.render(tempStage);
+                    }
+
+                    const adjustedHeadRect = getLive2dHeadRectInfo(model, viewportMetrics)?.rect || activeHeadRect;
+                    const adjustedHeadCenterX = adjustedHeadRect.x + adjustedHeadRect.width / 2;
+                    const adjustedHeadCenterY = adjustedHeadRect.y + adjustedHeadRect.height * 0.42;
+
+                    model.x += targetHeadCenterX - adjustedHeadCenterX;
+                    model.y += targetHeadCenterY - adjustedHeadCenterY;
+                }
             }
 
             renderer.render(tempStage);
@@ -918,10 +1019,12 @@
                 console.warn('[avatar-portrait] Live2D 离屏提取结果为空，回退到屏幕画布裁剪');
                 return null;
             }
-            let cropRectCss = clampRectToCanvas(
-                applyPadding(buildLive2dHeadshotRect(model, viewportMetrics, options), options),
-                viewportMetrics
-            );
+            let cropRectCss = isPortraitMode
+                ? clampRectToCanvas(buildLive2dPortraitRect(model, viewportMetrics, options), viewportMetrics)
+                : clampRectToCanvas(
+                    applyPadding(buildLive2dHeadshotRect(model, viewportMetrics, options), options),
+                    viewportMetrics
+                );
             let cropRectPixels = cssRectToPixelRect(cropRectCss, {
                 ...viewportMetrics,
                 pixelWidth: extractedCanvas.width,
@@ -930,7 +1033,7 @@
                 pixelRatioY: extractedCanvas.height / viewportHeight
             });
 
-            if (!hasVisiblePixelsInCrop(extractedCanvas, cropRectPixels)) {
+            if (!isPortraitMode && !hasVisiblePixelsInCrop(extractedCanvas, cropRectPixels)) {
                 const fallbackCropRectCss = clampRectToCanvas(
                     applyPadding(buildLive2dFallbackUpperRect(model, viewportMetrics, options), options),
                     viewportMetrics
@@ -1006,9 +1109,7 @@
                 const metrics = getCanvasMetrics(ctx.canvas);
                 // 立绘模式：返回全身包围盒
                 if (options.cropMode === 'portrait') {
-                    const bounds = ctx.model.getBounds();
-                    const padding = 0.05;
-                    return clampRectToCanvas(expandRect(bounds, padding), metrics);
+                    return clampRectToCanvas(buildLive2dPortraitRect(ctx.model, metrics, options), metrics);
                 }
                 // 头像模式：使用原有逻辑
                 return clampRectToCanvas(
@@ -1078,14 +1179,18 @@
                 const metrics = getCanvasMetrics(ctx.canvas);
                 ctx.model.vrm.scene.updateMatrixWorld(true);
                 const subjectRect = computeProjectedBoxCss(ctx.model.vrm.scene, ctx.manager.camera, metrics, THREE);
+                const headAnchor = getVrmHeadAnchor(ctx.model, ctx.manager.camera, metrics, THREE);
 
                 // 立绘模式：返回全身包围盒
                 if (options.cropMode === 'portrait') {
-                    const padding = 0.05;
-                    return clampRectToCanvas(expandRect(subjectRect, padding), metrics);
+                    return clampRectToCanvas(makeContainedPortraitRect(subjectRect, options, {
+                        centerX: headAnchor?.x,
+                        sidePaddingRatio: 0.06,
+                        topPaddingRatio: 0.08,
+                        bottomPaddingRatio: 0.03,
+                        extraHeightTopBias: 0.72
+                    }), metrics);
                 }
-
-                const headAnchor = getVrmHeadAnchor(ctx.model, ctx.manager.camera, metrics, THREE);
 
                 let portraitRect;
                 if (headAnchor) {
@@ -1219,14 +1324,18 @@
                 const metrics = getCanvasMetrics(ctx.canvas);
                 ctx.model.mesh.updateMatrixWorld(true);
                 const subjectRect = computeProjectedBoxCss(ctx.model.mesh, ctx.manager.camera, metrics, THREE);
+                const headAnchor = findMmdHeadAnchor(ctx.model.mesh, ctx.manager.camera, metrics, THREE);
 
                 // 立绘模式：返回全身包围盒
                 if (options.cropMode === 'portrait') {
-                    const padding = 0.05;
-                    return clampRectToCanvas(expandRect(subjectRect, padding), metrics);
+                    return clampRectToCanvas(makeContainedPortraitRect(subjectRect, options, {
+                        centerX: headAnchor?.x,
+                        sidePaddingRatio: 0.06,
+                        topPaddingRatio: 0.08,
+                        bottomPaddingRatio: 0.03,
+                        extraHeightTopBias: 0.72
+                    }), metrics);
                 }
-
-                const headAnchor = findMmdHeadAnchor(ctx.model.mesh, ctx.manager.camera, metrics, THREE);
 
                 let portraitRect;
                 if (headAnchor) {
