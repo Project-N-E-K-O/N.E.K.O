@@ -57,7 +57,14 @@
             "档案名": "檔案名",
             "性别": "性別",
             "年龄": "年齡",
-            "昵称": "暱稱"
+            "昵称": "暱稱",
+            "性格原型": "性格原型",
+            "种族": "種族",
+            "自称": "自稱",
+            "核心特质": "核心特質",
+            "行为特点": "行為特點",
+            "厌恶": "厭惡",
+            "一句话台词": "一句話台詞"
         }
     },
     "steam": {
@@ -1850,7 +1857,10 @@
             "selectedCount": "已選 {{count}} 個",
             "changed": "待機動作已切換",
             "changeFailed": "切換待機動作失敗"
-        }
+        },
+        "managerInitFailed": "MMD 管理器初始化失敗",
+        "modelLoading": "正在載入 MMD 模型...",
+        "modelLoaded": "MMD 模型載入成功"
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] 開始加載依賴模塊",

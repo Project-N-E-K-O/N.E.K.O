@@ -218,6 +218,7 @@ async def get_page_config(lanlan_name: str = ""):
             model_type = 'live3d'
         
         model_path = ""
+        lighting = None
         # live3d_sub_type: 前端用于区分 Live3D 模式下加载 VRM 还是 MMD 渲染器
         live3d_sub_type = ""
         
@@ -230,6 +231,16 @@ async def get_page_config(lanlan_name: str = ""):
                 model_path = _resolve_vrm_path(vrm_path, _config_manager, target_name)
             else:
                 logger.warning(f"角色 {target_name} 的VRM模型路径为空")
+            saved_lighting = get_reserved(
+                catgirl_config,
+                'avatar',
+                'vrm',
+                'lighting',
+                default=None,
+                legacy_keys=('lighting',),
+            )
+            if isinstance(saved_lighting, dict):
+                lighting = dict(saved_lighting)
         elif model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'mmd':
             live3d_sub_type = 'mmd'
             # MMD模型：处理路径转换
@@ -270,7 +281,8 @@ async def get_page_config(lanlan_name: str = ""):
             "master_nickname": str(master_basic_config.get('昵称', '') or ''),
             "master_display_name": master_display_name or "",
             "model_path": model_path,
-            "model_type": model_type
+            "model_type": model_type,
+            "lighting": lighting,
         }
         if model_type == 'live3d':
             result["live3d_sub_type"] = live3d_sub_type
