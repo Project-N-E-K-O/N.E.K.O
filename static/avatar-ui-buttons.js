@@ -80,26 +80,28 @@ const AvatarButtonMixin = {
                 }
             });
 
-            // 取消其他管理器的 UI 更新循环，防止幽灵回调重建按钮
+            // 调用其他管理器的完整清理 API，防止幽灵回调及残留事件监听
             const otherPrefixes = ['live2d', 'vrm', 'mmd'].filter(p => p !== prefix);
             otherPrefixes.forEach(p => {
                 const mgr = p === 'live2d' ? window.live2dManager
                           : p === 'vrm'    ? window.vrmManager
                           :                   window.mmdManager;
                 if (!mgr) return;
-                // 取消 RAF 循环（VRM / MMD）
-                if (mgr._uiUpdateLoopId !== null && mgr._uiUpdateLoopId !== undefined) {
-                    cancelAnimationFrame(mgr._uiUpdateLoopId);
-                    mgr._uiUpdateLoopId = null;
+                if (typeof mgr.cleanupFloatingButtons === 'function') {
+                    try { mgr.cleanupFloatingButtons(); } catch (_) {}
+                } else {
+                    // 回退：手动取消更新循环和清理引用
+                    if (mgr._uiUpdateLoopId !== null && mgr._uiUpdateLoopId !== undefined) {
+                        cancelAnimationFrame(mgr._uiUpdateLoopId);
+                        mgr._uiUpdateLoopId = null;
+                    }
+                    if (mgr._floatingButtonsTicker && mgr.pixi_app && mgr.pixi_app.ticker) {
+                        try { mgr.pixi_app.ticker.remove(mgr._floatingButtonsTicker); } catch (_) {}
+                        mgr._floatingButtonsTicker = null;
+                    }
+                    mgr._floatingButtonsContainer = null;
+                    mgr._returnButtonContainer = null;
                 }
-                // 取消 PIXI ticker（Live2D）
-                if (mgr._floatingButtonsTicker && mgr.pixi_app && mgr.pixi_app.ticker) {
-                    try { mgr.pixi_app.ticker.remove(mgr._floatingButtonsTicker); } catch (_) {}
-                    mgr._floatingButtonsTicker = null;
-                }
-                // 清理引用，防止残留状态
-                mgr._floatingButtonsContainer = null;
-                mgr._returnButtonContainer = null;
             });
 
             // 清理所有模型类型的侧边面板

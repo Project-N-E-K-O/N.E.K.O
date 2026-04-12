@@ -642,6 +642,12 @@
             }
         } catch (error) {
             console.error('[Model] 模型热切换失败:', error);
+            // 回滚提前写入的 config，防止残留错误的模型类型
+            if (typeChanged && window.lanlan_config) {
+                window.lanlan_config.model_type = oldModelType;
+                window.lanlan_config.live3d_sub_type = oldLive3dSubType || '';
+                console.warn('[Model] 已回滚 config:', { model_type: oldModelType, live3d_sub_type: oldLive3dSubType });
+            }
             window.showStatusToast(
                 window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',
                 3000
