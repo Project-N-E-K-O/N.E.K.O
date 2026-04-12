@@ -43,7 +43,7 @@
                     <img src="/static/icons/import_model_button_icon.png?v=1" data-i18n-alt="live2d.importModel" class="import-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
                     <span class="round-stroke-text" id="upload-text" data-i18n="live2d.importModel" data-text="Import Model:">导入模型</span>
                 </button>
-                <button id="delete-model-btn" class="btn btn-danger" data-i18n-title="live2d.deleteModel" aria-label="Delete imported models">
+                <button id="delete-model-btn" class="btn btn-danger" data-i18n-title="live2d.deleteModel" data-i18n-aria="live2d.deleteModel">
                     <img src="/static/icons/delete_model_button.png?v=1" data-i18n-alt="live2d.deleteModel">
                 </button>
             </div>
@@ -112,7 +112,7 @@
                     <!-- 下拉菜单项将动态生成 -->
                 </div>
             </div>
-            <button id="delete-mmd-model-btn" class="btn btn-danger" data-i18n-title="live2d.mmdModel.deleteModel" aria-label="Delete imported MMD models">
+            <button id="delete-mmd-model-btn" class="btn btn-danger" data-i18n-title="live2d.mmdModel.deleteModel" data-i18n-aria="live2d.mmdModel.deleteModel">
                 <img src="/static/icons/delete_model_button.png?v=1" data-i18n-alt="live2d.mmdModel.deleteModel">
             </button>
             </div>
@@ -133,7 +133,7 @@
                         <!-- 下拉菜单项将动态生成 -->
                     </div>
                 </div>
-                <button id="play-mmd-animation-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.mmdAnimation.play" data-i18n-aria-label="live2d.mmdAnimation.play">
+                <button id="play-mmd-animation-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.mmdAnimation.play" data-i18n-aria="live2d.mmdAnimation.play">
                     <img src="/static/icons/motion_play_icon.png?v=1" data-i18n-alt="live2d.mmdAnimation.play" class="mmd-animation-play-icon" style="height: 40px; width: auto; image-rendering: crisp-edges;">
                 </button>
             </div>
@@ -146,7 +146,7 @@
                     <img src="/static/icons/import_model_button_icon.png?v=1" data-i18n-alt="live2d.mmdAnimation.uploadAnimation" class="upload-mmd-animation-icon">
                     <span class="round-stroke-text" id="upload-mmd-animation-text" data-i18n="live2d.mmdAnimation.uploadAnimation" data-text="导入VMD动画">导入VMD动画</span>
                 </button>
-                <button id="delete-mmd-animation-btn" data-i18n-title="live2d.mmdAnimation.deleteAnimation" data-i18n-aria-label="live2d.mmdAnimation.deleteAnimation">
+                <button id="delete-mmd-animation-btn" data-i18n-title="live2d.mmdAnimation.deleteAnimation" data-i18n-aria="live2d.mmdAnimation.deleteAnimation">
                     <img src="/static/icons/delete_model_button.png?v=1" data-i18n-alt="live2d.mmdAnimation.deleteAnimation">
                 </button>
             </div>
@@ -167,8 +167,8 @@
                         <!-- 下拉菜单项将动态生成 -->
                     </div>
                 </div>
-                <button id="play-vrm-animation-btn" class="btn btn-primary" type="button" disabled style="flex-shrink: 0;">
-                    <img src="/static/icons/motion_play_icon.png?v=1" alt="播放" class="vrm-animation-play-icon" style="height: 40px; width: auto; image-rendering: crisp-edges;">
+                <button id="play-vrm-animation-btn" class="btn btn-primary" type="button" disabled style="flex-shrink: 0;" data-i18n-title="common.play" data-i18n-aria="common.play">
+                    <img src="/static/icons/motion_play_icon.png?v=1" data-i18n-alt="common.play" class="vrm-animation-play-icon" style="height: 40px; width: auto; image-rendering: crisp-edges;">
                 </button>
             </div>
         </div>
@@ -186,8 +186,8 @@
                         <!-- 下拉菜单项将动态生成 -->
                     </div>
                 </div>
-                <button id="trigger-vrm-expression-btn" class="btn btn-primary" type="button" disabled>
-                    <img src="/static/icons/motion_play_icon.png?v=1" alt="播放" class="vrm-expression-play-icon">
+                <button id="trigger-vrm-expression-btn" class="btn btn-primary" type="button" disabled data-i18n-title="common.play" data-i18n-aria="common.play">
+                    <img src="/static/icons/motion_play_icon.png?v=1" data-i18n-alt="common.play" class="vrm-expression-play-icon">
                 </button>
             </div>
         </div>
@@ -207,8 +207,8 @@
                         <!-- 下拉菜单项将动态生成 -->
                     </div>
                 </div>
-                <button id="play-motion-btn" class="btn btn-primary" type="button" disabled>
-                    <img src="/static/icons/motion_play_icon.png?v=3" alt="播放" class="motion-play-icon">
+                <button id="play-motion-btn" class="btn btn-primary" type="button" disabled data-i18n-title="common.play" data-i18n-aria="common.play">
+                    <img src="/static/icons/motion_play_icon.png?v=3" data-i18n-alt="common.play" class="motion-play-icon">
                 </button>
             </div>
         </div>
@@ -227,8 +227,8 @@
                         <!-- 下拉菜单项将动态生成 -->
                     </div>
                 </div>
-                <button id="play-expression-btn" class="btn btn-primary" type="button" disabled>
-                    <img src="/static/icons/motion_play_icon.png?v=1" alt="播放" class="expression-play-icon">
+                <button id="play-expression-btn" class="btn btn-primary" type="button" disabled data-i18n-title="common.play" data-i18n-aria="common.play">
+                    <img src="/static/icons/motion_play_icon.png?v=1" data-i18n-alt="common.play" class="expression-play-icon">
                 </button>
             </div>
         </div>
@@ -356,13 +356,13 @@
                 <label for="tonemapping-select" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.toneMapping">色调映射</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <select id="tonemapping-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
-                        <option value="0" {{ 'selected' if vrm_defaults.toneMapping|int == 0 }} style="color: #4f8cff;">None (无)</option>
-                        <option value="1" {{ 'selected' if vrm_defaults.toneMapping|int == 1 }} style="color: #4f8cff;">Linear (线性)</option>
-                        <option value="2" {{ 'selected' if vrm_defaults.toneMapping|int == 2 }} style="color: #4f8cff;">Reinhard</option>
-                        <option value="3" {{ 'selected' if vrm_defaults.toneMapping|int == 3 }} style="color: #4f8cff;">Cineon (电影)</option>
-                        <option value="4" {{ 'selected' if vrm_defaults.toneMapping|int == 4 }} style="color: #4f8cff;">ACES Filmic</option>
-                        <option value="6" {{ 'selected' if vrm_defaults.toneMapping|int == 6 }} style="color: #4f8cff;">AgX</option>
-                        <option value="7" {{ 'selected' if vrm_defaults.toneMapping|int == 7 }} style="color: #4f8cff;">Neutral</option>
+                        <option value="0" {{ 'selected' if vrm_defaults.toneMapping|int == 0 }} style="color: #4f8cff;" data-i18n="common.toneMappingNone">无</option>
+                        <option value="1" {{ 'selected' if vrm_defaults.toneMapping|int == 1 }} style="color: #4f8cff;" data-i18n="common.toneMappingLinear">线性</option>
+                        <option value="2" {{ 'selected' if vrm_defaults.toneMapping|int == 2 }} style="color: #4f8cff;" data-i18n="common.toneMappingReinhard">Reinhard</option>
+                        <option value="3" {{ 'selected' if vrm_defaults.toneMapping|int == 3 }} style="color: #4f8cff;" data-i18n="common.toneMappingCineon">Cineon</option>
+                        <option value="4" {{ 'selected' if vrm_defaults.toneMapping|int == 4 }} style="color: #4f8cff;" data-i18n="common.toneMappingACESFilmic">ACES Filmic</option>
+                        <option value="6" {{ 'selected' if vrm_defaults.toneMapping|int == 6 }} style="color: #4f8cff;" data-i18n="common.toneMappingAgX">AgX</option>
+                        <option value="7" {{ 'selected' if vrm_defaults.toneMapping|int == 7 }} style="color: #4f8cff;" data-i18n="common.toneMappingNeutral">Neutral</option>
                     </select>
                 </div>
             </div>
@@ -457,13 +457,13 @@
                             <label for="mmd-tonemapping-select" style="color: #2ecc71; font-size: 14px; font-weight: 500;" data-i18n="mmd.rendering.toneMapping">色调映射</label>
                             <div style="display: flex; align-items: center; gap: 10px;">
                                 <select id="mmd-tonemapping-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #2ecc71;">
-                                    <option value="0" style="color: #2ecc71;">None (无)</option>
-                                    <option value="1" style="color: #2ecc71;">Linear (线性)</option>
-                                    <option value="2" style="color: #2ecc71;">Reinhard</option>
-                                    <option value="3" style="color: #2ecc71;">Cineon (电影)</option>
-                                    <option value="4" style="color: #2ecc71;">ACES Filmic</option>
-                                    <option value="6" style="color: #2ecc71;">AgX</option>
-                                    <option value="7" selected style="color: #2ecc71;">Neutral</option>
+                                    <option value="0" style="color: #2ecc71;" data-i18n="common.toneMappingNone">无</option>
+                                    <option value="1" style="color: #2ecc71;" data-i18n="common.toneMappingLinear">线性</option>
+                                    <option value="2" style="color: #2ecc71;" data-i18n="common.toneMappingReinhard">Reinhard</option>
+                                    <option value="3" style="color: #2ecc71;" data-i18n="common.toneMappingCineon">Cineon</option>
+                                    <option value="4" style="color: #2ecc71;" data-i18n="common.toneMappingACESFilmic">ACES Filmic</option>
+                                    <option value="6" style="color: #2ecc71;" data-i18n="common.toneMappingAgX">AgX</option>
+                                    <option value="7" selected style="color: #2ecc71;" data-i18n="common.toneMappingNeutral">Neutral</option>
                                 </select>
                             </div>
                         </div>
@@ -481,7 +481,7 @@
                                     <input type="checkbox" id="mmd-outline-toggle" checked>
                                     <span class="toggle-slider"></span>
                                 </label>
-                                <span id="mmd-outline-status" style="color: #2ecc71; font-size: 14px;">ON</span>
+                                <span id="mmd-outline-status" style="color: #2ecc71; font-size: 14px;" data-i18n="common.on">ON</span>
                             </div>
                         </div>
                     </div>
@@ -519,7 +519,7 @@
         </div>
 
         <div id="status">
-            <img src="/static/icons/reminder_icon.png?v=1" alt="提示" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;">
+            <img src="/static/icons/reminder_icon.png?v=1" data-i18n-alt="common.alert" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;">
             <span id="status-text" data-i18n="status.initializing">正在初始化...</span>
         </div>
     </div>
@@ -534,7 +534,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3 data-i18n="live2d.deleteModelTitle">删除已导入模型</h3>
-                <button class="modal-close" id="close-delete-modal">&times;</button>
+                <button class="modal-close" id="close-delete-modal" data-i18n-title="common.close" data-i18n-aria="common.close">&times;</button>
             </div>
             <div class="delete-warning" data-i18n="live2d.deleteWarning">
                 以下列出了所有已导入的用户模型。请选择要删除的模型。注意：此操作不可恢复。
@@ -554,7 +554,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3 data-i18n="live2d.mmdModel.deleteModelTitle">删除已导入MMD模型</h3>
-                <button class="modal-close" id="close-delete-mmd-modal">&times;</button>
+                <button class="modal-close" id="close-delete-mmd-modal" data-i18n-title="common.close" data-i18n-aria="common.close">&times;</button>
             </div>
             <div class="delete-warning" data-i18n="live2d.mmdModel.deleteWarning">
                 以下列出了所有已导入的用户MMD模型。选择要删除的模型（模型所在文件夹及纹理将一并删除）。
@@ -573,7 +573,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3 data-i18n="live2d.mmdAnimation.deleteAnimationTitle">删除已导入VMD动画</h3>
-                <button class="modal-close" id="close-delete-mmd-animation-modal">&times;</button>
+                <button class="modal-close" id="close-delete-mmd-animation-modal" data-i18n-title="common.close" data-i18n-aria="common.close">&times;</button>
             </div>
             <div class="delete-warning" data-i18n="live2d.mmdAnimation.deleteAnimationWarning">
                 以下列出了所有已导入的用户VMD动画文件。选择要删除的动画文件。

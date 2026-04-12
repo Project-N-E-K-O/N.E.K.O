@@ -204,18 +204,42 @@ class DropdownManager {
         this.updateButtonText();
     }
 
+    getDefaultLabel() {
+        if (this.config.defaultTextKey && window.t && typeof window.t === 'function') {
+            return window.t(this.config.defaultTextKey);
+        }
+        return this.config.defaultText;
+    }
+
+    getIconAltText() {
+        if (this.config.iconAltKey && window.t && typeof window.t === 'function') {
+            return window.t(this.config.iconAltKey);
+        }
+        return this.config.iconAlt;
+    }
+
     ensureButtonStructure() {
         this.textSpan = document.getElementById(this.config.textSpanId);
         const icon = this.button.querySelector(`.${this.config.iconClass}`);
 
         if (!this.textSpan || !icon) {
-            this.button.innerHTML = `
-                <img src="${this.config.iconSrc}" alt="${this.config.iconAlt}" 
-                     class="${this.config.iconClass}" 
-                     style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
-                <span class="round-stroke-text" id="${this.config.textSpanId}" data-text="${this.config.defaultText}">${this.config.defaultText}</span>
-            `;
-            this.textSpan = document.getElementById(this.config.textSpanId);
+            const defaultText = this.getDefaultLabel();
+            const iconAlt = this.getIconAltText();
+
+            const iconElement = document.createElement('img');
+            iconElement.src = this.config.iconSrc;
+            iconElement.alt = iconAlt;
+            iconElement.className = this.config.iconClass;
+            iconElement.style.cssText = 'height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;';
+
+            const textElement = document.createElement('span');
+            textElement.className = 'round-stroke-text';
+            textElement.id = this.config.textSpanId;
+            textElement.textContent = defaultText;
+            textElement.setAttribute('data-text', defaultText);
+
+            this.button.replaceChildren(iconElement, textElement);
+            this.textSpan = textElement;
         }
     }
 
@@ -225,14 +249,7 @@ class DropdownManager {
             if (!this.textSpan) return;
         }
 
-        // 动态获取翻译文本（如果配置了 i18n key）
-        let defaultText = this.config.defaultText;
-        if (this.config.defaultTextKey && window.t && typeof window.t === 'function') {
-            const translated = window.t(this.config.defaultTextKey);
-            if (translated && translated !== this.config.defaultTextKey) {
-                defaultText = translated;
-            }
-        }
+        const defaultText = this.getDefaultLabel();
 
         let text = defaultText;
         let fullText = null;
@@ -261,17 +278,32 @@ class DropdownManager {
 
         const maxVisualWidth = this.config.maxVisualWidth || 13;
         const displayText = DropdownManager.truncateText(text, maxVisualWidth);
+        const hasFullTextLabel = !!(fullText && fullText !== defaultText);
+        const accessibleLabel = hasFullTextLabel ? fullText : this.getIconAltText();
 
         this.textSpan.textContent = displayText;
         this.textSpan.setAttribute('data-text', displayText);
 
         if (this.button) {
-            if (fullText && fullText !== defaultText) {
-                this.button.title = fullText;
+            this.button.title = accessibleLabel;
+            this.button.setAttribute('aria-label', accessibleLabel);
+
+            const imageIcon = this.button.querySelector('img');
+            if (imageIcon) {
+                imageIcon.alt = accessibleLabel;
+                if (hasFullTextLabel) {
+                    imageIcon.removeAttribute('data-i18n-alt');
+                }
+            }
+
+            const svgIcon = this.button.querySelector('svg');
+            if (svgIcon) {
+                svgIcon.setAttribute('aria-label', accessibleLabel);
+            }
+
+            if (hasFullTextLabel) {
                 this.button.removeAttribute('data-i18n-title');
-            } else {
-                const titleText = this.config.iconAltKey && window.t ? window.t(this.config.iconAltKey) : this.config.iconAlt;
-                this.button.title = titleText;
+                this.button.removeAttribute('data-i18n-aria');
             }
         }
     }
@@ -1029,6 +1061,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 defaultText: window.i18next?.t('live2d.modelType') || '模型类型',
                 defaultTextKey: 'live2d.modelType',
                 iconAlt: window.i18next?.t('live2d.modelType') || '模型类型',
+                iconAltKey: 'live2d.modelType',
                 alwaysShowDefault: false
             });
         }
@@ -1045,6 +1078,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 defaultText: window.i18next?.t('live2d.selectModel') || '选择模型',
                 defaultTextKey: 'live2d.selectModel',  // i18n key
                 iconAlt: window.i18next?.t('live2d.selectModel') || '选择模型',
+                iconAltKey: 'live2d.selectModel',
                 alwaysShowDefault: false,  // 显示选中的模型名字，而不是默认文本
                 shouldSkipOption: (option) => {
                     return option.value === '' && (
@@ -1068,7 +1102,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 iconClass: 'motion-select-icon',
                 iconSrc: '/static/icons/motion_select_icon.png?v=1',
                 defaultText: window.i18next?.t('live2d.selectMotion') || '选择动作',
+                defaultTextKey: 'live2d.selectMotion',
                 iconAlt: window.i18next?.t('live2d.selectMotion') || '选择动作',
+                iconAltKey: 'live2d.selectMotion',
                 shouldSkipOption: (option) => {
                     return option.value === '' && (
                         option.textContent.includes('请先加载') ||
@@ -1091,7 +1127,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 iconClass: 'expression-select-icon',
                 iconSrc: '/static/icons/expression_chosen.png?v=1',
                 defaultText: window.i18next?.t('live2d.selectExpression') || '选择表情',
+                defaultTextKey: 'live2d.selectExpression',
                 iconAlt: window.i18next?.t('live2d.selectExpression') || '选择表情',
+                iconAltKey: 'live2d.selectExpression',
                 shouldSkipOption: (option) => {
                     return option.value === '' && (
                         option.textContent.includes('请先加载') ||
@@ -1116,6 +1154,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 defaultText: window.i18next?.t('live2d.selectPersistentExpression') || '常驻表情',
                 defaultTextKey: 'live2d.selectPersistentExpression',
                 iconAlt: window.i18next?.t('live2d.selectPersistentExpression') || '常驻表情',
+                iconAltKey: 'live2d.selectPersistentExpression',
                 alwaysShowDefault: true  // 始终显示默认文字，不显示选中的选项
                 // 移除 disabled: true，让按钮可以正常使用
             });
@@ -1130,7 +1169,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 iconClass: 'vrm-model-select-icon',
                 iconSrc: '/static/icons/live2d_model_select_icon.png?v=1',
                 defaultText: window.i18next?.t('live2d.selectVRMModel') || '选择模型',
+                defaultTextKey: 'live2d.selectVRMModel',
                 iconAlt: window.i18next?.t('live2d.selectVRMModel') || '选择模型',
+                iconAltKey: 'live2d.selectVRMModel',
                 alwaysShowDefault: false,
                 shouldSkipOption: (option) => {
                     return option.value === '' && (
@@ -1155,7 +1196,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 iconClass: 'vrm-animation-select-icon',
                 iconSrc: '/static/icons/motion_select_icon.png?v=1',
                 defaultText: window.i18next?.t('live2d.vrmAnimation.selectAnimation') || '选择动作',
+                defaultTextKey: 'live2d.vrmAnimation.selectAnimation',
                 iconAlt: window.i18next?.t('live2d.vrmAnimation.selectAnimation') || '选择动作',
+                iconAltKey: 'live2d.vrmAnimation.selectAnimation',
                 shouldSkipOption: (option) => {
                     return option.value === '' && (
                         option.textContent.includes('请先加载') ||
@@ -1192,7 +1235,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 iconClass: 'vrm-expression-select-icon',
                 iconSrc: '/static/icons/expression_chosen.png?v=1',
                 defaultText: window.i18next?.t('live2d.vrmExpression.selectExpression') || '选择表情',
+                defaultTextKey: 'live2d.vrmExpression.selectExpression',
                 iconAlt: window.i18next?.t('live2d.vrmExpression.selectExpression') || '选择表情',
+                iconAltKey: 'live2d.vrmExpression.selectExpression',
                 shouldSkipOption: (option) => {
                     return option.value === '' && (
                         option.textContent.includes('请先加载') ||
@@ -1216,9 +1261,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 textSpanId: 'mmd-animation-select-text',
                 iconClass: 'mmd-animation-select-icon',
                 iconSrc: '/static/icons/motion_select_icon.png?v=1',
-                defaultText: '选择VMD动画',
+                defaultText: window.i18next?.t('live2d.mmdAnimation.selectAnimation') || '选择VMD动画',
                 defaultTextKey: 'live2d.mmdAnimation.selectAnimation',
-                iconAlt: '选择VMD动画',
+                iconAlt: window.i18next?.t('live2d.mmdAnimation.selectAnimation') || '选择VMD动画',
+                iconAltKey: 'live2d.mmdAnimation.selectAnimation',
                 shouldSkipOption: (option) => {
                     return option.value === '' && (
                         option.textContent.includes('请先加载') ||
@@ -1312,18 +1358,58 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // 更新动作播放按钮图标（始终显示播放图标，不再切换）
+    function setButtonAccessibilityLabel(button, iconSelector, key, fallback) {
+        if (!button) return;
+
+        const label = t(key, fallback);
+        button.title = label;
+        button.setAttribute('aria-label', label);
+        button.removeAttribute('data-i18n-title');
+        button.removeAttribute('data-i18n-aria');
+
+        if (iconSelector) {
+            const icon = button.querySelector(iconSelector);
+            if (icon) {
+                icon.alt = label;
+                icon.removeAttribute('data-i18n-alt');
+            }
+        }
+    }
+
     function updateMotionPlayButtonIcon() {
         if (!playMotionBtn) return;
         const icon = playMotionBtn.querySelector('.motion-play-icon');
         if (icon) {
             // 始终显示播放图标，强制设置为播放图标，绝不使用暂停图标
             icon.src = '/static/icons/motion_play_icon.png?v=3';
-            icon.alt = '播放';
             // 确保图标路径正确，如果检测到暂停图标路径，立即修正
             if (icon.src.includes('pause')) {
                 icon.src = '/static/icons/motion_play_icon.png?v=3';
             }
         }
+        setButtonAccessibilityLabel(playMotionBtn, '.motion-play-icon', 'common.play', '播放');
+    }
+
+    function updateExpressionPlayButtonLabel() {
+        setButtonAccessibilityLabel(playExpressionBtn, '.expression-play-icon', 'common.play', '播放');
+    }
+
+    function updateMmdOutlineStatusText() {
+        const statusEl = document.getElementById('mmd-outline-status');
+        if (!statusEl) return;
+
+        const isEnabled = !!(mmdOutlineToggle && mmdOutlineToggle.checked);
+        statusEl.textContent = isEnabled ? t('common.on', 'ON') : t('common.off', 'OFF');
+    }
+
+    function refreshLocalizedInteractiveTexts() {
+        updateMotionPlayButtonIcon();
+        updateExpressionPlayButtonLabel();
+        updateVRMAnimationPlayButtonIcon();
+        updateVRMExpressionPlayButtonIcon();
+        updateMMDAnimationPlayButtonIcon();
+        updateMMDModelSelectButtonText();
+        updateMmdOutlineStatusText();
     }
 
     // 动作播放状态
@@ -1332,6 +1418,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 确保播放按钮初始状态正确（始终显示播放图标）
     if (playMotionBtn) {
         updateMotionPlayButtonIcon();
+    }
+    if (playExpressionBtn) {
+        updateExpressionPlayButtonLabel();
     }
 
 
@@ -1416,6 +1505,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateUploadButtonText();
         updateModelTypeButtonText();
         updatePersistentExpressionButtonText();
+        refreshLocalizedInteractiveTexts();
     }, 800);
 
     // 如果i18next已经初始化，立即调用一次
@@ -1423,12 +1513,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateUploadButtonText();
         updateModelTypeButtonText();
         updatePersistentExpressionButtonText();
+        refreshLocalizedInteractiveTexts();
     }
 
     // 监听语言变化事件
     window.addEventListener('localechange', () => {
         updateUploadButtonText();
         DropdownManager.updateAllButtonText();
+        refreshLocalizedInteractiveTexts();
     });
 
     // 监听i18next的languageChanged事件（更可靠）
@@ -1436,6 +1528,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         window.i18n.on('languageChanged', () => {
             updateUploadButtonText();
             DropdownManager.updateAllButtonText();
+            refreshLocalizedInteractiveTexts();
         });
     }
 
@@ -3210,13 +3303,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (isVrmAnimationPlaying) {
                 // 显示暂停图标
                 icon.src = '/static/icons/vrm_pause_icon.png?v=1';
-                icon.alt = '暂停';
             } else {
                 // 显示播放图标
                 icon.src = '/static/icons/motion_play_icon.png?v=1';
-                icon.alt = '播放';
             }
         }
+        setButtonAccessibilityLabel(
+            playVrmAnimationBtn,
+            '.vrm-animation-play-icon',
+            isVrmAnimationPlaying ? 'common.pause' : 'common.play',
+            isVrmAnimationPlaying ? '暂停' : '播放'
+        );
     }
 
     // 播放/暂停 VRM 动作（切换功能）
@@ -3346,7 +3443,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const textSpan = mmdModelSelectBtn.querySelector('#mmd-model-select-text');
         if (!textSpan) return;
         const selected = mmdModelSelect.options[mmdModelSelect.selectedIndex];
-        const text = (selected && selected.value) ? selected.textContent : '选择MMD模型';
+        const text = (selected && selected.value) ? selected.textContent : t('live2d.mmdModel.selectModel', '选择MMD模型');
         textSpan.textContent = text;
         textSpan.setAttribute('data-text', text);
     }
@@ -3992,12 +4089,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (icon) {
             if (isMmdAnimationPlaying) {
                 icon.src = '/static/icons/vrm_pause_icon.png?v=1';
-                icon.alt = t('common.pause', '暂停');
             } else {
                 icon.src = '/static/icons/motion_play_icon.png?v=1';
-                icon.alt = t('common.play', '播放');
             }
         }
+        setButtonAccessibilityLabel(
+            playMmdAnimationBtn,
+            '.mmd-animation-play-icon',
+            isMmdAnimationPlaying ? 'common.pause' : 'common.play',
+            isMmdAnimationPlaying ? '暂停' : '播放'
+        );
     }
 
     // 播放/停止 MMD 动画
@@ -4160,13 +4261,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (isVrmExpressionPlaying) {
                 // 显示暂停图标
                 icon.src = '/static/icons/vrm_pause_icon.png?v=1';
-                icon.alt = '暂停';
             } else {
                 // 显示播放图标
                 icon.src = '/static/icons/motion_play_icon.png?v=1';
-                icon.alt = '播放';
             }
         }
+        setButtonAccessibilityLabel(
+            triggerVrmExpressionBtn,
+            '.vrm-expression-play-icon',
+            isVrmExpressionPlaying ? 'common.pause' : 'common.play',
+            isVrmExpressionPlaying ? '暂停' : '播放'
+        );
     }
 
     // VRM表情播放/暂停按钮点击事件
@@ -4903,8 +5008,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 描边开关
         if (mmdOutlineToggle) {
             mmdOutlineToggle.addEventListener('change', (e) => {
-                const statusEl = document.getElementById('mmd-outline-status');
-                if (statusEl) statusEl.textContent = e.target.checked ? 'ON' : 'OFF';
+                updateMmdOutlineStatusText();
                 applyMmdSettings();
                 window.hasUnsavedChanges = true;
             });
@@ -4998,8 +5102,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 if (mmdOutlineToggle && s.rendering.outline != null) {
                     mmdOutlineToggle.checked = s.rendering.outline;
-                    const el = document.getElementById('mmd-outline-status');
-                    if (el) el.textContent = s.rendering.outline ? 'ON' : 'OFF';
+                    updateMmdOutlineStatusText();
                 }
             }
             // physics 和 cursorFollow 由 popup-ui 统一控制，不在此加载

@@ -253,6 +253,24 @@
         <div id="neko-resize-handle"></div>
     </div>
 
+    <!--
+        ⚠️ 以下按钮永远不会显示，但绝对不能删除！
+        JS 层（app-buttons.js / app-websocket.js / app-screen.js 等）通过
+        getElementById 获取这些元素的引用，用来：
+          1. 绑定 click 事件 → 触发 WebSocket 后端调用（start_session / end_session / stream_data）
+          2. 读写 disabled / active / recording 等状态 → 判断当前会话模式
+        删除这些元素会导致 getElementById 返回 null，所有语音、屏幕共享、会话管理功能静默失败。
+        因为用户永远看不到这些按钮，所以也不需要做 i18n 翻译。
+    -->
+    <div id="sidebar" style="display:none;">
+        <button id="micButton">开始语音</button>
+        <button id="muteButton" disabled>暂停</button>
+        <button id="screenButton" disabled>屏幕</button>
+        <button id="stopButton" disabled>停止</button>
+        <button id="resetSessionButton">重置</button>
+        <button id="returnSessionButton">返回</button>
+    </div>
+
     <!-- React Chat（与 index.html 完全相同的 DOM 结构）-->
     <div id="react-chat-window-overlay">
         <div id="react-chat-window-backdrop"></div>
