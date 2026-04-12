@@ -824,6 +824,9 @@
             }).filter(Boolean)
             : [];
         state.messages = sortMessages(normalized);
+        if (state.messages.length > MAX_MESSAGES) {
+            state.messages = state.messages.slice(-MAX_MESSAGES);
+        }
         renderWindow();
         return state.messages;
     }

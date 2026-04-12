@@ -52,7 +52,7 @@ export default function App({
   onTranslateToggle,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
-  const [pendingDrafts, setPendingDrafts] = useState<Array<{ id: string; text: string; time: string }>>([]);
+  const [pendingDrafts, setPendingDrafts] = useState<Array<{ id: string; text: string; time: string; msgSnapshot: number }>>([]);
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
@@ -61,12 +61,14 @@ export default function App({
   // Clear pending drafts once the host confirms them (appears in messages)
   useEffect(() => {
     if (pendingDrafts.length === 0) return;
-    const hostUserTexts = new Set(
-      messages
-        .filter(m => m.role === 'user')
-        .flatMap(m => m.blocks.flatMap(b => b.type === 'text' ? [b.text] : [])),
-    );
-    const remaining = pendingDrafts.filter(d => !hostUserTexts.has(d.text));
+    const remaining = pendingDrafts.filter(d => {
+      const newUserTexts = new Set(
+        messages.slice(d.msgSnapshot)
+          .filter(m => m.role === 'user')
+          .flatMap(m => m.blocks.flatMap(b => b.type === 'text' ? [b.text] : [])),
+      );
+      return !newUserTexts.has(d.text);
+    });
     if (remaining.length < pendingDrafts.length) {
       setPendingDrafts(remaining);
     }
@@ -93,11 +95,14 @@ export default function App({
     const now = new Date();
     const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
       .map(n => String(n).padStart(2, '0')).join(':');
-    setPendingDrafts(prev => [...prev, {
-      id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      text,
-      time,
-    }]);
+    if (text) {
+      setPendingDrafts(prev => [...prev, {
+        id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        text,
+        time,
+        msgSnapshot: messages.length,
+      }]);
+    }
     onComposerSubmit?.({ text });
     setDraft('');
   }
