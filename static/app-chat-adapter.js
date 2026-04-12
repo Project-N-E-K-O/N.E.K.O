@@ -214,14 +214,46 @@
 
     // ---- host 未就绪时的待重发队列 ----
     var _pendingHostMessages = [];
+    var _pendingFlushTimer = null;
 
     function _tryFlushPendingHostMessages() {
         var host = getHost();
-        if (!host || typeof host.appendMessage !== 'function' || _pendingHostMessages.length === 0) return;
+        if (_pendingHostMessages.length === 0) {
+            // 队列已空，停止重试
+            if (_pendingFlushTimer) { clearInterval(_pendingFlushTimer); _pendingFlushTimer = null; }
+            return;
+        }
+        if (!host || typeof host.appendMessage !== 'function') {
+            // host 尚未就绪，启动轮询重试（200ms 间隔，最多重试 50 次 ≈ 10s）
+            if (!_pendingFlushTimer) {
+                var _retryCount = 0;
+                _pendingFlushTimer = setInterval(function () {
+                    _retryCount++;
+                    if (_retryCount > 50 || _pendingHostMessages.length === 0) {
+                        clearInterval(_pendingFlushTimer); _pendingFlushTimer = null;
+                        return;
+                    }
+                    _tryFlushPendingHostMessages();
+                }, 200);
+            }
+            return;
+        }
+        // host 就绪，flush 全部并停止重试
+        if (_pendingFlushTimer) { clearInterval(_pendingFlushTimer); _pendingFlushTimer = null; }
         var batch = _pendingHostMessages.splice(0);
         for (var i = 0; i < batch.length; i++) {
             try { host.appendMessage(batch[i]); } catch (_) {}
         }
+    }
+
+    // 供 response_discarded 等外部逻辑按 msgId 清理待发队列
+    function _clearPendingHostMessagesByIds(idsToRemove) {
+        if (!idsToRemove || idsToRemove.length === 0 || _pendingHostMessages.length === 0) return;
+        var idSet = {};
+        for (var i = 0; i < idsToRemove.length; i++) { idSet[idsToRemove[i]] = true; }
+        _pendingHostMessages = _pendingHostMessages.filter(function (m) {
+            return !(m && m.id && idSet[m.id]);
+        });
     }
 
     function createGeminiBubble(sentence) {
@@ -608,6 +640,7 @@
     window.processRealisticQueue = processRealisticQueue;
     window.setReactMessageStatus = setReactMessageStatus;
     window._tryFlushPendingHostMessages = _tryFlushPendingHostMessages;
+    window._clearPendingHostMessagesByIds = _clearPendingHostMessagesByIds;
 
     // 覆盖 appChat 上的方法
     if (window.appChat) {

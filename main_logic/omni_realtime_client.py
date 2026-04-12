@@ -287,6 +287,7 @@ class OmniRealtimeClient:
 
         # Interruption state - suppress output after user interruption until next response
         self._interrupted = False  # 打断状态标志，防止重复消息块
+        self._suppressed_delta_logged_resp_id = None  # 限流：每个 response 只记录一次 text.delta 被拦截的日志
 
         # Native image input rate limiting
         self._last_native_image_time = 0.0  # 上次原生图片输入时间戳
@@ -1586,12 +1587,14 @@ class OmniRealtimeClient:
                     elif event_type in self.extra_event_handlers:
                         await self.extra_event_handlers[event_type](event)
                 else:
-                    # 调试日志：text.delta 被 _interrupted/_skip 标志拦截
+                    # 调试日志：text.delta 被 _interrupted/_skip 标志拦截（每个 response 仅记录一次）
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
-                        logger.warning(
-                            "⚠️ text.delta suppressed: _skip=%s, _interrupted=%s, resp_id=%s",
-                            self._skip_until_next_response, self._interrupted, self._current_response_id
-                        )
+                        if self._suppressed_delta_logged_resp_id != self._current_response_id:
+                            self._suppressed_delta_logged_resp_id = self._current_response_id
+                            logger.warning(
+                                "⚠️ text.delta suppressed: _skip=%s, _interrupted=%s, resp_id=%s",
+                                self._skip_until_next_response, self._interrupted, self._current_response_id
+                            )
 
         except websockets.exceptions.ConnectionClosedOK:
             logger.info("Connection closed as expected")
