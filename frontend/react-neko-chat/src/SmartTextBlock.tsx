@@ -94,10 +94,13 @@ function StreamingText({ text }: { text: string }) {
 }
 
 export default function SmartTextBlock({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
+  // Streaming: always use StreamingText for per-batch fade-in, regardless of
+  // markdown content.  Once streaming ends, fall through to markdown rendering.
+  if (isStreaming) {
+    return <StreamingText text={text} />;
+  }
+
   if (!looksLikeRichText(text)) {
-    if (isStreaming) {
-      return <StreamingText text={text} />;
-    }
     return <div className="message-block message-block-text">{text}</div>;
   }
 
