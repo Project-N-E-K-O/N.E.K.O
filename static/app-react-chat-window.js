@@ -82,6 +82,24 @@
         }
     }
 
+    function resetMobileContentLayoutState(shell, topbar, composer, messageList) {
+        [topbar, composer, messageList].forEach(function (element) {
+            if (!element) return;
+            element.style.removeProperty('height');
+            if (element.dataset && element.dataset.mobileAutoHeight) {
+                delete element.dataset.mobileAutoHeight;
+            }
+        });
+
+        if (!shell) return;
+
+        shell.classList.remove('is-mobile-content-capped');
+        shell.style.removeProperty('height');
+        if (shell.dataset.mobileAutoHeight) {
+            delete shell.dataset.mobileAutoHeight;
+        }
+    }
+
     function syncMobileContentLayout() {
         var overlay = getOverlay();
         var shell = getShell();
@@ -95,7 +113,7 @@
         var composer = root.querySelector('.composer-panel');
         var messageList = root.querySelector('.message-list');
         if (!topbar || !composer || !messageList) {
-            shell.classList.remove('is-mobile-content-capped');
+            resetMobileContentLayoutState(shell, topbar, composer, messageList);
             return;
         }
 
