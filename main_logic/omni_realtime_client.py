@@ -1491,6 +1491,7 @@ class OmniRealtimeClient:
                     self._current_response_id = None
                     self._current_item_id = None
                     self._skip_until_next_response = False
+                    self._interrupted = False  # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
                     # 响应完成，检测重复度
                     if self._current_response_transcript:
                         print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...' | audio_deltas={self._audio_delta_count}")
@@ -1584,6 +1585,13 @@ class OmniRealtimeClient:
                     
                     elif event_type in self.extra_event_handlers:
                         await self.extra_event_handlers[event_type](event)
+                else:
+                    # 调试日志：text.delta 被 _interrupted/_skip 标志拦截
+                    if event_type in ["response.text.delta", "response.output_text.delta"]:
+                        logger.warning(
+                            "⚠️ text.delta suppressed: _skip=%s, _interrupted=%s, resp_id=%s",
+                            self._skip_until_next_response, self._interrupted, self._current_response_id
+                        )
 
         except websockets.exceptions.ConnectionClosedOK:
             logger.info("Connection closed as expected")

@@ -407,6 +407,9 @@
                     window._realisticGeminiBuffer = '';
                     window._pendingMusicCommand = '';
                     window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+                    // 重置并发锁，确保正在 sleep 的 processRealisticQueue 循环
+                    // 醒来后通过 version 检查退出，且不会阻塞下一轮启动
+                    window._isProcessingRealisticQueue = false;
 
                     var hadTrackedBubbles = window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0;
                     if (hadTrackedBubbles) {

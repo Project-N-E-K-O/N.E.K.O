@@ -603,19 +603,33 @@ class LLMSessionManager:
     async def send_lanlan_response(self, text: str, is_first_chunk: bool = False, turn_id: str | None = None):
         """Qwen输出转录回调: 可用于前端显示/缓存/同步。"""
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                text = self.emotion_pattern.sub('', text)
+            # 使用 websocket_lock 保护状态检查和发送操作的原子性，
+            # 防止并发任务在检查和发送之间断开连接导致消息丢失
+            async def _do_send():
+                if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                    text_clean = self.emotion_pattern.sub('', text)
 
-                # 优先使用传入的 turn_id, 兜底使用当前会话记录的 speech_id (即 turn id)
-                effective_turn_id = turn_id or self.current_speech_id
+                    # 优先使用传入的 turn_id, 兜底使用当前会话记录的 speech_id (即 turn id)
+                    effective_turn_id = turn_id or self.current_speech_id
 
-                message = {
-                    "type": "gemini_response",
-                    "text": text,
-                    "isNewMessage": is_first_chunk,
-                    "turn_id": effective_turn_id
-                }
-                await self.websocket.send_json(message)
+                    message = {
+                        "type": "gemini_response",
+                        "text": text_clean,
+                        "isNewMessage": is_first_chunk,
+                        "turn_id": effective_turn_id
+                    }
+                    await self.websocket.send_json(message)
+                    return message, text_clean
+                return None, text
+
+            if self.websocket_lock:
+                async with self.websocket_lock:
+                    result, text = await _do_send()
+            else:
+                result, text = await _do_send()
+
+            if result:
+                message = result
                 if is_first_chunk:
                     logger.debug("[%s] send_lanlan_response: first chunk sent via WS (len=%d)", self.lanlan_name, len(text))
                 self.sync_message_queue.put({"type": "json", "data": message})
