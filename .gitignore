@@ -65,6 +65,7 @@ playwright_browsers/
 *.code-workspace
 .claude
 CLAUDE.md
+.codex
 
 # Rust: ignore target and cargo artifacts
 /launcher/target/

@@ -35,6 +35,10 @@
         onComposerSubmit: null
     };
 
+    var MOBILE_MAX_HEIGHT_RATIO = 0.5;
+    var MOBILE_MESSAGE_MIN_HEIGHT = 60;
+    var mobileLayoutFrame = 0;
+
     function $(id) {
         return document.getElementById(id);
     }
@@ -65,6 +69,77 @@
 
     function getRoot() {
         return $('react-chat-window-root');
+    }
+
+    function clearMobileContentCap() {
+        var shell = getShell();
+        if (!shell) return;
+
+        shell.classList.remove('is-mobile-content-capped');
+        if (shell.dataset.mobileAutoHeight === 'true') {
+            shell.style.removeProperty('height');
+            delete shell.dataset.mobileAutoHeight;
+        }
+    }
+
+    function resetMobileContentLayoutState(shell, topbar, composer, messageList) {
+        [topbar, composer, messageList].forEach(function (element) {
+            if (!element) return;
+            element.style.removeProperty('height');
+            if (element.dataset && element.dataset.mobileAutoHeight) {
+                delete element.dataset.mobileAutoHeight;
+            }
+        });
+
+        if (!shell) return;
+
+        shell.classList.remove('is-mobile-content-capped');
+        shell.style.removeProperty('height');
+        if (shell.dataset.mobileAutoHeight) {
+            delete shell.dataset.mobileAutoHeight;
+        }
+    }
+
+    function syncMobileContentLayout() {
+        var overlay = getOverlay();
+        var shell = getShell();
+        var root = getRoot();
+        if (!overlay || overlay.hidden || !shell || !root || minimized || !isMobileWidth()) {
+            clearMobileContentCap();
+            return;
+        }
+
+        var topbar = root.querySelector('.window-topbar');
+        var composer = root.querySelector('.composer-panel');
+        var messageList = root.querySelector('.message-list');
+        if (!topbar || !composer || !messageList) {
+            resetMobileContentLayoutState(shell, topbar, composer, messageList);
+            return;
+        }
+
+        var maxHeight = Math.max(0, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
+        if (!maxHeight) return;
+
+        var desiredMessageHeight = Math.max(MOBILE_MESSAGE_MIN_HEIGHT, messageList.scrollHeight);
+        var desiredHeight = Math.ceil(
+            topbar.getBoundingClientRect().height
+            + composer.getBoundingClientRect().height
+            + desiredMessageHeight
+        );
+        var nextHeight = Math.min(maxHeight, desiredHeight);
+
+        shell.style.height = nextHeight + 'px';
+        shell.dataset.mobileAutoHeight = 'true';
+        shell.classList.toggle('is-mobile-content-capped', desiredHeight > maxHeight);
+    }
+
+    function scheduleMobileContentLayout() {
+        if (mobileLayoutFrame) return;
+
+        mobileLayoutFrame = window.requestAnimationFrame(function () {
+            mobileLayoutFrame = 0;
+            syncMobileContentLayout();
+        });
     }
 
     function getI18nText(key, fallback) {
@@ -497,6 +572,7 @@
         var overlay = getOverlay();
         if (!overlay || overlay.hidden) return;
         mountWindow();
+        scheduleMobileContentLayout();
     }
 
     function dispatchHostEvent(name, detail) {
@@ -918,6 +994,7 @@
                 // 清除内联尺寸，让 .is-minimized 的 CSS 生效
                 shell.style.removeProperty('width');
                 shell.style.removeProperty('height');
+                shell.classList.remove('is-mobile-content-capped');
                 // 将位置设为对话框左下角
                 shell.style.left = targetLeft + 'px';
                 shell.style.top = targetTop + 'px';
@@ -1025,6 +1102,7 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
+                scheduleMobileContentLayout();
                 // 确保位置不溢出；全屏模式（/chat）不持久化，
                 // 否则 (0,0) 会覆盖 index.html 中用户保存的窗口位置
                 requestAnimationFrame(function () {
@@ -1099,10 +1177,12 @@
                     overlay.hidden = false;
                     document.body.classList.add('react-chat-window-open');
                     setMinimized(false);
+                    scheduleMobileContentLayout();
                 } else {
                     overlay.hidden = false;
                     document.body.classList.add('react-chat-window-open');
                     restorePosition();
+                    scheduleMobileContentLayout();
                 }
             })
             .catch(function (error) {
@@ -1139,13 +1219,15 @@
 
         overlay.hidden = true;
         document.body.classList.remove('react-chat-window-open');
+        clearMobileContentCap();
     }
 
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
     function startDrag(clientX, clientY) {
         var shell = getShell();
-        if (!shell || isMobileWidth()) return;
+        if (!shell) return;
+        if (isMobileWidth() && !minimized) return;
 
         var rect = shell.getBoundingClientRect();
         dragState = {
@@ -1496,6 +1578,7 @@
                     }
                 } else {
                     restorePosition();
+                    scheduleMobileContentLayout();
                 }
             }
         });

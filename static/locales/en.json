@@ -1956,11 +1956,11 @@
         },
         "step1b": {
             "title": "🖱️ Drag & Zoom",
-            "desc": "You can drag your Neko to move her, and use mouse wheel to zoom in/out. Give it a try~"
+            "desc": "You can drag your Neko to move her, and use <strong>mouse wheel</strong> to zoom in/out. Give it a try~"
         },
         "step1c": {
             "title": "🔒 Lock Neko",
-            "desc": "Click this lock to lock your Neko's position, preventing accidental moves. Click again to unlock~"
+            "desc": "Click this lock to lock your Neko's position, preventing accidental moves. The Floating Toolbar around her will also stop appearing. Click again to unlock~"
         },
         "step2": {
             "title": "💬 Chat Area",
@@ -1984,15 +1984,15 @@
         },
         "step7": {
             "title": "🖥️ Screen Share",
-            "desc": "Share your screen/window/tab with your Neko~"
+            "desc": "Once enabled, your screen will be continuously shared with your Neko. This feature can only be used during a voice session~"
         },
         "step8": {
             "title": "🔨 NekoClaw",
-            "desc": "Open the NekoClaw panel for computer use, browser use, plugin, and more~"
+            "desc": "Open the NekoClaw panel for Keyboard/Mouse Control, Browser Control, user plugins, and more. Let Neko use your computer, help you work, and play games with you~"
         },
         "step9": {
             "title": "💤 Ask Her to Leave",
-            "desc": "Let your Neko leave temporarily. Click \"Ask Her Back\" to restore~"
+            "desc": "Let your Neko leave temporarily. Click \"Ask Her to Return\" to restore~ <strong>When she's having issues, letting her leave for a break often fixes the problem.</strong>"
         },
         "step10": {
             "title": "⚙️ Settings",
@@ -2004,7 +2004,7 @@
         },
         "step14": {
             "title": "👀 Proactive Vision",
-            "desc": "Your Neko actively reads screen information. Adjust interval here~"
+            "desc": "Unlike Screen Share which continuously streams during voice sessions, Proactive Vision lets your Neko glance at your screen from time to time on her own. Adjust the interval here~"
         },
         "step15": {
             "title": "👤 Character Manager",
@@ -2031,10 +2031,10 @@
             },
             "menu": {
                 "title": "📋 Tray Menu",
-                "desc": "You'll find a N.E.K.O icon in the bottom-right tray. Right-click it to see many options. Here are two commonly used features:"
+                "desc": "Right-click the N.E.K.O icon in the system tray (see the previous hint) to access the menu. Here are some commonly used features:"
             },
             "reset": {
-                "title": "🔄 Reset Model Position",
+                "title": "🔄 Reset Avatar Position",
                 "desc": "If your catgirl moves off-screen or to an undesirable position, click this option to return her to the default position~"
             },
             "switchMode": "Switch Desktop/Mobile Mode",
@@ -2050,11 +2050,15 @@
                 "title": "🎉 Tutorial Complete!",
                 "desc": "Congratulations on completing all tutorials! You now understand N.E.K.O's main features. Enjoy interacting with your catgirl! To review the tutorial, click \"Reset Tutorial\" in settings~"
             },
-            "resetPosition": "Reset Model Position",
+            "resetPosition": "Reset Avatar Position",
+            "resetPositionDesc": "Return your Neko to the default position if she goes off-screen~",
+            "openChat": "Open Chat Window",
+            "openChatDesc": "Open a separate chat window for text conversations~",
+            "important": "IMPORTANT:",
             "compatibility": "Compatibility Mode",
-            "hotkeyDesc": "Configure global hotkeys here to control N.E.K.O more efficiently~",
+            "hotkeyDesc": "Set global hotkeys to control N.E.K.O more efficiently~",
             "uploadLogs": "Upload Logs",
-            "exitDesc": "When you want to close N.E.K.O, click Exit here. Since the window is borderless, the tray menu is the primary way to exit the application~"
+            "exitDesc": "Close N.E.K.O. The tray menu is the primary way to exit~"
         },
         "completed": "✨ Tutorial complete! Enjoy~",
         "resetHint": {
