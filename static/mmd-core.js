@@ -942,6 +942,8 @@ class MMDCore {
         const mmd = this.manager.currentModel;
         if (!mmd || !mmd.mesh) return;
 
+        const THREE = window.THREE;
+
         // 禁用物理，防止位置变更期间拉丝
         const hadPhysics = this.manager.enablePhysics;
         this.manager.enablePhysics = false;
@@ -950,6 +952,40 @@ class MMDCore {
         mesh.position.set(0, 0, 0);
         mesh.quaternion.identity();
         mesh.scale.set(1, 1, 1);
+
+        // 复位相机到初始机位，使模型稳定出现在屏幕中央
+        // （MMD 的 orbit 仅旋转 mesh 不动相机，但用户可能通过其他入口改动过相机；
+        //  同时也为将来相机交互做前向兼容）
+        if (THREE && this.manager.camera) {
+            try {
+                mesh.updateMatrixWorld(true);
+                const box = new THREE.Box3().setFromObject(mesh);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+
+                const modelHeight = size.y > 0 ? size.y : 20;
+                const screenHeight = window.innerHeight;
+                const targetScreenHeight = screenHeight * 0.45;
+                const fov = this.manager.camera.fov * (Math.PI / 180);
+                // 让模型在屏幕上占约 45% 高度
+                const distance = (modelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
+
+                // 把相机锚定到 bounding box 中心，否则模型几何中心偏离世界原点时，
+                // 实际相机到目标的距离与 `distance` 不一致，复位构图会漂
+                this.manager.camera.position.set(center.x, center.y, center.z + Math.abs(distance));
+                this.manager.camera.lookAt(center.x, center.y, center.z);
+                this.manager.camera.updateProjectionMatrix();
+
+                if (this.manager.controls) {
+                    this.manager.controls.target.set(center.x, center.y, center.z);
+                    this.manager.controls.update();
+                }
+            } catch (err) {
+                console.warn('[MMD Core] 重置相机失败，回退到初始机位:', err);
+                this.manager.camera.position.set(0, 10, 70);
+                this.manager.camera.lookAt(0, 10, 0);
+            }
+        }
 
         if (mmd.physics && typeof mmd.physics.reset === 'function') {
             mesh.updateMatrixWorld(true);
@@ -968,6 +1004,8 @@ class MMDCore {
                 { x: 0, y: 0, z: 0 }
             );
         }
+
+        console.log('[MMD Core] 模型位置已重置，相机已复位');
     }
 
     // ═══════════════════ 锁定 ═══════════════════
