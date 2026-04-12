@@ -148,7 +148,7 @@
         "subscriptionsUpdated": "订阅列表已更新",
         "unsubscribeFailed": "取消订阅失败: {{error}}",
         "unsubscribeError": "取消订阅时发生错误，请稍后再试",
-        "validatingFolderPath": "正在验证文件夹路径...",
+        "validatingFolderPath": "正在验证文件夹: {{path}}",
         "previewImageMissing": "预览图片文件不存在，请检查路径",
         "uploadReady": "准备上传 {{itemName}}",
         "pageDescription": "通过此页面，您可以浏览、订阅、下载和管理Steam创意工坊中的Live2D模型和声音",

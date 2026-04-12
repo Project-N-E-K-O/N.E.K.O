@@ -1294,9 +1294,9 @@
         "noVoices": "登録済みボイスはありません",
         "loadError": "読み込み失敗、後でもう一度お試しください",
         "delete": "削除",
-        "confirmDelete": "このボイスを削除しますか？",
+        "confirmDelete": "ボイス「{{name}}」を削除してもよろしいですか？この操作は元に戻せません。",
         "deleting": "削除中...",
-        "deleteSuccess": "削除成功",
+        "deleteSuccess": "ボイス「{{name}}」の削除が完了しました",
         "deleteFailed": "削除失敗",
         "deleteError": "削除失敗：{{error}}",
         "freePresetLabel": "無料プリセット",
@@ -1848,7 +1848,7 @@
             "title": "待機アニメーション",
             "selectHint": "待機モーションを選択",
             "selectedCount": "{{count}} 件選択中",
-            "changed": "待機アニメーションが変更されました: {{name}}",
+            "changed": "待機アニメーションが変更されました",
             "changeFailed": "待機アニメーションの変更に失敗しました"
         }
     },
