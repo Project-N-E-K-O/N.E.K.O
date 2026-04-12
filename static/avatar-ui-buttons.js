@@ -87,10 +87,7 @@ const AvatarButtonMixin = {
                           : p === 'vrm'    ? window.vrmManager
                           :                   window.mmdManager;
                 if (!mgr) return;
-                if (typeof mgr.cleanupFloatingButtons === 'function') {
-                    try { mgr.cleanupFloatingButtons(); } catch (_) {}
-                } else {
-                    // 回退：手动取消更新循环和清理引用
+                const manualCleanup = () => {
                     if (mgr._uiUpdateLoopId !== null && mgr._uiUpdateLoopId !== undefined) {
                         cancelAnimationFrame(mgr._uiUpdateLoopId);
                         mgr._uiUpdateLoopId = null;
@@ -99,8 +96,19 @@ const AvatarButtonMixin = {
                         try { mgr.pixi_app.ticker.remove(mgr._floatingButtonsTicker); } catch (_) {}
                         mgr._floatingButtonsTicker = null;
                     }
+                    if (mgr._uiWindowHandlers) {
+                        mgr._uiWindowHandlers.forEach(({ event, handler, target, options: opts }) => {
+                            (target || window).removeEventListener(event, handler, opts);
+                        });
+                        mgr._uiWindowHandlers = [];
+                    }
                     mgr._floatingButtonsContainer = null;
                     mgr._returnButtonContainer = null;
+                };
+                if (typeof mgr.cleanupFloatingButtons === 'function') {
+                    try { mgr.cleanupFloatingButtons(); } catch (_) { manualCleanup(); }
+                } else {
+                    manualCleanup();
                 }
             });
 
