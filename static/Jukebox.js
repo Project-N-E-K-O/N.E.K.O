@@ -5591,7 +5591,7 @@ window.Jukebox = {
     }
 
     // 嵌入模式：逐一刷新已渲染的静态文本
-    var c = Jukebox.State.container;
+    const c = Jukebox.State.container;
     if (!c) return;
 
     // --- Header ---
@@ -5638,14 +5638,14 @@ window.Jukebox = {
 
     // --- Re-render song list (preserves playback state) ---
     if (Jukebox.State.songs && Jukebox.State.songs.length) {
-      Jukebox.renderList(Jukebox.State.songs);
+      Jukebox.renderList();
     }
 
     // --- Re-render SongActionManager (if visible) ---
     try {
-      if (Jukebox.SongActionManager && Jukebox.SongActionManager._panel) {
+      if (Jukebox.SongActionManager && Jukebox.SongActionManager.element) {
         // Rebuild panel to refresh tab titles and static text
-        var panel = Jukebox.SongActionManager._panel;
+        var panel = Jukebox.SongActionManager.element;
         var titleEl = panel.querySelector('.sam-title');
         if (titleEl) titleEl.textContent = window.t('Jukebox.managerTitle', '管理器');
         var tabs = panel.querySelectorAll('.sam-tab');
