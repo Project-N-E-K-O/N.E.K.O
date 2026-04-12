@@ -1206,6 +1206,7 @@ async def on_shutdown():
         except Exception as e:
             logger.debug(f"音乐爬虫清理失败: {e}", exc_info=True)
 
+        pre_export_release_failed = False
         try:
             from main_routers.characters_router import release_memory_server_character
 
@@ -1216,31 +1217,44 @@ async def on_shutdown():
             )
             for character_name in releasable_names:
                 try:
-                    await asyncio.wait_for(
+                    released = await asyncio.wait_for(
                         release_memory_server_character(
                             character_name,
                             reason=f"Steam Auto-Cloud export before shutdown: {character_name}",
                         ),
                         timeout=1.0,
                     )
+                    if not released:
+                        pre_export_release_failed = True
+                        logger.warning(
+                            "Steam Auto-Cloud pre-export release failed for %s: returned False",
+                            character_name,
+                        )
                 except Exception as e:
-                    logger.debug("Steam Auto-Cloud pre-export release skipped for %s: %s", character_name, e)
+                    pre_export_release_failed = True
+                    logger.warning("Steam Auto-Cloud pre-export release failed for %s: %s", character_name, e)
         except Exception as e:
-            logger.debug(f"Steam Auto-Cloud pre-export release phase failed: {e}")
+            pre_export_release_failed = True
+            logger.warning(f"Steam Auto-Cloud pre-export release phase failed: {e}")
 
-        try:
-            export_result = await _run_cloudsave_manager_action(
-                "export_snapshot",
-                reason="main_server_shutdown",
-                budget_seconds=3.0,
-            )
-            logger.info("Steam Auto-Cloud shutdown export: %s", export_result)
-        except CloudsaveDeadlineExceeded:
+        if pre_export_release_failed:
             logger.warning(
-                "Steam Auto-Cloud shutdown export exceeded 3.0s budget before applying snapshot changes; Steam may upload the previous local snapshot"
+                "Steam Auto-Cloud shutdown export skipped because at least one memory handle release failed"
             )
-        except Exception as e:
-            logger.warning(f"Steam Auto-Cloud shutdown export failed: {e}")
+        else:
+            try:
+                export_result = await _run_cloudsave_manager_action(
+                    "export_snapshot",
+                    reason="main_server_shutdown",
+                    budget_seconds=3.0,
+                )
+                logger.info("Steam Auto-Cloud shutdown export: %s", export_result)
+            except CloudsaveDeadlineExceeded:
+                logger.warning(
+                    "Steam Auto-Cloud shutdown export exceeded 3.0s budget before applying snapshot changes; Steam may upload the previous local snapshot"
+                )
+            except Exception as e:
+                logger.warning(f"Steam Auto-Cloud shutdown export failed: {e}")
 
         current_config = get_start_config()
         if current_config.get("shutdown_memory_server_on_exit"):

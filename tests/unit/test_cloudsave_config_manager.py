@@ -293,6 +293,21 @@ def test_load_workshop_config_does_not_delete_invalid_file_on_read(tmp_path):
 
 
 @pytest.mark.unit
+def test_repair_workshop_configs_respects_cloudsave_write_fence(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    with patch("utils.cloudsave_runtime.assert_cloudsave_writable", side_effect=MaintenanceModeError("maintenance_readonly")), patch.object(
+        cm,
+        "_cleanup_invalid_workshop_configs",
+    ) as mock_cleanup:
+        with pytest.raises(MaintenanceModeError):
+            cm.repair_workshop_configs()
+
+    mock_cleanup.assert_not_called()
+
+
+@pytest.mark.unit
 def test_load_user_preferences_prefers_runtime_path_when_present(tmp_path):
     cm = _make_config_manager(tmp_path)
     runtime_preferences_path = cm.config_dir / "user_preferences.json"

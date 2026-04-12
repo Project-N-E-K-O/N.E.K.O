@@ -1489,7 +1489,6 @@
         "autoSaved": "已自动保存设定",
         "autoSaveFailed": "自动保存失败，请手动保存后再关闭页面",
         "unsavedNewCatgirlDraftDetected": "检测到未保存的新猫娘草稿，请先保存或取消后再同步刷新",
-        "partialSaveVoiceFailed": "角色已保存，但音色更新失败: {{error}}",
         "exportCard": "导出角色卡",
         "exportingCard": "正在导出角色卡...",
         "exportCardSuccess": "角色卡导出成功",

@@ -1,0 +1,11 @@
+import pytest
+
+
+@pytest.mark.unit
+def test_derive_model_asset_binding_marks_http_path_as_manual_external():
+    from main_routers.characters_router import _derive_model_asset_binding
+
+    asset_source, asset_source_id = _derive_model_asset_binding("https://example.com/model.model3.json")
+
+    assert asset_source == "manual_external"
+    assert asset_source_id == ""

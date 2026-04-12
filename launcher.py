@@ -1458,8 +1458,14 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
         current_root=str(config_manager.app_docs_dir),
         last_known_good_root=str(config_manager.app_docs_dir),
     )
+    root_mode = str(root_state.get("mode") or "")
+    root_state_event_payload = {
+        "mode": root_mode,
+        "is_normal": root_mode == ROOT_MODE_NORMAL,
+        "is_readonly": root_mode == ROOT_MODE_MAINTENANCE_READONLY,
+    }
     event_payload = {
-        "root_state": root_state,
+        "root_state": root_state_event_payload,
         "manifest_name": Path(config_manager.cloudsave_manifest_path).name,
         "manifest_exists": bool(Path(config_manager.cloudsave_manifest_path).exists()),
         "import_result": import_result,

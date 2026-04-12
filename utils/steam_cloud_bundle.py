@@ -13,14 +13,13 @@ from contextlib import contextmanager
 from ctypes import POINTER, c_bool, c_char_p, c_int32, c_void_p, create_string_buffer
 from pathlib import Path, PurePosixPath
 from typing import Any
+from uuid import uuid4
 
 from utils.cloudsave_runtime import (
     CloudsaveDeadlineExceeded,
     _assert_deadline_not_exceeded,
     _atomic_copy_file,
-    _cleanup_empty_parent_dirs,
     _create_staging_workspace,
-    _list_existing_cloudsave_files,
     _load_json_if_exists,
     load_cloudsave_manifest,
 )
@@ -136,7 +135,6 @@ def _apply_bundle_to_local_cloudsave(config_manager, bundle_bytes: bytes, meta_p
     stage_root.mkdir(parents=True, exist_ok=True)
     stage_cloudsave_root = stage_root / "cloudsave"
     stage_cloudsave_root.mkdir(parents=True, exist_ok=True)
-    existing_relative_paths = {"manifest.json", *_list_existing_cloudsave_files(config_manager)}
 
     _extract_bundle_archive_safely(stage_cloudsave_root, bundle_bytes)
 
@@ -161,17 +159,29 @@ def _apply_bundle_to_local_cloudsave(config_manager, bundle_bytes: bytes, meta_p
         if not staged_file.is_file():
             raise FileNotFoundError(f"remote cloudsave bundle is missing {relative_path}")
 
+    stage_replacement_root = stage_root / "cloudsave-replacement"
+    stage_replacement_root.mkdir(parents=True, exist_ok=True)
     for relative_path in payload_relative_paths:
-        _atomic_copy_file(stage_cloudsave_root / relative_path, config_manager.cloudsave_dir / relative_path)
-    _atomic_copy_file(stage_manifest_path, config_manager.cloudsave_dir / "manifest.json")
+        _atomic_copy_file(stage_cloudsave_root / relative_path, stage_replacement_root / relative_path)
+    _atomic_copy_file(stage_manifest_path, stage_replacement_root / "manifest.json")
 
-    stale_relative_paths = existing_relative_paths - managed_relative_paths
-    stale_relative_paths.discard("manifest.json")
-    for relative_path in sorted(stale_relative_paths):
-        target_path = config_manager.cloudsave_dir / relative_path
-        if target_path.exists():
-            target_path.unlink()
-            _cleanup_empty_parent_dirs(target_path, config_manager.cloudsave_dir)
+    target_cloudsave_dir = config_manager.cloudsave_dir
+    target_cloudsave_dir.parent.mkdir(parents=True, exist_ok=True)
+    backup_cloudsave_dir = target_cloudsave_dir.parent / f"{target_cloudsave_dir.name}.rollback-{uuid4().hex}"
+    has_existing_cloudsave_dir = target_cloudsave_dir.exists()
+
+    if has_existing_cloudsave_dir:
+        os.replace(target_cloudsave_dir, backup_cloudsave_dir)
+
+    try:
+        os.replace(stage_replacement_root, target_cloudsave_dir)
+    except Exception:
+        if has_existing_cloudsave_dir and backup_cloudsave_dir.exists():
+            os.replace(backup_cloudsave_dir, target_cloudsave_dir)
+        raise
+    else:
+        if backup_cloudsave_dir.exists():
+            shutil.rmtree(backup_cloudsave_dir, ignore_errors=True)
 
     return {
         "manifest_fingerprint": remote_fingerprint,
@@ -420,14 +430,37 @@ def upload_cloudsave_bundle_to_steam(
                     "action": "skipped",
                     "reason": "cloud_disabled",
                 }
+            previous_bundle_bytes = None
+            previous_meta_bytes = None
+            if bridge.file_exists(REMOTE_BUNDLE_FILENAME):
+                previous_bundle_bytes = bridge.read_file(REMOTE_BUNDLE_FILENAME)
+            if bridge.file_exists(REMOTE_META_FILENAME):
+                previous_meta_bytes = bridge.read_file(REMOTE_META_FILENAME)
+
             bridge.write_file(REMOTE_BUNDLE_FILENAME, bundle_bytes)
             try:
                 bridge.write_file(REMOTE_META_FILENAME, meta_bytes)
-            except Exception:
+            except Exception as exc:
+                rollback_errors: list[str] = []
                 try:
-                    bridge.delete_file(REMOTE_BUNDLE_FILENAME)
-                except Exception:
-                    pass
+                    if previous_bundle_bytes is None:
+                        bridge.delete_file(REMOTE_BUNDLE_FILENAME)
+                    else:
+                        bridge.write_file(REMOTE_BUNDLE_FILENAME, previous_bundle_bytes)
+                except Exception as restore_bundle_error:
+                    rollback_errors.append(f"restore bundle failed: {restore_bundle_error}")
+                try:
+                    if previous_meta_bytes is None:
+                        bridge.delete_file(REMOTE_META_FILENAME)
+                    else:
+                        bridge.write_file(REMOTE_META_FILENAME, previous_meta_bytes)
+                except Exception as restore_meta_error:
+                    rollback_errors.append(f"restore meta failed: {restore_meta_error}")
+                if rollback_errors:
+                    raise RuntimeError(
+                        "failed to write remote cloudsave meta and rollback previous remote bundle state: "
+                        + "; ".join(rollback_errors)
+                    ) from exc
                 raise
             return {
                 "success": True,

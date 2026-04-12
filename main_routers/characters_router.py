@@ -126,10 +126,10 @@ def _derive_model_asset_binding(model_path: str, *, item_id: str = "") -> tuple[
         return "steam_workshop", normalized_item_id
     if normalized_path.startswith(("/user_live2d/", "/user_live2d_local/", "/user_vrm/", "/user_mmd/")):
         return "local_imported", ""
-    if normalized_path.startswith("/static/") or (normalized_path and not normalized_path.startswith("/")):
-        return "builtin", ""
     if normalized_path.startswith(("http://", "https://")):
         return "manual_external", ""
+    if normalized_path.startswith("/static/") or (normalized_path and not normalized_path.startswith("/")):
+        return "builtin", ""
     return "", ""
 
 

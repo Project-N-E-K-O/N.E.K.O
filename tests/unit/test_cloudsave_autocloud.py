@@ -389,3 +389,28 @@ def test_cloudsave_manager_export_uploads_source_launch_bundle_after_local_expor
         assert result["remote_bundle_result"]["action"] == "uploaded"
         assert observed["fingerprint"] == result["result"]["manifest"]["fingerprint"]
         assert observed["sequence_number"] == result["result"]["manifest"]["sequence_number"]
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_export_marks_partial_failure_when_remote_upload_fails():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        _write_runtime_state(cm, character_name="远端失败角色")
+
+        with patch(
+            "utils.cloudsave_autocloud.upload_cloudsave_bundle_to_steam",
+            return_value={
+                "success": False,
+                "action": "failed",
+                "reason": "remote_bundle_upload_failed",
+            },
+        ):
+            manager = CloudSaveManager(cm)
+            result = manager.export_snapshot(reason="source_launch_remote_bundle_upload")
+
+        assert result["success"] is False
+        assert result["action"] == "partial_exported"
+        assert result["reason"] == "remote_bundle_upload_failed"
+        assert result["remote_bundle_result"]["success"] is False
+        assert result["result"]["manifest"]["fingerprint"]

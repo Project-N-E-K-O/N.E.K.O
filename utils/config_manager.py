@@ -2597,6 +2597,9 @@ class ConfigManager:
     def repair_workshop_configs(self):
         """显式修复 workshop 配置文件，仅在调用方明确允许写盘时执行。"""
         with self._workshop_config_lock:
+            from utils.cloudsave_runtime import assert_cloudsave_writable
+
+            assert_cloudsave_writable(self, operation="repair", target="workshop_config.json")
             self._cleanup_invalid_workshop_configs()
     
     def load_workshop_config(self):

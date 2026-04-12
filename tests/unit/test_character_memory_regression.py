@@ -1143,3 +1143,48 @@ def test_timeindexed_dispose_engine_also_clears_sql_chat_engine_cache(monkeypatc
     finally:
         SQLChatMessageHistory._engine_cache.clear()
         SQLChatMessageHistory._engine_cache.update(original_cache)
+
+
+@pytest.mark.unit
+def test_timeindexed_engine_init_failure_disposes_engine_and_clears_temp_cache(monkeypatch, tmp_path):
+    from memory.timeindex import TimeIndexedMemory
+    from utils.llm_client import SQLChatMessageHistory
+
+    class _DummyEngine:
+        def __init__(self):
+            self.dispose_calls = 0
+
+        def dispose(self):
+            self.dispose_calls += 1
+
+    created_engine = _DummyEngine()
+    cached_engine = _DummyEngine()
+    db_path = (tmp_path / "time_indexed.db").resolve()
+    connection_string = f"sqlite:///{db_path.as_posix()}"
+
+    original_cache = dict(SQLChatMessageHistory._engine_cache)
+    try:
+        fake_config_manager = SimpleNamespace(
+            get_character_data=lambda: ({}, {}, {}, {}, {}, {}, {}, {}, {}),
+        )
+        monkeypatch.setattr("memory.timeindex.get_config_manager", lambda: fake_config_manager)
+        monkeypatch.setattr("memory.timeindex.create_engine", lambda _connection_string: created_engine)
+
+        manager = TimeIndexedMemory(recent_history_manager=None)
+        monkeypatch.setattr(manager, "_assert_timeindex_writable", lambda _lanlan_name: None)
+
+        def _explode_after_cache(_engine, _connection_string, _lanlan_name):
+            SQLChatMessageHistory._engine_cache[_connection_string] = cached_engine
+            raise RuntimeError("force init failure")
+
+        monkeypatch.setattr(manager, "_ensure_tables_exist_with", _explode_after_cache)
+
+        assert manager._ensure_engine_exists("测试角色", db_path=str(db_path), readonly=False) is False
+        assert created_engine.dispose_calls == 1
+        assert cached_engine.dispose_calls == 1
+        assert connection_string not in SQLChatMessageHistory._engine_cache
+        assert "测试角色" not in manager.engines
+        assert "测试角色" not in manager.db_paths
+    finally:
+        SQLChatMessageHistory._engine_cache.clear()
+        SQLChatMessageHistory._engine_cache.update(original_cache)

@@ -249,6 +249,34 @@ async def test_main_server_shutdown_releases_live_sessions_and_exports_cloudsave
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_main_server_shutdown_skips_export_when_memory_release_returns_false():
+    import main_server
+
+    fake_tracker = SimpleNamespace(save=Mock())
+    run_cloudsave_action = AsyncMock(return_value={"success": True, "action": "exported"})
+
+    with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
+         patch.object(main_server, "_preload_task", None), \
+         patch.object(main_server, "agent_event_bridge", None), \
+         patch.object(main_server, "session_manager", {"角色A": object(), "角色B": object()}), \
+         patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
+         patch("main_routers.characters_router.release_memory_server_character", AsyncMock(side_effect=[True, False])) as mock_release, \
+         patch("utils.language_utils.aclose_translation_service", AsyncMock(return_value=None), create=True), \
+         patch("utils.music_crawlers.close_all_crawlers", AsyncMock(return_value=None)), \
+         patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker), \
+         patch.object(main_server.logger, "warning", Mock()) as mock_warning:
+        await main_server.on_shutdown()
+
+    assert mock_release.await_count == 2
+    run_cloudsave_action.assert_not_awaited()
+    mock_warning.assert_any_call(
+        "Steam Auto-Cloud shutdown export skipped because at least one memory handle release failed"
+    )
+    fake_tracker.save.assert_called_once_with()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_shutdown_server_async_defers_memory_server_stop_until_main_shutdown():
     import main_server
 

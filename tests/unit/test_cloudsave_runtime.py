@@ -10,23 +10,35 @@ import pytest
 from utils.file_utils import atomic_write_json
 
 
-def _make_config_manager(tmp_path, platform: str | None = None):
+def _make_config_manager(
+    tmp_path,
+    platform: str | None = None,
+    legacy_candidates: list[str] | None = None,
+):
     from utils.config_manager import ConfigManager
+
+    if legacy_candidates is None:
+        legacy_candidates = []
 
     patchers = [
         patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_path),
+        patch.object(
+            ConfigManager,
+            "get_legacy_app_root_candidates",
+            return_value=list(legacy_candidates),
+        ),
     ]
     if platform is not None:
         patchers.append(patch("utils.config_manager.sys.platform", platform))
 
-    with patchers[0]:
-        if len(patchers) == 1:
+    with patchers[0], patchers[1]:
+        if len(patchers) == 2:
             config_manager = ConfigManager("N.E.K.O")
-            config_manager.get_legacy_app_root_candidates = lambda: []
+            config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
             return config_manager
-        with patchers[1]:
+        with patchers[2]:
             config_manager = ConfigManager("N.E.K.O")
-            config_manager.get_legacy_app_root_candidates = lambda: []
+            config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
             return config_manager
 
 
@@ -972,7 +984,7 @@ def test_cloudsave_summary_preserves_explicit_workshop_role_origin_even_when_cur
     set_reserved(characters["猫娘"]["水水"], "avatar", "model_type", "live2d")
     set_reserved(characters["猫娘"]["水水"], "avatar", "asset_source", "local")
     set_reserved(characters["猫娘"]["水水"], "avatar", "asset_source_id", "")
-    set_reserved(characters["猫娘"]["水水"], "avatar", "live2d", "model_path", "猫娘-YUI-洛丽塔-导出03/猫娘-YUI-洛丽塔-导出03.model3.json")
+    set_reserved(characters["猫娘"]["水水"], "avatar", "live2d", "model_path", "猫娘-YUI-洛丽塔-导出03/0313YUI03.model3.json")
     set_reserved(characters["猫娘"]["水水"], "character_origin", "source", "steam_workshop")
     set_reserved(characters["猫娘"]["水水"], "character_origin", "source_id", "3671939765")
     set_reserved(characters["猫娘"]["水水"], "character_origin", "display_name", "Blue cat")
@@ -1687,13 +1699,13 @@ def test_export_creates_valid_sqlite_shadow_copy_for_time_indexed_db(tmp_path):
 
     with sqlite3.connect(str(runtime_db_path)) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=0")
         conn.execute("CREATE TABLE IF NOT EXISTS entries (id INTEGER PRIMARY KEY, content TEXT)")
         conn.execute("INSERT INTO entries(content) VALUES (?)", ("来自 WAL 的长期记忆",))
         conn.commit()
 
-    assert Path(f"{runtime_db_path}-wal").exists()
-
-    export_local_cloudsave_snapshot(cm)
+        assert Path(f"{runtime_db_path}-wal").exists()
+        export_local_cloudsave_snapshot(cm)
 
     exported_db_path = cm.cloudsave_dir / "memory" / "小满" / "time_indexed.db"
     with sqlite3.connect(str(exported_db_path)) as conn:

@@ -40,6 +40,8 @@ class TimeIndexedMemory:
         if not readonly:
             self._assert_timeindex_writable(lanlan_name)
 
+        engine = None
+        connection_string = None
         try:
             if not db_path:
                 _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
@@ -63,9 +65,9 @@ class TimeIndexedMemory:
                 os.makedirs(db_dir, exist_ok=True)
             # Windows 路径使用反斜杠，SQLite URI 需要正斜杠
             uri_path = normalized_db_path.replace("\\", "/")
-            engine = create_engine(f"sqlite:///{uri_path}")
+            connection_string = f"sqlite:///{uri_path}"
+            engine = create_engine(connection_string)
             if not readonly:
-                connection_string = f"sqlite:///{uri_path}"
                 # 先完成所有初始化/迁移，再注册到 self.engines，
                 # 避免失败后引擎被标记为"已初始化"而跳过后续修复
                 self._ensure_tables_exist_with(engine, connection_string, lanlan_name)
@@ -74,6 +76,25 @@ class TimeIndexedMemory:
             self.engines[lanlan_name] = engine
             return True
         except Exception:
+            try:
+                if engine is not None:
+                    engine.dispose()
+            except Exception:
+                pass
+            try:
+                existing_engine = self.engines.get(lanlan_name)
+                if existing_engine is engine:
+                    self.engines.pop(lanlan_name, None)
+                    self.db_paths.pop(lanlan_name, None)
+            except Exception:
+                pass
+            if connection_string:
+                cached_engine = SQLChatMessageHistory._engine_cache.pop(connection_string, None)
+                if cached_engine is not None and cached_engine is not engine:
+                    try:
+                        cached_engine.dispose()
+                    except Exception:
+                        pass
             logger.exception(f"初始化角色数据库引擎失败: {lanlan_name}")
             return False
 

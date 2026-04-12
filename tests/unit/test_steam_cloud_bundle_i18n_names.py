@@ -11,6 +11,7 @@ import pytest
 
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.cloudsave_runtime import (
+    _atomic_copy_file as _runtime_atomic_copy_file,
     bootstrap_local_cloudsave_environment,
     export_local_cloudsave_snapshot,
     import_local_cloudsave_snapshot,
@@ -18,6 +19,8 @@ from utils.cloudsave_runtime import (
 from utils.config_manager import ConfigManager, set_reserved
 from utils.file_utils import atomic_write_json
 from utils.steam_cloud_bundle import (
+    REMOTE_BUNDLE_FILENAME,
+    REMOTE_META_FILENAME,
     _apply_bundle_to_local_cloudsave,
     _write_remote_bundle,
     download_cloudsave_bundle_from_steam,
@@ -383,3 +386,86 @@ def test_apply_bundle_rejects_archive_entries_outside_cloudsave_root(tmp_path):
             )
 
     assert not escaped_path.exists()
+
+
+@pytest.mark.unit
+def test_apply_bundle_does_not_touch_live_cloudsave_when_staging_copy_fails(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(source_cm)
+    bootstrap_local_cloudsave_environment(target_cm)
+
+    _write_runtime_state(source_cm, character_name="云端角色", recent_message="remote message")
+    _write_runtime_state(target_cm, character_name="本地旧角色", recent_message="stale local message")
+    export_local_cloudsave_snapshot(source_cm)
+    export_local_cloudsave_snapshot(target_cm)
+
+    bundle_path = tmp_path / "cloudsave_bundle.zip"
+    bundle_info = _write_remote_bundle(bundle_path, source_cm)
+
+    original_manifest = (target_cm.cloudsave_dir / "manifest.json").read_text(encoding="utf-8")
+    original_recent_exists = (target_cm.cloudsave_dir / "memory" / "本地旧角色" / "recent.json").exists()
+
+    def _fail_on_manifest_copy(src: Path, dst: Path):
+        if dst.name == "manifest.json":
+            raise OSError("simulated manifest stage copy failure")
+        return _runtime_atomic_copy_file(src, dst)
+
+    with patch("utils.steam_cloud_bundle._atomic_copy_file", side_effect=_fail_on_manifest_copy):
+        with pytest.raises(OSError, match="simulated manifest stage copy failure"):
+            _apply_bundle_to_local_cloudsave(target_cm, bundle_path.read_bytes(), bundle_info["meta"])
+
+    assert (target_cm.cloudsave_dir / "manifest.json").read_text(encoding="utf-8") == original_manifest
+    assert (target_cm.cloudsave_dir / "memory" / "本地旧角色" / "recent.json").exists() is original_recent_exists
+
+
+@pytest.mark.unit
+def test_upload_bundle_restores_previous_remote_files_when_meta_write_fails(tmp_path):
+    cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(cm)
+    _write_runtime_state(cm, character_name="上传回滚角色", recent_message="upload rollback")
+    export_local_cloudsave_snapshot(cm)
+
+    previous_bundle_bytes = b"previous-bundle"
+    previous_meta_bytes = b'{"manifest_fingerprint":"previous"}'
+
+    class _FailingMetaWriteBridge:
+        def __init__(self):
+            self.storage = {
+                REMOTE_BUNDLE_FILENAME: previous_bundle_bytes,
+                REMOTE_META_FILENAME: previous_meta_bytes,
+            }
+
+        def cloud_enabled(self) -> bool:
+            return True
+
+        def file_exists(self, remote_name: str) -> bool:
+            return remote_name in self.storage
+
+        def read_file(self, remote_name: str) -> bytes:
+            return self.storage[remote_name]
+
+        def write_file(self, remote_name: str, payload: bytes) -> None:
+            if remote_name == REMOTE_META_FILENAME:
+                raise RuntimeError("meta write failed")
+            self.storage[remote_name] = payload
+
+        def delete_file(self, remote_name: str) -> bool:
+            self.storage.pop(remote_name, None)
+            return True
+
+    bridge = _FailingMetaWriteBridge()
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        del steamworks
+        yield bridge
+
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge):
+        with pytest.raises(RuntimeError, match="meta write failed"):
+            upload_cloudsave_bundle_to_steam(cm)
+
+    assert bridge.storage[REMOTE_BUNDLE_FILENAME] == previous_bundle_bytes
+    assert bridge.storage[REMOTE_META_FILENAME] == previous_meta_bytes

@@ -55,6 +55,11 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
     assert emitted_events[-1][1]["import_result"]["requested_reason"] == "launcher_phase0_prelaunch_import"
     assert emitted_events[-1][1]["manifest_name"] == "manifest.json"
     assert emitted_events[-1][1]["manifest_exists"] is False
+    root_state_payload = emitted_events[-1][1]["root_state"]
+    assert root_state_payload["mode"] == launcher.ROOT_MODE_NORMAL
+    assert root_state_payload["is_normal"] is True
+    assert "current_root" not in root_state_payload
+    assert "last_known_good_root" not in root_state_payload
 
 
 @pytest.mark.unit

@@ -13,6 +13,7 @@ const CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME = 'neko_cloudsave_character_sync';
 let autoSaveToastTimer = null;
 let autoSaveToastElement = null;
 let lastCloudsaveSyncTimestamp = 0;
+let processingCloudsaveTimestamp = 0;
 let cloudsaveSyncChannel = null;
 
 function showAutoSaveToast(disableAutoHide = false, customMessage = null) {
@@ -1834,15 +1835,18 @@ window.deleteCatgirl = async function (key) {
     }
     const confirmTitle = window.t ? window.t('character.deleteCatgirlTitle') : '删除猫娘';
     if (!await showConfirm(confirmMsg, confirmTitle, { danger: true })) return;
-    const response = await fetch('/api/characters/catgirl/' + encodeURIComponent(key), { method: 'DELETE' });
-    let result = null;
     try {
-        result = await response.json();
+        const response = await fetch('/api/characters/catgirl/' + encodeURIComponent(key), { method: 'DELETE' });
+        const result = await response.json();
+        if (!response.ok || !result || result.success !== true) {
+            const errorText = translateBackendError(result?.code || result?.error || result?.message || '未知错误');
+            const prefix = window.t ? window.t('character.deleteFailed') : '删除失败';
+            await showAlert(errorText ? `${prefix}: ${errorText}` : prefix);
+            return;
+        }
     } catch (error) {
-        console.warn('解析删除猫娘响应失败:', error);
-    }
-    if (!response.ok || !result || result.success !== true) {
-        const errorText = translateBackendError(result?.code || result?.error || result?.message || '未知错误');
+        console.warn('删除猫娘请求失败:', error);
+        const errorText = translateBackendError(error?.message || '');
         const prefix = window.t ? window.t('character.deleteFailed') : '删除失败';
         await showAlert(errorText ? `${prefix}: ${errorText}` : prefix);
         return;
@@ -3178,32 +3182,50 @@ async function handleCloudsaveCharacterSync(payload) {
     if (!payload || payload.type !== CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE) return;
 
     const nextTimestamp = Number(payload.timestamp || 0);
-    if (nextTimestamp && nextTimestamp === lastCloudsaveSyncTimestamp) {
+    if (
+        nextTimestamp
+        && (
+            nextTimestamp === lastCloudsaveSyncTimestamp
+            || nextTimestamp === processingCloudsaveTimestamp
+        )
+    ) {
         return;
     }
 
-    if (hasUnsavedNewCatgirlDraft()) {
-        await showAlert(window.t
-            ? window.t('character.unsavedNewCatgirlDraftDetected')
-            : '检测到未保存的新猫娘草稿，请先保存或取消后再同步刷新');
-        return;
+    let shouldCommitTimestamp = false;
+    if (nextTimestamp) {
+        processingCloudsaveTimestamp = nextTimestamp;
     }
 
-    if (hasUnsavedChanges()) {
-        try {
-            await saveAllUnsavedChanges();
-        } catch (error) {
-            console.warn('[Cloud Save] 自动保存失败，跳过本次同步刷新:', error);
+    try {
+        if (hasUnsavedNewCatgirlDraft()) {
+            await showAlert(window.t
+                ? window.t('character.unsavedNewCatgirlDraftDetected')
+                : '检测到未保存的新猫娘草稿，请先保存或取消后再同步刷新');
+            shouldCommitTimestamp = true;
             return;
         }
-    }
 
-    if (nextTimestamp) {
-        lastCloudsaveSyncTimestamp = nextTimestamp;
-    }
+        if (hasUnsavedChanges()) {
+            try {
+                await saveAllUnsavedChanges();
+            } catch (error) {
+                console.warn('[Cloud Save] 自动保存失败，跳过本次同步刷新:', error);
+                return;
+            }
+        }
 
-    console.log('[Cloud Save] 收到角色列表刷新通知，正在刷新角色数据...', payload);
-    loadCharacterData();
+        console.log('[Cloud Save] 收到角色列表刷新通知，正在刷新角色数据...', payload);
+        await loadCharacterData();
+        shouldCommitTimestamp = true;
+    } finally {
+        if (nextTimestamp && processingCloudsaveTimestamp === nextTimestamp) {
+            processingCloudsaveTimestamp = 0;
+        }
+        if (nextTimestamp && shouldCommitTimestamp) {
+            lastCloudsaveSyncTimestamp = nextTimestamp;
+        }
+    }
 }
 
 function initCloudsaveCharacterSyncChannel() {

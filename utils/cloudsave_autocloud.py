@@ -304,14 +304,18 @@ class CloudSaveManager:
             steamworks=steamworks,
             deadline_monotonic=deadline_monotonic,
         )
-        return {
-            "success": True,
-            "action": "exported",
+        remote_success = bool(remote_bundle_result.get("success", False))
+        payload = {
+            "success": remote_success,
+            "action": "exported" if remote_success else "partial_exported",
             "requested_reason": str(reason or ""),
             "result": result,
             "remote_bundle_result": remote_bundle_result,
             "status": self.build_status(steamworks=steamworks),
         }
+        if not remote_success:
+            payload["reason"] = str(remote_bundle_result.get("reason") or "remote_bundle_upload_failed")
+        return payload
 
 
 def get_cloudsave_manager(config_manager) -> CloudSaveManager:
