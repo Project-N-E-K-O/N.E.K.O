@@ -2460,6 +2460,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.log('[模型管理] VRM 场景初始化成功');
                     showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
                 }
+                // 【修复】对称恢复：从 MMD 子类型切回 VRM 时，MMD 分支会把 canvas 隐藏并
+                // 暂停渲染循环。若场景已初始化则 initThreeJS 不会被调用，需要在此显式
+                // 恢复 canvas 可见性并重启渲染循环，避免预览空白或卡在旧帧。
+                if (vrmManager && vrmManager.renderer && vrmManager.renderer.domElement) {
+                    vrmManager.renderer.domElement.style.display = 'block';
+                }
+                if (vrmManager && typeof vrmManager.resumeRendering === 'function') {
+                    try { vrmManager.resumeRendering(); } catch (_) { /* ignore */ }
+                }
             } catch (error) {
                 console.error('VRM 场景初始化失败:', error);
                 showStatus(t('live2d.vrmInitFailed', `VRM 场景初始化失败: ${error.message}`));
