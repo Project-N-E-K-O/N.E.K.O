@@ -12,6 +12,7 @@ import pytest
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.cloudsave_runtime import (
     _atomic_copy_file as _runtime_atomic_copy_file,
+    CloudsaveDeadlineExceeded,
     bootstrap_local_cloudsave_environment,
     export_local_cloudsave_snapshot,
     import_local_cloudsave_snapshot,
@@ -22,6 +23,7 @@ from utils.steam_cloud_bundle import (
     REMOTE_BUNDLE_FILENAME,
     REMOTE_META_FILENAME,
     _apply_bundle_to_local_cloudsave,
+    _cloudsave_manifest_matches_local_files,
     _write_remote_bundle,
     download_cloudsave_bundle_from_steam,
     upload_cloudsave_bundle_to_steam,
@@ -469,3 +471,62 @@ def test_upload_bundle_restores_previous_remote_files_when_meta_write_fails(tmp_
 
     assert bridge.storage[REMOTE_BUNDLE_FILENAME] == previous_bundle_bytes
     assert bridge.storage[REMOTE_META_FILENAME] == previous_meta_bytes
+
+
+@pytest.mark.unit
+def test_manifest_matcher_returns_false_when_payload_file_is_tampered(tmp_path):
+    cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(cm)
+    _write_runtime_state(cm, character_name="篡改校验角色", recent_message="digest check")
+    export_result = export_local_cloudsave_snapshot(cm)
+
+    manifest_files = export_result["manifest"]["files"]
+    tamper_relative_path = next(iter(manifest_files.keys()))
+    tamper_path = cm.cloudsave_dir / tamper_relative_path
+    tamper_path.write_bytes(b"tampered-cloudsave-payload")
+
+    assert _cloudsave_manifest_matches_local_files(cm, export_result["manifest"]["fingerprint"]) is False
+
+
+@pytest.mark.unit
+def test_write_remote_bundle_checks_deadline_during_per_file_loop(tmp_path):
+    cm = _make_config_manager(tmp_path / "source")
+    bootstrap_local_cloudsave_environment(cm)
+    _write_runtime_state(cm, character_name="上传超时角色", recent_message="deadline")
+    export_local_cloudsave_snapshot(cm)
+    bundle_path = tmp_path / "deadline_bundle.zip"
+
+    def _raise_on_per_file_write(deadline_monotonic, *, operation, stage):
+        if stage.startswith("bundle_write_start:"):
+            raise CloudsaveDeadlineExceeded(operation, stage=stage)
+
+    with patch("utils.steam_cloud_bundle._assert_deadline_not_exceeded", side_effect=_raise_on_per_file_write):
+        with pytest.raises(CloudsaveDeadlineExceeded):
+            _write_remote_bundle(bundle_path, cm, deadline_monotonic=1.0)
+
+
+@pytest.mark.unit
+def test_apply_bundle_checks_deadline_during_per_file_copy(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(source_cm)
+    bootstrap_local_cloudsave_environment(target_cm)
+    _write_runtime_state(source_cm, character_name="下载超时角色", recent_message="deadline")
+    export_local_cloudsave_snapshot(source_cm)
+
+    bundle_path = tmp_path / "deadline_apply_bundle.zip"
+    bundle_info = _write_remote_bundle(bundle_path, source_cm)
+    bundle_bytes = bundle_path.read_bytes()
+
+    def _raise_on_per_file_copy(deadline_monotonic, *, operation, stage):
+        if stage.startswith("apply_copy_start:"):
+            raise CloudsaveDeadlineExceeded(operation, stage=stage)
+
+    with patch("utils.steam_cloud_bundle._assert_deadline_not_exceeded", side_effect=_raise_on_per_file_copy):
+        with pytest.raises(CloudsaveDeadlineExceeded):
+            _apply_bundle_to_local_cloudsave(
+                target_cm,
+                bundle_bytes,
+                bundle_info["meta"],
+                deadline_monotonic=1.0,
+            )

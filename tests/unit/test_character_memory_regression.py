@@ -1,5 +1,6 @@
 import importlib
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -21,6 +22,10 @@ def _make_config_manager(tmp_root: Path):
         ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
+    ), patch.object(
+        ConfigManager,
+        "_get_project_root",
+        return_value=tmp_root,
     ):
         config_manager = ConfigManager("N.E.K.O")
     config_manager.get_legacy_app_root_candidates = lambda: []
@@ -366,6 +371,99 @@ async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_
 
             restored_recent_payload = json.loads((old_memory_dir / "recent.json").read_text(encoding="utf-8"))
             assert restored_recent_payload[0]["speaker"] == "旧角色"
+            websocket.send_text.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_release_fails():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        websocket = AsyncMock()
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={
+                    "旧角色": SimpleNamespace(is_active=False, websocket=websocket, session=None),
+                },
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+
+            fake_response = type(
+                "Resp",
+                (),
+                {"status_code": 200, "json": lambda self: {"status": "success"}},
+            )()
+            fake_client = AsyncMock()
+            fake_client.__aenter__.return_value = fake_client
+            fake_client.__aexit__.return_value = False
+            fake_client.post.return_value = fake_response
+
+            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+                add_result = await characters_router_module.add_catgirl(
+                    _DummyRequest({"档案名": "旧角色"})
+                )
+            assert add_result["success"] is True
+
+            characters = cm.load_characters()
+            characters["当前猫娘"] = "旧角色"
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            old_memory_dir = Path(cm.memory_dir) / "旧角色"
+            old_memory_dir.mkdir(parents=True, exist_ok=True)
+            (old_memory_dir / "recent.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "speaker": "旧角色",
+                            "data": {"content": "旧角色说：你好"},
+                        }
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                characters_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=False),
+            ) as mock_release:
+                rename_result = await characters_router_module.rename_catgirl(
+                    "旧角色",
+                    _DummyRequest({"new_name": "新角色"}),
+                )
+
+            assert rename_result.status_code == 503
+            payload = json.loads(rename_result.body.decode("utf-8"))
+            assert payload["success"] is False
+            assert payload["code"] == "MEMORY_SERVER_RELEASE_FAILED"
+            mock_release.assert_awaited_once()
+
+            current_characters = cm.load_characters()
+            assert "旧角色" in current_characters.get("猫娘", {})
+            assert "新角色" not in current_characters.get("猫娘", {})
+            assert current_characters["当前猫娘"] == "旧角色"
+            assert old_memory_dir.exists()
+            assert (old_memory_dir / "recent.json").is_file()
+            assert not (Path(cm.memory_dir) / "新角色").exists()
             websocket.send_text.assert_not_awaited()
 
 
@@ -1118,7 +1216,8 @@ def test_timeindexed_dispose_engine_also_clears_sql_chat_engine_cache(monkeypatc
 
     primary_engine = _DummyEngine()
     cached_engine = _DummyEngine()
-    connection_string = "sqlite:///D:/tmp/test-time-indexed.db"
+    normalized_path = os.path.abspath("D:/tmp/test-time-indexed.db").replace("\\", "/")
+    connection_string = f"sqlite:///{normalized_path}"
 
     original_cache = dict(SQLChatMessageHistory._engine_cache)
     try:

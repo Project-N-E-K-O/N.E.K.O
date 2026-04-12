@@ -247,6 +247,7 @@ class CloudSaveManager:
         force: bool = False,
         steamworks=None,
         deadline_monotonic: float | None = None,
+        fence_already_active: bool = False,
     ) -> dict[str, Any]:
         remote_bundle_result = self._try_download_remote_bundle(
             steamworks=steamworks,
@@ -279,6 +280,7 @@ class CloudSaveManager:
         result = import_local_cloudsave_snapshot(
             self.config_manager,
             deadline_monotonic=deadline_monotonic,
+            use_cloud_apply_fence=not fence_already_active,
         )
         return {
             "success": True,

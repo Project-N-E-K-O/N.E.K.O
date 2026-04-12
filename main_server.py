@@ -1036,7 +1036,8 @@ async def on_startup():
                 last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             )
         except Exception as e:
-            logger.warning(f"写入 main_server 启动成功标记失败: {e}")
+            logger.error("写入 main_server 启动成功标记失败，已中止后续启动写盘初始化: %s", e)
+            raise RuntimeError("main_server failed to persist ROOT_MODE_NORMAL state") from e
         await initialize_character_data()
         await _sync_memory_server_after_startup_import(import_result)
         logger.info("正在初始化 Steamworks...")

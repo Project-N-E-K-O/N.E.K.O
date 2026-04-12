@@ -19,6 +19,10 @@ def _make_config_manager(tmp_root: Path):
         ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
+    ), patch.object(
+        ConfigManager,
+        "_get_project_root",
+        return_value=tmp_root,
     ):
         config_manager = ConfigManager("N.E.K.O")
     config_manager.get_legacy_app_root_candidates = lambda: []
@@ -213,6 +217,29 @@ async def test_main_server_shutdown_skips_cloudsave_export_when_budget_is_exceed
     mock_warning.assert_any_call(
         "Steam Auto-Cloud shutdown export exceeded 3.0s budget before applying snapshot changes; Steam may upload the previous local snapshot"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_startup_aborts_when_root_mode_persist_fails():
+    import main_server
+
+    fake_config_manager = SimpleNamespace(app_docs_dir=Path("/tmp/neko"))
+    fake_import_result = {"success": True, "action": "imported"}
+    run_cloudsave_action = AsyncMock(return_value=fake_import_result)
+
+    with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
+         patch.object(main_server, "_config_manager", fake_config_manager), \
+         patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
+         patch.object(main_server, "bootstrap_local_cloudsave_environment", Mock()), \
+         patch.object(main_server, "set_root_mode", Mock(side_effect=RuntimeError("root write failed"))), \
+         patch.object(main_server, "initialize_character_data", AsyncMock(return_value=None)) as mock_init_chars, \
+         patch.object(main_server, "_sync_memory_server_after_startup_import", AsyncMock(return_value=None)) as mock_sync_reload:
+        with pytest.raises(RuntimeError, match="failed to persist ROOT_MODE_NORMAL"):
+            await main_server.on_startup()
+
+    mock_init_chars.assert_not_awaited()
+    mock_sync_reload.assert_not_awaited()
 
 
 @pytest.mark.unit

@@ -1447,10 +1447,10 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
         reason="launcher_phase0_bootstrap",
     ):
         bootstrap_result = bootstrap_local_cloudsave_environment(config_manager)
-
-    import_result = get_cloudsave_manager(config_manager).import_if_needed(
-        reason="launcher_phase0_prelaunch_import",
-    )
+        import_result = get_cloudsave_manager(config_manager).import_if_needed(
+            reason="launcher_phase0_prelaunch_import",
+            fence_already_active=True,
+        )
 
     root_state = set_root_mode(
         config_manager,

@@ -18,16 +18,19 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
 
     @contextmanager
     def _fake_fence(_config_manager, *, mode, reason):
-        call_order.append(("fence", mode, reason))
-        yield {"mode": mode}
+        call_order.append(("fence_enter", mode, reason))
+        try:
+            yield {"mode": mode}
+        finally:
+            call_order.append(("fence_exit", mode, reason))
 
     def _fake_bootstrap(_config_manager):
         call_order.append("bootstrap")
         return {"bootstrap": True}
 
     class _DummyCloudsaveManager:
-        def import_if_needed(self, *, reason: str):
-            call_order.append(("import", reason))
+        def import_if_needed(self, *, reason: str, fence_already_active: bool = False, **_kwargs):
+            call_order.append(("import", reason, fence_already_active))
             return {"success": True, "action": "imported", "requested_reason": reason}
 
     def _fake_set_root_mode(_config_manager, mode, **updates):
@@ -48,8 +51,9 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
     result = launcher._prepare_cloudsave_runtime_for_launch()
 
     bootstrap_index = call_order.index("bootstrap")
-    import_index = call_order.index(("import", "launcher_phase0_prelaunch_import"))
-    assert bootstrap_index < import_index
+    import_index = call_order.index(("import", "launcher_phase0_prelaunch_import", True))
+    fence_exit_index = call_order.index(("fence_exit", launcher.ROOT_MODE_BOOTSTRAP_IMPORTING, "launcher_phase0_bootstrap"))
+    assert bootstrap_index < import_index < fence_exit_index
     assert result["import_result"]["action"] == "imported"
     assert emitted_events[-1][0] == "cloudsave_bootstrap_ready"
     assert emitted_events[-1][1]["import_result"]["requested_reason"] == "launcher_phase0_prelaunch_import"

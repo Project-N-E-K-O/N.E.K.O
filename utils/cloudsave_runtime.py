@@ -12,7 +12,7 @@ import tempfile
 import time
 import unicodedata
 from copy import deepcopy
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -3465,14 +3465,20 @@ def import_local_cloudsave_snapshot(
     config_manager,
     *,
     deadline_monotonic: float | None = None,
+    use_cloud_apply_fence: bool = True,
 ) -> dict[str, Any]:
     """Import the current local cloudsave snapshot back into runtime truth with rollback."""
     bootstrap_local_cloudsave_environment(config_manager)
-    with cloud_apply_fence(
-        config_manager,
-        mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
-        reason="local_cloudsave_import",
-    ):
+    fence_scope = (
+        cloud_apply_fence(
+            config_manager,
+            mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
+            reason="local_cloudsave_import",
+        )
+        if use_cloud_apply_fence
+        else nullcontext()
+    )
+    with fence_scope:
         _assert_deadline_not_exceeded(
             deadline_monotonic,
             operation="import",

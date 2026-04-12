@@ -104,6 +104,8 @@ def _normalize_live2d_catalog_path(model_path: str) -> str:
 
 def _derive_live2d_asset_source(model_path: str) -> str:
     normalized_path = str(model_path or "").strip().replace("\\", "/")
+    if normalized_path.startswith(("http://", "https://")):
+        return "manual_external"
     if normalized_path.startswith("/workshop/"):
         return "steam_workshop"
     if normalized_path.startswith("/static/"):

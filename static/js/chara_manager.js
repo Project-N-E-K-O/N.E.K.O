@@ -3185,8 +3185,8 @@ async function handleCloudsaveCharacterSync(payload) {
     if (
         nextTimestamp
         && (
-            nextTimestamp === lastCloudsaveSyncTimestamp
-            || nextTimestamp === processingCloudsaveTimestamp
+            nextTimestamp <= lastCloudsaveSyncTimestamp
+            || nextTimestamp <= processingCloudsaveTimestamp
         )
     ) {
         return;
@@ -3223,7 +3223,7 @@ async function handleCloudsaveCharacterSync(payload) {
             processingCloudsaveTimestamp = 0;
         }
         if (nextTimestamp && shouldCommitTimestamp) {
-            lastCloudsaveSyncTimestamp = nextTimestamp;
+            lastCloudsaveSyncTimestamp = Math.max(lastCloudsaveSyncTimestamp, nextTimestamp);
         }
     }
 }

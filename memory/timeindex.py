@@ -28,6 +28,14 @@ class TimeIndexedMemory:
             target=f"memory/{lanlan_name}/time_indexed.db",
         )
 
+    def _build_sqlite_connection_string(self, db_path: str, *, readonly: bool) -> tuple[str, str]:
+        normalized_db_path = os.path.abspath(db_path)
+        if not readonly:
+            db_dir = os.path.dirname(normalized_db_path)
+            os.makedirs(db_dir, exist_ok=True)
+        uri_path = normalized_db_path.replace("\\", "/")
+        return normalized_db_path, f"sqlite:///{uri_path}"
+
     def _ensure_engine_exists(
         self,
         lanlan_name: str,
@@ -56,16 +64,12 @@ class TimeIndexedMemory:
                         db_path = os.path.join(ensure_character_dir(config_mgr.memory_dir, lanlan_name), 'time_indexed.db')
                     logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
 
-            normalized_db_path = os.path.abspath(db_path)
+            normalized_db_path, connection_string = self._build_sqlite_connection_string(
+                db_path,
+                readonly=readonly,
+            )
             if readonly and not os.path.isfile(normalized_db_path):
                 return False
-            if not readonly:
-                # 写路径需要确保数据库文件父目录存在（兼容相对文件名路径）
-                db_dir = os.path.dirname(normalized_db_path)
-                os.makedirs(db_dir, exist_ok=True)
-            # Windows 路径使用反斜杠，SQLite URI 需要正斜杠
-            uri_path = normalized_db_path.replace("\\", "/")
-            connection_string = f"sqlite:///{uri_path}"
             engine = create_engine(connection_string)
             if not readonly:
                 # 先完成所有初始化/迁移，再注册到 self.engines，
@@ -106,8 +110,7 @@ class TimeIndexedMemory:
             engine.dispose()
             logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
         if db_path:
-            normalized_db_path = str(db_path).replace("\\", "/")
-            connection_string = f"sqlite:///{normalized_db_path}"
+            _, connection_string = self._build_sqlite_connection_string(str(db_path), readonly=True)
             cached_engine = SQLChatMessageHistory._engine_cache.pop(connection_string, None)
             if cached_engine and cached_engine is not engine:
                 cached_engine.dispose()

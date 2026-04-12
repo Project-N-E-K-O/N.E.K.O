@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -79,23 +80,63 @@ def _cloudsave_manifest_matches_local_files(config_manager, manifest_fingerprint
     if str(local_manifest.get("fingerprint") or "") != manifest_fingerprint:
         return False
     manifest_files = local_manifest.get("files") if isinstance(local_manifest.get("files"), dict) else {}
-    for relative_path in manifest_files.keys():
-        if not (config_manager.cloudsave_dir / relative_path).is_file():
+    for relative_path, expected_metadata in manifest_files.items():
+        if not isinstance(expected_metadata, dict):
             return False
+        local_path = config_manager.cloudsave_dir / relative_path
+        if not local_path.is_file():
+            return False
+        if "size" in expected_metadata:
+            try:
+                expected_size = int(expected_metadata.get("size"))
+            except (TypeError, ValueError):
+                return False
+            if local_path.stat().st_size != expected_size:
+                return False
+        expected_sha256 = str(expected_metadata.get("sha256") or expected_metadata.get("hash") or "").strip().lower()
+        if expected_sha256:
+            actual_sha256 = hashlib.sha256(local_path.read_bytes()).hexdigest().lower()
+            if actual_sha256 != expected_sha256:
+                return False
     return config_manager.cloudsave_manifest_path.is_file()
 
 
-def _write_remote_bundle(stage_bundle_path: Path, config_manager) -> dict[str, Any]:
+def _write_remote_bundle(
+    stage_bundle_path: Path,
+    config_manager,
+    *,
+    deadline_monotonic: float | None = None,
+) -> dict[str, Any]:
     relative_paths = _managed_cloudsave_relative_paths(config_manager)
     if not relative_paths:
         raise FileNotFoundError("no local cloudsave snapshot is available to bundle")
 
+    _assert_deadline_not_exceeded(
+        deadline_monotonic,
+        operation="steam_remote_upload",
+        stage="bundle_prepare",
+    )
     with zipfile.ZipFile(stage_bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for relative_path in relative_paths:
+            _assert_deadline_not_exceeded(
+                deadline_monotonic,
+                operation="steam_remote_upload",
+                stage=f"bundle_write_start:{relative_path}",
+            )
             source_path = config_manager.cloudsave_dir / relative_path
             if not source_path.is_file():
                 raise FileNotFoundError(f"cloudsave file missing while bundling: {relative_path}")
             archive.write(source_path, arcname=relative_path)
+            _assert_deadline_not_exceeded(
+                deadline_monotonic,
+                operation="steam_remote_upload",
+                stage=f"bundle_write_done:{relative_path}",
+            )
+    _assert_deadline_not_exceeded(
+        deadline_monotonic,
+        operation="steam_remote_upload",
+        stage="bundle_finalize",
+    )
 
     return {
         "relative_paths": relative_paths,
@@ -118,25 +159,65 @@ def _resolve_safe_archive_target(stage_cloudsave_root: Path, member_name: str) -
     return target_path
 
 
-def _extract_bundle_archive_safely(stage_cloudsave_root: Path, bundle_bytes: bytes) -> None:
+def _extract_bundle_archive_safely(
+    stage_cloudsave_root: Path,
+    bundle_bytes: bytes,
+    *,
+    deadline_monotonic: float | None = None,
+) -> None:
+    _assert_deadline_not_exceeded(
+        deadline_monotonic,
+        operation="steam_remote_download",
+        stage="extract_begin",
+    )
     with zipfile.ZipFile(io.BytesIO(bundle_bytes), "r") as archive:
         for member in archive.infolist():
+            _assert_deadline_not_exceeded(
+                deadline_monotonic,
+                operation="steam_remote_download",
+                stage=f"extract_start:{member.filename}",
+            )
             target_path = _resolve_safe_archive_target(stage_cloudsave_root, member.filename)
             if member.is_dir():
                 target_path.mkdir(parents=True, exist_ok=True)
+                _assert_deadline_not_exceeded(
+                    deadline_monotonic,
+                    operation="steam_remote_download",
+                    stage=f"extract_done:{member.filename}",
+                )
                 continue
             target_path.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(member, "r") as src, target_path.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
+            _assert_deadline_not_exceeded(
+                deadline_monotonic,
+                operation="steam_remote_download",
+                stage=f"extract_done:{member.filename}",
+            )
 
 
-def _apply_bundle_to_local_cloudsave(config_manager, bundle_bytes: bytes, meta_payload: dict[str, Any] | None) -> dict[str, Any]:
+def _apply_bundle_to_local_cloudsave(
+    config_manager,
+    bundle_bytes: bytes,
+    meta_payload: dict[str, Any] | None,
+    *,
+    deadline_monotonic: float | None = None,
+) -> dict[str, Any]:
+    _assert_deadline_not_exceeded(
+        deadline_monotonic,
+        operation="steam_remote_download",
+        stage="apply_prepare",
+    )
     stage_root = _create_staging_workspace(config_manager, "remote-bundle")
     stage_root.mkdir(parents=True, exist_ok=True)
     stage_cloudsave_root = stage_root / "cloudsave"
     stage_cloudsave_root.mkdir(parents=True, exist_ok=True)
 
-    _extract_bundle_archive_safely(stage_cloudsave_root, bundle_bytes)
+    _extract_bundle_archive_safely(
+        stage_cloudsave_root,
+        bundle_bytes,
+        deadline_monotonic=deadline_monotonic,
+    )
 
     stage_manifest_path = stage_cloudsave_root / "manifest.json"
     stage_manifest = _load_json_if_exists(stage_manifest_path)
@@ -162,8 +243,28 @@ def _apply_bundle_to_local_cloudsave(config_manager, bundle_bytes: bytes, meta_p
     stage_replacement_root = stage_root / "cloudsave-replacement"
     stage_replacement_root.mkdir(parents=True, exist_ok=True)
     for relative_path in payload_relative_paths:
+        _assert_deadline_not_exceeded(
+            deadline_monotonic,
+            operation="steam_remote_download",
+            stage=f"apply_copy_start:{relative_path}",
+        )
         _atomic_copy_file(stage_cloudsave_root / relative_path, stage_replacement_root / relative_path)
+        _assert_deadline_not_exceeded(
+            deadline_monotonic,
+            operation="steam_remote_download",
+            stage=f"apply_copy_done:{relative_path}",
+        )
+    _assert_deadline_not_exceeded(
+        deadline_monotonic,
+        operation="steam_remote_download",
+        stage="apply_copy_manifest_start",
+    )
     _atomic_copy_file(stage_manifest_path, stage_replacement_root / "manifest.json")
+    _assert_deadline_not_exceeded(
+        deadline_monotonic,
+        operation="steam_remote_download",
+        stage="apply_copy_manifest_done",
+    )
 
     target_cloudsave_dir = config_manager.cloudsave_dir
     target_cloudsave_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -171,9 +272,19 @@ def _apply_bundle_to_local_cloudsave(config_manager, bundle_bytes: bytes, meta_p
     has_existing_cloudsave_dir = target_cloudsave_dir.exists()
 
     if has_existing_cloudsave_dir:
+        _assert_deadline_not_exceeded(
+            deadline_monotonic,
+            operation="steam_remote_download",
+            stage="apply_swap_backup",
+        )
         os.replace(target_cloudsave_dir, backup_cloudsave_dir)
 
     try:
+        _assert_deadline_not_exceeded(
+            deadline_monotonic,
+            operation="steam_remote_download",
+            stage="apply_swap_live",
+        )
         os.replace(stage_replacement_root, target_cloudsave_dir)
     except Exception:
         if has_existing_cloudsave_dir and backup_cloudsave_dir.exists():
@@ -370,7 +481,12 @@ def download_cloudsave_bundle_from_steam(
             stage="download_bundle",
         )
         bundle_bytes = bridge.read_file(REMOTE_BUNDLE_FILENAME)
-        apply_result = _apply_bundle_to_local_cloudsave(config_manager, bundle_bytes, meta_payload)
+        apply_result = _apply_bundle_to_local_cloudsave(
+            config_manager,
+            bundle_bytes,
+            meta_payload,
+            deadline_monotonic=deadline_monotonic,
+        )
         return {
             "success": True,
             "action": "downloaded",
@@ -414,7 +530,11 @@ def upload_cloudsave_bundle_to_steam(
 
     with tempfile.TemporaryDirectory(prefix="neko-cloudsave-bundle-") as temp_dir:
         bundle_path = Path(temp_dir) / REMOTE_BUNDLE_FILENAME
-        bundle_payload = _write_remote_bundle(bundle_path, config_manager)
+        bundle_payload = _write_remote_bundle(
+            bundle_path,
+            config_manager,
+            deadline_monotonic=deadline_monotonic,
+        )
         bundle_bytes = bundle_path.read_bytes()
         meta_bytes = json.dumps(bundle_payload["meta"], ensure_ascii=False, indent=2).encode("utf-8")
 
