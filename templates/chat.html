@@ -177,20 +177,17 @@
             color: rgba(102, 117, 141, 0.5) !important;
             font-size: 0.85em !important;
         }
-        /* 消息气泡进场动效 */
-        @keyframes slideFromLeft {
-            from { opacity: 0; transform: translateX(-20px); }
-            to   { opacity: 1; transform: translateX(0); }
+        /* 消息气泡进场动效 —— 由 neko-chat-window.css 统一定义，此处不重复声明。
+           旧版在此处用 !important 重复声明 @keyframes + animation 规则，会导致浏览器
+           对同名 @keyframes 做二次解析，且 !important 阻止 prefers-reduced-motion
+           等未来覆盖，已移除。 */
+
+        /* Electron 独立窗口始终显示全部工具按钮（覆盖 index.css 768px 媒体查询隐藏） */
+        #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
+            display: inline-flex !important;
         }
-        @keyframes slideFromRight {
-            from { opacity: 0; transform: translateX(20px); }
-            to   { opacity: 1; transform: translateX(0); }
-        }
-        .message-row-assistant {
-            animation: slideFromLeft 0.3s ease-out both !important;
-        }
-        .message-row-user {
-            animation: slideFromRight 0.3s ease-out both !important;
+        #react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2) {
+            display: inline !important;
         }
         /* 隐藏旧版 chat */
         #chat-container { display: none !important; }

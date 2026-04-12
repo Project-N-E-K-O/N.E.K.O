@@ -47,14 +47,16 @@ function getAvatarClassName(message: ChatMessage) {
 function MessageBlockView({
   block,
   message,
+  isStreaming,
   onAction,
 }: {
   block: MessageBlock;
   message: ChatMessage;
+  isStreaming?: boolean;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 }) {
   if (block.type === 'text') {
-    return <SmartTextBlock text={block.text} />;
+    return <SmartTextBlock text={block.text} isStreaming={isStreaming} />;
   }
 
   if (block.type === 'image') {
@@ -155,6 +157,8 @@ export default function MessageBubble({
     );
   }
 
+  const streaming = message.status === 'streaming';
+
   return (
     <article
       className={rowClassName}
@@ -187,6 +191,7 @@ export default function MessageBubble({
               key={`${message.id}-${block.type}-${index}`}
               block={block}
               message={message}
+              isStreaming={streaming}
               onAction={onAction}
             />
           ))}

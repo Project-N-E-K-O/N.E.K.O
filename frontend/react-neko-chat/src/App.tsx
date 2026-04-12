@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import MessageList from './MessageList';
 import { i18n } from './i18n';
 import {
@@ -52,14 +52,52 @@ export default function App({
   onTranslateToggle,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
+  const [pendingDrafts, setPendingDrafts] = useState<Array<{ id: string; text: string; time: string }>>([]);
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
 
+  // Clear pending drafts once the host confirms them (appears in messages)
+  useEffect(() => {
+    if (pendingDrafts.length === 0) return;
+    const hostUserTexts = new Set(
+      messages
+        .filter(m => m.role === 'user')
+        .flatMap(m => m.blocks.flatMap(b => b.type === 'text' ? [b.text] : [])),
+    );
+    const remaining = pendingDrafts.filter(d => !hostUserTexts.has(d.text));
+    if (remaining.length < pendingDrafts.length) {
+      setPendingDrafts(remaining);
+    }
+  }, [messages, pendingDrafts]);
+
+  // Merge host messages + optimistic pending drafts
+  const lastUserAuthor = [...messages].reverse().find(m => m.role === 'user')?.author;
+  const allMessages = useMemo(() => {
+    if (pendingDrafts.length === 0) return messages;
+    const optimistic: ChatMessage[] = pendingDrafts.map(d => ({
+      id: d.id,
+      role: 'user' as const,
+      author: lastUserAuthor || 'You',
+      time: d.time,
+      blocks: [{ type: 'text' as const, text: d.text }],
+      status: 'sending' as const,
+    }));
+    return [...messages, ...optimistic];
+  }, [messages, pendingDrafts, lastUserAuthor]);
+
   function submitDraft() {
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
+    const now = new Date();
+    const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map(n => String(n).padStart(2, '0')).join(':');
+    setPendingDrafts(prev => [...prev, {
+      id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      text,
+      time,
+    }]);
     onComposerSubmit?.({ text });
     setDraft('');
   }
@@ -79,7 +117,7 @@ export default function App({
 
         <section className="chat-body">
           <MessageList
-            messages={messages}
+            messages={allMessages}
             ariaLabel={messageListAriaLabel}
             failedStatusLabel={failedStatusLabel}
             onAction={onMessageAction}

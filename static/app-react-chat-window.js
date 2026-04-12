@@ -843,11 +843,16 @@
         return state.composerAttachments;
     }
 
+    var MAX_MESSAGES = 50;
+
     function appendMessage(message) {
         var normalized = normalizeMessage(message, state.messages.length);
         if (!normalized) return null;
 
         state.messages = sortMessages(state.messages.concat([normalized]));
+        if (state.messages.length > MAX_MESSAGES) {
+            state.messages = state.messages.slice(-MAX_MESSAGES);
+        }
         renderWindow();
         return normalized;
     }
