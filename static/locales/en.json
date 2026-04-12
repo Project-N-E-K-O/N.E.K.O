@@ -57,7 +57,14 @@
             "档案名": "Profile Name",
             "性别": "Gender",
             "年龄": "Age",
-            "昵称": "Nickname"
+            "昵称": "Nickname",
+            "性格原型": "Personality Archetype",
+            "种族": "Race",
+            "自称": "Self-Reference",
+            "核心特质": "Core Traits",
+            "行为特点": "Behavioral Traits",
+            "厌恶": "Dislikes",
+            "一句话台词": "Signature Line"
         }
     },
     "steam": {
@@ -1850,7 +1857,10 @@
             "selectedCount": "{{count}} selected",
             "changed": "Idle animation changed",
             "changeFailed": "Failed to change idle animation"
-        }
+        },
+        "managerInitFailed": "MMD manager initialization failed",
+        "modelLoading": "Loading MMD model...",
+        "modelLoaded": "MMD model loaded successfully"
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] Starting to load dependency modules",
