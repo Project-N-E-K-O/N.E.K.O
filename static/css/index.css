@@ -2138,29 +2138,31 @@ body.react-chat-window-dragging {
         min-height: 0;
     }
 
+    /* 窄屏与桌面统一用 grid 布局：auto(顶栏) 1fr(消息) auto(输入) +
+       overflow:hidden 保证输入区不会被消息挤出。shell 尺寸仍由
+       syncMobileContentLayout() 写成显式像素（根据内容 50vh 上限）。 */
     #react-chat-window-shell .chat-window {
         height: 100%;
-        display: flex;
-        flex-direction: column;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
         min-height: 0;
+        overflow: hidden;
     }
 
     #react-chat-window-shell .chat-body {
-        flex: 1 1 auto;
-        min-height: 60px;
-        display: flex;
-        flex-direction: column;
+        min-height: 0;
         overflow: hidden;
     }
 
     #react-chat-window-shell .message-list {
-        flex: 1 1 auto;
-        min-height: 60px;
-        height: auto;
-        overflow-y: hidden;
+        height: 100%;
+        min-height: 0;
+        overflow-y: auto;
         -webkit-overflow-scrolling: touch;
     }
 
+    /* .is-mobile-content-capped 现在不再影响布局（message-list 始终可滚），
+       保留空规则以免其他位置若有依赖时出现样式回退。 */
     #react-chat-window-shell.is-mobile-content-capped .message-list {
         overflow-y: auto;
     }
