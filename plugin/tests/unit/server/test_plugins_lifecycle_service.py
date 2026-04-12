@@ -6,10 +6,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from plugin.core import registry as registry_module
 from plugin.server.application.plugins import query_service as query_module
 from plugin.server.application.plugins import lifecycle_service as module
+from plugin.server.domain.errors import ServerDomainError
 from plugin.sdk.plugin.decorators import plugin_entry
 
 
@@ -44,6 +46,26 @@ class _FakeAdapterPlugin:
     @plugin_entry(id="list_servers", name="List Servers", description="List configured MCP servers")
     async def list_servers(self) -> dict[str, object]:
         return {"servers": []}
+
+
+class _CaptureLogger:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def info(self, *_args, **_kwargs) -> None:
+        return
+
+    def debug(self, *_args, **_kwargs) -> None:
+        return
+
+    def warning(self, message, *args, **_kwargs) -> None:
+        rendered = str(message)
+        for arg in args:
+            rendered = rendered.replace("{}", str(arg), 1)
+        self.messages.append(rendered)
+
+    def error(self, *_args, **_kwargs) -> None:
+        return
 
 
 @pytest.mark.plugin_unit
@@ -228,7 +250,14 @@ async def test_start_plugin_persists_entries_preview_and_invalidates_stale_cache
             module.state._snapshot_cache["handlers"] = {"data": {}, "timestamp": now}
 
         monkeypatch.setattr(module, "_get_plugin_config_path", lambda plugin_id: config_path)
-        monkeypatch.setattr(module, "apply_user_config_profiles", lambda **kwargs: kwargs["base_config"])
+        monkeypatch.setattr(
+            module,
+            "resolve_plugin_config_from_path",
+            lambda *args, **kwargs: {
+                "effective_config": kwargs["base_config"],
+                "warnings": [],
+            },
+        )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
         monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
@@ -278,6 +307,127 @@ async def test_start_plugin_persists_entries_preview_and_invalidates_stale_cache
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_start_plugin_logs_structured_config_warnings_from_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "warn_adapter" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'warn_adapter'",
+                "name = 'Warn Adapter'",
+                "type = 'adapter'",
+                "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    capture_logger = _CaptureLogger()
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        monkeypatch.setattr(module, "_get_plugin_config_path", lambda plugin_id: config_path)
+        monkeypatch.setattr(
+            module,
+            "resolve_plugin_config_from_path",
+            lambda *args, **kwargs: {
+                "effective_config": kwargs["base_config"],
+                "warnings": [
+                    {
+                        "code": "PLUGIN_ENTRY_WHITESPACE",
+                        "field": "plugin.entry",
+                        "message": "entry has leading/trailing whitespace",
+                        "severity": "warning",
+                        "source": "semantic",
+                    }
+                ],
+            },
+        )
+        monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+        monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+        monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+        monkeypatch.setattr(module, "logger", capture_logger)
+
+        def _register_plugin(plugin_meta, logger, config_path=None, entry_point=None):
+            plugin_dump = plugin_meta.model_dump()
+            if config_path is not None:
+                plugin_dump["config_path"] = str(config_path)
+            if entry_point is not None:
+                plugin_dump["entry_point"] = entry_point
+            with module.state.acquire_plugins_write_lock():
+                module.state.plugins[plugin_meta.id] = plugin_dump
+            return plugin_meta.id
+
+        monkeypatch.setattr(module, "register_plugin", _register_plugin)
+
+        service = module.PluginLifecycleService()
+        response = await service.start_plugin("warn_adapter")
+
+        assert response["success"] is True
+        assert any(
+            "Plugin config warning [PLUGIN_ENTRY_WHITESPACE] field=plugin.entry msg=entry has leading/trailing whitespace"
+            in message
+            for message in capture_logger.messages
+        )
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_plugin_maps_resolver_http_exception_to_profile_domain_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "demo" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo'\nentry='demo:Plugin'\n", encoding="utf-8")
+
+    monkeypatch.setattr(module, "_get_plugin_config_path", lambda plugin_id: config_path)
+
+    def _raise_profile_error(*args, **kwargs):
+        raise HTTPException(status_code=422, detail="profile merge failed")
+
+    monkeypatch.setattr(module, "resolve_plugin_config_from_path", _raise_profile_error)
+
+    service = module.PluginLifecycleService()
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await service.start_plugin("demo")
+
+    assert exc_info.value.code == "PLUGIN_CONFIG_PROFILE_FAILED"
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.message == "profile merge failed"
+    assert exc_info.value.details["plugin_id"] == "demo"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_start_plugin_allows_retry_for_load_failed_plugin(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -323,7 +473,14 @@ async def test_start_plugin_allows_retry_for_load_failed_plugin(
             module.state.event_handlers.clear()
 
         monkeypatch.setattr(module, "_get_plugin_config_path", lambda plugin_id: config_path)
-        monkeypatch.setattr(module, "apply_user_config_profiles", lambda **kwargs: kwargs["base_config"])
+        monkeypatch.setattr(
+            module,
+            "resolve_plugin_config_from_path",
+            lambda *args, **kwargs: {
+                "effective_config": kwargs["base_config"],
+                "warnings": [],
+            },
+        )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
         monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
@@ -361,3 +518,75 @@ async def test_start_plugin_allows_retry_for_load_failed_plugin(
             module.state.event_handlers.update(handlers_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+def test_parse_single_plugin_config_uses_resolver_effective_config_and_logs_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'demo_plugin'",
+                "entry = 'demo.module:Plugin'",
+                "name = 'Base Name'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    capture_logger = _CaptureLogger()
+
+    monkeypatch.setattr(
+        registry_module,
+        "resolve_plugin_config_from_path",
+        lambda *args, **kwargs: {
+            "effective_config": {
+                "plugin": {
+                    "id": "demo_plugin",
+                    "entry": "demo.module:Plugin",
+                    "name": "Overlay Name",
+                    "description": "resolved by profile",
+                },
+                "plugin_runtime": {
+                    "enabled": False,
+                    "auto_start": False,
+                },
+            },
+            "warnings": [
+                {
+                    "code": "PLUGIN_KEYWORDS_NON_LIST",
+                    "field": "plugin.keywords",
+                    "message": "keywords should be a string list",
+                    "severity": "warning",
+                    "source": "semantic",
+                }
+            ],
+        },
+    )
+
+    parsed = registry_module._parse_single_plugin_config(
+        config_path,
+        set(),
+        capture_logger,
+    )
+
+    assert parsed is not None
+    assert parsed.pdata["name"] == "Overlay Name"
+    assert parsed.pdata["description"] == "resolved by profile"
+    assert parsed.enabled is False
+    assert parsed.auto_start is False
+    assert any(
+        "Plugin config warning [PLUGIN_KEYWORDS_NON_LIST] field=plugin.keywords msg=keywords should be a string list"
+        in message
+        for message in capture_logger.messages
+    )
