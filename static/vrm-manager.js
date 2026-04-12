@@ -847,6 +847,11 @@ class VRMManager {
         const loadToken = ++this._activeLoadToken;
         this._loadState = 'preparing';
         this._isModelReadyForInteraction = false;
+        // 新一轮加载：取消上一轮可能还在跑的 T-pose 回退重试，避免旧重试打断新模型动画
+        if (this._idleRecoveryTimerId) {
+            clearTimeout(this._idleRecoveryTimerId);
+            this._idleRecoveryTimerId = null;
+        }
         this._initModules();
         if (!this.core) this.core = new window.VRMCore(this);
 
@@ -969,15 +974,18 @@ class VRMManager {
         };
 
         // 加载待机动画（作为 Promise，与场景稳定性并行等待）
-        let animationReady = Promise.resolve();
+        // 返回 true 表示动画成功播放；false 表示模块未就绪或播放失败（需要后续回退重试）。
+        let animationReady = Promise.resolve(true);
         if (options.autoPlay !== false) {
             animationReady = (async () => {
-                if (!this.currentModel || !this.currentModel.vrm) return;
+                if (!this.currentModel || !this.currentModel.vrm) return false;
 
-                let retries = 10;
+                // 放宽模块加载等待窗口（原 10×100ms = 1s 在慢速网络下会静默跳过，
+                // 导致模型以 T-pose 亮相），改为 30×100ms = 3s
+                let retries = 30;
                 while (retries > 0) {
-                    if (!this._isLoadTokenActive(loadToken)) return;
-                    if (!this.currentModel || !this.currentModel.vrm) return;
+                    if (!this._isLoadTokenActive(loadToken)) return false;
+                    if (!this.currentModel || !this.currentModel.vrm) return false;
 
                     if (!this.animation) this._initModules();
                     if (this.animation) break;
@@ -1002,21 +1010,23 @@ class VRMManager {
                 }
 
                 if (!this.animation) {
-                    console.warn('[VRM Manager] VRMAnimation 模块未加载，跳过自动播放');
-                    return;
+                    console.warn('[VRM Manager] VRMAnimation 模块未加载，稍后将后台重试以避免卡 T-pose');
+                    return false;
                 }
                 const currentLoadToken = this._activeLoadToken;
-                if (loadToken !== currentLoadToken) return;
+                if (loadToken !== currentLoadToken) return false;
 
                 try {
-                    if (!this._isLoadTokenActive(loadToken)) return;
+                    if (!this._isLoadTokenActive(loadToken)) return false;
                     await this.playVRMAAnimation(DEFAULT_LOOP_ANIMATION, {
                         loop: true,
                         immediate: true,
                         isIdle: true
                     });
+                    return true;
                 } catch (err) {
-                    console.warn('[VRM Manager] 自动播放失败:', err);
+                    console.warn('[VRM Manager] 自动播放失败，稍后将后台重试以避免卡 T-pose:', err);
+                    return false;
                 }
             })();
         }
@@ -1038,7 +1048,7 @@ class VRMManager {
         const stabilityPromise = (result && result.vrm && result.vrm.scene && this._isLoadTokenActive(loadToken))
             ? this._waitForSceneStability(result.vrm.scene, loadToken)
             : Promise.resolve(false);
-        const [stabilityResult] = await Promise.all([stabilityPromise, animationReady]);
+        const [stabilityResult, animationSucceeded] = await Promise.all([stabilityPromise, animationReady]);
 
         if (this._isLoadTokenActive(loadToken) && stabilityResult === true) {
             this._loadState = 'ready';
@@ -1066,11 +1076,84 @@ class VRMManager {
             }));
 
             showAndFadeIn();
+
+            // T-pose 防卡死回退：autoPlay 未关闭、但首轮动画没播起来时（模块加载超时 / 播放抛错），
+            // 在后台周期性重试，直到成功播放或 loadToken 失效。这样即使 VRMAnimation 模块延迟加载
+            // 或网络抖动，模型最终也会脱离 T-pose 进入待机动画。
+            if (options.autoPlay !== false && !animationSucceeded) {
+                this._scheduleIdleAnimationRetry(loadToken, DEFAULT_LOOP_ANIMATION);
+            }
         } else if (this._isLoadTokenActive(loadToken)) {
             this._loadState = 'idle';
             this._isModelReadyForInteraction = false;
         }
         return result;
+    }
+
+    /**
+     * 在后台周期性重试待机动画，避免 VRMAnimation 模块加载慢/播放失败时模型卡在 T-pose。
+     * - 只要 loadToken 仍然有效（没有被新的 loadModel 替换），就会一直尝试。
+     * - 一旦 animation 模块就绪并成功触发 playVRMAAnimation，立即停止。
+     * - 用户手动播放了非 idle 动画时（isIdleAnimation=false 且有 currentAction）也会停止，不打扰手动操作。
+     */
+    _scheduleIdleAnimationRetry(loadToken, idleAnimationUrl) {
+        if (this._idleRecoveryTimerId) {
+            clearTimeout(this._idleRecoveryTimerId);
+            this._idleRecoveryTimerId = null;
+        }
+
+        const MAX_ATTEMPTS = 20;      // 最多尝试 20 次
+        const INTERVAL_MS = 500;      // 每次间隔 500ms -> 总计最长约 10s
+        let attempts = 0;
+
+        const attempt = async () => {
+            this._idleRecoveryTimerId = null;
+            // token 失效或已被 dispose：停止
+            if (this._isDisposed || !this._isLoadTokenActive(loadToken)) return;
+            if (!this.currentModel || !this.currentModel.vrm) return;
+
+            // 仅当动画"真正在运行"时才放弃重试：
+            // 单纯 currentAction 非 null 不能等同于正在播放——stopVRMAAnimation 用 500ms
+            // fadeOut 后才清空 currentAction；单次性 clip 播完后 currentAction 也会悬挂
+            // 指向已停止的 action。此时若提前 return，模型仍会卡在 T-pose。
+            const anim = this.animation;
+            const actionRunning = !!(
+                anim
+                && anim.vrmaIsPlaying
+                && anim.currentAction
+                && typeof anim.currentAction.isRunning === 'function'
+                && anim.currentAction.isRunning()
+            );
+            if (actionRunning) {
+                // 无论是用户手动动画还是已在播的 idle，模型都已脱离 T-pose
+                return;
+            }
+
+            if (!this.animation) this._initModules();
+
+            if (this.animation) {
+                try {
+                    await this.playVRMAAnimation(idleAnimationUrl, {
+                        loop: true,
+                        immediate: true,
+                        isIdle: true
+                    });
+                    console.log('[VRM Manager] T-pose 回退重试成功，已切入待机动画');
+                    return; // 成功，结束
+                } catch (err) {
+                    console.warn('[VRM Manager] T-pose 回退重试播放失败:', err);
+                }
+            }
+
+            attempts += 1;
+            if (attempts >= MAX_ATTEMPTS) {
+                console.warn('[VRM Manager] T-pose 回退重试已达上限，放弃');
+                return;
+            }
+            this._idleRecoveryTimerId = setTimeout(attempt, INTERVAL_MS);
+        };
+
+        this._idleRecoveryTimerId = setTimeout(attempt, INTERVAL_MS);
     }
 
     async playVRMAAnimation(url, opts) {
@@ -1199,6 +1282,11 @@ class VRMManager {
         if (this._retryTimerId) {
             clearTimeout(this._retryTimerId);
             this._retryTimerId = null;
+        }
+        // 3b. 清理 T-pose 回退重试定时器
+        if (this._idleRecoveryTimerId) {
+            clearTimeout(this._idleRecoveryTimerId);
+            this._idleRecoveryTimerId = null;
         }
 
         // 4. 清理阴影资源
