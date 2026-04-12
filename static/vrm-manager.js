@@ -834,6 +834,9 @@ class VRMManager {
                     // 使用固定参考距离（而非 camera.position.z，因相机可能已被 orbit 偏移）
                     const targetScreenHeight = screenHeight * 0.45;
                     const fov = this.camera.fov * (Math.PI / 180);
+                    // 5 = vrm-core.js 首次加载计算缩放时所用的默认相机距离
+                    //（见 vrm-core.js 里 `camera.position?.z || 5` 的 fallback）
+                    // 这里沿用同一参考值，保证复位前后缩放口径一致、避免视觉跳变
                     const referenceDistance = 5;
                     const worldHeightAtDistance = 2 * Math.tan(fov / 2) * referenceDistance;
                     const scaleRatio = (targetScreenHeight / screenHeight) * (worldHeightAtDistance / unscaledHeight);
