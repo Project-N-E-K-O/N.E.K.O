@@ -16,7 +16,7 @@
     'use strict';
 
     var MAX_EXPORT_SELECTION = 100;
-    var DEFAULT_USER_EXPORT_AVATAR = '/static/icons/avatar/04F0E17351255886095E903B30EC1570.png';
+    var DEFAULT_USER_EXPORT_AVATAR = '/static/icons/avatar/master-avatar.png';
 
     // ======================== State ========================
 
