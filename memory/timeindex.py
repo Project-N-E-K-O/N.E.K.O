@@ -28,11 +28,17 @@ class TimeIndexedMemory:
             target=f"memory/{lanlan_name}/time_indexed.db",
         )
 
-    def _ensure_engine_exists(self, lanlan_name: str, db_path: str | None = None) -> bool:
+    def _ensure_engine_exists(
+        self,
+        lanlan_name: str,
+        db_path: str | None = None,
+        readonly: bool = False,
+    ) -> bool:
         """确保指定角色的数据库引擎已初始化喵~"""
         if lanlan_name in self.engines and lanlan_name in self.db_paths:
             return True
-        self._assert_timeindex_writable(lanlan_name)
+        if not readonly:
+            self._assert_timeindex_writable(lanlan_name)
 
         try:
             if not db_path:
@@ -40,23 +46,30 @@ class TimeIndexedMemory:
                 if lanlan_name in time_store:
                     db_path = time_store[lanlan_name]
                 else:
-                    from memory import ensure_character_dir
                     config_mgr = get_config_manager()
-                    db_path = os.path.join(ensure_character_dir(config_mgr.memory_dir, lanlan_name), 'time_indexed.db')
+                    if readonly:
+                        db_path = os.path.join(config_mgr.memory_dir, lanlan_name, "time_indexed.db")
+                    else:
+                        from memory import ensure_character_dir
+                        db_path = os.path.join(ensure_character_dir(config_mgr.memory_dir, lanlan_name), 'time_indexed.db')
                     logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
 
-            # 确保数据库文件的父目录存在（兼容相对文件名路径）
             normalized_db_path = os.path.abspath(db_path)
-            db_dir = os.path.dirname(normalized_db_path)
-            os.makedirs(db_dir, exist_ok=True)
+            if readonly and not os.path.isfile(normalized_db_path):
+                return False
+            if not readonly:
+                # 写路径需要确保数据库文件父目录存在（兼容相对文件名路径）
+                db_dir = os.path.dirname(normalized_db_path)
+                os.makedirs(db_dir, exist_ok=True)
             # Windows 路径使用反斜杠，SQLite URI 需要正斜杠
             uri_path = normalized_db_path.replace("\\", "/")
             engine = create_engine(f"sqlite:///{uri_path}")
-            connection_string = f"sqlite:///{uri_path}"
-            # 先完成所有初始化/迁移，再注册到 self.engines，
-            # 避免失败后引擎被标记为"已初始化"而跳过后续修复
-            self._ensure_tables_exist_with(engine, connection_string, lanlan_name)
-            self._check_and_migrate_schema(engine, lanlan_name)
+            if not readonly:
+                connection_string = f"sqlite:///{uri_path}"
+                # 先完成所有初始化/迁移，再注册到 self.engines，
+                # 避免失败后引擎被标记为"已初始化"而跳过后续修复
+                self._ensure_tables_exist_with(engine, connection_string, lanlan_name)
+                self._check_and_migrate_schema(engine, lanlan_name)
             self.db_paths[lanlan_name] = normalized_db_path
             self.engines[lanlan_name] = engine
             return True
@@ -164,7 +177,7 @@ class TimeIndexedMemory:
     def get_last_conversation_time(self, lanlan_name: str) -> datetime | None:
         """查询指定角色最后一次对话的时间戳。无记录时返回 None。"""
         try:
-            if not self._ensure_engine_exists(lanlan_name):
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
                 return None
         except MaintenanceModeError as exc:
             logger.debug(f"[TimeIndexedMemory] 维护态跳过初始化 {lanlan_name} 的 time_indexed.db: {exc}")
@@ -209,11 +222,25 @@ class TimeIndexedMemory:
 
     FACTS_FTS_TABLE = "facts_fts"
 
-    def _ensure_fts_table(self, lanlan_name: str) -> None:
+    def _ensure_fts_table(self, lanlan_name: str, readonly: bool = False) -> bool:
         """确保 FTS5 虚拟表存在。unicode61 分词器对中文做字级别索引，零依赖。"""
+        if not self._ensure_engine_exists(lanlan_name, readonly=readonly):
+            return False
+        if readonly:
+            try:
+                with self.engines[lanlan_name].connect() as conn:
+                    result = conn.execute(
+                        text(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type='table' AND name = :table_name"
+                        ),
+                        {"table_name": self.FACTS_FTS_TABLE},
+                    )
+                    return result.fetchone() is not None
+            except Exception as e:
+                logger.debug(f"[TimeIndexedMemory] 只读检查 FTS5 表失败: {e}")
+                return False
         self._assert_timeindex_writable(lanlan_name)
-        if not self._ensure_engine_exists(lanlan_name):
-            return
         try:
             with self.engines[lanlan_name].connect() as conn:
                 conn.execute(text(
@@ -221,15 +248,18 @@ class TimeIndexedMemory:
                     f"USING fts5(fact_id, content, tokenize='unicode61')"
                 ))
                 conn.commit()
+            return True
         except Exception as e:
             logger.warning(f"[TimeIndexedMemory] 创建 FTS5 表失败: {e}")
+            return False
 
     def index_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
         """将事实插入 FTS5 索引。"""
         self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             return
-        self._ensure_fts_table(lanlan_name)
+        if not self._ensure_fts_table(lanlan_name):
+            return
         try:
             with self.engines[lanlan_name].connect() as conn:
                 # 先检查是否已存在
@@ -253,9 +283,10 @@ class TimeIndexedMemory:
         BM25 分数为负值，越接近 0 越相关。
         """
         try:
-            if not self._ensure_engine_exists(lanlan_name):
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
                 return []
-            self._ensure_fts_table(lanlan_name)
+            if not self._ensure_fts_table(lanlan_name, readonly=True):
+                return []
         except MaintenanceModeError as exc:
             logger.debug(f"[TimeIndexedMemory] 维护态跳过搜索 {lanlan_name} 的 FTS 索引初始化: {exc}")
             return []
@@ -282,7 +313,8 @@ class TimeIndexedMemory:
         self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             return
-        self._ensure_fts_table(lanlan_name)
+        if not self._ensure_fts_table(lanlan_name):
+            return
         try:
             with self.engines[lanlan_name].connect() as conn:
                 conn.execute(

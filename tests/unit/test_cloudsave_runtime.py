@@ -172,6 +172,39 @@ def test_bootstrap_imports_legacy_root_after_seed_migration(tmp_path):
 
 
 @pytest.mark.unit
+def test_bootstrap_preserves_staged_cloudsave_snapshot_before_legacy_runtime_import(tmp_path):
+    new_root_base = tmp_path / "new_root_base"
+    legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
+    snapshot_source_base = tmp_path / "snapshot_source"
+    cm = _make_config_manager(new_root_base)
+    snapshot_source_cm = _make_config_manager(snapshot_source_base)
+
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment, export_local_cloudsave_snapshot
+
+    legacy_config_dir = legacy_root / "config"
+    legacy_config_dir.mkdir(parents=True, exist_ok=True)
+    legacy_characters = cm.get_default_characters()
+    template_character = next(iter(legacy_characters["猫娘"].values()))
+    legacy_characters["猫娘"] = {"旧角色": template_character}
+    legacy_characters["当前猫娘"] = "旧角色"
+    atomic_write_json(legacy_config_dir / "characters.json", legacy_characters, ensure_ascii=False, indent=2)
+
+    bootstrap_local_cloudsave_environment(snapshot_source_cm)
+    _write_runtime_state(snapshot_source_cm, character_name="云端角色")
+    export_local_cloudsave_snapshot(snapshot_source_cm)
+
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    shutil.copytree(snapshot_source_cm.cloudsave_dir, cm.cloudsave_dir, dirs_exist_ok=True)
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is False
+    assert result["legacy_import"]["result"] == "target_root_preserves_staged_cloudsave_snapshot"
+    assert json.loads(cm.cloudsave_manifest_path.read_text(encoding="utf-8")).get("files")
+    assert cm.load_characters()["当前猫娘"] != "旧角色"
+
+
+@pytest.mark.unit
 def test_bootstrap_repairs_existing_seeded_install_with_backup_and_merged_preferences(tmp_path):
     new_root_base = tmp_path / "new_root_base"
     legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
@@ -284,6 +317,32 @@ def test_bootstrap_skips_legacy_repair_when_target_is_already_richer(tmp_path):
     assert result["legacy_import"]["migrated"] is False
     assert result["legacy_import"]["result"] == "target_root_already_initialized"
     assert cm.load_characters()["当前猫娘"] == "当前角色"
+
+
+@pytest.mark.unit
+def test_bootstrap_skips_legacy_character_merge_when_target_has_non_seeded_user_content(tmp_path):
+    new_root_base = tmp_path / "new_root_base"
+    legacy_source_base = tmp_path / "legacy_source_base"
+    legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
+    cm = _make_config_manager(new_root_base)
+    legacy_cm = _make_config_manager(legacy_source_base)
+
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    _write_runtime_state(cm, character_name="当前角色")
+    _write_runtime_state(legacy_cm, character_name="旧角色")
+    _add_runtime_character(legacy_cm, "旧角色二", recent_text="更多旧记忆")
+
+    shutil.copytree(legacy_cm.app_docs_dir, legacy_root, dirs_exist_ok=True)
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is False
+    assert result["legacy_import"]["result"] == "target_root_already_initialized"
+    characters = cm.load_characters()
+    assert set(characters["猫娘"]) == {"当前角色"}
+    assert characters["当前猫娘"] == "当前角色"
 
 
 @pytest.mark.unit

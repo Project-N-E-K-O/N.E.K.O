@@ -1073,10 +1073,7 @@
         if (!item || typeof item !== 'object') {
             return false;
         }
-        return isWorkshopSource(item.asset_source)
-            || isWorkshopSource(item.local_asset_source)
-            || isWorkshopSource(item.cloud_asset_source)
-            || isWorkshopSource(item.local_origin_source)
+        return isWorkshopSource(item.local_origin_source)
             || isWorkshopSource(item.cloud_origin_source);
     }
 

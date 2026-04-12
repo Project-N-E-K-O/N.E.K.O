@@ -79,9 +79,8 @@
   - `memory/`
   - `meta/`
   - `overrides/`
-  - `cloudsave_local_state.json`
-  - `character_tombstones.json`
 - 明确不进入快照层的内容包括：
+  - 本地状态文件 `cloudsave_local_state.json`、`character_tombstones.json`（位于 `app_docs_dir/state/`，不属于 Steam Auto-Cloud 快照层，必须保持本地，不同步 `client_id`、`last_applied_manifest_fingerprint` 等设备相关元数据）
   - `live2d/`
   - `vrm/`
   - `mmd/`

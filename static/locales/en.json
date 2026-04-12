@@ -1477,6 +1477,7 @@
         "saveMasterError": "Failed to save master settings",
         "autoSaved": "Settings auto-saved",
         "autoSaveFailed": "Auto-save failed, please save manually before closing",
+        "unsavedNewCatgirlDraftDetected": "Detected an unsaved new NEKO draft. Please save or cancel it before syncing refresh",
         "partialSaveVoiceFailed": "Character saved, but failed to update voice: {{error}}",
         "exportCard": "Export Character Card",
         "exportingCard": "Exporting character card...",
@@ -1614,10 +1615,10 @@
         },
         "group": {
             "count": "{{count}} items",
-            "workshopTitle": "Steam Workshop characters",
-            "workshopDescription": "Characters in this section are still related to Steam Workshop assets on either the local side or the cloud side.",
+            "workshopTitle": "Steam Workshop-origin characters",
+            "workshopDescription": "Characters in this section are confirmed to originate from Steam Workshop on either the local side or the cloud side. Switching only the current model to a Steam Workshop asset does not move a self-created character into this group.",
             "otherTitle": "My characters",
-            "otherDescription": "Characters in this section use local imports, built-in resources, or other non-Steam Workshop asset sources."
+            "otherDescription": "Characters in this section are self-created or otherwise not known to originate from Steam Workshop. The current model asset source is shown separately in the details."
         },
         "resourceRecoveryTitle": "Resource recovery notes",
         "metaNoValue": "None",

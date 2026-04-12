@@ -113,6 +113,16 @@ def _build_missing_snapshot_hint(status: dict[str, Any]) -> str:
     return " ".join(hint_parts)
 
 
+def _build_manual_download_hint(status: dict[str, Any]) -> str:
+    runtime_root = str(status.get("runtime_root") or "")
+    cloudsave_root = str(status.get("cloudsave_root") or "")
+    return (
+        f"A newer staged Steam Auto-Cloud snapshot is available under {cloudsave_root}, "
+        f"but the runtime root {runtime_root} already contains local user content. "
+        "Startup will keep the current local data and wait for an explicit download/apply action from Cloud Save Manager."
+    )
+
+
 def _build_steam_connectivity_status(steamworks) -> dict[str, bool]:
     if steamworks is None:
         return {
@@ -181,16 +191,28 @@ class CloudSaveManager:
         manifest_files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
         manifest_fingerprint = str(manifest.get("fingerprint") or "")
         last_applied_manifest_fingerprint = str(cloud_state.get("last_applied_manifest_fingerprint") or "")
-        runtime_has_user_content = _runtime_root_has_user_content(self.config_manager.app_docs_dir)
+        runtime_has_user_content = _runtime_root_has_user_content(
+            self.config_manager.app_docs_dir,
+            config_manager=self.config_manager,
+        )
         has_snapshot = bool(manifest_files)
-        startup_import_required = bool(
+        snapshot_differs_from_runtime = bool(
             has_snapshot
             and (
-                not runtime_has_user_content
-                or not last_applied_manifest_fingerprint
+                not last_applied_manifest_fingerprint
                 or not manifest_fingerprint
                 or manifest_fingerprint != last_applied_manifest_fingerprint
             )
+        )
+        startup_import_required = bool(
+            has_snapshot
+            and not runtime_has_user_content
+            and snapshot_differs_from_runtime
+        )
+        manual_download_required = bool(
+            has_snapshot
+            and runtime_has_user_content
+            and snapshot_differs_from_runtime
         )
 
         steam_status = _build_steam_connectivity_status(steamworks)
@@ -203,6 +225,7 @@ class CloudSaveManager:
             "manifest_fingerprint": manifest_fingerprint,
             "last_applied_manifest_fingerprint": last_applied_manifest_fingerprint,
             "startup_import_required": startup_import_required,
+            "manual_download_required": manual_download_required,
             "runtime_has_user_content": runtime_has_user_content,
             "last_successful_export_at": str(cloud_state.get("last_successful_export_at") or ""),
             "last_successful_import_at": str(cloud_state.get("last_successful_import_at") or ""),
@@ -241,14 +264,18 @@ class CloudSaveManager:
                 "status": status,
             }
         if not force and not status["startup_import_required"]:
-            return {
+            reason_code = "manual_download_required" if status.get("manual_download_required") else "already_applied"
+            result_payload = {
                 "success": True,
                 "action": "skipped",
-                "reason": "already_applied",
+                "reason": reason_code,
                 "requested_reason": str(reason or ""),
                 "remote_bundle_result": remote_bundle_result,
                 "status": status,
             }
+            if reason_code == "manual_download_required":
+                result_payload["hint"] = _build_manual_download_hint(status)
+            return result_payload
         result = import_local_cloudsave_snapshot(
             self.config_manager,
             deadline_monotonic=deadline_monotonic,

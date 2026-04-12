@@ -63,7 +63,7 @@ def _run_launcher_phase0(cm):
     import launcher
 
     emitted_events = []
-    with patch.object(launcher, "get_config_manager", lambda _app_name: cm), patch.object(
+    with patch.object(launcher, "get_config_manager", lambda _app_name, **_kwargs: cm), patch.object(
         launcher,
         "emit_frontend_event",
         lambda event_type, payload=None: emitted_events.append((event_type, payload)),
@@ -109,7 +109,13 @@ def test_cloudsave_lifecycle_round_trip_across_two_devices():
 
         shutil.copytree(device_b.cloudsave_dir, device_a.cloudsave_dir, dirs_exist_ok=True)
         startup_a_again, _ = _run_launcher_phase0(device_a)
-        assert startup_a_again["import_result"]["action"] == "imported"
+        assert startup_a_again["import_result"]["action"] == "skipped"
+        assert startup_a_again["import_result"]["reason"] == "manual_download_required"
+        manual_download = CloudSaveManager(device_a).import_if_needed(
+            reason="device_a_manual_download",
+            force=True,
+        )
+        assert manual_download["action"] == "imported"
         assert device_a.load_characters()["当前猫娘"] == "设备B角色"
         assert device_a.load_cloudsave_local_state()["last_applied_manifest_fingerprint"] == export_b["result"]["manifest"]["fingerprint"]
 

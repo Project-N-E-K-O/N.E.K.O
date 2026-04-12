@@ -27,7 +27,8 @@ def _get_app_root():
     处理 PyInstaller 打包情况：
     - 单文件模式：使用 sys._MEIPASS（临时解压目录）
     - 多文件模式：使用 sys.executable 所在目录
-    - 脚本运行：使用当前工作目录
+    - 脚本运行：固定使用项目根目录（基于 __file__），避免 IDE / 外部 cwd
+      导致加载到错误位置的本地库、动态库或 steam_appid.txt
     """
     if getattr(sys, 'frozen', False):
         # 打包后运行

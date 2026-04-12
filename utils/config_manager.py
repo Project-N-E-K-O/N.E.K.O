@@ -2724,16 +2724,36 @@ class ConfigManager:
 
 # 全局配置管理器实例
 _config_manager = None
+_config_manager_migrated = False
 
 
-def get_config_manager(app_name=None):
-    """获取配置管理器单例，默认使用配置中的 APP_NAME"""
-    global _config_manager
+def _ensure_config_manager_migrated():
+    global _config_manager_migrated
+    if _config_manager is None or _config_manager_migrated:
+        return _config_manager
+    # 统一在首次真正需要运行时配置时再迁移，允许启动 phase-0
+    # 先基于“尚未注入默认配置的运行根”判断是否需要导入云快照。
+    _config_manager.migrate_config_files()
+    _config_manager.migrate_memory_files()
+    _config_manager_migrated = True
+    return _config_manager
+
+
+def reset_config_manager_cache() -> None:
+    """Clear the process-local ConfigManager singleton cache."""
+    global _config_manager, _config_manager_migrated
+    _config_manager = None
+    _config_manager_migrated = False
+
+
+def get_config_manager(app_name=None, *, migrate=True):
+    """获取配置管理器单例，默认使用配置中的 APP_NAME。"""
+    global _config_manager, _config_manager_migrated
     if _config_manager is None:
         _config_manager = ConfigManager(app_name)
-        # 初始化时自动迁移配置文件和记忆文件
-        _config_manager.migrate_config_files()
-        _config_manager.migrate_memory_files()
+        _config_manager_migrated = False
+    if migrate:
+        _ensure_config_manager_migrated()
     return _config_manager
 
 

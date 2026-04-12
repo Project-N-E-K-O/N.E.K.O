@@ -1074,8 +1074,28 @@ async def on_startup():
             
             async def _sync_characters_only():
                 """等待预热完成后同步角色卡"""
-                if is_write_fence_active(_config_manager):
-                    logger.info("创意工坊角色卡同步被维护态拦截，延后到后续安全时机")
+                max_fence_retries = 15
+                retry_interval_seconds = 2
+                for attempt in range(1, max_fence_retries + 1):
+                    if not is_write_fence_active(_config_manager):
+                        break
+                    logger.info(
+                        "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
+                        attempt,
+                        max_fence_retries,
+                    )
+                    await asyncio.sleep(retry_interval_seconds)
+                else:
+                    logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
+
+                    async def _retry_sync_after_delay():
+                        try:
+                            await asyncio.sleep(30)
+                            await _sync_characters_only()
+                        except Exception as retry_exc:
+                            logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
+
+                    _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
                     return
                 # 先等预热完成，角色卡同步依赖订阅物品列表
                 if _wr._ugc_warmup_task is not None:

@@ -1477,6 +1477,7 @@
         "saveMasterError": "保存主人设定失败",
         "autoSaved": "已自动保存设定",
         "autoSaveFailed": "自动保存失败，请手动保存后再关闭页面",
+        "unsavedNewCatgirlDraftDetected": "检测到未保存的新猫娘草稿，请先保存或取消后再同步刷新",
         "partialSaveVoiceFailed": "角色已保存，但音色更新失败: {{error}}",
         "exportCard": "导出角色卡",
         "exportingCard": "正在导出角色卡...",
@@ -1614,10 +1615,10 @@
         },
         "group": {
             "count": "{{count}} 项",
-            "workshopTitle": "创意工坊角色",
-            "workshopDescription": "这里集中展示本地或云端任一侧仍与 Steam 创意工坊资源有关联的角色，方便统一查看恢复状态。",
+            "workshopTitle": "创意工坊来源角色",
+            "workshopDescription": "这里集中展示本地或云端任一侧已确认来源于 Steam 创意工坊的角色。仅仅把当前模型切换为创意工坊资源，不会把自建角色归入这里。",
             "otherTitle": "我的角色",
-            "otherDescription": "这里展示使用本地导入、内置资源或其他非创意工坊来源的角色。"
+            "otherDescription": "这里展示自建角色或其他非创意工坊来源的角色。当前模型资源来源会在详情中单独显示。"
         },
         "resourceRecoveryTitle": "资源恢复说明",
         "metaNoValue": "无",

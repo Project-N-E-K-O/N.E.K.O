@@ -237,6 +237,24 @@ def test_cloudsave_manager_renders_my_characters_first_and_sorts_by_local_update
 
 
 @pytest.mark.unit
+def test_cloudsave_manager_groups_workshop_section_by_character_origin_only():
+    script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+    match = re.search(
+        r"function isWorkshopCharacterItem\(item\) \{(?P<body>.*?)\n    \}",
+        script,
+        re.S,
+    )
+    assert match, "expected isWorkshopCharacterItem function to exist"
+    body = match.group("body")
+
+    assert "item.local_origin_source" in body
+    assert "item.cloud_origin_source" in body
+    assert "item.asset_source" not in body
+    assert "item.local_asset_source" not in body
+    assert "item.cloud_asset_source" not in body
+
+
+@pytest.mark.unit
 def test_cloudsave_group_titles_use_my_characters_copy_in_all_supported_locales():
     expected = {
         "en.json": "My characters",

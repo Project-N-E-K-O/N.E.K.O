@@ -10,6 +10,7 @@ import pytest
 from main_routers.shared_state import init_shared_state
 from utils.config_manager import ConfigManager
 from utils.cloudsave_runtime import (
+    MaintenanceModeError,
     ROOT_MODE_BOOTSTRAP_IMPORTING,
     bootstrap_local_cloudsave_environment,
 )
@@ -25,6 +26,11 @@ def _make_config_manager(tmp_root: Path):
     config_manager.get_legacy_app_root_candidates = lambda: []
     config_manager.project_memory_dir = tmp_root / "memory" / "store"
     return config_manager
+
+
+def reload_module(module_name: str):
+    module = importlib.import_module(module_name)
+    return importlib.reload(module)
 
 
 class _DummyRequest:
@@ -73,8 +79,8 @@ async def test_character_management_and_recent_save_regression():
                 initialize_character_data=_noop_init,
             )
 
-            characters_router_module = importlib.import_module("main_routers.characters_router")
-            memory_router_module = importlib.import_module("main_routers.memory_router")
+            characters_router_module = reload_module("main_routers.characters_router")
+            memory_router_module = reload_module("main_routers.memory_router")
             initial_name = next(iter(cm.load_characters().get("猫娘", {}).keys()))
 
             fake_response = type(
@@ -151,7 +157,7 @@ async def test_character_read_endpoints_disable_caching():
                 initialize_character_data=_noop_init,
             )
 
-            characters_router_module = importlib.import_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router")
 
             characters_response = await characters_router_module.get_characters(
                 _DummyGetRequest(headers={"Accept-Language": "zh-CN"})
@@ -189,8 +195,8 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage():
                 initialize_character_data=_noop_init,
             )
 
-            characters_router_module = importlib.import_module("main_routers.characters_router")
-            memory_router_module = importlib.import_module("main_routers.memory_router")
+            characters_router_module = reload_module("main_routers.characters_router")
+            memory_router_module = reload_module("main_routers.memory_router")
 
             fake_response = type(
                 "Resp",
@@ -287,7 +293,7 @@ async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_
                 initialize_character_data=_noop_init,
             )
 
-            characters_router_module = importlib.import_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router")
 
             fake_response = type(
                 "Resp",
@@ -365,6 +371,76 @@ async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_rename_catgirl_maintenance_error_preserves_original_exception_type_when_rollback_reports_string():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})["维护重命名角色"] = {"昵称": "维护重命名角色"}
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            maintenance_error = MaintenanceModeError(
+                "maintenance_readonly",
+                operation="rename",
+                target="characters/维护重命名角色 -> 新角色",
+            )
+            original_save_characters = cm.save_characters
+
+            def _raise_maintenance_on_primary_save(data, character_json_path=None, *, bypass_write_fence=False):
+                if not bypass_write_fence and "新角色" in (data.get("猫娘") or {}):
+                    raise maintenance_error
+                return original_save_characters(
+                    data,
+                    character_json_path=character_json_path,
+                    bypass_write_fence=bypass_write_fence,
+                )
+
+            with (
+                patch.object(
+                    characters_router_module,
+                    "release_memory_server_character",
+                    AsyncMock(return_value=True),
+                ),
+                patch.object(cm, "save_characters", side_effect=_raise_maintenance_on_primary_save),
+                patch.object(
+                    characters_router_module,
+                    "_rollback_character_operation",
+                    AsyncMock(return_value="notify_memory_server_reload failed: returned False"),
+                ),
+            ):
+                with pytest.raises(MaintenanceModeError) as exc_info:
+                    await characters_router_module.rename_catgirl(
+                        "维护重命名角色",
+                        _DummyRequest({"new_name": "新角色"}),
+                    )
+
+            assert exc_info.value is maintenance_error
+            assert isinstance(exc_info.value.__cause__, RuntimeError)
+            assert "notify_memory_server_reload failed: returned False" in str(exc_info.value.__cause__)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
@@ -388,8 +464,8 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
                 initialize_character_data=_noop_init,
             )
 
-            characters_router_module = importlib.import_module("main_routers.characters_router")
-            workshop_router_module = importlib.import_module("main_routers.workshop_router")
+            characters_router_module = reload_module("main_routers.characters_router")
+            workshop_router_module = reload_module("main_routers.workshop_router")
 
             characters = cm.load_characters()
             initial_name = next(iter(characters.get("猫娘", {})))
@@ -467,7 +543,7 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
                 initialize_character_data=_noop_init,
             )
 
-            workshop_router_module = importlib.import_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router")
 
             installed_folder = Path(td) / "mock_workshop_origin_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -512,11 +588,11 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
         assert payload["昵称"] == "来自创意工坊"
         assert get_reserved(payload, "avatar", "asset_source", default="") == "steam_workshop"
         assert get_reserved(payload, "avatar", "asset_source_id", default="") == "3671939765"
-        assert get_reserved(payload, "avatar", "live2d", "model_path", default="") == "/workshop/3671939765/Blue cat.model3.json"
+        assert get_reserved(payload, "avatar", "live2d", "model_path", default="") == "/workshop/3671939765/Blue cat/Blue cat.model3.json"
         assert get_reserved(payload, "character_origin", "source", default="") == "steam_workshop"
         assert get_reserved(payload, "character_origin", "source_id", default="") == "3671939765"
         assert get_reserved(payload, "character_origin", "display_name", default="") == "Blue cat"
-        assert get_reserved(payload, "character_origin", "model_ref", default="") == "/workshop/3671939765/Blue cat.model3.json"
+        assert get_reserved(payload, "character_origin", "model_ref", default="") == "/workshop/3671939765/Blue cat/Blue cat.model3.json"
 
 
 @pytest.mark.unit
@@ -576,7 +652,7 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
                 initialize_character_data=_noop_init,
             )
 
-            workshop_router_module = importlib.import_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router")
 
             installed_folder = Path(td) / "mock_workshop_live3d_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -644,7 +720,7 @@ async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
                 initialize_character_data=_noop_init,
             )
 
-            characters_router_module = importlib.import_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router")
 
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["删除失败角色"] = {"昵称": "删除失败角色"}
@@ -679,6 +755,54 @@ async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_delete_catgirl_returns_503_when_memory_handle_release_fails_before_disk_changes():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})["删除句柄失败角色"] = {"昵称": "删除句柄失败角色"}
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            with (
+                patch.object(
+                    characters_router_module,
+                    "release_memory_server_character",
+                    AsyncMock(return_value=False),
+                ),
+                patch.object(characters_router_module, "delete_character_memory_storage") as mock_delete_memory,
+            ):
+                delete_result = await characters_router_module.delete_catgirl("删除句柄失败角色")
+
+            assert delete_result.status_code == 503
+            payload = json.loads(delete_result.body.decode("utf-8"))
+            assert payload["success"] is False
+            assert payload["memory_server_released"] is False
+            assert "删除句柄失败角色" in cm.load_characters().get("猫娘", {})
+            mock_delete_memory.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failure_occurs():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
@@ -702,7 +826,7 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
                 initialize_character_data=_noop_init,
             )
 
-            characters_router_module = importlib.import_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router")
 
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["删除回滚角色"] = {"昵称": "删除回滚角色"}
@@ -755,6 +879,73 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delete_catgirl_maintenance_error_preserves_original_exception_type_when_rollback_reports_string():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})["维护删除角色"] = {"昵称": "维护删除角色"}
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            maintenance_error = MaintenanceModeError(
+                "maintenance_readonly",
+                operation="delete",
+                target="characters/维护删除角色",
+            )
+            original_save_characters = cm.save_characters
+
+            def _raise_maintenance_on_primary_save(data, character_json_path=None, *, bypass_write_fence=False):
+                if not bypass_write_fence and "维护删除角色" not in (data.get("猫娘") or {}):
+                    raise maintenance_error
+                return original_save_characters(
+                    data,
+                    character_json_path=character_json_path,
+                    bypass_write_fence=bypass_write_fence,
+                )
+
+            with (
+                patch.object(
+                    characters_router_module,
+                    "release_memory_server_character",
+                    AsyncMock(return_value=True),
+                ),
+                patch.object(cm, "save_characters", side_effect=_raise_maintenance_on_primary_save),
+                patch.object(
+                    characters_router_module,
+                    "_rollback_character_operation",
+                    AsyncMock(return_value="tombstones restore failed: readonly"),
+                ),
+            ):
+                with pytest.raises(MaintenanceModeError) as exc_info:
+                    await characters_router_module.delete_catgirl("维护删除角色")
+
+            assert exc_info.value is maintenance_error
+            assert isinstance(exc_info.value.__cause__, RuntimeError)
+            assert "tombstones restore failed: readonly" in str(exc_info.value.__cause__)
+
+
+@pytest.mark.unit
 def test_character_memory_regression_fixture_isolates_project_memory_dir(tmp_path):
     cm = _make_config_manager(tmp_path)
 
@@ -786,7 +977,7 @@ async def test_update_catgirl_l2d_marks_builtin_live2d_as_builtin():
                 initialize_character_data=_noop_init,
             )
 
-            characters_router_module = importlib.import_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router")
             characters = cm.load_characters()
             characters["当前猫娘"] = "测试内置模型"
             characters["猫娘"]["测试内置模型"] = json.loads(
@@ -845,7 +1036,7 @@ async def test_character_rollback_reports_notify_reload_false_as_failure():
                 initialize_character_data=_noop_init,
             )
 
-            characters_router_module = importlib.import_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router")
             characters_snapshot = cm.load_characters()
 
             with patch.object(

@@ -86,7 +86,7 @@ from utils.cloudsave_runtime import (
     set_root_mode,
 )
 from utils.cloudsave_autocloud import get_cloudsave_manager
-from utils.config_manager import get_config_manager
+from utils.config_manager import get_config_manager, reset_config_manager_cache
 
 # 本次 launcher 启动的唯一标识
 LAUNCH_ID = uuid.uuid4().hex
@@ -522,6 +522,17 @@ def run_merged_servers() -> int:
         print(f"[Merged] All servers ready "
               f"(ports {MEMORY_SERVER_PORT}/{TOOL_SERVER_PORT}/{MAIN_SERVER_PORT})",
               flush=True)
+        try:
+            _config_manager = get_config_manager(APP_NAME)
+            set_root_mode(
+                _config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(_config_manager.app_docs_dir),
+                last_known_good_root=str(_config_manager.app_docs_dir),
+                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        except Exception as e:
+            print(f"[Merged] Warning: failed to persist root_state boot success: {e}", flush=True)
         emit_frontend_event("startup_ready", {
             "instance_id": INSTANCE_ID,
             "selected": {
@@ -1427,7 +1438,8 @@ def _should_use_merged_mode() -> bool:
 def _prepare_cloudsave_runtime_for_launch() -> dict:
     """Bootstrap local cloudsave state and apply any staged snapshot before services start."""
     print("[Launcher] 初始化本地 cloudsave 基础设施...", flush=True)
-    config_manager = get_config_manager(APP_NAME)
+    reset_config_manager_cache()
+    config_manager = get_config_manager(APP_NAME, migrate=False)
 
     with cloud_apply_fence(
         config_manager,

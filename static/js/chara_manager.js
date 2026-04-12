@@ -533,6 +533,12 @@ function sanitizeProfileNameValue(value, caretPos = null) {
 
 function translateBackendError(errorMessage) {
     if (!errorMessage || typeof errorMessage !== 'string') return errorMessage;
+    if (errorMessage === 'CLOUDSAVE_WRITE_FENCE_ACTIVE') {
+        return window.t ? window.t('cloudsave.error.writeFenceActive') : '云存档维护模式生效中，请稍后再试';
+    }
+    if (errorMessage === 'MEMORY_SERVER_RELEASE_FAILED') {
+        return window.t ? window.t('cloudsave.error.memoryServerReleaseFailed') : '释放本地记忆句柄失败，请稍后再试';
+    }
     if (errorMessage.includes('保留的路由名称')) {
         return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, errorMessage);
     }
@@ -1828,7 +1834,19 @@ window.deleteCatgirl = async function (key) {
     }
     const confirmTitle = window.t ? window.t('character.deleteCatgirlTitle') : '删除猫娘';
     if (!await showConfirm(confirmMsg, confirmTitle, { danger: true })) return;
-    await fetch('/api/characters/catgirl/' + encodeURIComponent(key), { method: 'DELETE' });
+    const response = await fetch('/api/characters/catgirl/' + encodeURIComponent(key), { method: 'DELETE' });
+    let result = null;
+    try {
+        result = await response.json();
+    } catch (error) {
+        console.warn('解析删除猫娘响应失败:', error);
+    }
+    if (!response.ok || !result || result.success !== true) {
+        const errorText = translateBackendError(result?.code || result?.error || result?.message || '未知错误');
+        const prefix = window.t ? window.t('character.deleteFailed') : '删除失败';
+        await showAlert(errorText ? `${prefix}: ${errorText}` : prefix);
+        return;
+    }
     // 清除 localStorage 中的展开状态记录
     localStorage.removeItem(`catgirl_expand_${key}`);
     // 清除进阶设定折叠状态记录
@@ -2794,7 +2812,7 @@ window.renameMaster = async function (oldName) {
         await loadCharacterData();
         await showAlert(window.t ? window.t('character.renameSuccess') : '重命名成功');
     } else {
-        const errorText = translateBackendError(result.error || result.message || '未知错误');
+        const errorText = translateBackendError(result.code || result.error || result.message || '未知错误');
         await showAlert(window.t ? window.t('character.renameError', { error: errorText }) : '重命名失败: ' + errorText);
     }
 }
@@ -2938,7 +2956,10 @@ window.renameCatgirl = async function (oldName) {
 
         await loadCharacterData();
     } else {
-        await showAlert(translateBackendError(result.error) || (window.t ? window.t('character.renameFailed') : '重命名失败'));
+        await showAlert(
+            translateBackendError(result.code || result.error || result.message)
+            || (window.t ? window.t('character.renameFailed') : '重命名失败')
+        );
     }
 }
 
@@ -3162,7 +3183,9 @@ async function handleCloudsaveCharacterSync(payload) {
     }
 
     if (hasUnsavedNewCatgirlDraft()) {
-        await showAlert('检测到未保存的新猫娘草稿，请先保存或取消后再同步刷新');
+        await showAlert(window.t
+            ? window.t('character.unsavedNewCatgirlDraftDetected')
+            : '检测到未保存的新猫娘草稿，请先保存或取消后再同步刷新');
         return;
     }
 

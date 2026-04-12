@@ -67,10 +67,13 @@ def _write_runtime_state(cm, *, character_name="小满"):
 
 
 class _DummyRequest:
-    def __init__(self, payload=None):
+    def __init__(self, payload=None, *, json_exception=None):
         self.payload = {} if payload is None else payload
+        self._json_exception = json_exception
 
     async def json(self):
+        if self._json_exception is not None:
+            raise self._json_exception
         return self.payload
 
 
@@ -487,6 +490,104 @@ async def test_cloudsave_router_handles_not_found_and_release_failures():
             release_failed_payload = json.loads(release_failed.body)
             assert release_failed.status_code == 503
             assert release_failed_payload["code"] == "MEMORY_SERVER_RELEASE_FAILED"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_router_upload_rejects_invalid_overwrite_and_invalid_json():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        _write_runtime_state(cm, character_name="小满")
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            invalid_parameter = await cloudsave_router_module.post_cloudsave_character_upload(
+                "小满",
+                _DummyRequest({"overwrite": "false"}),
+            )
+            invalid_parameter_payload = json.loads(invalid_parameter.body)
+            assert invalid_parameter.status_code == 400
+            assert invalid_parameter_payload["code"] == "INVALID_PARAMETER"
+
+            invalid_json = await cloudsave_router_module.post_cloudsave_character_upload(
+                "小满",
+                _DummyRequest(json_exception=ValueError("bad json")),
+            )
+            invalid_json_payload = json.loads(invalid_json.body)
+            assert invalid_json.status_code == 400
+            assert invalid_json_payload["code"] == "INVALID_JSON_BODY"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_router_download_rejects_invalid_flags_and_invalid_json():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        _write_runtime_state(cm, character_name="小满")
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            invalid_overwrite = await cloudsave_router_module.post_cloudsave_character_download(
+                "小满",
+                _DummyRequest({"overwrite": "false", "backup_before_overwrite": True}),
+            )
+            invalid_overwrite_payload = json.loads(invalid_overwrite.body)
+            assert invalid_overwrite.status_code == 400
+            assert invalid_overwrite_payload["code"] == "INVALID_PARAMETER"
+
+            invalid_backup = await cloudsave_router_module.post_cloudsave_character_download(
+                "小满",
+                _DummyRequest({"overwrite": False, "backup_before_overwrite": "0"}),
+            )
+            invalid_backup_payload = json.loads(invalid_backup.body)
+            assert invalid_backup.status_code == 400
+            assert invalid_backup_payload["code"] == "INVALID_PARAMETER"
+
+            invalid_json = await cloudsave_router_module.post_cloudsave_character_download(
+                "小满",
+                _DummyRequest(json_exception=ValueError("bad json")),
+            )
+            invalid_json_payload = json.loads(invalid_json.body)
+            assert invalid_json.status_code == 400
+            assert invalid_json_payload["code"] == "INVALID_JSON_BODY"
 
 
 @pytest.mark.unit

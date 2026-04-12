@@ -87,6 +87,34 @@ def test_cloudsave_manager_imports_snapshot_when_runtime_is_empty():
 
 
 @pytest.mark.unit
+def test_cloudsave_manager_imports_snapshot_when_runtime_only_has_pristine_migrated_defaults():
+    with TemporaryDirectory() as td:
+        source_cm = _make_config_manager(Path(td) / "source")
+        target_cm = _make_config_manager(Path(td) / "target")
+        bootstrap_local_cloudsave_environment(source_cm)
+        bootstrap_local_cloudsave_environment(target_cm)
+        _write_runtime_state(source_cm, character_name="小满")
+        export_result = export_local_cloudsave_snapshot(source_cm)
+
+        # Simulate real launcher/main_server startup where config migration copies
+        # bundled defaults into the runtime root before cloudsave status is read.
+        target_cm.migrate_config_files()
+        target_cm.migrate_memory_files()
+        shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+        manager = CloudSaveManager(target_cm)
+        pre_status = manager.build_status()
+        result = manager.import_if_needed(reason="unit_test_pristine_migrated_defaults")
+
+        assert pre_status["runtime_has_user_content"] is False
+        assert pre_status["startup_import_required"] is True
+        assert result["success"] is True
+        assert result["action"] == "imported"
+        assert target_cm.load_characters()["当前猫娘"] == "小满"
+        assert target_cm.load_cloudsave_local_state()["last_applied_manifest_fingerprint"] == export_result["manifest"]["fingerprint"]
+
+
+@pytest.mark.unit
 def test_cloudsave_manager_skips_import_when_manifest_was_already_applied():
     with TemporaryDirectory() as td:
         source_cm = _make_config_manager(Path(td) / "source")
@@ -109,7 +137,7 @@ def test_cloudsave_manager_skips_import_when_manifest_was_already_applied():
 
 
 @pytest.mark.unit
-def test_cloudsave_manager_imports_new_snapshot_when_runtime_has_stale_user_content():
+def test_cloudsave_manager_stages_new_snapshot_without_auto_import_when_runtime_has_user_content():
     with TemporaryDirectory() as td:
         source_cm = _make_config_manager(Path(td) / "source")
         target_cm = _make_config_manager(Path(td) / "target")
@@ -132,11 +160,14 @@ def test_cloudsave_manager_imports_new_snapshot_when_runtime_has_stale_user_cont
         assert status["runtime_has_user_content"] is True
         assert status["manifest_fingerprint"] == export_result["manifest"]["fingerprint"]
         assert status["last_applied_manifest_fingerprint"] == local_export_result["manifest"]["fingerprint"]
-        assert status["startup_import_required"] is True
+        assert status["startup_import_required"] is False
+        assert status["manual_download_required"] is True
         assert result["success"] is True
-        assert result["action"] == "imported"
-        assert target_cm.load_characters()["当前猫娘"] == "云端角色"
-        assert target_cm.load_cloudsave_local_state()["last_applied_manifest_fingerprint"] == export_result["manifest"]["fingerprint"]
+        assert result["action"] == "skipped"
+        assert result["reason"] == "manual_download_required"
+        assert "wait for an explicit download/apply action" in result["hint"]
+        assert target_cm.load_characters()["当前猫娘"] == "本地角色"
+        assert target_cm.load_cloudsave_local_state()["last_applied_manifest_fingerprint"] == local_export_result["manifest"]["fingerprint"]
 
 
 @pytest.mark.unit
@@ -260,6 +291,7 @@ def test_cloudsave_manager_import_deadline_exceeded_before_apply_preserves_local
             manager.import_if_needed(
                 reason="budget_exhausted_before_apply",
                 deadline_monotonic=0.0,
+                force=True,
             )
 
         assert target_cm.load_characters()["当前猫娘"] == "本地角色"

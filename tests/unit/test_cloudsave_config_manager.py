@@ -4,11 +4,13 @@ from unittest.mock import patch
 
 import pytest
 from utils.file_utils import atomic_write_json
+from utils.config_manager import ConfigManager
+
+
+_ORIGINAL_GET_DOCUMENTS_DIRECTORY = ConfigManager._get_documents_directory
 
 
 def _make_config_manager(tmp_path):
-    from utils.config_manager import ConfigManager
-
     with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_path), patch.object(
         ConfigManager,
         "get_legacy_app_root_candidates",
@@ -129,6 +131,8 @@ def test_get_documents_directory_preserves_first_readable_legacy_candidate(tmp_p
     project_root = tmp_path / "project_root"
     for path in (home_dir, standard_dir, docs_dir, cwd_dir, project_root):
         path.mkdir(parents=True, exist_ok=True)
+    legacy_live2d_dir = docs_dir / "N.E.K.O" / "live2d"
+    legacy_live2d_dir.mkdir(parents=True, exist_ok=True)
 
     with patch.object(config_manager_module.sys, "platform", "linux"), patch.dict(
         config_manager_module.os.environ,
@@ -137,6 +141,10 @@ def test_get_documents_directory_preserves_first_readable_legacy_candidate(tmp_p
             "XDG_DOCUMENTS_DIR": str(docs_dir),
         },
         clear=False,
+    ), patch.object(
+        ConfigManager,
+        "_get_documents_directory",
+        _ORIGINAL_GET_DOCUMENTS_DIRECTORY,
     ), patch.object(config_manager_module.Path, "home", return_value=home_dir), patch.object(
         config_manager_module.Path,
         "cwd",
@@ -149,8 +157,8 @@ def test_get_documents_directory_preserves_first_readable_legacy_candidate(tmp_p
         cm = ConfigManager("N.E.K.O")
 
     assert cm.docs_dir == standard_dir
-    assert cm._first_readable_candidate == docs_dir
-    assert cm._first_non_writable_readable_candidate is None
+    # Linux 回退到 XDG 可写目录时并不进入 CFA 可读目录模式，readable_live2d_dir 应保持 None。
+    assert cm.readable_live2d_dir is None
 
 
 @pytest.mark.unit
@@ -166,6 +174,8 @@ def test_get_documents_directory_ignores_non_document_legacy_roots_for_cfa_detec
     project_root = tmp_path / "project_root"
     for path in (home_dir, standard_dir, docs_dir, exe_dir, cwd_dir, project_root):
         path.mkdir(parents=True, exist_ok=True)
+    legacy_live2d_dir = docs_dir / "N.E.K.O" / "live2d"
+    legacy_live2d_dir.mkdir(parents=True, exist_ok=True)
     exe_binary = exe_dir / "N.E.K.O"
     exe_binary.write_text("", encoding="utf-8")
 
@@ -185,6 +195,10 @@ def test_get_documents_directory_ignores_non_document_legacy_roots_for_cfa_detec
             "XDG_DOCUMENTS_DIR": str(docs_dir),
         },
         clear=False,
+    ), patch.object(
+        ConfigManager,
+        "_get_documents_directory",
+        _ORIGINAL_GET_DOCUMENTS_DIRECTORY,
     ), patch.object(config_manager_module.Path, "home", return_value=home_dir), patch.object(
         config_manager_module.Path,
         "cwd",
@@ -197,8 +211,8 @@ def test_get_documents_directory_ignores_non_document_legacy_roots_for_cfa_detec
         cm = ConfigManager("N.E.K.O")
 
     assert cm.docs_dir == standard_dir
-    assert cm._first_readable_candidate == docs_dir
-    assert cm._first_non_writable_readable_candidate is None
+    # 非 Windows CFA 场景不应暴露额外的只读回退目录。
+    assert cm.readable_live2d_dir is None
 
 
 @pytest.mark.unit
@@ -212,6 +226,8 @@ def test_get_documents_directory_uses_linux_xdg_fallback_when_xdg_data_home_miss
     project_root = tmp_path / "project_root"
     for path in (home_dir, docs_dir, cwd_dir, project_root):
         path.mkdir(parents=True, exist_ok=True)
+    legacy_live2d_dir = docs_dir / "N.E.K.O" / "live2d"
+    legacy_live2d_dir.mkdir(parents=True, exist_ok=True)
 
     with patch.object(config_manager_module.sys, "platform", "linux"), patch.dict(
         config_manager_module.os.environ,
@@ -220,6 +236,10 @@ def test_get_documents_directory_uses_linux_xdg_fallback_when_xdg_data_home_miss
             "XDG_DOCUMENTS_DIR": str(docs_dir),
         },
         clear=False,
+    ), patch.object(
+        ConfigManager,
+        "_get_documents_directory",
+        _ORIGINAL_GET_DOCUMENTS_DIRECTORY,
     ), patch.object(config_manager_module.Path, "home", return_value=home_dir), patch.object(
         config_manager_module.Path,
         "cwd",
@@ -232,7 +252,8 @@ def test_get_documents_directory_uses_linux_xdg_fallback_when_xdg_data_home_miss
         cm = ConfigManager("N.E.K.O")
 
     assert cm.docs_dir == home_dir / ".local" / "share"
-    assert cm._first_readable_candidate == docs_dir
+    # Linux XDG fallback 下不启用 CFA 可读目录回退。
+    assert cm.readable_live2d_dir is None
 
 
 @pytest.mark.unit

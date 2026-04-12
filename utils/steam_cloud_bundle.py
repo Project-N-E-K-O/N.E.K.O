@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import shutil
 import sys
@@ -29,6 +30,7 @@ REMOTE_BUNDLE_FILENAME = "__neko_cloudsave_bundle__.zip"
 REMOTE_META_FILENAME = "__neko_cloudsave_bundle_meta__.json"
 REMOTE_META_SCHEMA_VERSION = 1
 _SOURCE_SCRIPT_SUFFIXES = {".py", ".pyw"}
+logger = logging.getLogger(__name__)
 
 
 def _steam_remote_bundle_supported_platform() -> bool:
@@ -329,9 +331,22 @@ def download_cloudsave_bundle_from_steam(
                 "reason": "no_remote_bundle",
             }
 
-        meta_payload = json.loads(bridge.read_file(REMOTE_META_FILENAME).decode("utf-8"))
-        remote_fingerprint = str(meta_payload.get("manifest_fingerprint") or "")
-        if _cloudsave_manifest_matches_local_files(config_manager, remote_fingerprint):
+        meta_payload: dict[str, Any] | None = None
+        remote_fingerprint = ""
+        try:
+            parsed_meta = json.loads(bridge.read_file(REMOTE_META_FILENAME).decode("utf-8"))
+            if isinstance(parsed_meta, dict):
+                meta_payload = parsed_meta
+                remote_fingerprint = str(meta_payload.get("manifest_fingerprint") or "")
+            else:
+                logger.warning(
+                    "steam_cloud_bundle: remote meta payload is not a JSON object (type=%s), skip fingerprint pre-check",
+                    type(parsed_meta).__name__,
+                )
+        except Exception as exc:
+            logger.warning("steam_cloud_bundle: failed to parse remote meta payload, skip fingerprint pre-check: %s", exc)
+
+        if remote_fingerprint and _cloudsave_manifest_matches_local_files(config_manager, remote_fingerprint):
             return {
                 "success": True,
                 "action": "skipped",

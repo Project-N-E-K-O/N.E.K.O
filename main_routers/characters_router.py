@@ -113,6 +113,26 @@ def _derive_live2d_asset_source(model_path: str) -> str:
     return ""
 
 
+def _derive_model_asset_binding(model_path: str, *, item_id: str = "") -> tuple[str, str]:
+    normalized_path = str(model_path or "").strip().replace("\\", "/")
+    normalized_item_id = str(item_id or "").strip()
+
+    if not normalized_item_id and normalized_path.startswith("/workshop/"):
+        parts = normalized_path.split("/")
+        if len(parts) >= 3:
+            normalized_item_id = str(parts[2] or "").strip()
+
+    if normalized_item_id or normalized_path.startswith("/workshop/"):
+        return "steam_workshop", normalized_item_id
+    if normalized_path.startswith(("/user_live2d/", "/user_live2d_local/", "/user_vrm/", "/user_mmd/")):
+        return "local_imported", ""
+    if normalized_path.startswith("/static/") or (normalized_path and not normalized_path.startswith("/")):
+        return "builtin", ""
+    if normalized_path.startswith(("http://", "https://")):
+        return "manual_external", ""
+    return "", ""
+
+
 def _find_live2d_model_catalog_entry(
     all_models: list[dict],
     *,
@@ -875,11 +895,13 @@ async def update_catgirl_l2d(name: str, request: Request):
         # 切换模型类型时保留非当前模型配置，避免来回切换后丢失待机动作/光照等设置
         if model_type_str == 'live3d':
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live3d')
+            active_model_binding_path = ""
             
             if vrm_model:
                 # Live3D + VRM：更新当前激活的 VRM 配置，保留 MMD 配置便于切回
                 set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'vrm')
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', vrm_model)
+                active_model_binding_path = vrm_model
 
                 # 处理 VRM 动画（复用同样的验证逻辑）
                 if 'vrm_animation' in data:
@@ -922,6 +944,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 # Live3D + MMD：更新当前激活的 MMD 配置，保留 VRM 配置便于切回
                 set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'mmd')
                 set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', mmd_model)
+                active_model_binding_path = mmd_model
 
                 # 处理 MMD 动画
                 if 'mmd_animation' in data:
@@ -960,6 +983,18 @@ async def update_catgirl_l2d(name: str, request: Request):
                         set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [str(x).strip() for x in mmd_idle_list])
                 
                 logger.debug(f"已保存角色 {name} 的Live3D(MMD)模型 {mmd_model}")
+
+            current_asset_source, current_asset_source_id = _derive_model_asset_binding(
+                active_model_binding_path,
+                item_id=str(item_id or ""),
+            )
+            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', current_asset_source_id)
+            set_reserved(
+                characters['猫娘'][name],
+                'avatar',
+                'asset_source',
+                current_asset_source or 'local_imported',
+            )
         else:
             # 更新Live2D模型设置，同时保存item_id（如果有）
             live2d_model_path, resolved_item_id, resolved_asset_source = _resolve_live2d_model_binding(
@@ -1514,6 +1549,7 @@ async def rename_catgirl(old_name: str, request: Request):
         return JSONResponse(
             {
                 "success": False,
+                "code": "MEMORY_SERVER_RELEASE_FAILED",
                 "error": "释放角色记忆句柄失败，已阻止重命名，请稍后重试",
                 "memory_server_released": False,
             },
@@ -1551,8 +1587,8 @@ async def rename_catgirl(old_name: str, request: Request):
                 memory_snapshot_records=memory_snapshot_records,
                 reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
             )
-            if rollback_error is not None:
-                raise exc from rollback_error
+            if rollback_error:
+                raise exc from RuntimeError(rollback_error)
             raise
         except Exception as exc:
             rollback_error = await _rollback_character_operation(
@@ -1992,6 +2028,17 @@ async def delete_catgirl(name: str):
         name,
         reason=f"角色删除前释放 SQLite 句柄: {name}",
     )
+    if not released_memory_handle:
+        logger.warning("角色删除前释放记忆服务器句柄失败，已阻止删除: %s", name)
+        return JSONResponse(
+            {
+                "success": False,
+                "code": "MEMORY_SERVER_RELEASE_FAILED",
+                "error": "释放角色记忆句柄失败，已阻止删除，请稍后重试",
+                "memory_server_released": False,
+            },
+            status_code=503,
+        )
 
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, name)
@@ -2024,8 +2071,8 @@ async def delete_catgirl(name: str):
                 tombstone_snapshot=tombstone_snapshot,
                 reason=f"维护模式：删除角色回滚 {name}",
             )
-            if rollback_error is not None:
-                raise exc from rollback_error
+            if rollback_error:
+                raise exc from RuntimeError(rollback_error)
             raise
         except Exception as exc:
             rollback_error = await _rollback_character_operation(

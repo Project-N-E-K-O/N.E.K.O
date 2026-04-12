@@ -34,7 +34,7 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
         call_order.append(("set_root_mode", mode, updates))
         return {"mode": mode, **updates}
 
-    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name: config_manager)
+    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
     monkeypatch.setattr(launcher, "cloud_apply_fence", _fake_fence)
     monkeypatch.setattr(launcher, "bootstrap_local_cloudsave_environment", _fake_bootstrap)
     monkeypatch.setattr(launcher, "get_cloudsave_manager", lambda _config_manager: _DummyCloudsaveManager())

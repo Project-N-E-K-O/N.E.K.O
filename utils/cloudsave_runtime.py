@@ -549,9 +549,55 @@ def _raise_for_name_audit(audit_result: dict[str, Any], *, context: str) -> None
     raise ValueError(f"{context} character name audit failed: {'; '.join(rendered_errors)}")
 
 
-def _runtime_root_has_user_content(root: Path) -> bool:
+def _runtime_config_path_matches_pristine_default(config_manager, runtime_path: Path) -> bool:
+    source_path = None
+    if runtime_path.name == "characters.json":
+        localized_source = getattr(config_manager, "_get_localized_characters_source", lambda: None)()
+        if localized_source:
+            source_path = Path(localized_source)
+    if source_path is None:
+        candidate = Path(config_manager.project_config_dir) / runtime_path.name
+        if candidate.exists():
+            source_path = candidate
+
+    if source_path is not None and source_path.exists():
+        try:
+            return runtime_path.read_bytes() == source_path.read_bytes()
+        except Exception:
+            return False
+
+    default_payload = DEFAULT_CONFIG_DATA.get(runtime_path.name)
+    if default_payload is None:
+        return False
+    try:
+        return json.loads(runtime_path.read_text(encoding="utf-8")) == default_payload
+    except Exception:
+        return False
+
+
+def _runtime_config_dir_has_user_content(config_manager) -> bool:
+    config_dir = Path(config_manager.config_dir)
+    if not config_dir.exists():
+        return False
+    for child in config_dir.iterdir():
+        if _is_ignorable_runtime_entry(child):
+            continue
+        if child.is_dir():
+            return True
+        if not _runtime_config_path_matches_pristine_default(config_manager, child):
+            return True
+    return False
+
+
+def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
     if not root.exists():
         return False
+    config_dir = None
+    if config_manager is not None:
+        try:
+            config_dir = Path(config_manager.config_dir)
+        except Exception:
+            config_dir = None
     for name in LEGACY_RUNTIME_DIR_NAMES:
         if name in NON_RUNTIME_CONTENT_DIR_NAMES:
             continue
@@ -559,6 +605,10 @@ def _runtime_root_has_user_content(root: Path) -> bool:
         if candidate.is_file():
             return True
         if candidate.is_dir():
+            if config_dir is not None and candidate == config_dir:
+                if _runtime_config_dir_has_user_content(config_manager):
+                    return True
+                continue
             try:
                 for child in candidate.iterdir():
                     if _is_ignorable_runtime_entry(child):
@@ -836,6 +886,11 @@ def _runtime_root_summary(config_manager, root: Path) -> dict[str, Any]:
         for dir_name in RUNTIME_ASSET_DIR_NAMES
     }
     memory_character_names = _collect_memory_character_names(root)
+    seeded_character_shell = (
+        character_names.issubset(default_character_names)
+        and not memory_character_names
+        and not any(asset_dirs_with_content.values())
+    )
     score = (
         len(character_names) * 3
         + len(memory_character_names) * 2
@@ -847,7 +902,7 @@ def _runtime_root_summary(config_manager, root: Path) -> dict[str, Any]:
     )
 
     return {
-        "has_user_content": _runtime_root_has_user_content(root),
+        "has_user_content": _runtime_root_has_user_content(root, config_manager=config_manager),
         "characters_payload": characters_payload,
         "character_names": character_names,
         "memory_character_names": memory_character_names,
@@ -856,6 +911,7 @@ def _runtime_root_summary(config_manager, root: Path) -> dict[str, Any]:
         "has_workshop_config": workshop_config_path.is_file(),
         "has_core_config": core_config_path.is_file(),
         "asset_dirs_with_content": asset_dirs_with_content,
+        "seeded_character_shell": seeded_character_shell,
         "looks_like_seeded": (
             bool(character_names)
             and character_names.issubset(default_character_names)
@@ -884,25 +940,27 @@ def _legacy_root_provides_repair_benefit(config_manager, source_summary: dict[st
         return True, "target_missing"
 
     source_is_richer = source_summary["score"] > target_summary["score"]
+    target_is_seed_shell = bool(target_summary.get("seeded_character_shell"))
 
-    if (source_is_richer or target_summary["looks_like_seeded"]) and source_summary["character_names"] - target_summary["character_names"]:
-        return True, "missing_characters"
+    if target_is_seed_shell:
+        if source_summary["character_names"] - target_summary["character_names"]:
+            return True, "missing_characters"
 
-    if (source_is_richer or target_summary["looks_like_seeded"]) and source_summary["memory_character_names"] - target_summary["memory_character_names"]:
-        return True, "missing_memory"
+        if source_summary["memory_character_names"] - target_summary["memory_character_names"]:
+            return True, "missing_memory"
 
-    for flag_name, reason in (
-        ("has_user_preferences", "missing_user_preferences"),
-        ("has_voice_storage", "missing_voice_storage"),
-        ("has_workshop_config", "missing_workshop_config"),
-        ("has_core_config", "missing_core_config"),
-    ):
-        if (source_is_richer or target_summary["looks_like_seeded"]) and source_summary[flag_name] and not target_summary[flag_name]:
-            return True, reason
+        for flag_name, reason in (
+            ("has_user_preferences", "missing_user_preferences"),
+            ("has_voice_storage", "missing_voice_storage"),
+            ("has_workshop_config", "missing_workshop_config"),
+            ("has_core_config", "missing_core_config"),
+        ):
+            if source_summary[flag_name] and not target_summary[flag_name]:
+                return True, reason
 
-    for dir_name, source_has_content in source_summary["asset_dirs_with_content"].items():
-        if (source_is_richer or target_summary["looks_like_seeded"]) and source_has_content and not target_summary["asset_dirs_with_content"].get(dir_name):
-            return True, f"missing_{dir_name}"
+        for dir_name, source_has_content in source_summary["asset_dirs_with_content"].items():
+            if source_has_content and not target_summary["asset_dirs_with_content"].get(dir_name):
+                return True, f"missing_{dir_name}"
 
     source_characters = (source_summary.get("characters_payload") or {}).get("猫娘", {}) or {}
     target_characters = (target_summary.get("characters_payload") or {}).get("猫娘", {}) or {}
@@ -913,7 +971,7 @@ def _legacy_root_provides_repair_benefit(config_manager, source_summary: dict[st
         ):
             return True, "upgrade_default_character"
 
-    if target_summary["looks_like_seeded"] and source_summary["score"] > target_summary["score"]:
+    if target_is_seed_shell and source_is_richer:
         return True, "repair_seeded_target"
 
     return False, ""
@@ -933,7 +991,7 @@ def _stage_merged_runtime_configs(config_manager, *, source_root: Path, target_r
             config_manager,
             source_characters,
             target_characters,
-            preserve_current_only_defaults=not target_summary["looks_like_seeded"],
+            preserve_current_only_defaults=not bool(target_summary.get("seeded_character_shell")),
         )
         if target_tombstone_names:
             merged_catgirls = merged_characters.get("猫娘") or {}
@@ -1028,10 +1086,34 @@ def _legacy_source_was_already_imported(
     return last_result.startswith("legacy_root_")
 
 
+def _root_has_staged_cloudsave_snapshot(root: Path) -> bool:
+    manifest_path = Path(root) / "cloudsave" / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_files = manifest_payload.get("files")
+            if isinstance(manifest_files, dict) and manifest_files:
+                return True
+        except Exception:
+            pass
+
+    cloudsave_root = Path(root) / "cloudsave"
+    if not cloudsave_root.exists():
+        return False
+    try:
+        for child in cloudsave_root.rglob("*"):
+            if child.is_file() and child.name != "manifest.json":
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
     """One-time bootstrap import from legacy roots into the deterministic app data root."""
     target_root = Path(config_manager.app_docs_dir)
-    target_has_user_content = _runtime_root_has_user_content(target_root)
+    target_has_user_content = _runtime_root_has_user_content(target_root, config_manager=config_manager)
+    target_has_staged_cloudsave_snapshot = _root_has_staged_cloudsave_snapshot(target_root)
     target_summary = _runtime_root_summary(config_manager, target_root)
     existing_root_state = None
     try:
@@ -1039,11 +1121,22 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
             existing_root_state = config_manager.load_root_state()
     except Exception:
         existing_root_state = None
+
+    if target_has_staged_cloudsave_snapshot and not target_has_user_content:
+        return {
+            "migrated": False,
+            "source": "",
+            "copied_paths": [],
+            "backup_path": "",
+            "repair_reason": "",
+            "result": "target_root_preserves_staged_cloudsave_snapshot",
+        }
+
     saw_legacy_source = False
 
     for source_root in config_manager.get_legacy_app_root_candidates():
         source_root = Path(source_root)
-        if not _runtime_root_has_user_content(source_root):
+        if not _runtime_root_has_user_content(source_root, config_manager=config_manager):
             continue
         saw_legacy_source = True
         if _legacy_source_was_already_imported(

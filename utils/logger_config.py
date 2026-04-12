@@ -26,6 +26,13 @@ def _get_application_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _get_writable_application_directory() -> Path:
+    """返回适合作为日志落盘基目录的可写路径。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return _get_application_root()
+
+
 class RobustLoggerConfig:
     """鲁棒的日志配置类"""
     
@@ -96,7 +103,7 @@ class RobustLoggerConfig:
         
         # 尝试2: 使用应用程序所在目录
         try:
-            app_dir = _get_application_root()
+            app_dir = _get_writable_application_directory()
             log_dir = app_dir / "logs"
             if self._test_directory_writable(log_dir):
                 return log_dir
@@ -148,8 +155,8 @@ class RobustLoggerConfig:
             print(f"Warning: Failed to use temp directory: {e}", file=sys.stderr)
         
         # 如果所有方法都失败，返回当前目录
-        print(f"Warning: All log directory attempts failed, using application directory", file=sys.stderr)
-        return _get_application_root() / "logs"
+        print("Warning: All log directory attempts failed, using application directory", file=sys.stderr)
+        return _get_writable_application_directory() / "logs"
     
     def _get_documents_directory(self):
         """获取系统的用户文档目录（使用系统API）"""

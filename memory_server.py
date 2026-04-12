@@ -97,6 +97,17 @@ reflection_engine = ReflectionEngine(fact_store, persona_manager)
 
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
+_deferred_time_managers: list[TimeIndexedMemory] = []
+
+
+def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
+    """将旧的 TimeIndexedMemory 延迟到进程关闭时再清理，避免切换窗口内并发请求触发已释放句柄。"""
+    if manager is None:
+        return
+    if any(existing is manager for existing in _deferred_time_managers):
+        return
+    _deferred_time_managers.append(manager)
+    logger.info("[MemoryServer] 旧的 TimeIndexedMemory 已加入延迟清理队列")
 
 async def reload_memory_components():
     """重新加载记忆组件配置（用于新角色创建后）
@@ -126,10 +137,7 @@ async def reload_memory_components():
             reflection_engine = new_reflection
 
             if old_time_manager is not None and old_time_manager is not new_time:
-                try:
-                    old_time_manager.cleanup()
-                except Exception as cleanup_exc:
-                    logger.warning("[MemoryServer] 释放旧的 SQLite 引擎失败: %s", cleanup_exc)
+                _defer_time_manager_cleanup(old_time_manager)
             
             logger.info("[MemoryServer] ✅ 记忆组件配置重新加载完成")
             return True
@@ -406,6 +414,17 @@ async def shutdown_event_handler():
         TokenTracker.get_instance().save()
     except Exception:
         pass
+    managers_to_cleanup: list[TimeIndexedMemory] = []
+    async with _reload_lock:
+        managers_to_cleanup.extend(_deferred_time_managers)
+        _deferred_time_managers.clear()
+        if all(existing is not time_manager for existing in managers_to_cleanup):
+            managers_to_cleanup.append(time_manager)
+    for manager in managers_to_cleanup:
+        try:
+            manager.cleanup()
+        except Exception as cleanup_exc:
+            logger.warning("[MemoryServer] 延迟释放 SQLite 引擎失败: %s", cleanup_exc)
     logger.info("Memory server已关闭")
 
 

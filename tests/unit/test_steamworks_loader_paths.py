@@ -1,4 +1,5 @@
 import ast
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -113,3 +114,18 @@ def test_logger_config_source_mode_root_ignores_cwd(tmp_path):
 
     with patch.object(logger_config.Path, "cwd", return_value=fake_cwd):
         assert logger_config._get_application_root() == REPO_ROOT
+
+
+@pytest.mark.unit
+def test_steamworks_prepend_env_path_preserves_existing_entries_without_duplicates(monkeypatch):
+    import steamworks as steamworks_module
+
+    monkeypatch.setenv("LD_LIBRARY_PATH", os.pathsep.join(("/existing/lib", "/fallback/lib")))
+
+    steamworks_module._prepend_env_path("LD_LIBRARY_PATH", "/new/lib")
+    first_pass = os.environ["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert first_pass == ["/new/lib", "/existing/lib", "/fallback/lib"]
+
+    steamworks_module._prepend_env_path("LD_LIBRARY_PATH", "/new/lib")
+    second_pass = os.environ["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert second_pass == ["/new/lib", "/existing/lib", "/fallback/lib"]

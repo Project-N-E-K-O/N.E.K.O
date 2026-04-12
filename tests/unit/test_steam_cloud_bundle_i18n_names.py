@@ -193,6 +193,49 @@ def test_download_cloudsave_bundle_uses_bridge_on_windows_source_launch(tmp_path
 
 
 @pytest.mark.unit
+def test_download_cloudsave_bundle_continues_when_remote_meta_is_not_json_object(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(source_cm)
+    bootstrap_local_cloudsave_environment(target_cm)
+    _write_runtime_state(source_cm, character_name="无效元数据角色", recent_message="bundle fallback")
+    export_result = export_local_cloudsave_snapshot(source_cm)
+
+    bundle_path = tmp_path / "meta_invalid_bundle.zip"
+    _write_remote_bundle(bundle_path, source_cm)
+    bundle_bytes = bundle_path.read_bytes()
+
+    class _DummyBridge:
+        def cloud_enabled(self):
+            return True
+
+        def file_exists(self, filename):
+            return filename in {"__neko_cloudsave_bundle_meta__.json", "__neko_cloudsave_bundle__.zip"}
+
+        def read_file(self, filename):
+            if filename == "__neko_cloudsave_bundle_meta__.json":
+                return b"[]"
+            if filename == "__neko_cloudsave_bundle__.zip":
+                return bundle_bytes
+            raise FileNotFoundError(filename)
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
+
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge):
+        result = download_cloudsave_bundle_from_steam(target_cm)
+
+    assert result["success"] is True
+    assert result["action"] == "downloaded"
+    assert result.get("meta") is None
+    imported_manifest = json.loads((target_cm.cloudsave_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert imported_manifest["fingerprint"] == export_result["manifest"]["fingerprint"]
+
+
+@pytest.mark.unit
 def test_upload_cloudsave_bundle_skips_on_unsupported_platform_even_for_source_launch():
     with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
         "utils.steam_cloud_bundle.sys.platform", "darwin"

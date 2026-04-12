@@ -97,11 +97,17 @@ def _build_subscriber_workshop_model_ref(item_id: str | int, raw_model_ref: str)
     if not normalized_ref or not normalized_item_id:
         return normalized_ref
     if normalized_ref.startswith("/workshop/"):
-        return normalized_ref
-    model_name = Path(normalized_ref).name
-    if not model_name:
+        parts = [segment for segment in normalized_ref.strip("/").split("/") if segment]
+        # /workshop/{old_item_id}/...
+        if parts and parts[0] == "workshop":
+            tail_parts = parts[2:] if len(parts) >= 2 else []
+            if tail_parts:
+                return f"/workshop/{normalized_item_id}/{'/'.join(tail_parts)}"
+            return f"/workshop/{normalized_item_id}"
+    relative_ref = normalized_ref.strip("/")
+    if not relative_ref:
         return f"/workshop/{normalized_item_id}"
-    return f"/workshop/{normalized_item_id}/{model_name}"
+    return f"/workshop/{normalized_item_id}/{relative_ref}"
 
 
 def _derive_workshop_model_binding(chara_data: dict) -> dict[str, str]:

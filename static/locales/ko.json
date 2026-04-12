@@ -1477,6 +1477,7 @@
         "saveMasterError": "주인 설정 저장 실패",
         "autoSaved": "설정 자동 저장됨",
         "autoSaveFailed": "자동 저장 실패, 페이지를 닫기 전에 수동으로 저장하세요",
+        "unsavedNewCatgirlDraftDetected": "저장되지 않은 새 NEKO 초안이 감지되었습니다. 동기화 새로고침 전에 먼저 저장하거나 취소하세요",
         "partialSaveVoiceFailed": "캐릭터는 저장되었지만 음성 업데이트에 실패했습니다: {{error}}",
         "exportCard": "캐릭터 카드 내보내기",
         "exportingCard": "캐릭터 카드 내보내는 중...",
@@ -1614,10 +1615,10 @@
         },
         "group": {
             "count": "{{count}}개",
-            "workshopTitle": "창작마당 관련 캐릭터",
-            "workshopDescription": "이 섹션에는 로컬 또는 클라우드 어느 한쪽이라도 Steam 창작마당 리소스와 연결된 캐릭터를 모아 보여줍니다.",
+            "workshopTitle": "창작마당 출신 캐릭터",
+            "workshopDescription": "이 섹션에는 로컬 또는 클라우드 어느 한쪽에서든 Steam 창작마당 출신으로 확인된 캐릭터를 모아 보여줍니다. 현재 모델만 창작마당 리소스로 바꾼 자작 캐릭터는 이 그룹으로 이동하지 않습니다.",
             "otherTitle": "내 캐릭터",
-            "otherDescription": "이 섹션에는 로컬 가져오기, 내장 리소스, 또는 기타 비창작마당 소스를 사용하는 캐릭터를 보여줍니다."
+            "otherDescription": "이 섹션에는 자작 캐릭터나 Steam 창작마당 출신이 아닌 캐릭터를 보여줍니다. 현재 모델 리소스 출처는 상세 정보에서 별도로 표시됩니다."
         },
         "resourceRecoveryTitle": "리소스 복구 안내",
         "metaNoValue": "없음",

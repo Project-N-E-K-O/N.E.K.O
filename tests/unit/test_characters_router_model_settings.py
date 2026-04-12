@@ -6,7 +6,7 @@ import pytest
 
 characters_router_module = importlib.import_module('main_routers.characters_router')
 from main_routers.config_router import _get_live3d_sub_type
-from utils.config_manager import delete_reserved, flatten_reserved, get_reserved, migrate_catgirl_reserved
+from utils.config_manager import delete_reserved, flatten_reserved, get_reserved, migrate_catgirl_reserved, set_reserved
 
 
 class DummyRequest:
@@ -154,6 +154,70 @@ async def test_switching_live3d_subtypes_preserves_inactive_model_config(
         assert get_reserved(catgirl, 'avatar', 'mmd', 'model_path') == payload['mmd']
         assert get_reserved(catgirl, 'avatar', 'mmd', 'animation') == payload['mmd_animation']
         assert get_reserved(catgirl, 'avatar', 'mmd', 'idle_animation') == payload['mmd_idle_animation']
+
+
+@pytest.mark.asyncio
+async def test_switching_workshop_origin_character_to_local_live3d_model_updates_current_asset_source_only(monkeypatch):
+    characters = _build_characters_fixture()
+    catgirl = characters['猫娘']['测试角色']
+    set_reserved(catgirl, 'character_origin', 'source', 'steam_workshop')
+    set_reserved(catgirl, 'character_origin', 'source_id', '114514')
+    set_reserved(catgirl, 'character_origin', 'display_name', '工坊原始角色')
+    set_reserved(catgirl, 'character_origin', 'model_ref', '/workshop/114514/hero.vrm')
+
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'live3d',
+            'vrm': '/user_vrm/models/local-override.vrm',
+        },
+        characters=characters,
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    saved_catgirl = saved['猫娘']['测试角色']
+    assert get_reserved(saved_catgirl, 'avatar', 'asset_source') == 'local_imported'
+    assert get_reserved(saved_catgirl, 'avatar', 'asset_source_id') == ''
+    assert get_reserved(saved_catgirl, 'character_origin', 'source') == 'steam_workshop'
+    assert get_reserved(saved_catgirl, 'character_origin', 'source_id') == '114514'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('payload', 'expected_source_id'),
+    [
+        ({'model_type': 'live3d', 'vrm': '/workshop/998877/local/hero.vrm'}, '998877'),
+        ({'model_type': 'live3d', 'mmd': '/workshop/998877/local/dancer.pmx'}, '998877'),
+    ],
+)
+async def test_switching_self_created_character_to_workshop_model_marks_current_asset_as_workshop_without_overwriting_origin(
+    monkeypatch,
+    payload,
+    expected_source_id,
+):
+    characters = _build_characters_fixture()
+    catgirl = characters['猫娘']['测试角色']
+    delete_reserved(catgirl, 'character_origin', 'source')
+    delete_reserved(catgirl, 'character_origin', 'source_id')
+    delete_reserved(catgirl, 'character_origin', 'display_name')
+    delete_reserved(catgirl, 'character_origin', 'model_ref')
+    set_reserved(catgirl, 'avatar', 'asset_source', 'local_imported')
+    set_reserved(catgirl, 'avatar', 'asset_source_id', '')
+
+    response, body, saved = await _call_update(
+        monkeypatch,
+        payload,
+        characters=characters,
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    saved_catgirl = saved['猫娘']['测试角色']
+    assert get_reserved(saved_catgirl, 'avatar', 'asset_source') == 'steam_workshop'
+    assert get_reserved(saved_catgirl, 'avatar', 'asset_source_id') == expected_source_id
+    assert get_reserved(saved_catgirl, 'character_origin', 'source', default='') == ''
+    assert get_reserved(saved_catgirl, 'character_origin', 'source_id', default='') == ''
 
 
 def test_live3d_sub_type_prefers_persisted_active_sub_type_when_both_paths_exist():
