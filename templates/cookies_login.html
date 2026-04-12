@@ -68,13 +68,15 @@
             border-bottom: 1px solid #e2e8f0; 
             overflow-x: auto; 
             scrollbar-width: none; 
+            align-items: stretch;
         }
         .tabs::-webkit-scrollbar { display: none; }
         .tab-btn { 
-            flex: 1; min-width: 100px; padding: 16px 0; 
+            flex: 0 0 auto; min-width: 120px; padding: 16px 18px; 
             border: none; background: none; 
             font-size: 14px; font-weight: 600; color: #64748b; 
-            cursor: pointer; transition: all 0.2s; white-space: nowrap; 
+            cursor: pointer; transition: all 0.2s; white-space: nowrap;
+            text-align: center;
         }
         .tab-btn:hover { background: #e2e8f0; color: #334155; }
         .tab-btn.active { background: var(--card-bg); color: var(--primary); box-shadow: inset 0 -3px 0 var(--primary); font-weight: 700; }
@@ -401,8 +403,8 @@
 <body>
     <div class="container-header">
         <h2 data-i18n="cookiesLogin.header">🔐 凭证获取中心</h2>
-        <button class="close-btn" onclick="window.close()" title="关闭">
-            <img src="/static/icons/close_button.png" alt="关闭">
+        <button class="close-btn" onclick="window.close()" title="关闭" aria-label="关闭" data-i18n-title="common.close" data-i18n-aria="common.close">
+            <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="common.close">
         </button>
     </div>
     <div class="dashboard-wrapper">
@@ -455,7 +457,7 @@
             
             <button class="submit-btn" id="submit-btn" onclick="submitCurrentCookie()">
                 <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path></svg>
-                <span id="submit-text">保存配置</span>
+                <span id="submit-text" data-i18n="cookiesLogin.saveConfig">保存配置</span>
             </button>
             <div id="main-alert" class="alert"></div>
         </div>

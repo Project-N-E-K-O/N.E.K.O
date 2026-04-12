@@ -29,7 +29,18 @@
         "tryAgainLater": "Пожалуйста, попробуйте позже",
         "user": "Пользователь",
         "project": "Проект",
-        "collapse": "Свернуть"
+        "collapse": "Свернуть",
+        "play": "Воспроизвести",
+        "pause": "Пауза",
+        "on": "ВКЛ",
+        "off": "ВЫКЛ",
+        "toneMappingNone": "Нет",
+        "toneMappingLinear": "Линейная",
+        "toneMappingReinhard": "Reinhard",
+        "toneMappingCineon": "Cineon",
+        "toneMappingACESFilmic": "ACES Filmic",
+        "toneMappingAgX": "AgX",
+        "toneMappingNeutral": "Нейтральная"
     },
     "characterProfile": {
         "gender": "Пол",
@@ -66,6 +77,10 @@
         "tagsPreview": "Теги",
         "notesPreview": "Заметки",
         "selectCharaToPreview": "Выберите персонажа для предпросмотра",
+            "coverBgBottom": "Нижний слой фона",
+            "characterCardCover": "Обложка карточки персонажа",
+            "coverBgTop": "Верхний слой фона",
+            "selectCharacterForCover": "Выберите персонажа, чтобы посмотреть обложку",
         "characterModelNotSet": "Модель персонажа не задана",
         "selectCharacterCard": "Выберите карточку персонажа",
         "characterCardNotFound": "Данные карточки персонажа не найдены",
@@ -94,6 +109,12 @@
         "live2dInitFailed": "Ошибка инициализации среды предпросмотра Live2D",
         "live2dPreviewLoaded": "Предпросмотр модели Live2D загружен успешно",
         "live2dPreviewLoadFailed": "Ошибка загрузки предпросмотра модели Live2D: {{error}}",
+            "vrmModuleLoadFailed": "Не удалось загрузить модуль VRM",
+            "vrmPreviewLoaded": "Предпросмотр модели VRM загружен",
+            "vrmPreviewFailed": "Не удалось загрузить предпросмотр модели VRM",
+            "mmdModuleLoadFailed": "Не удалось загрузить модуль MMD",
+            "mmdPreviewLoaded": "Предпросмотр модели MMD загружен",
+            "mmdPreviewFailed": "Не удалось загрузить предпросмотр модели MMD",
         "placeholderCharacterName": "Введите имя персонажа",
         "placeholderDescription": "Введите описание",
         "placeholderCharacterSetting": "Введите настройки персонажа",
@@ -153,6 +174,8 @@
         "allowComments": "Разрешить комментарии",
         "uploadTip": "Вы можете выбрать предметы в «Управлении локальными предметами» для автозаполнения путей, или ввести полные пути к папке содержимого и изображению предпросмотра вручную.",
         "search": "Поиск:",
+            "searchAriaLabel": "Поиск по подпискам",
+            "sortAriaLabel": "Порядок сортировки",
         "uploadSuccess": "Загрузка успешна!",
         "itemIdDisplay": "ID предмета: {{itemId}}",
         "agreementAccepted": "Соглашение Мастерской принято",
@@ -308,6 +331,7 @@
         "default": "По умолчанию",
         "noVoiceSelected": "Голос не выбран",
         "noDescription": "Нет описания",
+            "characterSettingsFile": "Файл настроек персонажа",
         "workshopAgreementText": "Нажимая «Загрузить», вы соглашаетесь с условиями использования Мастерской Steam, включая юридическое соглашение Мастерской:",
         "alreadyUploaded": "Загружено в Мастерскую",
         "uploadTime": "Время загрузки",
@@ -1452,6 +1476,7 @@
         "saveMasterError": "Ошибка сохранения настроек хозяина",
         "autoSaved": "Настройки автосохранены",
         "autoSaveFailed": "Автосохранение не удалось, сохраните вручную перед закрытием",
+        "partialSaveVoiceFailed": "Персонаж сохранён, но не удалось обновить голос: {{error}}",
         "exportCard": "Экспорт карточки персонажа",
         "exportingCard": "Экспорт карточки персонажа...",
         "exportCardSuccess": "Карточка персонажа успешно экспортирована",
@@ -2099,6 +2124,24 @@
                     "title": "🎞️ Tone Mapping",
                     "desc": "Select different tone mapping algorithms to control highlight and shadow rendering."
                 }
+            },
+            "mmd": {
+                "step1": {
+                    "title": "🎭 Выбор модели MMD",
+                    "desc": "В режиме Live3D (MMD) выберите модель здесь. MMD и VRM используют один и тот же список моделей."
+                },
+                "step2": {
+                    "title": "💃 VMD анимация",
+                    "desc": "Выберите VMD движение для вашей MMD модели. Используйте «Импорт VMD», чтобы добавить пользовательские файлы движений."
+                },
+                "step3": {
+                    "title": "🌟 Освещение MMD",
+                    "desc": "В «Настройках MMD модели» настройте окружающий и основной свет, экспозицию и тональную компрессию для 3D-сцены."
+                },
+                "step4": {
+                    "title": "😄 Настройка эмоций",
+                    "desc": "После выбора модели откройте настройки эмоций здесь. В Live3D MMD и VRM используют эту кнопку совместно (не кнопку Live2D)."
+                }
             }
         },
         "parameter_editor": {
@@ -2659,6 +2702,7 @@
             "openQR": "📱 Открыть QR-вход",
             "loading": "Получение QR-кода...",
             "scanTitle": "📱 Вход по QR {{platform}}",
+            "qrCodeAlt": "QR-код для входа",
             "waiting": "Ожидание сканирования...",
             "validFor": "QR-код действителен: {{seconds}}сек",
             "refreshQR": "Обновить QR-код",
@@ -2670,6 +2714,12 @@
                 "expired": "❌ {{message}}, обновите",
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
+            },
+            "statusMessage": {
+                "success": "Вход выполнен",
+                "expired": "Срок действия QR-кода истек",
+                "scanned": "Код отсканирован, подтвердите вход на телефоне",
+                "waiting": "Ожидание сканирования"
             },
             "successAlert": "QR-вход успешен! Cookies автоматически заполнены, нажмите Сохранить конфигурацию",
             "extractFailed": "⚠️ QR-вход выполнен, но не удалось автоматически извлечь поля. Проверьте вручную."

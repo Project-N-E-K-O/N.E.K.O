@@ -381,6 +381,10 @@
             }
             clearManagedListeners();
         }
+        // 手动关闭时更新卡片状态为"已结束"，必须在清空 musicCardMessageId 之前
+        if (fullTeardown && musicCardMessageId) {
+            updateMusicCard('ended', currentPlayingTrack);
+        }
         currentPlayingTrack = null;
         musicCardMessageId = null;
     };

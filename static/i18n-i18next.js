@@ -418,9 +418,9 @@
                 console.log('[i18n] ✅ 初始化成功（手动加载模式）');
                 // 设置 HTML lang 属性，用于 CSS 语言特定样式
                 document.documentElement.lang = i18next.language;
+                exportNormalFunctions();
                 updatePageTexts();
                 window.dispatchEvent(new CustomEvent('localechange'));
-                exportNormalFunctions();
             });
         } catch (error) {
             console.error('[i18n] 手动加载翻译文件失败:', error);
@@ -527,9 +527,9 @@
                         initialized = true;
                         // 设置 HTML lang 属性，用于 CSS 语言特定样式
                         document.documentElement.lang = i18next.language;
+                        exportNormalFunctions();
                         updatePageTexts();
                         window.dispatchEvent(new CustomEvent('localechange'));
-                        exportNormalFunctions();
                     };
 
                     // 确保资源已经加载
