@@ -1069,22 +1069,51 @@ body.react-chat-window-dragging {
     display: none;
 }
 
-#chat-avatar-preview-card {
+/* 独立头像预览弹窗（chat.html / index.html 共用）
+   作为一个浮动窗口定位在触发按钮附近。 */
+#chat-avatar-preview-popup {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 320px;
+    max-width: calc(100vw - 24px);
     display: flex;
     flex-direction: column;
     gap: 12px;
-    padding: 12px;
+    padding: 14px;
     border-radius: 16px;
-    border: 1px solid rgba(68, 183, 254, 0.18);
+    border: 1px solid rgba(68, 183, 254, 0.22);
     background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 250, 252, 0.92));
+        linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 252, 0.96));
     box-shadow:
-        0 8px 22px rgba(33, 95, 144, 0.08),
+        0 20px 48px rgba(12, 20, 34, 0.24),
+        0 8px 22px rgba(33, 95, 144, 0.12),
         inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    z-index: 100010;
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+    transform-origin: top right;
+    transition: opacity 0.16s ease, transform 0.18s cubic-bezier(0.2, 0, 0, 1);
+    pointer-events: auto;
 }
 
-#chat-avatar-preview-card[hidden] {
+#chat-avatar-preview-popup.is-visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+
+#chat-avatar-preview-popup[hidden] {
     display: none !important;
+}
+
+[data-theme="dark"] #chat-avatar-preview-popup {
+    border-color: rgba(68, 183, 254, 0.28);
+    background:
+        linear-gradient(180deg, rgba(30, 38, 52, 0.96), rgba(22, 28, 40, 0.96));
+    box-shadow:
+        0 20px 48px rgba(0, 0, 0, 0.5),
+        0 8px 22px rgba(0, 0, 0, 0.28),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .chat-avatar-preview-card-header {

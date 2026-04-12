@@ -574,8 +574,24 @@ class VRMManager {
         }
         this._isDisposed = false;
 
+        // 恢复容器可见性：在 Live2D/VRM 之间反复切换时，cleanup 会把容器隐藏
+        // （display:none + 'hidden' class），若 _isInitialized 为 true，app-character.js
+        // 会跳过整个初始化块，导致下次切回 VRM 时容器仍不可见，新模型"加载不出来"。
+        // 这里无条件恢复，确保每次尝试初始化 VRM 时容器都是可见的。
+        const container = containerId ? document.getElementById(containerId) : null;
+        if (container) {
+            container.style.display = 'block';
+            container.style.visibility = 'visible';
+            container.style.opacity = '1';
+            container.classList.remove('hidden');
+        }
+
         // 检查是否已完全初始化（不仅检查 scene，还要检查 camera 和 renderer）
         if (this.scene && this.camera && this.renderer) {
+            // 恢复 renderer canvas 可见性（切换清理时会把 domElement 设为 display:none）
+            if (this.renderer.domElement) {
+                this.renderer.domElement.style.display = 'block';
+            }
             this._initMouseLookAtTracking();
             this._isInitialized = true;
             return true;
