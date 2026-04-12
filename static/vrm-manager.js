@@ -1098,11 +1098,22 @@ class VRMManager {
             if (this._isDisposed || !this._isLoadTokenActive(loadToken)) return;
             if (!this.currentModel || !this.currentModel.vrm) return;
 
-            // 用户已经手动触发了其他动画（非 idle）：让位，停止重试
+            // 仅当动画"真正在运行"时才放弃重试：
+            // 单纯 currentAction 非 null 不能等同于正在播放——stopVRMAAnimation 用 500ms
+            // fadeOut 后才清空 currentAction；单次性 clip 播完后 currentAction 也会悬挂
+            // 指向已停止的 action。此时若提前 return，模型仍会卡在 T-pose。
             const anim = this.animation;
-            if (anim && anim.currentAction && anim.isIdleAnimation === false) return;
-            // 当前已经在播 idle：已经脱离 T-pose，停止重试
-            if (anim && anim.currentAction && anim.isIdleAnimation === true) return;
+            const actionRunning = !!(
+                anim
+                && anim.vrmaIsPlaying
+                && anim.currentAction
+                && typeof anim.currentAction.isRunning === 'function'
+                && anim.currentAction.isRunning()
+            );
+            if (actionRunning) {
+                // 无论是用户手动动画还是已在播的 idle，模型都已脱离 T-pose
+                return;
+            }
 
             if (!this.animation) this._initModules();
 
