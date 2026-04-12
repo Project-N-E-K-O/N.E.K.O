@@ -325,6 +325,46 @@ class CloudSaveManager:
         }
         return payload
 
+    def upload_existing_snapshot(
+        self,
+        *,
+        reason: str = "",
+        steamworks=None,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        status = self.build_status(steamworks=steamworks)
+        if not status["has_snapshot"]:
+            return {
+                "success": True,
+                "action": "skipped",
+                "reason": "no_local_snapshot",
+                "requested_reason": str(reason or ""),
+                "status": status,
+            }
+
+        remote_bundle_result = self._try_upload_remote_bundle(
+            steamworks=steamworks,
+            deadline_monotonic=deadline_monotonic,
+        )
+        remote_success = bool(remote_bundle_result.get("success", False))
+        action = str(remote_bundle_result.get("action") or "")
+        if remote_success or action == "skipped":
+            return {
+                "success": True,
+                "action": "uploaded" if action == "uploaded" else "skipped",
+                "requested_reason": str(reason or ""),
+                "remote_bundle_result": remote_bundle_result,
+                "status": self.build_status(steamworks=steamworks),
+            }
+        return {
+            "success": False,
+            "action": "failed",
+            "reason": str(remote_bundle_result.get("reason") or "remote_bundle_upload_failed"),
+            "requested_reason": str(reason or ""),
+            "remote_bundle_result": remote_bundle_result,
+            "status": self.build_status(steamworks=steamworks),
+        }
+
 
 def get_cloudsave_manager(config_manager) -> CloudSaveManager:
     return CloudSaveManager(config_manager)

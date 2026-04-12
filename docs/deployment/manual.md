@@ -53,7 +53,7 @@ uv run python agent_server.py
 
 Notes:
 
-- To validate real Steam Auto-Cloud behavior, launch through Steam or the desktop launcher. Running source files directly is useful for development, but it is not a reliable way to verify Steam-side download/upload timing.
+- To validate the production Steam Auto-Cloud path, launch through Steam or the desktop launcher. Desktop source runs on Windows, macOS, and Linux can now use the RemoteStorage bundle helper when Steam is running and logged in, but that helper is still a development-side compatibility path rather than the packaged app's main sync path.
 - In manual three-server mode, `main_server` will still perform a fallback snapshot import when needed and will try to notify `memory_server` to reload afterward.
 - Shutdown no longer stages runtime changes into `cloudsave/` automatically. If you want Steam to upload new character data, prepare or overwrite the staged snapshot for that character from Cloud Save Manager before you exit.
 - On macOS source runs, if Apple reports that `SteamworksPy.dylib` cannot be verified, Gatekeeper is usually blocking the local unnotarized Steamworks libraries. First make sure you are launching from the project root. If it is still blocked, run the following from the repo root:

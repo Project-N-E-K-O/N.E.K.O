@@ -1617,7 +1617,7 @@
         "providerUnavailable": "Cloud save is currently unavailable. This page only shows local summaries.",
         "providerSteamAutoCloudReady": "Steam Cloud is connected. Upload writes the local cloud snapshot now, and Steam will upload it automatically after you exit the game through Steam.",
         "providerSteamAutoCloudOffline": "Local cloud snapshots are available, but Steam Cloud is not currently connected. Start the game from Steam while logged in if you want Steam to upload or download snapshots automatically.",
-        "providerSteamAutoCloudSourceLaunch": "This session was started from source, so Steam Auto-Cloud download and upload are not guaranteed even if Steam is logged in. To verify cross-device sync, launch once through Steam or the desktop launcher.",
+        "providerSteamAutoCloudSourceLaunch": "This session was started from source. If Steam is running and logged in, the desktop RemoteStorage helper can assist with cloudsave download and upload, but this still is not the same as the packaged Steam Auto-Cloud path. For production-path verification, launch once through Steam or the desktop launcher.",
         "providerSnapshotScope": "This page shows the staged cloud snapshot already stored on this device.",
         "providerSnapshotSequence": "Sequence {{sequence}}.",
         "providerSnapshotExportedAt": "Exported {{time}}.",

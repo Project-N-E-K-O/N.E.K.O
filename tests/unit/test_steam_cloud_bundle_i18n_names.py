@@ -134,42 +134,30 @@ def test_multilingual_character_names_roundtrip_through_local_snapshot(character
 
 
 @pytest.mark.unit
-def test_download_cloudsave_bundle_skips_on_unsupported_platform_even_for_source_launch():
-    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
-        "utils.steam_cloud_bundle.sys.platform", "darwin"
-    ):
-        result = download_cloudsave_bundle_from_steam(object())
+@pytest.mark.parametrize("platform_name", ["darwin", "linux"])
+def test_download_cloudsave_bundle_uses_bridge_on_desktop_source_launch(platform_name: str, tmp_path):
+    cm = _make_config_manager(tmp_path / platform_name)
+    bootstrap_local_cloudsave_environment(cm)
+    observed = {"entered": False}
 
+    class _DummyBridge:
+        def cloud_enabled(self):
+            observed["entered"] = True
+            return False
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
+
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", platform_name
+    ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge):
+        result = download_cloudsave_bundle_from_steam(cm)
+
+    assert observed["entered"] is True
     assert result["success"] is True
     assert result["action"] == "skipped"
-    assert result["reason"] == "unsupported_platform"
-    assert result["platform"] == "darwin"
-
-
-@pytest.mark.unit
-def test_download_cloudsave_bundle_skips_on_linux_source_launch():
-    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
-        "utils.steam_cloud_bundle.sys.platform", "linux"
-    ):
-        result = download_cloudsave_bundle_from_steam(object())
-
-    assert result["success"] is True
-    assert result["action"] == "skipped"
-    assert result["reason"] == "unsupported_platform"
-    assert result["platform"] == "linux"
-
-
-@pytest.mark.unit
-def test_upload_cloudsave_bundle_skips_on_linux_source_launch():
-    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
-        "utils.steam_cloud_bundle.sys.platform", "linux"
-    ):
-        result = upload_cloudsave_bundle_to_steam(object())
-
-    assert result["success"] is True
-    assert result["action"] == "skipped"
-    assert result["reason"] == "unsupported_platform"
-    assert result["platform"] == "linux"
+    assert result["reason"] == "cloud_disabled"
 
 
 @pytest.mark.unit
@@ -254,16 +242,32 @@ def test_download_cloudsave_bundle_continues_when_remote_meta_is_not_json_object
 
 
 @pytest.mark.unit
-def test_upload_cloudsave_bundle_skips_on_unsupported_platform_even_for_source_launch():
-    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
-        "utils.steam_cloud_bundle.sys.platform", "darwin"
-    ):
-        result = upload_cloudsave_bundle_to_steam(object())
+@pytest.mark.parametrize("platform_name", ["darwin", "linux"])
+def test_upload_cloudsave_bundle_uses_bridge_on_desktop_source_launch(platform_name: str, tmp_path):
+    cm = _make_config_manager(tmp_path / platform_name)
+    bootstrap_local_cloudsave_environment(cm)
+    _write_runtime_state(cm, character_name=f"{platform_name}-bundle", recent_message="upload")
+    export_local_cloudsave_snapshot(cm)
+    observed = {"entered": False}
 
+    class _DummyBridge:
+        def cloud_enabled(self):
+            observed["entered"] = True
+            return False
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
+
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", platform_name
+    ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge):
+        result = upload_cloudsave_bundle_to_steam(cm)
+
+    assert observed["entered"] is True
     assert result["success"] is True
     assert result["action"] == "skipped"
-    assert result["reason"] == "unsupported_platform"
-    assert result["platform"] == "darwin"
+    assert result["reason"] == "cloud_disabled"
 
 
 @pytest.mark.unit

@@ -1602,7 +1602,7 @@
                 setTranslatedText(
                     providerStatus,
                     'cloudsave.providerSteamAutoCloudSourceLaunch',
-                    'This session was started from source, so Steam Auto-Cloud download and upload are not guaranteed even if Steam is logged in. To verify cross-device sync, launch once through Steam or the desktop launcher.',
+                    'This session was started from source. If Steam is running and logged in, the desktop RemoteStorage helper can assist with cloudsave download and upload, but this still is not the same as the packaged Steam Auto-Cloud path. For production-path verification, launch once through Steam or the desktop launcher.',
                 );
             } else if (isSteamAutoCloudBackend(summary) && isSteamAutoCloudSessionReady(summary)) {
                 setTranslatedText(

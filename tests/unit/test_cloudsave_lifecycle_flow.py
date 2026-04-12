@@ -308,7 +308,7 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_main_server_shutdown_does_not_export_cloudsave_snapshot():
+async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_snapshot():
     import main_server
 
     fake_tracker = SimpleNamespace(save=Mock())
@@ -323,7 +323,11 @@ async def test_main_server_shutdown_does_not_export_cloudsave_snapshot():
         await main_server.on_shutdown()
 
     fake_tracker.save.assert_called_once_with()
-    run_cloudsave_action.assert_not_awaited()
+    run_cloudsave_action.assert_awaited_once_with(
+        "upload_existing_snapshot",
+        reason="main_server_shutdown_remote_upload",
+        budget_seconds=5.0,
+    )
 
 
 @pytest.mark.unit
@@ -351,11 +355,11 @@ async def test_main_server_startup_aborts_when_root_mode_persist_fails():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_main_server_shutdown_releases_live_sessions_without_exporting_cloudsave():
+async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing_snapshot():
     import main_server
 
     fake_tracker = SimpleNamespace(save=Mock())
-    run_cloudsave_action = AsyncMock(return_value={"success": True, "action": "exported"})
+    run_cloudsave_action = AsyncMock(return_value={"success": True, "action": "uploaded"})
     manager_with_resampler = SimpleNamespace(audio_resampler=object())
 
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
@@ -370,7 +374,11 @@ async def test_main_server_shutdown_releases_live_sessions_without_exporting_clo
         await main_server.on_shutdown()
 
     assert manager_with_resampler.audio_resampler is None
-    run_cloudsave_action.assert_not_awaited()
+    run_cloudsave_action.assert_awaited_once_with(
+        "upload_existing_snapshot",
+        reason="main_server_shutdown_remote_upload",
+        budget_seconds=5.0,
+    )
     assert mock_release.await_count == 2
     mock_release.assert_any_await("角色A", reason="Steam Auto-Cloud pre-shutdown release: 角色A")
     mock_release.assert_any_await("角色B", reason="Steam Auto-Cloud pre-shutdown release: 角色B")
@@ -396,7 +404,11 @@ async def test_main_server_shutdown_continues_when_memory_release_returns_false(
         await main_server.on_shutdown()
 
     assert mock_release.await_count == 2
-    run_cloudsave_action.assert_not_awaited()
+    run_cloudsave_action.assert_awaited_once_with(
+        "upload_existing_snapshot",
+        reason="main_server_shutdown_remote_upload",
+        budget_seconds=5.0,
+    )
     mock_warning.assert_any_call(
         "Steam Auto-Cloud pre-shutdown release failed for %s: returned False",
         "角色B",
@@ -429,7 +441,7 @@ async def test_shutdown_server_async_defers_memory_server_stop_until_main_shutdo
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_main_server_shutdown_requests_memory_server_stop_without_export_when_deferred():
+async def test_main_server_shutdown_requests_memory_server_stop_after_snapshot_upload_when_deferred():
     import main_server
 
     fake_tracker = SimpleNamespace(save=Mock())
@@ -456,6 +468,10 @@ async def test_main_server_shutdown_requests_memory_server_stop_without_export_w
         await main_server.on_shutdown()
 
     assert call_order == ["memory_shutdown"]
-    run_cloudsave_action.assert_not_awaited()
+    run_cloudsave_action.assert_awaited_once_with(
+        "upload_existing_snapshot",
+        reason="main_server_shutdown_remote_upload",
+        budget_seconds=5.0,
+    )
     assert start_config["shutdown_memory_server_on_exit"] is False
     mock_request_shutdown.assert_awaited_once_with()

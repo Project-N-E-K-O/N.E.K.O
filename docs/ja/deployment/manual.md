@@ -51,7 +51,7 @@ uv run python agent_server.py
 
 補足:
 
-- 実際の Steam Auto-Cloud の「起動前ダウンロード / 終了後アップロード」を検証したい場合は、Steam またはデスクトップランチャー経由で起動してください。ソースファイルの直接実行は開発には便利ですが、Steam 側のダウンロード / アップロードのタイミング確認には向きません。
+- 本番の Steam Auto-Cloud 主経路を検証したい場合は、引き続き Steam またはデスクトップランチャー経由で起動してください。現在は Windows / macOS / Linux のソース実行でも、Steam が起動中かつログイン済みであれば RemoteStorage bundle helper を使ったクロスデバイス検証が可能ですが、この経路はあくまで開発用の互換パスであり、パッケージ版の主同期経路ではありません。
 - 手動の 3 サーバーモードでは、必要に応じて `main_server` がフォールバックのスナップショット import を実行し、その後 `memory_server` に reload を通知しようとします。
 - shutdown では実行中データを `cloudsave/` に自動で書き戻しません。Steam に新しいキャラクターデータをアップロードしたい場合は、終了前に Cloud Save Manager から対象キャラクターの staged snapshot を手動で生成または上書きしてください。
 - macOS でソース実行したときに「Apple は `SteamworksPy.dylib` を検証できません」と表示される場合、通常は Gatekeeper がローカルの未公証 Steamworks ライブラリをブロックしています。まずプロジェクトのルートディレクトリから起動していることを確認してください。まだブロックされる場合は、リポジトリルートで次を実行します:

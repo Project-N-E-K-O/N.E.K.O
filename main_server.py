@@ -1234,6 +1234,20 @@ async def on_shutdown():
         except Exception as e:
             logger.warning(f"Steam Auto-Cloud pre-shutdown release phase failed: {e}")
 
+        try:
+            remote_upload_result = await _run_cloudsave_manager_action(
+                "upload_existing_snapshot",
+                reason="main_server_shutdown_remote_upload",
+                budget_seconds=5.0,
+            )
+            logger.info("Steam Auto-Cloud shutdown staged snapshot upload: %s", remote_upload_result)
+        except CloudsaveDeadlineExceeded:
+            logger.warning(
+                "Steam Auto-Cloud shutdown staged snapshot upload exceeded 5.0s budget; source launch may leave Steam remote snapshot unchanged"
+            )
+        except Exception as e:
+            logger.warning(f"Steam Auto-Cloud shutdown staged snapshot upload failed: {e}")
+
         current_config = get_start_config()
         if current_config.get("shutdown_memory_server_on_exit"):
             current_config["shutdown_memory_server_on_exit"] = False

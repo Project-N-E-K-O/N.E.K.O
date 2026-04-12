@@ -395,47 +395,30 @@ def test_cloudsave_manager_import_downloads_source_launch_bundle_before_local_im
 
 
 @pytest.mark.unit
-def test_cloudsave_manager_import_source_launch_on_macos_skips_remote_bundle_helper():
+@pytest.mark.parametrize("platform_name", ["darwin", "linux"])
+def test_cloudsave_manager_import_source_launch_on_desktop_uses_remote_bundle_helper(platform_name: str):
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
         bootstrap_local_cloudsave_environment(cm)
 
         manager = CloudSaveManager(cm)
-        with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
-            "utils.steam_cloud_bundle.sys.platform",
-            "darwin",
-        ):
-            result = manager.import_if_needed(reason="mac_source_launch_remote_bundle_gate")
+        with patch(
+            "utils.cloudsave_autocloud.download_cloudsave_bundle_from_steam",
+            return_value={
+                "success": True,
+                "action": "skipped",
+                "reason": "cloud_disabled",
+            },
+        ) as mock_download, patch("utils.cloudsave_autocloud.sys.platform", platform_name):
+            result = manager.import_if_needed(reason=f"{platform_name}_source_launch_remote_bundle_gate")
 
+        mock_download.assert_called_once()
         assert result["success"] is True
         assert result["action"] == "skipped"
         assert result["reason"] == "no_snapshot"
         assert result["remote_bundle_result"]["success"] is True
         assert result["remote_bundle_result"]["action"] == "skipped"
-        assert result["remote_bundle_result"]["reason"] == "unsupported_platform"
-        assert result["remote_bundle_result"]["platform"] == "darwin"
-
-
-@pytest.mark.unit
-def test_cloudsave_manager_import_source_launch_on_linux_skips_remote_bundle_helper():
-    with TemporaryDirectory() as td:
-        cm = _make_config_manager(Path(td))
-        bootstrap_local_cloudsave_environment(cm)
-
-        manager = CloudSaveManager(cm)
-        with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
-            "utils.steam_cloud_bundle.sys.platform",
-            "linux",
-        ):
-            result = manager.import_if_needed(reason="linux_source_launch_remote_bundle_gate")
-
-        assert result["success"] is True
-        assert result["action"] == "skipped"
-        assert result["reason"] == "no_snapshot"
-        assert result["remote_bundle_result"]["success"] is True
-        assert result["remote_bundle_result"]["action"] == "skipped"
-        assert result["remote_bundle_result"]["reason"] == "unsupported_platform"
-        assert result["remote_bundle_result"]["platform"] == "linux"
+        assert result["remote_bundle_result"]["reason"] == "cloud_disabled"
 
 
 @pytest.mark.unit
@@ -514,3 +497,50 @@ def test_cloudsave_manager_export_marks_partial_failure_when_remote_upload_fails
         assert result["remote_bundle_result"]["success"] is False
         assert result["remote_bundle_result"]["reason"] == "remote_bundle_upload_failed"
         assert result["result"]["manifest"]["fingerprint"]
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_upload_existing_snapshot_uses_remote_bundle_without_reexport():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        _write_runtime_state(cm, character_name="鍏抽棴涓婁紶瑙掕壊")
+        export_result = export_local_cloudsave_snapshot(cm)
+
+        observed = {}
+
+        def _fake_upload_bundle(config_manager, *, steamworks=None, deadline_monotonic=None):
+            manifest = json.loads((config_manager.cloudsave_dir / "manifest.json").read_text(encoding="utf-8"))
+            observed["fingerprint"] = manifest.get("fingerprint")
+            observed["sequence_number"] = manifest.get("sequence_number")
+            return {
+                "success": True,
+                "action": "uploaded",
+                "meta": {
+                    "manifest_fingerprint": manifest.get("fingerprint"),
+                },
+            }
+
+        with patch("utils.cloudsave_autocloud.upload_cloudsave_bundle_to_steam", side_effect=_fake_upload_bundle):
+            manager = CloudSaveManager(cm)
+            result = manager.upload_existing_snapshot(reason="main_server_shutdown_remote_upload")
+
+        assert result["success"] is True
+        assert result["action"] == "uploaded"
+        assert result["remote_bundle_result"]["action"] == "uploaded"
+        assert observed["fingerprint"] == export_result["manifest"]["fingerprint"]
+        assert observed["sequence_number"] == export_result["manifest"]["sequence_number"]
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_upload_existing_snapshot_skips_when_no_local_snapshot():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        manager = CloudSaveManager(cm)
+        result = manager.upload_existing_snapshot(reason="main_server_shutdown_remote_upload")
+
+        assert result["success"] is True
+        assert result["action"] == "skipped"
+        assert result["reason"] == "no_local_snapshot"

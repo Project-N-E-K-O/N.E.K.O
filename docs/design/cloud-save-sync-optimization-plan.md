@@ -41,7 +41,7 @@
 5. `f6957a25`
    - 修正 source 模式 Steamworks 根路径，避免被 `cwd` 干扰。
 6. `0e1f2bbc81685a3f21b0f2e4d91514d50b104a3b`
-   - 新增 Windows source 专用的 Steam RemoteStorage bundle 辅助链路，同时继续收紧 `ConfigManager` 的标准应用数据目录与 CFA fallback。
+   - 新增 Desktop source（Windows / macOS / Linux）可用的 Steam RemoteStorage bundle 辅助链路，同时继续收紧 `ConfigManager` 的标准应用数据目录与 CFA fallback。
 
 ### 2.2 当前最终方向
 
@@ -50,7 +50,7 @@
 - 启动时只在运行时没有用户内容、且 staged snapshot 与本地未确认对齐时，才会自动把本机已落地的 `cloudsave/` 应用回运行时。
 - 运行时到快照不再在退出时自动全量导出，而是要求用户在云存档管理页按角色手动生成 / 覆盖本地快照。
 - 单角色“上传 / 下载”体验继续保留，且现在就是用户确认“运行时 <-> 本地快照”变更的主入口。
-- Windows source 额外保留了一条 Steam RemoteStorage bundle 辅助链路，用于源码调试和兜底验证；它不是 Windows Steam 打包版的主路径，也不会在 Linux/macOS 上启用。
+- Desktop source 额外保留了一条 Steam RemoteStorage bundle 辅助链路，用于源码调试、跨设备联调和兜底验证；它不是 Steam 打包版的主路径，但会在 Windows / macOS / Linux 的源码模式下启用。
 
 ---
 
@@ -108,7 +108,7 @@
 - `utils/cloudsave_autocloud.py`
   - 负责 `CloudSaveManager.build_status()`、`import_if_needed()`，并保留 `export_snapshot()` 作为 source 调试 / 辅助能力。
 - `utils/steam_cloud_bundle.py`
-  - 负责 Windows source 专用的 Steam RemoteStorage bundle 下载/上传辅助链路。
+  - 负责 Desktop source（Windows / macOS / Linux）模式下的 Steam RemoteStorage bundle 下载/上传辅助链路。
 - `main_routers/cloudsave_router.py`
   - 负责 `/api/cloudsave/summary`
   - `GET /api/cloudsave/steam-autocloud-config`
@@ -216,17 +216,17 @@ startup_import_required = bool(
 
 也就是说，当前实现已经是“运行时已有用户内容时更保守”的版本，不会再因为 staged snapshot 较新就直接覆盖本地运行时。
 
-### 5.5 Windows source 的启动前 bundle 下载
+### 5.5 Desktop source 的启动前 bundle 下载
 
 `CloudSaveManager.import_if_needed()` 在判断是否导入本地快照前，会先调用 `_try_download_remote_bundle()`：
 
-- Windows source 启动时：
+- Windows / macOS / Linux source 启动时：
   - 可能先从 Steam RemoteStorage 读取 bundle，覆盖本地 `cloudsave/`
   - 然后再按 manifest/status 判断是否把 `cloudsave/` 应用回运行时
 - Windows frozen / Steam 打包版：
   - 这条链路直接返回 `reason = "not_source_launch"`
-- Linux/macOS：
-  - 这条链路直接返回 `reason = "unsupported_platform"`
+- 仅 frozen / 非 source launch：
+  - 这条链路直接返回 `reason = "not_source_launch"`
 
 因此当前主路径仍是：
 
@@ -301,7 +301,7 @@ startup_import_required = bool(
 - 本地 `cloudsave/` 不会在应用退出前被自动重写。
 - Steam 在应用结束后会观察并上传当前已经存在的 `cloudsave/` 目录。
 - 因此最终上传到云端的是“用户退出前最后一次手动确认生成的 staged snapshot”，不是当前运行时未经确认的全部状态。
-- Windows source 若手动触发 `export_snapshot()` 或相关调试链路，仍可能继续走 RemoteStorage bundle 辅助上传；但这只是 source 调试辅助，不改变打包版主路径。
+- Desktop source 若手动触发 `export_snapshot()` 或相关调试链路，仍可能继续走 RemoteStorage bundle 辅助上传；但这只是 source 调试辅助，不改变打包版主路径。
 
 ---
 
@@ -338,7 +338,7 @@ startup_import_required = bool(
 - launcher 默认：
   - 多进程模式
 - 额外能力：
-  - 允许 Windows source 进入 Steam RemoteStorage bundle 下载/上传辅助链路
+  - 允许 Desktop source 进入 Steam RemoteStorage bundle 下载/上传辅助链路
   - `.py` 和 `.pyw` 都视为 source launch
 - 设计定位：
   - 用于源码调试和验证
@@ -367,7 +367,8 @@ startup_import_required = bool(
 - `cloudsave/`：
   - `~/Library/Application Support/N.E.K.O/cloudsave/`
 - RemoteStorage bundle helper：
-  - 当前返回 `unsupported_platform`
+  - source launch 时可直接连接 Steam RemoteStorage，负责 `cloudsave/` bundle 下载/上传辅助
+  - frozen / 非 source launch 仍返回 `not_source_launch`
 - Steamworks 加载失败时：
   - 当前错误信息会给出 Gatekeeper / `xattr` / `codesign` 指引
 
@@ -382,7 +383,8 @@ startup_import_required = bool(
 - launcher 默认：
   - 多进程模式
 - RemoteStorage bundle helper：
-  - 当前返回 `unsupported_platform`
+  - source launch 时可直接连接 Steam RemoteStorage，负责 `cloudsave/` bundle 下载/上传辅助
+  - frozen / 非 source launch 仍返回 `not_source_launch`
 - Steamworks 动态库环境：
   - 当前对 `LD_LIBRARY_PATH` 采用 prepend
   - 不再粗暴覆盖现有环境变量
@@ -405,9 +407,9 @@ startup_import_required = bool(
 - Steam 负责同步本机 `cloudsave/`。
 - 应用负责启动导入，以及用户手动确认的运行时 <-> 快照变更。
 
-### 9.2 Windows source 的 bundle helper
+### 9.2 Desktop source 的 bundle helper
 
-- `utils/steam_cloud_bundle.py` 当前只支持 Windows。
+- `utils/steam_cloud_bundle.py` 当前支持 Windows / macOS / Linux 的源码模式。
 - 顶层不再直接导入 `WinDLL`，因此非 Windows 导入该模块不会在 import 阶段炸掉。
 - bundle 下载路径：
   - 先读 `__neko_cloudsave_bundle_meta__.json`
@@ -427,7 +429,7 @@ startup_import_required = bool(
 
 - bundle helper 不是全平台同步方案。
 - bundle helper 也不是 Steam 打包版的必经链路。
-- 若未来要继续扩展 `ISteamRemoteStorage`，需要单独设计；当前代码并没有把它推广为 Linux/macOS 或 frozen 版主路径。
+- 它当前只服务 Desktop source 模式，不会替代 frozen / Steam 打包版的主路径。
 
 ---
 
@@ -551,14 +553,14 @@ startup_import_required = bool(
 - 手动单角色上传 / 下载与跨设备生命周期
 - source/frozen 根目录选择
 - Windows/Linux/macOS 平台路径分支
-- Windows source bundle helper 的平台门控
+- Desktop source bundle helper 的平台门控
 
 ### 12.2 仍需要继续做的人工验收矩阵
 
 1. Windows 源码
    - `uv run python launcher.py` 能正常启动和退出
    - `/api/cloudsave/summary`、`/api/cloudsave/steam-autocloud-config` 路径正确
-   - source 启动时 bundle helper 的 skip / hit 行为与日志一致
+   - source 启动时 bundle helper 的 skip / hit 行为与日志一致，且 Win/macOS/Linux 口径一致
 2. Windows Steam 打包版
    - 走 frozen 根目录和 merged mode
    - 不误走 source-only bundle helper
@@ -569,7 +571,7 @@ startup_import_required = bool(
    - 关闭时顺序正常
 4. macOS
    - 启动与关闭顺序正常
-   - 非 Windows 下导入 `steam_cloud_bundle` 不会因 `WinDLL` 失败
+   - source launch 可进入 RemoteStorage bundle helper，且不会因平台门控被跳过
    - 若 Steamworks 本体加载失败，错误提示应包含 Gatekeeper 指引
 
 ### 12.3 判定“真实 Steam 云存档已跑通”的标准

@@ -34,9 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 def _steam_remote_bundle_supported_platform() -> bool:
-    # The direct RemoteStorage bridge below is currently implemented against
-    # the Windows steam_api64.dll entry points only.
-    return sys.platform == "win32"
+    return sys.platform in {"win32", "darwin", "linux", "linux2"}
 
 
 def is_source_launch() -> bool:
@@ -300,8 +298,31 @@ def _apply_bundle_to_local_cloudsave(
     }
 
 
-def _steam_api_dll_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "steam_api64.dll"
+def _steam_api_library_name() -> str:
+    if sys.platform == "win32":
+        return "steam_api64.dll"
+    if sys.platform == "darwin":
+        return "libsteam_api.dylib"
+    return "libsteam_api.so"
+
+
+def _steam_api_library_path() -> Path:
+    library_name = _steam_api_library_name()
+    repo_root = Path(__file__).resolve().parents[1]
+    candidates = [
+        repo_root / library_name,
+        repo_root / "steamworks" / library_name,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0]
+
+
+def _load_steam_api_library(path: Path):
+    if sys.platform == "win32":
+        return ctypes.WinDLL(str(path.resolve()))
+    return ctypes.CDLL(str(path.resolve()))
 
 
 class SteamCloudBundleBridge:
@@ -329,7 +350,7 @@ class SteamCloudBundleBridge:
             self._owned_steamworks.initialize()
             self.steamworks = self._owned_steamworks
 
-        self._api = ctypes.WinDLL(str(_steam_api_dll_path().resolve()))
+        self._api = _load_steam_api_library(_steam_api_library_path())
         self._api.SteamAPI_SteamRemoteStorage_v016.restype = c_void_p
         self._api.SteamAPI_ISteamRemoteStorage_IsCloudEnabledForAccount.argtypes = [c_void_p]
         self._api.SteamAPI_ISteamRemoteStorage_IsCloudEnabledForAccount.restype = c_bool
