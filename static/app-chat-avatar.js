@@ -165,6 +165,14 @@
     const HIDE_TRANSITION_FALLBACK_MS = 220;
     let pendingHideTimer = null;
     let pendingHideHandler = null;
+    let pendingShowRaf = null;
+
+    function cancelPendingShow() {
+        if (pendingShowRaf) {
+            window.cancelAnimationFrame(pendingShowRaf);
+            pendingShowRaf = null;
+        }
+    }
 
     function cancelPendingHide(card) {
         if (pendingHideTimer) {
@@ -184,6 +192,8 @@
         if (visible) {
             // 进场前把可能残留的退场监听清干净，避免刚打开又被 finalize 为 hidden
             cancelPendingHide(card);
+            // 也清掉可能排队但尚未执行的进场 rAF，确保 is-visible 只被加一次
+            cancelPendingShow();
 
             // 切换触发按钮的激活态
             if (activeTrigger && activeTrigger !== trigger) {
@@ -197,13 +207,18 @@
             card.hidden = false;
             positionPopupNearTrigger(card, activeTrigger);
             // 触发进入动画（下一帧应用 is-visible）
-            window.requestAnimationFrame(function () {
+            pendingShowRaf = window.requestAnimationFrame(function () {
+                pendingShowRaf = null;
+                // 守卫：如果这一帧之前已被切换到隐藏状态，就不要再加回 is-visible
+                if (card.hidden) return;
                 card.classList.add('is-visible');
             });
         } else {
             // 已经隐藏或正在隐藏 → 幂等退出
             if (card.hidden) return;
             if (pendingHideHandler) return;
+            // 关键：关闭时先取消任何尚未执行的进场 rAF，否则它会把 is-visible 加回来
+            cancelPendingShow();
 
             card.classList.remove('is-visible');
             clearTriggerActive();
