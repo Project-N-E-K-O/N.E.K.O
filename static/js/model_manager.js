@@ -3988,11 +3988,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 if (!window.mmdManager) {
-                    showStatus('MMD管理器初始化失败', 3000);
+                    showStatus(t('mmd.managerInitFailed', 'MMD管理器初始化失败'), 3000);
                     return;
                 }
 
-                showStatus('正在加载MMD模型...', 0);
+                showStatus(t('mmd.modelLoading', '正在加载MMD模型...'), 0);
                 if (mmdContainer) mmdContainer.classList.remove('hidden');
 
                 // 在加载新模型前，重置动画播放状态
@@ -4023,7 +4023,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 } catch (e) { /* ignore */ }
                 await window.mmdManager.loadModel(modelPath);
-                showStatus('MMD模型加载成功', 2000);
+                showStatus(t('mmd.modelLoaded', 'MMD模型加载成功'), 2000);
 
                 // 加载后立即播内置 wait03 防 T-pose; 用户保存的 idle 选择
                 // 由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖
