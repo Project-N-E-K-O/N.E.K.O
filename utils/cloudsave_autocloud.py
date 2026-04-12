@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -147,6 +148,15 @@ def _build_steam_connectivity_status(steamworks) -> dict[str, bool]:
     }
 
 
+def _is_steam_launch_tracked(app_id: str) -> bool:
+    normalized_app_id = str(app_id or "").strip()
+    if not normalized_app_id:
+        return False
+    steam_app_id = str(os.environ.get("SteamAppId") or "").strip()
+    steam_game_id = str(os.environ.get("SteamGameId") or "").strip()
+    return normalized_app_id in {steam_app_id, steam_game_id}
+
+
 class CloudSaveManager:
     def __init__(self, config_manager):
         self.config_manager = config_manager
@@ -219,13 +229,19 @@ class CloudSaveManager:
         )
 
         steam_status = _build_steam_connectivity_status(steamworks)
+        app_id = _load_steam_app_id()
+        steam_launch_tracked = _is_steam_launch_tracked(app_id)
         source_launch = bool(is_source_launch())
-        steam_session_ready = bool(steam_status["available"] and not source_launch)
+        steam_session_ready = bool(
+            steam_status["available"]
+            and not source_launch
+            and steam_launch_tracked
+        )
         recommended_paths = _build_recommended_root_paths(self.config_manager)
         current_platform_rule = _build_current_platform_rule_preview(self.config_manager)
         return {
             "backend": STEAM_AUTO_CLOUD_SYNC_BACKEND,
-            "app_id": _load_steam_app_id(),
+            "app_id": app_id,
             "has_snapshot": has_snapshot,
             "snapshot_sequence_number": snapshot_sequence_number,
             "snapshot_exported_at_utc": snapshot_exported_at_utc,
@@ -238,6 +254,7 @@ class CloudSaveManager:
             "last_successful_import_at": str(cloud_state.get("last_successful_import_at") or ""),
             "source_launch": source_launch,
             "steam_session_ready": steam_session_ready,
+            "steam_launch_tracked": bool(steam_launch_tracked),
             "steam_available": bool(steam_status["available"]),
             "steam_running": bool(steam_status["running"]),
             "steam_logged_on": bool(steam_status["logged_on"]),

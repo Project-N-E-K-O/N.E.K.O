@@ -364,10 +364,12 @@ async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing
     fake_tracker = SimpleNamespace(save=Mock())
     run_cloudsave_action = AsyncMock(return_value={"success": True, "action": "uploaded"})
     manager_with_resampler = SimpleNamespace(audio_resampler=object())
+    existing_steamworks = SimpleNamespace()
 
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
+         patch.object(main_server, "steamworks", existing_steamworks), \
          patch.object(main_server, "session_manager", {"角色A": manager_with_resampler, "角色B": object(), "空槽": None}), \
          patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
          patch("main_routers.characters_router.release_memory_server_character", AsyncMock(return_value=True)) as mock_release, \
@@ -381,6 +383,7 @@ async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing
         "upload_existing_snapshot",
         reason="main_server_shutdown_remote_upload",
         budget_seconds=5.0,
+        steamworks=existing_steamworks,
     )
     assert mock_release.await_count == 2
     mock_release.assert_any_await("角色A", reason="Steam Auto-Cloud pre-shutdown release: 角色A")
@@ -397,6 +400,7 @@ async def test_main_server_shutdown_continues_when_memory_release_returns_false(
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
+         patch.object(main_server, "steamworks", None), \
          patch.object(main_server, "session_manager", {"角色A": object(), "角色B": object()}), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch("main_routers.characters_router.release_memory_server_character", AsyncMock(side_effect=[True, False])) as mock_release, \
@@ -462,6 +466,7 @@ async def test_main_server_shutdown_requests_memory_server_stop_after_snapshot_u
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
+         patch.object(main_server, "steamworks", None), \
          patch.object(main_server, "session_manager", {}), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch.object(main_server, "get_start_config", Mock(return_value=start_config)), \

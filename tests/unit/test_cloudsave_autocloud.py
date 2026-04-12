@@ -249,6 +249,25 @@ def test_cloudsave_manager_status_does_not_treat_source_launch_as_autocloud_read
 
 
 @pytest.mark.unit
+def test_cloudsave_manager_status_requires_steam_launch_tracking_for_autocloud_ready():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        manager = CloudSaveManager(cm)
+        with patch("utils.cloudsave_autocloud.is_source_launch", return_value=False), patch.dict(
+            "os.environ",
+            {"SteamAppId": "", "SteamGameId": ""},
+            clear=False,
+        ):
+            status = manager.build_status(steamworks=_make_dummy_steamworks())
+
+        assert status["steam_available"] is True
+        assert status["steam_launch_tracked"] is False
+        assert status["steam_session_ready"] is False
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("platform_name", "expected_platform", "expected_root"),
     [

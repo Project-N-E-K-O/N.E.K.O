@@ -190,11 +190,25 @@ def _cloudsave_action_supports_deadline(action) -> bool:
     )
 
 
+def _cloudsave_action_supports_steamworks(action) -> bool:
+    try:
+        signature = inspect.signature(action)
+    except (TypeError, ValueError):
+        return False
+    if "steamworks" in signature.parameters:
+        return True
+    return any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
 async def _run_cloudsave_manager_action(
     action_name: str,
     *,
     reason: str,
     budget_seconds: float | None = None,
+    steamworks=None,
 ):
     action = getattr(_cloudsave_manager, action_name)
     kwargs = {"reason": reason}
@@ -204,6 +218,8 @@ async def _run_cloudsave_manager_action(
         and _cloudsave_action_supports_deadline(action)
     ):
         kwargs["deadline_monotonic"] = time.monotonic() + float(budget_seconds)
+    if steamworks is not None and _cloudsave_action_supports_steamworks(action):
+        kwargs["steamworks"] = steamworks
     return await asyncio.to_thread(action, **kwargs)
 
 
@@ -1235,10 +1251,15 @@ async def on_shutdown():
             logger.warning(f"Steam Auto-Cloud pre-shutdown release phase failed: {e}")
 
         try:
+            upload_action_kwargs = {
+                "reason": "main_server_shutdown_remote_upload",
+                "budget_seconds": 5.0,
+            }
+            if steamworks is not None:
+                upload_action_kwargs["steamworks"] = steamworks
             remote_upload_result = await _run_cloudsave_manager_action(
                 "upload_existing_snapshot",
-                reason="main_server_shutdown_remote_upload",
-                budget_seconds=5.0,
+                **upload_action_kwargs,
             )
             logger.info("Steam Auto-Cloud shutdown staged snapshot upload: %s", remote_upload_result)
         except CloudsaveDeadlineExceeded:

@@ -76,7 +76,11 @@ async def test_cloudsave_router_exposes_steam_autocloud_configuration_payload():
         async def _noop_init():
             return None
 
-        with patch("utils.config_manager._config_manager", cm):
+        with patch("utils.config_manager._config_manager", cm), patch.dict(
+            "os.environ",
+            {"SteamAppId": "4099310"},
+            clear=False,
+        ):
             init_shared_state(
                 sync_message_queue={},
                 sync_shutdown_event={},
