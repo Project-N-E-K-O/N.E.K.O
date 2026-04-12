@@ -520,10 +520,17 @@
                 console.log('[猫娘切换] 检查VRM管理器 - 存在:', !!window.vrmManager, '已初始化:', window.vrmManager?._isInitialized);
 
                 // 等待 VRM 模块加载（双保险：事件 + 轮询）
-                if (typeof window.VRMManager === 'undefined') {
+                // VRMManager 与 VRMCore 由 vrm-init.js 并行加载，加载顺序不确定；
+                // 只检查 VRMManager 会在 VRMCore 未就绪时放行，导致 initThreeJS
+                // 抛 "VRMCore 尚未加载"。因此就绪条件需同时覆盖两者。
+                const isVRMRuntimeReady = () =>
+                    typeof window.VRMManager !== 'undefined' &&
+                    typeof window.VRMCore !== 'undefined';
+
+                if (!isVRMRuntimeReady()) {
                     await new Promise((resolve, reject) => {
                         // 先检查是否已经就绪（事件可能已经发出）
-                        if (window.VRMManager) {
+                        if (isVRMRuntimeReady()) {
                             return resolve();
                         }
 
@@ -537,7 +544,7 @@
 
                         // 方法1：监听事件
                         const eventHandler = () => {
-                            if (!resolved && window.VRMManager) {
+                            if (!resolved && isVRMRuntimeReady()) {
                                 resolved = true;
                                 clearTimeout(timeoutId);
                                 window.removeEventListener('vrm-modules-ready', eventHandler);
@@ -548,7 +555,7 @@
 
                         // 方法2：轮询检查（双保险）
                         const pollInterval = setInterval(() => {
-                            if (window.VRMManager) {
+                            if (isVRMRuntimeReady()) {
                                 if (!resolved) {
                                     resolved = true;
                                     clearTimeout(timeoutId);
