@@ -819,18 +819,22 @@
     }
 
     function setMessages(messages) {
+        // Compute fallback start past any explicit sortKey in incoming batch
+        var maxIncomingSortKey = Array.isArray(messages)
+            ? messages.reduce(function (max, message) {
+                var key = message && typeof message.sortKey === 'number' && Number.isFinite(message.sortKey)
+                    ? message.sortKey : null;
+                return (key !== null && key > max) ? key : max;
+            }, -1)
+            : -1;
+        var nextSortKey = Math.max(_sortKeySeq, maxIncomingSortKey + 1);
         var normalized = Array.isArray(messages)
-            ? messages.map(function (message, index) {
-                return normalizeMessage(message, _sortKeySeq + index);
+            ? messages.map(function (message) {
+                return normalizeMessage(message, nextSortKey++);
             }).filter(Boolean)
             : [];
         state.messages = sortMessages(normalized);
-        // Advance counter past all assigned sortKeys
-        if (state.messages.length > 0) {
-            _sortKeySeq = state.messages.reduce(function (max, m) {
-                return (typeof m.sortKey === 'number' && m.sortKey > max) ? m.sortKey : max;
-            }, _sortKeySeq) + 1;
-        }
+        _sortKeySeq = nextSortKey;
         if (state.messages.length > MAX_MESSAGES) {
             state.messages = state.messages.slice(-MAX_MESSAGES);
         }

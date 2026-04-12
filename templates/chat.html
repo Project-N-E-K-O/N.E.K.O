@@ -32,6 +32,8 @@
             background: transparent !important;
         }
         #react-chat-window-backdrop { display: none !important; }
+        /* neko-e-collapsed 是 Electron preload 脚本注入的物理折叠态 class，
+           不在本仓库内；折叠时不应铺满窗口 */
         #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding):not(.neko-e-collapsed) {
             position: fixed !important;
             inset: 20px !important;
@@ -106,7 +108,8 @@
             0%   { background-position: -150% -150%; }
             100% { background-position: 250% 250%; }
         }
-        /* 静态边缘高光层 — 在内容之下 */
+        /* 静态边缘高光层 — 在内容之下
+           neko-e-collapsed: Electron preload 注入，折叠时隐藏光效 */
         #react-chat-window-shell:not(.is-minimized):not(.neko-e-collapsed)::before {
             content: '' !important;
             position: absolute !important;
@@ -131,7 +134,8 @@
             ) !important;
         }
         /* 流动光斑层 — 三色径向渐变缓慢漂移，模拟玻璃折射
-           用 background-image 而非 background 简写，避免 !important 锁死 background-position */
+           用 background-image 而非 background 简写，避免 !important 锁死 background-position
+           neko-e-collapsed: Electron preload 注入，折叠时隐藏光效 */
         #react-chat-window-shell:not(.is-minimized):not(.neko-e-collapsed)::after {
             content: '' !important;
             position: absolute !important;
