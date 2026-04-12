@@ -38,7 +38,8 @@ export default {
     runs: '執行記錄',
     serverLogs: '伺服器日誌',
     adapters: '適配器',
-    adapterUI: '適配器介面'
+    adapterUI: '適配器介面',
+    packageManager: '包管理'
   },
   auth: {
     unauthorized: '未授權存取',

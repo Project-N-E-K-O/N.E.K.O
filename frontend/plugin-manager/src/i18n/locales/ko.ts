@@ -38,7 +38,8 @@ export default {
     runs: '실행 기록',
     serverLogs: '서버 로그',
     adapters: '어댑터',
-    adapterUI: '어댑터 UI'
+    adapterUI: '어댑터 UI',
+    packageManager: '패키지 관리'
   },
   auth: {
     unauthorized: '인증되지 않은 접근',

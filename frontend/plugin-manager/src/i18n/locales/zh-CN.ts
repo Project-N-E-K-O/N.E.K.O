@@ -38,7 +38,8 @@ export default {
     runs: '运行记录',
     serverLogs: '服务器日志',
     adapters: '适配器',
-    adapterUI: '适配器界面'
+    adapterUI: '适配器界面',
+    packageManager: '包管理'
   },
   auth: {
     unauthorized: '未授权访问',

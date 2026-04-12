@@ -38,7 +38,8 @@ export default {
     runs: 'Запуски',
     serverLogs: 'Логи сервера',
     adapters: 'Адаптеры',
-    adapterUI: 'Интерфейс адаптера'
+    adapterUI: 'Интерфейс адаптера',
+    packageManager: 'Менеджер пакетов'
   },
   auth: {
     unauthorized: 'Неавторизованный доступ',

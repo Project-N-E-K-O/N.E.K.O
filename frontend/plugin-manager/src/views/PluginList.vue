@@ -1,33 +1,36 @@
 <template>
   <div class="plugin-list">
-    <el-card>
-      <template #header>
-        <div class="card-header">
-          <span>{{ $t('plugins.title') }}</span>
-          <div class="header-actions">
-            <el-button
-              :type="showMetrics ? 'success' : 'default'"
-              :icon="DataAnalysis"
-              @click="toggleMetrics"
-            >
-              {{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}
-            </el-button>
-            <el-button
-              type="warning"
-              :icon="RefreshRight"
-              :loading="reloadingAll"
-              :disabled="runningPlugins.length === 0"
-              @click="handleReloadAll"
-            >
-              {{ $t('plugins.reloadAll') }}
-            </el-button>
-            <el-button type="primary" :icon="Refresh" @click="handleRefresh" :loading="loading">
-              {{ $t('common.refresh') }}
-            </el-button>
-          </div>
-        </div>
+    <el-tabs v-model="activeWorkbenchTab" class="workbench-tabs">
+      <el-tab-pane :label="$t('plugins.title')" name="plugins">
+        <el-card>
+          <template #header>
+            <div class="card-header">
+              <span>{{ $t('plugins.title') }}</span>
+              <div class="header-actions">
+                <el-button text @click="openPackageTab">包管理</el-button>
+                <el-button
+                  :type="showMetrics ? 'success' : 'default'"
+                  :icon="DataAnalysis"
+                  @click="toggleMetrics"
+                >
+                  {{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}
+                </el-button>
+                <el-button
+                  type="warning"
+                  :icon="RefreshRight"
+                  :loading="reloadingAll"
+                  :disabled="runningPlugins.length === 0"
+                  @click="handleReloadAll"
+                >
+                  {{ $t('plugins.reloadAll') }}
+                </el-button>
+                <el-button type="primary" :icon="Refresh" @click="handleRefresh" :loading="loading">
+                  {{ $t('common.refresh') }}
+                </el-button>
+              </div>
+            </div>
 
-        <div class="filter-bar" @mouseenter="showFilter" @mouseleave="scheduleHideFilter">
+            <div class="filter-bar" @mouseenter="showFilter" @mouseleave="scheduleHideFilter">
           <Transition name="filter-fade" mode="out-in">
             <div v-if="filterVisible" key="controls" class="filter-controls">
               <el-input
@@ -68,104 +71,110 @@
             </el-checkbox-button>
           </el-checkbox-group>
         </div>
-      </template>
+          </template>
 
-      <LoadingSpinner v-if="loading && rawPlugins.length === 0" :loading="true" :text="$t('common.loading')" />
-      <EmptyState v-else-if="rawPlugins.length === 0" :description="$t('plugins.noPlugins')" />
-      
-      <template v-else>
-        <!-- 普通插件 -->
-        <template v-if="filteredPurePlugins.length > 0">
-          <div class="section-header">
-            <span class="section-title">
-              <el-icon><Box /></el-icon>
-              {{ $t('plugins.pluginsSection') }} ({{ filteredPurePlugins.length }})
-            </span>
-          </div>
-          <TransitionGroup name="list" tag="div" class="plugin-grid">
-            <div
-              v-for="plugin in filteredPurePlugins"
-              :key="plugin.id"
-              class="plugin-item"
-            >
-              <PluginCard
-                :plugin="plugin"
-                :show-metrics="showMetrics"
-                @click="handlePluginClick(plugin.id)"
-              />
-            </div>
-          </TransitionGroup>
-        </template>
+          <LoadingSpinner v-if="loading && rawPlugins.length === 0" :loading="true" :text="$t('common.loading')" />
+          <EmptyState v-else-if="rawPlugins.length === 0" :description="$t('plugins.noPlugins')" />
+          
+          <template v-else>
+            <template v-if="filteredPurePlugins.length > 0">
+              <div class="section-header">
+                <span class="section-title">
+                  <el-icon><Box /></el-icon>
+                  {{ $t('plugins.pluginsSection') }} ({{ filteredPurePlugins.length }})
+                </span>
+              </div>
+              <TransitionGroup name="list" tag="div" class="plugin-grid">
+                <div
+                  v-for="plugin in filteredPurePlugins"
+                  :key="plugin.id"
+                  class="plugin-item"
+                >
+                  <PluginCard
+                    :plugin="plugin"
+                    :show-metrics="showMetrics"
+                    @click="handlePluginClick(plugin.id)"
+                  />
+                </div>
+              </TransitionGroup>
+            </template>
 
-        <!-- 适配器 -->
-        <template v-if="filteredAdapters.length > 0">
-          <div class="section-header section-header--adapter">
-            <span class="section-title">
-              <el-icon><Connection /></el-icon>
-              {{ $t('plugins.adaptersSection') }} ({{ filteredAdapters.length }})
-            </span>
-          </div>
-          <TransitionGroup name="list" tag="div" class="plugin-grid">
-            <div
-              v-for="adapter in filteredAdapters"
-              :key="adapter.id"
-              class="plugin-item"
-            >
-              <PluginCard
-                :plugin="adapter"
-                :show-metrics="showMetrics"
-                @click="handlePluginClick(adapter.id)"
-              />
-            </div>
-          </TransitionGroup>
-        </template>
+            <template v-if="filteredAdapters.length > 0">
+              <div class="section-header section-header--adapter">
+                <span class="section-title">
+                  <el-icon><Connection /></el-icon>
+                  {{ $t('plugins.adaptersSection') }} ({{ filteredAdapters.length }})
+                </span>
+              </div>
+              <TransitionGroup name="list" tag="div" class="plugin-grid">
+                <div
+                  v-for="adapter in filteredAdapters"
+                  :key="adapter.id"
+                  class="plugin-item"
+                >
+                  <PluginCard
+                    :plugin="adapter"
+                    :show-metrics="showMetrics"
+                    @click="handlePluginClick(adapter.id)"
+                  />
+                </div>
+              </TransitionGroup>
+            </template>
 
-        <!-- 扩展插件 -->
-        <template v-if="filteredExtensions.length > 0">
-          <div class="section-header section-header--ext">
-            <span class="section-title">
-              <el-icon><Expand /></el-icon>
-              {{ $t('plugins.extensionsSection') }} ({{ filteredExtensions.length }})
-            </span>
-          </div>
-          <TransitionGroup name="list" tag="div" class="plugin-grid">
-            <div
-              v-for="ext in filteredExtensions"
-              :key="ext.id"
-              class="plugin-item"
-            >
-              <PluginCard
-                :plugin="ext"
-                :show-metrics="showMetrics"
-                @click="handlePluginClick(ext.id)"
-              />
-            </div>
-          </TransitionGroup>
-        </template>
-      </template>
-    </el-card>
+            <template v-if="filteredExtensions.length > 0">
+              <div class="section-header section-header--ext">
+                <span class="section-title">
+                  <el-icon><Expand /></el-icon>
+                  {{ $t('plugins.extensionsSection') }} ({{ filteredExtensions.length }})
+                </span>
+              </div>
+              <TransitionGroup name="list" tag="div" class="plugin-grid">
+                <div
+                  v-for="ext in filteredExtensions"
+                  :key="ext.id"
+                  class="plugin-item"
+                >
+                  <PluginCard
+                    :plugin="ext"
+                    :show-metrics="showMetrics"
+                    @click="handlePluginClick(ext.id)"
+                  />
+                </div>
+              </TransitionGroup>
+            </template>
+          </template>
+        </el-card>
+      </el-tab-pane>
+
+      <el-tab-pane label="包管理" name="packages">
+        <PackageManagerPanel />
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import PluginCard from '@/components/plugin/PluginCard.vue'
+import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { reloadAllPlugins } from '@/api/plugins'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import { useI18n } from 'vue-i18n'
 
+const route = useRoute()
 const router = useRouter()
 const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
 const { t } = useI18n()
 
+const activeWorkbenchTab = ref<string>('plugins')
 const reloadingAll = ref(false)
 
 const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
@@ -379,8 +388,25 @@ async function handleReloadAll() {
   await handleRefresh()
 }
 
+function openPackageTab() {
+  activeWorkbenchTab.value = 'packages'
+}
+
 onMounted(async () => {
+  if (route.query.tab === 'packages') {
+    activeWorkbenchTab.value = 'packages'
+  }
   await handleRefresh()
+})
+
+watch(activeWorkbenchTab, (tab) => {
+  const nextQuery = { ...route.query }
+  if (tab === 'packages') {
+    nextQuery.tab = 'packages'
+  } else {
+    delete nextQuery.tab
+  }
+  router.replace({ path: route.path, query: nextQuery })
 })
 
 onUnmounted(() => {
@@ -475,6 +501,11 @@ onUnmounted(() => {
   display: flex;
   gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.workbench-tabs :deep(.el-tabs__header) {
+  margin-bottom: 16px;
 }
 
 .section-header {

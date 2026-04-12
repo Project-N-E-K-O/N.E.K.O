@@ -38,7 +38,8 @@ export default {
     runs: '実行履歴',
     serverLogs: 'サーバーログ',
     adapters: 'アダプター',
-    adapterUI: 'アダプターUI'
+    adapterUI: 'アダプターUI',
+    packageManager: 'パッケージ管理'
   },
   auth: {
     unauthorized: '未認証のアクセス',

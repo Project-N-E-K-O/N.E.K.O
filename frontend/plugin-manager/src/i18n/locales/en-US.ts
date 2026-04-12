@@ -38,7 +38,8 @@ export default {
     runs: 'Runs',
     serverLogs: 'Server Logs',
     adapters: 'Adapters',
-    adapterUI: 'Adapter UI'
+    adapterUI: 'Adapter UI',
+    packageManager: 'Package Manager'
   },
   auth: {
     unauthorized: 'Unauthorized access',
