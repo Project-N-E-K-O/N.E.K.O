@@ -2146,7 +2146,7 @@ const AvatarPopupMixin = {
             if (typeof popup._showToken !== 'number') popup._showToken = 0;
 
             if (buttonId === 'agent' && !isVisible) {
-                window.dispatchEvent(new CustomEvent('live2d-agent-popup-opening'));
+                window.dispatchEvent(new CustomEvent('neko-popup-opening'));
             }
 
             if (isVisible) {
@@ -2158,7 +2158,7 @@ const AvatarPopupMixin = {
                 if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
                     this.updateSeparatePopupTriggerIcon(buttonId, false);
                 }
-                if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+                if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('neko-popup-closed'));
 
                 // 关闭该 popup 所属的所有侧面板
                 const closingPopupId = popup.id;
@@ -2252,7 +2252,7 @@ const AvatarPopupMixin = {
             const popup = document.getElementById(`${prefix}-popup-${buttonId}`);
             if (!popup || popup.style.display !== 'flex') return false;
 
-            if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+            if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('neko-popup-closed'));
             popup._showToken = (popup._showToken || 0) + 1;
             if (popup._hideTimeoutId) { clearTimeout(popup._hideTimeoutId); popup._hideTimeoutId = null; }
 

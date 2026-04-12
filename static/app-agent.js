@@ -1362,7 +1362,7 @@
         // ----------------------------------------------------------------
         // Agent popup opening event
         // ----------------------------------------------------------------
-        window.addEventListener('live2d-agent-popup-opening', async () => {
+        window.addEventListener('neko-popup-opening', async () => {
             agentStateMachine.openPopup();
             isAgentPopupOpen = true;
 
@@ -1522,7 +1522,7 @@
         // ----------------------------------------------------------------
         // Agent popup closing event
         // ----------------------------------------------------------------
-        window.addEventListener('live2d-agent-popup-closed', () => {
+        window.addEventListener('neko-popup-closed', () => {
             isAgentPopupOpen = false;
             agentStateMachine.closePopup();
             console.log('[App] Agent\u5f39\u7a97\u5df2\u5173\u95ed');
