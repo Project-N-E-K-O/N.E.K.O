@@ -976,7 +976,6 @@ class VRMManager {
         // 加载待机动画（作为 Promise，与场景稳定性并行等待）
         // 返回 true 表示动画成功播放；false 表示模块未就绪或播放失败（需要后续回退重试）。
         let animationReady = Promise.resolve(true);
-        let animationPlayed = false;
         if (options.autoPlay !== false) {
             animationReady = (async () => {
                 if (!this.currentModel || !this.currentModel.vrm) return false;
@@ -1024,7 +1023,6 @@ class VRMManager {
                         immediate: true,
                         isIdle: true
                     });
-                    animationPlayed = true;
                     return true;
                 } catch (err) {
                     console.warn('[VRM Manager] 自动播放失败，稍后将后台重试以避免卡 T-pose:', err);
@@ -1082,7 +1080,7 @@ class VRMManager {
             // T-pose 防卡死回退：autoPlay 未关闭、但首轮动画没播起来时（模块加载超时 / 播放抛错），
             // 在后台周期性重试，直到成功播放或 loadToken 失效。这样即使 VRMAnimation 模块延迟加载
             // 或网络抖动，模型最终也会脱离 T-pose 进入待机动画。
-            if (options.autoPlay !== false && animationSucceeded !== true && !animationPlayed) {
+            if (options.autoPlay !== false && !animationSucceeded) {
                 this._scheduleIdleAnimationRetry(loadToken, DEFAULT_LOOP_ANIMATION);
             }
         } else if (this._isLoadTokenActive(loadToken)) {
