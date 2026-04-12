@@ -161,11 +161,30 @@
         popup.style.transformOrigin = openUpward ? 'bottom right' : 'top right';
     }
 
+    // 退场过渡 fallback（略大于 CSS 里 opacity/transform transition 的最长时长 0.18s）
+    const HIDE_TRANSITION_FALLBACK_MS = 220;
+    let pendingHideTimer = null;
+    let pendingHideHandler = null;
+
+    function cancelPendingHide(card) {
+        if (pendingHideTimer) {
+            clearTimeout(pendingHideTimer);
+            pendingHideTimer = null;
+        }
+        if (card && pendingHideHandler) {
+            card.removeEventListener('transitionend', pendingHideHandler);
+        }
+        pendingHideHandler = null;
+    }
+
     function setPreviewVisible(visible, trigger) {
         const card = S.dom.chatAvatarPreviewCard;
         if (!card) return;
 
         if (visible) {
+            // 进场前把可能残留的退场监听清干净，避免刚打开又被 finalize 为 hidden
+            cancelPendingHide(card);
+
             // 切换触发按钮的激活态
             if (activeTrigger && activeTrigger !== trigger) {
                 activeTrigger.classList.remove('is-active');
@@ -182,9 +201,29 @@
                 card.classList.add('is-visible');
             });
         } else {
+            // 已经隐藏或正在隐藏 → 幂等退出
+            if (card.hidden) return;
+            if (pendingHideHandler) return;
+
             card.classList.remove('is-visible');
-            card.hidden = true;
             clearTriggerActive();
+
+            const finalizeHide = function () {
+                if (pendingHideTimer) {
+                    clearTimeout(pendingHideTimer);
+                    pendingHideTimer = null;
+                }
+                card.removeEventListener('transitionend', finalizeHide);
+                pendingHideHandler = null;
+                // 可能在等待过渡期间又被重新打开；若已重新可见则不要强制 hidden
+                if (!card.classList.contains('is-visible')) {
+                    card.hidden = true;
+                }
+            };
+
+            pendingHideHandler = finalizeHide;
+            card.addEventListener('transitionend', finalizeHide);
+            pendingHideTimer = window.setTimeout(finalizeHide, HIDE_TRANSITION_FALLBACK_MS);
         }
     }
 
@@ -676,6 +715,19 @@
     mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType) {
         externalAvatarDataUrl = dataUrl || '';
         externalAvatarModelType = modelType || '';
+
+        // 把 IPC 注入的头像合并进 cachedPreview，让 renderAvatarPreview 的快路径直接命中，
+        // 避免弹窗打开时再发一次 IPC（可能超时 → 用户看到失败态）。
+        if (externalAvatarDataUrl) {
+            cachedPreview = {
+                cacheKey: getCurrentModelCacheKey(),
+                dataUrl: externalAvatarDataUrl,
+                modelType: externalAvatarModelType || getCurrentModelType(),
+                capturedAt: Date.now()
+            };
+            saveToStorage(cachedPreview);
+        }
+
         // 如果弹窗已打开且本地没有本窗口可采集的模型，就直接把 IPC 数据显示出来。
         const card = S.dom && S.dom.chatAvatarPreviewCard;
         const hasLocalPortrait = !!(window.avatarPortrait && typeof window.avatarPortrait.capture === 'function');
