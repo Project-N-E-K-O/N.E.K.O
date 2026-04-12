@@ -583,6 +583,40 @@ startup_import_required = bool(
 - phase-0 或 main_server 兜底导入只负责把 staged snapshot 自动落到本地快照层可见状态
 - 用户手动点击“应用快照”后，角色配置和 memory 数据在运行时正确恢复
 
+### 12.4 Mac 到 Windows 的人工联调顺序（当前推荐）
+
+1. 在 Mac 修改目标角色的运行时真值（角色配置、记忆等），不要直接改 `cloudsave/`。
+2. 打开云存档管理页，手动点击目标角色“生成快照 / 上传”。
+3. 立刻检查 Mac 本机 `~/Library/Application Support/N.E.K.O/cloudsave/manifest.json`，确认以下字段已经变成新值：
+   - `sequence_number`
+   - `exported_at_utc`
+   - `fingerprint`
+4. 通过 Steam 或桌面启动器那条被 Steam 追踪的会话正常退出，让 Steam Auto-Cloud 上传当前本机 `cloudsave/`。
+5. 到 Windows 后，先通过 Steam 或桌面启动器启动一次，让 Steam 先下载到 `%LOCALAPPDATA%\\N.E.K.O\\cloudsave\\`。
+6. 启动后先在云存档管理页顶部确认“本机快照序号 / 导出时间”已变为新值；若仍是旧值，说明 Windows 本地 `cloudsave/` 尚未更新。
+7. 只有在 Windows 本地 `cloudsave/` 已确认更新后，再手动点击目标角色“应用快照 / 下载”。
+8. 最后确认 Windows 运行时目录中的角色配置和记忆已恢复为该快照内容。
+
+一句话链路：`Mac 运行时 -> 手动生成快照 -> Mac 本地 cloudsave -> Steam 退出后上传 -> Windows 启动时下载到本地 cloudsave -> 手动应用快照 -> Windows 运行时`。
+
+### 12.5 Linux 到 Windows 的人工联调顺序（当前推荐）
+
+1. 在 Linux 修改目标角色运行时真值（角色配置、记忆等），不要直接改 `cloudsave/`。
+2. 打开云存档管理页，手动点击目标角色“生成快照 / 上传”。
+3. 立刻检查 Linux 本机 `cloudsave/manifest.json` 是否更新：
+   - 若设置了 `XDG_DATA_HOME`，检查 `$XDG_DATA_HOME/N.E.K.O/cloudsave/manifest.json`
+   - 否则检查 `~/.local/share/N.E.K.O/cloudsave/manifest.json`
+4. 需要确认这些字段已变为新值：
+   - `sequence_number`
+   - `exported_at_utc`
+   - `fingerprint`
+5. 通过 Steam 或桌面启动器正常退出，让 Steam Auto-Cloud 上传本机 `cloudsave/`。
+6. 到 Windows 后，先通过 Steam 或桌面启动器启动一次，让 Steam 先下载到 `%LOCALAPPDATA%\\N.E.K.O\\cloudsave\\`。
+7. 启动后先在云存档管理页顶部确认“本机快照序号 / 导出时间”已变为新值；确认后再手动点“应用快照 / 下载”。
+8. 最后确认 Windows 运行时目录中的角色配置与记忆恢复正确。
+
+一句话链路：`Linux 运行时 -> 手动生成快照 -> Linux 本地 cloudsave -> Steam 退出后上传 -> Windows 启动时下载到本地 cloudsave -> 手动应用快照 -> Windows 运行时`。
+
 ---
 
 ## 13. 当前阶段结论

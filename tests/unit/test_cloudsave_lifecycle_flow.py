@@ -1,3 +1,5 @@
+import contextlib
+import json
 import shutil
 import asyncio
 from pathlib import Path
@@ -11,6 +13,12 @@ from utils.cloudsave_autocloud import CloudSaveManager
 from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
 from utils.cloudsave_runtime import export_cloudsave_character_unit
 from utils.cloudsave_runtime import import_cloudsave_character_unit
+from utils.steam_cloud_bundle import (
+    REMOTE_BUNDLE_FILENAME,
+    REMOTE_META_FILENAME,
+    download_cloudsave_bundle_from_steam,
+    upload_cloudsave_bundle_to_steam,
+)
 from utils.config_manager import ConfigManager
 from utils.file_utils import atomic_write_json
 
@@ -77,6 +85,33 @@ def _run_launcher_phase0(cm):
     return result, emitted_events
 
 
+def _build_in_memory_steam_bridge(storage: dict[str, bytes]):
+    class _Bridge:
+        def cloud_enabled(self) -> bool:
+            return True
+
+        def file_exists(self, remote_name: str) -> bool:
+            return remote_name in storage
+
+        def read_file(self, remote_name: str) -> bytes:
+            if remote_name not in storage:
+                raise FileNotFoundError(remote_name)
+            return storage[remote_name]
+
+        def write_file(self, remote_name: str, payload: bytes) -> None:
+            storage[remote_name] = payload
+
+        def delete_file(self, remote_name: str) -> bool:
+            return storage.pop(remote_name, None) is not None
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        del steamworks
+        yield _Bridge()
+
+    return _fake_bridge
+
+
 @pytest.mark.unit
 def test_launcher_phase0_skips_import_when_cloud_snapshot_is_empty():
     with TemporaryDirectory() as td:
@@ -122,6 +157,89 @@ def test_cloudsave_lifecycle_round_trip_across_two_devices():
         assert manual_download["character_name"] == "设备B角色"
         assert "设备B角色" in (device_a.load_characters().get("猫娘") or {})
         assert device_a.load_cloudsave_local_state()["last_successful_import_at"]
+
+
+@pytest.mark.unit
+def test_full_cloudsave_chain_runtime_snapshot_steam_cloud_and_manual_apply():
+    with TemporaryDirectory() as td:
+        device_a = _make_config_manager(Path(td) / "device_a")
+        device_b = _make_config_manager(Path(td) / "device_b")
+        bootstrap_local_cloudsave_environment(device_a)
+        bootstrap_local_cloudsave_environment(device_b)
+
+        # Device A: runtime truth -> user manual snapshot upload.
+        _write_runtime_state(device_a, character_name="跨端角色", recent_message="来自设备A-v1")
+        upload_a = export_cloudsave_character_unit(device_a, "跨端角色", overwrite=True)
+        assert upload_a["character_name"] == "跨端角色"
+
+        manifest_a = json.loads(device_a.cloudsave_manifest_path.read_text(encoding="utf-8"))
+        assert manifest_a["fingerprint"]
+
+        # Simulate Steam cloud on app close: upload local staged cloudsave to remote.
+        remote_storage: dict[str, bytes] = {}
+        fake_bridge = _build_in_memory_steam_bridge(remote_storage)
+        with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+            "utils.steam_cloud_bundle.sys.platform",
+            "win32",
+        ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", fake_bridge):
+            steam_upload = upload_cloudsave_bundle_to_steam(device_a)
+
+        assert steam_upload["success"] is True
+        assert steam_upload["action"] == "uploaded"
+        assert REMOTE_BUNDLE_FILENAME in remote_storage
+        assert REMOTE_META_FILENAME in remote_storage
+        remote_meta_v1 = json.loads(remote_storage[REMOTE_META_FILENAME].decode("utf-8"))
+        assert remote_meta_v1["manifest_fingerprint"] == manifest_a["fingerprint"]
+
+        # Device B keeps local runtime content so startup should not auto-apply.
+        _write_runtime_state(device_b, character_name="设备B本地角色", recent_message="设备B本地旧值")
+        assert "跨端角色" not in (device_b.load_characters().get("猫娘") or {})
+
+        # Simulate Steam cloud on app start: download remote staged cloudsave to local snapshot.
+        with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+            "utils.steam_cloud_bundle.sys.platform",
+            "win32",
+        ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", fake_bridge):
+            steam_download = download_cloudsave_bundle_from_steam(device_b)
+
+        assert steam_download["success"] is True
+        assert steam_download["action"] == "downloaded"
+        downloaded_manifest = json.loads(device_b.cloudsave_manifest_path.read_text(encoding="utf-8"))
+        assert downloaded_manifest["fingerprint"] == manifest_a["fingerprint"]
+
+        manager_b = CloudSaveManager(device_b)
+        startup_b = manager_b.import_if_needed(reason="device_b_startup_after_steam_download")
+        assert startup_b["action"] == "skipped"
+        assert startup_b["reason"] == "manual_download_required"
+        assert "跨端角色" not in (device_b.load_characters().get("猫娘") or {})
+
+        # User manual apply: local snapshot -> runtime truth.
+        apply_b = import_cloudsave_character_unit(device_b, "跨端角色")
+        assert apply_b["character_name"] == "跨端角色"
+        assert "跨端角色" in (device_b.load_characters().get("猫娘") or {})
+        restored_recent = json.loads(
+            (Path(device_b.memory_dir) / "跨端角色" / "recent.json").read_text(encoding="utf-8")
+        )
+        assert restored_recent[0]["content"] == "来自设备A-v1"
+
+        # Device B updates runtime truth, then user manually uploads a new snapshot.
+        _write_runtime_state(device_b, character_name="跨端角色", recent_message="来自设备B-v2")
+        upload_b = export_cloudsave_character_unit(device_b, "跨端角色", overwrite=True)
+        assert upload_b["character_name"] == "跨端角色"
+        manifest_b = json.loads(device_b.cloudsave_manifest_path.read_text(encoding="utf-8"))
+        assert manifest_b["fingerprint"]
+
+        # Simulate Steam cloud upload after normal exit on Device B.
+        with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+            "utils.steam_cloud_bundle.sys.platform",
+            "win32",
+        ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", fake_bridge):
+            steam_upload_v2 = upload_cloudsave_bundle_to_steam(device_b)
+
+        assert steam_upload_v2["success"] is True
+        assert steam_upload_v2["action"] == "uploaded"
+        remote_meta_v2 = json.loads(remote_storage[REMOTE_META_FILENAME].decode("utf-8"))
+        assert remote_meta_v2["manifest_fingerprint"] == manifest_b["fingerprint"]
 
 
 @pytest.mark.unit

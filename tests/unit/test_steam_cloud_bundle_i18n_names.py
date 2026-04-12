@@ -160,6 +160,19 @@ def test_download_cloudsave_bundle_skips_on_linux_source_launch():
 
 
 @pytest.mark.unit
+def test_upload_cloudsave_bundle_skips_on_linux_source_launch():
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", "linux"
+    ):
+        result = upload_cloudsave_bundle_to_steam(object())
+
+    assert result["success"] is True
+    assert result["action"] == "skipped"
+    assert result["reason"] == "unsupported_platform"
+    assert result["platform"] == "linux"
+
+
+@pytest.mark.unit
 def test_download_cloudsave_bundle_skips_on_windows_frozen_launch():
     with patch("utils.steam_cloud_bundle.is_source_launch", return_value=False), patch(
         "utils.steam_cloud_bundle.sys.platform", "win32"

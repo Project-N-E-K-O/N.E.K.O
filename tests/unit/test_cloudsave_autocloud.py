@@ -253,6 +253,7 @@ def test_cloudsave_manager_status_does_not_treat_source_launch_as_autocloud_read
     ("platform_name", "expected_platform", "expected_root"),
     [
         ("win32", "Windows", "WinAppDataLocal"),
+        ("darwin", "macOS", "MacAppSupport"),
         ("linux", "Linux", "LinuxXdgDataHome"),
     ],
 )
@@ -391,6 +392,50 @@ def test_cloudsave_manager_import_downloads_source_launch_bundle_before_local_im
         assert result["remote_bundle_result"]["action"] == "downloaded"
         assert target_cm.load_characters()["当前猫娘"] == "云端Bundle角色"
         assert target_cm.load_cloudsave_local_state()["last_applied_manifest_fingerprint"] == export_result["manifest"]["fingerprint"]
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_import_source_launch_on_macos_skips_remote_bundle_helper():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        manager = CloudSaveManager(cm)
+        with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+            "utils.steam_cloud_bundle.sys.platform",
+            "darwin",
+        ):
+            result = manager.import_if_needed(reason="mac_source_launch_remote_bundle_gate")
+
+        assert result["success"] is True
+        assert result["action"] == "skipped"
+        assert result["reason"] == "no_snapshot"
+        assert result["remote_bundle_result"]["success"] is True
+        assert result["remote_bundle_result"]["action"] == "skipped"
+        assert result["remote_bundle_result"]["reason"] == "unsupported_platform"
+        assert result["remote_bundle_result"]["platform"] == "darwin"
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_import_source_launch_on_linux_skips_remote_bundle_helper():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        manager = CloudSaveManager(cm)
+        with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+            "utils.steam_cloud_bundle.sys.platform",
+            "linux",
+        ):
+            result = manager.import_if_needed(reason="linux_source_launch_remote_bundle_gate")
+
+        assert result["success"] is True
+        assert result["action"] == "skipped"
+        assert result["reason"] == "no_snapshot"
+        assert result["remote_bundle_result"]["success"] is True
+        assert result["remote_bundle_result"]["action"] == "skipped"
+        assert result["remote_bundle_result"]["reason"] == "unsupported_platform"
+        assert result["remote_bundle_result"]["platform"] == "linux"
 
 
 @pytest.mark.unit
