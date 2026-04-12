@@ -617,9 +617,23 @@
 
         // —— 数据层：不管有无预览 UI 都执行（chat.html 没有预览卡片但仍需头像数据） ——
 
-        // 从 localStorage 恢复当前角色的头像
+        // 头像数据优先级：IPC 刚注入的内存缓存 > localStorage > 空态
+        //   1) 模块加载时 __nekoPendingAvatar 被消费后，cachedPreview 会被预先填好，
+        //      那才是 Pet 窗口当前的实时头像，比 localStorage 里上次会话的数据更新。
+        //   2) 否则退回读取当前角色的持久化头像。
+        //   3) 都没有，则进入等待态。
         var stored = loadFromStorage();
-        if (stored) {
+        if (cachedPreview && cachedPreview.dataUrl) {
+            // 保留内存缓存；刷新 cacheKey 并补写一次 localStorage
+            // （加载时 lanlan_config.lanlan_name 可能尚未就绪，保存会静默失败）。
+            cachedPreview.cacheKey = getCurrentModelCacheKey();
+            saveToStorage(cachedPreview);
+            setPreviewImage(cachedPreview.dataUrl);
+            setPreviewStatus(
+                translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
+            );
+            setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
+        } else if (stored) {
             cachedPreview = {
                 cacheKey: getCurrentModelCacheKey(),
                 dataUrl: stored.dataUrl,
