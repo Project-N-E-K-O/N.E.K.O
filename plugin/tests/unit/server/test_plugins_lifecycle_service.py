@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from plugin.core import registry as registry_module
 from plugin.server.application.plugins import query_service as query_module
 from plugin.server.application.plugins import lifecycle_service as module
 from plugin.sdk.plugin.decorators import plugin_entry
@@ -79,6 +80,107 @@ def test_get_plugin_config_path_returns_none_for_missing_file(monkeypatch: pytes
     monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
 
     assert module._get_plugin_config_path("demo") is None
+
+
+@pytest.mark.plugin_unit
+def test_parse_single_plugin_config_warns_on_directory_id_mismatch(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "bilibili_danmaku"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'bilibili-danmaku'",
+                "entry = 'plugin.plugins.bilibili_danmaku:Plugin'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    messages: list[str] = []
+
+    class _Logger:
+        def info(self, *_args, **_kwargs) -> None:
+            return
+
+        def debug(self, *_args, **_kwargs) -> None:
+            return
+
+        def warning(self, message, *args, **_kwargs) -> None:
+            rendered = str(message)
+            for arg in args:
+                rendered = rendered.replace("{}", str(arg), 1)
+            messages.append(rendered)
+
+        def error(self, *_args, **_kwargs) -> None:
+            return
+
+    parsed = registry_module._parse_single_plugin_config(
+        config_path,
+        set(),
+        _Logger(),
+    )
+
+    assert parsed is not None
+    assert any("directory name" in message and "does not match declared plugin.id" in message for message in messages)
+
+
+@pytest.mark.plugin_unit
+def test_parse_single_plugin_config_warns_on_noncanonical_fields(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'demo_plugin'",
+                "entry = ' plugin.plugins.demo_plugin:Plugin '",
+                "keywords = 'tag1'",
+                "passive = 'yes'",
+                "",
+                "[plugin_runtime]",
+                "enabled = 'true'",
+                "auto_start = 'false'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    messages: list[str] = []
+
+    class _Logger:
+        def info(self, *_args, **_kwargs) -> None:
+            return
+
+        def debug(self, *_args, **_kwargs) -> None:
+            return
+
+        def warning(self, message, *args, **_kwargs) -> None:
+            rendered = str(message)
+            for arg in args:
+                rendered = rendered.replace("{}", str(arg), 1)
+            messages.append(rendered)
+
+        def error(self, *_args, **_kwargs) -> None:
+            return
+
+    parsed = registry_module._parse_single_plugin_config(
+        config_path,
+        set(),
+        _Logger(),
+    )
+
+    assert parsed is not None
+    assert any("[plugin].entry" in message and "leading/trailing whitespace" in message for message in messages)
+    assert any("[plugin].keywords should be a string list" in message for message in messages)
+    assert any("[plugin].passive" in message and "prefer true/false" in message for message in messages)
+    assert any("[plugin_runtime].enabled" in message and "prefer true/false" in message for message in messages)
 
 
 @pytest.mark.plugin_unit

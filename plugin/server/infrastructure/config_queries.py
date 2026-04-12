@@ -1,94 +1,67 @@
 from __future__ import annotations
 
-import os
-from datetime import datetime
+from pathlib import Path
 
 from fastapi import HTTPException
 
 from plugin.logging_config import get_logger
-from plugin.server.infrastructure.config_paths import get_plugin_config_path
-from plugin.server.infrastructure.config_profiles import apply_user_config_profiles
 from plugin.server.infrastructure.config_protected import validate_protected_fields_unchanged
+from plugin.server.infrastructure.config_resolver import resolve_plugin_config
 from plugin.server.infrastructure.config_toml import (
-    load_toml_from_file,
     parse_toml_text,
     render_toml_text,
 )
 
 logger = get_logger("server.infrastructure.config_queries")
 
-_schema_validation_enabled = os.getenv("NEKO_CONFIG_SCHEMA_VALIDATION", "true").lower() in {
-    "true",
-    "1",
-    "yes",
-    "on",
-}
-
-
-def _validate_config_schema(config_data: dict[str, object], plugin_id: str) -> list[dict[str, object]] | None:
-    try:
-        from plugin.server.config_schema import ConfigValidationError, validate_plugin_config
-    except ImportError:
-        logger.debug(
-            "Plugin {}: config_schema module not available, skip validation",
-            plugin_id,
-        )
-        return None
-
-    try:
-        validate_plugin_config(config_data)
-        return None
-    except ConfigValidationError as exc:
-        if isinstance(exc.details, list):
-            normalized: list[dict[str, object]] = []
-            for item in exc.details:
-                if isinstance(item, dict):
-                    normalized.append({str(key): value for key, value in item.items()})
-            return normalized
-        return [{"msg": exc.message, "field": exc.field}]
-
 
 def load_plugin_base_config(plugin_id: str) -> dict[str, object]:
-    config_path = get_plugin_config_path(plugin_id)
-    config_data = load_toml_from_file(config_path)
-    stat = config_path.stat()
+    resolved = resolve_plugin_config(
+        plugin_id,
+        include_effective_config=False,
+        validate_schema=True,
+    )
     return {
         "plugin_id": plugin_id,
-        "config": config_data,
-        "last_modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-        "config_path": str(config_path),
+        "config": resolved["base_config"],
+        "last_modified": resolved["last_modified"],
+        "config_path": resolved["config_path"],
+        "profiles_state": resolved["profiles_state"],
+        "warnings": resolved["warnings"],
     }
 
 
 def load_plugin_config(plugin_id: str, *, validate: bool = True) -> dict[str, object]:
-    config_path = get_plugin_config_path(plugin_id)
-    base_config = load_toml_from_file(config_path)
-
-    if validate and _schema_validation_enabled:
-        validation_errors = _validate_config_schema(base_config, plugin_id)
-        if validation_errors:
-            logger.warning(
-                "Plugin {}: config schema validation warnings: {}",
-                plugin_id,
-                validation_errors,
-            )
-
-    merged_config = apply_user_config_profiles(
-        plugin_id=plugin_id,
-        base_config=base_config,
-        config_path=config_path,
+    resolved = resolve_plugin_config(
+        plugin_id,
+        include_effective_config=True,
+        validate_schema=validate,
     )
-    stat = config_path.stat()
+    validation_errors = resolved.get("schema_validation_errors")
+    if isinstance(validation_errors, list) and validation_errors:
+        logger.warning(
+            "Plugin {}: config schema validation warnings: {}",
+            plugin_id,
+            validation_errors,
+        )
     return {
         "plugin_id": plugin_id,
-        "config": merged_config,
-        "last_modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-        "config_path": str(config_path),
+        "config": resolved["effective_config"],
+        "base_config": resolved["base_config"],
+        "last_modified": resolved["last_modified"],
+        "config_path": resolved["config_path"],
+        "profiles_state": resolved["profiles_state"],
+        "warnings": resolved["warnings"],
     }
 
 
 def load_plugin_config_toml(plugin_id: str) -> dict[str, object]:
-    config_path = get_plugin_config_path(plugin_id)
+    resolved = resolve_plugin_config(
+        plugin_id,
+        include_effective_config=False,
+        validate_schema=True,
+    )
+    config_path = Path(str(resolved["config_path"]))
     try:
         toml_text = config_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -97,12 +70,13 @@ def load_plugin_config_toml(plugin_id: str) -> dict[str, object]:
             detail=f"Failed to load config: {str(exc)}",
         ) from exc
 
-    stat = config_path.stat()
     return {
         "plugin_id": plugin_id,
         "toml": toml_text,
-        "last_modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-        "config_path": str(config_path),
+        "last_modified": resolved["last_modified"],
+        "config_path": resolved["config_path"],
+        "profiles_state": resolved["profiles_state"],
+        "warnings": resolved["warnings"],
     }
 
 

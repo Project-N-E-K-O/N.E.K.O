@@ -30,7 +30,7 @@ from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.config_profiles import apply_user_config_profiles
+from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.settings import PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT
 from plugin.utils import parse_bool_config
@@ -363,23 +363,36 @@ class PluginLifecycleService:
             )
 
             try:
-                conf = await asyncio.to_thread(
-                    apply_user_config_profiles,
-                    plugin_id=str(current_plugin_id),
-                    base_config=conf,
+                resolved_conf = await asyncio.to_thread(
+                    resolve_plugin_config_from_path,
+                    str(current_plugin_id),
                     config_path=config_path,
+                    base_config=conf,
+                    include_effective_config=True,
+                    validate_schema=True,
                 )
+                warnings_obj = resolved_conf.get("warnings")
+                if isinstance(warnings_obj, list):
+                    for warning in warnings_obj:
+                        if isinstance(warning, Mapping):
+                            logger.warning(
+                                "Plugin config warning [{}] field={} msg={}",
+                                warning.get("code"),
+                                warning.get("field"),
+                                warning.get("message"),
+                            )
+                conf = resolved_conf.get("effective_config")
             except HTTPException as exc:
                 raise _to_domain_error(
                     code="PLUGIN_CONFIG_PROFILE_FAILED",
-                    message=_detail_to_message(exc.detail, default_message="Failed to apply user config profiles"),
+                    message=_detail_to_message(exc.detail, default_message="Failed to resolve plugin config"),
                     status_code=exc.status_code,
                     plugin_id=current_plugin_id,
                     error_type="HTTPException",
                 ) from exc
             except IO_RUNTIME_ERRORS as exc:
                 logger.warning(
-                    "apply user config profiles failed: plugin_id={}, err_type={}, err={}",
+                    "resolve plugin config failed: plugin_id={}, err_type={}, err={}",
                     current_plugin_id,
                     type(exc).__name__,
                     str(exc),

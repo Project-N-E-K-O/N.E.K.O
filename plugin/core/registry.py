@@ -35,6 +35,7 @@ except ImportError:  # pragma: no cover
 
 from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
 from plugin._types.version import SDK_VERSION
+from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.core.state import state
 from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
 from plugin.settings import (
@@ -963,13 +964,23 @@ def _parse_single_plugin_config(
     
     # 应用用户配置覆盖
     try:
-        from plugin.config.service import _apply_user_config_profiles
         if isinstance(conf, dict):
-            conf = _apply_user_config_profiles(
-                plugin_id=str(pid),
-                base_config=conf,
+            resolved_conf = resolve_plugin_config_from_path(
+                str(pid),
                 config_path=toml_path,
+                base_config=conf,
+                include_effective_config=True,
+                validate_schema=True,
             )
+            conf = cast(Dict[str, Any], resolved_conf["effective_config"])
+            for warning in resolved_conf.get("warnings", []):
+                if isinstance(warning, dict):
+                    logger.warning(
+                        "Plugin config warning [{}] field={} msg={}",
+                        warning.get("code"),
+                        warning.get("field"),
+                        warning.get("message"),
+                    )
             # Refresh pdata from post-overlay config so new fields (passive, keywords, etc.) pick up overrides
             pdata = conf.get("plugin") or pdata
     except Exception as e:
