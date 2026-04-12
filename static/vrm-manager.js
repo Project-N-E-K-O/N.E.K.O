@@ -872,11 +872,21 @@ class VRMManager {
                 this._cameraTarget = new THREE.Vector3(0, center.y, 0);
                 this.camera.lookAt(this._cameraTarget);
                 this.camera.updateProjectionMatrix();
+
+                // 同步 OrbitControls 的 target，否则下一帧 controls.update() 会用旧 target 覆盖 lookAt
+                if (this.controls) {
+                    this.controls.target.copy(this._cameraTarget);
+                    this.controls.update();
+                }
             } catch (err) {
                 console.warn('[VRM Manager] 重置相机失败，回退到初始机位:', err);
                 this.camera.position.set(0, 1.1, 1.5);
                 this._cameraTarget = new THREE.Vector3(0, 0.9, 0);
                 this.camera.lookAt(this._cameraTarget);
+                if (this.controls) {
+                    this.controls.target.copy(this._cameraTarget);
+                    this.controls.update();
+                }
             }
         }
 

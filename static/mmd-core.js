@@ -970,9 +970,16 @@ class MMDCore {
                 // 让模型在屏幕上占约 45% 高度
                 const distance = (modelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
 
-                this.manager.camera.position.set(0, center.y, Math.abs(distance));
+                // 把相机锚定到 bounding box 中心，否则模型几何中心偏离世界原点时，
+                // 实际相机到目标的距离与 `distance` 不一致，复位构图会漂
+                this.manager.camera.position.set(center.x, center.y, center.z + Math.abs(distance));
                 this.manager.camera.lookAt(center.x, center.y, center.z);
                 this.manager.camera.updateProjectionMatrix();
+
+                if (this.manager.controls) {
+                    this.manager.controls.target.set(center.x, center.y, center.z);
+                    this.manager.controls.update();
+                }
             } catch (err) {
                 console.warn('[MMD Core] 重置相机失败，回退到初始机位:', err);
                 this.manager.camera.position.set(0, 10, 70);
