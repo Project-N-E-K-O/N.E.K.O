@@ -5202,6 +5202,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 应用打光值到UI和场景
     function applyLightingValues(lighting) {
+        // 【修复】非 VRM 子类型不应用 VRM 打光配置：
+        // MMD 子类型时 switchModelDisplay 会跳过 VRM 初始化（避免 sister1.0 闪现），
+        // 此时 vrmManager.ambientLight 等永远不存在，若继续执行会陷入每 100ms 的
+        // setTimeout 重试循环，造成后台定时器长期挂起。
+        if (currentModelType !== 'live3d' || currentLive3dSubType === 'mmd') {
+            return;
+        }
         const ui = {
             ambientLightSlider: document.getElementById('ambient-light-slider'),
             mainLightSlider: document.getElementById('main-light-slider'),
