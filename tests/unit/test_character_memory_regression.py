@@ -1287,3 +1287,48 @@ def test_timeindexed_engine_init_failure_disposes_engine_and_clears_temp_cache(m
     finally:
         SQLChatMessageHistory._engine_cache.clear()
         SQLChatMessageHistory._engine_cache.update(original_cache)
+
+
+@pytest.mark.unit
+def test_timeindexed_readonly_open_still_runs_writable_bootstrap_on_first_write(monkeypatch, tmp_path):
+    from memory.timeindex import TimeIndexedMemory
+
+    class _DummyEngine:
+        pass
+
+    db_path = (tmp_path / "time_indexed.db").resolve()
+    db_path.write_text("", encoding="utf-8")
+    created_engine = _DummyEngine()
+    ensure_calls = []
+    migrate_calls = []
+
+    fake_config_manager = SimpleNamespace(
+        get_character_data=lambda: ({}, {}, {}, {}, {}, {}, {}, {}, {}),
+    )
+    monkeypatch.setattr("memory.timeindex.get_config_manager", lambda: fake_config_manager)
+    monkeypatch.setattr("memory.timeindex.create_engine", lambda _connection_string: created_engine)
+
+    manager = TimeIndexedMemory(recent_history_manager=None)
+    monkeypatch.setattr(manager, "_assert_timeindex_writable", lambda _lanlan_name: None)
+    monkeypatch.setattr(
+        manager,
+        "_ensure_tables_exist_with",
+        lambda _engine, _connection_string, _lanlan_name: ensure_calls.append(_lanlan_name),
+    )
+    monkeypatch.setattr(
+        manager,
+        "_check_and_migrate_schema",
+        lambda _engine, _lanlan_name: migrate_calls.append(_lanlan_name),
+    )
+
+    assert manager._ensure_engine_exists("测试角色", db_path=str(db_path), readonly=True) is True
+    assert ensure_calls == []
+    assert migrate_calls == []
+
+    assert manager._ensure_engine_exists("测试角色", db_path=str(db_path), readonly=False) is True
+    assert ensure_calls == ["测试角色"]
+    assert migrate_calls == ["测试角色"]
+
+    assert manager._ensure_engine_exists("测试角色", db_path=str(db_path), readonly=False) is True
+    assert ensure_calls == ["测试角色"]
+    assert migrate_calls == ["测试角色"]

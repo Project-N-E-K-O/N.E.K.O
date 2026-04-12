@@ -212,6 +212,15 @@ def test_cloudsave_manager_waits_for_i18n_and_rebinds_dynamic_labels():
 
 
 @pytest.mark.unit
+def test_cloudsave_manager_translate_short_circuits_for_empty_i18n_key():
+    script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+
+    assert "function translate(key, fallback, params = {}) {" in script
+    assert "if (!key) {" in script
+    assert "return interpolateText(fallback, params);" in script
+
+
+@pytest.mark.unit
 def test_cloudsave_manager_renders_provider_status_card_messages():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
 
@@ -271,6 +280,36 @@ def test_cloudsave_group_titles_use_my_characters_copy_in_all_supported_locales(
     for locale_name, expected_value in expected.items():
         payload = json.loads((LOCALE_DIR / locale_name).read_text(encoding="utf-8"))
         assert _get_nested_value(payload, "cloudsave.group.otherTitle") == expected_value
+
+
+@pytest.mark.unit
+def test_chara_manager_cloudsave_window_handle_is_cached_after_open():
+    script = CHARA_MANAGER_JS.read_text(encoding="utf-8")
+
+    assert "window._openedWindows[windowName] = openedWindow;" in script
+    assert "if (!window._openedWindows || typeof window._openedWindows !== 'object') {" in script
+
+
+@pytest.mark.unit
+def test_chara_manager_unsaved_draft_branch_does_not_commit_cloudsave_sync_timestamp():
+    script = CHARA_MANAGER_JS.read_text(encoding="utf-8")
+    match = re.search(
+        r"if \(hasUnsavedNewCatgirlDraft\(\)\) \{(?P<body>.*?)\n\s*\}",
+        script,
+        re.S,
+    )
+    assert match, "expected hasUnsavedNewCatgirlDraft guard to exist"
+    assert "shouldCommitTimestamp = true;" not in match.group("body")
+
+
+@pytest.mark.unit
+def test_partial_save_voice_failed_key_is_not_duplicated_in_en_and_ko_locales():
+    en_raw = (LOCALE_DIR / "en.json").read_text(encoding="utf-8")
+    ko_raw = (LOCALE_DIR / "ko.json").read_text(encoding="utf-8")
+
+    assert en_raw.count('"partialSaveVoiceFailed"') == 1
+    assert ko_raw.count('"partialSaveVoiceFailed"') == 1
+    assert "음성 업데이트에 실패했습니다" in ko_raw
 
 
 @pytest.mark.unit

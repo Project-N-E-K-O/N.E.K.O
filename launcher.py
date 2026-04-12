@@ -1464,11 +1464,17 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
         "is_normal": root_mode == ROOT_MODE_NORMAL,
         "is_readonly": root_mode == ROOT_MODE_MAINTENANCE_READONLY,
     }
+    import_payload_source = import_result if isinstance(import_result, dict) else {}
+    sanitized_import_result = {
+        "success": import_payload_source.get("success"),
+        "action": str(import_payload_source.get("action") or ""),
+        "requested_reason": str(import_payload_source.get("requested_reason") or ""),
+    }
     event_payload = {
         "root_state": root_state_event_payload,
         "manifest_name": Path(config_manager.cloudsave_manifest_path).name,
         "manifest_exists": bool(Path(config_manager.cloudsave_manifest_path).exists()),
-        "import_result": import_result,
+        "import_result": sanitized_import_result,
     }
     emit_frontend_event("cloudsave_bootstrap_ready", event_payload)
     return {

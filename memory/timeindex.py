@@ -13,6 +13,7 @@ class TimeIndexedMemory:
     def __init__(self, recent_history_manager):
         self.engines = {}  # 存储 {lanlan_name: engine}
         self.db_paths = {} # 存储 {lanlan_name: db_path}
+        self._writable_bootstrapped = set()  # 存储已完成可写初始化的角色
         self.recent_history_manager = recent_history_manager
         _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
         for name in time_store:
@@ -43,10 +44,24 @@ class TimeIndexedMemory:
         readonly: bool = False,
     ) -> bool:
         """确保指定角色的数据库引擎已初始化喵~"""
-        if lanlan_name in self.engines and lanlan_name in self.db_paths:
-            return True
         if not readonly:
             self._assert_timeindex_writable(lanlan_name)
+        if lanlan_name in self.engines and lanlan_name in self.db_paths:
+            if readonly or lanlan_name in self._writable_bootstrapped:
+                return True
+            try:
+                normalized_db_path, connection_string = self._build_sqlite_connection_string(
+                    str(self.db_paths[lanlan_name]),
+                    readonly=False,
+                )
+                self._ensure_tables_exist_with(self.engines[lanlan_name], connection_string, lanlan_name)
+                self._check_and_migrate_schema(self.engines[lanlan_name], lanlan_name)
+                self.db_paths[lanlan_name] = normalized_db_path
+                self._writable_bootstrapped.add(lanlan_name)
+                return True
+            except Exception:
+                logger.exception(f"补跑角色数据库可写初始化失败: {lanlan_name}")
+                return False
 
         engine = None
         connection_string = None
@@ -76,6 +91,9 @@ class TimeIndexedMemory:
                 # 避免失败后引擎被标记为"已初始化"而跳过后续修复
                 self._ensure_tables_exist_with(engine, connection_string, lanlan_name)
                 self._check_and_migrate_schema(engine, lanlan_name)
+                self._writable_bootstrapped.add(lanlan_name)
+            else:
+                self._writable_bootstrapped.discard(lanlan_name)
             self.db_paths[lanlan_name] = normalized_db_path
             self.engines[lanlan_name] = engine
             return True
@@ -90,6 +108,7 @@ class TimeIndexedMemory:
                 if existing_engine is engine:
                     self.engines.pop(lanlan_name, None)
                     self.db_paths.pop(lanlan_name, None)
+                    self._writable_bootstrapped.discard(lanlan_name)
             except Exception:
                 pass
             if connection_string:
@@ -106,6 +125,7 @@ class TimeIndexedMemory:
         """释放指定角色的数据库引擎资源喵~"""
         db_path = self.db_paths.pop(lanlan_name, None)
         engine = self.engines.pop(lanlan_name, None)
+        self._writable_bootstrapped.discard(lanlan_name)
         if engine:
             engine.dispose()
             logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")

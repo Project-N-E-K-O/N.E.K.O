@@ -56,7 +56,9 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
     assert bootstrap_index < import_index < fence_exit_index
     assert result["import_result"]["action"] == "imported"
     assert emitted_events[-1][0] == "cloudsave_bootstrap_ready"
-    assert emitted_events[-1][1]["import_result"]["requested_reason"] == "launcher_phase0_prelaunch_import"
+    event_import_result = emitted_events[-1][1]["import_result"]
+    assert set(event_import_result.keys()) == {"success", "action", "requested_reason"}
+    assert event_import_result["requested_reason"] == "launcher_phase0_prelaunch_import"
     assert emitted_events[-1][1]["manifest_name"] == "manifest.json"
     assert emitted_events[-1][1]["manifest_exists"] is False
     root_state_payload = emitted_events[-1][1]["root_state"]

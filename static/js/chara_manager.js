@@ -3106,6 +3106,13 @@ function openCloudsaveManager() {
         ? window.openOrFocusWindow(url, windowName, features)
         : window.open(url, windowName, features);
 
+    if (openedWindow && !openedWindow.closed) {
+        if (!window._openedWindows || typeof window._openedWindows !== 'object') {
+            window._openedWindows = {};
+        }
+        window._openedWindows[windowName] = openedWindow;
+    }
+
     if (!openedWindow) {
         window.location.href = url;
     }
@@ -3202,7 +3209,6 @@ async function handleCloudsaveCharacterSync(payload) {
             await showAlert(window.t
                 ? window.t('character.unsavedNewCatgirlDraftDetected')
                 : '检测到未保存的新猫娘草稿，请先保存或取消后再同步刷新');
-            shouldCommitTimestamp = true;
             return;
         }
 

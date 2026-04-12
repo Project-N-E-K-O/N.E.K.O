@@ -102,6 +102,18 @@ def _normalize_live2d_catalog_path(model_path: str) -> str:
     return normalized_path.lstrip("/")
 
 
+def _is_same_live2d_catalog_model_path(candidate_path: str, target_path: str) -> bool:
+    candidate_normalized = _normalize_live2d_catalog_path(candidate_path)
+    target_normalized = _normalize_live2d_catalog_path(target_path)
+    if not candidate_normalized or not target_normalized:
+        return False
+    if candidate_normalized == target_normalized:
+        return True
+    candidate_tail = "/".join(candidate_normalized.split("/")[-2:])
+    target_tail = "/".join(target_normalized.split("/")[-2:])
+    return bool(candidate_tail and candidate_tail == target_tail)
+
+
 def _derive_live2d_asset_source(model_path: str) -> str:
     normalized_path = str(model_path or "").strip().replace("\\", "/")
     if normalized_path.startswith(("http://", "https://")):
@@ -149,24 +161,39 @@ def _find_live2d_model_catalog_entry(
     normalized_item_id = str(item_id or "").strip()
 
     if normalized_item_id:
-        exact_item_match = next(
-            (
+        item_matches = [
+            model
+            for model in all_models
+            if str(model.get("item_id") or "").strip() == normalized_item_id
+        ]
+        item_name_matches = item_matches
+        if normalized_name:
+            item_name_matches = [
                 model
-                for model in all_models
-                if str(model.get("item_id") or "").strip() == normalized_item_id
-                and (not normalized_name or str(model.get("name") or "").strip() == normalized_name)
-            ),
-            None,
-        )
-        if exact_item_match is not None:
-            return exact_item_match
+                for model in item_matches
+                if str(model.get("name") or "").strip() == normalized_name
+            ]
 
-        loose_item_match = next(
-            (model for model in all_models if str(model.get("item_id") or "").strip() == normalized_item_id),
-            None,
-        )
-        if loose_item_match is not None:
-            return loose_item_match
+        if normalized_path:
+            strict_candidates = item_name_matches if item_name_matches else item_matches
+            strict_item_match = next(
+                (
+                    model
+                    for model in strict_candidates
+                    if _is_same_live2d_catalog_model_path(
+                        str(model.get("path") or "").strip().replace("\\", "/"),
+                        normalized_path,
+                    )
+                ),
+                None,
+            )
+            if strict_item_match is not None:
+                return strict_item_match
+
+        if len(item_name_matches) == 1:
+            return item_name_matches[0]
+        if len(item_matches) == 1:
+            return item_matches[0]
 
     if normalized_path:
         expected_prefixes: tuple[str, ...] = ()
@@ -181,7 +208,7 @@ def _find_live2d_model_catalog_entry(
             candidate_path = str(model.get("path") or "").strip().replace("\\", "/")
             if expected_prefixes and not candidate_path.startswith(expected_prefixes):
                 continue
-            if _normalize_live2d_catalog_path(candidate_path) == normalized_path:
+            if _is_same_live2d_catalog_model_path(candidate_path, normalized_path):
                 return model
 
     if normalized_name:

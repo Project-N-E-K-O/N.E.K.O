@@ -123,7 +123,10 @@ def test_launcher_phase0_skips_import_when_cloud_snapshot_is_empty():
         assert result["import_result"]["action"] == "skipped"
         assert result["import_result"]["reason"] == "no_snapshot"
         assert emitted_events[-1][0] == "cloudsave_bootstrap_ready"
-        assert emitted_events[-1][1]["import_result"]["reason"] == "no_snapshot"
+        event_import_result = emitted_events[-1][1]["import_result"]
+        assert event_import_result["action"] == "skipped"
+        assert event_import_result["requested_reason"] == "launcher_phase0_prelaunch_import"
+        assert "reason" not in event_import_result
 
 
 @pytest.mark.unit

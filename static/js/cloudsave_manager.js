@@ -191,6 +191,9 @@
     }
 
     function translate(key, fallback, params = {}) {
+        if (!key) {
+            return interpolateText(fallback, params);
+        }
         if (typeof window.t === 'function') {
             const translated = window.t(key, params);
             if (translated && translated !== key) {

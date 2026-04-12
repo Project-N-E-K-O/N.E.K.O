@@ -1489,7 +1489,6 @@
         "autoSaved": "Settings auto-saved",
         "autoSaveFailed": "Auto-save failed, please save manually before closing",
         "unsavedNewCatgirlDraftDetected": "Detected an unsaved new NEKO draft. Please save or cancel it before syncing refresh",
-        "partialSaveVoiceFailed": "Character saved, but failed to update voice: {{error}}",
         "exportCard": "Export Character Card",
         "exportingCard": "Exporting character card...",
         "exportCardSuccess": "Character card exported successfully",
