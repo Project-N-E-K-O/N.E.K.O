@@ -98,21 +98,105 @@
         return 'Live2D';
     }
 
-    function setPreviewVisible(visible) {
+    // 当前打开弹窗的触发按钮（用于定位 + 激活态）
+    let activeTrigger = null;
+
+    function clearTriggerActive() {
+        if (activeTrigger) {
+            activeTrigger.classList.remove('is-active');
+        }
+        activeTrigger = null;
+    }
+
+    /**
+     * 计算并设置弹窗相对触发按钮的位置。
+     * 默认在按钮下方右对齐；空间不足时翻转到上方；始终限制在视口内。
+     */
+    function positionPopupNearTrigger(popup, trigger) {
+        const margin = 8;
+        const viewportW = window.innerWidth;
+        const viewportH = window.innerHeight;
+
+        // 把弹窗移到不可见区域做精准尺寸测量，临时关闭 transform 以便 offsetWidth 反映真实布局尺寸
+        popup.style.left = '-9999px';
+        popup.style.top = '-9999px';
+        popup.style.transform = 'none';
+        popup.style.transformOrigin = '';
+
+        const popupW = popup.offsetWidth || 320;
+        const popupH = popup.offsetHeight || 220;
+
+        // 恢复 transform：is-visible 切换时才播放动画；此时清回空字符串，让 CSS 规则生效
+        popup.style.transform = '';
+
+        let anchorRect = null;
+        if (trigger && typeof trigger.getBoundingClientRect === 'function') {
+            anchorRect = trigger.getBoundingClientRect();
+        }
+
+        // 无触发按钮（例如通过 API 直接调用）：居中显示
+        if (!anchorRect || (anchorRect.width === 0 && anchorRect.height === 0)) {
+            const left = Math.max(margin, Math.round((viewportW - popupW) / 2));
+            const top = Math.max(margin, Math.round((viewportH - popupH) / 2));
+            popup.style.left = left + 'px';
+            popup.style.top = top + 'px';
+            popup.style.transformOrigin = 'center center';
+            return;
+        }
+
+        // 优先：按钮下方右对齐
+        let top = anchorRect.bottom + margin;
+        let openUpward = false;
+        if (top + popupH > viewportH - margin && anchorRect.top - margin - popupH >= margin) {
+            top = anchorRect.top - margin - popupH;
+            openUpward = true;
+        }
+        top = Math.max(margin, Math.min(top, viewportH - popupH - margin));
+
+        let left = anchorRect.right - popupW;
+        left = Math.max(margin, Math.min(left, viewportW - popupW - margin));
+
+        popup.style.left = left + 'px';
+        popup.style.top = top + 'px';
+        popup.style.transformOrigin = openUpward ? 'bottom right' : 'top right';
+    }
+
+    function setPreviewVisible(visible, trigger) {
         const card = S.dom.chatAvatarPreviewCard;
-        const button = S.dom.avatarPreviewButton;
-        if (!card || !button) return;
-        card.hidden = !visible;
-        button.classList.toggle('is-active', visible);
+        if (!card) return;
+
+        if (visible) {
+            // 切换触发按钮的激活态
+            if (activeTrigger && activeTrigger !== trigger) {
+                activeTrigger.classList.remove('is-active');
+            }
+            activeTrigger = trigger || activeTrigger || null;
+            if (activeTrigger) {
+                activeTrigger.classList.add('is-active');
+            }
+
+            card.hidden = false;
+            positionPopupNearTrigger(card, activeTrigger);
+            // 触发进入动画（下一帧应用 is-visible）
+            window.requestAnimationFrame(function () {
+                card.classList.add('is-visible');
+            });
+        } else {
+            card.classList.remove('is-visible');
+            card.hidden = true;
+            clearTriggerActive();
+        }
     }
 
     function setLoadingState(loading) {
-        const button = S.dom.avatarPreviewButton;
+        const legacyButton = S.dom.avatarPreviewButton;
+        const headerButton = S.dom.avatarPreviewHeaderButton;
         const refreshButton = S.dom.chatAvatarPreviewRefreshButton;
-        if (button) {
-            button.classList.toggle('is-loading', loading);
-            button.disabled = loading;
-        }
+        [legacyButton, headerButton].forEach(function (btn) {
+            if (!btn) return;
+            btn.classList.toggle('is-loading', loading);
+            btn.disabled = loading;
+        });
         if (refreshButton) {
             refreshButton.disabled = loading;
         }
@@ -150,11 +234,9 @@
         shell.classList.add('is-empty');
     }
 
+    // 作为独立弹窗后不再要求输入区可见；保留函数以便将来需要判断上下文。
     function isInlinePreviewAvailable() {
-        const textInputArea = S.dom.textInputArea || document.getElementById('text-input-area');
-        if (!textInputArea) return false;
-        if (textInputArea.classList.contains('hidden')) return false;
-        return window.getComputedStyle(textInputArea).display !== 'none';
+        return true;
     }
 
     function getCurrentModelType() {
@@ -235,47 +317,82 @@
         lastScheduledCacheKey = '';
     }
 
-    async function captureAvatarPreview() {
-        if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
-            throw new Error(translateLabel('chat.avatarPreviewUnavailable', '头像预览功能尚未就绪。'));
-        }
-
-        return window.avatarPortrait.capture({
-            width: 320,
-            height: 320,
-            padding: 0.035,
-            shape: 'rounded',
-            radius: 40,
-            background: 'rgba(255, 255, 255, 0.96)',
-            includeDataUrl: true
+    /**
+     * 从 Pet 窗口（Electron 多窗口模式）通过 IPC 请求头像预览。
+     */
+    function captureAvatarPreviewViaIpc() {
+        return new Promise(function (resolve, reject) {
+            var finished = false;
+            var timerId = null;
+            function cleanup() {
+                window.removeEventListener('neko:avatar-preview-ipc-result', onResult);
+                if (timerId) { clearTimeout(timerId); timerId = null; }
+            }
+            function onResult(event) {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                var detail = event && event.detail;
+                if (detail && detail.dataUrl) {
+                    resolve({ dataUrl: detail.dataUrl, modelType: detail.modelType || '' });
+                } else {
+                    reject(new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败')));
+                }
+            }
+            window.addEventListener('neko:avatar-preview-ipc-result', onResult);
+            timerId = setTimeout(function () {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                reject(new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败')));
+            }, 10000);
+            try {
+                window.__nekoRequestAvatarPreview();
+            } catch (err) {
+                if (!finished) {
+                    finished = true;
+                    cleanup();
+                    reject(err);
+                }
+            }
         });
+    }
+
+    async function captureAvatarPreview() {
+        // 优先使用本地 avatarPortrait（index.html）；chat.html 里回退到 IPC。
+        if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
+            return window.avatarPortrait.capture({
+                width: 320,
+                height: 320,
+                padding: 0.035,
+                shape: 'rounded',
+                radius: 40,
+                background: 'rgba(255, 255, 255, 0.96)',
+                includeDataUrl: true
+            });
+        }
+        if (window.__NEKO_MULTI_WINDOW__ && typeof window.__nekoRequestAvatarPreview === 'function') {
+            return captureAvatarPreviewViaIpc();
+        }
+        throw new Error(translateLabel('chat.avatarPreviewUnavailable', '头像预览功能尚未就绪。'));
     }
 
     async function renderAvatarPreview(options = {}) {
         const forceRefresh = options.forceRefresh === true;
         const showCard = options.showCard !== false;
-        const skipInputCheck = options.skipInputCheck === true;
         const silent = options.silent === true;
+        const trigger = options.trigger || null;
 
         if (isCapturing) {
-            if (skipInputCheck && silent) {
+            if (!showCard && silent) {
                 pendingAutoCapture = true;
-            }
-            return;
-        }
-        if (!skipInputCheck && !isInlinePreviewAvailable()) {
-            if (typeof window.showStatusToast === 'function') {
-                window.showStatusToast(
-                    translateLabel('chat.avatarPreviewInputHidden', '当前输入区已隐藏，请回到文字聊天界面后再查看头像。'),
-                    3500
-                );
             }
             return;
         }
 
         if (!forceRefresh && hasUsableCachedPreview()) {
             if (showCard) {
-                setPreviewVisible(true);
+                setPreviewVisible(true, trigger);
             }
             setPreviewImage(cachedPreview.dataUrl);
             setPreviewStatus(
@@ -289,7 +406,7 @@
         const token = ++activeCaptureToken;
         const cacheKey = getCurrentModelCacheKey();
         if (showCard) {
-            setPreviewVisible(true);
+            setPreviewVisible(true, trigger);
         }
         setLoadingState(true);
         setPreviewStatus(forceRefresh
@@ -354,7 +471,6 @@
                         forceRefresh: true,
                         silent: true,
                         showCard: false,
-                        skipInputCheck: true,
                         reason: reason || 'model-loaded'
                     }).catch(function (error) {
                         console.warn('[app-chat-avatar] 自动缓存头像失败:', error);
@@ -392,17 +508,51 @@
 
     function handleOutsidePointer(event) {
         const card = S.dom.chatAvatarPreviewCard;
-        const button = S.dom.avatarPreviewButton;
         if (!card || card.hidden) return;
-        if (card.contains(event.target) || (button && button.contains(event.target))) {
-            return;
+        if (card.contains(event.target)) return;
+        // 点在任一已注册的触发按钮上 → 由触发按钮自己处理（点击切换）
+        for (const trigger of triggerButtons) {
+            if (trigger && trigger.contains(event.target)) return;
         }
         setPreviewVisible(false);
     }
 
+    function handleEscapeKey(event) {
+        if (event.key !== 'Escape') return;
+        const card = S.dom.chatAvatarPreviewCard;
+        if (!card || card.hidden) return;
+        setPreviewVisible(false);
+    }
+
+    function handleViewportChange() {
+        const card = S.dom.chatAvatarPreviewCard;
+        if (!card || card.hidden || !activeTrigger) return;
+        positionPopupNearTrigger(card, activeTrigger);
+    }
+
+    // 已绑定的触发按钮集合（供外点击判断使用）
+    const triggerButtons = new Set();
+
+    function bindTriggerButton(button) {
+        if (!button || triggerButtons.has(button)) return;
+        triggerButtons.add(button);
+        button.addEventListener('click', function (event) {
+            event.stopPropagation();
+            const card = S.dom.chatAvatarPreviewCard;
+            // 同一触发按钮再次点击 → 关闭弹窗
+            if (card && !card.hidden && activeTrigger === button) {
+                setPreviewVisible(false);
+                return;
+            }
+            renderAvatarPreview({ trigger: button });
+        });
+    }
+
     mod.init = function init() {
         S.dom.avatarPreviewButton = document.getElementById('avatarPreviewButton');
-        S.dom.chatAvatarPreviewCard = document.getElementById('chat-avatar-preview-card');
+        S.dom.avatarPreviewHeaderButton = document.getElementById('avatarPreviewHeaderButton');
+        // 保留旧字段名 chatAvatarPreviewCard 以兼容其他代码；实际指向新弹窗元素。
+        S.dom.chatAvatarPreviewCard = document.getElementById('chat-avatar-preview-popup');
         S.dom.chatAvatarPreviewStatus = document.getElementById('chat-avatar-preview-status');
         S.dom.chatAvatarPreviewNote = document.getElementById('chat-avatar-preview-note');
         S.dom.chatAvatarPreviewImageShell = document.getElementById('chat-avatar-preview-image-shell');
@@ -448,22 +598,22 @@
         // 清理已删除角色的残留头像（不阻塞初始化）
         purgeOrphanedAvatars();
 
-        // —— UI 层：仅在预览卡片存在时绑定（index.html） ——
-
-        const button = S.dom.avatarPreviewButton;
+        // —— UI 层：独立弹窗绑定 ——
+        // 弹窗 DOM 在 chat.html / index.html 中都存在；避免重复绑定。
+        const popup = S.dom.chatAvatarPreviewCard;
         const refreshButton = S.dom.chatAvatarPreviewRefreshButton;
         const closeButton = S.dom.chatAvatarPreviewCloseButton;
 
-        if (!button || !refreshButton || !closeButton) {
+        if (!popup || !refreshButton || !closeButton) {
             return;
         }
 
-        button.addEventListener('click', function () {
-            renderAvatarPreview();
-        });
+        // 触发按钮：老版 index.html 聊天面板内的按钮 + 新版 React 聊天头部按钮
+        bindTriggerButton(S.dom.avatarPreviewButton);
+        bindTriggerButton(S.dom.avatarPreviewHeaderButton);
 
         refreshButton.addEventListener('click', function () {
-            renderAvatarPreview({ forceRefresh: true });
+            renderAvatarPreview({ forceRefresh: true, trigger: activeTrigger });
         });
 
         closeButton.addEventListener('click', function () {
@@ -471,6 +621,30 @@
         });
 
         document.addEventListener('pointerdown', handleOutsidePointer, true);
+        document.addEventListener('keydown', handleEscapeKey);
+        window.addEventListener('resize', handleViewportChange);
+        window.addEventListener('scroll', handleViewportChange, true);
+    };
+
+    /**
+     * 外部 API：允许其他模块（如 React 聊天窗口）手动打开弹窗。
+     * @param {HTMLElement} [trigger] - 触发按钮，用于定位
+     * @param {Object} [options]
+     */
+    mod.showPopup = function showPopup(trigger, options) {
+        const opts = Object.assign({ trigger: trigger || null }, options || {});
+        return renderAvatarPreview(opts);
+    };
+
+    mod.hidePopup = function hidePopup() {
+        setPreviewVisible(false);
+    };
+
+    /**
+     * 外部 API：让其他脚本追加触发按钮（例如动态生成的 DOM）。
+     */
+    mod.registerTrigger = function registerTrigger(button) {
+        bindTriggerButton(button);
     };
 
     mod.getCachedPreview = function getCachedPreview() {
@@ -502,6 +676,16 @@
     mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType) {
         externalAvatarDataUrl = dataUrl || '';
         externalAvatarModelType = modelType || '';
+        // 如果弹窗已打开且本地没有本窗口可采集的模型，就直接把 IPC 数据显示出来。
+        const card = S.dom && S.dom.chatAvatarPreviewCard;
+        const hasLocalPortrait = !!(window.avatarPortrait && typeof window.avatarPortrait.capture === 'function');
+        if (externalAvatarDataUrl && card && !card.hidden && !hasLocalPortrait) {
+            setPreviewImage(externalAvatarDataUrl);
+            setPreviewStatus(
+                translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(externalAvatarModelType)
+            );
+            setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
+        }
         window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
             detail: { dataUrl: externalAvatarDataUrl, modelType: externalAvatarModelType, source: 'ipc' }
         }));
