@@ -12,6 +12,15 @@ def test_derive_model_asset_binding_marks_http_path_as_manual_external():
 
 
 @pytest.mark.unit
+def test_derive_live2d_model_name_uses_url_path_instead_of_hostname():
+    from main_routers.characters_router import _derive_live2d_model_name
+
+    model_name = _derive_live2d_model_name("https://example.com/foo.model3.json?ts=1")
+
+    assert model_name == "foo"
+
+
+@pytest.mark.unit
 def test_resolve_live2d_model_binding_keeps_http_source_as_manual_external():
     from main_routers.characters_router import _resolve_live2d_model_binding
 

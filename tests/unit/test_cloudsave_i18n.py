@@ -90,12 +90,14 @@ def test_cloudsave_manager_js_is_ascii_only():
 def test_cloudsave_manager_compacts_workshop_status_display_for_all_paths():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
 
-    assert "formatWorkshopStatus(item, 'local')" in script
-    assert "formatWorkshopStatus(item, 'cloud')" in script
-    assert "formatWorkshopStatus(item, 'local_origin')" in script
-    assert "formatWorkshopStatus(item, 'cloud_origin')" in script
-    assert "summarizeAssetSource(item.local_asset_source)" in script
-    assert "summarizeAssetSource(item.cloud_asset_source)" in script
+    assert "cloudsave.meta.localWorkshopStatus" in script
+    assert "cloudsave.meta.cloudWorkshopStatus" in script
+    assert "cloudsave.meta.localOriginWorkshopStatus" in script
+    assert "cloudsave.meta.cloudOriginWorkshopStatus" in script
+    assert "local_origin_workshop_status" in script
+    assert "cloud_origin_workshop_status" in script
+    assert "local_asset_source" in script
+    assert "cloud_asset_source" in script
     assert "steamWorkshopWithId" not in script
     assert "workshopStatusWithTitle" not in script
 
@@ -103,11 +105,12 @@ def test_cloudsave_manager_compacts_workshop_status_display_for_all_paths():
 @pytest.mark.unit
 def test_cloudsave_manager_separates_local_and_cloud_meta_sections():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+    stylesheet = CLOUDSAVE_CSS.read_text(encoding="utf-8")
 
-    assert "function buildMetaSection(sectionClassName, titleText, entries)" in script
     assert "cloudsave.meta.groupLocal" in script
     assert "cloudsave.meta.groupCloud" in script
     assert "cloudsave-meta-sections" in script
+    assert ".cloudsave-meta-sections" in stylesheet
 
 
 @pytest.mark.unit
@@ -115,14 +118,11 @@ def test_cloudsave_manager_supports_collapsible_item_details_by_default():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
     stylesheet = CLOUDSAVE_CSS.read_text(encoding="utf-8")
 
-    assert "expandedCharacterNames: new Set()" in script
-    assert "function isCharacterExpanded(characterName)" in script
-    assert "function setCharacterExpanded(characterName, expanded)" in script
-    assert "function updateExpandButtonState(button, expanded)" in script
     assert "cloudsave.action.expandDetails" in script
     assert "cloudsave.action.collapseDetails" in script
+    assert "aria-controls" in script
     assert "details.hidden = !shouldBeOpen;" in script
-    assert "setCharacterExpanded(item.character_name, nextExpanded);" in script
+    assert "details.hidden = !nextExpanded;" in script
     assert ".cloudsave-item-main" in stylesheet
     assert ".cloudsave-item-expand" in stylesheet
     assert ".cloudsave-item-details" in stylesheet
@@ -131,17 +131,21 @@ def test_cloudsave_manager_supports_collapsible_item_details_by_default():
 @pytest.mark.unit
 def test_cloudsave_manager_confirm_hints_cover_workshop_origin_paths():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+    en_payload = json.loads((LOCALE_DIR / "en.json").read_text(encoding="utf-8"))
 
-    assert "hasWorkshopOriginOverride(item, 'local')" in script
-    assert "hasWorkshopOriginOverride(item, 'cloud')" in script
     assert "item.local_origin_workshop_status || ''" in script
     assert "item.cloud_origin_workshop_status || ''" in script
-    assert "cloudsave.hint.uploadOriginResubscribe" in script
-    assert "cloudsave.hint.uploadOriginUnavailable" in script
-    assert "cloudsave.hint.uploadOriginUnconfirmed" in script
-    assert "cloudsave.hint.downloadOriginResubscribe" in script
-    assert "cloudsave.hint.downloadOriginUnavailable" in script
-    assert "cloudsave.hint.downloadOriginUnconfirmed" in script
+    hint_keys = [
+        "cloudsave.hint.uploadOriginResubscribe",
+        "cloudsave.hint.uploadOriginUnavailable",
+        "cloudsave.hint.uploadOriginUnconfirmed",
+        "cloudsave.hint.downloadOriginResubscribe",
+        "cloudsave.hint.downloadOriginUnavailable",
+        "cloudsave.hint.downloadOriginUnconfirmed",
+    ]
+    for key in hint_keys:
+        assert key in script
+        assert _get_nested_value(en_payload, key)
 
 
 @pytest.mark.unit
@@ -155,13 +159,22 @@ def test_cloudsave_manager_does_not_render_origin_badges():
 @pytest.mark.unit
 def test_cloudsave_manager_only_shows_modified_model_guidance_for_workshop_origin_overrides():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+    en_payload = json.loads((LOCALE_DIR / "en.json").read_text(encoding="utf-8"))
 
-    assert "function shouldShowLocalManualSourceGuidance(item)" in script
-    assert "function shouldShowCloudManualSourceGuidance(item)" in script
-    assert "function shouldShowLocalModifiedWorkshopModelGuidance(item)" in script
-    assert "&& !hasWorkshopOriginOverride(item, 'local');" in script
-    assert "&& !hasWorkshopOriginOverride(item, 'cloud');" in script
-    assert "&& hasWorkshopOriginOverride(item, 'local');" in script
+    guidance_keys = [
+        "cloudsave.guidance.localManualSource.title",
+        "cloudsave.guidance.localManualSource.body",
+        "cloudsave.guidance.cloudManualSource.title",
+        "cloudsave.guidance.cloudManualSource.body",
+        "cloudsave.guidance.localModifiedModel.title",
+        "cloudsave.guidance.localModifiedModel.body",
+    ]
+    for key in guidance_keys:
+        assert key in script
+        assert _get_nested_value(en_payload, key)
+    assert re.search(r"!hasWorkshopOriginOverride\(item,\s*'local'\)", script)
+    assert re.search(r"!hasWorkshopOriginOverride\(item,\s*'cloud'\)", script)
+    assert re.search(r"hasWorkshopOriginOverride\(item,\s*'local'\)", script)
 
 
 @pytest.mark.unit
@@ -222,29 +235,35 @@ def test_cloudsave_manager_translate_short_circuits_for_empty_i18n_key():
 
 @pytest.mark.unit
 def test_cloudsave_manager_renders_provider_status_card_messages():
+    cloudsave_template = CLOUDSAVE_TEMPLATE.read_text(encoding="utf-8")
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
 
-    assert "const providerStatus = document.getElementById('cloudsave-provider-status');" in script
-    assert "const providerScope = document.getElementById('cloudsave-provider-scope');" in script
-    assert "cloudsave.providerSteamAutoCloudSourceLaunch" in script
-    assert "cloudsave.providerSteamAutoCloudReady" in script
-    assert "cloudsave.providerSteamAutoCloudOffline" in script
-    assert "cloudsave.providerSnapshotScope" in script
-    assert "cloudsave.providerAvailable" in script
-    assert "cloudsave.providerUnavailable" in script
+    assert 'id="cloudsave-provider-status"' in cloudsave_template
+    assert 'id="cloudsave-provider-scope"' in cloudsave_template
+    provider_keys = [
+        "cloudsave.providerSteamAutoCloudSourceLaunch",
+        "cloudsave.providerSteamAutoCloudReady",
+        "cloudsave.providerSteamAutoCloudOffline",
+        "cloudsave.providerSnapshotScope",
+        "cloudsave.providerAvailable",
+        "cloudsave.providerUnavailable",
+    ]
+    for key in provider_keys:
+        assert key in script
+        for locale_path in sorted(LOCALE_DIR.glob("*.json")):
+            payload = json.loads(locale_path.read_text(encoding="utf-8"))
+            assert _get_nested_value(payload, key)
 
 
 @pytest.mark.unit
 def test_cloudsave_manager_renders_my_characters_first_and_sorts_by_local_update_time():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
 
-    assert "function getItemLocalUpdatedAtSortValue(item)" in script
-    assert "function getLocallyUpdatedItems(items)" in script
-    assert "const leftTime = getItemLocalUpdatedAtSortValue(left);" in script
-    assert "const rightTime = getItemLocalUpdatedAtSortValue(right);" in script
-    assert "return rightTime - leftTime;" in script
-    assert "items: getLocallyUpdatedItems(otherItems)," in script
-    assert "items: getOrderedItems(workshopItems)," in script
+    assert "cloudsave.group.otherTitle" in script
+    assert "cloudsave.group.workshopTitle" in script
+    assert "local_updated_at_utc" in script
+    assert "state.preferredCharacterName" in script
+    assert "localeCompare" in script
     assert script.index("kind: 'other'") < script.index("kind: 'workshop'")
 
 

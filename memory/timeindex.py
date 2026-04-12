@@ -101,23 +101,34 @@ class TimeIndexedMemory:
             try:
                 if engine is not None:
                     engine.dispose()
-            except Exception:
-                pass
+            except Exception as cleanup_exc:
+                logger.debug(
+                    "[TimeIndexedMemory] 初始化失败后的 engine.dispose 清理失败: %s",
+                    cleanup_exc,
+                )
             try:
                 existing_engine = self.engines.get(lanlan_name)
                 if existing_engine is engine:
                     self.engines.pop(lanlan_name, None)
                     self.db_paths.pop(lanlan_name, None)
                     self._writable_bootstrapped.discard(lanlan_name)
-            except Exception:
-                pass
+            except Exception as cleanup_exc:
+                logger.debug(
+                    "[TimeIndexedMemory] 初始化失败后的缓存回收清理失败(%s): %s",
+                    lanlan_name,
+                    cleanup_exc,
+                )
             if connection_string:
                 cached_engine = SQLChatMessageHistory._engine_cache.pop(connection_string, None)
                 if cached_engine is not None and cached_engine is not engine:
                     try:
                         cached_engine.dispose()
-                    except Exception:
-                        pass
+                    except Exception as cleanup_exc:
+                        logger.debug(
+                            "[TimeIndexedMemory] 初始化失败后的 SQLChatMessageHistory 引擎清理失败(%s): %s",
+                            lanlan_name,
+                            cleanup_exc,
+                        )
             logger.exception(f"初始化角色数据库引擎失败: {lanlan_name}")
             return False
 

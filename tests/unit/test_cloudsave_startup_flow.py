@@ -273,7 +273,7 @@ def test_launcher_cleanup_requests_main_before_memory(monkeypatch):
 
     launcher.cleanup_servers()
 
-    assert call_order[:3] == ["main", "memory", "agent"]
+    assert call_order == ["main", "memory", "agent"]
 
 
 @pytest.mark.unit

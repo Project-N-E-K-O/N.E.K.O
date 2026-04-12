@@ -503,7 +503,7 @@ body .container-header {
 
 .cloudsave-meta-value {
     font-size: 0.92rem;
-    word-break: break-word;
+    overflow-wrap: break-word;
 }
 
 .cloudsave-warning-list {

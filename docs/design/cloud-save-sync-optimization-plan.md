@@ -223,9 +223,7 @@ startup_import_required = bool(
 - Windows / macOS / Linux source 启动时：
   - 可能先从 Steam RemoteStorage 读取 bundle，覆盖本地 `cloudsave/`
   - 然后再按 manifest/status 判断是否把 `cloudsave/` 应用回运行时
-- Windows frozen / Steam 打包版：
-  - 这条链路直接返回 `reason = "not_source_launch"`
-- 仅 frozen / 非 source launch：
+- 非 source launch（包含 frozen / Steam 打包版）：
   - 这条链路直接返回 `reason = "not_source_launch"`
 
 因此当前主路径仍是：

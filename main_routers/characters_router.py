@@ -19,6 +19,7 @@ import hashlib
 import struct
 import tempfile
 import zlib
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, Request, File, UploadFile, Form
@@ -77,7 +78,13 @@ def _json_no_store_response(content, *, status_code: int = 200):
 
 
 def _derive_live2d_model_name(model_ref: str) -> str:
-    normalized_ref = str(model_ref or "").strip().replace("\\", "/")
+    raw_ref = str(model_ref or "").strip()
+    if not raw_ref:
+        return ""
+    parsed_ref = urlparse(raw_ref)
+    is_http_url = parsed_ref.scheme in {"http", "https"} and bool(parsed_ref.netloc)
+    model_ref_source = parsed_ref.path if is_http_url and parsed_ref.path else raw_ref
+    normalized_ref = model_ref_source.strip().replace("\\", "/")
     if not normalized_ref:
         return ""
     if normalized_ref.endswith(".model3.json"):
