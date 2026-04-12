@@ -3073,19 +3073,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 // 使用 URL 加载模型，而不是本地文件路径（浏览器不允许加载 file:// 路径）
-                // 传入 { autoPlay: false } 以便在此处统一播放待机动画，避免先露出 T-pose
+                // 把 wait03 交给 loadModel 内部的 autoPlay 流水线，由它保证"先起动画、再淡入"，
+                // 避免外部 await 造成 showAndFadeIn 先于动画播放、让 T-pose 露出的竞态。
+                // 用户保存的 idle 选择由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖。
                 //增加 addShadow: false
                 // 【注意】朝向会自动从preferences中加载（在vrm-core.js的loadModel中处理）
-                await vrmManager.loadModel(modelUrl, { autoPlay: false, addShadow: false });
-                // 加载后立即播内置 wait03 防 T-pose; 用户保存的 idle 选择
-                // 由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖
-                if (vrmManager.animation) {
-                    try {
-                        await vrmManager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', { loop: true, immediate: true, isIdle: true });
-                    } catch (e) {
-                        console.warn('[VRM] 播放 wait03 待机动画失败:', e);
-                    }
-                }
+                await vrmManager.loadModel(modelUrl, {
+                    addShadow: false,
+                    idleAnimation: '/static/vrm/animation/wait03.vrma'
+                });
                 // 加载新模型后，重置播放状态
                 isVrmAnimationPlaying = false;
                 updateVRMAnimationPlayButtonIcon();
