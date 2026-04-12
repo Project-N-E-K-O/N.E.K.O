@@ -2111,7 +2111,7 @@ body.react-chat-window-dragging {
 
     /* 窄屏与桌面统一用 grid 布局：auto(顶栏) 1fr(消息) auto(输入) +
        overflow:hidden 保证输入区不会被消息挤出。shell 尺寸仍由
-       syncMobileContentLayout() 写成显式像素（根据内容 50vh 上限）。*/
+       syncMobileContentLayout() 写成显式像素（根据内容 50vh 上限）。 */
     #react-chat-window-shell .chat-window {
         height: 100%;
         display: grid;
@@ -2133,7 +2133,7 @@ body.react-chat-window-dragging {
     }
 
     /* .is-mobile-content-capped 现在不再影响布局（message-list 始终可滚），
-       保留空规则以免其他位置若有依赖时出现样式回退。*/
+       保留空规则以免其他位置若有依赖时出现样式回退。 */
     #react-chat-window-shell.is-mobile-content-capped .message-list {
         overflow-y: auto;
     }
