@@ -86,7 +86,7 @@
 <!--<div class="filter-label" data-i18n="steam.search">搜索：</div>-->
 <div class="search-input-wrapper">
     <input type="text" id="search-subscription" class="control-input" placeholder="" onkeyup="filterSubscriptions(this.value)" data-i18n-placeholder="steam.searchPlaceholder" aria-label="搜索订阅内容" data-i18n-aria="steam.searchAriaLabel">
-    <img src="/static/icons/search_icon.png" class="search-icon" alt="搜索">
+    <img src="/static/icons/search_icon.png" class="search-icon" alt="" aria-hidden="true">
 </div>
 </div>
 <div class="filter-group action-group">
@@ -101,11 +101,11 @@
 <option value="update_asc" data-i18n="steam.sort.updateAsc">更新时间（升序）</option>
 <option value="update_desc" data-i18n="steam.sort.updateDesc">更新时间（降序）</option>
 </select>
-<img src="/static/icons/drop_down_arrow_icon.png" class="select-arrow-icon" alt="下拉箭头">
+<img src="/static/icons/drop_down_arrow_icon.png" class="select-arrow-icon" alt="" aria-hidden="true">
 </div>
 <div class="refresh-button-wrapper">
 <button class="btn btn-primary" onclick="loadSubscriptions()" data-i18n="steam.refresh">刷新订阅内容</button>
-<img src="/static/icons/roload_icon.png" class="refresh-icon" alt="刷新">
+<img src="/static/icons/roload_icon.png" class="refresh-icon" alt="" aria-hidden="true">
 </div>
 </div>
 </div>

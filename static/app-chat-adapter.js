@@ -572,6 +572,10 @@
     window.addEventListener('chat-avatar-preview-updated', refreshReactAssistantAvatars);
     window.addEventListener('chat-avatar-preview-cleared', refreshReactAssistantAvatars);
 
+    // init() 的 chat-avatar-preview-updated 事件可能在本脚本或 reactChatWindowHost 就绪前触发，
+    // 延迟到所有同步脚本加载完成后主动刷新一次
+    setTimeout(refreshReactAssistantAvatars, 0);
+
     // ======================== 隐藏旧 chat container ========================
 
     function hideOldChat() {

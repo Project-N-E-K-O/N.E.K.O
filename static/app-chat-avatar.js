@@ -18,6 +18,8 @@
     let externalAvatarDataUrl = '';
     let externalAvatarModelType = '';
 
+    const STORAGE_PREFIX = 'neko_avatar:';
+
     function translateLabel(key, fallback) {
         if (typeof window.safeT === 'function') {
             return window.safeT(key, fallback);
@@ -30,6 +32,63 @@
 
     function getErrorMessage(error) {
         return error && error.message ? error.message : String(error || '');
+    }
+
+    // ——— per-character localStorage ———
+
+    function getCurrentCharacterKey() {
+        var name = window.lanlan_config && window.lanlan_config.lanlan_name;
+        return name ? STORAGE_PREFIX + name : '';
+    }
+
+    function saveToStorage(preview) {
+        var key = getCurrentCharacterKey();
+        if (!key) return;
+        try {
+            localStorage.setItem(key, JSON.stringify({
+                dataUrl: preview.dataUrl,
+                modelType: preview.modelType,
+                capturedAt: preview.capturedAt
+            }));
+        } catch (_) { /* quota exceeded — 静默失败 */ }
+    }
+
+    function loadFromStorage() {
+        var key = getCurrentCharacterKey();
+        if (!key) return null;
+        try {
+            var raw = localStorage.getItem(key);
+            if (!raw) return null;
+            var parsed = JSON.parse(raw);
+            if (parsed && parsed.dataUrl) return parsed;
+        } catch (_) { /* 损坏数据 — 忽略 */ }
+        return null;
+    }
+
+    /** 清除已不存在的角色的头像缓存（fire-and-forget） */
+    function purgeOrphanedAvatars() {
+        // 清理旧版单 key 缓存
+        try { localStorage.removeItem('neko_chat_avatar_cache'); } catch (_) {}
+
+        fetch('/api/characters')
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                var validNames = new Set();
+                var catgirls = data && data['\u732b\u5a18'];  // 猫娘
+                if (catgirls && typeof catgirls === 'object') {
+                    Object.keys(catgirls).forEach(function (n) { validNames.add(n); });
+                }
+                for (var i = localStorage.length - 1; i >= 0; i--) {
+                    var k = localStorage.key(i);
+                    if (k && k.indexOf(STORAGE_PREFIX) === 0) {
+                        var charName = k.slice(STORAGE_PREFIX.length);
+                        if (!validNames.has(charName)) {
+                            localStorage.removeItem(k);
+                        }
+                    }
+                }
+            })
+            .catch(function () { /* 静默失败 */ });
     }
 
     function normalizeModelLabel(modelType) {
@@ -153,6 +212,7 @@
             modelType: result.modelType || getCurrentModelType(),
             capturedAt: Date.now()
         };
+        saveToStorage(cachedPreview);
 
         setPreviewImage(cachedPreview.dataUrl);
         setPreviewStatus(
@@ -169,13 +229,10 @@
         }));
     }
 
-    function clearCachedPreview() {
+    /** 仅清内存，让 scheduleAutoCapture 不被跳过；localStorage 按角色隔离，无需清除 */
+    function invalidateCachedPreview() {
         cachedPreview = null;
         lastScheduledCacheKey = '';
-        setPreviewImage('');
-        setPreviewStatus(translateLabel('chat.avatarPreviewWaiting', '等待当前模型头像缓存生成'));
-        setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
-        window.dispatchEvent(new CustomEvent('chat-avatar-preview-cleared'));
     }
 
     async function captureAvatarPreview() {
@@ -317,18 +374,18 @@
                 if (previousOnModelLoaded) {
                     previousOnModelLoaded.call(window.live2dManager, model, modelPath);
                 }
-                clearCachedPreview();
+                invalidateCachedPreview();
                 scheduleAutoCapture('live2d-model-loaded');
             };
         }
 
         window.addEventListener('vrm-model-loaded', function () {
-            clearCachedPreview();
+            invalidateCachedPreview();
             scheduleAutoCapture('vrm-model-loaded');
         });
 
         window.addEventListener('mmd-model-loaded', function () {
-            clearCachedPreview();
+            invalidateCachedPreview();
             scheduleAutoCapture('mmd-model-loaded');
         });
     }
@@ -354,6 +411,45 @@
         S.dom.chatAvatarPreviewRefreshButton = document.getElementById('chatAvatarPreviewRefreshButton');
         S.dom.chatAvatarPreviewCloseButton = document.getElementById('chatAvatarPreviewCloseButton');
 
+        // —— 数据层：不管有无预览 UI 都执行（chat.html 没有预览卡片但仍需头像数据） ——
+
+        // 从 localStorage 恢复当前角色的头像
+        var stored = loadFromStorage();
+        if (stored) {
+            cachedPreview = {
+                cacheKey: getCurrentModelCacheKey(),
+                dataUrl: stored.dataUrl,
+                modelType: stored.modelType,
+                capturedAt: stored.capturedAt
+            };
+            setPreviewImage(cachedPreview.dataUrl);
+            setPreviewStatus(
+                translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
+            );
+            setPreviewNote(translateLabel('chat.avatarPreviewCachedHint', '已显示当前模型的缓存头像，点击刷新可重新生成。'));
+            window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+                detail: {
+                    dataUrl: cachedPreview.dataUrl,
+                    modelType: cachedPreview.modelType,
+                    capturedAt: cachedPreview.capturedAt,
+                    source: 'storage'
+                }
+            }));
+        } else {
+            cachedPreview = null;
+            setPreviewImage('');
+            setPreviewStatus(translateLabel('chat.avatarPreviewWaiting', '等待当前模型头像缓存生成'));
+            setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
+        }
+
+        bindModelLoadListeners();
+        scheduleAutoCapture('init');
+
+        // 清理已删除角色的残留头像（不阻塞初始化）
+        purgeOrphanedAvatars();
+
+        // —— UI 层：仅在预览卡片存在时绑定（index.html） ——
+
         const button = S.dom.avatarPreviewButton;
         const refreshButton = S.dom.chatAvatarPreviewRefreshButton;
         const closeButton = S.dom.chatAvatarPreviewCloseButton;
@@ -375,9 +471,6 @@
         });
 
         document.addEventListener('pointerdown', handleOutsidePointer, true);
-        clearCachedPreview();
-        bindModelLoadListeners();
-        scheduleAutoCapture('init');
     };
 
     mod.getCachedPreview = function getCachedPreview() {
@@ -391,6 +484,11 @@
 
     mod.getCurrentAvatarDataUrl = function getCurrentAvatarDataUrl() {
         if (hasUsableCachedPreview()) return cachedPreview.dataUrl || '';
+        // 内存缓存被 invalidate（模型加载中）或 cacheKey 暂不匹配时，仍返回旧头像
+        if (cachedPreview && cachedPreview.dataUrl) return cachedPreview.dataUrl;
+        // 内存为空但 localStorage 有持久化头像（invalidate 后的 fallback）
+        var stored = loadFromStorage();
+        if (stored && stored.dataUrl) return stored.dataUrl;
         // 多窗口 fallback：使用 IPC 注入的头像
         if (externalAvatarDataUrl) return externalAvatarDataUrl;
         return '';

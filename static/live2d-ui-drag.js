@@ -111,7 +111,7 @@ Live2DManager.prototype.closePopupById = function (buttonId) {
 
     // 如果是 agent 弹窗关闭，派发关闭事件
     if (buttonId === 'agent') {
-        window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+        window.dispatchEvent(new CustomEvent('neko-popup-closed'));
     }
 
     popup.style.opacity = '0';
@@ -739,7 +739,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
     // 如果是 agent 弹窗，触发服务器状态检查事件
     if (buttonId === 'agent' && !isVisible) {
         // 弹窗即将显示，派发事件让 app.js 检查服务器状态
-        window.dispatchEvent(new CustomEvent('live2d-agent-popup-opening'));
+        window.dispatchEvent(new CustomEvent('neko-popup-opening'));
     }
 
     if (isVisible) {
@@ -770,7 +770,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
 
         // 如果是 agent 弹窗关闭，派发关闭事件
         if (buttonId === 'agent') {
-            window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+            window.dispatchEvent(new CustomEvent('neko-popup-closed'));
         }
 
         setTimeout(() => {

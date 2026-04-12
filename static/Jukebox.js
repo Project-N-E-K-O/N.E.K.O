@@ -453,6 +453,20 @@ window.Jukebox = {
     isVisible: false,
 
     toggle: function() {
+      if (window.__NEKO_JUKEBOX_STANDALONE__) {
+        // 独立模式：打开/关闭管理器独立窗口
+        if (this._managerWindow && !this._managerWindow.closed) {
+          this._managerWindow.close();
+          this._managerWindow = null;
+        } else {
+          this._managerWindow = window.open(
+            '/jukebox/manager', 'neko-jukebox-manager',
+            'width=480,height=600'
+          );
+        }
+        return;
+      }
+      // Web 模式：切换 DOM 面板
       if (this.isVisible) {
         this.hide();
       } else {
@@ -464,11 +478,9 @@ window.Jukebox = {
       if (this.element) {
         this.element.style.display = 'flex';
         this.isVisible = true;
-        // 如果尚未被拖拽过，定位到点歌台左侧
         if (!this.element.style.left) {
           this.positionNextToJukebox();
         }
-        // 刷新数据
         this.load();
       }
     },
@@ -3216,6 +3228,13 @@ window.Jukebox = {
     const MAX_RETRIES = 20;
     const jukeboxButton = document.getElementById('jukeboxButton');
     if (!jukeboxButton) {
+      // React Chat 模式下按钮由 React 组件渲染，通过 onJukeboxClick 回调直接调用
+      // window.Jukebox.toggle()，无需绑定 DOM 按钮
+      const reactChatRoot = document.getElementById('react-chat-window-root');
+      if (reactChatRoot) {
+        console.log('[Jukebox]', 'React Chat 模式，跳过 DOM 按钮绑定');
+        return;
+      }
       if (retries >= MAX_RETRIES) {
         console.error('[Jukebox]', window.t('Jukebox.btnNotFoundGiveUp', '点歌台按钮在重试后仍未找到，放弃绑定'));
         return;
@@ -3317,12 +3336,25 @@ window.Jukebox = {
     });
     
     Jukebox.State.isOpen = true;
-    
+
+    // 监听管理器独立窗口的刷新通知（BroadcastChannel 跨窗口通信）
+    try {
+      if (!Jukebox._broadcastChannel) {
+        Jukebox._broadcastChannel = new BroadcastChannel('neko-jukebox');
+        Jukebox._broadcastChannel.onmessage = function(e) {
+          if (e.data && e.data.type === 'reload' && Jukebox.State.isOpen) {
+            console.log('[Jukebox] 收到管理器刷新通知，重新加载歌曲');
+            Jukebox.loadSongs();
+          }
+        };
+      }
+    } catch (e) {}
+
     const jukeboxButton = document.getElementById('jukeboxButton');
     if (jukeboxButton) {
       jukeboxButton.classList.add('active');
     }
-    
+
     console.log('[Jukebox] 点歌台已打开');
   },
   
@@ -3389,6 +3421,15 @@ window.Jukebox = {
     
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
+    
+    // 清理 BroadcastChannel
+    try {
+      if (Jukebox._broadcastChannel) {
+        Jukebox._broadcastChannel.onmessage = null;
+        Jukebox._broadcastChannel.close();
+        Jukebox._broadcastChannel = null;
+      }
+    } catch (e) {}
     
     // 清空歌曲列表和元素映射，确保下次打开时重新渲染
     Jukebox.State.songs = [];
@@ -3529,10 +3570,12 @@ window.Jukebox = {
     document.body.appendChild(sidePanel);
     Jukebox.State.container = wrapper;
     
-    // 绑定窗口拖拽事件
-    Jukebox.bindWindowDrag(wrapper, jukeboxContainer);
-    // 绑定管理器面板拖拽事件
-    Jukebox.bindPanelDrag(sidePanel);
+    // 独立窗口模式由 preload 注入 -webkit-app-region: drag 处理拖拽，
+    // JS 拖拽会因 preventDefault 与原生拖拽冲突，且 inset:0!important 阻止 wrapper 移动
+    if (!window.__NEKO_JUKEBOX_STANDALONE__) {
+      Jukebox.bindWindowDrag(wrapper, jukeboxContainer);
+      Jukebox.bindPanelDrag(sidePanel);
+    }
     
     Jukebox.injectStyles();
   },
@@ -5534,5 +5577,100 @@ window.Jukebox = {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  },
+
+  /**
+   * 语言切换后刷新 Jukebox UI 文本
+   * 独立窗口模式直接重载页面；嵌入模式逐一更新 DOM 元素
+   */
+  refreshLocale: function() {
+    // 独立窗口（N.E.K.O.-PC）：重载最干净
+    if (window.__NEKO_JUKEBOX_STANDALONE__) {
+      location.reload();
+      return;
+    }
+
+    // 嵌入模式：逐一刷新已渲染的静态文本
+    const c = Jukebox.State.container;
+    if (!c) return;
+
+    // --- Header ---
+    var h3 = c.querySelector('.jukebox-header h3');
+    if (h3) h3.textContent = window.t('Jukebox.title', '点歌台');
+    var settingsBtn = c.querySelector('.jukebox-settings');
+    if (settingsBtn) settingsBtn.title = window.t('Jukebox.manager', '管理器');
+    var minBtn = c.querySelector('.jukebox-minimize');
+    if (minBtn) minBtn.title = window.t('Jukebox.minimize', '最小化');
+    var closeBtn = c.querySelector('.jukebox-close');
+    if (closeBtn) closeBtn.title = window.t('Jukebox.close', '关闭');
+
+    // --- Calibration ---
+    var calToggle = c.querySelector('#jukebox-calibration-toggle');
+    if (calToggle) calToggle.textContent = window.t('Jukebox.calibrateAnimation', '校准动画');
+    var calClose = c.querySelector('.jukebox-calibration-close');
+    if (calClose) calClose.textContent = window.t('Jukebox.closeCalibration', '关闭校准控制台');
+    var calReset = c.querySelector('.jukebox-calibration-reset');
+    if (calReset) { calReset.textContent = window.t('Jukebox.reset', '重置'); calReset.title = window.t('Jukebox.reset', '重置'); }
+    var calTitle = c.querySelector('.jukebox-calibration-title');
+    if (calTitle) {
+      var fpsSpan = calTitle.querySelector('#jukebox-calibration-fps');
+      var fpsHtml = fpsSpan ? fpsSpan.outerHTML : '';
+      calTitle.innerHTML = window.t('Jukebox.animationCalibration', '动画校准') + ' ' + fpsHtml;
+    }
+
+    // --- Notice ---
+    var notices = c.querySelectorAll('.jukebox-notice-item');
+    if (notices[0]) notices[0].textContent = window.t('Jukebox.noticeDance', '💃 伴舞服务目前仅在载入 MMD 形象时可用，后续会增加更多互动');
+    if (notices[1]) notices[1].textContent = window.t('Jukebox.noticeMusic', '⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入');
+
+    // --- Table headers ---
+    var ths = c.querySelectorAll('.jukebox-table thead th');
+    if (ths.length >= 4) {
+      ths[0].textContent = window.t('Jukebox.sequence', '序号');
+      ths[1].textContent = window.t('Jukebox.song', '歌曲');
+      ths[2].textContent = window.t('Jukebox.artist', '艺术家');
+      ths[3].textContent = window.t('Jukebox.action', '操作');
+    }
+
+    // --- Mute button ---
+    var speakerBtn = c.querySelector('#jukebox-speaker-btn');
+    if (speakerBtn) speakerBtn.title = window.t('Jukebox.mute', '静音');
+
+    // --- Re-render song list (preserves playback state) ---
+    if (Jukebox.State.songs && Jukebox.State.songs.length) {
+      Jukebox.renderList();
+    }
+
+    // --- Re-render SongActionManager (if visible) ---
+    try {
+      if (Jukebox.SongActionManager && Jukebox.SongActionManager.element) {
+        // Rebuild panel to refresh tab titles and static text
+        var panel = Jukebox.SongActionManager.element;
+        var titleEl = panel.querySelector('.sam-title');
+        if (titleEl) titleEl.textContent = window.t('Jukebox.managerTitle', '管理器');
+        var tabs = panel.querySelectorAll('.sam-tab');
+        var tabKeys = ['Jukebox.songs', 'Jukebox.actions', 'Jukebox.bindings'];
+        var tabDefaults = ['歌曲', '动作', '绑定'];
+        tabs.forEach(function(tab, i) {
+          if (tabKeys[i]) tab.textContent = window.t(tabKeys[i], tabDefaults[i]);
+        });
+        var samCloseBtn = panel.querySelector('.sam-close-btn');
+        if (samCloseBtn) samCloseBtn.title = window.t('Jukebox.close', '关闭');
+        // Re-render active tab content
+        Jukebox.SongActionManager.render();
+      }
+    } catch (e) { console.warn('[Jukebox] refreshLocale SongActionManager error:', e); }
+
+    console.log('[Jukebox] UI 文本已刷新');
   }
 };
+
+// ===== 跨窗口语言切换自动刷新 =====
+// i18n-i18next.js 会通过 storage 事件检测其他窗口的语言变更并调用 changeLanguage，
+// changeLanguage 触发 languageChanged → localechange 自定义事件。
+// 此处监听 localechange，在 Jukebox 已打开时自动刷新 UI 文本。
+window.addEventListener('localechange', function() {
+  if (Jukebox.State.isOpen || Jukebox.State.isHidden) {
+    Jukebox.refreshLocale();
+  }
+});

@@ -117,17 +117,31 @@
         // ===== 监听转写消息 =====
         window.addEventListener('neko-ws-transcript', function(e) {
             var data = e.detail;
-            if (data && data.transcript) {
-                subtitleText.textContent = data.transcript;
+            if (data && data.transcript != null) {
+                subtitleText.textContent = data.transcript || '';
                 autoResize();
             }
         });
 
-        // ===== 自动缩放窗口 =====
+        // ===== 自动缩放窗口（防抖，避免流式文本高频 resize 导致闪烁）=====
+        var DEFAULT_W = 600, DEFAULT_H = 80;
+        var resizeTimer = null;
+
         function autoResize() {
             if (!api || !api.setSize) return;
+            // 防抖：流式文本快速到达时，仅在最后一次更新后 150ms 才真正 resize
+            if (resizeTimer) clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(doResize, 150);
+        }
+
+        function doResize() {
+            resizeTimer = null;
             var text = subtitleText.textContent || '';
-            if (!text.trim()) return;
+            if (!text.trim()) {
+                // 文本清空时重置为默认尺寸
+                api.setSize(DEFAULT_W, DEFAULT_H);
+                return;
+            }
 
             // 用隐藏元素测量：先测单行宽度
             var m = document.createElement('div');
@@ -155,20 +169,16 @@
         // 窗口默认 setIgnoreMouseEvents(true, {forward:true})
         // mousemove 能收到，但 mousedown 收不到
         // 进入 drag handle 区域时取消穿透，离开时恢复
+        //
+        // 拖拽委托给主进程的 DRAG_START/DRAG_STOP：主进程在 dragStart 时缓存
+        // startBounds（含固定的 width/height），后续 setBounds 使用缓存尺寸，
+        // 彻底避免 Windows DWM 透明窗口 getBounds() 尺寸漂移导致窗口逐渐放大。
         if (api) {
             var overHandle = false;
             var isDragging = false;
-            var ready = false;
-            var sx = 0, sy = 0, ox = 0, oy = 0;
 
             document.addEventListener('mousemove', function(e) {
-                if (isDragging) {
-                    // 拖拽中：移动窗口
-                    if (ready) {
-                        api.setPosition(ox + e.screenX - sx, oy + e.screenY - sy);
-                    }
-                    return;
-                }
+                if (isDragging) return; // 拖拽中由主进程控制位置，renderer 不干预
                 // 检测是否在 drag handle 上
                 var el = document.elementFromPoint(e.clientX, e.clientY);
                 var isOnHandle = dragHandle.contains(el);
@@ -182,12 +192,9 @@
             });
 
             dragHandle.addEventListener('mousedown', function(e) {
-                isDragging = true; ready = false;
-                sx = e.screenX; sy = e.screenY;
-                api.getBounds().then(function(b) {
-                    if (b) { ox = b.x; oy = b.y; }
-                    ready = true;
-                });
+                isDragging = true;
+                // 委托主进程进行拖拽（主进程缓存初始尺寸，避免 getBounds 漂移）
+                api.dragStart();
                 dragHandle.style.cursor = 'grabbing';
                 e.preventDefault();
             });
@@ -195,7 +202,9 @@
             document.addEventListener('mouseup', function() {
                 if (isDragging) {
                     dragHandle.style.cursor = 'grab';
-                    isDragging = false; ready = false;
+                    isDragging = false;
+                    // 通知主进程停止拖拽（会触发 bounceBackToWorkArea）
+                    api.dragStop();
                 }
                 if (overHandle) {
                     // 鼠标还在 handle 上，保持交互

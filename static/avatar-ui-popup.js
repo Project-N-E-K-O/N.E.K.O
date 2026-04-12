@@ -635,6 +635,26 @@ function createCharacterSettingsSidePanel(manager, prefix) {
 /**
  * 创建侧边面板菜单项
  */
+// 跟踪所有已打开的模型管理子窗口，只有全部关闭后才恢复主页渲染
+const _activeManagerWindows = new Set();
+let _managerWindowCheckTimer = null;
+
+function _startManagerWindowWatcher() {
+    if (_managerWindowCheckTimer) return;
+    _managerWindowCheckTimer = setInterval(() => {
+        for (const win of _activeManagerWindows) {
+            if (win.closed) _activeManagerWindows.delete(win);
+        }
+        if (_activeManagerWindows.size === 0) {
+            clearInterval(_managerWindowCheckTimer);
+            _managerWindowCheckTimer = null;
+            if (typeof window.handleShowMainUI === 'function') {
+                window.handleShowMainUI();
+            }
+        }
+    }, 1000);
+}
+
 function createSidePanelMenuItem(manager, prefix, item) {
     const menuItem = document.createElement('div');
     menuItem.id = `${prefix}-sidepanel-${item.id}`;
@@ -695,6 +715,23 @@ function createSidePanelMenuItem(manager, prefix, item) {
 
     let isOpening = false;
 
+    // 打开子窗口并暂停主页渲染，所有管理窗口关闭后自动恢复
+    function openAndPauseMainUI(url, name, feat) {
+        let childWin;
+        if (typeof window.openOrFocusWindow === 'function') {
+            childWin = window.openOrFocusWindow(url, name, feat);
+        } else {
+            childWin = window.open(url, name, feat);
+        }
+        // 弹窗被拦截或打开失败时不隐藏主页，避免无法恢复
+        if (!childWin) return;
+        if (typeof window.handleHideMainUI === 'function') {
+            window.handleHideMainUI();
+        }
+        _activeManagerWindows.add(childWin);
+        _startManagerWindowWatcher();
+    }
+
     menuItem.addEventListener('click', (e) => {
         e.stopPropagation();
         if (isOpening) return;
@@ -708,7 +745,8 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 isOpening = true;
-                window.location.href = finalUrl;
+                windowName = `neko_${item.id}_${encodeURIComponent(lanlanName || 'default')}`;
+                openAndPauseMainUI(finalUrl, windowName);
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -2108,7 +2146,7 @@ const AvatarPopupMixin = {
             if (typeof popup._showToken !== 'number') popup._showToken = 0;
 
             if (buttonId === 'agent' && !isVisible) {
-                window.dispatchEvent(new CustomEvent('live2d-agent-popup-opening'));
+                window.dispatchEvent(new CustomEvent('neko-popup-opening'));
             }
 
             if (isVisible) {
@@ -2120,7 +2158,7 @@ const AvatarPopupMixin = {
                 if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
                     this.updateSeparatePopupTriggerIcon(buttonId, false);
                 }
-                if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+                if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('neko-popup-closed'));
 
                 // 关闭该 popup 所属的所有侧面板
                 const closingPopupId = popup.id;
@@ -2214,7 +2252,7 @@ const AvatarPopupMixin = {
             const popup = document.getElementById(`${prefix}-popup-${buttonId}`);
             if (!popup || popup.style.display !== 'flex') return false;
 
-            if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+            if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('neko-popup-closed'));
             popup._showToken = (popup._showToken || 0) + 1;
             if (popup._hideTimeoutId) { clearTimeout(popup._hideTimeoutId); popup._hideTimeoutId = null; }
 
@@ -2352,7 +2390,10 @@ const AvatarPopupMixin = {
                     const grid = document.createElement('div');
                     Object.assign(grid.style, { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', padding: '6px' });
 
-                    items.forEach(source => {
+                    items.forEach((source, index) => {
+                        const displayName = typeof window.getScreenSourceDisplayName === 'function'
+                            ? window.getScreenSourceDisplayName(source, index)
+                            : source.name;
                         const option = document.createElement('div');
                         option.className = 'screen-source-option';
                         option.dataset.sourceId = source.id;
@@ -2374,7 +2415,11 @@ const AvatarPopupMixin = {
                         thumb.onerror = () => { thumb.style.display = 'none'; };
 
                         const name = document.createElement('div');
-                        name.textContent = source.name;
+                        name.textContent = displayName || source.name || '';
+                        if (source.name) {
+                            name.title = source.name;
+                            option.title = source.name;
+                        }
                         Object.assign(name.style, {
                             fontSize: '11px', textAlign: 'center', maxWidth: '90px',
                             overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box',
@@ -2397,7 +2442,7 @@ const AvatarPopupMixin = {
                         option.addEventListener('click', (e) => {
                             e.stopPropagation();
                             if (typeof window.selectScreenSource === 'function') {
-                                window.selectScreenSource(source.id, source.name);
+                                window.selectScreenSource(source.id, source.name, displayName);
                             }
                         });
 

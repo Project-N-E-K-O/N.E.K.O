@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import MessageList from './MessageList';
+import { i18n } from './i18n';
 import {
   type ChatMessage,
   type MessageAction,
@@ -21,26 +22,26 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
 const defaultMessages: ChatMessage[] = [];
 
 export default function App({
-  title = 'N.E.K.O Chat',
+  title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
-  inputPlaceholder = '输入消息...',
-  sendButtonLabel = '发送',
-  chatWindowAriaLabel = 'Neko chat window',
-  messageListAriaLabel = 'Chat messages',
-  composerToolsAriaLabel = 'Composer tools',
+  inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
+  sendButtonLabel = i18n('chat.send', 'Send'),
+  chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
+  messageListAriaLabel = i18n('chat.messageListAriaLabel', 'Chat messages'),
+  composerToolsAriaLabel = i18n('chat.composerToolsAriaLabel', 'Composer tools'),
   composerAttachments = [],
-  composerAttachmentsAriaLabel = 'Pending attachments',
-  importImageButtonLabel = '导入图片',
-  screenshotButtonLabel = '截图',
+  composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
+  importImageButtonLabel = i18n('chat.importImage', 'Import Image'),
+  screenshotButtonLabel = i18n('chat.screenshot', 'Screenshot'),
   importImageButtonAriaLabel,
   screenshotButtonAriaLabel,
-  removeAttachmentButtonAriaLabel = '移除图片',
-  failedStatusLabel = '发送失败',
-  jukeboxButtonLabel = '点歌台',
-  jukeboxButtonAriaLabel = '点歌台',
+  removeAttachmentButtonAriaLabel = i18n('chat.removePendingImage', 'Remove image'),
+  failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
+  jukeboxButtonLabel = i18n('chat.jukeboxLabel', 'Jukebox'),
+  jukeboxButtonAriaLabel = i18n('chat.jukebox', 'Jukebox'),
   translateEnabled = false,
-  translateButtonLabel = '字幕翻译',
+  translateButtonLabel = i18n('subtitle.enable', 'Subtitle Translation'),
   translateButtonAriaLabel,
   onMessageAction,
   onComposerImportImage,
@@ -51,14 +52,59 @@ export default function App({
   onTranslateToggle,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
+  const [pendingDrafts, setPendingDrafts] = useState<Array<{ id: string; text: string; time: string; lastMsgId: string | null }>>([]);
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
 
+  // Clear pending drafts once the host confirms them (appears in messages)
+  useEffect(() => {
+    if (pendingDrafts.length === 0) return;
+    const remaining = pendingDrafts.filter(d => {
+      const anchor = d.lastMsgId ? messages.findIndex(m => m.id === d.lastMsgId) : -1;
+      const newMsgs = messages.slice(anchor + 1);
+      const newUserTexts = new Set(
+        newMsgs
+          .filter(m => m.role === 'user')
+          .flatMap(m => m.blocks.flatMap(b => b.type === 'text' ? [b.text] : [])),
+      );
+      return !newUserTexts.has(d.text);
+    });
+    if (remaining.length < pendingDrafts.length) {
+      setPendingDrafts(remaining);
+    }
+  }, [messages, pendingDrafts]);
+
+  // Merge host messages + optimistic pending drafts
+  const lastUserAuthor = [...messages].reverse().find(m => m.role === 'user')?.author;
+  const allMessages = useMemo(() => {
+    if (pendingDrafts.length === 0) return messages;
+    const optimistic: ChatMessage[] = pendingDrafts.map(d => ({
+      id: d.id,
+      role: 'user' as const,
+      author: lastUserAuthor || 'You',
+      time: d.time,
+      blocks: [{ type: 'text' as const, text: d.text }],
+      status: 'sending' as const,
+    }));
+    return [...messages, ...optimistic];
+  }, [messages, pendingDrafts, lastUserAuthor]);
+
   function submitDraft() {
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
+    const now = new Date();
+    const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map(n => String(n).padStart(2, '0')).join(':');
+    if (text) {
+      setPendingDrafts(prev => [...prev, {
+        id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        text,
+        time,
+        lastMsgId: messages.length > 0 ? messages[messages.length - 1].id : null,
+      }]);
+    }
     onComposerSubmit?.({ text });
     setDraft('');
   }
@@ -78,7 +124,7 @@ export default function App({
 
         <section className="chat-body">
           <MessageList
-            messages={messages}
+            messages={allMessages}
             ariaLabel={messageListAriaLabel}
             failedStatusLabel={failedStatusLabel}
             onAction={onMessageAction}
