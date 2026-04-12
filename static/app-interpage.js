@@ -235,6 +235,12 @@
                 var newModelType = (data.model_type || 'live2d').toLowerCase();
                 var live3dSubType = (data.live3d_sub_type || '').toLowerCase();
                 var oldModelType = window.lanlan_config?.model_type || 'live2d';
+                var nextLighting = (data.lighting && typeof data.lighting === 'object')
+                    ? Object.assign({}, data.lighting)
+                    : null;
+
+                window.lanlan_config = window.lanlan_config || {};
+                window.lanlan_config.lighting = nextLighting;
 
                 console.log('[Model] 模型切换:', {
                     oldType: oldModelType,
@@ -354,9 +360,22 @@
                             }
                         }
 
-                        // Apply lighting config if available
-                        if (window.lanlan_config?.lighting && typeof window.applyVRMLighting === 'function') {
-                            window.applyVRMLighting(window.lanlan_config.lighting, window.vrmManager);
+                        // 重新应用打光/曝光/描边；若角色未保存自定义光照，则回退到默认值，避免沿用上一个角色的灯光状态。
+                        var effectiveLighting = window.lanlan_config?.lighting || window.VRM_DEFAULT_LIGHTING || null;
+                        if (effectiveLighting && typeof window.applyVRMLighting === 'function') {
+                            window.applyVRMLighting(effectiveLighting, window.vrmManager);
+                            if (typeof window.applyVRMOutlineWidth === 'function') {
+                                var currentModelRef = window.vrmManager?.currentModel;
+                                var outlineScale = effectiveLighting.outlineWidthScale;
+                                requestAnimationFrame(function () {
+                                    if (window.vrmManager?.currentModel !== currentModelRef) {
+                                        return;
+                                    }
+                                    if (outlineScale !== undefined) {
+                                        window.applyVRMOutlineWidth(outlineScale, window.vrmManager);
+                                    }
+                                });
+                            }
                         }
                     } else {
                         console.error('[Model] VRM 管理器初始化失败');
