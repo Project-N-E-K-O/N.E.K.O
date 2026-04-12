@@ -67,7 +67,7 @@ const AvatarButtonMixin = {
             }
 
             // 清理旧的侧边面板（防止画质切换等场景导致重复 UI）
-            document.querySelectorAll(`[data-neko-sidepanel-owner^="${prefix}-popup-"]`).forEach(panel => {
+            document.querySelectorAll(`[data-neko-sidepanel-owner^="${options.popupPrefix}-popup-"]`).forEach(panel => {
                 if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
                 if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
                 panel.remove();
