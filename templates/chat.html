@@ -32,7 +32,7 @@
             background: transparent !important;
         }
         #react-chat-window-backdrop { display: none !important; }
-        #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+        #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding):not(.neko-e-collapsed) {
             position: fixed !important;
             inset: 20px !important;
             width: auto !important; height: auto !important;
@@ -107,7 +107,7 @@
             100% { background-position: 250% 250%; }
         }
         /* 静态边缘高光层 — 在内容之下 */
-        #react-chat-window-shell:not(.is-minimized)::before {
+        #react-chat-window-shell:not(.is-minimized):not(.neko-e-collapsed)::before {
             content: '' !important;
             position: absolute !important;
             inset: 0 !important;
@@ -132,7 +132,7 @@
         }
         /* 流动光斑层 — 三色径向渐变缓慢漂移，模拟玻璃折射
            用 background-image 而非 background 简写，避免 !important 锁死 background-position */
-        #react-chat-window-shell:not(.is-minimized)::after {
+        #react-chat-window-shell:not(.is-minimized):not(.neko-e-collapsed)::after {
             content: '' !important;
             position: absolute !important;
             inset: 0 !important;

@@ -23,6 +23,7 @@
     var minimized = false;
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
+    var _sortKeySeq = 0; // monotonically increasing sortKey counter
 
     var state = {
         viewProps: null,
@@ -820,10 +821,16 @@
     function setMessages(messages) {
         var normalized = Array.isArray(messages)
             ? messages.map(function (message, index) {
-                return normalizeMessage(message, index);
+                return normalizeMessage(message, _sortKeySeq + index);
             }).filter(Boolean)
             : [];
         state.messages = sortMessages(normalized);
+        // Advance counter past all assigned sortKeys
+        if (state.messages.length > 0) {
+            _sortKeySeq = state.messages.reduce(function (max, m) {
+                return (typeof m.sortKey === 'number' && m.sortKey > max) ? m.sortKey : max;
+            }, _sortKeySeq) + 1;
+        }
         if (state.messages.length > MAX_MESSAGES) {
             state.messages = state.messages.slice(-MAX_MESSAGES);
         }
@@ -849,7 +856,7 @@
     var MAX_MESSAGES = 50;
 
     function appendMessage(message) {
-        var normalized = normalizeMessage(message, state.messages.length);
+        var normalized = normalizeMessage(message, _sortKeySeq++);
         if (!normalized) return null;
 
         state.messages = sortMessages(state.messages.concat([normalized]));
@@ -888,6 +895,7 @@
 
     function clearMessages() {
         state.messages = [];
+        _sortKeySeq = 0;
         renderWindow();
     }
 
