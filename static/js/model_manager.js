@@ -5296,8 +5296,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // 加载待机动作选项并恢复保存的选择（多选）
+            // 优先读取 snake_case `idle_animation`，这是主保存路径（见 line 1822）实际写入的字段；
+            // 再兼容历史的 `idleAnimations` / `idleAnimation`。与 restoreVrmIdleAnimation 保持一致，
+            // 否则我的 loadModel bootstrap (wait03) 会在此后无法被用户保存的 idle 列表覆盖。
             await loadIdleAnimationOptions();
-            let vrmIdleAnims = charData?.idleAnimations ?? charData?.idleAnimation;
+            let vrmIdleAnims = charData?.idle_animation ?? charData?.idleAnimations ?? charData?.idleAnimation;
             if (vrmIdleAnims != null) {
                 // 向前兼容: string -> array
                 if (typeof vrmIdleAnims === 'string') vrmIdleAnims = vrmIdleAnims ? [vrmIdleAnims] : [];
