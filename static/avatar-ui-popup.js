@@ -208,6 +208,19 @@ function injectPopupStyles(prefix) {
  * 创建弹出框（按 buttonId 区分类型）
  */
 function createPopup(manager, prefix, buttonId) {
+    // 去重守卫：如果同 ID 弹窗已存在，先移除旧的及其侧面板
+    const existingPopup = document.getElementById(`${prefix}-popup-${buttonId}`);
+    if (existingPopup) {
+        const existingId = existingPopup.id;
+        document.querySelectorAll(`[data-neko-sidepanel-owner="${existingId}"]`).forEach(panel => {
+            if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+            if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+            panel.remove();
+        });
+        if (existingPopup._hideTimeoutId) { clearTimeout(existingPopup._hideTimeoutId); }
+        existingPopup.remove();
+    }
+
     const popup = document.createElement('div');
     popup.id = `${prefix}-popup-${buttonId}`;
     popup.className = `${prefix}-popup`;
@@ -439,6 +452,7 @@ function createSettingsMenuButton(manager, prefix, config) {
  */
 function createChatSettingsSidePanel(manager, prefix, popup) {
     const container = manager._createSidePanelContainer();
+    container.setAttribute('data-neko-sidepanel-type', 'chat-settings');
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
     container.style.gap = '0';
@@ -615,6 +629,7 @@ function createTextGuardSlider(manager, prefix) {
  */
 function createCharacterSettingsSidePanel(manager, prefix) {
     const container = manager._createSidePanelContainer();
+    container.setAttribute('data-neko-sidepanel-type', 'character-settings');
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
     container.style.gap = '2px';
@@ -916,6 +931,7 @@ function createSettingsLinkItem(manager, prefix, item, popup) {
  */
 function createAnimationSettingsSidePanel(manager, prefix) {
     const container = manager._createSidePanelContainer();
+    container.setAttribute('data-neko-sidepanel-type', 'animation-settings');
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
     container.style.gap = '0';
@@ -959,16 +975,22 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         qualityValue.textContent = window.t ? window.t(qualityLabelKeys[idx]) : qualityDefaults[idx];
         qualityValue.setAttribute('data-i18n', qualityLabelKeys[idx]);
     });
+    let _qualityChangeTimer = null;
     qualitySlider.addEventListener('change', () => {
         const idx = parseInt(qualitySlider.value, 10);
         const quality = qualityNames[idx];
         window.renderQuality = quality;
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
-        window.dispatchEvent(new CustomEvent('neko-render-quality-changed', { detail: { quality } }));
-        // 调用系统特定的回调
-        if (typeof manager._onQualityChange === 'function') {
-            manager._onQualityChange(quality);
-        }
+        // 防抖：避免快速连续切换画质触发多次模型重载
+        if (_qualityChangeTimer) clearTimeout(_qualityChangeTimer);
+        _qualityChangeTimer = setTimeout(() => {
+            _qualityChangeTimer = null;
+            window.dispatchEvent(new CustomEvent('neko-render-quality-changed', { detail: { quality: window.renderQuality } }));
+            // 调用系统特定的回调
+            if (typeof manager._onQualityChange === 'function') {
+                manager._onQualityChange(window.renderQuality);
+            }
+        }, 300);
     });
     qualitySlider.addEventListener('click', (e) => e.stopPropagation());
     qualitySlider.addEventListener('mousedown', (e) => e.stopPropagation());
@@ -1393,6 +1415,7 @@ function createIntervalControl(manager, prefix, toggle) {
     const container = document.createElement('div');
     container.className = `${prefix}-interval-control-${toggle.id}`;
     container.setAttribute('data-neko-sidepanel', '');
+    container.setAttribute('data-neko-sidepanel-type', `interval-${toggle.id}`);
     Object.assign(container.style, {
         position: 'fixed',
         display: 'none',
