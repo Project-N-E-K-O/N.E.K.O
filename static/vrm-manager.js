@@ -775,22 +775,93 @@ class VRMManager {
     }
 
     /**
-     * 重置模型位置/旋转/缩放到默认值（供外部调用，如 N.E.K.O.-PC）
+     * 重置模型位置/旋转/缩放到默认值，并把相机拉回屏幕中心（供外部调用，如 N.E.K.O.-PC）
+     *
+     * 问题背景：之前只重置 scene.position/rotation/scale，但用户如果右键拖拽过（orbit），
+     * 相机已不再看向世界原点，此时仅复位模型位置会使模型继续处于屏幕外。
+     * 因此这里同时复位相机到依据模型包围盒计算的默认机位，使模型稳定回到屏幕中央。
      */
     resetModelPosition() {
         const model = this.currentModel;
         const scene = model?.vrm?.scene ?? model?.scene;
         if (!scene) return;
 
+        const THREE = window.THREE;
         const vrm = model.vrm || model;
 
+        // 1) 先复位模型的位置与旋转
         scene.position.set(0, 0, 0);
         scene.rotation.set(0, 0, 0);
-        this.setModelScaleScalar(1);
 
+        // 2) 应用朝向检测（保持和初次加载一致）
         if (window.VRMOrientationDetector && vrm) {
             const detectedRotation = window.VRMOrientationDetector.detectAndFixOrientation(vrm, null);
             window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
+        }
+
+        // 3) 根据模型 bounding box 与屏幕大小计算目标缩放，避免硬编码 1 造成视觉过大
+        let targetScale = 1;
+        if (THREE) {
+            try {
+                scene.updateMatrixWorld(true);
+                const preBox = new THREE.Box3().setFromObject(scene);
+                const preSize = preBox.getSize(new THREE.Vector3());
+                const unscaledHeight = preSize.y / (scene.scale.y || 1);
+
+                const screenHeight = window.innerHeight;
+                const screenWidth = window.innerWidth;
+                const isMobile = screenWidth <= 768;
+
+                if (isMobile) {
+                    targetScale = Math.max(0.4, Math.min(0.8, screenHeight / 1800));
+                } else if (unscaledHeight > 0 && Number.isFinite(unscaledHeight) && this.camera && this.camera.fov) {
+                    // 使用固定参考距离（而非 camera.position.z，因相机可能已被 orbit 偏移）
+                    const targetScreenHeight = screenHeight * 0.45;
+                    const fov = this.camera.fov * (Math.PI / 180);
+                    const referenceDistance = 5;
+                    const worldHeightAtDistance = 2 * Math.tan(fov / 2) * referenceDistance;
+                    const scaleRatio = (targetScreenHeight / screenHeight) * (worldHeightAtDistance / unscaledHeight);
+                    targetScale = Math.max(0.5, Math.min(1.2, scaleRatio));
+                } else {
+                    targetScale = Math.max(0.5, Math.min(1.0, screenHeight / 1200));
+                }
+            } catch (err) {
+                console.warn('[VRM Manager] 重置缩放计算失败，使用 1:', err);
+                targetScale = 1;
+            }
+        }
+        this.setModelScaleScalar(targetScale);
+
+        // 4) 根据缩放后的 bounding box 重新放置相机，使模型居中显示
+        if (THREE && this.camera) {
+            try {
+                scene.updateMatrixWorld(true);
+                const box = new THREE.Box3().setFromObject(scene);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+
+                const screenHeight = window.innerHeight;
+                const screenWidth = window.innerWidth;
+                const isMobileDevice = screenWidth <= 768;
+
+                const scaledModelHeight = size.y > 0 ? size.y : 1.5;
+                const targetScreenHeight = screenHeight * 0.45;
+                const fov = this.camera.fov * (Math.PI / 180);
+                const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
+
+                const cameraY = center.y + (isMobileDevice ? scaledModelHeight * 0.2 : scaledModelHeight * 0.1);
+                const cameraZ = Math.abs(distance);
+                this.camera.position.set(0, cameraY, cameraZ);
+
+                this._cameraTarget = new THREE.Vector3(0, center.y, 0);
+                this.camera.lookAt(this._cameraTarget);
+                this.camera.updateProjectionMatrix();
+            } catch (err) {
+                console.warn('[VRM Manager] 重置相机失败，回退到初始机位:', err);
+                this.camera.position.set(0, 1.1, 1.5);
+                this._cameraTarget = new THREE.Vector3(0, 0.9, 0);
+                this.camera.lookAt(this._cameraTarget);
+            }
         }
 
         const modelUrl = model.url || '';
@@ -798,12 +869,12 @@ class VRMManager {
             this.core.saveUserPreferences(
                 modelUrl,
                 { x: 0, y: 0, z: 0 },
-                { x: 1, y: 1, z: 1 },
+                { x: targetScale, y: targetScale, z: targetScale },
                 { x: scene.rotation.x, y: scene.rotation.y, z: scene.rotation.z }
             ).catch(err => console.warn('[VRM Manager] 保存重置偏好失败:', err));
         }
 
-        console.log('[VRM Manager] 模型位置已重置');
+        console.log('[VRM Manager] 模型位置已重置，相机已复位，目标缩放:', targetScale.toFixed(3));
     }
 
     /**
