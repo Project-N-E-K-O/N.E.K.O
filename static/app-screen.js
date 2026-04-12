@@ -837,9 +837,45 @@
         }
     };
 
+    function getScreenSourceDisplayName(source, screenIndex) {
+        if (!source) return '';
+
+        var rawName = source.name ? String(source.name) : '';
+        var sourceId = source.id ? String(source.id) : '';
+        if (!sourceId.startsWith('screen:')) {
+            return rawName;
+        }
+
+        var index = null;
+        if (typeof screenIndex === 'number' && isFinite(screenIndex)) {
+            index = screenIndex + 1;
+        }
+
+        if (!index || index < 1) {
+            var displayId = source.display_id != null ? String(source.display_id) : '';
+            var displayIdMatch = displayId.match(/\d+/);
+            if (displayIdMatch) {
+                index = Number(displayIdMatch[0]);
+            }
+        }
+
+        if (!index || index < 1) {
+            index = 1;
+        }
+
+        if (window.t) {
+            return window.t('app.screenSource.screenLabel', { index: index });
+        }
+
+        return '屏幕 ' + index;
+    }
+    mod.getScreenSourceDisplayName = getScreenSourceDisplayName;
+
     // ======================== selectScreenSource ========================
-    async function selectScreenSource(sourceId, sourceName) {
+    async function selectScreenSource(sourceId, sourceName, displayName) {
         S.selectedScreenSourceId = sourceId;
+
+        var resolvedSourceName = displayName || sourceName || sourceId;
 
         // 持久化到 localStorage
         try {
@@ -856,9 +892,9 @@
         updateScreenSourceListSelection();
 
         // 显示选择提示
-        window.showStatusToast(window.t ? window.t('app.screenSource.selected', { source: sourceName }) : '已选择 ' + sourceName, 3000);
+        window.showStatusToast(window.t ? window.t('app.screenSource.selected', { source: resolvedSourceName }) : '已选择 ' + resolvedSourceName, 3000);
 
-        console.log('[屏幕源] 已选择:', sourceName, '(ID:', sourceId, ')');
+        console.log('[屏幕源] 已选择:', sourceName || resolvedSourceName, '(ID:', sourceId, ')');
 
         // 切换窗口源时，强制释放旧的缓存流（无论是否在屏幕分享中）
         // 这确保下次获取流时使用新选择的源
@@ -991,7 +1027,8 @@
             }
 
             // 创建屏幕源选项元素（网格样式：垂直布局，名字在下）
-            function createSourceOption(source) {
+            function createSourceOption(source, screenIndex) {
+                var displayName = getScreenSourceDisplayName(source, screenIndex);
                 var option = document.createElement('div');
                 option.className = 'screen-source-option';
                 option.dataset.sourceId = source.id;
@@ -1071,7 +1108,11 @@
 
                 // 名称（在缩略图下方，允许多行）
                 var label = document.createElement('span');
-                label.textContent = source.name;
+                label.textContent = displayName || source.name || '';
+                if (source.name) {
+                    label.title = source.name;
+                    option.title = source.name;
+                }
                 Object.assign(label.style, {
                     fontSize: '10px',
                     color: 'var(--neko-popup-text)',
@@ -1089,7 +1130,7 @@
 
                 option.addEventListener('click', async function (e) {
                     e.stopPropagation();
-                    await selectScreenSource(source.id, source.name);
+                    await selectScreenSource(source.id, source.name, displayName);
                 });
 
                 option.addEventListener('mouseenter', function () {
@@ -1120,8 +1161,8 @@
                 screenPopup.appendChild(screenLabel);
 
                 var screenGrid = createGridContainer();
-                screens.forEach(function (source) {
-                    screenGrid.appendChild(createSourceOption(source));
+                screens.forEach(function (source, index) {
+                    screenGrid.appendChild(createSourceOption(source, index));
                 });
                 screenPopup.appendChild(screenGrid);
             }
@@ -1142,7 +1183,7 @@
 
                 var windowGrid = createGridContainer();
                 windows.forEach(function (source) {
-                    windowGrid.appendChild(createSourceOption(source));
+                    windowGrid.appendChild(createSourceOption(source, null));
                 });
                 screenPopup.appendChild(windowGrid);
             }
@@ -1169,6 +1210,7 @@
     window.startScreenSharing = startScreenSharing;
     window.stopScreenSharing = stopScreenSharing;
     window.selectScreenSource = selectScreenSource;
+    window.getScreenSourceDisplayName = getScreenSourceDisplayName;
     window.captureCanvasFrame = captureCanvasFrame;
     window.captureFrameFromStream = captureFrameFromStream;
     window.acquireOrReuseCachedStream = acquireOrReuseCachedStream;

@@ -2390,7 +2390,10 @@ const AvatarPopupMixin = {
                     const grid = document.createElement('div');
                     Object.assign(grid.style, { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', padding: '6px' });
 
-                    items.forEach(source => {
+                    items.forEach((source, index) => {
+                        const displayName = typeof window.getScreenSourceDisplayName === 'function'
+                            ? window.getScreenSourceDisplayName(source, index)
+                            : source.name;
                         const option = document.createElement('div');
                         option.className = 'screen-source-option';
                         option.dataset.sourceId = source.id;
@@ -2412,7 +2415,11 @@ const AvatarPopupMixin = {
                         thumb.onerror = () => { thumb.style.display = 'none'; };
 
                         const name = document.createElement('div');
-                        name.textContent = source.name;
+                        name.textContent = displayName || source.name || '';
+                        if (source.name) {
+                            name.title = source.name;
+                            option.title = source.name;
+                        }
                         Object.assign(name.style, {
                             fontSize: '11px', textAlign: 'center', maxWidth: '90px',
                             overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box',
@@ -2435,7 +2442,7 @@ const AvatarPopupMixin = {
                         option.addEventListener('click', (e) => {
                             e.stopPropagation();
                             if (typeof window.selectScreenSource === 'function') {
-                                window.selectScreenSource(source.id, source.name);
+                                window.selectScreenSource(source.id, source.name, displayName);
                             }
                         });
 
