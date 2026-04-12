@@ -578,10 +578,17 @@
         setPreviewVisible(false);
     }
 
+    // 捕获模式下 scroll 会被文档内任意滚动容器触发（聊天消息列表、设置面板等），
+    // 用 rAF 合并到每帧最多一次布局计算，避免频繁 getBoundingClientRect 触发回流。
+    let viewportChangeRaf = null;
     function handleViewportChange() {
-        const card = S.dom.chatAvatarPreviewCard;
-        if (!card || card.hidden || !activeTrigger) return;
-        positionPopupNearTrigger(card, activeTrigger);
+        if (viewportChangeRaf) return;
+        viewportChangeRaf = window.requestAnimationFrame(function () {
+            viewportChangeRaf = null;
+            const card = S.dom.chatAvatarPreviewCard;
+            if (!card || card.hidden || !activeTrigger) return;
+            positionPopupNearTrigger(card, activeTrigger);
+        });
     }
 
     // 已绑定的触发按钮集合（供外点击判断使用）
