@@ -545,7 +545,7 @@
         "title": "チャット",
         "viewerTitle": "チャット（ビューアーモード）",
         "tooltip": "チャットエリア",
-        "textInputPlaceholder": "テキストチャットモード... Enterで送信、Shift+Enterで改行",
+        "textInputPlaceholder": "Enterで送信、Shift+Enterで改行",
         "send": "送信",
         "importImage": "画像を取り込む",
         "importImageAriaLabel": "画像を取り込む",

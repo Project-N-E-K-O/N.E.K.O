@@ -545,7 +545,7 @@
         "title": "對話",
         "viewerTitle": "對話 (觀看模式)",
         "tooltip": "對話區",
-        "textInputPlaceholder": "文字聊天模式...迴車發送，Shift+迴車換行",
+        "textInputPlaceholder": "迴車發送，Shift+迴車換行",
         "send": "發送",
         "importImage": "匯入圖片",
         "importImageAriaLabel": "匯入圖片",
