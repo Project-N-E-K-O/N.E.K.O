@@ -5577,5 +5577,100 @@ window.Jukebox = {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  },
+
+  /**
+   * 语言切换后刷新 Jukebox UI 文本
+   * 独立窗口模式直接重载页面；嵌入模式逐一更新 DOM 元素
+   */
+  refreshLocale: function() {
+    // 独立窗口（N.E.K.O.-PC）：重载最干净
+    if (window.__NEKO_JUKEBOX_STANDALONE__) {
+      location.reload();
+      return;
+    }
+
+    // 嵌入模式：逐一刷新已渲染的静态文本
+    const c = Jukebox.State.container;
+    if (!c) return;
+
+    // --- Header ---
+    var h3 = c.querySelector('.jukebox-header h3');
+    if (h3) h3.textContent = window.t('Jukebox.title', '点歌台');
+    var settingsBtn = c.querySelector('.jukebox-settings');
+    if (settingsBtn) settingsBtn.title = window.t('Jukebox.manager', '管理器');
+    var minBtn = c.querySelector('.jukebox-minimize');
+    if (minBtn) minBtn.title = window.t('Jukebox.minimize', '最小化');
+    var closeBtn = c.querySelector('.jukebox-close');
+    if (closeBtn) closeBtn.title = window.t('Jukebox.close', '关闭');
+
+    // --- Calibration ---
+    var calToggle = c.querySelector('#jukebox-calibration-toggle');
+    if (calToggle) calToggle.textContent = window.t('Jukebox.calibrateAnimation', '校准动画');
+    var calClose = c.querySelector('.jukebox-calibration-close');
+    if (calClose) calClose.textContent = window.t('Jukebox.closeCalibration', '关闭校准控制台');
+    var calReset = c.querySelector('.jukebox-calibration-reset');
+    if (calReset) { calReset.textContent = window.t('Jukebox.reset', '重置'); calReset.title = window.t('Jukebox.reset', '重置'); }
+    var calTitle = c.querySelector('.jukebox-calibration-title');
+    if (calTitle) {
+      var fpsSpan = calTitle.querySelector('#jukebox-calibration-fps');
+      var fpsHtml = fpsSpan ? fpsSpan.outerHTML : '';
+      calTitle.innerHTML = window.t('Jukebox.animationCalibration', '动画校准') + ' ' + fpsHtml;
+    }
+
+    // --- Notice ---
+    var notices = c.querySelectorAll('.jukebox-notice-item');
+    if (notices[0]) notices[0].textContent = window.t('Jukebox.noticeDance', '💃 伴舞服务目前仅在载入 MMD 形象时可用，后续会增加更多互动');
+    if (notices[1]) notices[1].textContent = window.t('Jukebox.noticeMusic', '⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入');
+
+    // --- Table headers ---
+    var ths = c.querySelectorAll('.jukebox-table thead th');
+    if (ths.length >= 4) {
+      ths[0].textContent = window.t('Jukebox.sequence', '序号');
+      ths[1].textContent = window.t('Jukebox.song', '歌曲');
+      ths[2].textContent = window.t('Jukebox.artist', '艺术家');
+      ths[3].textContent = window.t('Jukebox.action', '操作');
+    }
+
+    // --- Mute button ---
+    var speakerBtn = c.querySelector('#jukebox-speaker-btn');
+    if (speakerBtn) speakerBtn.title = window.t('Jukebox.mute', '静音');
+
+    // --- Re-render song list (preserves playback state) ---
+    if (Jukebox.State.songs && Jukebox.State.songs.length) {
+      Jukebox.renderList();
+    }
+
+    // --- Re-render SongActionManager (if visible) ---
+    try {
+      if (Jukebox.SongActionManager && Jukebox.SongActionManager.element) {
+        // Rebuild panel to refresh tab titles and static text
+        var panel = Jukebox.SongActionManager.element;
+        var titleEl = panel.querySelector('.sam-title');
+        if (titleEl) titleEl.textContent = window.t('Jukebox.managerTitle', '管理器');
+        var tabs = panel.querySelectorAll('.sam-tab');
+        var tabKeys = ['Jukebox.songs', 'Jukebox.actions', 'Jukebox.bindings'];
+        var tabDefaults = ['歌曲', '动作', '绑定'];
+        tabs.forEach(function(tab, i) {
+          if (tabKeys[i]) tab.textContent = window.t(tabKeys[i], tabDefaults[i]);
+        });
+        var samCloseBtn = panel.querySelector('.sam-close-btn');
+        if (samCloseBtn) samCloseBtn.title = window.t('Jukebox.close', '关闭');
+        // Re-render active tab content
+        Jukebox.SongActionManager.render();
+      }
+    } catch (e) { console.warn('[Jukebox] refreshLocale SongActionManager error:', e); }
+
+    console.log('[Jukebox] UI 文本已刷新');
   }
 };
+
+// ===== 跨窗口语言切换自动刷新 =====
+// i18n-i18next.js 会通过 storage 事件检测其他窗口的语言变更并调用 changeLanguage，
+// changeLanguage 触发 languageChanged → localechange 自定义事件。
+// 此处监听 localechange，在 Jukebox 已打开时自动刷新 UI 文本。
+window.addEventListener('localechange', function() {
+  if (Jukebox.State.isOpen || Jukebox.State.isHidden) {
+    Jukebox.refreshLocale();
+  }
+});

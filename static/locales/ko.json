@@ -77,10 +77,10 @@
         "tagsPreview": "태그",
         "notesPreview": "메모",
         "selectCharaToPreview": "미리 볼 캐릭터를 선택하세요.",
-            "coverBgBottom": "배경 하단 레이어",
-            "characterCardCover": "캐릭터 카드 커버",
-            "coverBgTop": "배경 상단 레이어",
-            "selectCharacterForCover": "표지를 보려면 캐릭터를 선택하세요",
+        "coverBgBottom": "배경 하단 레이어",
+        "characterCardCover": "캐릭터 카드 커버",
+        "coverBgTop": "배경 상단 레이어",
+        "selectCharacterForCover": "표지를 보려면 캐릭터를 선택하세요",
         "characterModelNotSet": "캐릭터 모델이 설정되지 않았습니다.",
         "selectCharacterCard": "캐릭터 카드를 선택해주세요.",
         "characterCardNotFound": "캐릭터 카드 데이터를 찾을 수 없습니다.",
@@ -109,12 +109,14 @@
         "live2dInitFailed": "Live2D 미리보기 환경 초기화 실패",
         "live2dPreviewLoaded": "Live2D 모델 미리보기가 성공적으로 로드되었습니다.",
         "live2dPreviewLoadFailed": "Live2D 모델 미리보기 로드 실패: {{error}}",
-            "vrmModuleLoadFailed": "VRM 모듈을 불러오지 못했습니다",
-            "vrmPreviewLoaded": "VRM 모델 미리보기를 불러왔습니다",
-            "vrmPreviewFailed": "VRM 모델 미리보기를 불러오지 못했습니다",
-            "mmdModuleLoadFailed": "MMD 모듈을 불러오지 못했습니다",
-            "mmdPreviewLoaded": "MMD 모델 미리보기를 불러왔습니다",
-            "mmdPreviewFailed": "MMD 모델 미리보기를 불러오지 못했습니다",
+        "searchAriaLabel": "구독 항목 검색",
+        "sortAriaLabel": "정렬 방식",
+        "vrmModuleLoadFailed": "VRM 모듈 로드 실패",
+        "vrmPreviewLoaded": "VRM 모델 미리보기를 불러왔습니다",
+        "vrmPreviewFailed": "VRM 모델 미리보기 로드 실패",
+        "mmdModuleLoadFailed": "MMD 모듈 로드 실패",
+        "mmdPreviewLoaded": "MMD 모델 미리보기를 불러왔습니다",
+        "mmdPreviewFailed": "MMD 모델 미리보기 로드 실패",
         "placeholderCharacterName": "캐릭터 이름 입력",
         "placeholderDescription": "설명 입력",
         "placeholderCharacterSetting": "문자 설정 입력",
@@ -174,8 +176,6 @@
         "allowComments": "댓글 허용",
         "uploadTip": "\"로컬 항목 관리\"에서 항목을 선택하여 경로를 자동으로 채우거나 콘텐츠 폴더 및 미리보기 이미지의 전체 경로를 수동으로 입력할 수 있습니다.",
         "search": "검색:",
-            "searchAriaLabel": "구독 항목 검색",
-            "sortAriaLabel": "정렬 방식",
         "uploadSuccess": "업로드가 성공했습니다!",
         "itemIdDisplay": "항목 ID: {{itemId}}",
         "agreementAccepted": "창작마당 계약 수락됨",
@@ -567,6 +567,15 @@
         "avatarPreviewPlaceholder": "AVATAR",
         "avatarPreviewCardNote": "현재 표시 중인 Live2D / VRM / MMD 모델을 기반으로 아바타를 생성합니다.",
         "avatarPreviewRefresh": "아바타 새로고침",
+        "avatarPreviewReady": "아바타가 업데이트되었습니다",
+        "avatarPreviewReadyHint": "현재 모델 캔버스에서 실시간으로 추출한 아바타 미리보기입니다.",
+        "avatarPreviewWaiting": "현재 모델 아바타 캐시가 생성되기를 기다리는 중",
+        "avatarPreviewUnavailable": "아바타 미리보기 기능이 아직 준비되지 않았습니다.",
+        "avatarPreviewInputHidden": "현재 입력 영역이 숨겨져 있습니다. 텍스트 채팅 화면으로 돌아가 아바타를 확인하세요.",
+        "avatarPreviewCachedHint": "현재 모델의 캐시된 아바타를 표시 중입니다. 새로고침을 누르면 다시 생성할 수 있습니다.",
+        "avatarPreviewRefreshing": "현재 아바타를 새로고침하는 중...",
+        "avatarPreviewGenerating": "현재 아바타를 생성하는 중...",
+        "avatarPreviewFailed": "아바타 생성 실패",
         "emptyState": "채팅 내용이 연결되면 여기에 표시됩니다.",
         "messageStreaming": "생성 중",
         "messageFailed": "전송 실패",
@@ -982,6 +991,7 @@
             "hitAreaId": "터치 영역",
             "close": "닫기",
             "configSaved": "터치 반응 설정 저장됨",
+            "saved": "저장됨",
             "noHitAreas": "모델에 터치 영역이 정의되지 않음",
             "modelNotFound": "로드된 모델 없음",
             "modelDataNotReady": "모델 내부 데이터 준비되지 않음",
@@ -1464,6 +1474,7 @@
         "unregisterVoiceTitle": "음성 등록 취소",
         "voiceUnregistered": "음성 등록이 등록되지 않았습니다.",
         "unregisterFailed": "등록을 취소하지 못했습니다.",
+        "partialSaveVoiceFailed": "캐릭터는 저장되었지만 음색 업데이트에 실패했습니다: {{error}}",
         "unregisterError": "등록을 취소하는 동안 오류가 발생했습니다.",
         "switchFailed": "전환 실패",
         "switchError": "네코를 전환하는 동안 오류가 발생했습니다.",
@@ -1573,6 +1584,7 @@
             "noSources": "사용 가능한 화면 소스가 없습니다.",
             "loadFailed": "화면 소스를 로드하지 못했습니다.",
             "screens": "화면",
+            "screenLabel": "화면 {{index}}",
             "windows": "윈도우",
             "selected": "{{source}} 선택됨",
             "sourceLost": "화면 공유에서 이전에 선택한 창을 찾을 수 없어 전체 화면 공유로 전환되었습니다"
@@ -2188,11 +2200,11 @@
         },
         "step1b": {
             "title": "🖱️ 드래그 앤 줌",
-            "desc": "모델을 끌어서 이동할 수 있고, 마우스 휠을 사용하여 확대/축소할 수 있습니다. 한번 해보세요~"
+            "desc": "모델을 끌어서 이동할 수 있고, <strong>마우스 휠</strong>을 사용하여 확대/축소할 수 있습니다. 한번 해보세요~"
         },
         "step1c": {
             "title": "🔒 잠금 모델",
-            "desc": "이 잠금 장치를 클릭하면 모델 위치가 잠기고 실수로 움직이는 것을 방지할 수 있습니다. 다시 클릭하시면 잠금이 해제됩니다~"
+            "desc": "이 잠금 장치를 클릭하면 모델 위치가 잠기고 실수로 움직이는 것을 방지할 수 있습니다. 잠금 시 주변의 부동 도구 모음도 더 이상 표시되지 않습니다. 다시 클릭하시면 잠금이 해제됩니다~"
         },
         "step2": {
             "title": "💬 채팅 영역",
@@ -2216,15 +2228,15 @@
         },
         "step7": {
             "title": "🖥️ 화면 공유",
-            "desc": "화면/창/탭을 동료와 공유하세요~"
+            "desc": "활성화하면 화면이 지속적으로 동료에게 공유됩니다. 이 기능은 음성 세션 중에만 사용할 수 있습니다~"
         },
         "step8": {
             "title": "🔨 네코클로",
-            "desc": "네코클로 패널을 열어 computer use, browser use, plugin 등의 기능을 사용하세요~"
+            "desc": "네코클로 패널을 열어 키보드/마우스 제어, 브라우저 제어, 사용자 플러그인 등의 기능을 사용하세요. 동료가 컴퓨터를 사용하고, 작업을 도와주고, 함께 게임할 수 있습니다~"
         },
         "step9": {
             "title": "💤 그녀에게 떠나라고 요청하세요",
-            "desc": "동반자가 일시적으로 떠나도록 합니다. 복원하려면 \"그녀에게 물어보기\"를 클릭하세요~"
+            "desc": "동반자가 일시적으로 떠나도록 합니다. 복원하려면 \"그녀에게 돌아오라고 요청하세요\"를 클릭하세요~ <strong>문제가 발생했을 때 잠시 떠나게 하면 문제가 해결되는 경우가 많습니다.</strong>"
         },
         "step10": {
             "title": "⚙️ 설정",
@@ -2236,7 +2248,7 @@
         },
         "step14": {
             "title": "🙌 사전 예방적 비전",
-            "desc": "Companion은 화면 정보를 적극적으로 읽습니다. 여기서 간격을 조정하세요~"
+            "desc": "음성 세션 중 실시간으로 전송하는 화면 공유와 달리, 사전 예방적 비전을 활성화하면 동료가 때때로 스스로 화면을 살펴봅니다. 여기서 간격을 조정하세요~"
         },
         "step15": {
             "title": "👤 캐릭터 관리자",
@@ -2263,10 +2275,10 @@
             },
             "menu": {
                 "title": "📋 트레이 메뉴",
-                "desc": "오른쪽 하단 트레이에 N.E.K.O 아이콘이 있으며, 마우스 오른쪽 버튼을 클릭하면 다양한 옵션이 나타납니다. 다음은 두 가지 자주 사용하는 기능입니다:"
+                "desc": "시스템 트레이(이전 힌트 참조)에서 N.E.K.O 아이콘을 우클릭하여 메뉴를 엽니다. 자주 사용하는 기능:"
             },
             "reset": {
-                "title": "🔄 모델 위치 초기화",
+                "title": "🔄 아바타 위치 초기화",
                 "desc": "캐릭터가 화면 밖으로 드래그되거나 위치가 마음에 들지 않으면 이 옵션을 클릭하여 기본 위치로 되돌릴 수 있습니다~"
             },
             "switchMode": "데스크톱/모바일 모드 전환",
@@ -2282,11 +2294,15 @@
                 "title": "🎉 가이드 완료!",
                 "desc": "모든 가이드를 완료하셨습니다! 이제 N.E.K.O의 주요 기능을 알게 되셨습니다. 캐릭터와의 상호작용을 즐겨보세요! 가이드를 다시 보려면 설정에서 '가이드 초기화'를 클릭하세요~"
             },
-            "resetPosition": "모델 위치 초기화",
+            "resetPosition": "아바타 위치 초기화",
+            "resetPositionDesc": "캐릭터가 화면 밖으로 이동한 경우 기본 위치로 되돌립니다~",
+            "openChat": "채팅 창 열기",
+            "openChatDesc": "텍스트 대화를 위한 별도의 채팅 창을 엽니다~",
+            "important": "중요:",
             "compatibility": "호환 모드",
-            "hotkeyDesc": "여기에서 전역 단축키를 설정하여 N.E.K.O를 더 효율적으로 제어할 수 있습니다~",
+            "hotkeyDesc": "전역 단축키로 N.E.K.O를 더 효율적으로 제어~",
             "uploadLogs": "로그 업로드",
-            "exitDesc": "N.E.K.O를 닫으려면 여기에서 종료를 클릭하세요. 창이 테두리 없는 형태이므로 트레이 메뉴가 앱을 종료하는 주요 방법입니다~"
+            "exitDesc": "N.E.K.O를 종료합니다. 트레이 메뉴가 주요 종료 방법입니다~"
         },
         "completed": "✨ 튜토리얼이 완료되었습니다! 즐겨보세요~",
         "resetHint": {
@@ -2985,7 +3001,9 @@
         "loadError": "음악 플레이어를 로드하지 못했습니다",
         "autoplayBlocked": "브라우저에서 자동 재생이 차단되었습니다. 재생 버튼을 클릭하세요",
         "ended": "종료",
-        "unknownState": "알 수 없는 상태"
+        "unknownState": "알 수 없는 상태",
+        "volume": "볼륨: ",
+        "unsafeSource": "안전하지 않은 오디오 소스를 차단했습니다: {{domain}}"
     },
     "Jukebox": {
         "title": "주크박스",
@@ -2996,6 +3014,10 @@
         "playing": "재생 중: {{name}} - {{artist}}",
         "error": "오류: {{message}}",
         "volume": "볼륨",
+        "mute": "음소거",
+        "noSongPlaying": "재생 중인 곡이 없습니다",
+        "noActionBound": "현재 곡에 연결된 애니메이션이 없습니다",
+        "adjustOffsetFailed": "오프셋 조정 실패",
         "stop": "정지",
         "sequence": "번호",
         "song": "곡",

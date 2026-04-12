@@ -470,7 +470,7 @@
             });
         });
 
-        window.addEventListener('live2d-agent-popup-opening', async () => {
+        window.addEventListener('neko-popup-opening', async () => {
             state.popupOpen = true;
             render('popup');
             refreshOpenClawAvailability().catch(() => {});
@@ -481,7 +481,7 @@
             // Open popup without waiting, then refresh in background.
             fetchSnapshot().catch(() => { });
         });
-        window.addEventListener('live2d-agent-popup-closed', () => {
+        window.addEventListener('neko-popup-closed', () => {
             state.popupOpen = false;
         });
     }

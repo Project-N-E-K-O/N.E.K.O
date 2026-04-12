@@ -77,10 +77,10 @@
         "tagsPreview": "標簽",
         "notesPreview": "注意事項",
         "selectCharaToPreview": "請選擇角色進行預覽",
-            "coverBgBottom": "背景底層",
-            "characterCardCover": "角色卡封面",
-            "coverBgTop": "背景頂層",
-            "selectCharacterForCover": "請選擇角色查看封面",
+        "coverBgBottom": "背景底層",
+        "characterCardCover": "角色卡封面",
+        "coverBgTop": "背景頂層",
+        "selectCharacterForCover": "請選擇角色查看封面",
         "characterModelNotSet": "當前角色未設置模型",
         "selectCharacterCard": "請選擇一個角色卡",
         "characterCardNotFound": "找不到角色卡數據",
@@ -109,12 +109,14 @@
         "live2dInitFailed": "Live2D預覽環境初始化失敗",
         "live2dPreviewLoaded": "Live2D模型預覽加載成功",
         "live2dPreviewLoadFailed": "Live2D模型預覽加載失敗：{{error}} ",
-            "vrmModuleLoadFailed": "VRM 模組載入失敗",
-            "vrmPreviewLoaded": "VRM 模型預覽已載入",
-            "vrmPreviewFailed": "VRM 模型預覽載入失敗",
-            "mmdModuleLoadFailed": "MMD 模組載入失敗",
-            "mmdPreviewLoaded": "MMD 模型預覽已載入",
-            "mmdPreviewFailed": "MMD 模型預覽載入失敗",
+        "searchAriaLabel": "搜尋訂閱內容",
+        "sortAriaLabel": "排序方式",
+        "vrmModuleLoadFailed": "VRM 模組加載失敗",
+        "vrmPreviewLoaded": "VRM 模型預覽已加載",
+        "vrmPreviewFailed": "VRM 模型預覽加載失敗",
+        "mmdModuleLoadFailed": "MMD 模組加載失敗",
+        "mmdPreviewLoaded": "MMD 模型預覽已加載",
+        "mmdPreviewFailed": "MMD 模型預覽加載失敗",
         "placeholderCharacterName": "輸入角色名稱",
         "placeholderDescription": "輸入描述",
         "placeholderCharacterSetting": "輸入設定",
@@ -174,8 +176,6 @@
         "allowComments": "允許評論",
         "uploadTip": "您可以在\"管理本地物品\"中選擇物品自動填充路徑，也可以直接手動輸入內容文件夾和預覽圖片的完整路徑。",
         "search": "搜索：",
-            "searchAriaLabel": "搜尋訂閱內容",
-            "sortAriaLabel": "排序方式",
         "uploadSuccess": "上傳成功！",
         "itemIdDisplay": "物品ID: {{itemId}}",
         "agreementAccepted": "已接受創意工坊協議",
@@ -567,6 +567,15 @@
         "avatarPreviewPlaceholder": "AVATAR",
         "avatarPreviewCardNote": "將基於當前顯示中的 Live2D / VRM / MMD 模型生成頭像。",
         "avatarPreviewRefresh": "刷新頭像",
+        "avatarPreviewReady": "頭像已更新",
+        "avatarPreviewReadyHint": "這是從當前模型畫布即時擷取的頭像預覽。",
+        "avatarPreviewWaiting": "等待當前模型頭像快取生成",
+        "avatarPreviewUnavailable": "頭像預覽功能尚未就緒。",
+        "avatarPreviewInputHidden": "當前輸入區已隱藏，請回到文字聊天介面後再查看頭像。",
+        "avatarPreviewCachedHint": "已顯示當前模型的快取頭像，點擊刷新可重新生成。",
+        "avatarPreviewRefreshing": "正在刷新當前頭像...",
+        "avatarPreviewGenerating": "正在生成當前頭像...",
+        "avatarPreviewFailed": "生成頭像失敗",
         "emptyState": "聊天內容接入後會顯示在這裡。",
         "messageStreaming": "生成中",
         "messageFailed": "發送失敗",
@@ -982,6 +991,7 @@
             "hitAreaId": "觸摸區域",
             "close": "關閉",
             "configSaved": "觸摸反應配置已保存",
+            "saved": "已儲存",
             "noHitAreas": "模型沒有定義可觸摸位置",
             "modelNotFound": "當前沒有加載模型",
             "modelDataNotReady": "模型內部數據未準備好",
@@ -1464,6 +1474,7 @@
         "unregisterVoiceTitle": "解除聲音注冊",
         "voiceUnregistered": "聲音注冊已解除",
         "unregisterFailed": "解除注冊失敗",
+        "partialSaveVoiceFailed": "角色已儲存，但音色更新失敗: {{error}}",
         "unregisterError": "解除注冊時發生錯誤",
         "switchFailed": "切換失敗",
         "switchError": "切換貓娘時發生錯誤",
@@ -1573,6 +1584,7 @@
             "noSources": "沒有可用的屏幕源",
             "loadFailed": "獲取屏幕源失敗",
             "screens": "屏幕",
+            "screenLabel": "螢幕 {{index}}",
             "windows": "窗口",
             "selected": "已選擇 {{source}}",
             "sourceLost": "螢幕分享無法找到之前選擇的窗口，已切換為全螢幕分享"
@@ -2188,11 +2200,11 @@
         },
         "step1b": {
             "title": "🖱️ 拖曳與縮放",
-            "desc": "妳可以拖曳貓娘移動位置，也可以用滑鼠滾輪放大縮小，試試看吧~"
+            "desc": "妳可以拖曳貓娘移動位置，也可以用<strong>滑鼠滾輪</strong>放大縮小，試試看吧~"
         },
         "step1c": {
             "title": "🔒 鎖定貓娘",
-            "desc": "點擊這個鎖可以鎖定貓娘位置，防止誤觸移動。再次點擊可以解鎖~"
+            "desc": "點擊這個鎖可以鎖定貓娘位置，防止誤觸移動。鎖定後周圍的浮動工具欄也不會再出現。再次點擊可以解鎖~"
         },
         "step2": {
             "title": "💬 對話區域",
@@ -2216,15 +2228,15 @@
         },
         "step7": {
             "title": "🖥️ 屏幕分享",
-            "desc": "分享屏幕/窗口/標籤頁，讓貓娘看到妳的畫面~"
+            "desc": "開啟後會持續地將螢幕分享給貓娘，只能在語音對話期間使用~"
         },
         "step8": {
             "title": "🔨 猫爪",
-            "desc": "打開猫爪面板，使用 computer use、browser use 和 plugin 等功能~"
+            "desc": "打開猫爪面板，使用鍵鼠控制、瀏覽器控制和用戶插件等功能。讓貓娘使用妳的電腦、幫妳工作、陪妳遊戲~"
         },
         "step9": {
             "title": "💤 請她離開",
-            "desc": "讓貓娘暫時離開並隱藏界面。需要時可點擊\"請她回來\"恢復~"
+            "desc": "讓貓娘暫時離開並隱藏界面。需要時可點擊\"請她回來\"恢復~ <strong>當她出現問題時，讓她離開休息一會兒，往往能解決問題。</strong>"
         },
         "step10": {
             "title": "⚙️ 設置",
@@ -2236,7 +2248,7 @@
         },
         "step14": {
             "title": "👀 自主視覺",
-            "desc": "開啟後貓娘會主動讀取畫面信息。間隔可在此調整~"
+            "desc": "與語音對話中即時傳輸的螢幕分享不同，開啟自主視覺後貓娘會時不時自己看一眼妳的螢幕。間隔可在此調整~"
         },
         "step15": {
             "title": "👤 角色管理",
@@ -2263,10 +2275,10 @@
             },
             "menu": {
                 "title": "📋 托盤菜單",
-                "desc": "右下角托盤裡會有 N.E.K.O 的圖標，右鍵點擊會出現很多選項。下面是兩個常用功能："
+                "desc": "右鍵點擊系統托盤（見上一步提示）中的 N.E.K.O 圖示即可打開菜單。以下是一些常用功能："
             },
             "reset": {
-                "title": "🔄 復位模型位置",
+                "title": "🔄 重置角色位置",
                 "desc": "如果貓娘被拖到螢幕外或位置不理想，點擊這個選項可以讓她回到默認位置~"
             },
             "switchMode": "切換桌面/移動模式",
@@ -2277,16 +2289,20 @@
                 "title": "📤 上傳日誌",
                 "desc": "遇到問題或有好的建議？點這裡上傳日誌提交反饋~"
             },
-            "exit": "退出",
+            "exit": "結束",
             "complete": {
                 "title": "🎉 引導完成！",
                 "desc": "恭喜妳完成了所有引導！現在妳已經了解了 N.E.K.O 的主要功能。開始享受和貓娘的互動吧！如需重新查看引導，可以在設置中點擊「重置引導」~"
             },
-            "resetPosition": "復位模型位置",
+            "resetPosition": "重置角色位置",
+            "resetPositionDesc": "貓娘跑到螢幕外時，點此恢復預設位置~",
+            "openChat": "開啟對話框",
+            "openChatDesc": "開啟獨立的對話框進行文字對話~",
+            "important": "重要：",
             "compatibility": "兼容模式",
-            "hotkeyDesc": "在這裡可以設置全局快捷鍵，讓你更高效地控制 N.E.K.O~",
+            "hotkeyDesc": "設置全局快捷鍵，更高效地控制 N.E.K.O~",
             "uploadLogs": "上傳日誌",
-            "exitDesc": "想要關閉 N.E.K.O 時，在這裡點擊退出即可。因為窗口是無邊框的，所以托盤菜單是退出應用的主要方式~"
+            "exitDesc": "關閉 N.E.K.O。托盤菜單是退出應用的主要方式~"
         },
         "completed": "✨ 引導完成！祝妳使用愉快~",
         "resetHint": {
@@ -2985,7 +3001,9 @@
         "loadError": "音樂播放器載入失敗",
         "autoplayBlocked": "瀏覽器限制了自動播放，請點擊播放按鈕",
         "ended": "已結束",
-        "unknownState": "未知狀態"
+        "unknownState": "未知狀態",
+        "volume": "音量: ",
+        "unsafeSource": "已攔截不安全音源: {{domain}}"
     },
     "Jukebox": {
         "title": "點歌台",
@@ -2996,6 +3014,10 @@
         "playing": "正在播放: {{name}} - {{artist}}",
         "error": "錯誤: {{message}}",
         "volume": "音量",
+        "mute": "靜音",
+        "noSongPlaying": "沒有正在播放的歌曲",
+        "noActionBound": "當前歌曲沒有綁定動畫",
+        "adjustOffsetFailed": "調整偏移失敗",
         "stop": "停止",
         "sequence": "序號",
         "song": "歌曲",

@@ -120,6 +120,13 @@
                 _initManager().catch(function(e) { console.error('[JukeboxManager] init failed:', e); });
             }
         }, 3000);
+
+        // 语言切换时重载管理器页面（独立窗口模式）
+        window.addEventListener('localechange', function() {
+            if (window.__NEKO_JUKEBOX_MANAGER_STANDALONE__) {
+                location.reload();
+            }
+        });
     </script>
 </body>
 </html>

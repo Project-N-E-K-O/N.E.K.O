@@ -2146,7 +2146,7 @@ const AvatarPopupMixin = {
             if (typeof popup._showToken !== 'number') popup._showToken = 0;
 
             if (buttonId === 'agent' && !isVisible) {
-                window.dispatchEvent(new CustomEvent('live2d-agent-popup-opening'));
+                window.dispatchEvent(new CustomEvent('neko-popup-opening'));
             }
 
             if (isVisible) {
@@ -2158,7 +2158,7 @@ const AvatarPopupMixin = {
                 if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
                     this.updateSeparatePopupTriggerIcon(buttonId, false);
                 }
-                if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+                if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('neko-popup-closed'));
 
                 // 关闭该 popup 所属的所有侧面板
                 const closingPopupId = popup.id;
@@ -2252,7 +2252,7 @@ const AvatarPopupMixin = {
             const popup = document.getElementById(`${prefix}-popup-${buttonId}`);
             if (!popup || popup.style.display !== 'flex') return false;
 
-            if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+            if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('neko-popup-closed'));
             popup._showToken = (popup._showToken || 0) + 1;
             if (popup._hideTimeoutId) { clearTimeout(popup._hideTimeoutId); popup._hideTimeoutId = null; }
 
@@ -2390,7 +2390,10 @@ const AvatarPopupMixin = {
                     const grid = document.createElement('div');
                     Object.assign(grid.style, { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', padding: '6px' });
 
-                    items.forEach(source => {
+                    items.forEach((source, index) => {
+                        const displayName = typeof window.getScreenSourceDisplayName === 'function'
+                            ? window.getScreenSourceDisplayName(source, index)
+                            : source.name;
                         const option = document.createElement('div');
                         option.className = 'screen-source-option';
                         option.dataset.sourceId = source.id;
@@ -2412,7 +2415,11 @@ const AvatarPopupMixin = {
                         thumb.onerror = () => { thumb.style.display = 'none'; };
 
                         const name = document.createElement('div');
-                        name.textContent = source.name;
+                        name.textContent = displayName || source.name || '';
+                        if (source.name) {
+                            name.title = source.name;
+                            option.title = source.name;
+                        }
                         Object.assign(name.style, {
                             fontSize: '11px', textAlign: 'center', maxWidth: '90px',
                             overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box',
@@ -2435,7 +2442,7 @@ const AvatarPopupMixin = {
                         option.addEventListener('click', (e) => {
                             e.stopPropagation();
                             if (typeof window.selectScreenSource === 'function') {
-                                window.selectScreenSource(source.id, source.name);
+                                window.selectScreenSource(source.id, source.name, displayName);
                             }
                         });
 
