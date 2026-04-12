@@ -2083,8 +2083,65 @@ body.react-chat-window-dragging {
 
     #react-chat-window-shell {
         width: calc(100vw - 12px);
-        height: calc(100vh - 12px);
+        height: auto;
+        max-height: 50vh;
+        top: auto;
+        bottom: 6px;
+        left: 6px;
+        transform: none;
         border-radius: 14px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    #react-chat-window-shell #react-chat-window-root {
+        height: 100%;
+        flex: 1 1 auto;
+        overflow: hidden;
+        min-height: 0;
+    }
+
+    #react-chat-window-shell .app-shell {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    #react-chat-window-shell .chat-window {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    #react-chat-window-shell .chat-body {
+        flex: 1 1 auto;
+        min-height: 60px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    #react-chat-window-shell .message-list {
+        flex: 1 1 auto;
+        min-height: 60px;
+        height: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    #react-chat-window-shell.is-mobile-content-capped .message-list {
+        overflow-y: auto;
+    }
+
+    /* Mobile: hide the divider between translate and jukebox plus the last tool button (jukebox)
+       to reduce clutter on small screens. If the tool order changes, replace these positional
+       selectors with a dedicated class or data attribute on the affected controls. */
+    #react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2),
+    #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
+        display: none;
     }
 
     #react-chat-window-drag-handle {
