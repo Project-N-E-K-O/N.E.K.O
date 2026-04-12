@@ -750,17 +750,8 @@ class UniversalTutorialManager {
             {
                 element: '#live2d-container',
                 popover: {
-                    title: window.t ? window.t('tutorial.step1a.title', '🎭 点击体验表情动作') : '🎭 点击体验表情动作',
-                    description: window.t ? window.t('tutorial.step1a.desc', '试试点击猫娘吧！每次点击都会触发不同的表情和动作变化。体验完后点击「下一步」继续~') : '试试点击猫娘吧！每次点击都会触发不同的表情和动作变化。体验完后点击「下一步」继续~',
-                },
-                disableActiveInteraction: false,
-                enableModelInteraction: true
-            },
-            {
-                element: '#live2d-container',
-                popover: {
                     title: window.t ? window.t('tutorial.step1b.title', '🖱️ 拖拽与缩放') : '🖱️ 拖拽与缩放',
-                    description: window.t ? window.t('tutorial.step1b.desc', '你可以拖拽猫娘移动位置，也可以用鼠标滚轮放大缩小，试试看吧~') : '你可以拖拽猫娘移动位置，也可以用鼠标滚轮放大缩小，试试看吧~',
+                    description: window.t ? window.t('tutorial.step1b.desc', '你可以拖拽猫娘移动位置，也可以用<strong>鼠标滚轮</strong>放大缩小，试试看吧~') : '你可以拖拽猫娘移动位置，也可以用<strong>鼠标滚轮</strong>放大缩小，试试看吧~',
                 },
                 disableActiveInteraction: false,
                 enableModelInteraction: true
@@ -769,15 +760,7 @@ class UniversalTutorialManager {
                 element: '#live2d-lock-icon',
                 popover: {
                     title: window.t ? window.t('tutorial.step1c.title', '🔒 锁定猫娘') : '🔒 锁定猫娘',
-                    description: window.t ? window.t('tutorial.step1c.desc', '点击这个锁可以锁定猫娘位置，防止误触移动。再次点击可以解锁~') : '点击这个锁可以锁定猫娘位置，防止误触移动。再次点击可以解锁~',
-                },
-                disableActiveInteraction: true
-            },
-            {
-                element: '#chat-container',
-                popover: {
-                    title: window.t ? window.t('tutorial.step2.title', '💬 对话区域') : '💬 对话区域',
-                    description: window.t ? window.t('tutorial.step2.desc', '在这里可以和猫娘进行文字对话。输入您的想法，她会给您有趣的回应呢~') : '在这里可以和猫娘进行文字对话。输入您的想法，她会给您有趣的回应呢~',
+                    description: window.t ? window.t('tutorial.step1c.desc', '点击这个锁可以锁定猫娘位置，防止误触移动。锁定后周围的浮动工具栏也不会再出现。再次点击可以解锁~') : '点击这个锁可以锁定猫娘位置，防止误触移动。锁定后周围的浮动工具栏也不会再出现。再次点击可以解锁~',
                 },
                 disableActiveInteraction: true
             },
@@ -801,7 +784,7 @@ class UniversalTutorialManager {
                 element: '#live2d-btn-screen',
                 popover: {
                     title: window.t ? window.t('tutorial.step7.title', '🖥️ 屏幕分享') : '🖥️ 屏幕分享',
-                    description: window.t ? window.t('tutorial.step7.desc', '分享屏幕/窗口/标签页，让猫娘看到你的画面~') : '分享屏幕/窗口/标签页，让猫娘看到你的画面~',
+                    description: window.t ? window.t('tutorial.step7.desc', '开启后会持续地将屏幕分享给猫娘，只能在语音对话期间使用~') : '开启后会持续地将屏幕分享给猫娘，只能在语音对话期间使用~',
                 },
                 disableActiveInteraction: true
             },
@@ -809,7 +792,7 @@ class UniversalTutorialManager {
                 element: '#live2d-btn-agent',
                 popover: {
                     title: window.t ? window.t('tutorial.step8.title', '🔨 OpenClaw') : '🔨 OpenClaw',
-                    description: window.t ? window.t('tutorial.step8.desc', '打开 OpenClaw 面板，使用 computer use、browser use 和 plugin 等功能~') : '打开 OpenClaw 面板，使用 computer use、browser use 和 plugin 等功能~',
+                    description: window.t ? window.t('tutorial.step8.desc', '打开猫爪面板，使用 computer use、browser use 和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~') : '打开猫爪面板，使用 computer use、browser use 和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~',
                 },
                 disableActiveInteraction: true
             },
@@ -817,7 +800,7 @@ class UniversalTutorialManager {
                 element: '#live2d-btn-goodbye',
                 popover: {
                     title: window.t ? window.t('tutorial.step9.title', '💤 请她离开') : '💤 请她离开',
-                    description: window.t ? window.t('tutorial.step9.desc', '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~') : '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~',
+                    description: window.t ? window.t('tutorial.step9.desc', '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~ <strong>当她出现问题时，让她离开休息一会儿，往往能解决问题。</strong>') : '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~ <strong>当她出现问题时，让她离开休息一会儿，往往能解决问题。</strong>',
                 },
                 disableActiveInteraction: true
             },
@@ -842,7 +825,7 @@ class UniversalTutorialManager {
                 element: '#live2d-toggle-proactive-vision',
                 popover: {
                     title: window.t ? window.t('tutorial.step14.title', '👀 自主视觉') : '👀 自主视觉',
-                    description: window.t ? window.t('tutorial.step14.desc', '开启后猫娘会主动读取画面信息，间隔可在此调整~') : '开启后猫娘会主动读取画面信息，间隔可在此调整~',
+                    description: window.t ? window.t('tutorial.step14.desc', '与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~') : '与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~',
                 },
                 disableActiveInteraction: true
             },
@@ -907,15 +890,34 @@ class UniversalTutorialManager {
                     description: `
                         <div class="neko-systray-menu">
                             <div class="neko-systray-menu__hint">
-                                ${this.safeEscapeHtml(t('tutorial.systray.menu.desc', '右下角托盘里会有 N.E.K.O 的图标，右键点击会出现很多选项。下面是两个常用功能：'))}
+                                <strong>${this.safeEscapeHtml(t('tutorial.systray.important', '重要：'))}</strong>
+                                ${this.safeEscapeHtml(t('tutorial.systray.menu.desc', '右键点击系统托盘（见上一步提示）中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：'))}
                             </div>
                             <div class="neko-systray-menu__panel">
+                                <div class="neko-systray-menu__item">
+                                    <div class="neko-systray-menu__item-label">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.resetPosition', '重置角色位置'))}
+                                    </div>
+                                    <div class="neko-systray-menu__item-desc">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.resetPositionDesc', '猫娘跑到屏幕外时，点此恢复默认位置~'))}
+                                    </div>
+                                </div>
+                                <div class="neko-systray-menu__separator"></div>
+                                <div class="neko-systray-menu__item">
+                                    <div class="neko-systray-menu__item-label">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.openChat', '打开对话框'))}
+                                    </div>
+                                    <div class="neko-systray-menu__item-desc">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.openChatDesc', '打开独立的对话框进行文字对话~'))}
+                                    </div>
+                                </div>
+                                <div class="neko-systray-menu__separator"></div>
                                 <div class="neko-systray-menu__item">
                                     <div class="neko-systray-menu__item-label">
                                         ${this.safeEscapeHtml(t('tutorial.systray.hotkey', '快捷键设置'))}
                                     </div>
                                     <div class="neko-systray-menu__item-desc">
-                                        ${this.safeEscapeHtml(t('tutorial.systray.hotkeyDesc', '在这里可以设置全局快捷键，让你更高效地控制 N.E.K.O~'))}
+                                        ${this.safeEscapeHtml(t('tutorial.systray.hotkeyDesc', '设置全局快捷键，更高效地控制 N.E.K.O~'))}
                                     </div>
                                 </div>
                                 <div class="neko-systray-menu__separator"></div>
@@ -924,7 +926,7 @@ class UniversalTutorialManager {
                                         ${this.safeEscapeHtml(t('tutorial.systray.exit', '退出'))}
                                     </div>
                                     <div class="neko-systray-menu__item-desc">
-                                        ${this.safeEscapeHtml(t('tutorial.systray.exitDesc', '想要关闭 N.E.K.O 时，在这里点击退出即可。'))}
+                                        ${this.safeEscapeHtml(t('tutorial.systray.exitDesc', '关闭 N.E.K.O。托盘菜单是退出应用的主要方式~'))}
                                     </div>
                                 </div>
                             </div>
