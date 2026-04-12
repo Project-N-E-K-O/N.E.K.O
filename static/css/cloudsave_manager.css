@@ -250,6 +250,12 @@ body .container-header {
     line-height: 1.65;
 }
 
+#cloudsave-provider-scope {
+    color: var(--cloudsave-blue);
+    font-size: 0.88rem;
+    line-height: 1.6;
+}
+
 #cloudsave-current-character {
     display: inline-flex;
     align-items: center;
@@ -621,6 +627,7 @@ body .container-header {
 [data-theme="dark"] .cloudsave-item-subtitle,
 [data-theme="dark"] .cloudsave-meta-label,
 [data-theme="dark"] #cloudsave-provider-status,
+[data-theme="dark"] #cloudsave-provider-scope,
 [data-theme="dark"] .cloudsave-empty {
     color: #b0bec5;
 }

@@ -1617,6 +1617,11 @@
         "providerUnavailable": "雲存檔目前不可用，頁面只顯示本地摘要。",
         "providerSteamAutoCloudReady": "Steam Cloud 已連線。上傳會立即寫入本地雲快照，等你透過 Steam 離開遊戲後，Steam 會自動把該快照上傳到雲端。",
         "providerSteamAutoCloudOffline": "本地雲快照目前可用，但 Steam Cloud 還沒有連線。若希望 Steam 自動上傳或下載快照，請確認是從 Steam 啟動遊戲且帳號已登入。",
+        "providerSteamAutoCloudSourceLaunch": "目前這次執行是原始碼啟動，所以即使 Steam 已登入，也不能把這次運行視為 Steam Auto-Cloud 一定會執行上傳或下載。若要驗證跨裝置同步，請至少透過 Steam 或桌面啟動器啟動一次。",
+        "providerSnapshotScope": "目前頁面顯示的是這台裝置上已經落地的 cloudsave 暫存快照。",
+        "providerSnapshotSequence": "快照序號：{{sequence}}。",
+        "providerSnapshotExportedAt": "匯出時間：{{time}}。",
+        "providerSnapshotManualApply": "這台裝置上已經有更新的暫存快照，但執行中的資料仍要等你手動按下「套用快照」後才會變更。",
         "currentCharacter": "目前角色：{{name}}",
         "noCurrentCharacter": "目前角色：未設定",
         "nameConflictNotice": {

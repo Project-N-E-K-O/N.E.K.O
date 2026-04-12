@@ -338,8 +338,12 @@
         return getCurrentSyncBackend(summary) === 'steam_auto_cloud';
     }
 
-    function isSteamAutoCloudConnected(summary = state.summary) {
-        return !!getSteamAutoCloudStatus(summary).steam_available;
+    function isSteamAutoCloudSessionReady(summary = state.summary) {
+        return !!getSteamAutoCloudStatus(summary).steam_session_ready;
+    }
+
+    function isSourceLaunchSession(summary = state.summary) {
+        return !!getSteamAutoCloudStatus(summary).source_launch;
     }
 
     function getCloudsaveSyncChannel() {
@@ -1581,9 +1585,11 @@
 
     function renderSummary(summary) {
         const providerStatus = document.getElementById('cloudsave-provider-status');
+        const providerScope = document.getElementById('cloudsave-provider-scope');
         const currentCharacter = document.getElementById('cloudsave-current-character');
         const list = document.getElementById('cloudsave-list');
         const emptyState = document.getElementById('cloudsave-empty-state');
+        const steamAutoCloud = getSteamAutoCloudStatus(summary);
 
         if (providerStatus) {
             if (!summary.provider_available) {
@@ -1592,7 +1598,13 @@
                     'cloudsave.providerUnavailable',
                     'Cloud save is currently unavailable. This page only shows local summaries.',
                 );
-            } else if (isSteamAutoCloudBackend(summary) && isSteamAutoCloudConnected(summary)) {
+            } else if (isSteamAutoCloudBackend(summary) && isSourceLaunchSession(summary)) {
+                setTranslatedText(
+                    providerStatus,
+                    'cloudsave.providerSteamAutoCloudSourceLaunch',
+                    'This session was started from source, so Steam Auto-Cloud download and upload are not guaranteed even if Steam is logged in. To verify cross-device sync, launch once through Steam or the desktop launcher.',
+                );
+            } else if (isSteamAutoCloudBackend(summary) && isSteamAutoCloudSessionReady(summary)) {
                 setTranslatedText(
                     providerStatus,
                     'cloudsave.providerSteamAutoCloudReady',
@@ -1611,6 +1623,42 @@
                     'Cloud save is available. You can prepare or restore individual character snapshots manually.',
                 );
             }
+        }
+
+        if (providerScope) {
+            const scopeParts = [
+                translate(
+                    'cloudsave.providerSnapshotScope',
+                    'This page shows the staged cloud snapshot already stored on this device.',
+                ),
+            ];
+            if (Number.isFinite(Number(steamAutoCloud.snapshot_sequence_number)) && Number(steamAutoCloud.snapshot_sequence_number) > 0) {
+                scopeParts.push(
+                    translate(
+                        'cloudsave.providerSnapshotSequence',
+                        'Sequence {{sequence}}',
+                        { sequence: steamAutoCloud.snapshot_sequence_number },
+                    ),
+                );
+            }
+            if (steamAutoCloud.snapshot_exported_at_utc) {
+                scopeParts.push(
+                    translate(
+                        'cloudsave.providerSnapshotExportedAt',
+                        'Exported {{time}}',
+                        { time: formatUtcTimestamp(steamAutoCloud.snapshot_exported_at_utc) || steamAutoCloud.snapshot_exported_at_utc },
+                    ),
+                );
+            }
+            if (steamAutoCloud.manual_download_required) {
+                scopeParts.push(
+                    translate(
+                        'cloudsave.providerSnapshotManualApply',
+                        'A newer staged snapshot is already on this device, but runtime data will change only after you click Apply snapshot manually.',
+                    ),
+                );
+            }
+            setTranslatedText(providerScope, null, scopeParts.join(' '));
         }
 
         if (summary.current_character_name) {

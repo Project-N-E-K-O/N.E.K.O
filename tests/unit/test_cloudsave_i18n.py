@@ -216,8 +216,11 @@ def test_cloudsave_manager_renders_provider_status_card_messages():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
 
     assert "const providerStatus = document.getElementById('cloudsave-provider-status');" in script
+    assert "const providerScope = document.getElementById('cloudsave-provider-scope');" in script
+    assert "cloudsave.providerSteamAutoCloudSourceLaunch" in script
     assert "cloudsave.providerSteamAutoCloudReady" in script
     assert "cloudsave.providerSteamAutoCloudOffline" in script
+    assert "cloudsave.providerSnapshotScope" in script
     assert "cloudsave.providerAvailable" in script
     assert "cloudsave.providerUnavailable" in script
 

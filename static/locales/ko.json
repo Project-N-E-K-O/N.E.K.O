@@ -1617,6 +1617,11 @@
         "providerUnavailable": "클라우드 저장을 현재 사용할 수 없습니다. 이 페이지에는 로컬 요약만 표시됩니다.",
         "providerSteamAutoCloudReady": "Steam Cloud가 연결되었습니다. 업로드하면 지금 로컬 클라우드 스냅샷에 기록되며, Steam을 통해 게임을 종료한 뒤 Steam이 자동으로 클라우드에 업로드합니다.",
         "providerSteamAutoCloudOffline": "로컬 클라우드 스냅샷은 사용할 수 있지만 Steam Cloud는 현재 연결되어 있지 않습니다. Steam에 로그인한 상태로 Steam에서 게임을 실행하면 Steam이 스냅샷을 자동으로 업로드하거나 다운로드할 수 있습니다.",
+        "providerSteamAutoCloudSourceLaunch": "현재 세션은 소스 실행이므로 Steam에 로그인되어 있어도 이번 실행에서 Steam Auto-Cloud 업로드나 다운로드가 반드시 일어나는 것은 아닙니다. 기기 간 동기화를 확인하려면 Steam 또는 데스크톱 런처를 통해 한 번 실행하세요.",
+        "providerSnapshotScope": "이 페이지에는 현재 이 장치에 이미 내려와 있는 cloudsave 스테이징 스냅샷이 표시됩니다.",
+        "providerSnapshotSequence": "스냅샷 번호: {{sequence}}.",
+        "providerSnapshotExportedAt": "내보낸 시각: {{time}}.",
+        "providerSnapshotManualApply": "이 장치에는 더 새로운 스테이징 스냅샷이 있지만, 실제 런타임 데이터는 수동으로 '스냅샷 적용'을 누르기 전까지 바뀌지 않습니다.",
         "currentCharacter": "현재 캐릭터: {{name}}",
         "noCurrentCharacter": "현재 캐릭터: 설정되지 않음",
         "nameConflictNotice": {

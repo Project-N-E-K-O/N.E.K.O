@@ -10,7 +10,7 @@
 
 - 覆盖范围：
   - `db687345`、`ceb913a7` 起始设计约束
-  - `64033ab4` 到 `1dc2c0f7` 的本地快照、启动导入、退出导出、回滚和路径收口
+  - `64033ab4` 到 `1dc2c0f7` 的本地快照、启动导入、手动快照同步、回滚和路径收口
   - `f6957a25` 的 source 模式 Steamworks 路径修正
   - `0e1f2bbc81685a3f21b0f2e4d91514d50b104a3b` 的 Steam RemoteStorage bundle 辅助链路与 CFA fallback 收口
   - 当前工作树里已经落地、但未必体现在旧设计文档中的启动/关闭顺序、平台门控和性能收口
@@ -31,7 +31,7 @@
 ### 2.1 从第一版设计到当前实现的主线
 
 1. `db687345`、`ceb913a7`
-   - 明确把方案收敛到“本地快照层 + 自动导入/导出”，而不是继续扩展自建远端 provider。
+   - 明确把方案收敛到“本地快照层 + 启动导入 + 手动快照同步”，而不是继续扩展自建远端 provider。
 2. `64033ab4`、`d48ff1fc`、`7a044555`
    - 把 `cloudsave_runtime`、`manifest.json`、`cloudsave_local_state.json`、tombstone、SQLite shadow copy、`CloudSaveManager` 等核心闭环真正接入代码。
 3. `4e00c6a6`、`7e357b6e`、`1e48caf2`、`4c7de26c`
@@ -47,9 +47,9 @@
 
 - 运行时真源始终是本地应用数据目录。
 - Steam Auto-Cloud 只同步本地 `cloudsave/` 快照目录。
-- 启动时优先把本机已落地的 `cloudsave/` 应用回运行时。
-- 退出时把运行时提炼成新的 `cloudsave/` 快照。
-- 单角色“上传 / 下载”体验继续保留，但底层同步单位已经是受控的整体快照树。
+- 启动时只在运行时没有用户内容、且 staged snapshot 与本地未确认对齐时，才会自动把本机已落地的 `cloudsave/` 应用回运行时。
+- 运行时到快照不再在退出时自动全量导出，而是要求用户在云存档管理页按角色手动生成 / 覆盖本地快照。
+- 单角色“上传 / 下载”体验继续保留，且现在就是用户确认“运行时 <-> 本地快照”变更的主入口。
 - Windows source 额外保留了一条 Steam RemoteStorage bundle 辅助链路，用于源码调试和兜底验证；它不是 Windows Steam 打包版的主路径，也不会在 Linux/macOS 上启用。
 
 ---
@@ -106,7 +106,7 @@
 - `utils/cloudsave_runtime.py`
   - 负责本地快照导出/导入、manifest、local state、tombstone、SQLite shadow copy、原子写和运行时内容判断。
 - `utils/cloudsave_autocloud.py`
-  - 负责 `CloudSaveManager.build_status()`、`import_if_needed()`、`export_snapshot()`。
+  - 负责 `CloudSaveManager.build_status()`、`import_if_needed()`，并保留 `export_snapshot()` 作为 source 调试 / 辅助能力。
 - `utils/steam_cloud_bundle.py`
   - 负责 Windows source 专用的 Steam RemoteStorage bundle 下载/上传辅助链路。
 - `main_routers/cloudsave_router.py`
@@ -116,7 +116,7 @@
 - `launcher.py`
   - 负责 phase-0 cloudsave bootstrap/import、进程模式选择、服务启动、优雅关闭和顺序收口。
 - `main_server.py`
-  - 负责直启兜底导入、启动后 memory_server 对齐、退出前导出和延后关闭 memory_server。
+  - 负责直启兜底导入、启动后 memory_server 对齐、退出前会话释放和延后关闭 memory_server。
 
 ### 4.2 当前状态接口口径
 
@@ -128,10 +128,14 @@
   - `cloudsave_root`
   - `manifest_path`
   - `manifest_exists`
+  - `snapshot_sequence_number`
+  - `snapshot_exported_at_utc`
+  - `source_launch`
+  - `steam_session_ready`
   - `recommended_paths`
   - `current_platform_rule`
   - Steam 在线状态
-- 前端 summary 状态文案当前先检查 `provider_available`，只有 provider 可用时才继续区分 Steam Ready / Offline。
+- 前端 summary 状态文案当前会明确提示“页面展示的是本机已经落地的 staged snapshot”，并把 source launch 与真正可验证 Auto-Cloud 的 Steam session 区分开。
 
 ---
 
@@ -187,14 +191,19 @@
 `CloudSaveManager.build_status()` 当前把 `startup_import_required` 计算为：
 
 ```python
-startup_import_required = bool(
+snapshot_differs_from_runtime = bool(
     has_snapshot
     and (
-        not runtime_has_user_content
-        or not last_applied_manifest_fingerprint
+        not last_applied_manifest_fingerprint
         or not manifest_fingerprint
         or manifest_fingerprint != last_applied_manifest_fingerprint
     )
+)
+
+startup_import_required = bool(
+    has_snapshot
+    and not runtime_has_user_content
+    and snapshot_differs_from_runtime
 )
 ```
 
@@ -202,11 +211,10 @@ startup_import_required = bool(
 
 - 没有快照时跳过导入。
 - 有快照且运行时为空时导入。
-- 有快照但 `last_applied_manifest_fingerprint` 为空时也导入。
-- 有快照但 manifest 指纹为空时也导入。
-- 有快照且指纹不一致时也导入。
+- 有快照但运行时已有用户内容时，不自动导入，而是进入 `manual_download_required`。
+- 只有“运行时为空”且“manifest 指纹未确认对齐”时，才会自动导入。
 
-也就是说，当前实现仍然是“只要存在快照且指纹未确认对齐，就倾向执行导入”，并不是更保守的“运行时已有用户内容就绝不自动导入”版本。
+也就是说，当前实现已经是“运行时已有用户内容时更保守”的版本，不会再因为 staged snapshot 较新就直接覆盖本地运行时。
 
 ### 5.5 Windows source 的启动前 bundle 下载
 
@@ -240,9 +248,12 @@ startup_import_required = bool(
 ### 6.2 前端“上传 / 下载”的真实语义
 
 - 上传：
+  - 由用户在云存档管理页按角色手动确认
   - 立即更新本地 `cloudsave/` 快照
   - 不等于立刻上传到 Steam 远端
+  - 若退出前没有手动生成 / 覆盖目标角色快照，Steam 只会上传当前机器上已有的旧 `cloudsave/`
 - 下载：
+  - 由用户在云存档管理页按角色手动确认
   - 把当前设备已经存在的快照应用回运行时
   - 不等于绕过 Steam 直接实时从远端抓取
 
@@ -263,13 +274,12 @@ startup_import_required = bool(
 
 1. 清理后台预加载、翻译服务、token tracker、音乐爬虫等资源。
 2. 遍历可释放的角色，逐个调用 `release_memory_server_character(...)`，每个角色 1 秒超时。
-3. 在 3 秒预算内执行 `CloudSaveManager.export_snapshot(reason="main_server_shutdown")`。
-4. 导出完成后，如启动配置要求关闭 memory_server，再显式调用 `_request_memory_server_shutdown()`。
+3. 如启动配置要求关闭 memory_server，再显式调用 `_request_memory_server_shutdown()`。
 
 这里的关键变化是：
 
-- 不再让 memory_server 先于主导出流程结束。
-- 先导出 cloudsave，再请求 memory_server 退出，避免把数据库句柄和导出顺序打乱。
+- 不再让 memory_server 先于主服务的会话释放流程结束。
+- 不再在 shutdown 时自动把运行时重写回 `cloudsave/`，避免用户尚未确认的本地运行时变更污染 staged snapshot。
 
 ### 7.2 launcher 的总关闭顺序
 
@@ -281,16 +291,17 @@ startup_import_required = bool(
 
 这样做是为了让：
 
-- `main_server` 的 shutdown 导出链路先执行完
+- `main_server` 的 shutdown 收尾链路先执行完
 - memory_server 不会因为被过早杀掉而让主服务的收尾行为失序
 
 在 POSIX 平台上，child process 还会先脱离 launcher 的 Ctrl+C 进程组，以避免终端 SIGINT 同时打到所有服务，导致 memory_server 抢先退出。
 
 ### 7.3 Steam 观察到的最终行为
 
-- 本地 `cloudsave/` 会在应用退出前被更新。
-- Steam 在应用结束后观察到 `cloudsave/` 变化，再执行 Auto-Cloud 上传。
-- Windows source 若启用 bundle helper，还会在 `export_snapshot()` 后尝试同步 RemoteStorage bundle；但这只是 source 调试辅助，不改变打包版主路径。
+- 本地 `cloudsave/` 不会在应用退出前被自动重写。
+- Steam 在应用结束后会观察并上传当前已经存在的 `cloudsave/` 目录。
+- 因此最终上传到云端的是“用户退出前最后一次手动确认生成的 staged snapshot”，不是当前运行时未经确认的全部状态。
+- Windows source 若手动触发 `export_snapshot()` 或相关调试链路，仍可能继续走 RemoteStorage bundle 辅助上传；但这只是 source 调试辅助，不改变打包版主路径。
 
 ---
 
@@ -343,7 +354,8 @@ startup_import_required = bool(
   - merged mode
 - 主同步路径：
   - Steam Auto-Cloud 同步 `%LOCALAPPDATA%/N.E.K.O/cloudsave/`
-  - 应用自身负责 phase-0 导入和 shutdown 导出
+  - 应用自身负责 phase-0 导入
+  - 运行时到快照仍需用户手动在云存档管理页确认
 - RemoteStorage bundle helper：
   - 当前会直接返回 `not_source_launch`
   - 不会误走 source-only 分支
@@ -391,7 +403,7 @@ startup_import_required = bool(
 
 - 当前主方案仍然是 Steam Auto-Cloud。
 - Steam 负责同步本机 `cloudsave/`。
-- 应用负责启动导入和退出导出。
+- 应用负责启动导入，以及用户手动确认的运行时 <-> 快照变更。
 
 ### 9.2 Windows source 的 bundle helper
 
@@ -421,16 +433,16 @@ startup_import_required = bool(
 
 ## 10. 当前风险点与已落地防护
 
-### 10.1 退出导出卡顿
+### 10.1 退出前未手动生成快照
 
 当前防护：
 
-- `main_server` shutdown 导出有 3 秒预算。
+- shutdown 不再自动重写 `cloudsave/`。
 - launcher 对服务退出有 graceful wait、terminate、kill 和进程树兜底。
 
 剩余边界：
 
-- 如果导出超时，Steam 可能上传上一份本地快照而不是本次最新状态。
+- 如果用户退出前没有在云存档管理页手动生成 / 覆盖目标角色快照，Steam 仍会上传上一份本地快照而不是当前运行时的新状态。
 
 ### 10.2 SQLite / memory 句柄竞争
 
@@ -444,33 +456,30 @@ startup_import_required = bool(
 
 - 极端异常退出时，仍需依赖 timeout、shadow copy 和回滚链路兜底。
 
-### 10.3 自动导入覆盖策略偏激进
+### 10.3 自动导入覆盖策略
 
 当前真实行为：
 
-- 只要有快照且指纹未确认对齐，`startup_import_required` 就可能为真。
+- 只有“有快照 + 运行时无用户内容 + 指纹未确认对齐”时，`startup_import_required` 才为真。
+- 若运行时已有用户内容且 staged snapshot 较新，则改为 `manual_download_required`。
 
 这意味着：
 
-- manifest 指纹为空
-- `last_applied_manifest_fingerprint` 为空
-- 指纹不一致
-
-以上情况即使运行时已有本地用户内容，也仍可能执行自动导入。
-
-这不是文档误差，而是当前代码实际策略。若后续要改成“本地已有内容时更保守”，必须改代码，不是只改文案。
+- 自动导入已经是偏保守策略。
+- 真正的覆盖行为需要用户在云存档管理页手动点击“应用快照”。
 
 ### 10.4 Steam 不在线或非 Steam 启动
 
 当前行为：
 
-- 本地 `cloudsave/` 导入/导出仍可工作。
-- summary 会区分 `steam_available`、`steam_running`、`steam_logged_on`。
+- 本地 `cloudsave/` 导入和手动快照生成仍可工作。
+- summary 会区分 `steam_available`、`steam_running`、`steam_logged_on`、`source_launch`、`steam_session_ready`。
 - provider 不可用时，前端优先显示 provider unavailable，不再误报 Steam ready/offline。
 
 剩余边界：
 
 - 不通过 Steam 启动时，不会发生真实的 Steam 云上传/下载。
+- 即使 Steam SDK 在线，source launch 也不应被误判为“这次会话一定会发生真实 Auto-Cloud 同步”。
 
 ### 10.5 后台路径配置错位
 
@@ -538,7 +547,8 @@ startup_import_required = bool(
 
 - phase-0 bootstrap/import 顺序
 - main_server 兜底导入与 memory_server reload
-- shutdown 导出与延后关闭 memory_server
+- shutdown 不重写快照与延后关闭 memory_server
+- 手动单角色上传 / 下载与跨设备生命周期
 - source/frozen 根目录选择
 - Windows/Linux/macOS 平台路径分支
 - Windows source bundle helper 的平台门控
@@ -552,7 +562,7 @@ startup_import_required = bool(
 2. Windows Steam 打包版
    - 走 frozen 根目录和 merged mode
    - 不误走 source-only bundle helper
-   - 退出后 Steam Auto-Cloud 能观察到 `cloudsave/` 更新
+   - 退出后 Steam Auto-Cloud 能上传当前已准备好的 staged snapshot
 3. Linux 源码
    - 设置和不设置 `XDG_DATA_HOME` 两种情况下都能正常定位到数据根
    - 不会触发 Windows-only 分支
@@ -567,20 +577,21 @@ startup_import_required = bool(
 必须同时满足：
 
 - 运行时真源不是 Steam 直接同步目录
-- `cloudsave/` 会在退出前更新
-- Steam 客户端会在应用结束后上传该快照
+- 用户已在云存档管理页手动把目标角色同步到本地 `cloudsave/`
+- Steam 客户端会在应用结束后上传该 staged snapshot
 - 另一台设备通过 Steam 启动后能先拿到 `cloudsave/`
-- phase-0 或 main_server 兜底导入后，角色配置和 memory 数据在运行时正确恢复
+- phase-0 或 main_server 兜底导入只负责把 staged snapshot 自动落到本地快照层可见状态
+- 用户手动点击“应用快照”后，角色配置和 memory 数据在运行时正确恢复
 
 ---
 
 ## 13. 当前阶段结论
 
 - 本分支的云端同步方案已经明确收口为：
-  - `Steam Auto-Cloud + 本地 cloudsave 快照 + 启动导入 + 退出导出`
+  - `Steam Auto-Cloud + 本地 cloudsave 快照 + 启动自动导入 + 手动上传/下载确认`
 - 当前代码已经不是最初的“设计草案”阶段，而是有明确平台分支和生命周期收口的实现阶段。
 - 现在最重要的不是继续发散新方案，而是继续围绕以下几点验收和收尾：
   - Windows source、Windows Steam 打包版、Linux source、macOS 的真实启动/关闭与路径一致性
   - Steamworks 后台路径映射与 `ConfigManager` 真实根目录的一致性
-  - 自动导入覆盖策略是否需要从“偏激进”进一步改成“更保守”
+  - 手动上传/下载确认语义、source launch 提示和 UI 状态口径是否还需要进一步细化
   - 极端退出、SQLite 句柄竞争和跨设备真实 Steam 联调

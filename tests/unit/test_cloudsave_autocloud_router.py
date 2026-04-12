@@ -97,7 +97,9 @@ async def test_cloudsave_router_exposes_steam_autocloud_configuration_payload():
             assert summary["sync_backend"] == "steam_auto_cloud"
             assert summary["steam_autocloud"]["backend"] == "steam_auto_cloud"
             assert summary["steam_autocloud"]["app_id"] == "4099310"
+            assert summary["steam_autocloud"]["source_launch"] is False
             assert summary["steam_autocloud"]["steam_available"] is True
+            assert summary["steam_autocloud"]["steam_session_ready"] is True
             assert summary["steam_autocloud"]["cloudsave_root"].endswith("cloudsave")
 
             config_payload = await cloudsave_router_module.get_steam_autocloud_config()

@@ -266,7 +266,7 @@ def _detach_child_process_session() -> None:
 
     Without this on macOS/Linux, terminal SIGINT reaches the launcher and all child
     servers at once. That lets ``memory_server`` exit before ``main_server`` finishes
-    its shutdown export/release sequence, which defeats the cloudsave cleanup order.
+    its shutdown release/cleanup sequence, which defeats the cloudsave cleanup order.
     """
     if os.name != "posix":
         return

@@ -14,6 +14,7 @@ from utils.cloudsave_runtime import (
 )
 from utils.steam_cloud_bundle import (
     download_cloudsave_bundle_from_steam,
+    is_source_launch,
     upload_cloudsave_bundle_to_steam,
 )
 
@@ -190,6 +191,8 @@ class CloudSaveManager:
         manifest = load_cloudsave_manifest(self.config_manager)
         manifest_files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
         manifest_fingerprint = str(manifest.get("fingerprint") or "")
+        snapshot_sequence_number = int(manifest.get("sequence_number") or 0)
+        snapshot_exported_at_utc = str(manifest.get("exported_at_utc") or "")
         last_applied_manifest_fingerprint = str(cloud_state.get("last_applied_manifest_fingerprint") or "")
         runtime_has_user_content = _runtime_root_has_user_content(
             self.config_manager.app_docs_dir,
@@ -216,12 +219,16 @@ class CloudSaveManager:
         )
 
         steam_status = _build_steam_connectivity_status(steamworks)
+        source_launch = bool(is_source_launch())
+        steam_session_ready = bool(steam_status["available"] and not source_launch)
         recommended_paths = _build_recommended_root_paths(self.config_manager)
         current_platform_rule = _build_current_platform_rule_preview(self.config_manager)
         return {
             "backend": STEAM_AUTO_CLOUD_SYNC_BACKEND,
             "app_id": _load_steam_app_id(),
             "has_snapshot": has_snapshot,
+            "snapshot_sequence_number": snapshot_sequence_number,
+            "snapshot_exported_at_utc": snapshot_exported_at_utc,
             "manifest_fingerprint": manifest_fingerprint,
             "last_applied_manifest_fingerprint": last_applied_manifest_fingerprint,
             "startup_import_required": startup_import_required,
@@ -229,6 +236,8 @@ class CloudSaveManager:
             "runtime_has_user_content": runtime_has_user_content,
             "last_successful_export_at": str(cloud_state.get("last_successful_export_at") or ""),
             "last_successful_import_at": str(cloud_state.get("last_successful_import_at") or ""),
+            "source_launch": source_launch,
+            "steam_session_ready": steam_session_ready,
             "steam_available": bool(steam_status["available"]),
             "steam_running": bool(steam_status["running"]),
             "steam_logged_on": bool(steam_status["logged_on"]),
@@ -306,17 +315,14 @@ class CloudSaveManager:
             steamworks=steamworks,
             deadline_monotonic=deadline_monotonic,
         )
-        remote_success = bool(remote_bundle_result.get("success", False))
         payload = {
-            "success": remote_success,
-            "action": "exported" if remote_success else "partial_exported",
+            "success": True,
+            "action": "exported",
             "requested_reason": str(reason or ""),
             "result": result,
             "remote_bundle_result": remote_bundle_result,
             "status": self.build_status(steamworks=steamworks),
         }
-        if not remote_success:
-            payload["reason"] = str(remote_bundle_result.get("reason") or "remote_bundle_upload_failed")
         return payload
 
 

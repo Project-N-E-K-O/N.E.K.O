@@ -1616,6 +1616,11 @@
         "providerUnavailable": "クラウドセーブは現在利用できません。このページではローカル概要のみ表示します。",
         "providerSteamAutoCloudReady": "Steam Cloud は接続済みです。アップロードすると今すぐローカルクラウドスナップショットへ書き込み、Steam 経由でゲーム終了後に Steam が自動でクラウドへアップロードします。",
         "providerSteamAutoCloudOffline": "ローカルクラウドスナップショットは利用できますが、Steam Cloud は現在接続されていません。Steam にログインした状態で Steam からゲームを起動すると、Steam がスナップショットを自動でアップロードまたはダウンロードできます。",
+        "providerSteamAutoCloudSourceLaunch": "現在のセッションはソース起動なので、Steam にログインしていても今回の実行で Steam Auto-Cloud のアップロードやダウンロードが必ず行われるとは限りません。デバイス間同期を確認したい場合は、少なくとも一度 Steam またはデスクトップランチャー経由で起動してください。",
+        "providerSnapshotScope": "このページに表示されるのは、この端末にすでに保存されている cloudsave のステージ済みスナップショットです。",
+        "providerSnapshotSequence": "スナップショット番号: {{sequence}}。",
+        "providerSnapshotExportedAt": "エクスポート時刻: {{time}}。",
+        "providerSnapshotManualApply": "この端末には新しいステージ済みスナップショットがありますが、実際のランタイムデータは手動で「スナップショットを適用」を押すまで変わりません。",
         "currentCharacter": "現在のキャラクター：{{name}}",
         "noCurrentCharacter": "現在のキャラクター：未設定",
         "nameConflictNotice": {

@@ -209,9 +209,43 @@ def test_cloudsave_manager_status_includes_autocloud_configuration_hints():
         assert status["runtime_root"].endswith("N.E.K.O")
         assert status["cloudsave_root"].endswith("cloudsave")
         assert status["manifest_path"].endswith("manifest.json")
+        assert status["snapshot_sequence_number"] == 0
+        assert status["snapshot_exported_at_utc"] == ""
+        assert status["source_launch"] is False
+        assert status["steam_session_ready"] is False
         assert status["recommended_paths"]["primary_root"]["root"] == "WinAppDataLocal"
         assert status["recommended_paths"]["primary_root"]["subdirectory"] == "N.E.K.O/cloudsave"
         assert status["current_platform_rule"]["subdirectory"] == "N.E.K.O/cloudsave"
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_status_reports_snapshot_metadata_after_export():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        _write_runtime_state(cm, character_name="快照状态角色")
+        export_result = export_local_cloudsave_snapshot(cm)
+
+        manager = CloudSaveManager(cm)
+        status = manager.build_status()
+
+        assert status["snapshot_sequence_number"] == export_result["manifest"]["sequence_number"]
+        assert status["snapshot_exported_at_utc"] == export_result["manifest"]["exported_at_utc"]
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_status_does_not_treat_source_launch_as_autocloud_ready():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        manager = CloudSaveManager(cm)
+        with patch("utils.cloudsave_autocloud.is_source_launch", return_value=True):
+            status = manager.build_status(steamworks=_make_dummy_steamworks())
+
+        assert status["source_launch"] is True
+        assert status["steam_available"] is True
+        assert status["steam_session_ready"] is False
 
 
 @pytest.mark.unit
@@ -392,6 +426,27 @@ def test_cloudsave_manager_export_uploads_source_launch_bundle_after_local_expor
 
 
 @pytest.mark.unit
+def test_cloudsave_manager_export_keeps_local_export_success_when_remote_bundle_helper_fails():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        _write_runtime_state(cm, character_name="本地导出角色")
+
+        with patch(
+            "utils.cloudsave_autocloud.upload_cloudsave_bundle_to_steam",
+            side_effect=RuntimeError("remote helper failed"),
+        ):
+            manager = CloudSaveManager(cm)
+            result = manager.export_snapshot(reason="remote_bundle_failure_does_not_fail_local_export")
+
+        assert result["success"] is True
+        assert result["action"] == "exported"
+        assert result["remote_bundle_result"]["success"] is False
+        assert result["remote_bundle_result"]["reason"] == "remote_bundle_upload_failed"
+        assert result["result"]["manifest"]["fingerprint"]
+
+
+@pytest.mark.unit
 def test_cloudsave_manager_export_marks_partial_failure_when_remote_upload_fails():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
@@ -409,8 +464,8 @@ def test_cloudsave_manager_export_marks_partial_failure_when_remote_upload_fails
             manager = CloudSaveManager(cm)
             result = manager.export_snapshot(reason="source_launch_remote_bundle_upload")
 
-        assert result["success"] is False
-        assert result["action"] == "partial_exported"
-        assert result["reason"] == "remote_bundle_upload_failed"
+        assert result["success"] is True
+        assert result["action"] == "exported"
         assert result["remote_bundle_result"]["success"] is False
+        assert result["remote_bundle_result"]["reason"] == "remote_bundle_upload_failed"
         assert result["result"]["manifest"]["fingerprint"]

@@ -53,6 +53,7 @@ uv run python agent_server.py
 
 - 想验证 Steam Auto-Cloud 的真实“启动前下载 / 退出后上传”，应通过 Steam 或桌面启动器启动，不要把纯源码直跑当作 Steam 云同步验证路径。
 - 手动三服务模式更适合开发调试；当前 `main_server` 会在需要时兜底导入快照，并尝试通知 `memory_server` reload。
+- shutdown 不会再自动把运行时变化写回 `cloudsave/`。如果希望 Steam 上传新的角色数据，需要在退出前先到云存档管理页手动为对应角色生成或覆盖 staged snapshot。
 - macOS 源码模式如果提示“Apple 无法验证 `SteamworksPy.dylib`”，通常是 Gatekeeper 在拦截未公证的本地动态库。先确认从项目根目录启动；如果仍被拦截，可在项目根目录执行：
 
 ```bash
