@@ -51,6 +51,20 @@ function buildNonJsonError(res, text) {
     return `服务端返回了非JSON响应 (HTTP ${res.status})${snippet ? ': ' + snippet : ''}`;
 }
 
+// 把后端错误响应体转成可读消息：
+// 只有在 errors.<code> 翻译确实存在时才使用 i18n，否则回退到响应自带文案，
+// 避免 i18next 的「缺失 key 回退成 key 本身」行为把 "errors.XXX_UNKNOWN" 直接丢给用户。
+function resolveBackendErrorMsg(data, status) {
+    if (data && data.code && window.t) {
+        const i18nKey = 'errors.' + data.code;
+        const translated = window.t(i18nKey, data.details || {});
+        if (translated && translated !== i18nKey) {
+            return translated;
+        }
+    }
+    return (data && (data.detail || data.message || data.error)) || `API returned ${status}`;
+}
+
 function parseVoiceRegisterError(errorObj) {
     const errorCode = errorObj?.code;
     const errorMsg = errorObj?.message || errorObj?.error || errorObj || '';
@@ -478,9 +492,8 @@ function registerVoice() {
             const { data, nonJson, text } = await safeReadResponse(res);
             if (!res.ok) {
                 if (data) {
-                    // 从响应体中提取详细错误信息
-                    const errorMsg = (data.code && window.t) ? window.t('errors.' + data.code, data.details || {}) : (data.error || data.detail || `API returned ${res.status}`);
-                    throw new Error(errorMsg);
+                    // 从响应体中提取详细错误信息（优先已翻译的 errors.<code>，缺失则回退到 message/detail/error）
+                    throw new Error(resolveBackendErrorMsg(data, res.status));
                 }
                 // 后端/网关返回了 HTML（如 404/502/504），构造可读错误而不是 "Unexpected token '<'"
                 throw new Error(buildNonJsonError(res, text));
@@ -588,9 +601,13 @@ function registerVoice() {
                             }
                         }
                     }).catch(e => {
+                        // e 可能携带 safeReadResponse/buildNonJsonError 构造的可读错误
+                        // （含 HTTP 状态和正文摘要），必须拼进最终提示，否则诊断信息被吞。
+                        const saveErrorMsg = e?.message || e?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
+                        const base = window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错';
                         const errorSpan = document.createElement('span');
                         errorSpan.className = 'error';
-                        errorSpan.textContent = (window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错');
+                        errorSpan.textContent = saveErrorMsg ? `${base}: ${saveErrorMsg}` : base;
                         resultDiv.appendChild(document.createElement('br'));
                         resultDiv.appendChild(errorSpan);
                     });
@@ -665,7 +682,7 @@ async function playPreview(voiceId, btn) {
                     // localStorage 可能满了，但我们仍然可以播放这一次生成的音频
                 }
             } else {
-                const _errMsg = (data.code && window.t) ? window.t('errors.' + data.code, data.details || {}) : (data.error || 'Failed to get preview');
+                const _errMsg = resolveBackendErrorMsg(data, response.status) || 'Failed to get preview';
                 throw new Error(_errMsg);
             }
         }
