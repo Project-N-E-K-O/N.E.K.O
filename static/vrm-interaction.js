@@ -296,25 +296,31 @@ class VRMInteraction {
                 // 更新相机位置
                 camera.position.copy(orbitCenter).add(offset);
 
-                // 先临时看向旋转中心，建立新的相机坐标系
+                // 先临时看向旋转中心（此时模型在屏幕正中心）
                 camera.lookAt(orbitCenter);
 
-                // 用 NDC 坐标补偿，使模型中心保持在原来的屏幕位置
+                // 用精确的四元数旋转补偿，使模型中心保持在原来的屏幕位置
                 const nx = this._orbitNDC.x;
                 const ny = this._orbitNDC.y;
-                const halfHeight = radius * Math.tan(camera.fov * Math.PI / 360);
-                const halfWidth = halfHeight * camera.aspect;
 
-                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+                if (Math.abs(nx) > 0.001 || Math.abs(ny) > 0.001) {
+                    const tanHalfFov = Math.tan(camera.fov * Math.PI / 360);
+                    // 计算 orbitCenter 需要投影到 NDC (nx, ny) 对应的 camera-local 方向
+                    const desiredDir = new THREE.Vector3(
+                        nx * tanHalfFov * camera.aspect,
+                        ny * tanHalfFov,
+                        -1
+                    ).normalize();
+                    const forward = new THREE.Vector3(0, 0, -1);
+                    // 旋转相机使 orbitCenter 从屏幕中心移到目标 NDC 位置
+                    const compensation = new THREE.Quaternion().setFromUnitVectors(desiredDir, forward);
+                    camera.quaternion.multiply(compensation);
+                }
 
-                // target = 模型中心 - NDC偏移量（使模型投影回原屏幕位置）
-                const newTarget = orbitCenter.clone()
-                    .sub(right.clone().multiplyScalar(nx * halfWidth))
-                    .sub(up.clone().multiplyScalar(ny * halfHeight));
-
-                camera.lookAt(newTarget);
-                this.manager._cameraTarget = newTarget;
+                // 从新朝向重建 _cameraTarget（相机前方与 orbitCenter 同距离处）
+                const dist = camera.position.distanceTo(orbitCenter);
+                const worldForward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+                this.manager._cameraTarget = camera.position.clone().add(worldForward.multiplyScalar(dist));
             }
 
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
@@ -404,15 +410,20 @@ class VRMInteraction {
 
             if (this.manager.currentModel.scene && this.manager.camera) {
                 // 使用模型包围盒的实际中心作为缩放中心，确保缩放始终围绕模型正中心
-                const vrm = this.manager.currentModel.vrm;
+                // 优先使用已缓存的包围盒（由 updateModelBoundsCache 在动画帧中维护），避免每次 wheel 事件重算
                 let zoomCenter;
-                if (vrm && vrm.scene) {
-                    const box = new THREE.Box3().setFromObject(vrm.scene);
-                    zoomCenter = box.getCenter(new THREE.Vector3());
+                if (this._cachedBox) {
+                    zoomCenter = this._cachedBox.getCenter(new THREE.Vector3());
                 } else {
-                    zoomCenter = this.manager._cameraTarget
-                        ? this.manager._cameraTarget.clone()
-                        : new THREE.Vector3(0, 0, 0);
+                    const vrm = this.manager.currentModel.vrm;
+                    if (vrm && vrm.scene) {
+                        const box = new THREE.Box3().setFromObject(vrm.scene);
+                        zoomCenter = box.getCenter(new THREE.Vector3());
+                    } else {
+                        zoomCenter = this.manager._cameraTarget
+                            ? this.manager._cameraTarget.clone()
+                            : new THREE.Vector3(0, 0, 0);
+                    }
                 }
 
                 const oldDistance = this.manager.camera.position.distanceTo(zoomCenter);
@@ -429,12 +440,8 @@ class VRMInteraction {
                 this.manager.camera.position.copy(zoomCenter)
                     .add(direction.multiplyScalar(newDistance));
 
-                // 同步 _cameraTarget 到模型中心
+                // 仅同步内部状态，不调用 lookAt / controls.target 以保持模型在屏幕上的位置不变
                 this.manager._cameraTarget = zoomCenter.clone();
-
-                if (this.manager.controls && this.manager.controls.update) {
-                    this.manager.controls.update();
-                }
 
                 // 缩放结束后防抖保存位置
                 this._debouncedSavePosition();
