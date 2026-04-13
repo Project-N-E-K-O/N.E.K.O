@@ -997,11 +997,26 @@ class MMDCore {
 
         const modelPath = mmd.url;
         if (modelPath) {
+            // 构造重置后的相机位置，覆盖后端保存的旧值
+            let resetCameraPosition = null;
+            if (this.manager.camera) {
+                const cam = this.manager.camera;
+                const ctrl = this.manager.controls;
+                resetCameraPosition = {
+                    x: cam.position.x, y: cam.position.y, z: cam.position.z,
+                    targetX: ctrl ? ctrl.target.x : 0,
+                    targetY: ctrl ? ctrl.target.y : 0,
+                    targetZ: ctrl ? ctrl.target.z : 0
+                };
+            }
             this.saveUserPreferences(
                 modelPath,
                 { x: 0, y: 0, z: 0 },
                 { x: 1, y: 1, z: 1 },
-                { x: 0, y: 0, z: 0 }
+                { x: 0, y: 0, z: 0 },
+                null,  // display
+                null,  // viewport
+                resetCameraPosition
             );
         }
 
@@ -1057,7 +1072,7 @@ class MMDCore {
 
     // ═══════════════════ 用户偏好持久化 ═══════════════════
 
-    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport) {
+    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport, cameraPosition) {
         try {
             if (!position || typeof position !== 'object' ||
                 !Number.isFinite(position.x) || !Number.isFinite(position.y) || !Number.isFinite(position.z)) {
@@ -1085,6 +1100,17 @@ class MMDCore {
                 Number.isFinite(viewport.width) && Number.isFinite(viewport.height) &&
                 viewport.width > 0 && viewport.height > 0) {
                 preferences.viewport = { width: viewport.width, height: viewport.height };
+            }
+            if (cameraPosition && typeof cameraPosition === 'object' &&
+                Number.isFinite(cameraPosition.x) && Number.isFinite(cameraPosition.y) && Number.isFinite(cameraPosition.z)) {
+                preferences.camera_position = {
+                    x: cameraPosition.x, y: cameraPosition.y, z: cameraPosition.z
+                };
+                if (Number.isFinite(cameraPosition.targetX) && Number.isFinite(cameraPosition.targetY) && Number.isFinite(cameraPosition.targetZ)) {
+                    preferences.camera_position.targetX = cameraPosition.targetX;
+                    preferences.camera_position.targetY = cameraPosition.targetY;
+                    preferences.camera_position.targetZ = cameraPosition.targetZ;
+                }
             }
 
             const controller = new AbortController();
