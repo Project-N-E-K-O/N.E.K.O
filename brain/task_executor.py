@@ -484,7 +484,13 @@ class DirectTaskExecutor:
         cleaned = cleaned.replace("\r", " ").replace("\n", " ")
         patterns = [
             (r"(?i)(password|passwd|pwd)\s*[:=]\s*\S+", r"\1=[REDACTED_PASSWORD]"),
+            (r"(?i)(password|passwd|pwd|密码|口令)\s*(?:is|是|=|:)\s*\S+", r"\1=[REDACTED_PASSWORD]"),
             (r"(?i)(token|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+", r"\1=[REDACTED_TOKEN]"),
+            (
+                r"(?i)(token|api(?:[\s_-]?key)|access(?:[\s_-]?token)|refresh(?:[\s_-]?token)|令牌|密钥|秘钥)\s*(?:is|是|=|:)\s*\S+",
+                r"\1=[REDACTED_TOKEN]",
+            ),
+            (r"(?i)\bsk-[a-z0-9_-]{10,}\b", "[REDACTED_TOKEN]"),
             (r"(?i)(cookie)\s*[:=]\s*\S+", r"\1=[REDACTED_COOKIE]"),
             (
                 r"(?i)(\b(?:otp|pin|verification(?:\s+code)?|sms\s*code|one[-\s]?time(?:\s+password|\s+code)?|验证码|校验码|短信码|动态码)\b(?:\s*(?:is|为|是))?[\s:：=#-]{0,6})\d{4,8}\b",
@@ -502,7 +508,7 @@ class DirectTaskExecutor:
     def _sanitize_recent_context(self, recent_context: List[Dict[str, str]]) -> List[Dict[str, str]]:
         sanitized: List[Dict[str, str]] = []
         total_chars = 0
-        for item in recent_context[-4:]:
+        for item in reversed(recent_context[-4:]):
             role = str(item.get("role") or "").strip().lower()
             if role not in {"user", "assistant"}:
                 continue
@@ -513,6 +519,7 @@ class DirectTaskExecutor:
             if total_chars > 1200:
                 break
             sanitized.append({"role": role, "content": content})
+        sanitized.reverse()
         return sanitized
 
     def _get_correction_memory_path(self) -> Path:
@@ -632,6 +639,23 @@ class DirectTaskExecutor:
     def _append_correction_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
         memory = self._load_correction_memory()
         events = memory.setdefault("correction_events", [])
+        task_id = str(event.get("task_id") or "").strip()
+        if task_id:
+            for idx, existing in enumerate(events):
+                if not isinstance(existing, dict):
+                    continue
+                if str(existing.get("task_id") or "").strip() != task_id:
+                    continue
+                merged_event = dict(existing)
+                merged_event.update(event)
+                merged_event["task_id"] = task_id
+                merged_event["event_id"] = str(existing.get("event_id") or event.get("event_id") or f"corr_{uuid.uuid4().hex[:12]}")
+                events[idx] = merged_event
+                self._save_correction_memory(memory)
+                return merged_event
+
+        event = dict(event)
+        event["event_id"] = str(event.get("event_id") or f"corr_{uuid.uuid4().hex[:12]}")
         events.append(event)
         if len(events) > 300:
             del events[:-300]
@@ -647,9 +671,10 @@ class DirectTaskExecutor:
         user_note: str = "",
     ) -> Dict[str, Any]:
         chosen_tool = str(task_info.get("type") or "").strip()
+        task_id = str(task_info.get("task_id") or task_info.get("id") or "").strip()
         task_type = chosen_tool  # Backward-compatible alias for existing readers of correction events.
         event = {
-            "event_id": f"corr_{uuid.uuid4().hex[:12]}",
+            "task_id": task_id,
             "timestamp": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
             "user_query": self._sanitize_correction_text(task_info.get("latest_user_request", "")),
             "normalized_intent": self._sanitize_correction_text(task_info.get("normalized_intent", "")),

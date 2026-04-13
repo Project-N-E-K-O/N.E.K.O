@@ -2799,6 +2799,7 @@ async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
         event = Modules.task_executor.record_tool_correction(
             {
                 **correction_info,
+                "task_id": task_id,
                 "type": task_type,
             },
             correct_tool=correct_tool,
