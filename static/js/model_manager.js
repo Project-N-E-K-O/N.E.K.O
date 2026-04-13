@@ -4727,11 +4727,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         return mats;
     }
 
+    // 同时取消：rAF tween / 延迟 fade-in setTimeout / 未决的 _fadeAlpha Promise。
+    //
+    // 关键点：不 resolve pendingResolve 的话，上一轮 `await _fadeAlpha(...)` 会
+    // 永远挂住，调用方（_playIdleAnimation）的 try/finally 永远不执行 → MMD
+    // 物理冻结无法恢复 / loop 监听器无法注册 / 回退定时器无法启动（Codex PR#774 P1）。
+    // 延迟 fade-in 的 setTimeout 若不清，过期回调会在下一轮 fade-out 期间触发
+    // `_fadeAlpha(type, 1, ...)`，cancel 当前 tween 并让新 await 挂住（Codex PR#774 P2）。
     function _cancelFadeTween(type) {
         const st = _idleFadeState[type];
-        if (st?.rafId) {
+        if (!st) return;
+        if (st.rafId) {
             cancelAnimationFrame(st.rafId);
             st.rafId = null;
+        }
+        if (st.delayTimerId) {
+            clearTimeout(st.delayTimerId);
+            st.delayTimerId = null;
+        }
+        if (st.pendingResolve) {
+            const r = st.pendingResolve;
+            st.pendingResolve = null;
+            try { r(); } catch (_) { /* resolve 不应抛，防御性忽略 */ }
         }
     }
 
@@ -4780,13 +4797,16 @@ document.addEventListener('DOMContentLoaded', async () => {
      * 把指定模型的材质 opacity 在 durationMs 内 tween 到 toAlpha * origOpacity。
      * toAlpha: 0 = 完全不可见，1 = 还原原始 opacity。
      * 到达 alpha=1 时自动还原 transparent 标志，避免长期开 transparent 导致的 z-sort 问题。
-     * 返回 Promise，tween 完成或被取消时 resolve。
+     * 返回 Promise，tween 完成或被取消时都会 resolve（被 `_cancelFadeTween` 取消时
+     * 由 cancel 端 drain pendingResolve，防止 await 挂住调用方的 try/finally）。
      */
     function _fadeAlpha(type, toAlpha, durationMs) {
         return new Promise(resolve => {
             const state = _ensureFadeState(type);
             if (!state) { resolve(); return; }
+            // 先 cancel 上一次（包括 drain 其 pendingResolve），再把自己的 resolve 装进 state
             _cancelFadeTween(type);
+            state.pendingResolve = resolve;
 
             // tween 期间强制 transparent=true，否则 opacity 在不透明材质上无视觉效果
             for (const t of state.targets) {
@@ -4819,6 +4839,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     state.rafId = requestAnimationFrame(step);
                 } else {
                     state.rafId = null;
+                    // 先把 pendingResolve 摘下来再做 restore（_restoreFadeMaterials 会调
+                    // _cancelFadeTween，若 pendingResolve 还在 state 上会被再 resolve 一次
+                    // —— Promise 第二次 resolve 是 no-op，但避免顺序混乱更清楚）
+                    state.pendingResolve = null;
                     if (toAlpha >= 1) {
                         // 完全不透明：还原 transparent，清空快照，下次 fade 重新 ensure
                         _restoreFadeMaterials(type);
@@ -4965,9 +4989,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         const fadeOutMs = type === 'vrm' ? IDLE_VRM_VISUAL_FADE_OUT_MS : IDLE_MMD_VISUAL_FADE_OUT_MS;
         await _fadeAlpha(type, 0, fadeOutMs);
 
+        // await 期间可能发生：stopIdleRotation 清空轮换（会 drain pendingResolve 唤醒这里）/
+        // 用户手动播 VRMA/VMD / 切模式。原先 `_cancelFadeTween` 不 resolve Promise，await
+        // 永挂成事实上的 stop gate；Codex PR#774 P1 修复后必须显式重校 guards，否则会
+        // 绕过 stopIdleRotation 继续激活 mixer、注册 loop 监听器、启动回退定时器。
+        // aborted 分支走完 try 仍进 finally：played=false → _alignAndRestoreMmdIdlePhysics
+        // (idempotent) + fade-in（materials 已被 stopIdleRotation 还原则是 1→1 的 no-op tween）。
+        const aborted = !_isIdleTypeActive(type) ||
+                        (type === 'vrm' && isVrmAnimationPlaying) ||
+                        (type === 'mmd' && isMmdAnimationPlaying);
+
         let played = false;
         try {
-            if (type === 'vrm') {
+            if (aborted) {
+                console.debug(`[${type.toUpperCase()} IdleAnimation] fade-out 期间被打断，跳过动画切换`);
+            } else if (type === 'vrm') {
                 if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
                     // 不再先 stopVRMAAnimation（它会 0.5s fadeOut，过长且是为手动动画设计的），
                     // 改由 _playAction 的 crossfade 分支直接 fadeOut(old) + fadeIn(new)。
@@ -5037,10 +5073,28 @@ document.addEventListener('DOMContentLoaded', async () => {
             // - MMD：loadAnimation 一步落位但 physics.reset 还在 IDLE_MMD_PHYSICS_RESTORE_MS
             //   后执行；等物理稳定再淡入，避免让用户看到头发/裙摆 reset 瞬间的跳变。
             // 失败分支（played=false）也淡入还原，防止模型永久不可见。
+            //
+            // 延迟 timer 登记到 state.delayTimerId，stopIdleRotation / _cancelFadeTween
+            // 能一并清掉；否则上一轮 MMD 切换残留的 setTimeout 会在下一轮 fade-out
+            // 期间触发 `_fadeAlpha(type, 1, ...)`，cancel 当前 tween 并让新 await 挂住
+            // （Codex PR#774 P2 / CodeRabbit）。回调内再校一次 `_idleFadeState[type] === st`
+            // 防御 state 被另一条路径（stopIdleRotation → _restoreFadeMaterials）清空后
+            // 重建的情况。
             const fadeInMs = type === 'vrm' ? IDLE_VRM_VISUAL_FADE_IN_MS : IDLE_MMD_VISUAL_FADE_IN_MS;
             const fadeInDelayMs = (type === 'mmd' && played) ? IDLE_MMD_PHYSICS_RESTORE_MS + 30 : 0;
             if (fadeInDelayMs > 0) {
-                setTimeout(() => { _fadeAlpha(type, 1, fadeInMs); }, fadeInDelayMs);
+                const st = _ensureFadeState(type);
+                if (st) {
+                    if (st.delayTimerId) clearTimeout(st.delayTimerId);
+                    st.delayTimerId = setTimeout(() => {
+                        if (_idleFadeState[type] !== st) return; // state 已被替换/清空，回调过期
+                        st.delayTimerId = null;
+                        _fadeAlpha(type, 1, fadeInMs);
+                    }, fadeInDelayMs);
+                } else {
+                    // state 建不起来（模型未就绪）：直接 fade-in（会 resolve 空 Promise）
+                    _fadeAlpha(type, 1, fadeInMs);
+                }
             } else {
                 _fadeAlpha(type, 1, fadeInMs);
             }
