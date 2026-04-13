@@ -983,6 +983,10 @@ window.Jukebox = {
 
         // 刷新所有面板
         this.refreshAllPanels();
+        // 通知点歌台播放器窗口同步刷新
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          window.Jukebox.loadSongs();
+        }
       } catch (err) {
         console.error('删除歌曲失败:', err);
         alert(window.t('Jukebox.deleteFailed', '删除失败'));
@@ -1006,6 +1010,10 @@ window.Jukebox = {
 
         // 刷新所有面板
         this.refreshAllPanels();
+        // 通知点歌台播放器窗口同步刷新
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          window.Jukebox.loadSongs();
+        }
       } catch (err) {
         console.error('删除动画失败:', err);
         alert(window.t('Jukebox.deleteFailed', '删除失败'));
@@ -1683,7 +1691,7 @@ window.Jukebox = {
     async uploadSongs(files) {
       try {
         const metadata = files.map(f => ({
-          name: f.name.replace(/\.mp3$/i, ''),
+          name: f.name.replace(/\.[^/.]+$/, ''),
           artist: '未知'
         }));
         const result = await this.api.uploadSongs(files, metadata);
@@ -1697,7 +1705,7 @@ window.Jukebox = {
     async uploadActions(files) {
       try {
         const metadata = files.map(f => ({
-          name: f.name.replace(/\.vmd$/i, '')
+          name: f.name.replace(/\.[^/.]+$/, '')
         }));
         const result = await this.api.uploadActions(files, metadata);
         console.log('[SongActionManager] 上传动画成功:', result);
@@ -1849,7 +1857,7 @@ window.Jukebox = {
       const input = document.createElement('input');
       input.type = 'file';
       input.multiple = true;
-      input.accept = '.mp3,.vmd,.zip,audio/*,video/*';
+      input.accept = '.mp3,.wav,.ogg,.flac,.vmd,.bvh,.fbx,.vrma,.zip,audio/*';
       input.onchange = async (e) => {
         if (e.target.files && e.target.files.length > 0) {
           await this.processFiles(Array.from(e.target.files));
@@ -1864,11 +1872,13 @@ window.Jukebox = {
       const actions = [];
       const zips = [];
 
+      const audioExts = ['mp3', 'wav', 'ogg', 'flac'];
+      const actionExts = ['vmd', 'bvh', 'fbx', 'vrma'];
       for (const file of files) {
         const ext = file.name.split('.').pop().toLowerCase();
-        if (ext === 'mp3' || file.type.startsWith('audio/')) {
+        if (audioExts.includes(ext) || file.type.startsWith('audio/')) {
           songs.push(file);
-        } else if (ext === 'vmd') {
+        } else if (actionExts.includes(ext)) {
           actions.push(file);
         } else if (ext === 'zip') {
           zips.push(file);
@@ -1891,35 +1901,10 @@ window.Jukebox = {
       }
     },
 
-    // 导入歌曲文件
+    // 导入歌曲文件（委托给 uploadSongs，使用正确的批量上传 API）
     importSongs: async function(files) {
       try {
-        for (const file of files) {
-          const formData = new FormData();
-          formData.append('file', file);
-          formData.append('name', file.name.replace(/\.[^/.]+$/, ''));
-
-          const response = await fetch('/api/jukebox/upload', {
-            method: 'POST',
-            body: formData
-          });
-
-          if (!response.ok) {
-            throw new Error(`上传失败: ${response.status}`);
-          }
-
-          const result = await response.json();
-          if (result.success) {
-            // 添加到数据
-            this.data.songs[result.song_id] = {
-              id: result.song_id,
-              name: result.name,
-              artist: result.artist || '',
-              visible: true
-            };
-          }
-        }
-        this.render();
+        await this.uploadSongs(files);
         // 通知主UI刷新
         if (window.Jukebox && window.Jukebox.loadSongs) {
           window.Jukebox.loadSongs();
@@ -1931,35 +1916,10 @@ window.Jukebox = {
       }
     },
 
-    // 导入动作文件
+    // 导入动作文件（委托给 uploadActions，使用正确的批量上传 API）
     importActions: async function(files) {
       try {
-        for (const file of files) {
-          const formData = new FormData();
-          formData.append('file', file);
-          formData.append('name', file.name.replace(/\.[^/.]+$/, ''));
-          formData.append('format', 'vmd');
-
-          const response = await fetch('/api/jukebox/upload_action', {
-            method: 'POST',
-            body: formData
-          });
-
-          if (!response.ok) {
-            throw new Error(`上传失败: ${response.status}`);
-          }
-
-          const result = await response.json();
-          if (result.success) {
-            // 添加到数据
-            this.data.actions[result.action_id] = {
-              id: result.action_id,
-              name: result.name,
-              format: result.format || 'vmd'
-            };
-          }
-        }
-        this.render();
+        await this.uploadActions(files);
         console.log(`[SongActionManager] 成功导入 ${files.length} 个动作`);
       } catch (error) {
         console.error('[SongActionManager] 导入动作失败:', error);
