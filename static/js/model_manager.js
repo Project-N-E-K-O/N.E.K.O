@@ -2476,6 +2476,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else {
                 // MMD 子类型：暂停 VRM 渲染循环，避免后台仍然绘制已缓存的 VRM 模型
                 // （即使容器 display:none，某些浏览器在过渡/重排时仍可能短暂显示 canvas）
+                //
+                // 【修复 MMD→VRM 切换闪现】额外把当前 VRM 模型节点隐藏：
+                // 仅靠 pauseRendering + canvas display:none 不足以覆盖从 MMD 切回 VRM 的缝隙。
+                // 切回 VRM 时，switchModelDisplay 的 VRM 分支会显式 resumeRendering +
+                // 显示 canvas（见上方"对称恢复"），而真正替换模型的 vrmManager.loadModel
+                // 要等到 switchModelDisplay 之后才被 vrmModelSelect handler 调用。
+                // 期间 loadLive3DModels / loadIdleAnimationOptions / restoreVrmIdleAnimation
+                // 等多处 await 都会让浏览器绘制若干帧，此时旧 sister1.0 仍留在 scene 中
+                // 就会被画出来。把 scene.visible 置 false 后，即便 canvas 可见也画不出内容
+                // （renderer 使用 alpha:true，画面为透明）；新模型加载时 disposeVRM 会清掉
+                // 旧节点，新节点走自己的 visible=false → fadeIn 流水线，不受影响。
+                if (vrmManager && vrmManager.currentModel &&
+                    vrmManager.currentModel.vrm && vrmManager.currentModel.vrm.scene) {
+                    vrmManager.currentModel.vrm.scene.visible = false;
+                }
                 if (vrmManager && typeof vrmManager.pauseRendering === 'function') {
                     try { vrmManager.pauseRendering(); } catch (_) { /* ignore */ }
                 }
