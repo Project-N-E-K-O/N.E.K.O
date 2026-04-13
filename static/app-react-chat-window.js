@@ -935,13 +935,15 @@
     function getMinimizedTarget(rect) {
         if (isMobileWidth()) {
             var mobileWidth = Math.max(0, window.innerWidth - MOBILE_CAPSULE_MARGIN * 2);
+            // 胶囊四周保持 MOBILE_CAPSULE_MARGIN 间距（与左右 6px 对称）
+            var mobileBottomTop = Math.max(0, window.innerHeight - MOBILE_CAPSULE_HEIGHT - MOBILE_CAPSULE_MARGIN);
             return {
                 width: mobileWidth,
                 height: MOBILE_CAPSULE_HEIGHT,
                 left: MOBILE_CAPSULE_MARGIN,
                 top: Math.max(0, Math.min(
                     rect.bottom - MOBILE_CAPSULE_HEIGHT,
-                    window.innerHeight - MOBILE_CAPSULE_HEIGHT
+                    mobileBottomTop
                 ))
             };
         }
@@ -1083,7 +1085,20 @@
 
             // 恢复保存的尺寸
             shell.classList.remove('is-minimized');
-            if (savedShellSize) {
+            if (isMobileWidth()) {
+                // 手机端：宽度永远是全宽（由 CSS 对非动画态的 `.is-minimized`/展开态
+                // 双向 !important 覆盖），所以忽略 savedShellSize.width —— 否则旋屏
+                // (portrait→landscape) 后 savedSize.width < curRect.width，
+                // expandedRect 被 savedSize 缩窄，sx2 > 1，动画反向缩小。
+                // 高度按当前视口 50vh 重新 clamp，避免旋屏或视口变短后超出上限。
+                shell.style.width = Math.max(0, window.innerWidth - MOBILE_CAPSULE_MARGIN * 2) + 'px';
+                var maxMobileHeight = Math.max(0, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
+                var savedHeightPx = savedShellSize ? parseFloat(savedShellSize.height) : NaN;
+                var restoreHeight = isFinite(savedHeightPx) && savedHeightPx > 0
+                    ? Math.min(savedHeightPx, maxMobileHeight)
+                    : maxMobileHeight;
+                if (restoreHeight > 0) shell.style.height = restoreHeight + 'px';
+            } else if (savedShellSize) {
                 if (savedShellSize.width) shell.style.width = savedShellSize.width;
                 if (savedShellSize.height) shell.style.height = savedShellSize.height;
             }
