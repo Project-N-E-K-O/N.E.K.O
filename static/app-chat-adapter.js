@@ -285,11 +285,6 @@
             window.ensureAssistantTurnStarted('create_gemini_bubble');
         }
 
-        // 字幕检测
-        if (typeof window.checkAndShowSubtitlePrompt === 'function') {
-            window.checkAndShowSubtitlePrompt(cleanSentence);
-        }
-
         return ref;
     }
 

@@ -1119,17 +1119,12 @@
                             }
                         }, 100);
 
-                        // Frontend translation
+                        // Frontend subtitle finalization: subtitle.js 内部根据开关决定是否
+                        // 真正发请求；不需要的语言会保留流式累积的原文，不会清空字幕
                         (async function () {
                             try {
-                                if (typeof getUserLanguage === 'function') {
-                                    var _userLanguage = await getUserLanguage();
-                                    // Only translate subtitle when subtitle toggle is on
-                                    if (typeof subtitleEnabled !== 'undefined' && subtitleEnabled) {
-                                        if (typeof translateAndShowSubtitle === 'function') {
-                                            await translateAndShowSubtitle(fullText);
-                                        }
-                                    }
+                                if (typeof window.translateAndShowSubtitle === 'function') {
+                                    await window.translateAndShowSubtitle(fullText);
                                 }
                             } catch (transError) {
                                 console.error(window.t('console.translationProcessFailed'), {
