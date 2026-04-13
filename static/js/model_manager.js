@@ -1012,13 +1012,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // VRM 侧走 crossfade + 跨 clip 同半球对齐，骨骼每帧位移极小，SpringBone 无冲击，不走这条路径。
     const _idleMmdPhysicsRestoreTimer = { mmd: null };
     const _idleMmdPhysicsSavedState = { mmd: null };
-    // 上一轮 VRM crossfade 的 previousAction：fadeOut(IDLE_VRM_FADE_SEC) 完成后仍以权重 0
-    // 占用 PropertyBinding，长期累积会吃内存。单槽存储即可：下一轮切换时 stop() 它
-    // （idle 轮换间隔 ≫ 0.15s，届时 fadeOut 早已完成）。
-    // 用定时器 Set 反而复杂且容易漏 stop，顺延到下一轮是无副作用的最小方案。
-    const _idlePendingStopAction = { vrm: null };
     // VRM 待机动作 crossfade 时长（秒）。mixer 对每根骨做加权 slerp，把单帧姿态跳变稀释成
     // 逐帧小幅位移，避开 LookAt 奇点 / 四元数跨半球长路径 / 物理飞甩。
+    // previousAction 的延迟 stop 已下沉到 vrm-animation.js `_playAction` 的每次 fadeOut，
+    // 跟 idle/手动切换路径解耦，不在此处维护 pending 槽。
     const IDLE_VRM_FADE_SEC = 0.15;
 
     // 更新模型类型按钮文字的函数（使用统一管理器）
@@ -4691,16 +4688,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 _idleMmdPhysicsRestoreTimer.mmd = null;
             }
             _alignAndRestoreMmdIdlePhysics();
-        } else if (type === 'vrm' && _idlePendingStopAction.vrm) {
-            // 上一轮 crossfade 的 previousAction：此时 fadeOut 早已完成（idle 间隔 ≫ 0.15s）。
-            // stop() 释放 binding，避免权重 0 常驻 mixer。
-            const cur = vrmManager?.animation?.currentAction || null;
-            try {
-                if (_idlePendingStopAction.vrm !== cur) {
-                    _idlePendingStopAction.vrm.stop();
-                }
-            } catch (e) { /* noop */ }
-            _idlePendingStopAction.vrm = null;
         }
         _idleRotationLast[type] = null;
     }
@@ -4815,20 +4802,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             if (type === 'vrm') {
                 if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
-                    // 上一轮挂起的 previousAction：此时其 fadeOut 早已完成，stop() 释放 binding。
-                    // 必须在本轮 crossfade 启动之前做：否则本轮 previousAction 会覆盖上一轮的槽。
-                    if (_idlePendingStopAction.vrm) {
-                        const curBefore = vrmManager.animation.currentAction || null;
-                        try {
-                            if (_idlePendingStopAction.vrm !== curBefore) {
-                                _idlePendingStopAction.vrm.stop();
-                            }
-                        } catch (e) { /* noop */ }
-                        _idlePendingStopAction.vrm = null;
-                    }
-                    const previousAction = vrmManager.animation.currentAction || null;
                     // 不再先 stopVRMAAnimation（它会 0.5s fadeOut，过长且是为手动动画设计的），
-                    // 改由 _playAction 的 crossfade 分支直接 fadeOut(old) + fadeIn(new)
+                    // 改由 _playAction 的 crossfade 分支直接 fadeOut(old) + fadeIn(new)。
+                    // previousAction 的延迟 stop 在 vrm-animation.js `_playAction` 内部按本次
+                    // fadeDuration schedule，不再依赖 idle 轮换路径来 drain。
                     await vrmManager.playVRMAAnimation(url, {
                         loop: true,
                         immediate: false,
@@ -4850,12 +4827,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                         };
                         mixer.addEventListener('loop', handler);
                         _idleLoopCleanup['vrm'] = () => mixer.removeEventListener('loop', handler);
-                    }
-
-                    // 把本轮 previousAction 挂起到下一轮 crossfade 启动时 stop()。
-                    // 届时其 fadeOut(IDLE_VRM_FADE_SEC) 早已完成，stop 不会打断任何淡出。
-                    if (previousAction && previousAction !== vrmManager.animation.currentAction) {
-                        _idlePendingStopAction.vrm = previousAction;
                     }
 
                     // 动画加载成功后再启动回退定时器（从实际播放开始计时）

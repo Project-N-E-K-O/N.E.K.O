@@ -235,13 +235,38 @@ class VRMAnimation {
             proxy.name = 'lookAtQuaternionProxy';
             vrm.scene.add(proxy);
         }
-        // 永久屏蔽 proxy 的 Euler 拆分。
-        // 原实现每次 proxy.quaternion 变化都会 setFromQuaternion→Euler(YXZ) 再写 yaw/pitch，
-        // pitch ≈ ±90° 附近命中万向锁 → yaw 爆炸 → 眼球奇点甩动。
-        // 而 cursor-follow 已经通过 vrmLookAt.target 直接驱动眼球（见 vrm-manager.js），
-        // proxy 这条路径既冗余又有害，直接 shadow 成 no-op 一劳永逸。
+        // 用基于前向向量的稳定提取替换 proxy 的 Euler 拆分（shadow 原型方法）。
+        //
+        // 原实现：setFromQuaternion(q, 'YXZ') → Euler → yaw = y, pitch = x。
+        //   pitch ≈ ±π/2 附近 YXZ 拆分退化（Euler 矩阵奇异），yaw 由退化矩阵任意
+        //   输出 → 眼球奇点甩动。
+        //
+        // 新实现：把 proxy.quaternion 作用于本地 -Z（VRM 头部前方），从结果向量
+        //   提取 pitch=asin(fy), yaw=atan2(-fx, -fz)。
+        //   对无 roll 的 LookAt quaternion（authored gaze 的标准形态）与 Euler YXZ
+        //   数学上完全等价——Y 旋转给 yaw，X 旋转给 pitch，Z 旋转(roll)在 YXZ
+        //   里被塞进 euler.z 被 proxy 忽略，forward-vector 提取同样忽略 roll
+        //   （绕前向轴的旋转不改变前向）。
+        //   关键区别：pitch=±π/2 时 asin 域边界稳定返回 π/2，atan2(0,0)=0 给
+        //   出明确的 yaw=0 回退，而不是退化 YXZ 的任意值。
+        //
+        // 不再用 no-op：no-op 会静默丢弃 VRMA 文件里 authored 的 LookAt quaternion
+        // 轨道（createVRMAnimationClip 把它们映射到 proxy.quaternion），影响
+        // 手动播放的带 gaze 动画的正常表现（Project-N-E-K-O/N.E.K.O#772 Codex P1）。
         if (!Object.prototype.hasOwnProperty.call(proxy, '_applyToLookAt')) {
-            proxy._applyToLookAt = function () {};
+            const RAD2DEG = 180 / Math.PI;
+            proxy._applyToLookAt = function () {
+                const q = this.quaternion;
+                const x = q.x, y = q.y, z = q.z, w = q.w;
+                // forward = q * (0,0,-1) * q⁻¹，展开后的分量
+                const fx = -2 * (x * z + w * y);
+                const fy =  2 * (w * x - y * z);
+                const fz =  2 * (x * x + y * y) - 1;
+                // asin 定义域 [-1, 1]，浮点积累可能越界，clamp 防 NaN
+                const cy = fy > 1 ? 1 : (fy < -1 ? -1 : fy);
+                this.vrmLookAt.pitch = Math.asin(cy) * RAD2DEG;
+                this.vrmLookAt.yaw = Math.atan2(-fx, -fz) * RAD2DEG;
+            };
         }
     }
 
@@ -460,7 +485,26 @@ class VRMAnimation {
             if (this.currentAction && this.currentAction !== newAction) {
                 this.vrmaMixer.update(0);
                 if (vrm.scene) vrm.scene.updateMatrixWorld(true);
-                this.currentAction.fadeOut(fadeDuration);
+                // fadeOut 只把 weight 归零，action 本身仍在 mixer 的 _actions 列表里
+                // 以 weight=0 的状态持续 update。如果不 stop，后续每次 _playAction 都
+                // 会让残留 action 越堆越多（idle ↔ manual VRMA 反复切换尤其明显）。
+                // 这里按本次 fadeDuration schedule 一个与 action 绑定的 stop，
+                // 跟调用方（idle/manual）解耦——任何 VRMA 播放路径都能正确收尾
+                // （Project-N-E-K-O/N.E.K.O#772 Codex P2）。
+                const outgoing = this.currentAction;
+                outgoing.fadeOut(fadeDuration);
+                const stopDelayMs = Math.ceil(fadeDuration * 1000) + 50;
+                setTimeout(() => {
+                    try {
+                        // 只有当 outgoing 已经不是当前 action 时才 stop，避免把同一
+                        // action 反复切入/切出时误杀正在 fadeIn 的自己。
+                        if (this.currentAction !== outgoing) {
+                            outgoing.stop();
+                        }
+                    } catch (e) {
+                        // action 可能已被 mixer 清理；stop 幂等，忽略异常
+                    }
+                }, stopDelayMs);
                 newAction.enabled = true;
                 if (options.noReset) {
                     newAction.fadeIn(fadeDuration).play();
