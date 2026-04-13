@@ -16,7 +16,10 @@ function openApiSettings() {
 // 不应抛出 "Unexpected token '<', '<html>...' is not valid JSON"，而应返回带状态码的可读错误。
 async function safeReadResponse(res) {
     const contentType = (res.headers.get('content-type') || '').toLowerCase();
-    if (contentType.includes('application/json')) {
+    // 识别 application/json 以及 RFC 6839 的结构化后缀（如 application/problem+json,
+    // application/vnd.api+json 等），它们都是合法 JSON。
+    const isJsonContentType = contentType.includes('application/json') || /\+json(\s*;|\s*$)/.test(contentType);
+    if (isJsonContentType) {
         try {
             return { data: await res.json(), nonJson: false, text: '' };
         } catch (_) {
