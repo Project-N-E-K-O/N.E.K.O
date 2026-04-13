@@ -149,9 +149,9 @@
     }
 
     function getWeakIdleIntervalMs() {
-        var secs = Number(S.weakIdleInterval || C.DEFAULT_WEAK_IDLE_INTERVAL || 10);
+        var secs = Number(S.weakIdleInterval || C.DEFAULT_WEAK_IDLE_INTERVAL || 1800);
         if (!Number.isFinite(secs) || secs <= 0) {
-            secs = 10;
+            secs = 1800;
         }
         return Math.max(5, secs) * 1000;
     }
@@ -316,6 +316,9 @@
             });
 
             if (!response.ok) {
+                if (response.status === 409) {
+                    return 'blocked';
+                }
                 return false;
             }
 
@@ -341,6 +344,10 @@
             var success = false;
             if (action === 'chat') {
                 success = await sendWeakIdleChat();
+                if (success === 'blocked') {
+                    recordWeakIdleInteraction('weak_idle_auto_chat', { blocked: true, reschedule: true });
+                    return true;
+                }
             } else if (action === 'expression') {
                 success = await performWeakIdleExpressionSwitch();
             } else if (action === 'bubble') {

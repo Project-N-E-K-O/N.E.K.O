@@ -79,8 +79,40 @@
         S.assistantTurnAwaitingBubble = false;
     }
 
-    function clearAssistantEffectSuppression() {
-        S.assistantTurnSkipEffects = false;
+    function setAssistantTurnSkipEffects(turnId, shouldSkip) {
+        var normalized = normalizeAssistantTurnId(turnId);
+        if (!normalized) {
+            return;
+        }
+        if (!S.assistantTurnSkipEffectsById) {
+            S.assistantTurnSkipEffectsById = {};
+        }
+        if (shouldSkip) {
+            S.assistantTurnSkipEffectsById[normalized] = true;
+        } else {
+            delete S.assistantTurnSkipEffectsById[normalized];
+        }
+    }
+
+    function shouldSkipAssistantEffects(turnId) {
+        var normalized = normalizeAssistantTurnId(turnId);
+        if (!normalized || !S.assistantTurnSkipEffectsById) {
+            return false;
+        }
+        return S.assistantTurnSkipEffectsById[normalized] === true;
+    }
+
+    function clearAssistantEffectSuppression(turnId) {
+        if (!S.assistantTurnSkipEffectsById) {
+            S.assistantTurnSkipEffectsById = {};
+            return;
+        }
+        var normalized = normalizeAssistantTurnId(turnId);
+        if (!normalized) {
+            S.assistantTurnSkipEffectsById = {};
+            return;
+        }
+        delete S.assistantTurnSkipEffectsById[normalized];
     }
 
     function resolveAssistantLifecycleTurnId(turnId) {
@@ -372,6 +404,10 @@
                 if (response.type === 'gemini_response') {
                     var isNewMessage = response.isNewMessage || false;
                     var skipAssistantEffects = response.skip_assistant_effects === true;
+                    var responseTurnId = normalizeAssistantTurnId(response.turn_id);
+                    if (responseTurnId) {
+                        setAssistantTurnSkipEffects(responseTurnId, skipAssistantEffects);
+                    }
                     if (isNewMessage) {
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
                         if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
@@ -381,21 +417,19 @@
                         S.lastVoiceUserMessage = null;
                         S.lastVoiceUserMessageTime = 0;
                         S.assistantTurnId = null;
-                        S.assistantTurnSkipEffects = skipAssistantEffects;
+                        S.assistantPendingTurnServerId = responseTurnId;
                         if (skipAssistantEffects) {
-                            clearPendingAssistantTurnStart();
+                            S.assistantTurnAwaitingBubble = false;
                         } else {
-                            S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
-                            S.assistantTurnAwaitingBubble = true;
+                            S.assistantTurnAwaitingBubble = responseTurnId || true;
                         }
-                    } else if (skipAssistantEffects) {
-                        S.assistantTurnSkipEffects = true;
                     }
                     var createdVisibleBubble = false;
                     if (typeof window.appendMessage === 'function') {
                         createdVisibleBubble = window.appendMessage(response.text, 'gemini', isNewMessage) === true;
                     }
-                    if (!S.assistantTurnSkipEffects && !S.assistantTurnId && S.assistantTurnAwaitingBubble && createdVisibleBubble) {
+                    if (!shouldSkipAssistantEffects(responseTurnId || S.assistantPendingTurnServerId) &&
+                        !S.assistantTurnId && S.assistantTurnAwaitingBubble && createdVisibleBubble) {
                         ensureAssistantTurnStarted('gemini_response_visible_bubble', response.turn_id);
                     }
                     if (response.turn_id) {
@@ -1039,7 +1073,8 @@
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log(window.t('console.turnEndReceived'));
                     logAssistantLifecycle('ws:turn_end:received');
-                    var skipAssistantEffectsOnTurnEnd = S.assistantTurnSkipEffects === true;
+                    var resolvedAssistantTurnId = resolveAssistantLifecycleTurnId();
+                    var skipAssistantEffectsOnTurnEnd = shouldSkipAssistantEffects(resolvedAssistantTurnId);
                     // Flush remaining buffer
                     try {
                         if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
@@ -1067,7 +1102,7 @@
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
                     }
-                    var assistantTurnId = skipAssistantEffectsOnTurnEnd ? null : resolveAssistantLifecycleTurnId();
+                    var assistantTurnId = skipAssistantEffectsOnTurnEnd ? null : resolvedAssistantTurnId;
                     if (!skipAssistantEffectsOnTurnEnd) {
                         if (assistantTurnId) {
                             logAssistantLifecycle('ws:turn_end:emit', {
@@ -1167,7 +1202,7 @@
                             }
                         })();
                     })();
-                    clearAssistantEffectSuppression();
+                    clearAssistantEffectSuppression(resolvedAssistantTurnId);
 
                     // Reset proactive chat backoff after AI turn completes
                     var hasChatMode = (typeof window.hasAnyChatModeEnabled === 'function') ? window.hasAnyChatModeEnabled() : false;

@@ -995,33 +995,48 @@ async def weak_idle_chat(request: Request):
         turn_id = str(uuid4())
 
         async def _deliver_once():
-            current_session = getattr(mgr, 'session', None)
-            if current_session and hasattr(current_session, '_conversation_history'):
-                current_session._conversation_history.append(AIMessage(content=message_text))
-
             websocket = getattr(mgr, 'websocket', None)
             if not websocket or not hasattr(websocket, 'client_state'):
-                return
+                logger.warning(f"[{lanlan_name}] 弱化版搭话未投递：websocket 不存在或不可用 turn_id={turn_id}")
+                return False
 
             try:
-                if websocket.client_state == websocket.client_state.CONNECTED:
-                    await websocket.send_json({
-                        "type": "gemini_response",
-                        "text": message_text,
-                        "isNewMessage": True,
-                        "turn_id": turn_id,
-                        "skip_assistant_effects": True,
-                    })
-                    await websocket.send_json({"type": "system", "data": "turn end"})
+                if websocket.client_state != websocket.client_state.CONNECTED:
+                    logger.warning(
+                        f"[{lanlan_name}] 弱化版搭话未投递：websocket 未连接 "
+                        f"client_state={websocket.client_state} turn_id={turn_id}"
+                    )
+                    return False
+
+                await websocket.send_json({
+                    "type": "gemini_response",
+                    "text": message_text,
+                    "isNewMessage": True,
+                    "turn_id": turn_id,
+                    "skip_assistant_effects": True,
+                })
+                await websocket.send_json({"type": "system", "data": "turn end"})
+                return True
             except Exception as ws_error:
-                logger.warning(f"[{lanlan_name}] 弱化版搭话发送到前端失败: {ws_error}")
+                logger.warning(f"[{lanlan_name}] 弱化版搭话发送到前端失败 turn_id={turn_id}: {ws_error}")
+                return False
 
         lock = getattr(mgr, '_proactive_write_lock', None)
         if lock is not None:
             async with lock:
-                await _deliver_once()
+                delivered = await _deliver_once()
         else:
-            await _deliver_once()
+            delivered = await _deliver_once()
+
+        if not delivered:
+            return JSONResponse({
+                "success": False,
+                "error": "弱化版搭话未成功投递到前端",
+            }, status_code=503)
+
+        current_session = getattr(mgr, 'session', None)
+        if current_session and hasattr(current_session, '_conversation_history'):
+            current_session._conversation_history.append(AIMessage(content=message_text))
 
         try:
             memory_payload = [{
@@ -1029,13 +1044,19 @@ async def weak_idle_chat(request: Request):
                 "content": [{"type": "text", "text": message_text}],
             }]
             async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
-                await client.post(
+                memory_response = await client.post(
                     f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
                     json={"input_history": json.dumps(memory_payload, ensure_ascii=False)},
                     timeout=5.0,
                 )
+                if not memory_response.is_success:
+                    logger.warning(
+                        f"[{lanlan_name}] 弱化版搭话写入 recent memory 失败 "
+                        f"turn_id={turn_id} status={memory_response.status_code} "
+                        f"body={memory_response.text[:500]}"
+                    )
         except Exception as memory_error:
-            logger.warning(f"[{lanlan_name}] 弱化版搭话写入 recent memory 失败: {memory_error}")
+            logger.warning(f"[{lanlan_name}] 弱化版搭话写入 recent memory 异常 turn_id={turn_id}: {memory_error}")
 
         return JSONResponse({
             "success": True,

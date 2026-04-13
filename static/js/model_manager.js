@@ -4348,7 +4348,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     vrmManager.expression.autoReturnToNeutral = false;
                     vrmManager.expression.setBaseExpression(name);
                     if (typeof window.recordWeakIdleInteraction === 'function') {
-                        window.recordWeakIdleInteraction('manual_vrm_expression', { userInitiated: true });
+                        try {
+                            window.recordWeakIdleInteraction('manual_vrm_expression', { userInitiated: true });
+                        } catch (weakIdleError) {
+                            console.warn('[VRM] recordWeakIdleInteraction 失败:', weakIdleError);
+                        }
                     }
                     isVrmExpressionPlaying = true;
                     updateVRMExpressionPlayButtonIcon();

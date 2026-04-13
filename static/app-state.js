@@ -14,7 +14,7 @@
         DEFAULT_SPEAKER_VOLUME: 100,         // 扬声器默认音量
         DEFAULT_PROACTIVE_CHAT_INTERVAL: 15, // 默认搭话间隔 (秒)
         DEFAULT_PROACTIVE_VISION_INTERVAL: 10, // 默认视觉间隔 (秒)
-        DEFAULT_WEAK_IDLE_INTERVAL: 10, // 弱化版空闲互动间隔 (秒)
+        DEFAULT_WEAK_IDLE_INTERVAL: 1800, // 弱化版空闲互动间隔 (秒，30分钟)
         MAX_SCREENSHOT_WIDTH: 1280,
         MAX_SCREENSHOT_HEIGHT: 720,
         VOICE_TRANSCRIPT_MERGE_WINDOW: 3000, // 语音转录合并时间窗 (ms)
@@ -77,7 +77,7 @@
         sessionStartedResolver: null,
         sessionStartedRejecter: null,
         assistantTurnId: null,
-        assistantTurnSkipEffects: false,
+        assistantTurnSkipEffectsById: {},
         assistantPendingTurnServerId: null,
         assistantTurnAwaitingBubble: false,
         assistantTurnSeq: 0,
@@ -117,7 +117,7 @@
         proactiveVisionInterval: 10,
         _lastProactiveChatScreenTime: 0,
         weakIdleTimer: null,
-        weakIdleInterval: 10,
+        weakIdleInterval: window.appConst.DEFAULT_WEAK_IDLE_INTERVAL,
         weakIdleLastInteractionAt: 0,
         _weakIdleSchedulerInitialized: false,
 

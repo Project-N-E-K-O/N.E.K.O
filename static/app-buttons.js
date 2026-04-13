@@ -757,7 +757,9 @@
                 window.recordWeakIdleInteraction('text_send', { userInitiated: true });
             } else {
                 window.lastUserInputTime = Date.now();
-                window.resetProactiveChatBackoff();
+                if (typeof window.resetProactiveChatBackoff === 'function') {
+                    window.resetProactiveChatBackoff();
+                }
             }
 
             // If no active text session, start one first
