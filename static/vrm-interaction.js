@@ -319,6 +319,9 @@ class VRMInteraction {
             if (this.isDragging) {
                 e.preventDefault();
                 e.stopPropagation();
+                // 保留本次拖拽类型再清状态，跨屏切换只对 pan 生效
+                // （orbit 只旋转相机，不应触发多屏切换）
+                const wasPanDrag = this.dragMode === 'pan';
                 this.isDragging = false;
                 this.dragMode = null;
                 canvas.style.cursor = 'default';
@@ -326,9 +329,11 @@ class VRMInteraction {
                 // 拖拽结束后恢复按钮的 pointer-events
                 this._restoreButtonPointerEvents();
 
-                // 多屏幕支持：检测模型是否移出当前屏幕并切换到新屏幕
+                // 多屏幕支持：仅对平移拖拽检测是否移出当前屏幕并切换到新屏幕
                 // 与 Live2D 行为对齐：若发生切屏，_checkAndSwitchDisplay 内部负责回弹和保存
-                const displaySwitched = await this._checkAndSwitchDisplay();
+                const displaySwitched = wasPanDrag
+                    ? await this._checkAndSwitchDisplay()
+                    : false;
 
                 if (!displaySwitched) {
                     // 拖拽结束后：若超出屏幕范围，执行回弹

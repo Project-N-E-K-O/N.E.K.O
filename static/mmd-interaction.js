@@ -282,14 +282,19 @@ class MMDInteraction {
         // 鼠标抬起
         this.mouseUpHandler = async () => {
             if (this.isDragging) {
+                // 保留本次拖拽类型再清状态，跨屏切换只对 pan 生效
+                // （orbit 是绕模型中心旋转朝向，不应触发多屏切换）
+                const wasPanDrag = this.dragMode === 'pan';
                 this.isDragging = false;
                 this.dragMode = null;
                 canvas.style.cursor = 'default';
                 this._restoreButtonPointerEvents();
 
-                // 多屏幕支持：检测模型是否移出当前屏幕并切换到新屏幕
+                // 多屏幕支持：仅对平移拖拽检测是否移出当前屏幕并切换到新屏幕
                 // 若发生切屏，_checkAndSwitchDisplay 内部会负责保存位置
-                const displaySwitched = await this._checkAndSwitchDisplay();
+                const displaySwitched = wasPanDrag
+                    ? await this._checkAndSwitchDisplay()
+                    : false;
 
                 if (!displaySwitched) {
                     // 拖拽结束后保存位置/旋转/缩放
