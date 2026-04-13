@@ -7,6 +7,7 @@ import {
   type ChatWindowSchemaProps,
   type ComposerSubmitPayload,
   type ComposerAttachment,
+  type AvatarInteractionPayload,
 } from './message-schema';
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
@@ -15,6 +16,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onComposerScreenshot?: () => void;
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
+  onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
   onJukeboxClick?: () => void;
   onTranslateToggle?: () => void;
 };
@@ -56,7 +58,7 @@ const toolIconItems: ToolIconItem[] = [
   },
   {
     id: 'fist',
-    label: '拳头',
+    label: '猫爪',
     iconImagePath: '/static/icons/cat_claw1.png',
     iconImagePathAlt: '/static/icons/cat_claw2.png',
     cursorImagePath: '/static/icons/cat_claw1_cursor.png',
@@ -126,6 +128,7 @@ const compactCursorZoneSelector = [
 
 type CursorVariant = 'primary' | 'secondary' | 'tertiary';
 type ToolCursorVariantState = Record<string, CursorVariant>;
+type InteractionIntensity = NonNullable<AvatarInteractionPayload['intensity']>;
 
 type HostAvatarBounds = {
   left: number;
@@ -402,6 +405,19 @@ function createDefaultToolCursorVariantState(): ToolCursorVariantState {
   return Object.fromEntries(toolIconItems.map(item => [item.id, 'primary'])) as ToolCursorVariantState;
 }
 
+function createAvatarInteractionId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `avatar-int-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function sanitizeInteractionTextContext(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > 80 ? trimmed.slice(0, 80).trimEnd() : trimmed;
+}
+
 export default function App({
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
@@ -429,6 +445,7 @@ export default function App({
   onComposerScreenshot,
   onComposerRemoveAttachment,
   onComposerSubmit,
+  onAvatarInteraction,
   onJukeboxClick,
   onTranslateToggle,
 }: ChatWindowProps) {
@@ -453,6 +470,8 @@ export default function App({
   const floatingFistDropTimeoutIdsRef = useRef<number[]>([]);
   const latestPointerPositionRef = useRef({ x: 0, y: 0 });
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
+  const draftRef = useRef(draft);
+  const avatarInteractionCallbackRef = useRef(onAvatarInteraction);
   const [floatingHearts, setFloatingHearts] = useState<FloatingHeart[]>([]);
   const [floatingFistDrops, setFloatingFistDrops] = useState<FloatingFistDrop[]>([]);
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
@@ -486,6 +505,20 @@ export default function App({
   const hammerCursorOverlaySecondaryImagePath = hammerToolItem
     ? resolveToolImagePaths(hammerToolItem, 'secondary').iconImagePath
     : '';
+  const activeToolMenuVisual = activeToolItem
+    ? resolveMenuIconVisual(activeToolItem, effectiveCursorVariant)
+    : null;
+  const selectedEmojiButtonAriaLabel = activeToolItem
+    ? `${emojiButtonAriaLabel}: ${activeToolItem.label}`
+    : emojiButtonAriaLabel;
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  useEffect(() => {
+    avatarInteractionCallbackRef.current = onAvatarInteraction;
+  }, [onAvatarInteraction]);
 
   function clearHammerSwingAnimation() {
     hammerSwingTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
@@ -564,6 +597,50 @@ export default function App({
     overlayNode.style.transform = `translate3d(${clientX - hotspotX}px, ${clientY - hotspotY}px, 0)`;
   }
 
+  function emitAvatarInteraction(
+    toolId: AvatarInteractionPayload['toolId'],
+    actionId: string,
+    target: AvatarInteractionPayload['target'],
+    clientX: number,
+    clientY: number,
+    options?: {
+      intensity?: InteractionIntensity;
+      rewardDrop?: boolean;
+      easterEgg?: boolean;
+    },
+  ) {
+    const callback = avatarInteractionCallbackRef.current;
+    if (!callback) return;
+
+    const payload: AvatarInteractionPayload = {
+      interactionId: createAvatarInteractionId(),
+      toolId,
+      actionId,
+      target,
+      pointer: {
+        clientX,
+        clientY,
+      },
+      timestamp: Date.now(),
+    };
+
+    const textContext = sanitizeInteractionTextContext(draftRef.current);
+    if (textContext) {
+      payload.textContext = textContext;
+    }
+    if (options?.intensity) {
+      payload.intensity = options.intensity;
+    }
+    if (options?.rewardDrop) {
+      payload.rewardDrop = true;
+    }
+    if (options?.easterEgg) {
+      payload.easterEgg = true;
+    }
+
+    callback(payload);
+  }
+
   // Clear pending drafts once the host confirms them (appears in messages)
   useEffect(() => {
     if (pendingDrafts.length === 0) return;
@@ -631,8 +708,22 @@ export default function App({
 
     const toggleCursorVariantOnPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
+      const isOverAvatarAtPointer = isPointerWithinAvatarRange(event.clientX, event.clientY);
+      setIsCursorOverAvatarRange(previousValue => (
+        previousValue === isOverAvatarAtPointer ? previousValue : isOverAvatarAtPointer
+      ));
+
       if (activeCursorToolId === 'lollipop') {
-        if (isCursorOverAvatarRange) {
+        if (isOverAvatarAtPointer) {
+          const currentVariant = avatarRangeCursorVariants.lollipop ?? 'primary';
+          const actionId = currentVariant === 'primary'
+            ? 'offer'
+            : currentVariant === 'secondary'
+              ? 'tease'
+              : 'tap_soft';
+          const intensity: InteractionIntensity = currentVariant === 'tertiary' ? 'rapid' : 'normal';
+          emitAvatarInteraction('lollipop', actionId, 'avatar', event.clientX, event.clientY, { intensity });
+
           setAvatarRangeCursorVariants(prev => {
             if (prev.lollipop === 'tertiary') {
               spawnLollipopHearts(event.clientX, event.clientY);
@@ -650,15 +741,29 @@ export default function App({
         return;
       }
       if (activeCursorToolId === 'fist') {
+        const shouldSpawnRewardDrop = isOverAvatarAtPointer && Math.random() < 0.25;
         setAvatarRangeCursorVariants(prev => ({ ...prev, fist: 'secondary' }));
         setOutsideRangeCursorVariants(prev => ({ ...prev, fist: 'secondary' }));
-        if (isCursorOverAvatarRange && Math.random() < 0.25) {
+        if (isOverAvatarAtPointer) {
+          emitAvatarInteraction(
+            'fist',
+            'poke',
+            'avatar',
+            event.clientX,
+            event.clientY,
+            {
+              intensity: 'normal',
+              rewardDrop: shouldSpawnRewardDrop,
+            },
+          );
+        }
+        if (shouldSpawnRewardDrop) {
           spawnFistDrops(event.clientX, event.clientY);
         }
         return;
       }
       if (activeCursorToolId === 'hammer') {
-        if (!isCursorOverAvatarRange) {
+        if (!isOverAvatarAtPointer) {
           clearOutsideHammerResetTimer(false);
           setOutsideRangeCursorVariants(prev => ({ ...prev, hammer: 'secondary' }));
           outsideHammerResetTimeoutRef.current = window.setTimeout(() => {
@@ -671,6 +776,10 @@ export default function App({
           return;
         }
         const shouldTriggerInnerHammerEasterEgg = Math.random() < 0.05;
+        emitAvatarInteraction('hammer', 'bonk', 'avatar', event.clientX, event.clientY, {
+          intensity: shouldTriggerInnerHammerEasterEgg ? 'easter_egg' : 'normal',
+          easterEgg: shouldTriggerInnerHammerEasterEgg,
+        });
         setIsInnerHammerEasterEggActive(shouldTriggerInnerHammerEasterEgg);
         setHammerSwingPhase('windup');
         hammerSwingTimeoutIdsRef.current = [
@@ -690,7 +799,7 @@ export default function App({
         ];
         return;
       }
-      if (isCursorOverAvatarRange) {
+      if (isOverAvatarAtPointer) {
         setAvatarRangeCursorVariants(prev => ({
           ...prev,
           [activeCursorToolId]: prev[activeCursorToolId] === 'primary' ? 'secondary' : 'primary',
@@ -718,7 +827,7 @@ export default function App({
       window.removeEventListener('pointercancel', handlePointerUp, true);
       window.removeEventListener('blur', handlePointerUp);
     };
-  }, [activeCursorToolId, hammerSwingPhase, isCursorOverAvatarRange]);
+  }, [activeCursorToolId, avatarRangeCursorVariants, hammerSwingPhase]);
 
   useEffect(() => {
     if (activeCursorToolId === 'hammer') return;
@@ -951,7 +1060,7 @@ export default function App({
             }}
           >
             <div
-              className={`hammer-cursor-overlay-visual${hammerCursorOverlayMotionActive ? ' is-active' : ''}${hammerSwingPhase === 'impact' ? ' is-impact' : ''}`}
+              className={`hammer-cursor-overlay-visual${hammerCursorOverlayMotionActive ? ' is-active' : ' is-idle'}${hammerSwingPhase === 'impact' ? ' is-impact' : ''}`}
               style={{
                 transformOrigin: `${hammerOverlayTransformOrigin.x}px ${hammerOverlayTransformOrigin.y}px`,
               }}
@@ -1081,13 +1190,20 @@ export default function App({
                     <button
                       className={`composer-tool-btn composer-emoji-btn${toolMenuOpen ? ' is-active' : ''}`}
                       type="button"
-                      aria-label={emojiButtonAriaLabel}
-                      title={emojiButtonAriaLabel}
+                      aria-label={selectedEmojiButtonAriaLabel}
+                      title={selectedEmojiButtonAriaLabel}
                       aria-expanded={toolMenuOpen}
                       aria-haspopup="menu"
                       onClick={() => setToolMenuOpen(open => !open)}
                     >
-                      <img src="/static/icons/emoji_icon.png" alt="" aria-hidden="true" />
+                      <img
+                        src={activeToolMenuVisual?.imagePath || '/static/icons/emoji_icon.png'}
+                        style={activeToolItem ? {
+                          transform: `translate(${activeToolMenuVisual?.offsetX ?? 0}px, ${activeToolMenuVisual?.offsetY ?? 0}px) scale(${activeToolItem.menuIconScale ?? 1})`,
+                        } : undefined}
+                        alt=""
+                        aria-hidden="true"
+                      />
                     </button>
                     {toolMenuOpen ? (
                       <div className="composer-icon-popover" role="menu" aria-label={toolIconsAriaLabel}>

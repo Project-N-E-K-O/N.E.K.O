@@ -48,6 +48,22 @@ const composerAttachmentSchema = z.object({
   alt: z.string().optional(),
 });
 
+export const avatarInteractionPayloadSchema = z.object({
+  interactionId: z.string().min(1),
+  toolId: z.enum(['lollipop', 'fist', 'hammer']),
+  actionId: z.string().min(1),
+  target: z.literal('avatar'),
+  pointer: z.object({
+    clientX: z.number().finite(),
+    clientY: z.number().finite(),
+  }),
+  textContext: z.string().optional(),
+  timestamp: z.number().finite(),
+  intensity: z.enum(['normal', 'rapid', 'burst', 'easter_egg']).optional(),
+  rewardDrop: z.boolean().optional(),
+  easterEgg: z.boolean().optional(),
+});
+
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
   imageBlockSchema,
@@ -120,6 +136,10 @@ export const chatWindowPropsSchema = z.object({
     .args(composerSubmitSchema)
     .returns(z.void())
     .optional(),
+  onAvatarInteraction: z.function()
+    .args(avatarInteractionPayloadSchema)
+    .returns(z.void())
+    .optional(),
   onJukeboxClick: z.function()
     .args()
     .returns(z.void())
@@ -142,6 +162,7 @@ export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
+export type AvatarInteractionPayload = z.infer<typeof avatarInteractionPayloadSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ComposerSubmitPayload = z.infer<typeof composerSubmitSchema>;

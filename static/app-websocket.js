@@ -1166,6 +1166,7 @@
                 // -------- session_started --------
                 } else if (response.type === 'session_started') {
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
+                    S.isTextSessionActive = response.input_mode === 'text';
                     setTimeout(function () {
                         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                         if (S.sessionStartedResolver) {

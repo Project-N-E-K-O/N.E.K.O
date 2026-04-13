@@ -283,6 +283,103 @@
     };
     window.applyEmotion = mod.applyEmotion;
 
+    var AVATAR_INTERACTION_ALLOWED_ACTIONS = Object.freeze({
+        lollipop: Object.freeze(['offer', 'tease', 'tap_soft']),
+        fist: Object.freeze(['poke']),
+        hammer: Object.freeze(['bonk'])
+    });
+    var AVATAR_INTERACTION_ALLOWED_INTENSITIES = Object.freeze(['normal', 'rapid', 'burst', 'easter_egg']);
+
+    function sanitizeAvatarInteractionTextContext(value) {
+        var text = String(value || '').trim();
+        if (!text) return '';
+        return text.length > 80 ? text.slice(0, 80).trimEnd() : text;
+    }
+
+    function normalizeAvatarInteractionPayload(payload) {
+        if (!payload || typeof payload !== 'object') {
+            console.warn('[AvatarInteraction] ignored invalid payload:', payload);
+            return null;
+        }
+
+        var toolId = String(payload.toolId || '').trim().toLowerCase();
+        var actionId = String(payload.actionId || '').trim().toLowerCase();
+        var allowedActions = AVATAR_INTERACTION_ALLOWED_ACTIONS[toolId];
+        if (!allowedActions || allowedActions.indexOf(actionId) === -1) {
+            console.warn('[AvatarInteraction] ignored unsupported tool/action:', toolId, actionId);
+            return null;
+        }
+
+        if (String(payload.target || '').trim().toLowerCase() !== 'avatar') {
+            console.warn('[AvatarInteraction] ignored non-avatar target:', payload.target);
+            return null;
+        }
+
+        var interactionId = String(payload.interactionId || '').trim();
+        if (!interactionId) {
+            console.warn('[AvatarInteraction] ignored payload without interactionId');
+            return null;
+        }
+
+        var timestamp = Number(payload.timestamp);
+        if (!Number.isFinite(timestamp) || timestamp <= 0) {
+            timestamp = Date.now();
+        }
+
+        var normalized = {
+            action: 'avatar_interaction',
+            interaction_id: interactionId,
+            tool_id: toolId,
+            action_id: actionId,
+            target: 'avatar',
+            timestamp: timestamp
+        };
+
+        var intensity = String(payload.intensity || '').trim().toLowerCase();
+        if (AVATAR_INTERACTION_ALLOWED_INTENSITIES.indexOf(intensity) !== -1) {
+            if (toolId === 'hammer' || intensity !== 'easter_egg') {
+                normalized.intensity = intensity;
+            }
+        }
+
+        var textContext = sanitizeAvatarInteractionTextContext(payload.textContext);
+        if (textContext) {
+            normalized.text_context = textContext;
+        }
+
+        if (toolId === 'fist' && payload.rewardDrop === true) {
+            normalized.reward_drop = true;
+        }
+
+        if (toolId === 'hammer' && payload.easterEgg === true) {
+            normalized.easter_egg = true;
+        }
+
+        return normalized;
+    }
+
+    async function sendAvatarInteractionPayload(payload) {
+        var normalized = normalizeAvatarInteractionPayload(payload);
+        if (!normalized) {
+            return false;
+        }
+
+        try {
+            await window.ensureWebSocketOpen();
+            if (!S.socket || S.socket.readyState !== WebSocket.OPEN) {
+                throw new Error('WEBSOCKET_NOT_CONNECTED');
+            }
+            S.socket.send(JSON.stringify(normalized));
+            return true;
+        } catch (error) {
+            console.error('[AvatarInteraction] send failed:', error);
+            return false;
+        }
+    }
+
+    mod.normalizeAvatarInteractionPayload = normalizeAvatarInteractionPayload;
+    mod.sendAvatarInteractionPayload = sendAvatarInteractionPayload;
+
     // ======================== init — wire up all event listeners ========================
 
     mod.init = function init() {
@@ -1143,6 +1240,11 @@
         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerRemoveAttachment === 'function') {
             window.reactChatWindowHost.setOnComposerRemoveAttachment(function (attachmentId) {
                 return mod.removePendingAttachmentById(attachmentId);
+            });
+        }
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnAvatarInteraction === 'function') {
+            window.reactChatWindowHost.setOnAvatarInteraction(function (payload) {
+                return mod.sendAvatarInteractionPayload(payload);
             });
         }
 

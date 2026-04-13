@@ -33,7 +33,8 @@
         onComposerImportImage: null,
         onComposerScreenshot: null,
         onComposerRemoveAttachment: null,
-        onComposerSubmit: null
+        onComposerSubmit: null,
+        onAvatarInteraction: null
     };
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.5;
@@ -368,6 +369,7 @@
             onComposerScreenshot: handleComposerScreenshot,
             onComposerRemoveAttachment: handleComposerRemoveAttachment,
             onComposerSubmit: handleComposerSubmit,
+            onAvatarInteraction: handleAvatarInteraction,
             onJukeboxClick: handleJukeboxClick,
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
             onTranslateToggle: handleTranslateToggle
@@ -630,6 +632,22 @@
         }
 
         dispatchHostEvent('submit', detail);
+    }
+
+    function handleAvatarInteraction(payload) {
+        var detail = payload || {};
+
+        if (typeof state.onAvatarInteraction === 'function') {
+            try {
+                state.onAvatarInteraction(detail);
+            } catch (error) {
+                console.error('[ReactChatWindow] onAvatarInteraction failed:', error);
+            }
+        } else {
+            console.warn('[ReactChatWindow] no avatar interaction handler registered; dispatching host event only');
+        }
+
+        dispatchHostEvent('avatar-interaction', detail);
     }
 
     function handleComposerImportImage() {
@@ -1704,6 +1722,9 @@
         },
         setOnComposerSubmit: function (handler) {
             state.onComposerSubmit = typeof handler === 'function' ? handler : null;
+        },
+        setOnAvatarInteraction: function (handler) {
+            state.onAvatarInteraction = typeof handler === 'function' ? handler : null;
         },
         isMounted: function () { return mounted; }
     };

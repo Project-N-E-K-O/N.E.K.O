@@ -104,4 +104,52 @@ describe('App', () => {
 
     expect(onComposerRemoveAttachment).toHaveBeenCalledWith('img-1');
   });
+
+  it('only emits avatar interactions when the pointer hits the avatar range', () => {
+    const onAvatarInteraction = vi.fn();
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    render(<App onAvatarInteraction={onAvatarInteraction} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getAllByRole('menuitem')[0]!);
+
+    fireEvent.pointerDown(window, { button: 0, clientX: 20, clientY: 20 });
+    expect(onAvatarInteraction).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+    expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
+    expect(onAvatarInteraction).toHaveBeenCalledWith(expect.objectContaining({
+      toolId: 'lollipop',
+      actionId: 'offer',
+      target: 'avatar',
+      pointer: {
+        clientX: 150,
+        clientY: 150,
+      },
+    }));
+
+    delete (window as Window & { live2dManager?: unknown }).live2dManager;
+    live2dContainer.remove();
+  });
 });

@@ -8,6 +8,7 @@ import json
 import struct  # For packing audio data
 import re
 import time
+from collections import deque
 from typing import Optional
 from datetime import datetime
 from websockets import exceptions as web_exceptions
@@ -120,6 +121,177 @@ def drain_prominent_notices(up_to_cursor: int) -> list[dict]:
 # CosyVoice 旧版音色通知去重（模块级，startup 和 LLMSessionManager 共享）
 # ---------------------------------------------------------------------------
 _notified_legacy_voices: set[str] = set()
+
+_AVATAR_INTERACTION_ALLOWED_ACTIONS = {
+    "lollipop": {"offer", "tease", "tap_soft"},
+    "fist": {"poke"},
+    "hammer": {"bonk"},
+}
+_AVATAR_INTERACTION_ALLOWED_INTENSITIES = {"normal", "rapid", "burst", "easter_egg"}
+_AVATAR_INTERACTION_TOOL_LABELS = {
+    "zh": {
+        "lollipop": "棒棒糖",
+        "fist": "猫爪",
+        "hammer": "锤子",
+    },
+    "en": {
+        "lollipop": "lollipop",
+        "fist": "cat paw",
+        "hammer": "hammer",
+    },
+}
+_AVATAR_INTERACTION_ACTION_LABELS = {
+    "zh": {
+        "lollipop": {
+            "offer": "递到嘴边",
+            "tease": "晃着逗你",
+            "tap_soft": "轻轻碰一下",
+        },
+        "fist": {
+            "poke": "拍一下",
+        },
+        "hammer": {
+            "bonk": "敲一下",
+        },
+    },
+    "en": {
+        "lollipop": {
+            "offer": "offers it close",
+            "tease": "teases with it",
+            "tap_soft": "taps you softly",
+        },
+        "fist": {
+            "poke": "pokes you",
+        },
+        "hammer": {
+            "bonk": "bonks you",
+        },
+    },
+}
+_AVATAR_INTERACTION_INTENSITY_LABELS = {
+    "zh": {
+        "normal": "正常",
+        "rapid": "偏高频",
+        "burst": "连续爆发",
+        "easter_egg": "彩蛋爆发",
+    },
+    "en": {
+        "normal": "normal",
+        "rapid": "rapid",
+        "burst": "burst",
+        "easter_egg": "easter egg",
+    },
+}
+
+
+def _avatar_interaction_locale(language: str | None) -> str:
+    normalized = normalize_language_code(language or '', format='short') or get_global_language()
+    return 'zh' if str(normalized).lower().startswith('zh') else 'en'
+
+
+def _sanitize_avatar_interaction_text_context(text: str, max_length: int = 80) -> str:
+    cleaned = str(text or '').strip()
+    if not cleaned:
+        return ''
+    return cleaned[:max_length].rstrip()
+
+
+def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
+    if not isinstance(payload, dict):
+        return None
+
+    interaction_id = str(payload.get("interaction_id") or payload.get("interactionId") or "").strip()
+    tool_id = str(payload.get("tool_id") or payload.get("toolId") or "").strip().lower()
+    action_id = str(payload.get("action_id") or payload.get("actionId") or "").strip().lower()
+    target = str(payload.get("target") or "").strip().lower()
+
+    if not interaction_id or target != "avatar":
+        return None
+    if tool_id not in _AVATAR_INTERACTION_ALLOWED_ACTIONS:
+        return None
+    if action_id not in _AVATAR_INTERACTION_ALLOWED_ACTIONS[tool_id]:
+        return None
+
+    raw_intensity = str(payload.get("intensity") or "").strip().lower()
+    intensity = raw_intensity if raw_intensity in _AVATAR_INTERACTION_ALLOWED_INTENSITIES else "normal"
+    if tool_id != "hammer" and intensity == "easter_egg":
+        intensity = "normal"
+
+    reward_drop = bool(payload.get("reward_drop", payload.get("rewardDrop", False))) if tool_id == "fist" else False
+    easter_egg = bool(payload.get("easter_egg", payload.get("easterEgg", False))) if tool_id == "hammer" else False
+    if easter_egg:
+        intensity = "easter_egg"
+
+    timestamp = payload.get("timestamp")
+    try:
+        timestamp_value = int(float(timestamp))
+    except (TypeError, ValueError):
+        timestamp_value = int(time.time() * 1000)
+
+    return {
+        "interaction_id": interaction_id,
+        "tool_id": tool_id,
+        "action_id": action_id,
+        "target": "avatar",
+        "text_context": _sanitize_avatar_interaction_text_context(payload.get("text_context", payload.get("textContext", ""))),
+        "timestamp": timestamp_value,
+        "intensity": intensity,
+        "reward_drop": reward_drop,
+        "easter_egg": easter_egg,
+    }
+
+
+def _build_avatar_interaction_instruction(manager: "LLMSessionManager", payload: dict) -> str:
+    locale = _avatar_interaction_locale(getattr(manager, "user_language", None))
+    tool_label = _AVATAR_INTERACTION_TOOL_LABELS[locale].get(payload["tool_id"], payload["tool_id"])
+    action_label = _AVATAR_INTERACTION_ACTION_LABELS[locale].get(payload["tool_id"], {}).get(payload["action_id"], payload["action_id"])
+    intensity_label = _AVATAR_INTERACTION_INTENSITY_LABELS[locale].get(payload["intensity"], payload["intensity"])
+    text_context = payload.get("text_context", "")
+
+    if locale == "zh":
+        lines = [
+            f"你是{manager.lanlan_name}，正在和{manager.master_name}互动。",
+            "主人刚刚用道具碰到了你，请立刻给出自然、贴合角色的简短回应。",
+            f"- 道具：{tool_label}",
+            f"- 动作：{action_label}",
+            f"- 强度：{intensity_label}",
+        ]
+        if payload.get("reward_drop"):
+            lines.append("- 这次互动里额外触发了掉落奖励，可以顺口提醒主人留意。")
+        if payload.get("easter_egg"):
+            lines.append("- 这次是夸张彩蛋级重击，可以更戏剧化、更崩溃一点。")
+        if text_context:
+            lines.append(f"- 输入框里还有一句草稿，只能当语境参考：{text_context}")
+        lines.extend([
+            "要求：",
+            "1. 只输出猫娘当下会说的话，不要解释系统或复述字段名。",
+            "2. 保持 1 到 2 句，短促、有即时反应感。",
+            "3. text_context 不是正式用户消息，只有在非常自然时才能轻微借用，不能逐字复述。",
+            "4. 不要提范围外点击、坐标、概率、payload 或后台逻辑。",
+        ])
+        return "\n".join(lines)
+
+    lines = [
+        f"You are {manager.lanlan_name}, reacting to an interaction from {manager.master_name}.",
+        "The user just touched you with a tool. Reply in-character with a short, immediate reaction.",
+        f"- Tool: {tool_label}",
+        f"- Action: {action_label}",
+        f"- Intensity: {intensity_label}",
+    ]
+    if payload.get("reward_drop"):
+        lines.append("- A reward drop also happened, so you may briefly point it out.")
+    if payload.get("easter_egg"):
+        lines.append("- This is an exaggerated easter-egg bonk, so a more dramatic reaction is allowed.")
+    if text_context:
+        lines.append(f"- Draft text in the input box, for context only: {text_context}")
+    lines.extend([
+        "Requirements:",
+        "1. Output only what the catgirl would say right now.",
+        "2. Keep it to 1 or 2 short sentences.",
+        "3. The draft text is not a formal user message; use it only as light context if it fits naturally.",
+        "4. Do not mention coordinates, probabilities, payloads, or backend rules.",
+    ])
+    return "\n".join(lines)
 
 
 def enqueue_voice_migration_notice(legacy_names: list) -> None:
@@ -290,6 +462,18 @@ class LLMSessionManager:
         self.last_audio_send_error_time = 0.0  # 上次音频发送错误的时间戳
         self.audio_error_log_interval = 2.0  # 音频错误log间隔（秒）
 
+        self.user_language = None
+        self._translation_service = None
+        self.session_closed_by_server = False
+        self.last_audio_send_error_time = 0.0
+        self.audio_error_log_interval = 2.0
+        self._recent_avatar_interaction_ids = deque(maxlen=32)
+        self._recent_avatar_interaction_id_set = set()
+        self._last_avatar_interaction_at = 0
+        self._last_avatar_interaction_speak_at = 0
+        self.avatar_interaction_cooldown_ms = 600
+        self.avatar_interaction_speak_cooldown_ms = 1500
+
     def _fire_task(self, coro):
         """Create a background task with GC protection (prevent Python 3.11+ from collecting it)."""
         task = asyncio.create_task(coro)
@@ -313,6 +497,24 @@ class LLMSessionManager:
             return value
         except Exception:
             return 350
+
+    def _remember_avatar_interaction_id(self, interaction_id: str) -> None:
+        if interaction_id in self._recent_avatar_interaction_id_set:
+            return
+        if self._recent_avatar_interaction_ids.maxlen and len(self._recent_avatar_interaction_ids) >= self._recent_avatar_interaction_ids.maxlen:
+            oldest_id = self._recent_avatar_interaction_ids[0]
+            self._recent_avatar_interaction_id_set.discard(oldest_id)
+        self._recent_avatar_interaction_ids.append(interaction_id)
+        self._recent_avatar_interaction_id_set.add(interaction_id)
+
+    def _has_connected_websocket(self) -> bool:
+        websocket = self.websocket
+        if not websocket or not hasattr(websocket, 'client_state'):
+            return False
+        try:
+            return websocket.client_state == websocket.client_state.CONNECTED
+        except Exception:
+            return False
 
     async def _clear_tts_pipeline(self):
         """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""
@@ -2085,6 +2287,82 @@ class LLMSessionManager:
             except Exception:
                 pass
         logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
+
+    async def handle_avatar_interaction(self, payload: dict) -> dict:
+        raw = _normalize_avatar_interaction_payload(payload)
+        if not raw:
+            logger.debug("[%s] handle_avatar_interaction: ignored invalid payload", self.lanlan_name)
+            return {"accepted": False, "reason": "invalid_payload"}
+
+        interaction_id = raw["interaction_id"]
+        now_ms = int(time.time() * 1000)
+
+        if interaction_id in self._recent_avatar_interaction_id_set:
+            logger.debug("[%s] handle_avatar_interaction: duplicate interaction_id=%s", self.lanlan_name, interaction_id)
+            return {"accepted": False, "reason": "duplicate", "interaction_id": interaction_id}
+
+        if now_ms - self._last_avatar_interaction_at < self.avatar_interaction_cooldown_ms:
+            logger.debug("[%s] handle_avatar_interaction: cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
+            self._remember_avatar_interaction_id(interaction_id)
+            return {"accepted": False, "reason": "cooldown", "interaction_id": interaction_id}
+
+        self._remember_avatar_interaction_id(interaction_id)
+        self._last_avatar_interaction_at = now_ms
+
+        if self.is_active and isinstance(self.session, OmniRealtimeClient):
+            logger.debug("[%s] handle_avatar_interaction: voice session active, skipping", self.lanlan_name)
+            return {"accepted": False, "reason": "voice_session_active", "interaction_id": interaction_id}
+
+        if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
+            if not self._has_connected_websocket():
+                logger.warning("[%s] handle_avatar_interaction: no connected websocket, skipping", self.lanlan_name)
+                return {"accepted": False, "reason": "no_websocket", "interaction_id": interaction_id}
+            try:
+                logger.info("[%s] handle_avatar_interaction: auto-starting text session", self.lanlan_name)
+                await self.start_session(self.websocket, new=False, input_mode='text')
+            except Exception as e:
+                logger.warning("[%s] handle_avatar_interaction: auto start_session failed: %s", self.lanlan_name, e)
+                return {"accepted": False, "reason": "session_start_failed", "interaction_id": interaction_id}
+
+        if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
+            logger.warning("[%s] handle_avatar_interaction: session is not text mode after start, skipping", self.lanlan_name)
+            return {"accepted": False, "reason": "not_text_session", "interaction_id": interaction_id}
+
+        if now_ms - self._last_avatar_interaction_speak_at < self.avatar_interaction_speak_cooldown_ms:
+            logger.debug("[%s] handle_avatar_interaction: speak cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
+            return {"accepted": False, "reason": "speak_cooldown", "interaction_id": interaction_id}
+
+        instruction = _build_avatar_interaction_instruction(self, raw)
+
+        async with self._proactive_write_lock:
+            if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
+                return {"accepted": False, "reason": "session_changed", "interaction_id": interaction_id}
+            if getattr(self.session, "_is_responding", False):
+                logger.debug("[%s] handle_avatar_interaction: text session busy, skipping", self.lanlan_name)
+                return {"accepted": False, "reason": "busy", "interaction_id": interaction_id}
+
+            async with self.lock:
+                self.current_speech_id = str(uuid4())
+                self._tts_done_queued_for_turn = False
+
+            if hasattr(self.session, 'update_max_response_length'):
+                self.session.update_max_response_length(self._get_text_guard_max_length())
+
+            delivered = await self.session.prompt_ephemeral(instruction)
+
+        if delivered:
+            self._last_avatar_interaction_speak_at = int(time.time() * 1000)
+            logger.info(
+                "[%s] handle_avatar_interaction: delivered interaction_id=%s tool=%s action=%s",
+                self.lanlan_name,
+                interaction_id,
+                raw["tool_id"],
+                raw["action_id"],
+            )
+            return {"accepted": True, "interaction_id": interaction_id}
+
+        logger.debug("[%s] handle_avatar_interaction: prompt_ephemeral produced no response", self.lanlan_name)
+        return {"accepted": False, "reason": "empty_response", "interaction_id": interaction_id}
 
     async def trigger_agent_callbacks(self) -> None:
         """Proactively deliver pending agent task results via LLM rephrase.
