@@ -2,8 +2,6 @@
 
 :root {
   --neko-chat-tool-cursor: auto;
-  --neko-chat-action-button-box-size: 44px;
-  --neko-chat-action-button-icon-size: 30px;
   color: #1f2329;
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   line-height: 1.5;
@@ -29,6 +27,13 @@ body {
   min-width: 320px;
 }
 
+html.neko-tool-cursor-active,
+html.neko-tool-cursor-active *,
+html.neko-tool-cursor-active *::before,
+html.neko-tool-cursor-active *::after {
+  cursor: var(--neko-chat-tool-cursor) !important;
+}
+
 button,
 textarea {
   font: inherit;
@@ -39,9 +44,295 @@ textarea {
   height: 100%;
 }
 
-html.neko-tool-cursor-active,
-html.neko-tool-cursor-active * {
-  cursor: var(--neko-chat-tool-cursor) !important;
+.avatar-cursor-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9998;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.avatar-cursor-overlay-stage {
+  opacity: 0;
+  transform: scale(0.84);
+  will-change: transform, opacity;
+  transition:
+    opacity 180ms cubic-bezier(0.22, 0.78, 0.2, 1),
+    transform 180ms cubic-bezier(0.2, 0.82, 0.22, 1);
+}
+
+.avatar-cursor-overlay.is-visible .avatar-cursor-overlay-stage {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.avatar-cursor-overlay-image {
+  display: block;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+  will-change: transform;
+}
+
+.avatar-cursor-overlay-image-lollipop {
+  width: 74px;
+  height: 108px;
+}
+
+.avatar-cursor-overlay-image-fist {
+  width: 100px;
+  height: 102px;
+}
+
+.fist-floating-drop {
+  --drop-drift-x: 0px;
+  --drop-drift-y: -96px;
+  --drop-rotation: 0deg;
+  --drop-scale: 1;
+  --drop-delay: 0ms;
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10000;
+  pointer-events: none;
+  opacity: 1;
+  will-change: transform;
+  transform: translate3d(0, 0, 0);
+  animation: fist-drop-burst 0.92s cubic-bezier(0.16, 0.78, 0.22, 1) forwards;
+  animation-delay: var(--drop-delay);
+}
+
+.fist-floating-drop-image {
+  display: block;
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+  transform: translate3d(0, 0, 0) rotate(var(--drop-rotation)) scale(calc(var(--drop-scale) * 0.72));
+  will-change: transform;
+  animation: fist-drop-spin 0.92s cubic-bezier(0.18, 0.72, 0.22, 1) forwards;
+  animation-delay: var(--drop-delay);
+  pointer-events: none;
+}
+
+@keyframes fist-drop-burst {
+  0% {
+    transform: translate3d(0, 6px, 0);
+  }
+
+  100% {
+    transform: translate3d(var(--drop-drift-x), var(--drop-drift-y), 0);
+  }
+}
+
+@keyframes fist-drop-spin {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(calc(var(--drop-rotation) - 30deg)) scale(calc(var(--drop-scale) * 0.68));
+  }
+
+  18% {
+    transform: translate3d(0, -5px, 0) rotate(calc(var(--drop-rotation) + 48deg)) scale(calc(var(--drop-scale) * 1.06));
+  }
+
+  56% {
+    transform: translate3d(0, 0, 0) rotate(calc(var(--drop-rotation) + 142deg)) scale(calc(var(--drop-scale) * 1));
+  }
+
+  100% {
+    transform: translate3d(0, 0, 0) rotate(calc(var(--drop-rotation) + 212deg)) scale(calc(var(--drop-scale) * 0.84));
+  }
+}
+
+.lollipop-floating-heart {
+  --heart-drift-x: 0px;
+  --heart-drift-y: -96px;
+  --heart-sway-x: 10px;
+  --heart-scale: 1;
+  --heart-delay: 0ms;
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10000;
+  pointer-events: none;
+  opacity: 0;
+  will-change: transform, opacity;
+  transform: translate3d(0, 0, 0);
+  animation: lollipop-heart-rise 2.1s cubic-bezier(0.18, 0.72, 0.22, 1) forwards;
+  animation-delay: var(--heart-delay);
+}
+
+.lollipop-floating-heart-glyph {
+  display: block;
+  color: rgba(255, 126, 168, 0.92);
+  font-size: 22px;
+  line-height: 1;
+  text-shadow:
+    0 2px 10px rgba(255, 112, 155, 0.32),
+    0 0 14px rgba(255, 184, 204, 0.2);
+  transform: translate3d(0, 0, 0) scale(calc(var(--heart-scale) * 0.72));
+  will-change: transform;
+  animation: lollipop-heart-sway 2.1s ease-in-out forwards;
+  animation-delay: var(--heart-delay);
+}
+
+@keyframes lollipop-heart-rise {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+
+  12% {
+    opacity: 1;
+  }
+
+  72% {
+    opacity: 0.9;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--heart-drift-x), var(--heart-drift-y), 0);
+  }
+}
+
+@keyframes lollipop-heart-sway {
+  0% {
+    transform: translate3d(0, 0, 0) scale(calc(var(--heart-scale) * 0.52));
+  }
+
+  16% {
+    transform: translate3d(calc(var(--heart-sway-x) * 0.22), 0, 0) scale(calc(var(--heart-scale) * 0.86));
+  }
+
+  32% {
+    transform: translate3d(calc(var(--heart-sway-x) * -0.04), 0, 0) scale(calc(var(--heart-scale) * 0.98));
+  }
+
+  52% {
+    transform: translate3d(calc(var(--heart-sway-x) * 0.14), 0, 0) scale(calc(var(--heart-scale) * 1.03));
+  }
+
+  74% {
+    transform: translate3d(calc(var(--heart-sway-x) * -0.02), 0, 0) scale(calc(var(--heart-scale) * 1.08));
+  }
+
+  100% {
+    transform: translate3d(calc(var(--heart-sway-x) * 0.1), 0, 0) scale(calc(var(--heart-scale) * 1.12));
+  }
+}
+
+.hammer-cursor-overlay {
+  --hammer-overlay-scale: 1;
+  --hammer-overlay-anchor-fix-x: 0px;
+  --hammer-overlay-anchor-fix-y: 0px;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9999;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.hammer-cursor-overlay.is-easter-egg {
+  --hammer-overlay-scale: 5;
+  --hammer-overlay-anchor-fix-x: 322.11px;
+  --hammer-overlay-anchor-fix-y: 259.27px;
+}
+
+.hammer-cursor-overlay-stage {
+  opacity: 0;
+  transform: scale(0.82);
+  will-change: transform, opacity;
+  transition:
+    opacity 200ms cubic-bezier(0.22, 0.78, 0.2, 1),
+    transform 200ms cubic-bezier(0.2, 0.82, 0.22, 1);
+}
+
+.hammer-cursor-overlay.is-visible .hammer-cursor-overlay-stage {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.hammer-cursor-overlay-visual {
+  position: relative;
+  width: 136px;
+  height: 130px;
+  will-change: transform, filter;
+  filter: drop-shadow(0 4px 8px rgba(22, 34, 58, 0.16));
+}
+
+.hammer-cursor-overlay-visual.is-idle {
+  transform: translate3d(var(--hammer-overlay-anchor-fix-x), var(--hammer-overlay-anchor-fix-y), 0) rotate(0deg) scale(var(--hammer-overlay-scale));
+}
+
+.hammer-cursor-overlay-visual.is-active {
+  animation: hammer-inner-cycle 620ms linear forwards;
+  filter: drop-shadow(0 13px 22px rgba(22, 34, 58, 0.3));
+}
+
+.hammer-cursor-overlay-visual.is-impact {
+  filter: drop-shadow(0 9px 18px rgba(22, 34, 58, 0.26));
+}
+
+.hammer-cursor-overlay-image {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+  will-change: opacity, transform;
+  transition: none;
+}
+
+.hammer-cursor-overlay-image-primary {
+  opacity: 1;
+}
+
+.hammer-cursor-overlay-image-secondary {
+  opacity: 0;
+  transform-origin: 80.19px 68px;
+  transform: translate3d(19.62px, -9.01px, 0) rotate(34.258deg) scale(0.999333);
+}
+
+.hammer-cursor-overlay-visual.is-impact .hammer-cursor-overlay-image-primary {
+  opacity: 0;
+}
+
+.hammer-cursor-overlay-visual.is-impact .hammer-cursor-overlay-image-secondary {
+  opacity: 1;
+}
+
+@keyframes hammer-inner-cycle {
+  0% {
+    transform: translate3d(var(--hammer-overlay-anchor-fix-x), var(--hammer-overlay-anchor-fix-y), 0) rotate(0deg) scale(var(--hammer-overlay-scale));
+  }
+
+  52% {
+    transform: translate3d(calc(var(--hammer-overlay-anchor-fix-x) + 18px), calc(var(--hammer-overlay-anchor-fix-y) - 12px), 0) rotate(42deg) scale(var(--hammer-overlay-scale));
+  }
+
+  66% {
+    transform: translate3d(calc(var(--hammer-overlay-anchor-fix-x) - 22px), calc(var(--hammer-overlay-anchor-fix-y) + 10px), 0) rotate(-86deg) scale(var(--hammer-overlay-scale));
+  }
+
+  81% {
+    transform: translate3d(calc(var(--hammer-overlay-anchor-fix-x) - 20px), calc(var(--hammer-overlay-anchor-fix-y) + 9px), 0) rotate(-82deg) scale(var(--hammer-overlay-scale));
+  }
+
+  90% {
+    transform: translate3d(calc(var(--hammer-overlay-anchor-fix-x) - 14px), calc(var(--hammer-overlay-anchor-fix-y) + 3px), 0) rotate(-58deg) scale(var(--hammer-overlay-scale));
+  }
+
+  96% {
+    transform: translate3d(calc(var(--hammer-overlay-anchor-fix-x) - 6px), calc(var(--hammer-overlay-anchor-fix-y) - 1px), 0) rotate(-18deg) scale(var(--hammer-overlay-scale));
+  }
+
+  100% {
+    transform: translate3d(var(--hammer-overlay-anchor-fix-x), var(--hammer-overlay-anchor-fix-y), 0) rotate(0deg) scale(var(--hammer-overlay-scale));
+  }
 }
 
 .chat-window {
@@ -375,6 +666,28 @@ html.neko-tool-cursor-active * {
 @keyframes textChunkReveal {
   from { opacity: 0; }
   to   { opacity: 1; }
+}
+
+@keyframes bubbleFloat {
+  0%, 100% { transform: translateY(0) scale(var(--composer-icon-bubble-scale, 1)); }
+  50% { transform: translateY(-7px) scale(var(--composer-icon-bubble-scale, 1)); }
+}
+
+@keyframes bubblePopoverAppear {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(12px) scale(0.68);
+  }
+
+  70% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-2px) scale(1.05);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
 }
 
 .text-chunk-reveal {
@@ -772,68 +1085,6 @@ html.neko-tool-cursor-active * {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
-.composer-tool-menu {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-
-.composer-icon-popover {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 8;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px;
-  border: 1px solid #bfd4e6;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 10px 24px rgba(51, 84, 132, 0.18);
-  backdrop-filter: blur(6px);
-}
-
-.composer-icon-button {
-  width: var(--neko-chat-action-button-box-size);
-  height: var(--neko-chat-action-button-box-size);
-  border: 1px solid #b7d0e9;
-  border-radius: 10px;
-  background: #fff;
-  color: #12304f;
-  cursor: pointer;
-  font-size: 1.28rem;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
-}
-
-.composer-icon-button-image {
-  width: var(--neko-chat-action-button-icon-size);
-  height: var(--neko-chat-action-button-icon-size);
-  object-fit: contain;
-  pointer-events: none;
-  transform-origin: center center;
-  will-change: transform;
-}
-
-.composer-icon-button:hover {
-  border-color: #5bb5ef;
-  background: #eff8ff;
-  transform: translateY(-1px);
-}
-
-.composer-icon-button:active {
-  transform: translateY(0);
-}
-
-.composer-icon-button.is-active {
-  border-color: #3fa8eb;
-  background: #e8f4ff;
-}
-
 /* ===== 输入框统一容器 ===== */
 .composer {
   display: block;
@@ -917,6 +1168,12 @@ html.neko-tool-cursor-active * {
   gap: 2px;
 }
 
+.composer-tool-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
 .composer-tool-btn {
   display: inline-flex;
   align-items: center;
@@ -934,6 +1191,10 @@ html.neko-tool-cursor-active * {
 
 .composer-tool-btn:hover {
   background: rgba(68, 183, 254, 0.1);
+}
+
+.composer-emoji-btn.is-active {
+  background: rgba(68, 183, 254, 0.18);
 }
 
 .composer-tool-btn:disabled {
@@ -954,6 +1215,126 @@ html.neko-tool-cursor-active * {
   line-height: 1;
   user-select: none;
   padding: 0 2px;
+}
+
+.composer-icon-popover {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  z-index: 8;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  transform-origin: bottom center;
+  animation: bubblePopoverAppear 0.24s cubic-bezier(0.2, 0.9, 0.2, 1.15) both;
+}
+
+.composer-icon-button {
+  --composer-icon-bubble-scale: 1;
+  position: relative;
+  width: 46px;
+  height: 46px;
+  border: 0;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 30% 28%, rgba(255, 255, 255, 0.74) 0%, rgba(255, 255, 255, 0.58) 24%, rgba(236, 246, 255, 0.5) 72%, rgba(210, 232, 249, 0.42) 100%);
+  color: #12304f;
+  cursor: pointer;
+  font-size: 1.28rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  box-shadow:
+    0 10px 20px rgba(77, 122, 174, 0.2),
+    0 2px 6px rgba(113, 160, 212, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(6px);
+  animation: bubbleFloat 3.2s ease-in-out infinite;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.composer-icon-button::before,
+.composer-icon-button::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+}
+
+.composer-icon-button::before {
+  top: 7px;
+  left: 9px;
+  width: 20px;
+  height: 12px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.08) 100%);
+  transform: rotate(-18deg);
+  opacity: 0.92;
+}
+
+.composer-icon-button::after {
+  right: 8px;
+  bottom: 7px;
+  width: 18px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(135, 188, 231, 0.18);
+  filter: blur(3px);
+}
+
+.composer-icon-button-image {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+  pointer-events: none;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.composer-icon-button:nth-child(1) {
+  top: 8px;
+  animation-delay: -0.45s;
+}
+
+.composer-icon-button:nth-child(2) {
+  top: -2px;
+  animation-delay: -1.2s;
+}
+
+.composer-icon-button:nth-child(3) {
+  top: 8px;
+  animation-delay: -0.8s;
+}
+
+.composer-icon-button:hover {
+  --composer-icon-bubble-scale: 1.14;
+  background:
+    radial-gradient(circle at 30% 28%, rgba(255, 255, 255, 0.8) 0%, rgba(255, 255, 255, 0.66) 24%, rgba(233, 246, 255, 0.6) 72%, rgba(212, 236, 255, 0.5) 100%);
+  box-shadow:
+    0 12px 24px rgba(77, 122, 174, 0.24),
+    0 3px 8px rgba(113, 160, 212, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98);
+}
+
+.composer-icon-button:active {
+  --composer-icon-bubble-scale: 1.08;
+}
+
+.composer-icon-button.is-active {
+  --composer-icon-bubble-scale: 1.12;
+  background:
+    radial-gradient(circle at 30% 28%, rgba(255, 255, 255, 0.84) 0%, rgba(255, 255, 255, 0.7) 22%, rgba(223, 241, 255, 0.66) 70%, rgba(200, 232, 255, 0.56) 100%);
+  box-shadow:
+    0 12px 24px rgba(63, 168, 235, 0.22),
+    0 3px 8px rgba(96, 177, 230, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98);
+}
+
+.composer-icon-button.is-active:hover {
+  --composer-icon-bubble-scale: 1.18;
 }
 
 /* ===== 翻译开关按钮 ===== */
@@ -1321,34 +1702,53 @@ html.neko-tool-cursor-active * {
   background: rgba(68, 183, 254, 0.15);
 }
 
+[data-theme="dark"] .composer-emoji-btn.is-active {
+  background: rgba(68, 183, 254, 0.26);
+}
+
 [data-theme="dark"] .composer-tool-divider {
   color: rgba(255, 255, 255, 0.15);
 }
 
-[data-theme="dark"] .composer-translate-btn.is-active::after {
-  background: #44b7fe;
-}
-
 [data-theme="dark"] .composer-icon-popover {
-  border-color: rgba(136, 169, 212, 0.4);
-  background: rgba(33, 39, 60, 0.96);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.42);
+  background: transparent;
 }
 
 [data-theme="dark"] .composer-icon-button {
-  border-color: rgba(122, 152, 194, 0.48);
-  background: rgba(38, 46, 70, 0.98);
+  border: 0;
+  background:
+    radial-gradient(circle at 30% 28%, rgba(104, 127, 179, 0.56) 0%, rgba(79, 100, 146, 0.46) 22%, rgba(50, 61, 93, 0.52) 72%, rgba(35, 43, 66, 0.44) 100%);
   color: #d8eaff;
+  box-shadow:
+    0 12px 26px rgba(0, 0, 0, 0.34),
+    0 2px 8px rgba(28, 59, 109, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .composer-icon-button::before {
+  background: linear-gradient(180deg, rgba(233, 244, 255, 0.34) 0%, rgba(233, 244, 255, 0.02) 100%);
+}
+
+[data-theme="dark"] .composer-icon-button::after {
+  background: rgba(122, 184, 255, 0.16);
 }
 
 [data-theme="dark"] .composer-icon-button:hover {
-  border-color: #6fc4ff;
-  background: rgba(54, 71, 110, 0.98);
+  background:
+    radial-gradient(circle at 30% 28%, rgba(118, 145, 203, 0.68) 0%, rgba(94, 118, 168, 0.58) 22%, rgba(61, 81, 126, 0.64) 72%, rgba(54, 71, 110, 0.58) 100%);
 }
 
 [data-theme="dark"] .composer-icon-button.is-active {
-  border-color: #6fc4ff;
-  background: rgba(62, 83, 130, 0.98);
+  background:
+    radial-gradient(circle at 30% 28%, rgba(130, 166, 232, 0.72) 0%, rgba(101, 132, 191, 0.62) 22%, rgba(73, 98, 150, 0.68) 72%, rgba(62, 83, 130, 0.62) 100%);
+  box-shadow:
+    0 12px 26px rgba(11, 24, 47, 0.42),
+    0 2px 8px rgba(37, 86, 160, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+[data-theme="dark"] .composer-translate-btn.is-active::after {
+  background: #44b7fe;
 }
 
 [data-theme="dark"] .composer-input-shell {

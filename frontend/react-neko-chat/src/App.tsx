@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import MessageList from './MessageList';
 import { i18n } from './i18n';
 import {
@@ -23,18 +23,20 @@ const defaultMessages: ChatMessage[] = [];
 
 type ToolIconItem = {
   id: string;
-  icon: string;
-  iconAlt?: string;
   label: string;
-  iconImagePath?: string;
+  iconImagePath: string;
   iconImagePathAlt?: string;
+  iconImagePathAlt2?: string;
   menuIconScale?: number;
   menuIconOffsetX?: number;
   menuIconOffsetY?: number;
   menuIconOffsetXAlt?: number;
   menuIconOffsetYAlt?: number;
-  cursorImagePath?: string;
+  menuIconOffsetXAlt2?: number;
+  menuIconOffsetYAlt2?: number;
+  cursorImagePath: string;
   cursorImagePathAlt?: string;
+  cursorImagePathAlt2?: string;
   cursorHotspotX?: number;
   cursorHotspotY?: number;
 };
@@ -42,11 +44,10 @@ type ToolIconItem = {
 const toolIconItems: ToolIconItem[] = [
   {
     id: 'lollipop',
-    icon: '🍭',
-    iconAlt: '🍬',
     label: '棒棒糖',
     iconImagePath: '/static/icons/chat_sugar1.png',
     iconImagePathAlt: '/static/icons/chat_sugar2.png',
+    iconImagePathAlt2: '/static/icons/chat_sugar3.png',
     cursorImagePath: '/static/icons/chat_sugar1_cursor.png',
     cursorImagePathAlt: '/static/icons/chat_sugar2_cursor.png',
     menuIconScale: 1.18,
@@ -55,8 +56,6 @@ const toolIconItems: ToolIconItem[] = [
   },
   {
     id: 'fist',
-    icon: '👊',
-    iconAlt: '✊',
     label: '拳头',
     iconImagePath: '/static/icons/cat_claw1.png',
     iconImagePathAlt: '/static/icons/cat_claw2.png',
@@ -67,8 +66,6 @@ const toolIconItems: ToolIconItem[] = [
   },
   {
     id: 'hammer',
-    icon: '🔨',
-    iconAlt: '⚒️',
     label: '锤子',
     iconImagePath: '/static/icons/chat_hammer1.png',
     iconImagePathAlt: '/static/icons/chat_hammer2.png',
@@ -84,28 +81,325 @@ const toolIconItems: ToolIconItem[] = [
   },
 ];
 
-function buildEmojiCursor(emoji: string): string {
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='36' height='36' viewBox='0 0 36 36'><text x='18' y='24' text-anchor='middle' font-size='24'>${emoji}</text></svg>`;
-  return `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}") 18 18, auto`;
+const hammerToolItem = toolIconItems.find(item => item.id === 'hammer') ?? null;
+const hammerOverlayTransformOrigin = {
+  x: 60,
+  y: 118,
+};
+const avatarToolRangePadding = 100;
+const compactCursorZoneSelector = [
+  '.composer-bottom-tools',
+  '.composer-tool-menu',
+  '.composer-icon-popover',
+  '.composer-tool-btn',
+  '.composer-icon-button',
+  '.send-button-circle',
+  '.window-topbar-actions',
+  '.topbar-action-btn',
+  '.message-action-button',
+  '#live2d-floating-buttons',
+  '#vrm-floating-buttons',
+  '#mmd-floating-buttons',
+  '#live2d-return-button-container',
+  '#vrm-return-button-container',
+  '#mmd-return-button-container',
+  '#live2d-lock-icon',
+  '#vrm-lock-icon',
+  '#mmd-lock-icon',
+  '.live2d-floating-btn',
+  '.vrm-floating-btn',
+  '.mmd-floating-btn',
+  '.live2d-trigger-btn',
+  '.vrm-trigger-btn',
+  '.mmd-trigger-btn',
+  '.live2d-return-btn',
+  '.vrm-return-btn',
+  '.mmd-return-btn',
+  '.live2d-popup',
+  '.vrm-popup',
+  '.mmd-popup',
+  '[id^="live2d-popup-"]',
+  '[id^="vrm-popup-"]',
+  '[id^="mmd-popup-"]',
+  '[data-neko-sidepanel]',
+].join(', ');
+
+type CursorVariant = 'primary' | 'secondary' | 'tertiary';
+type ToolCursorVariantState = Record<string, CursorVariant>;
+
+type HostAvatarBounds = {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  width: number;
+  height: number;
+  centerX?: number;
+  centerY?: number;
+};
+
+type HostAvatarManager = {
+  currentModel?: unknown;
+  getModelScreenBounds?: () => HostAvatarBounds | null;
+};
+
+type AvatarBoundsCacheEntry = {
+  bounds: HostAvatarBounds;
+};
+
+type FloatingHeart = {
+  id: number;
+  x: number;
+  y: number;
+  driftX: number;
+  driftY: number;
+  scale: number;
+  delayMs: number;
+};
+
+type FloatingFistDrop = {
+  id: number;
+  x: number;
+  y: number;
+  driftX: number;
+  driftY: number;
+  rotation: number;
+  scale: number;
+  delayMs: number;
+};
+
+const loadedCursorImageCache = new Map<string, Promise<HTMLImageElement>>();
+const compactCursorValueCache = new Map<string, Promise<string>>();
+const avatarBoundsCacheTtlMs = 80;
+let avatarBoundsCache: {
+  expiresAt: number;
+  entries: AvatarBoundsCacheEntry[];
+} = {
+  expiresAt: 0,
+  entries: [],
+};
+
+function resolveToolImagePaths(item: ToolIconItem, variant: CursorVariant) {
+  return {
+    iconImagePath: variant === 'tertiary' && item.iconImagePathAlt2
+      ? item.iconImagePathAlt2
+      : variant === 'secondary' && item.iconImagePathAlt
+        ? item.iconImagePathAlt
+        : item.iconImagePath,
+    cursorImagePath: variant === 'tertiary' && item.cursorImagePathAlt2
+      ? item.cursorImagePathAlt2
+      : variant === 'secondary' && item.cursorImagePathAlt
+        ? item.cursorImagePathAlt
+        : variant === 'tertiary' && item.cursorImagePathAlt
+          ? item.cursorImagePathAlt
+          : item.cursorImagePath,
+  };
 }
 
-type CursorVariant = 'primary' | 'secondary';
+function resolveMenuIconVisual(item: ToolIconItem, variant: CursorVariant) {
+  const imagePath = variant === 'tertiary' && item.iconImagePathAlt2
+    ? item.iconImagePathAlt2
+    : variant === 'secondary' && item.iconImagePathAlt
+      ? item.iconImagePathAlt
+      : item.iconImagePath;
+  const offsetX = variant === 'tertiary'
+    ? (item.menuIconOffsetXAlt2 ?? item.menuIconOffsetXAlt ?? item.menuIconOffsetX ?? 0)
+    : variant === 'secondary'
+      ? (item.menuIconOffsetXAlt ?? item.menuIconOffsetX ?? 0)
+      : (item.menuIconOffsetX ?? 0);
+  const offsetY = variant === 'tertiary'
+    ? (item.menuIconOffsetYAlt2 ?? item.menuIconOffsetYAlt ?? item.menuIconOffsetY ?? 0)
+    : variant === 'secondary'
+      ? (item.menuIconOffsetYAlt ?? item.menuIconOffsetY ?? 0)
+      : (item.menuIconOffsetY ?? 0);
+
+  return {
+    imagePath,
+    offsetX,
+    offsetY,
+  };
+}
+
+function loadCursorImage(imagePath: string): Promise<HTMLImageElement> {
+  const cached = loadedCursorImageCache.get(imagePath);
+  if (cached) return cached;
+
+  const pending = new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.decoding = 'async';
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`Failed to load cursor image: ${imagePath}`));
+    image.src = imagePath;
+  });
+
+  loadedCursorImageCache.set(imagePath, pending);
+  return pending;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+async function resolveCompactCursorValue(item: ToolIconItem, variant: CursorVariant): Promise<string> {
+  const { iconImagePath, cursorImagePath } = resolveToolImagePaths(item, variant);
+  const cursorScale = item.menuIconScale ?? 1;
+  const cacheKey = [
+    iconImagePath,
+    cursorImagePath,
+    cursorScale,
+    item.cursorHotspotX ?? 18,
+    item.cursorHotspotY ?? 18,
+  ].join('|');
+
+  const cached = compactCursorValueCache.get(cacheKey);
+  if (cached) return cached;
+
+  const pending = Promise.all([
+    loadCursorImage(iconImagePath),
+    loadCursorImage(cursorImagePath),
+  ]).then(([iconImage, cursorImage]) => {
+    const boxSize = Math.max(32, Math.round(40 * cursorScale));
+    const scale = Math.min(boxSize / iconImage.naturalWidth, boxSize / iconImage.naturalHeight);
+    const drawWidth = Math.max(1, Math.round(iconImage.naturalWidth * scale));
+    const drawHeight = Math.max(1, Math.round(iconImage.naturalHeight * scale));
+    const offsetX = Math.round((boxSize - drawWidth) / 2);
+    const offsetY = Math.round((boxSize - drawHeight) / 2);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = boxSize;
+    canvas.height = boxSize;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return resolveCursorValue(item, variant);
+    }
+
+    context.clearRect(0, 0, boxSize, boxSize);
+    context.drawImage(iconImage, offsetX, offsetY, drawWidth, drawHeight);
+
+    const hotspotRatioX = (item.cursorHotspotX ?? 18) / Math.max(cursorImage.naturalWidth, 1);
+    const hotspotRatioY = (item.cursorHotspotY ?? 18) / Math.max(cursorImage.naturalHeight, 1);
+    const hotspotX = clamp(Math.round(offsetX + drawWidth * hotspotRatioX), 0, boxSize - 1);
+    const hotspotY = clamp(Math.round(offsetY + drawHeight * hotspotRatioY), 0, boxSize - 1);
+
+    return `url("${canvas.toDataURL('image/png')}") ${hotspotX} ${hotspotY}, auto`;
+  }).catch(() => resolveCursorValue(item, variant));
+
+  compactCursorValueCache.set(cacheKey, pending);
+  return pending;
+}
 
 function resolveCursorValue(item: ToolIconItem, variant: CursorVariant): string {
+  const { cursorImagePath: imagePath } = resolveToolImagePaths(item, variant);
   const hotspotX = typeof item.cursorHotspotX === 'number' ? item.cursorHotspotX : 18;
   const hotspotY = typeof item.cursorHotspotY === 'number' ? item.cursorHotspotY : 18;
+  return `url("${imagePath}") ${hotspotX} ${hotspotY}, auto`;
+}
 
-  if (variant === 'secondary') {
-    if (item.cursorImagePathAlt) {
-      return `url("${item.cursorImagePathAlt}") ${hotspotX} ${hotspotY}, auto`;
-    }
-    return buildEmojiCursor(item.iconAlt || item.icon);
+function isElementVisible(elementId: string): boolean {
+  const element = document.getElementById(elementId);
+  if (!element) return false;
+  const computedStyle = window.getComputedStyle(element);
+  return computedStyle.display !== 'none'
+    && computedStyle.visibility !== 'hidden'
+    && computedStyle.opacity !== '0'
+    && element.getClientRects().length > 0;
+}
+
+function isPointInsideAvatarBounds(bounds: HostAvatarBounds, clientX: number, clientY: number): boolean {
+  if (
+    clientX < bounds.left - avatarToolRangePadding
+    || clientX > bounds.right + avatarToolRangePadding
+    || clientY < bounds.top - avatarToolRangePadding
+    || clientY > bounds.bottom + avatarToolRangePadding
+  ) {
+    return false;
   }
 
-  if (item.cursorImagePath) {
-    return `url("${item.cursorImagePath}") ${hotspotX} ${hotspotY}, auto`;
+  const centerX = typeof bounds.centerX === 'number'
+    ? bounds.centerX
+    : (bounds.left + bounds.right) / 2;
+  const centerY = typeof bounds.centerY === 'number'
+    ? bounds.centerY
+    : (bounds.top + bounds.bottom) / 2;
+  const radiusX = bounds.width * 0.3 + avatarToolRangePadding;
+  const radiusY = bounds.height * 0.475 + avatarToolRangePadding;
+  if (radiusX <= 0 || radiusY <= 0) return false;
+
+  const normalizedX = (clientX - centerX) / radiusX;
+  const normalizedY = (clientY - centerY) / radiusY;
+  return normalizedX * normalizedX + normalizedY * normalizedY <= 1;
+}
+
+function isPointerWithinAvatarRange(clientX: number, clientY: number): boolean {
+  const now = performance.now();
+  if (avatarBoundsCache.expiresAt <= now) {
+    const hostWindow = window as Window & {
+      mmdManager?: HostAvatarManager;
+      vrmManager?: HostAvatarManager;
+      live2dManager?: HostAvatarManager;
+    };
+
+    const candidates: Array<{ containerId: string; manager: HostAvatarManager | undefined }> = [
+      { containerId: 'mmd-container', manager: hostWindow.mmdManager },
+      { containerId: 'vrm-container', manager: hostWindow.vrmManager },
+      { containerId: 'live2d-container', manager: hostWindow.live2dManager },
+    ];
+
+    avatarBoundsCache = {
+      expiresAt: now + avatarBoundsCacheTtlMs,
+      entries: candidates.flatMap(({ containerId, manager }) => {
+        if (!manager?.currentModel || typeof manager.getModelScreenBounds !== 'function') {
+          return [];
+        }
+        if (!isElementVisible(containerId)) return [];
+
+        try {
+          const bounds = manager.getModelScreenBounds();
+          return bounds ? [{ bounds }] : [];
+        } catch {
+          return [];
+        }
+      }),
+    };
   }
-  return buildEmojiCursor(item.icon);
+
+  return avatarBoundsCache.entries.some(({ bounds }) => (
+    isPointInsideAvatarBounds(bounds, clientX, clientY)
+  ));
+}
+
+function clearAvatarBoundsCache() {
+  avatarBoundsCache = {
+    expiresAt: 0,
+    entries: [],
+  };
+}
+
+function isPointerOverCompactCursorZone(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest(compactCursorZoneSelector);
+}
+
+function resolveEffectiveCursorVariant(
+  toolId: string | null,
+  avatarRangeVariants: ToolCursorVariantState,
+  outsideRangeVariants: ToolCursorVariantState,
+  isWithinAvatarRange: boolean,
+): CursorVariant {
+  const avatarRangeVariant = toolId ? (avatarRangeVariants[toolId] ?? 'primary') : 'primary';
+  const outsideRangeVariant = toolId ? (outsideRangeVariants[toolId] ?? 'primary') : 'primary';
+  if (toolId === 'lollipop') {
+    return avatarRangeVariant;
+  }
+  if (toolId === 'hammer') {
+    return isWithinAvatarRange
+      ? 'primary'
+      : outsideRangeVariant;
+  }
+  return isWithinAvatarRange ? avatarRangeVariant : outsideRangeVariant;
+}
+
+function createDefaultToolCursorVariantState(): ToolCursorVariantState {
+  return Object.fromEntries(toolIconItems.map(item => [item.id, 'primary'])) as ToolCursorVariantState;
 }
 
 export default function App({
@@ -142,28 +436,146 @@ export default function App({
   const [pendingDrafts, setPendingDrafts] = useState<Array<{ id: string; text: string; time: string; lastMsgId: string | null }>>([]);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
-  const [cursorVariant, setCursorVariant] = useState<CursorVariant>('primary');
+  const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
+  const [outsideRangeCursorVariants, setOutsideRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
+  const [isCursorOverAvatarRange, setIsCursorOverAvatarRange] = useState(false);
+  const [isCursorOverCompactCursorZone, setIsCursorOverCompactCursorZone] = useState(false);
+  const [hammerSwingPhase, setHammerSwingPhase] = useState<'idle' | 'windup' | 'swing' | 'impact' | 'recover'>('idle');
+  const [isInnerHammerEasterEggActive, setIsInnerHammerEasterEggActive] = useState(false);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
-
+  const avatarCursorOverlayRef = useRef<HTMLDivElement | null>(null);
+  const hammerCursorOverlayRef = useRef<HTMLDivElement | null>(null);
+  const hammerSwingTimeoutIdsRef = useRef<number[]>([]);
+  const outsideHammerResetTimeoutRef = useRef<number | null>(null);
+  const floatingHeartIdRef = useRef(0);
+  const floatingHeartTimeoutIdsRef = useRef<number[]>([]);
+  const floatingFistDropIdRef = useRef(0);
+  const floatingFistDropTimeoutIdsRef = useRef<number[]>([]);
+  const latestPointerPositionRef = useRef({ x: 0, y: 0 });
+  const latestPointerTargetRef = useRef<EventTarget | null>(null);
+  const [floatingHearts, setFloatingHearts] = useState<FloatingHeart[]>([]);
+  const [floatingFistDrops, setFloatingFistDrops] = useState<FloatingFistDrop[]>([]);
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
-  const moreToolsButtonLabel = i18n('chat.moreTools', 'More tools');
+  const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
   const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
+  const effectiveCursorVariant = resolveEffectiveCursorVariant(
+    activeCursorToolId,
+    avatarRangeCursorVariants,
+    outsideRangeCursorVariants,
+    isCursorOverAvatarRange,
+  );
+  const avatarRangeCursorVariant = activeCursorToolId
+    ? (avatarRangeCursorVariants[activeCursorToolId] ?? 'primary')
+    : 'primary';
+  const activeToolItem = toolIconItems.find(item => item.id === activeCursorToolId) ?? null;
+  const shouldRenderAvatarRangeOverlay = isCursorOverAvatarRange && !isCursorOverCompactCursorZone;
+  const avatarCursorOverlayActive = !!activeToolItem
+    && activeCursorToolId !== 'hammer'
+    && shouldRenderAvatarRangeOverlay;
+  const hammerCursorOverlayActive = activeCursorToolId === 'hammer' && shouldRenderAvatarRangeOverlay;
+  const hammerCursorOverlayMotionActive = hammerSwingPhase !== 'idle';
+  const avatarCursorOverlayImagePath = activeToolItem && activeCursorToolId !== 'hammer'
+    ? resolveToolImagePaths(activeToolItem, avatarRangeCursorVariant).iconImagePath
+    : '';
+  const hammerCursorOverlayPrimaryImagePath = hammerToolItem
+    ? resolveToolImagePaths(hammerToolItem, 'primary').iconImagePath
+    : '';
+  const hammerCursorOverlaySecondaryImagePath = hammerToolItem
+    ? resolveToolImagePaths(hammerToolItem, 'secondary').iconImagePath
+    : '';
+
+  function clearHammerSwingAnimation() {
+    hammerSwingTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
+    hammerSwingTimeoutIdsRef.current = [];
+    setHammerSwingPhase('idle');
+    setIsInnerHammerEasterEggActive(false);
+  }
+
+  function clearOutsideHammerResetTimer(shouldResetToPrimary = true) {
+    if (outsideHammerResetTimeoutRef.current !== null) {
+      window.clearTimeout(outsideHammerResetTimeoutRef.current);
+      outsideHammerResetTimeoutRef.current = null;
+    }
+    if (shouldResetToPrimary) {
+      setOutsideRangeCursorVariants(prev => ({ ...prev, hammer: 'primary' }));
+    }
+  }
+
+  function spawnLollipopHearts(clientX: number, clientY: number) {
+    const hearts: FloatingHeart[] = [
+      { id: floatingHeartIdRef.current += 1, x: clientX - 12, y: clientY - 26, driftX: -26, driftY: -124, scale: 0.92, delayMs: 0 },
+      { id: floatingHeartIdRef.current += 1, x: clientX + 10, y: clientY - 20, driftX: 24, driftY: -138, scale: 1.06, delayMs: 110 },
+      { id: floatingHeartIdRef.current += 1, x: clientX - 4, y: clientY - 40, driftX: -18, driftY: -154, scale: 0.84, delayMs: 190 },
+    ];
+    setFloatingHearts(prev => [...prev, ...hearts]);
+    hearts.forEach(heart => {
+      const timeoutId = window.setTimeout(() => {
+        setFloatingHearts(prev => prev.filter(item => item.id !== heart.id));
+        floatingHeartTimeoutIdsRef.current = floatingHeartTimeoutIdsRef.current.filter(id => id !== timeoutId);
+      }, 2100 + heart.delayMs);
+      floatingHeartTimeoutIdsRef.current.push(timeoutId);
+    });
+  }
+
+  function spawnFistDrops(clientX: number, clientY: number) {
+    const drops: FloatingFistDrop[] = Array.from({ length: 3 }, () => {
+      const launchAngleDeg = -140 + Math.random() * 100;
+      const launchAngleRad = (launchAngleDeg * Math.PI) / 180;
+      const distance = 76 + Math.random() * 42;
+      return {
+        id: floatingFistDropIdRef.current += 1,
+        x: clientX - 8 + (Math.random() * 28 - 14),
+        y: clientY - 24 + (Math.random() * 18 - 9),
+        driftX: Math.round(Math.cos(launchAngleRad) * distance),
+        driftY: Math.round(Math.sin(launchAngleRad) * distance),
+        rotation: Math.round(-120 + Math.random() * 240),
+        scale: Number((0.82 + Math.random() * 0.38).toFixed(2)),
+        delayMs: Math.round(Math.random() * 140),
+      };
+    });
+    setFloatingFistDrops(prev => [...prev, ...drops]);
+    drops.forEach(drop => {
+      const timeoutId = window.setTimeout(() => {
+        setFloatingFistDrops(prev => prev.filter(item => item.id !== drop.id));
+        floatingFistDropTimeoutIdsRef.current = floatingFistDropTimeoutIdsRef.current.filter(id => id !== timeoutId);
+      }, 920 + drop.delayMs);
+      floatingFistDropTimeoutIdsRef.current.push(timeoutId);
+    });
+  }
+
+  function updateHammerCursorOverlayPosition(clientX: number, clientY: number) {
+    latestPointerPositionRef.current = { x: clientX, y: clientY };
+    const overlayNode = hammerCursorOverlayRef.current;
+    if (!overlayNode || !hammerToolItem) return;
+    const hotspotX = hammerToolItem.cursorHotspotX ?? 18;
+    const hotspotY = hammerToolItem.cursorHotspotY ?? 18;
+    overlayNode.style.transform = `translate3d(${clientX - hotspotX}px, ${clientY - hotspotY}px, 0)`;
+  }
+
+  function updateAvatarCursorOverlayPosition(clientX: number, clientY: number) {
+    latestPointerPositionRef.current = { x: clientX, y: clientY };
+    const overlayNode = avatarCursorOverlayRef.current;
+    if (!overlayNode || !activeToolItem) return;
+    const hotspotX = activeToolItem.cursorHotspotX ?? 18;
+    const hotspotY = activeToolItem.cursorHotspotY ?? 18;
+    overlayNode.style.transform = `translate3d(${clientX - hotspotX}px, ${clientY - hotspotY}px, 0)`;
+  }
 
   // Clear pending drafts once the host confirms them (appears in messages)
   useEffect(() => {
     if (pendingDrafts.length === 0) return;
-    const remaining = pendingDrafts.filter((draftItem) => {
-      const anchor = draftItem.lastMsgId ? messages.findIndex((m) => m.id === draftItem.lastMsgId) : -1;
+    const remaining = pendingDrafts.filter(d => {
+      const anchor = d.lastMsgId ? messages.findIndex(m => m.id === d.lastMsgId) : -1;
       const newMsgs = messages.slice(anchor + 1);
       const newUserTexts = new Set(
         newMsgs
-          .filter((m) => m.role === 'user')
-          .flatMap((m) => m.blocks.flatMap((b) => (b.type === 'text' ? [b.text] : []))),
+          .filter(m => m.role === 'user')
+          .flatMap(m => m.blocks.flatMap(b => b.type === 'text' ? [b.text] : [])),
       );
-      return !newUserTexts.has(draftItem.text);
+      return !newUserTexts.has(d.text);
     });
     if (remaining.length < pendingDrafts.length) {
       setPendingDrafts(remaining);
@@ -171,15 +583,15 @@ export default function App({
   }, [messages, pendingDrafts]);
 
   // Merge host messages + optimistic pending drafts
-  const lastUserAuthor = [...messages].reverse().find((m) => m.role === 'user')?.author;
+  const lastUserAuthor = [...messages].reverse().find(m => m.role === 'user')?.author;
   const allMessages = useMemo(() => {
     if (pendingDrafts.length === 0) return messages;
-    const optimistic: ChatMessage[] = pendingDrafts.map((draftItem) => ({
-      id: draftItem.id,
+    const optimistic: ChatMessage[] = pendingDrafts.map(d => ({
+      id: d.id,
       role: 'user' as const,
       author: lastUserAuthor || 'You',
-      time: draftItem.time,
-      blocks: [{ type: 'text' as const, text: draftItem.text }],
+      time: d.time,
+      blocks: [{ type: 'text' as const, text: d.text }],
       status: 'sending' as const,
     }));
     return [...messages, ...optimistic];
@@ -212,36 +624,233 @@ export default function App({
   useEffect(() => {
     if (!activeCursorToolId) return;
 
+    const resetFistCursorVariant = () => {
+      setAvatarRangeCursorVariants(prev => ({ ...prev, fist: 'primary' }));
+      setOutsideRangeCursorVariants(prev => ({ ...prev, fist: 'primary' }));
+    };
+
     const toggleCursorVariantOnPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
-      setCursorVariant((prev) => (prev === 'primary' ? 'secondary' : 'primary'));
+      if (activeCursorToolId === 'lollipop') {
+        if (isCursorOverAvatarRange) {
+          setAvatarRangeCursorVariants(prev => {
+            if (prev.lollipop === 'tertiary') {
+              spawnLollipopHearts(event.clientX, event.clientY);
+              return prev;
+            }
+            const nextVariant = prev.lollipop === 'primary'
+              ? 'secondary'
+              : prev.lollipop === 'secondary'
+                ? 'tertiary'
+                : 'primary';
+            return { ...prev, lollipop: nextVariant };
+          });
+          return;
+        }
+        return;
+      }
+      if (activeCursorToolId === 'fist') {
+        setAvatarRangeCursorVariants(prev => ({ ...prev, fist: 'secondary' }));
+        setOutsideRangeCursorVariants(prev => ({ ...prev, fist: 'secondary' }));
+        if (isCursorOverAvatarRange && Math.random() < 0.25) {
+          spawnFistDrops(event.clientX, event.clientY);
+        }
+        return;
+      }
+      if (activeCursorToolId === 'hammer') {
+        if (!isCursorOverAvatarRange) {
+          clearOutsideHammerResetTimer(false);
+          setOutsideRangeCursorVariants(prev => ({ ...prev, hammer: 'secondary' }));
+          outsideHammerResetTimeoutRef.current = window.setTimeout(() => {
+            setOutsideRangeCursorVariants(prev => ({ ...prev, hammer: 'primary' }));
+            outsideHammerResetTimeoutRef.current = null;
+          }, 220);
+          return;
+        }
+        if (hammerSwingPhase !== 'idle') {
+          return;
+        }
+        const shouldTriggerInnerHammerEasterEgg = Math.random() < 0.05;
+        setIsInnerHammerEasterEggActive(shouldTriggerInnerHammerEasterEgg);
+        setHammerSwingPhase('windup');
+        hammerSwingTimeoutIdsRef.current = [
+          window.setTimeout(() => {
+            setHammerSwingPhase('swing');
+          }, 240),
+          window.setTimeout(() => {
+            setHammerSwingPhase('impact');
+          }, 420),
+          window.setTimeout(() => {
+            setHammerSwingPhase('recover');
+          }, 520),
+          window.setTimeout(() => {
+            setHammerSwingPhase('idle');
+            hammerSwingTimeoutIdsRef.current = [];
+          }, 620),
+        ];
+        return;
+      }
+      if (isCursorOverAvatarRange) {
+        setAvatarRangeCursorVariants(prev => ({
+          ...prev,
+          [activeCursorToolId]: prev[activeCursorToolId] === 'primary' ? 'secondary' : 'primary',
+        }));
+      } else {
+        setOutsideRangeCursorVariants(prev => ({
+          ...prev,
+          [activeCursorToolId]: prev[activeCursorToolId] === 'primary' ? 'secondary' : 'primary',
+        }));
+      }
+    };
+
+    const handlePointerUp = () => {
+      if (activeCursorToolId !== 'fist') return;
+      resetFistCursorVariant();
     };
 
     window.addEventListener('pointerdown', toggleCursorVariantOnPointerDown, true);
+    window.addEventListener('pointerup', handlePointerUp, true);
+    window.addEventListener('pointercancel', handlePointerUp, true);
+    window.addEventListener('blur', handlePointerUp);
     return () => {
       window.removeEventListener('pointerdown', toggleCursorVariantOnPointerDown, true);
+      window.removeEventListener('pointerup', handlePointerUp, true);
+      window.removeEventListener('pointercancel', handlePointerUp, true);
+      window.removeEventListener('blur', handlePointerUp);
+    };
+  }, [activeCursorToolId, hammerSwingPhase, isCursorOverAvatarRange]);
+
+  useEffect(() => {
+    if (activeCursorToolId === 'hammer') return;
+    clearHammerSwingAnimation();
+    clearOutsideHammerResetTimer();
+  }, [activeCursorToolId]);
+
+  useEffect(() => () => {
+    clearHammerSwingAnimation();
+    clearOutsideHammerResetTimer();
+    floatingHeartTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
+    floatingHeartTimeoutIdsRef.current = [];
+    floatingFistDropTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
+    floatingFistDropTimeoutIdsRef.current = [];
+  }, []);
+
+  useEffect(() => {
+    if (!activeCursorToolId) {
+      setIsCursorOverAvatarRange(false);
+      setIsCursorOverCompactCursorZone(false);
+      return;
+    }
+
+    let frameId = 0;
+
+    const updateCursorRangeState = (clientX: number, clientY: number) => {
+      const nextValue = isPointerWithinAvatarRange(clientX, clientY);
+      setIsCursorOverAvatarRange(previousValue => (
+        previousValue === nextValue ? previousValue : nextValue
+      ));
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      latestPointerPositionRef.current = { x: event.clientX, y: event.clientY };
+      latestPointerTargetRef.current = event.target;
+      if (frameId) return;
+
+      frameId = window.requestAnimationFrame(() => {
+        frameId = 0;
+        const { x, y } = latestPointerPositionRef.current;
+        const isOverCompactCursorZone = isPointerOverCompactCursorZone(latestPointerTargetRef.current);
+        if (activeCursorToolId === 'hammer') {
+          updateHammerCursorOverlayPosition(x, y);
+        } else if (activeCursorToolId) {
+          updateAvatarCursorOverlayPosition(x, y);
+        }
+        updateCursorRangeState(x, y);
+        setIsCursorOverCompactCursorZone(previousValue => (
+          previousValue === isOverCompactCursorZone ? previousValue : isOverCompactCursorZone
+        ));
+      });
+    };
+
+    const clearCursorRangeState = () => {
+      clearAvatarBoundsCache();
+      latestPointerTargetRef.current = null;
+      setIsCursorOverAvatarRange(false);
+      setIsCursorOverCompactCursorZone(false);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: true, capture: true });
+    window.addEventListener('blur', clearCursorRangeState);
+
+    return () => {
+      if (frameId) {
+        window.cancelAnimationFrame(frameId);
+      }
+      clearAvatarBoundsCache();
+      window.removeEventListener('pointermove', handlePointerMove, true);
+      window.removeEventListener('blur', clearCursorRangeState);
     };
   }, [activeCursorToolId]);
 
   useEffect(() => {
     const root = document.documentElement;
+    let cancelled = false;
+
     if (!activeCursorToolId) {
       root.classList.remove('neko-tool-cursor-active');
       root.style.removeProperty('--neko-chat-tool-cursor');
       return;
     }
 
-    const selected = toolIconItems.find((item) => item.id === activeCursorToolId);
+    const selected = toolIconItems.find(item => item.id === activeCursorToolId);
     if (!selected) {
       root.classList.remove('neko-tool-cursor-active');
       root.style.removeProperty('--neko-chat-tool-cursor');
       return;
     }
 
-    const cursorValue = resolveCursorValue(selected, cursorVariant);
-    root.style.setProperty('--neko-chat-tool-cursor', cursorValue);
     root.classList.add('neko-tool-cursor-active');
-  }, [activeCursorToolId, cursorVariant]);
+
+    const applyResolvedCursor = async () => {
+      let cursorValue: string;
+      if ((selected.id === 'hammer' && hammerCursorOverlayActive) || avatarCursorOverlayActive) {
+        cursorValue = 'none';
+      } else if (isCursorOverAvatarRange && !isCursorOverCompactCursorZone) {
+        cursorValue = resolveCursorValue(selected, effectiveCursorVariant);
+      } else {
+        cursorValue = await resolveCompactCursorValue(selected, effectiveCursorVariant);
+      }
+      if (cancelled) return;
+      root.style.setProperty('--neko-chat-tool-cursor', cursorValue);
+    };
+
+    void applyResolvedCursor();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCursorToolId, avatarCursorOverlayActive, effectiveCursorVariant, hammerCursorOverlayActive, isCursorOverAvatarRange, isCursorOverCompactCursorZone]);
+
+  useEffect(() => {
+    if (!activeToolItem) return;
+    void resolveCompactCursorValue(activeToolItem, effectiveCursorVariant);
+  }, [activeToolItem, effectiveCursorVariant]);
+
+  useEffect(() => {
+    if (!avatarCursorOverlayActive) return;
+    updateAvatarCursorOverlayPosition(
+      latestPointerPositionRef.current.x,
+      latestPointerPositionRef.current.y,
+    );
+  }, [avatarCursorOverlayActive, avatarCursorOverlayImagePath, activeToolItem]);
+
+  useEffect(() => {
+    if (!hammerCursorOverlayActive) return;
+    updateHammerCursorOverlayPosition(
+      latestPointerPositionRef.current.x,
+      latestPointerPositionRef.current.y,
+    );
+  }, [hammerCursorOverlayActive, hammerSwingPhase]);
 
   useEffect(() => () => {
     const root = document.documentElement;
@@ -254,9 +863,9 @@ export default function App({
     if (!text && composerAttachments.length === 0) return;
     const now = new Date();
     const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
-      .map((n) => String(n).padStart(2, '0')).join(':');
+      .map(n => String(n).padStart(2, '0')).join(':');
     if (text) {
-      setPendingDrafts((prev) => [...prev, {
+      setPendingDrafts(prev => [...prev, {
         id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         text,
         time,
@@ -269,6 +878,98 @@ export default function App({
 
   return (
     <main className="app-shell">
+      {floatingFistDrops.map(drop => (
+        <span
+          key={drop.id}
+          className="fist-floating-drop"
+          aria-hidden="true"
+          style={{
+            left: `${drop.x}px`,
+            top: `${drop.y}px`,
+            '--drop-drift-x': `${drop.driftX}px`,
+            '--drop-drift-y': `${drop.driftY}px`,
+            '--drop-rotation': `${drop.rotation}deg`,
+            '--drop-scale': drop.scale,
+            '--drop-delay': `${drop.delayMs}ms`,
+          } as CSSProperties}
+        >
+            <img
+            className="fist-floating-drop-image"
+            src="/static/icons/cat_moneny.png"
+            alt=""
+          />
+        </span>
+      ))}
+      {floatingHearts.map(heart => (
+        <span
+          key={heart.id}
+          className="lollipop-floating-heart"
+          aria-hidden="true"
+          style={{
+            left: `${heart.x}px`,
+            top: `${heart.y}px`,
+            '--heart-drift-x': `${heart.driftX}px`,
+            '--heart-drift-y': `${heart.driftY}px`,
+            '--heart-sway-x': `${Math.max(8, Math.round(Math.abs(heart.driftX) * 0.32)) * (heart.driftX < 0 ? -1 : 1)}px`,
+            '--heart-scale': heart.scale,
+            '--heart-delay': `${heart.delayMs}ms`,
+          } as CSSProperties}
+        >
+          <span className="lollipop-floating-heart-glyph">♥</span>
+        </span>
+      ))}
+      {activeToolItem && activeCursorToolId !== 'hammer' && avatarCursorOverlayActive ? (
+        <div
+          ref={avatarCursorOverlayRef}
+          className={`avatar-cursor-overlay avatar-cursor-overlay-${activeToolItem.id}${avatarCursorOverlayActive ? ' is-visible' : ''}`}
+          aria-hidden="true"
+        >
+          <div
+            className="avatar-cursor-overlay-stage"
+            style={{
+              transformOrigin: `${activeToolItem.cursorHotspotX ?? 18}px ${activeToolItem.cursorHotspotY ?? 18}px`,
+            }}
+          >
+            <img
+              className={`avatar-cursor-overlay-image avatar-cursor-overlay-image-${activeToolItem.id}`}
+              src={avatarCursorOverlayImagePath}
+              alt=""
+            />
+          </div>
+        </div>
+      ) : null}
+      {hammerToolItem && hammerCursorOverlayActive ? (
+        <div
+          ref={hammerCursorOverlayRef}
+          className={`hammer-cursor-overlay${hammerCursorOverlayActive ? ' is-visible' : ''}${isInnerHammerEasterEggActive ? ' is-easter-egg' : ''}`}
+          aria-hidden="true"
+        >
+          <div
+            className="hammer-cursor-overlay-stage"
+            style={{
+              transformOrigin: `${hammerToolItem.cursorHotspotX ?? 18}px ${hammerToolItem.cursorHotspotY ?? 18}px`,
+            }}
+          >
+            <div
+              className={`hammer-cursor-overlay-visual${hammerCursorOverlayMotionActive ? ' is-active' : ''}${hammerSwingPhase === 'impact' ? ' is-impact' : ''}`}
+              style={{
+                transformOrigin: `${hammerOverlayTransformOrigin.x}px ${hammerOverlayTransformOrigin.y}px`,
+              }}
+            >
+              <img
+                className="hammer-cursor-overlay-image hammer-cursor-overlay-image-primary"
+                src={hammerCursorOverlayPrimaryImagePath}
+                alt=""
+              />
+              <img
+                className="hammer-cursor-overlay-image hammer-cursor-overlay-image-secondary"
+                src={hammerCursorOverlaySecondaryImagePath}
+                alt=""
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
       <section className="chat-window" aria-label={chatWindowAriaLabel}>
         <header className="window-topbar">
           <div className="window-title-group">
@@ -355,67 +1056,6 @@ export default function App({
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
                   </button>
                   <span className="composer-tool-divider" aria-hidden="true">|</span>
-                  <div className="composer-tool-menu" ref={toolMenuRef}>
-                    <button
-                      className="composer-tool-btn composer-tool-btn-toggle"
-                      type="button"
-                      aria-label={moreToolsButtonLabel}
-                      title={moreToolsButtonLabel}
-                      aria-expanded={toolMenuOpen}
-                      aria-haspopup="menu"
-                      onClick={() => setToolMenuOpen((open) => !open)}
-                    >
-                      <img src="/static/icons/chat_tools.png" alt="" aria-hidden="true" />
-                    </button>
-                    {toolMenuOpen ? (
-                      <div className="composer-icon-popover" role="menu" aria-label={toolIconsAriaLabel}>
-                        {toolIconItems.map((item) => (
-                          <button
-                            key={item.id}
-                            className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
-                            type="button"
-                            role="menuitem"
-                            aria-label={item.label}
-                            title={item.label}
-                            onClick={() => {
-                              setCursorVariant('primary');
-                              setActiveCursorToolId(item.id);
-                              setToolMenuOpen(false);
-                            }}
-                          >
-                            {item.iconImagePath ? (
-                              <img
-                                className="composer-icon-button-image"
-                                src={activeCursorToolId === item.id
-                                  && cursorVariant === 'secondary'
-                                  && item.iconImagePathAlt
-                                  ? item.iconImagePathAlt
-                                  : item.iconImagePath}
-                                style={{
-                                  transform: `translate(${
-                                    activeCursorToolId === item.id
-                                    && cursorVariant === 'secondary'
-                                    && item.iconImagePathAlt
-                                      ? (item.menuIconOffsetXAlt ?? item.menuIconOffsetX ?? 0)
-                                      : (item.menuIconOffsetX ?? 0)
-                                  }px, ${
-                                    activeCursorToolId === item.id
-                                    && cursorVariant === 'secondary'
-                                    && item.iconImagePathAlt
-                                      ? (item.menuIconOffsetYAlt ?? item.menuIconOffsetY ?? 0)
-                                      : (item.menuIconOffsetY ?? 0)
-                                  }px) scale(${item.menuIconScale ?? 1})`,
-                                }}
-                                alt=""
-                                aria-hidden="true"
-                              />
-                            ) : item.icon}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                  <span className="composer-tool-divider" aria-hidden="true">|</span>
                   <button
                     className={`composer-tool-btn composer-translate-btn${translateEnabled ? ' is-active' : ''}`}
                     type="button"
@@ -436,6 +1076,61 @@ export default function App({
                   >
                     <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
                   </button>
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  <div className="composer-tool-menu" ref={toolMenuRef}>
+                    <button
+                      className={`composer-tool-btn composer-emoji-btn${toolMenuOpen ? ' is-active' : ''}`}
+                      type="button"
+                      aria-label={emojiButtonAriaLabel}
+                      title={emojiButtonAriaLabel}
+                      aria-expanded={toolMenuOpen}
+                      aria-haspopup="menu"
+                      onClick={() => setToolMenuOpen(open => !open)}
+                    >
+                      <img src="/static/icons/emoji_icon.png" alt="" aria-hidden="true" />
+                    </button>
+                    {toolMenuOpen ? (
+                      <div className="composer-icon-popover" role="menu" aria-label={toolIconsAriaLabel}>
+                        {toolIconItems.map(item => {
+                          const menuVariant = activeCursorToolId === item.id
+                            ? effectiveCursorVariant
+                            : 'primary';
+                          const menuVisual = resolveMenuIconVisual(item, menuVariant);
+                          return (
+                          <button
+                            key={item.id}
+                            className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
+                            type="button"
+                            role="menuitem"
+                            aria-label={item.label}
+                            title={item.label}
+                            onClick={() => {
+                              if (activeCursorToolId === item.id) {
+                                setActiveCursorToolId(null);
+                                setToolMenuOpen(false);
+                                return;
+                              }
+                              setAvatarRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
+                              setOutsideRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
+                              setActiveCursorToolId(item.id);
+                              setToolMenuOpen(false);
+                            }}
+                          >
+                            <img
+                              className="composer-icon-button-image"
+                              src={menuVisual.imagePath}
+                              style={{
+                                transform: `translate(${menuVisual.offsetX}px, ${menuVisual.offsetY}px) scale(${item.menuIconScale ?? 1})`,
+                              }}
+                              alt=""
+                              aria-hidden="true"
+                            />
+                          </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
                 <button className="send-button-circle" type="submit" aria-label={sendButtonLabel} disabled={!canSubmit}>
                   <img src="/static/icons/send_new_icon.png" alt="" aria-hidden="true" />
