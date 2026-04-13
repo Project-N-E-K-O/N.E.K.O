@@ -400,7 +400,8 @@ cd N.E.K.O
 # 2. Install Python dependencies
 uv sync
 
-# 3. Build frontend projects (required on first run or after frontend changes)
+# 3. Build frontend projects (requires Node.js >= 20.19; needed on first run or after frontend changes)
+#    Or use the convenience script: build_frontend.bat (Windows) / ./build_frontend.sh (Linux/macOS)
 cd frontend/react-neko-chat && npm install && npm run build && cd ../..
 cd frontend/plugin-manager && npm install && npm run build && cd ../..
 
@@ -460,6 +461,7 @@ Visit `http://localhost:48911/api_key` to configure directly through the Web int
 
 ```
 N.E.K.O/
+├── 📁 .agent/                   # 🤖 AI coding assistant rules & skills (auto-loaded by Claude Code / Cursor etc.)
 ├── 📁 brain/                    # 🧠 Agent modules
 │   ├── computer_use.py          # Computer control
 │   ├── browser_use_adapter.py   # Browser automation
@@ -495,6 +497,8 @@ N.E.K.O/
 ├── agent_server.py              # 🤖 AI agent server
 └── memory_server.py             # 🧠 Memory server
 ```
+
+> **AI-Assisted Development**: The `.agent/` directory contains development rules and skill sets for AI coding assistants (Claude Code, Cursor, etc.). AI agents that support these tools will automatically load and follow the rules within. See the [developer docs](https://project-neko.online/contributing/ai-assisted-dev) for details.
 
 **Data Flow**
 
