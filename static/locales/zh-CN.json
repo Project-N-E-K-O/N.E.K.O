@@ -1705,7 +1705,8 @@
     "subtitle": {
         "title": "实时字幕",
         "enable": "字幕翻译",
-        "enableAriaLabel": "字幕翻译开关"
+        "enableAriaLabel": "字幕翻译开关",
+        "markdownPlaceholder": "[格式化内容]"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."

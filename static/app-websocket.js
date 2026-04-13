@@ -1033,6 +1033,13 @@
                         var fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
                         fullText = fullText.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
                         if (!fullText) return;
+                        // 结构化 turn（markdown/code/table/latex）→ 字幕收尾为 [markdown] 占位，不翻译
+                        if (window._turnIsStructured) {
+                            if (typeof window.finalizeSubtitleAsStructured === 'function') {
+                                try { window.finalizeSubtitleAsStructured(); } catch (_) {}
+                            }
+                            return;
+                        }
                         (async function () {
                             try {
                                 if (typeof window.translateAndShowSubtitle === 'function') {
@@ -1146,7 +1153,14 @@
                         }, 100);
 
                         // Frontend subtitle finalization: subtitle.js 内部根据开关决定是否
-                        // 真正发请求；不需要的语言会保留流式累积的原文，不会清空字幕
+                        // 真正发请求；不需要的语言会保留流式累积的原文，不会清空字幕。
+                        // 结构化 turn 收尾为 [markdown] 占位，跳过翻译链路。
+                        if (window._turnIsStructured) {
+                            if (typeof window.finalizeSubtitleAsStructured === 'function') {
+                                try { window.finalizeSubtitleAsStructured(); } catch (_) {}
+                            }
+                            return;
+                        }
                         (async function () {
                             try {
                                 if (typeof window.translateAndShowSubtitle === 'function') {

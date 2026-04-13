@@ -422,11 +422,27 @@
                 window._geminiTurnFullText = '';
                 window._pendingMusicCommand = '';
                 window._structuredGeminiStreaming = false;
+                window._turnIsStructured = false;
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
             }
             var prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
             window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
+
+            // 常驻字幕流式写入（adapter 是生产常驻路径；PR #777 漏了这段，导致 React
+            // 聊天窗口下字幕只能等 turn_end 才首次出现，视觉上像"一口气显示"）。
+            // 结构化命中时改走 [markdown] 占位，turn_end 跳过翻译。
+            var streamingText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            if (!window._turnIsStructured && looksLikeStructuredRichText(streamingText)) {
+                window._turnIsStructured = true;
+            }
+            if (window._turnIsStructured) {
+                if (typeof window.markSubtitleStructured === 'function') {
+                    window.markSubtitleStructured();
+                }
+            } else if (typeof window.updateSubtitleStreamingText === 'function') {
+                window.updateSubtitleStreamingText(streamingText);
+            }
         }
 
         // ---------- gemini + realistic 模式 ----------

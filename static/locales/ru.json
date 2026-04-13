@@ -1705,7 +1705,8 @@
     "subtitle": {
         "title": "Субтитры в реальном времени",
         "enable": "Перевод субтитров",
-        "enableAriaLabel": "Переключить перевод субтитров"
+        "enableAriaLabel": "Переключить перевод субтитров",
+        "markdownPlaceholder": "[форматированный контент]"
     },
     "viewer": {
         "title": "Просмотр — Project N.E.K.O."

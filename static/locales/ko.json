@@ -1705,7 +1705,8 @@
     "subtitle": {
         "title": "실시간 자막",
         "enable": "자막 번역",
-        "enableAriaLabel": "자막 번역 전환"
+        "enableAriaLabel": "자막 번역 전환",
+        "markdownPlaceholder": "[서식 있는 내용]"
     },
     "viewer": {
         "title": "뷰어 - 프로젝트 N.E.K.O."

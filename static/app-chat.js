@@ -784,6 +784,7 @@
                 window._geminiTurnFullText = '';
                 window._pendingMusicCommand = '';
                 window._structuredGeminiStreaming = false;
+                window._turnIsStructured = false;
                 // ========== 重置本轮气泡追踪 ==========
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
@@ -791,10 +792,20 @@
             var prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
             window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
 
-            // 把整轮累积的原文流式写入字幕（常驻字幕，跨气泡持续显示）
-            // turn 结束时由 app-websocket.js 调用翻译替换；turn-start 事件清空
-            if (typeof window.updateSubtitleStreamingText === 'function') {
-                var streamingText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            // 结构化富文本（markdown / code / table / latex）→ 字幕显示 [markdown] 占位，
+            // 不再流式写原文，turn_end 也跳过翻译。检测命中后幂等，不会往回切。
+            var streamingText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            if (!window._turnIsStructured && looksLikeStructuredRichText(streamingText)) {
+                window._turnIsStructured = true;
+            }
+
+            if (window._turnIsStructured) {
+                if (typeof window.markSubtitleStructured === 'function') {
+                    window.markSubtitleStructured();
+                }
+            } else if (typeof window.updateSubtitleStreamingText === 'function') {
+                // 把整轮累积的原文流式写入字幕（常驻字幕，跨气泡持续显示）
+                // turn 结束时由 app-websocket.js 调用翻译替换；turn-start 事件清空
                 window.updateSubtitleStreamingText(streamingText);
             }
         }
