@@ -1274,6 +1274,8 @@
         "prefixShouldBeEnglishLetterAndNumber": "Префикс должен состоять из английских букв и цифр",
         "invalidApiKeyProvided": "Указан неверный API-ключ",
         "requestError": "Ошибка запроса: {{error}}",
+        "serverNonJsonError": "Сервер вернул не-JSON ответ (HTTP {{status}}): {{snippet}}",
+        "serverRouteNotFound": "Маршрут API не найден (HTTP {{status}}). Убедитесь, что сервер развёрнут и перезапущен.",
         "voiceIdSaveFailed": "Не удалось автоматически сохранить voice_id: {{error}}",
         "voiceIdSaved": "voice_id автоматически сохранён для персонажа",
         "pageWillRefresh": "Текущая страница обновится для применения нового голоса",

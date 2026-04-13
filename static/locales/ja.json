@@ -1274,6 +1274,8 @@
         "prefixShouldBeEnglishLetterAndNumber": "接頭辞は英文字と数字である必要があります",
         "invalidApiKeyProvided": "無効なAPIキーが提供されました",
         "requestError": "リクエストエラー：{{error}}",
+        "serverNonJsonError": "サーバーが非JSONレスポンスを返しました (HTTP {{status}})：{{snippet}}",
+        "serverRouteNotFound": "APIエンドポイントが見つかりません (HTTP {{status}})。サーバーが正しくデプロイされ再起動されていることを確認してください。",
         "voiceIdSaveFailed": "voice_idの自動保存に失敗しました: {{error}}",
         "voiceIdSaved": "voice_idをキャラクターに自動保存しました",
         "pageWillRefresh": "新しいボイスを適用するためにページが自動更新されます",
