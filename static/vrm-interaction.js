@@ -158,6 +158,14 @@ class VRMInteraction {
             if (this._snapAnimationFrameId) {
                 cancelAnimationFrame(this._snapAnimationFrameId);
                 this._snapAnimationFrameId = null;
+
+                // 动画被中断，同步 _cameraTarget 到模型实际移动的位移量
+                if (this.manager._cameraTarget && this._snapStartPosition && this.manager.currentModel?.scene) {
+                    const currentDelta = this.manager.currentModel.scene.position.clone().sub(this._snapStartPosition);
+                    this.manager._cameraTarget.add(currentDelta);
+                }
+                this._snapStartPosition = null;
+
                 if (this._snapResolve) {
                     this._snapResolve(false);
                     this._snapResolve = null;
@@ -265,8 +273,10 @@ class VRMInteraction {
                     const posDelta = finalPosition.clone().sub(oldPosition);
                     this.manager._cameraTarget.add(posDelta);
                 }
-                // 位置变了，清除缓存的包围盒，下次缩放时重新获取
+                // 位置变了，清除所有缓存，下次缩放/悬停检测时重新获取
                 this._cachedBox = null;
+                this._cachedCorners = null;
+                this._cachedScreenBounds = null;
             } else if (this.dragMode === 'orbit' && this.manager.camera && this._orbitCenter) {
                 // 右键拖拽：相机绕模型中心旋转，同时补偿 lookAt 使模型保持在屏幕原位
                 const camera = this.manager.camera;
@@ -814,6 +824,7 @@ class VRMInteraction {
         const scene = this.manager.currentModel.scene;
 
         this._isSnappingModel = true;
+        this._snapStartPosition = startPosition.clone();
 
         return new Promise((resolve) => {
             this._snapResolve = resolve;
@@ -835,6 +846,7 @@ class VRMInteraction {
                     this._isSnappingModel = false;
                     this._snapAnimationFrameId = null;
                     this._snapResolve = null;
+                    this._snapStartPosition = null;
                     resolve(true);
                 }
             };
