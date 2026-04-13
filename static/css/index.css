@@ -287,8 +287,29 @@ button * {
     opacity: 1;
     overflow: hidden;
     visibility: visible;
-    transition: all 1s ease-in-out;
+    /* 【修复】仅过渡 opacity 和 transform，排除 visibility 的过渡影响，
+     * 避免 MMD 模式下隐藏 VRM 容器时因 transition: all 导致约 1s 的视觉
+     * 残留窗口，使 VRM canvas 中缓存的旧模型（如 sister1.0）短暂可见。 */
+    transition: opacity 1s ease-in-out, transform 1s ease-in-out;
     /* GPU 合成层隔离：减少窗口级重绘对 canvas 的影响 */
+    will-change: transform;
+    transform: translateZ(0);
+}
+
+/* 看板娘MMD模型判定框-容器 */
+#mmd-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    /* 【修复】z-index 与 vrm-container 一致，防止 VRM 容器层级始终高于 MMD，
+     * 导致 MMD 画布透明窗口期（模型清理/重建期间）穿透显示 VRM 缓存内容。 */
+    z-index: 10;
+    pointer-events: none;
+    background: none;
+    overflow: hidden;
+    /* GPU 合成层隔离 */
     will-change: transform;
     transform: translateZ(0);
 }

@@ -2494,6 +2494,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (vrmManager && typeof vrmManager.pauseRendering === 'function') {
                     try { vrmManager.pauseRendering(); } catch (_) { /* ignore */ }
                 }
+                // 【修复】清除 VRM canvas 缓存帧，防止 canvas 内容在容器短暂可见时被绘制
+                if (vrmManager && vrmManager.renderer) {
+                    try { vrmManager.renderer.clear(); } catch (_) { /* ignore */ }
+                }
                 if (vrmManager && vrmManager.renderer && vrmManager.renderer.domElement) {
                     vrmManager.renderer.domElement.style.display = 'none';
                 }
@@ -2878,9 +2882,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 // 更新 sub_type 并刷新控件可见性
                 stopIdleRotation('vrm');
+                // 【修复】MMD→MMD 同类型切换时跳过冗余的 switchModelDisplay，
+                // 避免触发 loadLive3DModels 等异步操作和 VRM 场景重建，减少切换闪烁窗口期。
+                const wasAlreadyMmd = currentLive3dSubType === 'mmd';
                 currentLive3dSubType = 'mmd';
                 localStorage.setItem('live3dSubType', 'mmd');
-                await switchModelDisplay('live3d', 'mmd');
+                if (!wasAlreadyMmd) {
+                    await switchModelDisplay('live3d', 'mmd');
+                }
 
                 // switchModelDisplay 重建了 vrmModelSelect，需要重新选中当前模型
                 if (vrmModelSelect) {
@@ -4012,6 +4021,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (vrmContainer) {
                 vrmContainer.classList.add('hidden');
                 vrmContainer.style.display = 'none';
+            }
+            // 【修复】清除 VRM canvas 缓存帧，防止旧 VRM 模型在切换窗口期短暂闪现
+            if (window.vrmManager && window.vrmManager.renderer) {
+                try { window.vrmManager.renderer.clear(); } catch (_) { /* ignore */ }
             }
             // 显示 MMD 容器
             if (mmdContainer) {

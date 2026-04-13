@@ -577,9 +577,11 @@ class VRMManager {
         // 恢复容器可见性：在 Live2D/VRM 之间反复切换时，cleanup 会把容器隐藏
         // （display:none + 'hidden' class），若 _isInitialized 为 true，app-character.js
         // 会跳过整个初始化块，导致下次切回 VRM 时容器仍不可见，新模型"加载不出来"。
-        // 这里无条件恢复，确保每次尝试初始化 VRM 时容器都是可见的。
+        // 【修复】仅在非 MMD 子类型时恢复容器可见性，防止 MMD 模式下 VRM 容器
+        // 被意外显示（initThreeJS 可能被 loadModel 等间接调用，此时 MMD 正在前台）。
+        const isMmdMode = (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd';
         const container = containerId ? document.getElementById(containerId) : null;
-        if (container) {
+        if (container && !isMmdMode) {
             container.style.display = 'block';
             container.style.visibility = 'visible';
             container.style.opacity = '1';
@@ -589,7 +591,8 @@ class VRMManager {
         // 检查是否已完全初始化（不仅检查 scene，还要检查 camera 和 renderer）
         if (this.scene && this.camera && this.renderer) {
             // 恢复 renderer canvas 可见性（切换清理时会把 domElement 设为 display:none）
-            if (this.renderer.domElement) {
+            // 【修复】同样受 MMD 守卫保护
+            if (this.renderer.domElement && !isMmdMode) {
                 this.renderer.domElement.style.display = 'block';
             }
             this._initMouseLookAtTracking();
