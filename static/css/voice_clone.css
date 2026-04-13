@@ -687,6 +687,10 @@ body .container-header {
     color: #9dd8f2;
 }
 
+[data-theme="dark"] .workshop-source-status.error {
+    color: #d63b5c;
+}
+
 .register-voice-btn .register-text {
     position: relative;
     z-index: 20;

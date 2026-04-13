@@ -1365,7 +1365,9 @@ function updateReferenceAudioDisplay() {
     const fileNameDisplay = document.getElementById('voice-reference-file-name');
     const selectedFile = getSelectedReferenceAudioFile();
     if (!fileNameDisplay) return;
-    fileNameDisplay.textContent = selectedFile ? selectedFile.name : '未选择文件';
+    fileNameDisplay.textContent = selectedFile
+        ? selectedFile.name
+        : (window.t ? window.t('steam.voiceReferenceNoFileSelected') : '未选择文件');
 }
 
 function clearReferenceAudioSelection() {
@@ -3534,7 +3536,7 @@ function updateFileDisplay() {
     if (fileInput.files.length > 0) {
         fileNameDisplay.textContent = fileInput.files[0].name;
     } else {
-        fileNameDisplay.textContent = window.t ? window.t('voice.noFileSelected') : '未选择文件';
+        fileNameDisplay.textContent = window.t ? window.t('steam.voiceReferenceNoFileSelected') : '未选择文件';
     }
 }
 

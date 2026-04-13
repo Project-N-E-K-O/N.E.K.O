@@ -497,43 +497,43 @@
 </div>
 
 <div class="control-group">
-<div class="control-label">参考语音（可选）</div>
+<div class="control-label" data-i18n="steam.voiceReferenceOptional">参考语音（可选）</div>
 <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
 <input type="file" id="voice-reference-file" accept=".wav,.mp3,audio/wav,audio/mpeg" style="display: none;">
-<button class="btn btn-secondary" type="button" onclick="selectReferenceAudio()">选择文件</button>
-<button class="btn btn-secondary" type="button" onclick="clearReferenceAudioSelection()">清空</button>
-<span id="voice-reference-file-name" class="control-hint" style="margin: 0; color: #555;">未选择文件</span>
+<button class="btn btn-secondary" type="button" onclick="selectReferenceAudio()" data-i18n="common.selectFile">选择文件</button>
+<button class="btn btn-secondary" type="button" onclick="clearReferenceAudioSelection()" data-i18n="common.clear">清空</button>
+<span id="voice-reference-file-name" class="control-hint" style="margin: 0; color: #555;" data-i18n="steam.voiceReferenceNoFileSelected">未选择文件</span>
 </div>
-<div class="control-hint" style="color: #555; font-size: 14px;">订阅者会在语音克隆页自动带入这段样本，但不会自动注册音色。</div>
+<div class="control-hint" style="color: #555; font-size: 14px;" data-i18n="steam.voiceReferenceHint">订阅者会在语音克隆页自动带入这段样本，但不会自动注册音色。</div>
 </div>
 
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px;">
 <div class="control-group" style="margin-bottom: 0;">
-<div class="control-label">参考语音展示名</div>
-<input type="text" id="voice-reference-display-name" class="control-input" placeholder="例如：猫娘柔和中文">
+<div class="control-label" data-i18n="steam.voiceReferenceDisplayName">参考语音展示名</div>
+<input type="text" id="voice-reference-display-name" class="control-input" placeholder="例如：猫娘柔和中文" data-i18n-placeholder="steam.voiceReferenceDisplayNamePlaceholder">
 </div>
 <div class="control-group" style="margin-bottom: 0;">
-<div class="control-label">默认前缀</div>
-<input type="text" id="voice-reference-prefix" class="control-input" placeholder="英文字母和数字，最多10位">
+<div class="control-label" data-i18n="steam.voiceReferencePrefix">默认前缀</div>
+<input type="text" id="voice-reference-prefix" class="control-input" placeholder="英文字母和数字，最多10位" data-i18n-placeholder="steam.voiceReferencePrefixPlaceholder">
 </div>
 <div class="control-group" style="margin-bottom: 0;">
-<div class="control-label">参考语音语言</div>
+<div class="control-label" data-i18n="steam.voiceReferenceLanguage">参考语音语言</div>
 <select id="voice-reference-language" class="control-select">
-<option value="ch">中文</option>
-<option value="en">英语</option>
-<option value="fr">法语</option>
-<option value="de">德语</option>
-<option value="ja">日语</option>
-<option value="ko">韩语</option>
-<option value="ru">俄语</option>
+<option value="ch" data-i18n="voiceClone.lang.ch">中文</option>
+<option value="en" data-i18n="voiceClone.lang.en">英语</option>
+<option value="fr" data-i18n="voiceClone.lang.fr">法语</option>
+<option value="de" data-i18n="voiceClone.lang.de">德语</option>
+<option value="ja" data-i18n="voiceClone.lang.ja">日语</option>
+<option value="ko" data-i18n="voiceClone.lang.ko">韩语</option>
+<option value="ru" data-i18n="voiceClone.lang.ru">俄语</option>
 </select>
 </div>
 <div class="control-group" style="margin-bottom: 0;">
-<div class="control-label">服务商建议</div>
+<div class="control-label" data-i18n="steam.voiceReferenceProviderHint">服务商建议</div>
 <select id="voice-reference-provider-hint" class="control-select">
-<option value="cosyvoice">阿里云 CosyVoice</option>
-<option value="minimax">MiniMax（国服）</option>
-<option value="minimax_intl">MiniMax（国际服）</option>
+<option value="cosyvoice" data-i18n="voiceClone.provider.cosyvoice">阿里云 CosyVoice</option>
+<option value="minimax" data-i18n="voiceClone.provider.minimax">MiniMax（国服）</option>
+<option value="minimax_intl" data-i18n="voiceClone.provider.minimax_intl">MiniMax（国际服）</option>
 </select>
 </div>
 </div>

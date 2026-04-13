@@ -435,12 +435,13 @@ async function initWorkshopVoiceReference() {
     const sourceTitle = document.getElementById('workshopVoiceSourceTitle');
     const sourceMeta = document.getElementById('workshopVoiceSourceMeta');
     const previewAudio = document.getElementById('workshopVoicePreview');
+    const workshopSourceTitleText = window.t ? window.t('voice.workshopSourceTitle') : 'Workshop Reference Voice';
     if (!sourceCard || !sourceTitle || !sourceMeta || !previewAudio) {
         return;
     }
 
     sourceCard.style.display = 'block';
-    sourceTitle.textContent = '正在读取工坊内容...';
+    sourceTitle.textContent = workshopSourceTitleText;
     sourceMeta.textContent = '';
     setWorkshopVoiceSourceStatus('正在加载参考语音...');
 
@@ -470,7 +471,7 @@ async function initWorkshopVoiceReference() {
         revokeWorkshopReferenceAudioUrl();
         workshopReferenceAudioUrl = URL.createObjectURL(audioBlob);
 
-        sourceTitle.textContent = manifestData.title || manifest.display_name || `创意工坊物品 ${workshopItemId}`;
+        sourceTitle.textContent = manifestData.title || manifest.display_name || workshopSourceTitleText;
         sourceMeta.textContent = `样本：${manifest.display_name || manifest.reference_audio} ｜ 前缀：${manifest.prefix} ｜ 语言：${manifest.ref_language}`;
         previewAudio.src = workshopReferenceAudioUrl;
         previewAudio.style.display = 'block';
@@ -486,7 +487,7 @@ async function initWorkshopVoiceReference() {
     } catch (error) {
         workshopReferenceFile = null;
         revokeWorkshopReferenceAudioUrl();
-        sourceTitle.textContent = `工坊物品 ${workshopItemId}`;
+        sourceTitle.textContent = workshopSourceTitleText;
         sourceMeta.textContent = '';
         previewAudio.removeAttribute('src');
         previewAudio.style.display = 'none';
