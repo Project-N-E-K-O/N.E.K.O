@@ -251,6 +251,9 @@ window.Jukebox = {
         bg: 'rgba(76,175,80,0.2)',
         border: '3px solid #4CAF50'
       },
+      // 允许的文件扩展名（与后端 ALLOWED_AUDIO/ACTION_EXTENSIONS 保持一致）
+      allowedAudioExts: ['mp3', 'wav', 'ogg', 'flac'],
+      allowedActionExts: ['vmd', 'bvh', 'fbx', 'vrma'],
       // 拖放区域
       dropzone: {
         overBg: 'rgba(100, 150, 255, 0.2)',
@@ -1669,13 +1672,11 @@ window.Jukebox = {
 
       dropZone.addEventListener('drop', async (e) => {
         const files = Array.from(e.dataTransfer.files);
-        const audioExts = ['mp3', 'wav', 'ogg', 'flac'];
-        const actionExts = ['vmd', 'bvh', 'fbx', 'vrma'];
 
         if (fileType === 'audio') {
           const audioFiles = files.filter(f => {
             const ext = f.name.split('.').pop().toLowerCase();
-            return audioExts.includes(ext);
+            return this.Config.allowedAudioExts.includes(ext);
           });
           if (audioFiles.length === 0) {
             console.log('[SongActionManager] 没有检测到音频文件');
@@ -1685,7 +1686,7 @@ window.Jukebox = {
         } else if (fileType === 'action') {
           const actionFiles = files.filter(f => {
             const ext = f.name.split('.').pop().toLowerCase();
-            return actionExts.includes(ext);
+            return this.Config.allowedActionExts.includes(ext);
           });
           if (actionFiles.length === 0) {
             console.log('[SongActionManager] 没有检测到动画文件');
@@ -1880,13 +1881,11 @@ window.Jukebox = {
       const actions = [];
       const zips = [];
 
-      const audioExts = ['mp3', 'wav', 'ogg', 'flac'];
-      const actionExts = ['vmd', 'bvh', 'fbx', 'vrma'];
       for (const file of files) {
         const ext = file.name.split('.').pop().toLowerCase();
-        if (audioExts.includes(ext) || file.type.startsWith('audio/')) {
+        if (this.Config.allowedAudioExts.includes(ext) || file.type.startsWith('audio/')) {
           songs.push(file);
-        } else if (actionExts.includes(ext)) {
+        } else if (this.Config.allowedActionExts.includes(ext)) {
           actions.push(file);
         } else if (ext === 'zip') {
           zips.push(file);
@@ -1928,6 +1927,10 @@ window.Jukebox = {
     importActions: async function(files) {
       try {
         await this.uploadActions(files);
+        // 通知主UI刷新
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          window.Jukebox.loadSongs();
+        }
         console.log(`[SongActionManager] 成功导入 ${files.length} 个动作`);
       } catch (error) {
         console.error('[SongActionManager] 导入动作失败:', error);
