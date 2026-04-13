@@ -1321,6 +1321,12 @@
         "freePresetBadge": "Предустановленный",
         "workshopSourceBadge": "Эталонный голос Workshop",
         "workshopSourceTitle": "Эталонный голос Workshop",
+        "workshopSourceLoading": "Загрузка эталонного голоса из Workshop...",
+        "workshopSourceUnavailable": "У этого предмета Workshop нет доступного эталонного голоса.",
+        "workshopSourceMeta": "Образец: {{sample}} | Префикс: {{prefix}} | Язык: {{language}}",
+        "workshopSourceReady": "Эталонный голос предварительно загружен. При отправке будет использован сценарий клонирования через загрузку файла.",
+        "workshopSourceLoadFailed": "Не удалось загрузить эталонный голос из Workshop",
+        "workshopPreloaded": " (предзагружено из Workshop)",
         "freeVoice": {
             "playfulGirl": "Игривая девушка",
             "cuteGirl": "Милая девочка",

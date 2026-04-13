@@ -1322,6 +1322,12 @@
         "freePresetBadge": "Preset",
         "workshopSourceBadge": "Workshop Reference Voice",
         "workshopSourceTitle": "Workshop Reference Voice",
+        "workshopSourceLoading": "Loading workshop reference voice...",
+        "workshopSourceUnavailable": "This workshop item has no available reference voice.",
+        "workshopSourceMeta": "Sample: {{sample}} | Prefix: {{prefix}} | Language: {{language}}",
+        "workshopSourceReady": "Reference voice preloaded. Submission will use the file upload clone flow.",
+        "workshopSourceLoadFailed": "Failed to load workshop reference voice",
+        "workshopPreloaded": " (Workshop preloaded)",
         "freeVoice": {
             "playfulGirl": "Playful Girl",
             "cuteGirl": "Cute Girl",

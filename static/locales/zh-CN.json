@@ -1322,6 +1322,12 @@
         "freePresetBadge": "预设",
         "workshopSourceBadge": "创意工坊参考语音",
         "workshopSourceTitle": "创意工坊参考语音",
+        "workshopSourceLoading": "正在加载参考语音...",
+        "workshopSourceUnavailable": "该工坊物品没有可用的参考语音",
+        "workshopSourceMeta": "样本：{{sample}} ｜ 前缀：{{prefix}} ｜ 语言：{{language}}",
+        "workshopSourceReady": "参考语音已预载入，提交时将走文件上传克隆流程。",
+        "workshopSourceLoadFailed": "加载工坊参考语音失败",
+        "workshopPreloaded": "（创意工坊预载入）",
         "freeVoice": {
             "playfulGirl": "俏皮女孩",
             "cuteGirl": "可爱女孩",

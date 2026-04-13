@@ -1321,6 +1321,12 @@
         "freePresetBadge": "預設",
         "workshopSourceBadge": "創意工坊參考語音",
         "workshopSourceTitle": "創意工坊參考語音",
+        "workshopSourceLoading": "正在加載參考語音...",
+        "workshopSourceUnavailable": "此創意工坊物品沒有可用的參考語音",
+        "workshopSourceMeta": "樣本：{{sample}} ｜ 前綴：{{prefix}} ｜ 語言：{{language}}",
+        "workshopSourceReady": "參考語音已預載入，提交時將走檔案上傳克隆流程。",
+        "workshopSourceLoadFailed": "加載創意工坊參考語音失敗",
+        "workshopPreloaded": "（創意工坊預載入）",
         "freeVoice": {
             "playfulGirl": "俏皮女孩",
             "cuteGirl": "可愛女孩",

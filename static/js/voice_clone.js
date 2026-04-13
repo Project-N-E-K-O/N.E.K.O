@@ -205,7 +205,10 @@ function updateFileDisplay() {
     if (fileInput.files.length > 0) {
         fileNameDisplay.textContent = fileInput.files[0].name;
     } else if (workshopReferenceFile) {
-        fileNameDisplay.textContent = `${workshopReferenceFile.name}（创意工坊预载入）`;
+        const workshopPreloadedSuffix = (window.t && typeof window.t === 'function')
+            ? window.t('voice.workshopPreloaded')
+            : '（创意工坊预载入）';
+        fileNameDisplay.textContent = `${workshopReferenceFile.name}${workshopPreloadedSuffix}`;
     } else {
         fileNameDisplay.textContent = window.t ? window.t('voice.noFileSelected') : '未选择文件';
     }
@@ -488,7 +491,8 @@ async function initWorkshopVoiceReference() {
     const sourceTitle = document.getElementById('workshopVoiceSourceTitle');
     const sourceMeta = document.getElementById('workshopVoiceSourceMeta');
     const previewAudio = document.getElementById('workshopVoicePreview');
-    const workshopSourceTitleText = window.t ? window.t('voice.workshopSourceTitle') : 'Workshop Reference Voice';
+    const t = (key, fallback, options) => window.t ? window.t(key, options) : fallback;
+    const workshopSourceTitleText = t('voice.workshopSourceTitle', 'Workshop Reference Voice');
     if (!sourceCard || !sourceTitle || !sourceMeta || !previewAudio) {
         return;
     }
@@ -496,7 +500,7 @@ async function initWorkshopVoiceReference() {
     sourceCard.style.display = 'block';
     sourceTitle.textContent = workshopSourceTitleText;
     sourceMeta.textContent = '';
-    setWorkshopVoiceSourceStatus('正在加载参考语音...');
+    setWorkshopVoiceSourceStatus(t('voice.workshopSourceLoading', 'Loading workshop reference voice...'));
 
     try {
         const manifestResponse = await fetch(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}`);
@@ -505,7 +509,7 @@ async function initWorkshopVoiceReference() {
             throw new Error(manifestData.error || `HTTP ${manifestResponse.status}`);
         }
         if (!manifestData.available || !manifestData.manifest) {
-            throw new Error('该工坊物品没有可用的参考语音');
+            throw new Error(t('voice.workshopSourceUnavailable', 'This workshop item has no available reference voice.'));
         }
 
         const audioResponse = await fetch(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}/audio`);
@@ -525,10 +529,14 @@ async function initWorkshopVoiceReference() {
         workshopReferenceAudioUrl = URL.createObjectURL(audioBlob);
 
         sourceTitle.textContent = manifestData.title || manifest.display_name || workshopSourceTitleText;
-        sourceMeta.textContent = `样本：${manifest.display_name || manifest.reference_audio} ｜ 前缀：${manifest.prefix} ｜ 语言：${manifest.ref_language}`;
+        sourceMeta.textContent = t('voice.workshopSourceMeta', 'Sample: {{sample}} | Prefix: {{prefix}} | Language: {{language}}', {
+            sample: manifest.display_name || manifest.reference_audio,
+            prefix: manifest.prefix,
+            language: manifest.ref_language
+        });
         previewAudio.src = workshopReferenceAudioUrl;
         previewAudio.style.display = 'block';
-        setWorkshopVoiceSourceStatus('参考语音已预载入，提交时将走文件上传克隆流程。');
+        setWorkshopVoiceSourceStatus(t('voice.workshopSourceReady', 'Reference voice preloaded. Submission will use the file upload clone flow.'));
 
         switchCloneMethod('file');
         const prefixInput = document.getElementById('prefix');
@@ -544,7 +552,7 @@ async function initWorkshopVoiceReference() {
         sourceMeta.textContent = '';
         previewAudio.removeAttribute('src');
         previewAudio.style.display = 'none';
-        setWorkshopVoiceSourceStatus(error?.message || '加载工坊参考语音失败', true);
+        setWorkshopVoiceSourceStatus(error?.message || t('voice.workshopSourceLoadFailed', 'Failed to load workshop reference voice'), true);
         updateFileDisplay();
     }
 }

@@ -1321,6 +1321,12 @@
         "freePresetBadge": "プリセット",
         "workshopSourceBadge": "Workshop参照音声",
         "workshopSourceTitle": "Workshop参照音声",
+        "workshopSourceLoading": "Workshop参照音声を読み込み中...",
+        "workshopSourceUnavailable": "このWorkshopアイテムには利用可能な参照音声がありません。",
+        "workshopSourceMeta": "サンプル: {{sample}} | 接頭辞: {{prefix}} | 言語: {{language}}",
+        "workshopSourceReady": "参照音声を事前読み込みしました。送信時はファイルアップロードのクローン処理を使用します。",
+        "workshopSourceLoadFailed": "Workshop参照音声の読み込みに失敗しました",
+        "workshopPreloaded": "（Workshop事前読み込み）",
         "freeVoice": {
             "playfulGirl": "陽気な少女",
             "cuteGirl": "かわいい女の子",
