@@ -434,6 +434,9 @@ class VRMInteraction {
      */
     _updateModelFacing(delta) {
         if (!this.enableFaceCamera) return;
+        // 手动 orbit 期间不自动朝向相机，避免和用户拖拽对抗
+        // （当前 vrm-core.js:887 加载完会把 enableFaceCamera=false，这里是防御性守卫）
+        if (this.dragMode === 'orbit') return;
         if (!this.manager.currentModel || !this.manager.currentModel.scene || !this.manager.camera) return;
 
         const model = this.manager.currentModel.scene;
