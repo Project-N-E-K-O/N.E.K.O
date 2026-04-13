@@ -227,13 +227,21 @@ class VRMAnimation {
 
     async _createLookAtProxy(vrm) {
         if (!vrm.lookAt) return;
-        const existingProxy = vrm.scene.getObjectByName('lookAtQuaternionProxy');
-        if (!existingProxy) {
+        let proxy = vrm.scene.getObjectByName('lookAtQuaternionProxy');
+        if (!proxy) {
             const animationModule = await VRMAnimation._getAnimationModule();
             const { VRMLookAtQuaternionProxy } = animationModule;
-            const lookAtQuatProxy = new VRMLookAtQuaternionProxy(vrm.lookAt);
-            lookAtQuatProxy.name = 'lookAtQuaternionProxy';
-            vrm.scene.add(lookAtQuatProxy);
+            proxy = new VRMLookAtQuaternionProxy(vrm.lookAt);
+            proxy.name = 'lookAtQuaternionProxy';
+            vrm.scene.add(proxy);
+        }
+        // 永久屏蔽 proxy 的 Euler 拆分。
+        // 原实现每次 proxy.quaternion 变化都会 setFromQuaternion→Euler(YXZ) 再写 yaw/pitch，
+        // pitch ≈ ±90° 附近命中万向锁 → yaw 爆炸 → 眼球奇点甩动。
+        // 而 cursor-follow 已经通过 vrmLookAt.target 直接驱动眼球（见 vrm-manager.js），
+        // proxy 这条路径既冗余又有害，直接 shadow 成 no-op 一劳永逸。
+        if (!Object.prototype.hasOwnProperty.call(proxy, '_applyToLookAt')) {
+            proxy._applyToLookAt = function () {};
         }
     }
 
@@ -275,6 +283,41 @@ class VRMAnimation {
                     track.name = originalName;
                 }
             });
+        }
+    }
+
+    /**
+     * 把新 clip 每条 QuaternionKeyframeTrack 的关键帧整体翻到当前骨骼姿态的同半球。
+     * crossfade 期间 mixer 在"旧 clip 当前采样"和"新 clip 第 0 帧"之间做加权 slerp；
+     * 若两者 dot < 0，slerp 会取反向长路径——即使两个旋转在 3D 空间里完全相同，
+     * 视觉上就是骨骼绕反向轴甩一大圈再归位（偶发脖子折 90° 甩几圈的根因）。
+     * _normalizeQuaternionTrackSigns 只解决单 clip 内部相邻帧的符号一致性，解决不了跨 clip。
+     * 这里用 "新 clip 首帧 vs 骨骼当前 quaternion" 的 dot 决定是否整条轨道翻号；
+     * 翻号不改变旋转本身（q 与 -q 等价），只改变插值路径。
+     * 必须在 _normalizeQuaternionTrackSigns 之后调用——那一步保证 clip 内部自洽，
+     * 所以整条翻号不会破坏内部相邻帧的同半球关系。
+     */
+    _alignClipToCurrentPose(clip) {
+        const THREE = window.THREE;
+        if (!clip?.tracks || !THREE?.QuaternionKeyframeTrack) return;
+        // 优先用正在运行的 vrmaMixer 的 root，确保查到的 bone.quaternion 反映当前动画姿态
+        const root = this.vrmaMixer?.getRoot?.() || this.manager?.currentModel?.vrm?.scene;
+        if (!root || typeof root.getObjectByName !== 'function') return;
+        const stride = 4;
+        for (const track of clip.tracks) {
+            if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
+            const boneName = track.name.split('.')[0];
+            const bone = root.getObjectByName(boneName);
+            const bq = bone?.quaternion;
+            if (!bq) continue;
+            const v = track.values;
+            if (!v || v.length < stride) continue;
+            const dot = bq.x * v[0] + bq.y * v[1] + bq.z * v[2] + bq.w * v[3];
+            if (dot < 0) {
+                for (let i = 0; i < v.length; i++) {
+                    v[i] = -v[i];
+                }
+            }
         }
     }
 
@@ -520,6 +563,10 @@ class VRMAnimation {
             const clip = await this._createAndValidateAnimationClip(vrmAnimation, vrm);
             this._processTracksForVersion(clip, vrmVersion);
             this._normalizeQuaternionTrackSigns(clip);
+            // 跨 clip 同半球对齐：必须在 _normalizeQuaternionTrackSigns 之后、
+            // _createAndConfigureAction 之前。此刻 vrmaMixer 上仍是上一条 action 在跑，
+            // 骨骼 quaternion 反映当前姿态；后续 _playAction 的 crossfade slerp 才能走最短路径。
+            this._alignClipToCurrentPose(clip);
 
             // 判断是否为待机动画（仅在显式传入 isIdle: true 时才视为待机）
             this.isIdleAnimation = !!options.isIdle;
