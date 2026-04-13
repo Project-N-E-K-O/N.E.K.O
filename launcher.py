@@ -731,6 +731,8 @@ def get_port_owners(port: int) -> list[int]:
                 ["netstat", "-ano", "-p", "tcp"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=3,
                 check=False,
             )
@@ -750,6 +752,8 @@ def get_port_owners(port: int) -> list[int]:
                 ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=3,
                 check=False,
             )
@@ -1265,6 +1269,8 @@ def _ensure_playwright_browsers():
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=300,
         )
 
