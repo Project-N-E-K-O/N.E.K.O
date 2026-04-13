@@ -403,11 +403,14 @@
                 // -------- gemini_response --------
                 if (response.type === 'gemini_response') {
                     var isNewMessage = response.isNewMessage || false;
-                    var skipAssistantEffects = response.skip_assistant_effects === true;
+                    var hasExplicitSkipAssistantEffects = Object.prototype.hasOwnProperty.call(response, 'skip_assistant_effects');
                     var responseTurnId = normalizeAssistantTurnId(response.turn_id);
-                    if (responseTurnId) {
-                        setAssistantTurnSkipEffects(responseTurnId, skipAssistantEffects);
+                    if (responseTurnId && hasExplicitSkipAssistantEffects) {
+                        setAssistantTurnSkipEffects(responseTurnId, response.skip_assistant_effects === true);
                     }
+                    var skipAssistantEffects = responseTurnId
+                        ? shouldSkipAssistantEffects(responseTurnId)
+                        : (response.skip_assistant_effects === true);
                     if (isNewMessage) {
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
                         if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
@@ -444,9 +447,10 @@
                 } else if (response.type === 'response_discarded') {
                     window.invalidatePendingMusicSearch();
                     emitAssistantSpeechCancel('response_discarded');
+                    var discardedTurnId = resolveAssistantLifecycleTurnId();
                     S.assistantTurnId = null;
                     clearPendingAssistantTurnStart();
-                    clearAssistantEffectSuppression();
+                    clearAssistantEffectSuppression(discardedTurnId);
                     var attempt = response.attempt || 0;
                     var maxAttempts = response.max_attempts || 0;
                     console.log('[Discard] AI回复被丢弃 reason=' + response.reason + ' attempt=' + attempt + '/' + maxAttempts + ' retry=' + response.will_retry);

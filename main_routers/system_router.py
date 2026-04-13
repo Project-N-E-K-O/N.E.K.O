@@ -1021,45 +1021,53 @@ async def weak_idle_chat(request: Request):
                 logger.warning(f"[{lanlan_name}] 弱化版搭话发送到前端失败 turn_id={turn_id}: {ws_error}")
                 return False
 
+        async def _persist_delivered_turn():
+            current_session = getattr(mgr, 'session', None)
+            if current_session and hasattr(current_session, '_conversation_history'):
+                current_session._conversation_history.append(AIMessage(content=message_text))
+
+            memory_cached = True
+            try:
+                memory_payload = [{
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": message_text}],
+                }]
+                async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
+                    memory_response = await client.post(
+                        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
+                        json={"input_history": json.dumps(memory_payload, ensure_ascii=False)},
+                        timeout=5.0,
+                    )
+                    if not memory_response.is_success:
+                        memory_cached = False
+                        logger.warning(
+                            f"[{lanlan_name}] 弱化版搭话写入 recent memory 失败 "
+                            f"turn_id={turn_id} status={memory_response.status_code} "
+                            f"body={memory_response.text[:500]}"
+                        )
+            except Exception as memory_error:
+                memory_cached = False
+                logger.warning(f"[{lanlan_name}] 弱化版搭话写入 recent memory 异常 turn_id={turn_id}: {memory_error}")
+
+            return memory_cached
+
         lock = getattr(mgr, '_proactive_write_lock', None)
+        memory_cached = True
         if lock is not None:
             async with lock:
                 delivered = await _deliver_once()
+                if delivered:
+                    memory_cached = await _persist_delivered_turn()
         else:
             delivered = await _deliver_once()
+            if delivered:
+                memory_cached = await _persist_delivered_turn()
 
         if not delivered:
             return JSONResponse({
                 "success": False,
                 "error": "弱化版搭话未成功投递到前端",
             }, status_code=503)
-
-        current_session = getattr(mgr, 'session', None)
-        if current_session and hasattr(current_session, '_conversation_history'):
-            current_session._conversation_history.append(AIMessage(content=message_text))
-
-        memory_cached = True
-        try:
-            memory_payload = [{
-                "role": "assistant",
-                "content": [{"type": "text", "text": message_text}],
-            }]
-            async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
-                memory_response = await client.post(
-                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
-                    json={"input_history": json.dumps(memory_payload, ensure_ascii=False)},
-                    timeout=5.0,
-                )
-                if not memory_response.is_success:
-                    memory_cached = False
-                    logger.warning(
-                        f"[{lanlan_name}] 弱化版搭话写入 recent memory 失败 "
-                        f"turn_id={turn_id} status={memory_response.status_code} "
-                        f"body={memory_response.text[:500]}"
-                    )
-        except Exception as memory_error:
-            memory_cached = False
-            logger.warning(f"[{lanlan_name}] 弱化版搭话写入 recent memory 异常 turn_id={turn_id}: {memory_error}")
 
         return JSONResponse({
             "success": True,
