@@ -1231,6 +1231,8 @@ async def on_shutdown():
                 for name, mgr in session_manager.items()
                 if mgr is not None
             )
+            any_release_failed = False
+            failed_release_characters: list[str] = []
             for character_name in releasable_names:
                 try:
                     released = await asyncio.wait_for(
@@ -1241,39 +1243,51 @@ async def on_shutdown():
                         timeout=1.0,
                     )
                     if not released:
+                        any_release_failed = True
+                        failed_release_characters.append(character_name)
                         logger.warning(
                             "Steam Auto-Cloud pre-shutdown release failed for %s: returned False; uploaded snapshot may be stale/incomplete",
                             character_name,
                         )
                 except Exception as e:
+                    any_release_failed = True
+                    failed_release_characters.append(character_name)
                     logger.warning(
                         "Steam Auto-Cloud pre-shutdown release failed for %s: %s; uploaded snapshot may be stale/incomplete",
                         character_name,
                         e,
                     )
         except Exception as e:
+            any_release_failed = True
+            failed_release_characters = ["<release_phase_error>"]
             logger.warning(
                 f"Steam Auto-Cloud pre-shutdown release phase failed: {e}; uploaded snapshot may be stale/incomplete"
             )
 
-        try:
-            upload_action_kwargs = {
-                "reason": "main_server_shutdown_remote_upload",
-                "budget_seconds": 5.0,
-            }
-            if steamworks is not None:
-                upload_action_kwargs["steamworks"] = steamworks
-            remote_upload_result = await _run_cloudsave_manager_action(
-                "upload_existing_snapshot",
-                **upload_action_kwargs,
-            )
-            logger.info("Steam Auto-Cloud shutdown staged snapshot upload: %s", remote_upload_result)
-        except CloudsaveDeadlineExceeded:
+        if any_release_failed:
             logger.warning(
-                "Steam Auto-Cloud shutdown staged snapshot upload exceeded 5.0s budget; source launch may leave Steam remote snapshot unchanged"
+                "Steam Auto-Cloud shutdown staged snapshot upload skipped because pre-shutdown release failed for: %s",
+                ", ".join(sorted(set(failed_release_characters))) if failed_release_characters else "<unknown>",
             )
-        except Exception as e:
-            logger.warning(f"Steam Auto-Cloud shutdown staged snapshot upload failed: {e}")
+        else:
+            try:
+                upload_action_kwargs = {
+                    "reason": "main_server_shutdown_remote_upload",
+                    "budget_seconds": 5.0,
+                }
+                if steamworks is not None:
+                    upload_action_kwargs["steamworks"] = steamworks
+                remote_upload_result = await _run_cloudsave_manager_action(
+                    "upload_existing_snapshot",
+                    **upload_action_kwargs,
+                )
+                logger.info("Steam Auto-Cloud shutdown staged snapshot upload: %s", remote_upload_result)
+            except CloudsaveDeadlineExceeded:
+                logger.warning(
+                    "Steam Auto-Cloud shutdown staged snapshot upload exceeded 5.0s budget; source launch may leave Steam remote snapshot unchanged"
+                )
+            except Exception as e:
+                logger.warning(f"Steam Auto-Cloud shutdown staged snapshot upload failed: {e}")
 
         current_config = get_start_config()
         if current_config.get("shutdown_memory_server_on_exit"):

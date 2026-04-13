@@ -1455,6 +1455,7 @@
         "cannotConfirmCatgirlStatus": "無法確認當前貓娘狀態，刪除操作已取消",
         "confirmDeleteCatgirl": "確定要刪除貓娘\"{{name}}\"？",
         "deleteCatgirlTitle": "刪除貓娘",
+        "deleteFailed": "刪除失敗",
         "addCatgirlFieldPrompt": "請輸入新設定的名稱（鍵名）",
         "addCatgirlFieldTitle": "新增貓娘設定",
         "live2dModelError": "貓娘\"{{name}}\"的Live2D模型文件不存在或已損壞。\n\n當前模型路徑: {{path}}\n\n是否迴退到默認模型(mao_pro)？\n\n點擊\"確定\"使用默認模型，點擊\"取消\"保持當前設置。",

@@ -13,6 +13,7 @@ class TimeIndexedMemory:
     def __init__(self, recent_history_manager):
         self.engines = {}  # 存储 {lanlan_name: engine}
         self.db_paths = {} # 存储 {lanlan_name: db_path}
+        self._engine_readonly_flags = {}  # 存储 {lanlan_name: bool}
         self._writable_bootstrapped = set()  # 存储已完成可写初始化的角色
         self.recent_history_manager = recent_history_manager
         _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
@@ -52,21 +53,31 @@ class TimeIndexedMemory:
         if not readonly:
             self._assert_timeindex_writable(lanlan_name)
         if lanlan_name in self.engines and lanlan_name in self.db_paths:
-            if readonly or lanlan_name in self._writable_bootstrapped:
-                return True
-            try:
-                normalized_db_path, connection_string = self._build_sqlite_connection_string(
-                    str(self.db_paths[lanlan_name]),
-                    readonly=False,
-                )
-                self._ensure_tables_exist_with(self.engines[lanlan_name], connection_string, lanlan_name)
-                self._check_and_migrate_schema(self.engines[lanlan_name], lanlan_name)
-                self.db_paths[lanlan_name] = normalized_db_path
-                self._writable_bootstrapped.add(lanlan_name)
-                return True
-            except Exception:
-                logger.exception(f"补跑角色数据库可写初始化失败: {lanlan_name}")
-                return False
+            cached_engine = self.engines[lanlan_name]
+            cached_db_path = str(self.db_paths[lanlan_name])
+            cached_readonly = bool(self._engine_readonly_flags.get(lanlan_name, False))
+            if not readonly and cached_readonly and lanlan_name not in self._writable_bootstrapped:
+                logger.info("[TimeIndexedMemory] 角色 %s 当前为只读引擎，切换为可写引擎后再执行迁移", lanlan_name)
+                self.dispose_engine(lanlan_name)
+                if not db_path:
+                    db_path = cached_db_path
+            else:
+                if readonly or lanlan_name in self._writable_bootstrapped:
+                    return True
+                try:
+                    normalized_db_path, connection_string = self._build_sqlite_connection_string(
+                        str(self.db_paths[lanlan_name]),
+                        readonly=False,
+                    )
+                    self._ensure_tables_exist_with(cached_engine, connection_string, lanlan_name)
+                    self._check_and_migrate_schema(cached_engine, lanlan_name)
+                    self.db_paths[lanlan_name] = normalized_db_path
+                    self._writable_bootstrapped.add(lanlan_name)
+                    self._engine_readonly_flags[lanlan_name] = False
+                    return True
+                except Exception:
+                    logger.exception(f"补跑角色数据库可写初始化失败: {lanlan_name}")
+                    return False
 
         engine = None
         connection_string = None
@@ -101,6 +112,7 @@ class TimeIndexedMemory:
                 self._writable_bootstrapped.discard(lanlan_name)
             self.db_paths[lanlan_name] = normalized_db_path
             self.engines[lanlan_name] = engine
+            self._engine_readonly_flags[lanlan_name] = readonly
             return True
         except Exception:
             try:
@@ -116,6 +128,7 @@ class TimeIndexedMemory:
                 if existing_engine is engine:
                     self.engines.pop(lanlan_name, None)
                     self.db_paths.pop(lanlan_name, None)
+                    self._engine_readonly_flags.pop(lanlan_name, None)
                     self._writable_bootstrapped.discard(lanlan_name)
             except Exception as cleanup_exc:
                 logger.debug(
@@ -141,6 +154,7 @@ class TimeIndexedMemory:
         """释放指定角色的数据库引擎资源喵~"""
         db_path = self.db_paths.pop(lanlan_name, None)
         engine = self.engines.pop(lanlan_name, None)
+        self._engine_readonly_flags.pop(lanlan_name, None)
         self._writable_bootstrapped.discard(lanlan_name)
         if engine:
             engine.dispose()

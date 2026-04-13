@@ -978,6 +978,68 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_delete_catgirl_rolls_back_when_notify_reload_returns_false():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})["删除重载失败角色"] = {"昵称": "删除重载失败角色"}
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            memory_dir = Path(cm.memory_dir) / "删除重载失败角色"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            recent_path = memory_dir / "recent.json"
+            recent_path.write_text("[]", encoding="utf-8")
+
+            with (
+                patch.object(
+                    characters_router_module,
+                    "release_memory_server_character",
+                    AsyncMock(return_value=True),
+                ),
+                patch.object(
+                    characters_router_module,
+                    "notify_memory_server_reload",
+                    AsyncMock(side_effect=[False, True]),
+                ),
+            ):
+                delete_result = await characters_router_module.delete_catgirl("删除重载失败角色")
+
+            assert delete_result.status_code == 500
+            payload = json.loads(delete_result.body.decode("utf-8"))
+            assert payload["success"] is False
+            assert "notify_memory_server_reload returned False" in payload["error"]
+            assert payload["memory_server_released"] is True
+
+            reloaded_characters = cm.load_characters()
+            assert "删除重载失败角色" in reloaded_characters.get("猫娘", {})
+            assert recent_path.is_file()
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert not any(entry.get("character_name") == "删除重载失败角色" for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_delete_catgirl_maintenance_error_preserves_original_exception_type_when_rollback_reports_string():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
@@ -1041,6 +1103,45 @@ async def test_delete_catgirl_maintenance_error_preserves_original_exception_typ
             assert exc_info.value is maintenance_error
             assert isinstance(exc_info.value.__cause__, RuntimeError)
             assert "tombstones restore failed: readonly" in str(exc_info.value.__cause__)
+
+
+@pytest.mark.unit
+def test_resolve_live2d_model_binding_keeps_manual_external_url_without_catalog_rebind():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                sync_message_queue={},
+                sync_shutdown_event={},
+                session_manager={},
+                session_id={},
+                sync_process={},
+                websocket_locks={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+
+            with patch.object(
+                characters_router_module,
+                "find_models",
+                side_effect=AssertionError("manual_external should skip local model lookup"),
+            ):
+                model_ref = "https://example.com/live2d/neko/neko.model3.json"
+                model_path, source_id, source = characters_router_module._resolve_live2d_model_binding(model_ref)
+
+            assert model_path == model_ref
+            assert source == "manual_external"
+            assert source_id == ""
 
 
 @pytest.mark.unit
@@ -1294,11 +1395,18 @@ def test_timeindexed_readonly_open_still_runs_writable_bootstrap_on_first_write(
     from memory.timeindex import TimeIndexedMemory
 
     class _DummyEngine:
-        pass
+        def __init__(self, name):
+            self.name = name
+            self.dispose_calls = 0
+
+        def dispose(self):
+            self.dispose_calls += 1
 
     db_path = (tmp_path / "time_indexed.db").resolve()
     db_path.write_text("", encoding="utf-8")
-    created_engine = _DummyEngine()
+    readonly_engine = _DummyEngine("readonly")
+    writable_engine = _DummyEngine("writable")
+    created_engines = [readonly_engine, writable_engine]
     ensure_calls = []
     migrate_calls = []
 
@@ -1306,29 +1414,34 @@ def test_timeindexed_readonly_open_still_runs_writable_bootstrap_on_first_write(
         get_character_data=lambda: ({}, {}, {}, {}, {}, {}, {}, {}, {}),
     )
     monkeypatch.setattr("memory.timeindex.get_config_manager", lambda: fake_config_manager)
-    monkeypatch.setattr("memory.timeindex.create_engine", lambda _connection_string: created_engine)
+    monkeypatch.setattr("memory.timeindex.create_engine", lambda _connection_string: created_engines.pop(0))
 
     manager = TimeIndexedMemory(recent_history_manager=None)
     monkeypatch.setattr(manager, "_assert_timeindex_writable", lambda _lanlan_name: None)
     monkeypatch.setattr(
         manager,
         "_ensure_tables_exist_with",
-        lambda _engine, _connection_string, _lanlan_name: ensure_calls.append(_lanlan_name),
+        lambda _engine, _connection_string, _lanlan_name: ensure_calls.append((_lanlan_name, _engine)),
     )
     monkeypatch.setattr(
         manager,
         "_check_and_migrate_schema",
-        lambda _engine, _lanlan_name: migrate_calls.append(_lanlan_name),
+        lambda _engine, _lanlan_name: migrate_calls.append((_lanlan_name, _engine)),
     )
 
     assert manager._ensure_engine_exists("测试角色", db_path=str(db_path), readonly=True) is True
     assert ensure_calls == []
     assert migrate_calls == []
+    assert manager.engines["测试角色"] is readonly_engine
+    assert manager._engine_readonly_flags["测试角色"] is True
 
     assert manager._ensure_engine_exists("测试角色", db_path=str(db_path), readonly=False) is True
-    assert ensure_calls == ["测试角色"]
-    assert migrate_calls == ["测试角色"]
+    assert ensure_calls == [("测试角色", writable_engine)]
+    assert migrate_calls == [("测试角色", writable_engine)]
+    assert readonly_engine.dispose_calls == 1
+    assert manager.engines["测试角色"] is writable_engine
+    assert manager._engine_readonly_flags["测试角色"] is False
 
     assert manager._ensure_engine_exists("测试角色", db_path=str(db_path), readonly=False) is True
-    assert ensure_calls == ["测试角色"]
-    assert migrate_calls == ["测试角色"]
+    assert ensure_calls == [("测试角色", writable_engine)]
+    assert migrate_calls == [("测试角色", writable_engine)]

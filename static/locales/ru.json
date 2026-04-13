@@ -1455,6 +1455,7 @@
         "cannotConfirmCatgirlStatus": "Не удалось подтвердить статус текущего NEKO, удаление отменено",
         "confirmDeleteCatgirl": "Вы уверены, что хотите удалить NEKO \"{{name}}\"?",
         "deleteCatgirlTitle": "Удалить NEKO",
+        "deleteFailed": "Ошибка удаления",
         "addCatgirlFieldPrompt": "Введите имя нового поля",
         "addCatgirlFieldTitle": "Добавить поле NEKO",
         "live2dModelError": "Файл модели Live2D NEKO \"{{name}}\" не существует или повреждён.\n\nТекущий путь: {{path}}\n\nИспользовать модель по умолчанию (mao_pro)?",

@@ -37,7 +37,7 @@ def _iter_leaf_strings(payload):
 
 def _extract_i18n_keys() -> set[str]:
     keys: set[str] = set()
-    pattern = re.compile(r"(cloudsave\.[A-Za-z0-9_.]+|character\.openCloudsaveManager)")
+    pattern = re.compile(r"(cloudsave\.[A-Za-z0-9_.]+|character\.[A-Za-z0-9_.]+)")
     for path in (CLOUDSAVE_JS, CLOUDSAVE_TEMPLATE, CHARA_TEMPLATE, CHARA_MANAGER_JS):
         keys.update(pattern.findall(path.read_text(encoding="utf-8")))
     return keys

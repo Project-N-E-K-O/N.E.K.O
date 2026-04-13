@@ -1455,6 +1455,7 @@
         "cannotConfirmCatgirlStatus": "Unable to confirm current neko status, deletion cancelled",
         "confirmDeleteCatgirl": "Are you sure you want to delete neko \"{{name}}\"?",
         "deleteCatgirlTitle": "Delete NEKO",
+        "deleteFailed": "Delete failed",
         "addCatgirlFieldPrompt": "Please enter the name of the new field (key name)",
         "addCatgirlFieldTitle": "Add NEKO Field",
         "live2dModelError": "NEKO \"{{name}}\"'s Live2D model file does not exist or is corrupted.\n\nCurrent model path: {{path}}\n\nDo you want to fallback to default model (mao_pro)?\n\nClick \"OK\" to use default model, click \"Cancel\" to keep current settings.",

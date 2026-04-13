@@ -411,13 +411,13 @@ async def test_main_server_shutdown_continues_when_memory_release_returns_false(
         await main_server.on_shutdown()
 
     assert mock_release.await_count == 2
-    run_cloudsave_action.assert_awaited_once_with(
-        "upload_existing_snapshot",
-        reason="main_server_shutdown_remote_upload",
-        budget_seconds=5.0,
-    )
+    run_cloudsave_action.assert_not_awaited()
     mock_warning.assert_any_call(
         "Steam Auto-Cloud pre-shutdown release failed for %s: returned False; uploaded snapshot may be stale/incomplete",
+        "角色B",
+    )
+    mock_warning.assert_any_call(
+        "Steam Auto-Cloud shutdown staged snapshot upload skipped because pre-shutdown release failed for: %s",
         "角色B",
     )
     fake_tracker.save.assert_called_once_with()

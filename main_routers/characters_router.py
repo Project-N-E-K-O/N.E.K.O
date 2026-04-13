@@ -239,6 +239,10 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
     resolved_source = "steam_workshop" if normalized_item_id else (_derive_live2d_asset_source(normalized_model) or "local_imported")
     resolved_source_id = normalized_item_id
 
+    # 外部链接保持原始绑定，不回绑到本地目录/创意工坊目录。
+    if resolved_source == "manual_external":
+        return normalized_model or resolved_model_path, resolved_source_id, resolved_source
+
     try:
         all_models = find_models()
         matching_model = _find_live2d_model_catalog_entry(
@@ -2105,6 +2109,7 @@ async def delete_catgirl(name: str):
     with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
         memory_snapshot_records = _snapshot_existing_paths(memory_targets, Path(temp_dir))
         tombstone_snapshot = None
+        memory_server_reloaded = False
         try:
             tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
 
@@ -2122,6 +2127,8 @@ async def delete_catgirl(name: str):
             initialize_character_data = get_initialize_character_data()
             await initialize_character_data()
             memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
+            if not memory_server_reloaded:
+                raise RuntimeError("notify_memory_server_reload returned False")
         except MaintenanceModeError as exc:
             rollback_error = await _rollback_character_operation(
                 _config_manager,

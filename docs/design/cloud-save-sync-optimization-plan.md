@@ -142,14 +142,14 @@
 顺序：
 
 1. 释放后台资源。
-2. 遍历角色执行 `release_memory_server_character(...)`（失败只告警，不中断流程）。
-3. 调用 `upload_existing_snapshot`，预算 5 秒，尝试上传“已有 staged snapshot”。
+2. 遍历角色执行 `release_memory_server_character(...)`；若任一角色释放失败（返回 `False` 或抛错），会记录告警并跳过本次远端上传步骤，避免上传可能 stale/incomplete 的快照。
+3. 仅当第 2 步全部成功时，调用 `upload_existing_snapshot`，预算 5 秒，尝试上传“已有 staged snapshot”。
 4. 按 `shutdown_memory_server_on_exit` 决定是否请求关闭 memory_server。
 
 约束：
 
 - shutdown 不自动 `export_snapshot`。
-- shutdown 第 3 步是“上传已有快照”，不是“重写快照”。
+- shutdown 第 3 步是“上传已有快照”，不是“重写快照”；若第 2 步失败则该上传步骤会被跳过。
 
 ---
 
