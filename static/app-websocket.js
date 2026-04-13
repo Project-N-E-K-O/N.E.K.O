@@ -407,9 +407,22 @@
                     window._realisticGeminiBuffer = '';
                     window._pendingMusicCommand = '';
                     window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+                    // 重置并发锁，确保正在 sleep 的 processRealisticQueue 循环
+                    // 醒来后通过 version 检查退出，且不会阻塞下一轮启动
+                    window._isProcessingRealisticQueue = false;
 
+                    // 同时清理 host 未就绪期间缓存的待发消息（防止 discard 的消息在 host ready 后被重放）
                     var hadTrackedBubbles = window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0;
                     if (hadTrackedBubbles) {
+                        var _discardIds = [];
+                        window.currentTurnGeminiBubbles.forEach(function (bubble) {
+                            if (bubble && bubble.dataset && bubble.dataset.reactChatMessageId) {
+                                _discardIds.push(bubble.dataset.reactChatMessageId);
+                            }
+                        });
+                        if (_discardIds.length > 0 && typeof window._clearPendingHostMessagesByIds === 'function') {
+                            window._clearPendingHostMessagesByIds(_discardIds);
+                        }
                         var _discardHost = window.reactChatWindowHost;
                         window.currentTurnGeminiBubbles.forEach(function (bubble) {
                             // Remove paired React mirror message

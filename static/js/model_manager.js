@@ -2249,9 +2249,25 @@ document.addEventListener('DOMContentLoaded', async () => {
             // VRM 表情组仅在 VRM 子类型时显示（MMD 子类型时隐藏）
             if (vrmExpressionGroup) vrmExpressionGroup.style.display = (currentLive3dSubType !== 'mmd') ? 'flex' : 'none';
             if (live2dContainer) live2dContainer.style.display = 'none';
+            // 【修复】MMD 子类型时保持 VRM 容器隐藏，避免 VRM 场景中缓存的模型（如 sister1.0）
+            // 在切换过程中被浏览器绘制，导致短暂闪现；同时显示 MMD 容器作为前台画布。
             if (vrmContainer) {
-                vrmContainer.classList.remove('hidden');
-                vrmContainer.style.display = 'block';
+                if (currentLive3dSubType === 'mmd') {
+                    vrmContainer.classList.add('hidden');
+                    vrmContainer.style.display = 'none';
+                } else {
+                    vrmContainer.classList.remove('hidden');
+                    vrmContainer.style.display = 'block';
+                }
+            }
+            if (mmdContainer) {
+                if (currentLive3dSubType === 'mmd') {
+                    mmdContainer.classList.remove('hidden');
+                    mmdContainer.style.display = 'block';
+                } else {
+                    mmdContainer.classList.add('hidden');
+                    mmdContainer.style.display = 'none';
+                }
             }
             // 更新VRM选择器按钮文字
             if (typeof updateVRMAnimationSelectButtonText === 'function') {
@@ -2343,22 +2359,26 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (parameterEditorGroup) parameterEditorGroup.style.display = 'none';
 
             // 初始化 VRM 管理器
+            // 【修复】仅在 VRM 子类型时初始化 VRM 场景。MMD 子类型时若调用 initThreeJS，
+            // 会强制显示 vrm-container（见 vrm-manager.js initThreeJS），导致 VRM 场景中缓存的
+            // 模型（如 sister1.0）被浏览器绘制并短暂闪现。
+            if (currentLive3dSubType !== 'mmd') {
             // 1. 如果 vrmManager 不存在，创建实例
             if (!vrmManager) {
                 try {
                     /**
                      * ===== 代码质量改进：修复 VRM 初始化竞争条件 =====
-                     * 
+                     *
                      * 问题：
                      * - 如果 'vrm-modules-ready' 事件在监听器附加之前触发，会导致无限等待
                      * - 缺少超时机制可能导致用户界面卡死
-                     * 
+                     *
                      * 解决方案：
                      * 1. 首先检查模块是否已加载（window.VRMManager 或 window.vrmModuleLoaded）
                      *    如果已加载，立即 resolve，避免等待已发生的事件
                      * 2. 使用 once: true 确保事件监听器只触发一次
                      * 3. 添加 8 秒超时机制，提供更快的反馈和防止无限等待
-                     * 
+                     *
                      * 使用位置：
                      * - switchModelDisplay() 函数中的 VRM 初始化
                      * - vrmModelSelect change 事件监听器中的 VRM 初始化
@@ -2440,9 +2460,28 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.log('[模型管理] VRM 场景初始化成功');
                     showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
                 }
+                // 【修复】对称恢复：从 MMD 子类型切回 VRM 时，MMD 分支会把 canvas 隐藏并
+                // 暂停渲染循环。若场景已初始化则 initThreeJS 不会被调用，需要在此显式
+                // 恢复 canvas 可见性并重启渲染循环，避免预览空白或卡在旧帧。
+                if (vrmManager && vrmManager.renderer && vrmManager.renderer.domElement) {
+                    vrmManager.renderer.domElement.style.display = 'block';
+                }
+                if (vrmManager && typeof vrmManager.resumeRendering === 'function') {
+                    try { vrmManager.resumeRendering(); } catch (_) { /* ignore */ }
+                }
             } catch (error) {
                 console.error('VRM 场景初始化失败:', error);
                 showStatus(t('live2d.vrmInitFailed', `VRM 场景初始化失败: ${error.message}`));
+            }
+            } else {
+                // MMD 子类型：暂停 VRM 渲染循环，避免后台仍然绘制已缓存的 VRM 模型
+                // （即使容器 display:none，某些浏览器在过渡/重排时仍可能短暂显示 canvas）
+                if (vrmManager && typeof vrmManager.pauseRendering === 'function') {
+                    try { vrmManager.pauseRendering(); } catch (_) { /* ignore */ }
+                }
+                if (vrmManager && vrmManager.renderer && vrmManager.renderer.domElement) {
+                    vrmManager.renderer.domElement.style.display = 'none';
+                }
             }
 
             // 加载模型列表
@@ -3073,19 +3112,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 // 使用 URL 加载模型，而不是本地文件路径（浏览器不允许加载 file:// 路径）
-                // 传入 { autoPlay: false } 以便在此处统一播放待机动画，避免先露出 T-pose
+                // 把 wait03 交给 loadModel 内部的 autoPlay 流水线，由它保证"先起动画、再淡入"，
+                // 避免外部 await 造成 showAndFadeIn 先于动画播放、让 T-pose 露出的竞态。
+                // 用户保存的 idle 选择由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖。
                 //增加 addShadow: false
                 // 【注意】朝向会自动从preferences中加载（在vrm-core.js的loadModel中处理）
-                await vrmManager.loadModel(modelUrl, { autoPlay: false, addShadow: false });
-                // 加载后立即播内置 wait03 防 T-pose; 用户保存的 idle 选择
-                // 由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖
-                if (vrmManager.animation) {
-                    try {
-                        await vrmManager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', { loop: true, immediate: true, isIdle: true });
-                    } catch (e) {
-                        console.warn('[VRM] 播放 wait03 待机动画失败:', e);
-                    }
-                }
+                await vrmManager.loadModel(modelUrl, {
+                    addShadow: false,
+                    idleAnimation: '/static/vrm/animation/wait03.vrma'
+                });
                 // 加载新模型后，重置播放状态
                 isVrmAnimationPlaying = false;
                 updateVRMAnimationPlayButtonIcon();
@@ -3988,11 +4023,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 if (!window.mmdManager) {
-                    showStatus('MMD管理器初始化失败', 3000);
+                    showStatus(t('mmd.managerInitFailed', 'MMD管理器初始化失败'), 3000);
                     return;
                 }
 
-                showStatus('正在加载MMD模型...', 0);
+                showStatus(t('mmd.modelLoading', '正在加载MMD模型...'), 0);
                 if (mmdContainer) mmdContainer.classList.remove('hidden');
 
                 // 在加载新模型前，重置动画播放状态
@@ -4023,7 +4058,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 } catch (e) { /* ignore */ }
                 await window.mmdManager.loadModel(modelPath);
-                showStatus('MMD模型加载成功', 2000);
+                showStatus(t('mmd.modelLoaded', 'MMD模型加载成功'), 2000);
 
                 // 加载后立即播内置 wait03 防 T-pose; 用户保存的 idle 选择
                 // 由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖
@@ -5167,6 +5202,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 应用打光值到UI和场景
     function applyLightingValues(lighting) {
+        // 【修复】非 VRM 子类型不应用 VRM 打光配置：
+        // MMD 子类型时 switchModelDisplay 会跳过 VRM 初始化（避免 sister1.0 闪现），
+        // 此时 vrmManager.ambientLight 等永远不存在，若继续执行会陷入每 100ms 的
+        // setTimeout 重试循环，造成后台定时器长期挂起。
+        if (currentModelType !== 'live3d' || currentLive3dSubType === 'mmd') {
+            return;
+        }
         const ui = {
             ambientLightSlider: document.getElementById('ambient-light-slider'),
             mainLightSlider: document.getElementById('main-light-slider'),
@@ -5300,8 +5342,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // 加载待机动作选项并恢复保存的选择（多选）
+            // 优先读取 snake_case `idle_animation`，这是主保存路径（见 line 1822）实际写入的字段；
+            // 再兼容历史的 `idleAnimations` / `idleAnimation`。与 restoreVrmIdleAnimation 保持一致，
+            // 否则我的 loadModel bootstrap (wait03) 会在此后无法被用户保存的 idle 列表覆盖。
             await loadIdleAnimationOptions();
-            let vrmIdleAnims = charData?.idleAnimations ?? charData?.idleAnimation;
+            let vrmIdleAnims = charData?.idle_animation ?? charData?.idleAnimations ?? charData?.idleAnimation;
             if (vrmIdleAnims != null) {
                 // 向前兼容: string -> array
                 if (typeof vrmIdleAnims === 'string') vrmIdleAnims = vrmIdleAnims ? [vrmIdleAnims] : [];

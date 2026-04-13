@@ -66,16 +66,14 @@
         .tabs { 
             display: flex; background: #f1f5f9; 
             border-bottom: 1px solid #e2e8f0; 
-            overflow-x: auto; 
-            scrollbar-width: none; 
+            flex-wrap: wrap;
             align-items: stretch;
         }
-        .tabs::-webkit-scrollbar { display: none; }
         .tab-btn { 
-            flex: 0 0 auto; min-width: 120px; padding: 16px 18px; 
+            flex: 1 1 auto; min-width: 0; padding: 16px 18px; 
             border: none; background: none; 
             font-size: 14px; font-weight: 600; color: #64748b; 
-            cursor: pointer; transition: all 0.2s; white-space: nowrap;
+            cursor: pointer; transition: all 0.2s;
             text-align: center;
         }
         .tab-btn:hover { background: #e2e8f0; color: #334155; }

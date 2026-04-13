@@ -23,6 +23,7 @@
     var minimized = false;
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
+    var _sortKeySeq = 0; // monotonically increasing sortKey counter
 
     var state = {
         viewProps: null,
@@ -765,13 +766,15 @@
 
     function handleAvatarGeneratorClick() {
         try {
-            // Prefer legacy button if it exists (index.html); absent in chat.html
-            var legacyBtn = document.getElementById('avatarPreviewButton');
-            if (legacyBtn) {
-                legacyBtn.click();
+            // 统一走独立头像预览弹窗；弹窗模块自行处理缓存与 IPC 回退。
+            if (window.appChatAvatar && typeof window.appChatAvatar.showPopup === 'function') {
+                var anchor = document.getElementById('avatarPreviewHeaderButton')
+                    || document.getElementById('avatarPreviewButton')
+                    || null;
+                window.appChatAvatar.showPopup(anchor);
                 return;
             }
-            // React-first mode or standalone chat window — capture directly
+            // 极端兜底：弹窗模块加载失败时仍保持原有直采逻辑。
             captureAvatarDirect();
         } finally {
             dispatchHostEvent('avatar-generator-click', {});
@@ -818,12 +821,22 @@
     }
 
     function setMessages(messages) {
+        // Compute fallback start past any explicit sortKey in incoming batch
+        var maxIncomingSortKey = Array.isArray(messages)
+            ? messages.reduce(function (max, message) {
+                var key = message && typeof message.sortKey === 'number' && Number.isFinite(message.sortKey)
+                    ? message.sortKey : null;
+                return (key !== null && key > max) ? key : max;
+            }, -1)
+            : -1;
+        var nextSortKey = Math.max(_sortKeySeq, maxIncomingSortKey + 1);
         var normalized = Array.isArray(messages)
-            ? messages.map(function (message, index) {
-                return normalizeMessage(message, index);
+            ? messages.map(function (message) {
+                return normalizeMessage(message, nextSortKey++);
             }).filter(Boolean)
             : [];
         state.messages = sortMessages(normalized);
+        _sortKeySeq = nextSortKey;
         if (state.messages.length > MAX_MESSAGES) {
             state.messages = state.messages.slice(-MAX_MESSAGES);
         }
@@ -849,7 +862,7 @@
     var MAX_MESSAGES = 50;
 
     function appendMessage(message) {
-        var normalized = normalizeMessage(message, state.messages.length);
+        var normalized = normalizeMessage(message, _sortKeySeq++);
         if (!normalized) return null;
 
         state.messages = sortMessages(state.messages.concat([normalized]));
@@ -888,6 +901,7 @@
 
     function clearMessages() {
         state.messages = [];
+        _sortKeySeq = 0;
         renderWindow();
     }
 
@@ -1519,14 +1533,12 @@
                 toggleMinimized();
             });
         }
+        // Note: the avatarPreviewHeaderButton click is bound by app-chat-avatar.js
+        // (it owns the standalone avatar preview popup and toggling behavior).
+        // We only fire the host event here for external listeners/analytics.
         if (avatarHeaderButton) {
-            avatarHeaderButton.addEventListener('click', function (event) {
-                event.stopPropagation();
-                // Notify external listeners/analytics/extensions first
+            avatarHeaderButton.addEventListener('click', function () {
                 dispatchHostEvent('avatar-generator-click', {});
-                // Always use direct capture — the legacy avatarPreviewButton opens
-                // the old-chat preview card which is hidden behind the React overlay.
-                captureAvatarDirect();
             });
         }
         if (backdrop) {

@@ -66,6 +66,13 @@ const AvatarButtonMixin = {
                 });
             }
 
+            // 清理旧的侧边面板（防止画质切换等场景导致重复 UI）
+            document.querySelectorAll(`[data-neko-sidepanel-owner^="${options.popupPrefix}-popup-"]`).forEach(panel => {
+                if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+                if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                panel.remove();
+            });
+
             // 创建按钮容器
             const buttonsContainer = document.createElement('div');
             buttonsContainer.id = options.containerElementId;
@@ -778,6 +785,13 @@ const AvatarButtonMixin = {
             // 移除 DOM 元素
             document.querySelectorAll(`#${opts.containerElementId}, #${opts.lockIconId}, #${opts.returnContainerId}`)
                 .forEach(el => el.remove());
+
+            // 移除侧边面板
+            document.querySelectorAll(`[data-neko-sidepanel-owner^="${opts.popupPrefix}-popup-"]`).forEach(panel => {
+                if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+                if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                panel.remove();
+            });
 
             // 移除事件监听
             if (this._uiWindowHandlers) {

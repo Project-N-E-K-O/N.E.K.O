@@ -438,6 +438,27 @@
         </div>
     </div>
 
+    <!-- 独立头像预览弹窗（chat.html / index.html 共用）-->
+    <div id="chat-avatar-preview-popup" class="chat-avatar-preview-popup" role="dialog" aria-modal="false" aria-labelledby="chat-avatar-preview-popup-title" hidden>
+        <div class="chat-avatar-preview-card-header">
+            <div class="chat-avatar-preview-card-title-group">
+                <div id="chat-avatar-preview-popup-title" class="chat-avatar-preview-card-title" data-i18n="chat.avatarPreviewCardTitle">当前头像</div>
+                <div id="chat-avatar-preview-status" class="chat-avatar-preview-card-status" data-i18n="chat.avatarPreviewCardStatus">点击上方按钮生成当前模型头像</div>
+            </div>
+            <button id="chatAvatarPreviewCloseButton" class="chat-avatar-preview-card-close" type="button" data-i18n-title="chat.avatarPreviewClose" data-i18n-aria="chat.avatarPreviewClose" aria-label="关闭头像预览">×</button>
+        </div>
+        <div class="chat-avatar-preview-card-body">
+            <div id="chat-avatar-preview-image-shell" class="chat-avatar-preview-image-shell is-empty">
+                <img id="chat-avatar-preview-image" class="chat-avatar-preview-image" data-i18n-alt="chat.avatarPreviewImageAlt" alt="当前头像预览" hidden>
+                <div id="chat-avatar-preview-placeholder" class="chat-avatar-preview-placeholder" data-i18n="chat.avatarPreviewPlaceholder">AVATAR</div>
+            </div>
+            <div class="chat-avatar-preview-card-meta">
+                <div id="chat-avatar-preview-note" class="chat-avatar-preview-card-note" data-i18n="chat.avatarPreviewCardNote">将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。</div>
+                <button id="chatAvatarPreviewRefreshButton" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chat.avatarPreviewRefresh">刷新头像</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 跳过：Live2D/VRM/Three.js、common_ui.js(DOM拖拽不兼容)、touch-config、tutorial -->
     <script src="/static/libs/ogg-opus-decoder.min.js"></script>
     <script src="/static/music_ui.js"></script>
