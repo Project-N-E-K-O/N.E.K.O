@@ -1010,6 +1010,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 待机动作切换期间临时禁用物理，防止头发/裙摆因瞬时姿态跳变而飞甩
     const _idlePhysicsRestoreTimers = { vrm: null, mmd: null };
     const _idlePhysicsSavedState = { vrm: null, mmd: null };
+    // VRM crossfade 结束后收尾旧 action 的定时器（防止 fadeOut 后 action 残留占用 binding）
+    const _idleCrossfadeCleanupTimers = { vrm: null };
+    // VRM 待机动作 crossfade 时长（秒）。代替 immediate: true，让 mixer 对每根骨做加权 slerp，
+    // 稀释单帧姿态跳变，避开 LookAtQuaternionProxy Euler 拆分在奇点附近的脖子甩动。
+    const IDLE_VRM_FADE_SEC = 0.15;
 
     // 更新模型类型按钮文字的函数（使用统一管理器）
     function updateModelTypeButtonText() {
@@ -4699,6 +4704,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             else if (type === 'mmd' && window.mmdManager) window.mmdManager.enablePhysics = true;
         }
         _idlePhysicsSavedState[type] = null;
+        // 取消挂起的 crossfade 收尾定时器（若有）
+        if (type === 'vrm' && _idleCrossfadeCleanupTimers.vrm) {
+            clearTimeout(_idleCrossfadeCleanupTimers.vrm);
+            _idleCrossfadeCleanupTimers.vrm = null;
+        }
         _idleRotationLast[type] = null;
     }
 
@@ -4806,22 +4816,46 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             if (type === 'vrm') {
                 if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
-                    if (vrmManager.vrmaAction) {
-                        vrmManager.stopVRMAAnimation();
-                    }
-                    await vrmManager.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
+                    // 记录切换前的 action：crossfade 结束后需要把它 stop() 掉，否则 fadeOut
+                    // 完成后它会以权重 0 继续持有 binding，长期下来会堆积无效 action
+                    const previousAction = vrmManager.animation.currentAction || null;
+                    // 不再先 stopVRMAAnimation（它会 0.5s fadeOut，过长且是为手动动画设计的），
+                    // 改由 _playAction 的 crossfade 分支直接 fadeOut(old) + fadeIn(new)
+                    await vrmManager.playVRMAAnimation(url, {
+                        loop: true,
+                        immediate: false,
+                        fadeDuration: IDLE_VRM_FADE_SEC,
+                        isIdle: true,
+                    });
                     played = true;
                     console.log('[VRM IdleAnimation] 待机动作已切换:', url.split('/').pop());
 
-                    // 注册 loop 事件监听：动画一轮播完时自动切换
+                    // 注册 loop 事件监听：动画一轮播完时自动切换。
+                    // 仅响应当前 action 的 loop，忽略 fadeOut 中的旧 action（权重 0 也会触发 loop）。
                     const mixer = vrmManager.animation?.vrmaMixer;
                     if (mixer) {
-                        const handler = () => {
+                        const handler = (event) => {
+                            const cur = vrmManager.animation?.currentAction;
+                            if (cur && event.action !== cur) return;
                             console.debug('[VRM IdleAnimation] 动画循环完成，切换下一个');
                             _triggerIdleSwitch('vrm');
                         };
                         mixer.addEventListener('loop', handler);
                         _idleLoopCleanup['vrm'] = () => mixer.removeEventListener('loop', handler);
+                    }
+
+                    // crossfade 完成后把旧 action 彻底 stop()，避免 fadeOut 残留累积
+                    if (previousAction && previousAction !== vrmManager.animation.currentAction) {
+                        if (_idleCrossfadeCleanupTimers.vrm) clearTimeout(_idleCrossfadeCleanupTimers.vrm);
+                        _idleCrossfadeCleanupTimers.vrm = setTimeout(() => {
+                            _idleCrossfadeCleanupTimers.vrm = null;
+                            try {
+                                // 再确认它确实不是"当前" action，防止竞态把新 action 误停
+                                if (previousAction !== vrmManager.animation?.currentAction) {
+                                    previousAction.stop();
+                                }
+                            } catch (e) { /* noop */ }
+                        }, Math.ceil(IDLE_VRM_FADE_SEC * 1000) + 50);
                     }
 
                     // 动画加载成功后再启动回退定时器（从实际播放开始计时）

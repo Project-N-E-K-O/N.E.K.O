@@ -278,6 +278,36 @@ class VRMAnimation {
         }
     }
 
+    /**
+     * 把 clip 里每条 QuaternionKeyframeTrack 的相邻关键帧翻到同一半球（dot >= 0）。
+     * slerpFlat 成对处理能自洽，但链式经过 3+ 关键帧或配合 LookAt 的 Euler 拆分时，
+     * 偶尔会被反向四元数骗出长路径 / 奇点甩动（表现为脖子折 90 度甩几圈后自愈）。
+     * 同一旋转的 q 和 -q 在表现上等价，翻符号是无副作用的防御。
+     */
+    _normalizeQuaternionTrackSigns(clip) {
+        const THREE = window.THREE;
+        if (!clip?.tracks || !THREE?.QuaternionKeyframeTrack) return;
+        const stride = 4;
+        for (const track of clip.tracks) {
+            if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
+            const v = track.values;
+            if (!v || v.length < stride * 2) continue;
+            for (let i = stride; i < v.length; i += stride) {
+                const dot =
+                    v[i - 4] * v[i] +
+                    v[i - 3] * v[i + 1] +
+                    v[i - 2] * v[i + 2] +
+                    v[i - 1] * v[i + 3];
+                if (dot < 0) {
+                    v[i]     = -v[i];
+                    v[i + 1] = -v[i + 1];
+                    v[i + 2] = -v[i + 2];
+                    v[i + 3] = -v[i + 3];
+                }
+            }
+        }
+    }
+
     _findBestMixerRoot(vrm, clip) {
         let mixerRoot = vrm.scene;
         const sampleTracks = clip.tracks.slice(0, 10);
@@ -489,6 +519,7 @@ class VRMAnimation {
             await this._createLookAtProxy(vrm);
             const clip = await this._createAndValidateAnimationClip(vrmAnimation, vrm);
             this._processTracksForVersion(clip, vrmVersion);
+            this._normalizeQuaternionTrackSigns(clip);
 
             // 判断是否为待机动画（仅在显式传入 isIdle: true 时才视为待机）
             this.isIdleAnimation = !!options.isIdle;
