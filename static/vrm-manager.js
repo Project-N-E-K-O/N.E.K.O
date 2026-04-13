@@ -895,11 +895,31 @@ class VRMManager {
 
         const modelUrl = model.url || '';
         if (modelUrl && this.core && typeof this.core.saveUserPreferences === 'function') {
+            // 构造重置后的相机位置，覆盖后端保存的旧值，避免下次加载时恢复到 orbit 后的坏相机
+            let resetCameraPosition = null;
+            if (this.camera) {
+                const target = this._cameraTarget || new THREE.Vector3(0, 0, 0);
+                resetCameraPosition = {
+                    x: this.camera.position.x,
+                    y: this.camera.position.y,
+                    z: this.camera.position.z,
+                    qx: this.camera.quaternion.x,
+                    qy: this.camera.quaternion.y,
+                    qz: this.camera.quaternion.z,
+                    qw: this.camera.quaternion.w,
+                    targetX: target.x,
+                    targetY: target.y,
+                    targetZ: target.z
+                };
+            }
             this.core.saveUserPreferences(
                 modelUrl,
                 { x: 0, y: 0, z: 0 },
                 { x: targetScale, y: targetScale, z: targetScale },
-                { x: scene.rotation.x, y: scene.rotation.y, z: scene.rotation.z }
+                { x: scene.rotation.x, y: scene.rotation.y, z: scene.rotation.z },
+                null,  // display
+                null,  // viewport
+                resetCameraPosition
             ).catch(err => console.warn('[VRM Manager] 保存重置偏好失败:', err));
         }
 
