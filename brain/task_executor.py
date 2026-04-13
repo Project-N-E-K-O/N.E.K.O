@@ -547,10 +547,12 @@ class DirectTaskExecutor:
     @staticmethod
     def _extract_search_terms(text: str) -> List[str]:
         lowered = str(text or "").lower()
-        terms = re.findall(r"[a-z0-9][a-z0-9._/-]{2,}|[\u4e00-\u9fff]{2,}", lowered)
+        terms = re.findall(r"\w{2,}", lowered, flags=re.UNICODE)
         seen: set[str] = set()
         result: List[str] = []
         for term in terms:
+            if term.isdigit():
+                continue
             if term in seen:
                 continue
             seen.add(term)
@@ -611,21 +613,19 @@ class DirectTaskExecutor:
             return ""
         lines = ["[Historical correction lessons]"]
         for event in events[:3]:
-            user_query = self._sanitize_correction_text(event.get("user_query", ""))
             normalized_intent = self._sanitize_correction_text(event.get("normalized_intent", ""))
             chosen_tool = self._sanitize_correction_text(event.get("chosen_tool", ""))
             correct_tool = self._sanitize_correction_text(event.get("correct_tool", ""))
-            correct_instruction = self._sanitize_correction_text(event.get("correct_instruction", ""))
-            if normalized_intent:
-                lines.append(f"- Similar intent: {normalized_intent}")
-            elif user_query:
-                lines.append(f"- Similar request: {user_query}")
+            if not any((normalized_intent, chosen_tool, correct_tool)):
+                continue
+            lines.append("- Routing lesson:")
+            lines.append(f"  Intent: {normalized_intent or '[unspecified]'}")
             if chosen_tool:
                 lines.append(f"  Wrong choice: {chosen_tool}")
             if correct_tool:
                 lines.append(f"  Correct tool: {correct_tool}")
-            if correct_instruction:
-                lines.append(f"  User correction: {correct_instruction}")
+        if len(lines) == 1:
+            return ""
         return "\n".join(lines)
 
     def _append_correction_event(self, event: Dict[str, Any]) -> Dict[str, Any]:

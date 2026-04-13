@@ -25,10 +25,10 @@
 
 当前项目已经有“统一渠道评估”能力，而不是分别硬编码判断：
 
-- [config/prompts_agent.py](../../config/prompts_agent.py#L13) 定义了 `UNIFIED_CHANNEL_SYSTEM_PROMPT`
-- [config/prompts_agent.py](../../config/prompts_agent.py#L161) 定义了 `CHANNEL_DESC_BROWSER_USE`
-- [config/prompts_agent.py](../../config/prompts_agent.py#L181) 定义了 `CHANNEL_DESC_COMPUTER_USE`
-- [brain/task_executor.py](../../brain/task_executor.py#L431) 的 `_assess_unified_channels()` 会把各渠道描述拼进 system prompt，让 LLM 输出：
+- [config/prompts_agent.py](../../config/prompts_agent.py) 定义了 `UNIFIED_CHANNEL_SYSTEM_PROMPT`
+- [config/prompts_agent.py](../../config/prompts_agent.py) 定义了 `CHANNEL_DESC_BROWSER_USE`
+- [config/prompts_agent.py](../../config/prompts_agent.py) 定义了 `CHANNEL_DESC_COMPUTER_USE`
+- [brain/task_executor.py](../../brain/task_executor.py) 的 `_assess_unified_channels()` 会把各渠道描述拼进 system prompt，让 LLM 输出：
   - `can_execute`
   - `task_description`
   - `reason`
@@ -136,7 +136,7 @@
 
 文件：
 
-- [config/prompts_agent.py](../../config/prompts_agent.py#L13)
+- [config/prompts_agent.py](../../config/prompts_agent.py)
 
 建议做法：
 
@@ -150,8 +150,8 @@
 
 同时可以微调这两个渠道描述：
 
-- [config/prompts_agent.py](../../config/prompts_agent.py#L161)
-- [config/prompts_agent.py](../../config/prompts_agent.py#L181)
+- [config/prompts_agent.py](../../config/prompts_agent.py)
+- [config/prompts_agent.py](../../config/prompts_agent.py)
 
 改动原则：
 
@@ -162,7 +162,7 @@
 
 文件：
 
-- [brain/task_executor.py](../../brain/task_executor.py#L431)
+- [brain/task_executor.py](../../brain/task_executor.py)
 
 这是整个方案的核心，也是最适合加记忆的地方，因为：
 
@@ -207,7 +207,7 @@
 
 注入位置建议放在这里之前：
 
-- [brain/task_executor.py](../../brain/task_executor.py#L467)
+- [brain/task_executor.py](../../brain/task_executor.py)
 
 也就是在 `system_prompt = _loc(...).format(...)` 生成后，再追加：
 
@@ -402,8 +402,8 @@ def _sanitize_correction_text(text: str) -> str:
 ### 6.1 正常路径
 
 1. 用户发起请求。
-2. [brain/task_executor.py](../../brain/task_executor.py#L962) `analyze_and_execute()` 开始做渠道评估。
-3. 在 [brain/task_executor.py](../../brain/task_executor.py#L467) 构造统一评估 prompt 前，先检索 `correction_memory.json`。
+2. [brain/task_executor.py](../../brain/task_executor.py) `analyze_and_execute()` 开始做渠道评估。
+3. 在 [brain/task_executor.py](../../brain/task_executor.py) 构造统一评估 prompt 前，先检索 `correction_memory.json`。
 4. 如果命中相似纠正记录，则将历史教训追加到 `system_prompt`。
 5. LLM 继续输出统一 JSON 决策。
 6. 系统照常分发到：
