@@ -88,8 +88,13 @@ async function getUserLanguage() {
 let currentTurnOriginalText = '';
 // 终态翻译请求的取消器
 let currentTranslateAbortController = null;
-// 标记最近一次翻译请求所对应的原文，用于丢弃过期响应
-let pendingTranslationKey = null;
+// 单调递增的 turn id / request id，用于丢弃来自旧 turn 或旧请求的响应。
+// 不要用原文做去重键：同一字幕在相邻 turn 有可能字面量相同。
+let currentTurnId = 0;
+let currentTranslationRequestId = 0;
+// 当前 turn 是否已收到 turn-end（即 translateAndShowSubtitle 被调用过）。
+// 用于 toggle 开启时判断要不要对当前缓存发起翻译；流式途中不会标记 true。
+let isCurrentTurnFinalized = false;
 
 /**
  * 内部：把字幕显示元素切换到“可见”状态（如果开关开启）
@@ -147,8 +152,9 @@ function updateSubtitleStreamingText(text) {
  * 由 'neko-assistant-turn-start' 事件触发。
  */
 function onAssistantTurnStart() {
+    currentTurnId += 1;
     currentTurnOriginalText = '';
-    pendingTranslationKey = null;
+    isCurrentTurnFinalized = false;
     if (currentTranslateAbortController) {
         currentTranslateAbortController.abort();
         currentTranslateAbortController = null;
@@ -171,8 +177,20 @@ async function translateAndShowSubtitle(text) {
         return;
     }
 
+    // 快照本次请求归属的 turn 与 request 序号。响应回来时必须跟当前值匹配，
+    // 否则说明已被新 turn / 新请求抢占（哪怕原文字面量相同也要丢弃）。
+    const requestTurnId = currentTurnId;
+    const requestId = ++currentTranslationRequestId;
+    // 收到 turn-end 才算当前 turn 已结算
+    isCurrentTurnFinalized = true;
+
     if (userLanguage === null) {
         await getUserLanguage();
+    }
+
+    // 请求之前再校验一次 — getUserLanguage 本身是 await，可能已经跨 turn
+    if (requestTurnId !== currentTurnId || requestId !== currentTranslationRequestId) {
+        return;
     }
 
     // 始终把原文当作字幕基准
@@ -185,8 +203,6 @@ async function translateAndShowSubtitle(text) {
     if (!subtitleEnabled) {
         return; // 开关关闭，不发翻译请求
     }
-
-    pendingTranslationKey = text;
 
     if (currentTranslateAbortController) {
         currentTranslateAbortController.abort();
@@ -213,11 +229,10 @@ async function translateAndShowSubtitle(text) {
 
         const result = await response.json();
 
-        // 已经被新一轮翻译/turn 抢占，丢弃过期结果
-        if (pendingTranslationKey !== text) {
+        // 已经被新 turn / 新请求抢占，丢弃过期结果（用单调序号判断，不用原文）
+        if (requestTurnId !== currentTurnId || requestId !== currentTranslationRequestId) {
             return;
         }
-        pendingTranslationKey = null;
 
         if (!subtitleEnabled) {
             return; // 翻译期间用户关掉了开关
@@ -255,6 +270,20 @@ document.addEventListener('DOMContentLoaded', async function() {
     initSubtitleDrag();
     await getUserLanguage();
     window.addEventListener('neko-assistant-turn-start', onAssistantTurnStart);
+
+    // 通用引导管理器：index.html / chat.html 都加载 subtitle.js，
+    // 但自身模板没有 init 调用，历史上靠这里兜底（其他子页面模板各自 init）。
+    // 幂等保护防止跨页面重复 init。
+    if (!window.__universalTutorialManagerInitialized &&
+        typeof initUniversalTutorialManager === 'function') {
+        try {
+            initUniversalTutorialManager();
+            window.__universalTutorialManagerInitialized = true;
+            console.log('[App] 通用引导管理器已初始化');
+        } catch (error) {
+            console.error('[App] 通用引导管理器初始化失败:', error);
+        }
+    }
 });
 
 // 字幕拖拽功能
@@ -430,15 +459,17 @@ window.subtitleBridge = {
                 currentTranslateAbortController.abort();
                 currentTranslateAbortController = null;
             }
-            pendingTranslationKey = null;
             hideSubtitle();
         } else {
             // 立即把当前 turn 已有原文补显
             if (currentTurnOriginalText && currentTurnOriginalText.trim()) {
                 ensureSubtitleVisibleIfEnabled();
                 writeSubtitleText(currentTurnOriginalText);
-                // 如果当前 turn 已经结束（没有新流入），尝试触发一次翻译替换
-                translateAndShowSubtitle(currentTurnOriginalText);
+                // 仅当本 turn 已经收到 turn-end 时，才对缓存原文补发一次翻译；
+                // 流式途中打开开关时，让字幕跟随流式文本更新，避免"半句翻译 → 被后续 chunk 覆盖"的闪烁。
+                if (isCurrentTurnFinalized) {
+                    translateAndShowSubtitle(currentTurnOriginalText);
+                }
             } else {
                 ensureSubtitleVisibleIfEnabled();
                 writeSubtitleText('');
