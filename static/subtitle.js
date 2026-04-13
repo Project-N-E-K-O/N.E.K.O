@@ -101,13 +101,12 @@ let isCurrentTurnFinalized = false;
  */
 function ensureSubtitleVisibleIfEnabled() {
     const display = document.getElementById('subtitle-display');
-    if (!display) return null;
+    if (!display) return;
     if (subtitleEnabled) {
         display.classList.remove('hidden');
         display.classList.add('show');
         display.style.opacity = '1';
     }
-    return display;
 }
 
 /**
