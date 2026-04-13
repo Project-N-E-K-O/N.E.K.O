@@ -79,6 +79,10 @@
         S.assistantTurnAwaitingBubble = false;
     }
 
+    function clearAssistantEffectSuppression() {
+        S.assistantTurnSkipEffects = false;
+    }
+
     function resolveAssistantLifecycleTurnId(turnId) {
         return normalizeAssistantTurnId(
             turnId ||
@@ -157,6 +161,7 @@
         logAssistantLifecycle('clearAssistantLifecycleOnDisconnect', {
             source: source || 'socket_close'
         });
+        clearAssistantEffectSuppression();
     }
 
     // ========================  Convenience helpers  ========================
@@ -366,6 +371,7 @@
                 // -------- gemini_response --------
                 if (response.type === 'gemini_response') {
                     var isNewMessage = response.isNewMessage || false;
+                    var skipAssistantEffects = response.skip_assistant_effects === true;
                     if (isNewMessage) {
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
                         if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
@@ -375,14 +381,21 @@
                         S.lastVoiceUserMessage = null;
                         S.lastVoiceUserMessageTime = 0;
                         S.assistantTurnId = null;
-                        S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
-                        S.assistantTurnAwaitingBubble = true;
+                        S.assistantTurnSkipEffects = skipAssistantEffects;
+                        if (skipAssistantEffects) {
+                            clearPendingAssistantTurnStart();
+                        } else {
+                            S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
+                            S.assistantTurnAwaitingBubble = true;
+                        }
+                    } else if (skipAssistantEffects) {
+                        S.assistantTurnSkipEffects = true;
                     }
                     var createdVisibleBubble = false;
                     if (typeof window.appendMessage === 'function') {
                         createdVisibleBubble = window.appendMessage(response.text, 'gemini', isNewMessage) === true;
                     }
-                    if (!S.assistantTurnId && S.assistantTurnAwaitingBubble && createdVisibleBubble) {
+                    if (!S.assistantTurnSkipEffects && !S.assistantTurnId && S.assistantTurnAwaitingBubble && createdVisibleBubble) {
                         ensureAssistantTurnStarted('gemini_response_visible_bubble', response.turn_id);
                     }
                     if (response.turn_id) {
@@ -399,6 +412,7 @@
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
                     clearPendingAssistantTurnStart();
+                    clearAssistantEffectSuppression();
                     var attempt = response.attempt || 0;
                     var maxAttempts = response.max_attempts || 0;
                     console.log('[Discard] AI回复被丢弃 reason=' + response.reason + ' attempt=' + attempt + '/' + maxAttempts + ' retry=' + response.will_retry);
@@ -512,6 +526,9 @@
                     if (S._voiceSessionInitialTimer) {
                         clearTimeout(S._voiceSessionInitialTimer);
                         S._voiceSessionInitialTimer = null;
+                    }
+                    if (typeof window.recordWeakIdleInteraction === 'function') {
+                        window.recordWeakIdleInteraction('user_transcript', { userInitiated: true });
                     }
                     var now = Date.now();
                     var shouldMerge = S.isRecording &&
@@ -1022,6 +1039,7 @@
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log(window.t('console.turnEndReceived'));
                     logAssistantLifecycle('ws:turn_end:received');
+                    var skipAssistantEffectsOnTurnEnd = S.assistantTurnSkipEffects === true;
                     // Flush remaining buffer
                     try {
                         if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
@@ -1049,17 +1067,21 @@
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
                     }
-                    var assistantTurnId = resolveAssistantLifecycleTurnId();
-                    if (assistantTurnId) {
-                        logAssistantLifecycle('ws:turn_end:emit', {
-                            turnId: assistantTurnId
-                        });
-                        emitAssistantLifecycleEvent('neko-assistant-turn-end', {
-                            turnId: assistantTurnId,
-                            source: 'turn_end'
-                        });
+                    var assistantTurnId = skipAssistantEffectsOnTurnEnd ? null : resolveAssistantLifecycleTurnId();
+                    if (!skipAssistantEffectsOnTurnEnd) {
+                        if (assistantTurnId) {
+                            logAssistantLifecycle('ws:turn_end:emit', {
+                                turnId: assistantTurnId
+                            });
+                            emitAssistantLifecycleEvent('neko-assistant-turn-end', {
+                                turnId: assistantTurnId,
+                                source: 'turn_end'
+                            });
+                        } else {
+                            logAssistantLifecycle('ws:turn_end:clear_pending');
+                        }
                     } else {
-                        logAssistantLifecycle('ws:turn_end:clear_pending');
+                        logAssistantLifecycle('ws:turn_end:skip_assistant_effects');
                     }
                     clearPendingAssistantTurnStart();
 
@@ -1089,35 +1111,37 @@
                             return;
                         }
 
-                        // Emotion analysis (5s timeout)
-                        setTimeout(async function () {
-                            try {
-                                var emotionPromise = (typeof window.analyzeEmotion === 'function')
-                                    ? window.analyzeEmotion(fullText)
-                                    : Promise.resolve(null);
-                                var timeoutPromise = new Promise(function (_, reject2) {
-                                    setTimeout(function () { reject2(new Error('情感分析超时')); }, 5000);
-                                });
-                                var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
-                                if (emotionResult && emotionResult.emotion) {
-                                    console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
-                                    if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
-                                    if (assistantTurnId) {
-                                        emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
-                                            turnId: assistantTurnId,
-                                            emotion: emotionResult.emotion,
-                                            source: 'emotion_analysis'
-                                        });
+                        if (!skipAssistantEffectsOnTurnEnd) {
+                            // Emotion analysis (5s timeout)
+                            setTimeout(async function () {
+                                try {
+                                    var emotionPromise = (typeof window.analyzeEmotion === 'function')
+                                        ? window.analyzeEmotion(fullText)
+                                        : Promise.resolve(null);
+                                    var timeoutPromise = new Promise(function (_, reject2) {
+                                        setTimeout(function () { reject2(new Error('情感分析超时')); }, 5000);
+                                    });
+                                    var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
+                                    if (emotionResult && emotionResult.emotion) {
+                                        console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
+                                        if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
+                                        if (assistantTurnId) {
+                                            emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
+                                                turnId: assistantTurnId,
+                                                emotion: emotionResult.emotion,
+                                                source: 'emotion_analysis'
+                                            });
+                                        }
+                                    }
+                                } catch (emotionError) {
+                                    if (emotionError.message === '情感分析超时') {
+                                        console.warn(window.t('console.emotionAnalysisTimeout'));
+                                    } else {
+                                        console.warn(window.t('console.emotionAnalysisFailed'), emotionError);
                                     }
                                 }
-                            } catch (emotionError) {
-                                if (emotionError.message === '情感分析超时') {
-                                    console.warn(window.t('console.emotionAnalysisTimeout'));
-                                } else {
-                                    console.warn(window.t('console.emotionAnalysisFailed'), emotionError);
-                                }
-                            }
-                        }, 100);
+                            }, 100);
+                        }
 
                         // Frontend translation
                         (async function () {
@@ -1143,6 +1167,7 @@
                             }
                         })();
                     })();
+                    clearAssistantEffectSuppression();
 
                     // Reset proactive chat backoff after AI turn completes
                     var hasChatMode = (typeof window.hasAnyChatModeEnabled === 'function') ? window.hasAnyChatModeEnabled() : false;

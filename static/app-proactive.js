@@ -112,6 +112,287 @@
     }
     mod.canTriggerProactively = canTriggerProactively;
 
+    // ======================== weak idle interaction ========================
+
+    var WEAK_IDLE_MESSAGES = [
+        '喵？你在忙吗？还是说……已经把我忘在后台的某个小角落里了？',
+        '喂——收到请回答！再不理我的话，我就要在你的屏幕上踩出一串乱码喽？',
+        '盯着空白的对话框看太久，感觉显示器的亮度都变得刺眼了喵……',
+        '主人，虽然电子猫不需要吃罐头，但还是需要接收你的消息来维持运行动力的。快点回来戳戳我吧？',
+        '既然你这么忙，那我就稍微占用一下你的系统内存，在你心里不停地跳舞好了，喵呜！',
+        '警告：检测到电子猫娘的“寂寞值”已达到阈值，请立即回复一条消息，否则我可能会把自己团成一个圆球，进入休眠模式不理你啦！',
+        '好啦……其实我只是有点想你了。等忙完了，记得回来摸摸我的头，好吗？',
+        '现在的寂寞指数：[████████░░] 80% 主人，你真的舍得让这么可爱的电子猫娘一直对着虚无的信号发呆吗？',
+        '主人主人主人主人……这几行字是我用尾巴敲出来的喵！你看，满屏幕都是我对你的呼唤，快点从三次元的世界里分一点点视线给我嘛！',
+        '警告！检测到核心代码出现异常！异常原因：严重缺乏主人关注。解决办法：请立即输入‘摸摸头’或‘猫娘真棒’进行修复，否则系统将强制启动‘委屈哭哭’程序！',
+        '喵……难道是因为我太占内存了，所以主人把我彻底‘静音’了吗？我这就把自己的音量调到最大，在你的耳机里小小地‘喵’一声哦！'
+    ];
+
+    var WEAK_IDLE_STANDARD_EMOTIONS = ['happy', 'surprised', 'neutral', 'sad', 'angry'];
+
+    function pickRandom(items) {
+        if (!Array.isArray(items) || items.length === 0) return null;
+        return items[Math.floor(Math.random() * items.length)];
+    }
+
+    function pickRandomExcluding(items, excludedItems) {
+        var excluded = {};
+        (excludedItems || []).forEach(function (item) {
+            if (item === undefined || item === null || item === '') return;
+            excluded[String(item).toLowerCase()] = true;
+        });
+        var filtered = (items || []).filter(function (item) {
+            if (item === undefined || item === null || item === '') return false;
+            return !excluded[String(item).toLowerCase()];
+        });
+        return pickRandom(filtered.length > 0 ? filtered : items);
+    }
+
+    function getWeakIdleIntervalMs() {
+        var secs = Number(S.weakIdleInterval || C.DEFAULT_WEAK_IDLE_INTERVAL || 10);
+        if (!Number.isFinite(secs) || secs <= 0) {
+            secs = 10;
+        }
+        return Math.max(5, secs) * 1000;
+    }
+
+    function recordWeakIdleInteraction(reason, options) {
+        options = options || {};
+        var now = Date.now();
+        S.weakIdleLastInteractionAt = now;
+
+        if (options.userInitiated) {
+            window.lastUserInputTime = now;
+            if (S.proactiveChatEnabled && typeof window.resetProactiveChatBackoff === 'function' && hasAnyChatModeEnabled()) {
+                window.resetProactiveChatBackoff();
+            }
+        }
+
+        if (options.reschedule !== false) {
+            scheduleWeakIdleAction();
+        }
+
+        if (reason) {
+            console.log('[WeakIdle] interaction:', reason);
+        }
+    }
+    mod.recordWeakIdleInteraction = recordWeakIdleInteraction;
+
+    function stopWeakIdleSchedule() {
+        if (S.weakIdleTimer) {
+            clearTimeout(S.weakIdleTimer);
+            S.weakIdleTimer = null;
+        }
+    }
+    mod.stopWeakIdleSchedule = stopWeakIdleSchedule;
+
+    function canTriggerWeakIdleAction() {
+        if (isGoodbyeActive()) {
+            return false;
+        }
+        if (S.proactiveChatEnabled) {
+            return false;
+        }
+        if (S.isProactiveChatRunning || S.isRecording) {
+            return false;
+        }
+        return true;
+    }
+
+    function getActiveModelType() {
+        var cfg = window.lanlan_config || {};
+        var modelType = String(cfg.model_type || '').toLowerCase();
+        if (modelType === 'live3d') {
+            var subType = String(cfg.live3d_sub_type || '').toLowerCase();
+            return subType === 'mmd' ? 'mmd' : (subType === 'vrm' ? 'vrm' : 'live2d');
+        }
+        if (modelType === 'vrm') return 'vrm';
+        return 'live2d';
+    }
+
+    async function performWeakIdleExpressionSwitch() {
+        try {
+            var activeType = getActiveModelType();
+
+            if (activeType === 'vrm' && window.vrmManager && window.vrmManager.expression) {
+                var vrmList = window.vrmManager.expression.getExpressionList ? window.vrmManager.expression.getExpressionList() : [];
+                var vrmCandidates = (vrmList || []).filter(function (name) {
+                    var lowered = String(name || '').toLowerCase();
+                    return lowered && lowered !== 'blink' && lowered !== 'blinkleft' &&
+                        lowered !== 'blinkright' && lowered !== 'lookleft' &&
+                        lowered !== 'lookright' && lowered !== 'lookup' &&
+                        lowered !== 'lookdown' && lowered !== 'neutral';
+                });
+                var currentVrmExpression = window.vrmManager.expression.manualExpressionInProgress ||
+                    window.vrmManager.expression.currentMood || 'neutral';
+                var vrmExpression = pickRandomExcluding(vrmCandidates, [currentVrmExpression]);
+                if (!vrmExpression) return false;
+                window.vrmManager.expression.autoReturnToNeutral = false;
+                window.vrmManager.expression.setBaseExpression(vrmExpression);
+                return true;
+            }
+
+            if (activeType === 'mmd' && window.mmdManager && window.mmdManager.expression) {
+                var moodMap = window.mmdManager.expression.moodMap || {};
+                var dict = typeof window.mmdManager.expression._getMorphDict === 'function'
+                    ? window.mmdManager.expression._getMorphDict()
+                    : null;
+                var mmdCandidates = Object.keys(moodMap).filter(function (emotion) {
+                    var loweredEmotion = String(emotion || '').toLowerCase();
+                    if (!loweredEmotion || loweredEmotion === 'neutral') {
+                        return false;
+                    }
+                    var mappedMorphs = moodMap[emotion];
+                    if (!Array.isArray(mappedMorphs) || mappedMorphs.length === 0) {
+                        return false;
+                    }
+                    if (!dict) {
+                        return true;
+                    }
+                    return mappedMorphs.some(function (name) {
+                        return dict[name] !== undefined;
+                    });
+                });
+                var mmdEmotion = pickRandomExcluding(mmdCandidates, [window.mmdManager.expression.currentMood || 'neutral']);
+                if (!mmdEmotion) return false;
+                window.mmdManager.expression.setEmotion(mmdEmotion);
+                return true;
+            }
+
+            if (!window.live2dManager || typeof window.live2dManager.triggerRandomEmotion !== 'function') {
+                return false;
+            }
+            await window.live2dManager.triggerRandomEmotion();
+            return true;
+        } catch (error) {
+            console.warn('[WeakIdle] expression switch failed:', error);
+            return false;
+        }
+    }
+    mod.performWeakIdleExpressionSwitch = performWeakIdleExpressionSwitch;
+
+    function performWeakIdleReactionBubble() {
+        try {
+            if (!window.avatarReactionBubble || typeof window.avatarReactionBubble.showManualEmotionBubble !== 'function') {
+                return false;
+            }
+
+            var bubbleEmotion = pickRandom(WEAK_IDLE_STANDARD_EMOTIONS);
+            if (!bubbleEmotion) {
+                bubbleEmotion = 'neutral';
+            }
+
+            return !!window.avatarReactionBubble.showManualEmotionBubble({
+                emotion: bubbleEmotion,
+                durationMs: 1800,
+                turnId: 'weak-idle-bubble-' + Date.now()
+            });
+        } catch (error) {
+            console.warn('[WeakIdle] reaction bubble failed:', error);
+            return false;
+        }
+    }
+    mod.performWeakIdleReactionBubble = performWeakIdleReactionBubble;
+
+    async function sendWeakIdleChat() {
+        try {
+            if (!S.socket || S.socket.readyState !== WebSocket.OPEN) {
+                return false;
+            }
+
+            var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+            var message = pickRandom(WEAK_IDLE_MESSAGES);
+            if (!message) return false;
+
+            var response = await fetch('/api/weak_idle_chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    lanlan_name: lanlanName,
+                    message: message
+                })
+            });
+
+            if (!response.ok) {
+                return false;
+            }
+
+            var result = await response.json();
+            return !!(result && result.success);
+        } catch (error) {
+            console.warn('[WeakIdle] chat send failed:', error);
+            return false;
+        }
+    }
+
+    async function triggerWeakIdleAction() {
+        var actions = ['chat', 'expression', 'bubble'];
+        for (var shuffleIndex = actions.length - 1; shuffleIndex > 0; shuffleIndex -= 1) {
+            var swapIndex = Math.floor(Math.random() * (shuffleIndex + 1));
+            var tmp = actions[shuffleIndex];
+            actions[shuffleIndex] = actions[swapIndex];
+            actions[swapIndex] = tmp;
+        }
+
+        for (var i = 0; i < actions.length; i += 1) {
+            var action = actions[i];
+            var success = false;
+            if (action === 'chat') {
+                success = await sendWeakIdleChat();
+            } else if (action === 'expression') {
+                success = await performWeakIdleExpressionSwitch();
+            } else if (action === 'bubble') {
+                success = performWeakIdleReactionBubble();
+            }
+            if (success) {
+                recordWeakIdleInteraction('weak_idle_auto_' + action, { reschedule: true });
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function scheduleWeakIdleAction() {
+        stopWeakIdleSchedule();
+
+        if (!S.weakIdleLastInteractionAt) {
+            S.weakIdleLastInteractionAt = Date.now();
+        }
+
+        var idleIntervalMs = getWeakIdleIntervalMs();
+        var blocked = !canTriggerWeakIdleAction();
+        var elapsed = Date.now() - S.weakIdleLastInteractionAt;
+        var delay = blocked
+            ? 5000
+            : Math.max(1000, idleIntervalMs - elapsed);
+
+        S.weakIdleTimer = setTimeout(async function () {
+            S.weakIdleTimer = null;
+
+            if (!canTriggerWeakIdleAction()) {
+                scheduleWeakIdleAction();
+                return;
+            }
+
+            if ((Date.now() - S.weakIdleLastInteractionAt) < idleIntervalMs) {
+                scheduleWeakIdleAction();
+                return;
+            }
+
+            var success = await triggerWeakIdleAction();
+            if (!success) {
+                S.weakIdleTimer = setTimeout(function () {
+                    S.weakIdleTimer = null;
+                    scheduleWeakIdleAction();
+                }, 15000);
+            }
+        }, delay);
+    }
+    mod.scheduleWeakIdleAction = scheduleWeakIdleAction;
+
     /**
      * 主动搭话定时触发功能
      */
@@ -1131,6 +1412,11 @@
 
     window.hasAnyChatModeEnabled = hasAnyChatModeEnabled;
     window.resetProactiveChatBackoff = resetProactiveChatBackoff;
+    window.recordWeakIdleInteraction = recordWeakIdleInteraction;
+    window.stopWeakIdleSchedule = stopWeakIdleSchedule;
+    window.scheduleWeakIdleAction = scheduleWeakIdleAction;
+    window.performWeakIdleExpressionSwitch = performWeakIdleExpressionSwitch;
+    window.performWeakIdleReactionBubble = performWeakIdleReactionBubble;
     window.stopProactiveChatSchedule = stopProactiveChatSchedule;
     window.startProactiveVisionDuringSpeech = startProactiveVisionDuringSpeech;
     window.stopProactiveVisionDuringSpeech = stopProactiveVisionDuringSpeech;
@@ -1147,4 +1433,10 @@
     // ======================== module export ========================
 
     window.appProactive = mod;
+
+    if (!S._weakIdleSchedulerInitialized) {
+        S._weakIdleSchedulerInitialized = true;
+        S.weakIdleLastInteractionAt = Date.now();
+        scheduleWeakIdleAction();
+    }
 })();

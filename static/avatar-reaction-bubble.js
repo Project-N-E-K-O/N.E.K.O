@@ -1292,6 +1292,50 @@
         }
     }
 
+    function showManualEmotionBubble(options) {
+        options = options || {};
+        if (!syncEnabledFromSettings()) {
+            return false;
+        }
+
+        var emotion = options.emotion ? String(options.emotion) : 'neutral';
+        var theme = normalizeTheme(emotion);
+        var durationMs = Math.max(
+            TIMING.minVisibleMs + TIMING.fadeDurationMs,
+            Number(options.durationMs) || 1800
+        );
+        var turnId = String(options.turnId || ('manual-bubble-' + now()));
+
+        clearTurnTimers();
+        stopFollowLoop();
+        ensureDom();
+        resetPositionTracking();
+
+        state.turnId = turnId;
+        state.visible = true;
+        state.phase = 'emotion-ready';
+        state.theme = theme;
+        state.emotion = emotion;
+        state.showEmotionArt = theme !== 'thinking';
+        state.content = getThemeContent(theme);
+        state.side = 'right';
+        state.shownAt = now();
+        state.turnEndedAt = 0;
+        state.speechStartedAt = 0;
+
+        applyVisualState();
+        syncPositionOnce();
+        extendFollowLoop(Math.max(TIMING.showFollowWindowMs, durationMs));
+        scheduleMaxVisibleFallback(turnId);
+        beginHide(turnId, Math.max(0, durationMs - TIMING.minVisibleMs));
+        logBubbleLifecycle('showManualEmotionBubble:applied', {
+            requestedTurnId: turnId,
+            emotion: emotion,
+            durationMs: durationMs
+        });
+        return true;
+    }
+
     function init() {
         ensureDom();
         syncEnabledFromSettings();
@@ -1346,6 +1390,7 @@
 
     window.avatarReactionBubble = {
         forceHide: function () { forceHide(true); },
+        showManualEmotionBubble: showManualEmotionBubble,
         getState: function () {
             return Object.assign({}, state);
         },

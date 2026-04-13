@@ -752,9 +752,13 @@
 
             if (!text && !hasScreenshots) return;
 
-            // Record user input time and reset proactive chat
-            window.lastUserInputTime = Date.now();
-            window.resetProactiveChatBackoff();
+            // 记录用户互动时间，供主动搭话与弱化版空闲互动共用
+            if (typeof window.recordWeakIdleInteraction === 'function') {
+                window.recordWeakIdleInteraction('text_send', { userInitiated: true });
+            } else {
+                window.lastUserInputTime = Date.now();
+                window.resetProactiveChatBackoff();
+            }
 
             // If no active text session, start one first
             if (!S.isTextSessionActive) {

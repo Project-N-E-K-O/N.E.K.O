@@ -192,9 +192,13 @@
 
                 // 如果主动搭话已启用且选择了搭话方式，重置并开始定时
                 if (S.proactiveChatEnabled && typeof window.hasAnyChatModeEnabled === 'function' && window.hasAnyChatModeEnabled()) {
-                    window.lastUserInputTime = Date.now();
-                    if (typeof window.resetProactiveChatBackoff === 'function') {
-                        window.resetProactiveChatBackoff();
+                    if (typeof window.recordWeakIdleInteraction === 'function') {
+                        window.recordWeakIdleInteraction('voice_pause', { userInitiated: true });
+                    } else {
+                        window.lastUserInputTime = Date.now();
+                        if (typeof window.resetProactiveChatBackoff === 'function') {
+                            window.resetProactiveChatBackoff();
+                        }
                     }
                 }
 
@@ -693,9 +697,13 @@
 
         // 停止录音后，重置主动搭话退避级别并开始定时
         if (S.proactiveChatEnabled && typeof window.hasAnyChatModeEnabled === 'function' && window.hasAnyChatModeEnabled()) {
-            window.lastUserInputTime = Date.now();
-            if (typeof window.resetProactiveChatBackoff === 'function') {
-                window.resetProactiveChatBackoff();
+            if (typeof window.recordWeakIdleInteraction === 'function') {
+                window.recordWeakIdleInteraction('voice_stop', { userInitiated: true });
+            } else {
+                window.lastUserInputTime = Date.now();
+                if (typeof window.resetProactiveChatBackoff === 'function') {
+                    window.resetProactiveChatBackoff();
+                }
             }
         }
 
