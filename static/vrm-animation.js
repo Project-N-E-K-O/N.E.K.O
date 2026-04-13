@@ -325,14 +325,24 @@ class VRMAnimation {
     _alignClipToCurrentPose(clip) {
         const THREE = window.THREE;
         if (!clip?.tracks || !THREE?.QuaternionKeyframeTrack) return;
-        // 优先用正在运行的 vrmaMixer 的 root，确保查到的 bone.quaternion 反映当前动画姿态
+        // 优先用正在运行的 vrmaMixer 的 root（_findBestMixerRoot 通常返回
+        // normalizedRoot——VRM 标准化骨架树），确保查到的 bone.quaternion
+        // 反映当前动画姿态。
+        // 但 `lookAtQuaternionProxy` 是挂在 vrm.scene 直下的 sibling，不在
+        // normalizedRoot 树里——此时回退到 vrm.scene.getObjectByName 才能
+        // 拿到 proxy.quaternion 做同半球对齐，否则 authored LookAt 轨道
+        // 在 crossfade 时仍可能走长路径（CodeRabbit on PR #772）。
         const root = this.vrmaMixer?.getRoot?.() || this.manager?.currentModel?.vrm?.scene;
         if (!root || typeof root.getObjectByName !== 'function') return;
+        const scene = this.manager?.currentModel?.vrm?.scene;
         const stride = 4;
         for (const track of clip.tracks) {
             if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
             const boneName = track.name.split('.')[0];
-            const bone = root.getObjectByName(boneName);
+            let bone = root.getObjectByName(boneName);
+            if (!bone && scene && scene !== root) {
+                bone = scene.getObjectByName(boneName);
+            }
             const bq = bone?.quaternion;
             if (!bq) continue;
             const v = track.values;
