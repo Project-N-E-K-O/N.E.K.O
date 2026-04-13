@@ -1,5 +1,6 @@
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
+const MINIMAX_PREFIX_MAX_LENGTH = 10;
 let workshopReferenceFile = null;
 let workshopReferenceAudioUrl = '';
 let providerTouchedByUser = false;
@@ -40,6 +41,37 @@ function parseVoiceRegisterError(errorObj) {
     }
 
     return { displayError, shouldFlash };
+}
+
+function isMiniMaxProvider(provider) {
+    return provider === 'minimax' || provider === 'minimax_intl';
+}
+
+function sanitizeMiniMaxPrefix(prefix) {
+    return String(prefix || '')
+        .replace(/[^0-9a-z]/gi, '')
+        .slice(0, MINIMAX_PREFIX_MAX_LENGTH);
+}
+
+function normalizePrefixInputForProvider() {
+    const prefixInput = document.getElementById('prefix');
+    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
+    if (!prefixInput) {
+        return '';
+    }
+
+    if (!isMiniMaxProvider(provider)) {
+        prefixInput.removeAttribute('maxlength');
+        return prefixInput.value.trim();
+    }
+
+    prefixInput.maxLength = MINIMAX_PREFIX_MAX_LENGTH;
+    const trimmedValue = prefixInput.value.trim();
+    const sanitized = sanitizeMiniMaxPrefix(trimmedValue);
+    if (trimmedValue !== sanitized || prefixInput.value !== sanitized) {
+        prefixInput.value = sanitized;
+    }
+    return sanitized;
 }
 
 function guessAudioMimeType(filename) {
@@ -318,6 +350,7 @@ if (window.i18n && window.i18n.isInitialized) {
 document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     const providerSelect = document.getElementById('voiceProvider');
     const noticeDiv = document.getElementById('provider-notice');
+    const prefixInput = document.getElementById('prefix');
     if (!providerSelect || !noticeDiv) return;
 
     function updateNotice() {
@@ -342,8 +375,15 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
             providerTouchedByUser = true;
         }
         updateNotice();
+        normalizePrefixInputForProvider();
     });
+    if (prefixInput) {
+        prefixInput.addEventListener('input', () => {
+            normalizePrefixInputForProvider();
+        });
+    }
     updateNotice();
+    normalizePrefixInputForProvider();
 });
 
 // 当前克隆方式
@@ -479,15 +519,14 @@ function registerVoice() {
     const fileInput = document.getElementById('audioFile');
     const directLinkUrl = document.getElementById('directLinkUrl');
     const refLanguage = document.getElementById('refLanguage').value;
-    const prefix = document.getElementById('prefix').value.trim();
     const resultDiv = document.getElementById('result');
     const effectiveAudioFile = getEffectiveAudioFile();
+    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
+    const prefix = normalizePrefixInputForProvider();
 
     // 清空现有内容并重置类名
     resultDiv.textContent = '';
     resultDiv.className = 'result';
-
-    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
 
     // 根据克隆方式验证输入
     if (currentCloneMethod === 'file') {

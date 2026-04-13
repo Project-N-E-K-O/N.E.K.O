@@ -35,8 +35,10 @@ from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
     minimax_normalize_language,
+    sanitize_minimax_voice_prefix,
     MINIMAX_VOICE_STORAGE_KEY,
     MINIMAX_INTL_VOICE_STORAGE_KEY,
+    MINIMAX_PREFIX_MAX_LENGTH,
     get_minimax_base_url,
     get_minimax_storage_prefix,
     QwenVoiceCloneClient,
@@ -116,6 +118,25 @@ def _filter_mutable_catgirl_fields(data: dict) -> dict:
         for key, value in data.items()
         if key not in CHARACTER_RESERVED_FIELD_SET
     }
+
+
+def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str, str]:
+    """将用户输入的前缀规范化为 MiniMax 可接受的安全前缀。"""
+    import uuid
+
+    original_prefix = str(prefix or '').strip()
+    safe_prefix = sanitize_minimax_voice_prefix(
+        original_prefix,
+        max_length=MINIMAX_PREFIX_MAX_LENGTH,
+    )
+    if safe_prefix != original_prefix:
+        logger.info(
+            "%s 音色前缀已规范化: %r -> %r",
+            provider_label,
+            original_prefix,
+            safe_prefix,
+        )
+    return original_prefix, f"{safe_prefix}{uuid.uuid4().hex[:8]}"
 
 
 async def send_reload_page_notice(session, message_text: str = "语音已更新，页面即将刷新"):
@@ -2398,11 +2419,8 @@ async def voice_clone(
     # ---------- 按 provider 调用对应克隆 API ----------
     try:
         if provider in ('minimax', 'minimax_intl'):
-            # 为MiniMax生成带随机数的前缀（避免重复）
-            import uuid
-            original_prefix = prefix  # 保存原始前缀用于显示
-            minimax_prefix = f"{prefix}_{uuid.uuid4().hex[:8]}"  # 添加8位随机数
-            
+            original_prefix, minimax_prefix = _build_minimax_request_prefix(prefix, provider_label)
+
             minimax_lang = minimax_normalize_language(ref_language)
             client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
             voice_id = await client.clone_voice(
@@ -2413,8 +2431,8 @@ async def voice_clone(
             )
             voice_data = {
                 'voice_id': voice_id,
-                'prefix': original_prefix,  # 保存原始前缀（不含随机数）用于显示
-                'minimax_prefix': minimax_prefix,  # 保存实际使用的带随机数前缀
+                'prefix': original_prefix,  # 保存原始前缀用于显示
+                'minimax_prefix': minimax_prefix,  # 保存实际提交给 MiniMax 的安全前缀
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'minimax_language': minimax_lang,
@@ -2693,11 +2711,8 @@ async def voice_clone_direct(request: Request):
                 original_buffer, filename
             )
             
-            # 3. 为MiniMax生成带随机数的前缀（避免重复）
-            import uuid
-            original_prefix = prefix  # 保存原始前缀用于显示
-            minimax_prefix = f"{prefix}_{uuid.uuid4().hex[:8]}"  # 添加8位随机数
-            
+            original_prefix, minimax_prefix = _build_minimax_request_prefix(prefix, provider_label)
+
             # 4. 使用 MinimaxVoiceCloneClient 上传并注册音色
             minimax_lang = minimax_normalize_language(ref_language)
             client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
@@ -2711,8 +2726,8 @@ async def voice_clone_direct(request: Request):
             
             voice_data = {
                 'voice_id': voice_id,
-                'prefix': original_prefix,  # 保存原始前缀（不含随机数）用于显示
-                'minimax_prefix': minimax_prefix,  # 保存实际使用的带随机数前缀
+                'prefix': original_prefix,  # 保存原始前缀用于显示
+                'minimax_prefix': minimax_prefix,  # 保存实际提交给 MiniMax 的安全前缀
                 'direct_link': direct_link,
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
