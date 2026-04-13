@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import MessageList from './MessageList';
+import { i18n } from './i18n';
 import {
   type ChatMessage,
   type MessageAction,
@@ -14,9 +15,12 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onComposerScreenshot?: () => void;
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
+  onJukeboxClick?: () => void;
+  onTranslateToggle?: () => void;
 };
 
 const defaultMessages: ChatMessage[] = [];
+
 type ToolIconItem = {
   id: string;
   icon: string;
@@ -29,7 +33,6 @@ type ToolIconItem = {
   menuIconOffsetY?: number;
   menuIconOffsetXAlt?: number;
   menuIconOffsetYAlt?: number;
-  // Later you can swap to designed assets by filling these paths.
   cursorImagePath?: string;
   cursorImagePathAlt?: string;
   cursorHotspotX?: number;
@@ -71,15 +74,11 @@ const toolIconItems: ToolIconItem[] = [
     iconImagePathAlt: '/static/icons/chat_hammer2.png',
     cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
     cursorImagePathAlt: '/static/icons/chat_hammer2_cursor.png',
-    // 视觉补偿：锤子源图留白较多，菜单里放大并微调居中
     menuIconScale: 1.42,
-    // 主图向左下再移动一点（仅主图）
     menuIconOffsetX: -6,
     menuIconOffsetY: 1,
-    // 副图保持原先观感
     menuIconOffsetXAlt: 1,
     menuIconOffsetYAlt: -1,
-    // 光标热点放到图标视觉中心，避免看起来偏移
     cursorHotspotX: 50,
     cursorHotspotY: 48,
   },
@@ -110,34 +109,81 @@ function resolveCursorValue(item: ToolIconItem, variant: CursorVariant): string 
 }
 
 export default function App({
-  title = 'N.E.K.O Chat',
+  title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
-  inputPlaceholder = '输入消息...',
-  sendButtonLabel = '发送',
-  emptyText = '聊天内容接入后会显示在这里。',
-  chatWindowAriaLabel = 'Neko chat window',
-  messageListAriaLabel = 'Chat messages',
-  composerToolsAriaLabel = 'Composer tools',
+  inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
+  sendButtonLabel = i18n('chat.send', 'Send'),
+  chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
+  messageListAriaLabel = i18n('chat.messageListAriaLabel', 'Chat messages'),
+  composerToolsAriaLabel = i18n('chat.composerToolsAriaLabel', 'Composer tools'),
   composerAttachments = [],
-  composerAttachmentsAriaLabel = 'Pending attachments',
-  importImageButtonLabel = '导入图片',
-  screenshotButtonLabel = '截图',
-  importImageButtonAriaLabel = '导入图片',
-  screenshotButtonAriaLabel = '截图',
-  removeAttachmentButtonAriaLabel = '移除图片',
-  failedStatusLabel = '发送失败',
+  composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
+  importImageButtonLabel = i18n('chat.importImage', 'Import Image'),
+  screenshotButtonLabel = i18n('chat.screenshot', 'Screenshot'),
+  importImageButtonAriaLabel,
+  screenshotButtonAriaLabel,
+  removeAttachmentButtonAriaLabel = i18n('chat.removePendingImage', 'Remove image'),
+  failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
+  jukeboxButtonLabel = i18n('chat.jukeboxLabel', 'Jukebox'),
+  jukeboxButtonAriaLabel = i18n('chat.jukebox', 'Jukebox'),
+  translateEnabled = false,
+  translateButtonLabel = i18n('subtitle.enable', 'Subtitle Translation'),
+  translateButtonAriaLabel,
   onMessageAction,
   onComposerImportImage,
   onComposerScreenshot,
   onComposerRemoveAttachment,
   onComposerSubmit,
+  onJukeboxClick,
+  onTranslateToggle,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
+  const [pendingDrafts, setPendingDrafts] = useState<Array<{ id: string; text: string; time: string; lastMsgId: string | null }>>([]);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [cursorVariant, setCursorVariant] = useState<CursorVariant>('primary');
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
+  const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
+  const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
+  const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
+  const moreToolsButtonLabel = i18n('chat.moreTools', 'More tools');
+  const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
+
+  // Clear pending drafts once the host confirms them (appears in messages)
+  useEffect(() => {
+    if (pendingDrafts.length === 0) return;
+    const remaining = pendingDrafts.filter((draftItem) => {
+      const anchor = draftItem.lastMsgId ? messages.findIndex((m) => m.id === draftItem.lastMsgId) : -1;
+      const newMsgs = messages.slice(anchor + 1);
+      const newUserTexts = new Set(
+        newMsgs
+          .filter((m) => m.role === 'user')
+          .flatMap((m) => m.blocks.flatMap((b) => (b.type === 'text' ? [b.text] : []))),
+      );
+      return !newUserTexts.has(draftItem.text);
+    });
+    if (remaining.length < pendingDrafts.length) {
+      setPendingDrafts(remaining);
+    }
+  }, [messages, pendingDrafts]);
+
+  // Merge host messages + optimistic pending drafts
+  const lastUserAuthor = [...messages].reverse().find((m) => m.role === 'user')?.author;
+  const allMessages = useMemo(() => {
+    if (pendingDrafts.length === 0) return messages;
+    const optimistic: ChatMessage[] = pendingDrafts.map((draftItem) => ({
+      id: draftItem.id,
+      role: 'user' as const,
+      author: lastUserAuthor || 'You',
+      time: draftItem.time,
+      blocks: [{ type: 'text' as const, text: draftItem.text }],
+      status: 'sending' as const,
+    }));
+    return [...messages, ...optimistic];
+  }, [messages, pendingDrafts, lastUserAuthor]);
 
   useEffect(() => {
     if (!toolMenuOpen) return;
@@ -197,17 +243,26 @@ export default function App({
     root.classList.add('neko-tool-cursor-active');
   }, [activeCursorToolId, cursorVariant]);
 
-  useEffect(() => {
-    return () => {
-      const root = document.documentElement;
-      root.classList.remove('neko-tool-cursor-active');
-      root.style.removeProperty('--neko-chat-tool-cursor');
-    };
+  useEffect(() => () => {
+    const root = document.documentElement;
+    root.classList.remove('neko-tool-cursor-active');
+    root.style.removeProperty('--neko-chat-tool-cursor');
   }, []);
 
   function submitDraft() {
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
+    const now = new Date();
+    const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map((n) => String(n).padStart(2, '0')).join(':');
+    if (text) {
+      setPendingDrafts((prev) => [...prev, {
+        id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        text,
+        time,
+        lastMsgId: messages.length > 0 ? messages[messages.length - 1].id : null,
+      }]);
+    }
     onComposerSubmit?.({ text });
     setDraft('');
   }
@@ -222,12 +277,12 @@ export default function App({
             </div>
             <h1 className="window-title" id="react-chat-window-title">{title}</h1>
           </div>
+          {/* Avatar button moved to #react-chat-window-header-actions in host template */}
         </header>
 
         <section className="chat-body">
           <MessageList
-            messages={messages}
-            emptyText={emptyText}
+            messages={allMessages}
             ariaLabel={messageListAriaLabel}
             failedStatusLabel={failedStatusLabel}
             onAction={onMessageAction}
@@ -258,138 +313,134 @@ export default function App({
               ))}
             </div>
           ) : null}
-          <div className="composer-toolbar" aria-label={composerToolsAriaLabel}>
-            <button
-              className="composer-tool-chip"
-              type="button"
-              aria-label={importImageButtonAriaLabel}
-              onClick={() => onComposerImportImage?.()}
-            >
-              <img
-                className="composer-tool-chip-icon"
-                src="/static/icons/chat_picture.png"
-                alt=""
-                aria-hidden="true"
-              />
-              <span>{importImageButtonLabel}</span>
-            </button>
-            <button
-              className="composer-tool-chip"
-              type="button"
-              aria-label={screenshotButtonAriaLabel}
-              onClick={() => onComposerScreenshot?.()}
-            >
-              <img
-                className="composer-tool-chip-icon"
-                src="/static/icons/chat_shot.png"
-                alt=""
-                aria-hidden="true"
-              />
-              <span>{screenshotButtonLabel}</span>
-            </button>
-            <div className="composer-tool-menu" ref={toolMenuRef}>
-              <button
-                className="composer-tool-chip composer-tool-chip-toggle"
-                type="button"
-                aria-label="更多工具"
-                aria-expanded={toolMenuOpen}
-                aria-haspopup="menu"
-                onClick={() => setToolMenuOpen((open) => !open)}
-              >
-                <img
-                  className="composer-tool-chip-icon"
-                  src="/static/icons/chat_tools.png"
-                  alt=""
-                  aria-hidden="true"
-                />
-                <span>工具</span>
-              </button>
-              {toolMenuOpen ? (
-                <div className="composer-icon-popover" role="menu" aria-label="工具图标">
-                  {toolIconItems.map((item) => (
-                    <button
-                      key={item.id}
-                      className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
-                      type="button"
-                      role="menuitem"
-                      aria-label={item.label}
-                      title={item.label}
-                      onClick={() => {
-                        setCursorVariant('primary');
-                        setActiveCursorToolId(item.id);
-                        setToolMenuOpen(false);
-                      }}
-                    >
-                      {item.iconImagePath ? (
-                        <img
-                          className="composer-icon-button-image"
-                          src={activeCursorToolId === item.id
-                            && cursorVariant === 'secondary'
-                            && item.iconImagePathAlt
-                            ? item.iconImagePathAlt
-                            : item.iconImagePath}
-                          style={{
-                            transform: `translate(${
-                              activeCursorToolId === item.id
-                              && cursorVariant === 'secondary'
-                              && item.iconImagePathAlt
-                                ? (item.menuIconOffsetXAlt ?? item.menuIconOffsetX ?? 0)
-                                : (item.menuIconOffsetX ?? 0)
-                            }px, ${
-                              activeCursorToolId === item.id
-                              && cursorVariant === 'secondary'
-                              && item.iconImagePathAlt
-                                ? (item.menuIconOffsetYAlt ?? item.menuIconOffsetY ?? 0)
-                                : (item.menuIconOffsetY ?? 0)
-                            }px) scale(${item.menuIconScale ?? 1})`,
-                          }}
-                          alt=""
-                          aria-hidden="true"
-                        />
-                      ) : item.icon}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          </div>
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();
             submitDraft();
           }}>
-            <div className="composer-row">
-              <label className="composer-input-shell">
-                <textarea
-                  className="composer-input"
-                  placeholder={inputPlaceholder}
-                  aria-label={inputPlaceholder}
-                  rows={1}
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.nativeEvent.isComposing) return;
-                    if (event.key === 'Enter' && !event.shiftKey) {
-                      event.preventDefault();
-                      submitDraft();
-                    }
-                  }}
-                />
-              </label>
-              <button className="send-button" type="submit">
-                <img
-                  className="send-button-paw"
-                  src="/static/icons/paw_ui.png"
-                  alt=""
-                  aria-hidden="true"
-                />
-                <img
-                  className="send-button-icon"
-                  src="/static/icons/send_icon.png"
-                  alt=""
-                  aria-hidden="true"
-                />
-                <span>{sendButtonLabel}</span>
-              </button>
+            <div className="composer-input-shell">
+              <textarea
+                className="composer-input"
+                placeholder={inputPlaceholder}
+                aria-label={inputPlaceholder}
+                rows={1}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing) return;
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    submitDraft();
+                  }
+                }}
+              />
+              <div className="composer-bottom-bar">
+                <div className="composer-bottom-tools" aria-label={composerToolsAriaLabel}>
+                  <button
+                    className="composer-tool-btn"
+                    type="button"
+                    aria-label={resolvedImportImageAriaLabel}
+                    title={importImageButtonLabel}
+                    onClick={() => onComposerImportImage?.()}
+                  >
+                    <img src="/static/icons/import_image_icon.png" alt="" aria-hidden="true" />
+                  </button>
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  <button
+                    className="composer-tool-btn"
+                    type="button"
+                    aria-label={resolvedScreenshotAriaLabel}
+                    title={screenshotButtonLabel}
+                    onClick={() => onComposerScreenshot?.()}
+                  >
+                    <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
+                  </button>
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  <div className="composer-tool-menu" ref={toolMenuRef}>
+                    <button
+                      className="composer-tool-btn composer-tool-btn-toggle"
+                      type="button"
+                      aria-label={moreToolsButtonLabel}
+                      title={moreToolsButtonLabel}
+                      aria-expanded={toolMenuOpen}
+                      aria-haspopup="menu"
+                      onClick={() => setToolMenuOpen((open) => !open)}
+                    >
+                      <img src="/static/icons/chat_tools.png" alt="" aria-hidden="true" />
+                    </button>
+                    {toolMenuOpen ? (
+                      <div className="composer-icon-popover" role="menu" aria-label={toolIconsAriaLabel}>
+                        {toolIconItems.map((item) => (
+                          <button
+                            key={item.id}
+                            className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
+                            type="button"
+                            role="menuitem"
+                            aria-label={item.label}
+                            title={item.label}
+                            onClick={() => {
+                              setCursorVariant('primary');
+                              setActiveCursorToolId(item.id);
+                              setToolMenuOpen(false);
+                            }}
+                          >
+                            {item.iconImagePath ? (
+                              <img
+                                className="composer-icon-button-image"
+                                src={activeCursorToolId === item.id
+                                  && cursorVariant === 'secondary'
+                                  && item.iconImagePathAlt
+                                  ? item.iconImagePathAlt
+                                  : item.iconImagePath}
+                                style={{
+                                  transform: `translate(${
+                                    activeCursorToolId === item.id
+                                    && cursorVariant === 'secondary'
+                                    && item.iconImagePathAlt
+                                      ? (item.menuIconOffsetXAlt ?? item.menuIconOffsetX ?? 0)
+                                      : (item.menuIconOffsetX ?? 0)
+                                  }px, ${
+                                    activeCursorToolId === item.id
+                                    && cursorVariant === 'secondary'
+                                    && item.iconImagePathAlt
+                                      ? (item.menuIconOffsetYAlt ?? item.menuIconOffsetY ?? 0)
+                                      : (item.menuIconOffsetY ?? 0)
+                                  }px) scale(${item.menuIconScale ?? 1})`,
+                                }}
+                                alt=""
+                                aria-hidden="true"
+                              />
+                            ) : item.icon}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  <button
+                    className={`composer-tool-btn composer-translate-btn${translateEnabled ? ' is-active' : ''}`}
+                    type="button"
+                    aria-label={resolvedTranslateAriaLabel}
+                    aria-pressed={translateEnabled}
+                    title={translateButtonLabel}
+                    onClick={() => onTranslateToggle?.()}
+                  >
+                    <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
+                  </button>
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  <button
+                    className="composer-tool-btn"
+                    type="button"
+                    aria-label={jukeboxButtonAriaLabel}
+                    title={jukeboxButtonLabel}
+                    onClick={() => onJukeboxClick?.()}
+                  >
+                    <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
+                  </button>
+                </div>
+                <button className="send-button-circle" type="submit" aria-label={sendButtonLabel} disabled={!canSubmit}>
+                  <img src="/static/icons/send_new_icon.png" alt="" aria-hidden="true" />
+                </button>
+              </div>
             </div>
           </form>
         </footer>

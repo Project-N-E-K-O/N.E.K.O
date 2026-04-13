@@ -51,8 +51,11 @@ __pycache__/
 .DS_Store
 .venv
 .venv_monitor/
+.matplotlib/
+.pyinstaller-config/
 # Playwright browsers cache (used by build_nuitka.bat, not for repo)
 playwright_browsers/
+.playwright-browsers/
 .env
 .env.local
 .env.development.local
@@ -62,6 +65,7 @@ playwright_browsers/
 *.code-workspace
 .claude
 CLAUDE.md
+.codex
 
 # Rust: ignore target and cargo artifacts
 /launcher/target/
@@ -74,6 +78,7 @@ Cargo.lock
 # Node/Front-end temp (if any)
 node_modules/
 *.cache/
+*.tsbuildinfo
 dist/
 build/
 *.tsbuildinfo
@@ -99,6 +104,7 @@ static/ziraitikuwa/*
 static/neko/*
 static/kemomimi/*
 static/yui/*
+static/react/neko-chat/*
 打包说明.txt
 runtime_hook_inflect.py
 backup/

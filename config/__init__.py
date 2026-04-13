@@ -13,7 +13,7 @@ from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_pr
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.7.3.1"
+APP_VERSION = "0.7.4"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -28,6 +28,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "voice_id",
     "system_prompt",
     "model_type",
+    "live3d_sub_type",
     "vrm",
     "vrm_animation",
     "lighting",
@@ -72,6 +73,7 @@ RESERVED_FIELD_SCHEMA = {
     "system_prompt": str,
     "avatar": {
         "model_type": str,
+        "live3d_sub_type": str,
         "asset_source": str,
         "asset_source_id": str,
         "live2d": {
@@ -103,6 +105,7 @@ LEGACY_FLAT_TO_RESERVED = {
     "voice_id": ("voice_id",),
     "system_prompt": ("system_prompt",),
     "model_type": ("avatar", "model_type"),
+    "live3d_sub_type": ("avatar", "live3d_sub_type"),
     "live2d_item_id": ("avatar", "asset_source_id"),
     "item_id": ("avatar", "asset_source_id"),
     "live2d": ("avatar", "live2d", "model_path"),
@@ -300,14 +303,15 @@ DEFAULT_LANLAN_TEMPLATE = {
 }
 
 _DEFAULT_VRM_LIGHTING_MUTABLE = {
-    "ambient": 0.4,  # HemisphereLight 强度
-    "main": 1.2,     # 主光源强度
-    "fill": 0.5,     # 补光强度
-    "rim": 0.8,      # 轮廓光强度
-    "top": 0.3,      # 顶光强度
-    "bottom": 0.15,  # 底光强度
-    "exposure": 0.0, # 曝光值
-    "toneMapping": 7, # 色调映射类型 (7 = Neutral)
+    # 与前端 vrm-core.js defaultLighting 保持一致
+    "ambient": 0.83,  # HemisphereLight 强度
+    "main": 1.91,     # 主光源强度
+    "fill": 0.0,      # 补光强度（简化模式下禁用）
+    "rim": 0.0,       # 轮廓光强度（简化模式下禁用，MToon 内建处理）
+    "top": 0.0,       # 顶光强度（简化模式下禁用）
+    "bottom": 0.0,    # 底光强度（简化模式下禁用）
+    "exposure": 1.1,  # 曝光值
+    "toneMapping": 7, # 色调映射类型 (7 = NeutralToneMapping)
     "outlineWidthScale": 1.0, # 描边粗细倍率
 }
 
@@ -541,7 +545,7 @@ DEFAULT_VOICE_STORAGE = {}
 # 默认API配置（供 utils.api_config_loader 作为回退选项使用）
 DEFAULT_CORE_API_PROFILES = {
     'free': {
-        'CORE_URL': "wss://api.lanlan.tech/core",
+        'CORE_URL': "wss://www.lanlan.tech/core",
         'CORE_MODEL': "free-model",
         'CORE_API_KEY': "free-access",
         'IS_FREE_VERSION': True,
@@ -570,7 +574,7 @@ DEFAULT_CORE_API_PROFILES = {
 
 DEFAULT_ASSIST_API_PROFILES = {
     'free': {
-        'OPENROUTER_URL': "https://api.lanlan.tech/text/v1",
+        'OPENROUTER_URL': "https://www.lanlan.tech/text/v1",
         'CONVERSATION_MODEL' : "free-model" ,
         'SUMMARY_MODEL': "free-model",
         'CORRECTION_MODEL': "free-model",

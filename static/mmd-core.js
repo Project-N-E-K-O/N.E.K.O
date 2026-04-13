@@ -942,6 +942,8 @@ class MMDCore {
         const mmd = this.manager.currentModel;
         if (!mmd || !mmd.mesh) return;
 
+        const THREE = window.THREE;
+
         // 禁用物理，防止位置变更期间拉丝
         const hadPhysics = this.manager.enablePhysics;
         this.manager.enablePhysics = false;
@@ -950,6 +952,40 @@ class MMDCore {
         mesh.position.set(0, 0, 0);
         mesh.quaternion.identity();
         mesh.scale.set(1, 1, 1);
+
+        // 复位相机到初始机位，使模型稳定出现在屏幕中央
+        // （MMD 的 orbit 仅旋转 mesh 不动相机，但用户可能通过其他入口改动过相机；
+        //  同时也为将来相机交互做前向兼容）
+        if (THREE && this.manager.camera) {
+            try {
+                mesh.updateMatrixWorld(true);
+                const box = new THREE.Box3().setFromObject(mesh);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+
+                const modelHeight = size.y > 0 ? size.y : 20;
+                const screenHeight = window.innerHeight;
+                const targetScreenHeight = screenHeight * 0.45;
+                const fov = this.manager.camera.fov * (Math.PI / 180);
+                // 让模型在屏幕上占约 45% 高度
+                const distance = (modelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
+
+                // 把相机锚定到 bounding box 中心，否则模型几何中心偏离世界原点时，
+                // 实际相机到目标的距离与 `distance` 不一致，复位构图会漂
+                this.manager.camera.position.set(center.x, center.y, center.z + Math.abs(distance));
+                this.manager.camera.lookAt(center.x, center.y, center.z);
+                this.manager.camera.updateProjectionMatrix();
+
+                if (this.manager.controls) {
+                    this.manager.controls.target.set(center.x, center.y, center.z);
+                    this.manager.controls.update();
+                }
+            } catch (err) {
+                console.warn('[MMD Core] 重置相机失败，回退到初始机位:', err);
+                this.manager.camera.position.set(0, 10, 70);
+                this.manager.camera.lookAt(0, 10, 0);
+            }
+        }
 
         if (mmd.physics && typeof mmd.physics.reset === 'function') {
             mesh.updateMatrixWorld(true);
@@ -961,13 +997,30 @@ class MMDCore {
 
         const modelPath = mmd.url;
         if (modelPath) {
+            // 构造重置后的相机位置，覆盖后端保存的旧值
+            let resetCameraPosition = null;
+            if (this.manager.camera) {
+                const cam = this.manager.camera;
+                const ctrl = this.manager.controls;
+                resetCameraPosition = {
+                    x: cam.position.x, y: cam.position.y, z: cam.position.z,
+                    targetX: ctrl ? ctrl.target.x : 0,
+                    targetY: ctrl ? ctrl.target.y : 0,
+                    targetZ: ctrl ? ctrl.target.z : 0
+                };
+            }
             this.saveUserPreferences(
                 modelPath,
                 { x: 0, y: 0, z: 0 },
                 { x: 1, y: 1, z: 1 },
-                { x: 0, y: 0, z: 0 }
+                { x: 0, y: 0, z: 0 },
+                null,  // display
+                null,  // viewport
+                resetCameraPosition
             );
         }
+
+        console.log('[MMD Core] 模型位置已重置，相机已复位');
     }
 
     // ═══════════════════ 锁定 ═══════════════════
@@ -1019,7 +1072,7 @@ class MMDCore {
 
     // ═══════════════════ 用户偏好持久化 ═══════════════════
 
-    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport) {
+    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport, cameraPosition) {
         try {
             if (!position || typeof position !== 'object' ||
                 !Number.isFinite(position.x) || !Number.isFinite(position.y) || !Number.isFinite(position.z)) {
@@ -1047,6 +1100,17 @@ class MMDCore {
                 Number.isFinite(viewport.width) && Number.isFinite(viewport.height) &&
                 viewport.width > 0 && viewport.height > 0) {
                 preferences.viewport = { width: viewport.width, height: viewport.height };
+            }
+            if (cameraPosition && typeof cameraPosition === 'object' &&
+                Number.isFinite(cameraPosition.x) && Number.isFinite(cameraPosition.y) && Number.isFinite(cameraPosition.z)) {
+                preferences.camera_position = {
+                    x: cameraPosition.x, y: cameraPosition.y, z: cameraPosition.z
+                };
+                if (Number.isFinite(cameraPosition.targetX) && Number.isFinite(cameraPosition.targetY) && Number.isFinite(cameraPosition.targetZ)) {
+                    preferences.camera_position.targetX = cameraPosition.targetX;
+                    preferences.camera_position.targetY = cameraPosition.targetY;
+                    preferences.camera_position.targetZ = cameraPosition.targetZ;
+                }
             }
 
             const controller = new AbortController();

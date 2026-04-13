@@ -66,6 +66,13 @@ const AvatarButtonMixin = {
                 });
             }
 
+            // 清理旧的侧边面板（防止画质切换等场景导致重复 UI）
+            document.querySelectorAll(`[data-neko-sidepanel-owner^="${options.popupPrefix}-popup-"]`).forEach(panel => {
+                if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+                if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                panel.remove();
+            });
+
             // 创建按钮容器
             const buttonsContainer = document.createElement('div');
             buttonsContainer.id = options.containerElementId;
@@ -671,6 +678,33 @@ const AvatarButtonMixin = {
         };
 
         /**
+         * 同步独立弹窗触发器（三角形）方向
+         */
+        ManagerPrototype.updateSeparatePopupTriggerIcon = function(buttonId, expanded) {
+            if (!buttonId) return;
+
+            const buttonData = this._floatingButtons && this._floatingButtons[buttonId];
+            const triggerIcon = buttonData && buttonData.triggerImg
+                ? buttonData.triggerImg
+                : document.querySelector(`.${this._avatarPrefix}-trigger-icon-${buttonId}`);
+            if (!triggerIcon) return;
+
+            if (typeof expanded === 'boolean') {
+                triggerIcon.style.transform = expanded ? 'rotate(180deg)' : 'rotate(0deg)';
+                return;
+            }
+
+            const buttonActive = !!(buttonData && buttonData.button && buttonData.button.dataset.active === 'true');
+            const popup = document.getElementById(`${this._avatarPrefix}-popup-${buttonId}`);
+            const popupExpanded = !!(
+                popup &&
+                popup.style.display === 'flex' &&
+                (popup.style.opacity !== '0' || popup.classList.contains('is-positioning'))
+            );
+            triggerIcon.style.transform = (buttonActive || popupExpanded) ? 'rotate(180deg)' : 'rotate(0deg)';
+        };
+
+        /**
          * 设置按钮激活状态
          */
         ManagerPrototype.setButtonActive = function(buttonId, active) {
@@ -688,6 +722,8 @@ const AvatarButtonMixin = {
             if (buttonData.imgOn) {
                 buttonData.imgOn.style.opacity = active ? '1' : '0';
             }
+
+            this.updateSeparatePopupTriggerIcon(buttonId);
 
             // 同步静音按钮的显示状态
             if (buttonId === 'mic') {
@@ -749,6 +785,13 @@ const AvatarButtonMixin = {
             // 移除 DOM 元素
             document.querySelectorAll(`#${opts.containerElementId}, #${opts.lockIconId}, #${opts.returnContainerId}`)
                 .forEach(el => el.remove());
+
+            // 移除侧边面板
+            document.querySelectorAll(`[data-neko-sidepanel-owner^="${opts.popupPrefix}-popup-"]`).forEach(panel => {
+                if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+                if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                panel.remove();
+            });
 
             // 移除事件监听
             if (this._uiWindowHandlers) {

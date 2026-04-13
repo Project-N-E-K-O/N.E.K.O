@@ -29,7 +29,18 @@
         "tryAgainLater": "後でもう一度お試しください",
         "user": "ユーザー",
         "project": "プロジェクト",
-        "collapse": "折りたたむ"
+        "collapse": "折りたたむ",
+        "play": "再生",
+        "pause": "一時停止",
+        "on": "オン",
+        "off": "オフ",
+        "toneMappingNone": "なし",
+        "toneMappingLinear": "線形",
+        "toneMappingReinhard": "Reinhard",
+        "toneMappingCineon": "Cineon",
+        "toneMappingACESFilmic": "ACES Filmic",
+        "toneMappingAgX": "AgX",
+        "toneMappingNeutral": "Neutral"
     },
     "characterProfile": {
         "gender": "性別",
@@ -46,7 +57,14 @@
             "档案名": "プロファイル名",
             "性别": "性別",
             "年龄": "年齢",
-            "昵称": "ニックネーム"
+            "昵称": "ニックネーム",
+            "性格原型": "性格原型",
+            "种族": "種族",
+            "自称": "自称",
+            "核心特质": "コア特性",
+            "行为特点": "行動特徴",
+            "厌恶": "嫌いなこと",
+            "一句话台词": "一言セリフ"
         }
     },
     "steam": {
@@ -66,6 +84,10 @@
         "tagsPreview": "タグ",
         "notesPreview": "メモ",
         "selectCharaToPreview": "プレビューするキャラクターを選択してください",
+        "coverBgBottom": "背景下層",
+        "characterCardCover": "キャラクターカードのカバー",
+        "coverBgTop": "背景上層",
+        "selectCharacterForCover": "キャラクターを選択してカバーを表示してください",
         "characterModelNotSet": "キャラクターモデルが設定されていません",
         "selectCharacterCard": "キャラクターカードを選択してください",
         "characterCardNotFound": "キャラクターカードのデータが見つかりません",
@@ -94,6 +116,14 @@
         "live2dInitFailed": "Live2Dプレビュー環境の初期化に失敗しました",
         "live2dPreviewLoaded": "Live2Dモデルプレビューの読み込みに成功しました",
         "live2dPreviewLoadFailed": "Live2Dモデルプレビューの読み込みに失敗しました: {{error}} ",
+        "searchAriaLabel": "サブスクリプションを検索",
+        "sortAriaLabel": "並び順",
+        "vrmModuleLoadFailed": "VRM モジュールの読み込みに失敗しました",
+        "vrmPreviewLoaded": "VRM モデルプレビューを読み込みました",
+        "vrmPreviewFailed": "VRM モデルプレビューの読み込みに失敗しました",
+        "mmdModuleLoadFailed": "MMD モジュールの読み込みに失敗しました",
+        "mmdPreviewLoaded": "MMD モデルプレビューを読み込みました",
+        "mmdPreviewFailed": "MMD モデルプレビューの読み込みに失敗しました",
         "placeholderCharacterName": "キャラクター名を入力",
         "placeholderDescription": "説明を入力",
         "placeholderCharacterSetting": "キャラクター設定を入力",
@@ -308,6 +338,7 @@
         "default": "デフォルト",
         "noVoiceSelected": "ボイスが選択されていません",
         "noDescription": "説明なし",
+            "characterSettingsFile": "キャラクター設定ファイル",
         "workshopAgreementText": "「アップロード」をクリックすることで、ワークショップ法的使用許諾契約を含むSteamワークショップ利用規約に同意したことになります：",
         "alreadyUploaded": "ワークショップにアップロード済み",
         "uploadTime": "アップロード日時",
@@ -521,7 +552,7 @@
         "title": "チャット",
         "viewerTitle": "チャット（ビューアーモード）",
         "tooltip": "チャットエリア",
-        "textInputPlaceholder": "テキストチャットモード... Enterで送信、Shift+Enterで改行",
+        "textInputPlaceholder": "Enterで送信、Shift+Enterで改行",
         "send": "送信",
         "importImage": "画像を取り込む",
         "importImageAriaLabel": "画像を取り込む",
@@ -543,6 +574,15 @@
         "avatarPreviewPlaceholder": "AVATAR",
         "avatarPreviewCardNote": "現在表示中の Live2D / VRM / MMD モデルからアバターを生成します。",
         "avatarPreviewRefresh": "アバターを更新",
+        "avatarPreviewReady": "アバターを更新しました",
+        "avatarPreviewReadyHint": "これは現在のモデルキャンバスからリアルタイムで抽出したアバタープレビューです。",
+        "avatarPreviewWaiting": "現在のモデルのアバターキャッシュの生成を待機しています",
+        "avatarPreviewUnavailable": "アバタープレビュー機能はまだ利用できません。",
+        "avatarPreviewInputHidden": "現在、入力欄は非表示です。テキストチャット画面に戻ってからアバターを確認してください。",
+        "avatarPreviewCachedHint": "現在のモデルのキャッシュ済みアバターを表示しています。更新を押すと再生成できます。",
+        "avatarPreviewRefreshing": "現在のアバターを更新しています...",
+        "avatarPreviewGenerating": "現在のアバターを生成しています...",
+        "avatarPreviewFailed": "アバターの生成に失敗しました",
         "emptyState": "チャット内容が接続されると、ここに表示されます。",
         "messageStreaming": "生成中",
         "messageFailed": "送信失敗",
@@ -958,6 +998,7 @@
             "hitAreaId": "タッチエリア",
             "close": "閉じる",
             "configSaved": "タッチ反応設定を保存しました",
+            "saved": "保存しました",
             "noHitAreas": "モデルにタッチエリアが定義されていません",
             "modelNotFound": "モデルが読み込まれていません",
             "modelDataNotReady": "モデル内部データの準備ができていません",
@@ -1260,9 +1301,9 @@
         "noVoices": "登録済みボイスはありません",
         "loadError": "読み込み失敗、後でもう一度お試しください",
         "delete": "削除",
-        "confirmDelete": "このボイスを削除しますか？",
+        "confirmDelete": "ボイス「{{name}}」を削除してもよろしいですか？この操作は元に戻せません。",
         "deleting": "削除中...",
-        "deleteSuccess": "削除成功",
+        "deleteSuccess": "ボイス「{{name}}」の削除が完了しました",
         "deleteFailed": "削除失敗",
         "deleteError": "削除失敗：{{error}}",
         "freePresetLabel": "無料プリセット",
@@ -1369,6 +1410,7 @@
         "profileNameContainsSlash": "プロフィール名にパス区切り文字(/または\\)を含めることはできません",
         "profileNameContainsDot": "プロフィール名にドット(.)を含めることはできません",
         "profileNameInvalidChars": "プロフィール名には文字、数字、空白、アンダースコア、ハイフン、括弧、中黒(·/・)、アポストロフィのみ使えます",
+        "profileNameReservedRoute": "この名前はシステム予約のルート名のため、プロフィール名として使用できません",
         "newProfileNameRequired": "新しいプロフィール名は空にできません",
         "newProfileNameTooLong": "プロフィール名が長すぎます",
         "required": "*",
@@ -1451,6 +1493,7 @@
         "saveMasterError": "マスター設定の保存に失敗しました",
         "autoSaved": "設定を自動保存しました",
         "autoSaveFailed": "自動保存に失敗しました。手動で保存してからページを閉じてください",
+        "partialSaveVoiceFailed": "キャラクターは保存されましたが、音声の更新に失敗しました: {{error}}",
         "exportCard": "キャラクターカードをエクスポート",
         "exportingCard": "キャラクターカードをエクスポート中...",
         "exportCardSuccess": "キャラクターカードのエクスポートに成功しました",
@@ -1513,6 +1556,7 @@
         "switchingCatgirl": "{{name}}に切り替え中...",
         "switchedCatgirl": "{{name}}に切り替えました",
         "switchCatgirlFailed": "{{name}}への切り替えに失敗しました",
+        "switchCatgirlError": "切り替えに失敗しました: {{error}}",
         "started": "{{name}}が起動しました",
         "voiceUpdated": "{{name}}の声が更新されました",
         "audioWorkletFailed": "AudioWorkletの読み込みに失敗しました",
@@ -1535,6 +1579,7 @@
         "connectingToServer": "サーバーに接続中...",
         "readyToSpeak": "話す準備ができました！",
         "screenShareRequiresVoice": "画面共有は音声/ビデオ通話専用です",
+        "screenRecordingPermissionDenied": "⚠️ 画面録画の権限が許可されていません。システム設定で画面録画を許可してください",
         "repetitionDetected": "高い繰り返しが検出されました。{{name}}を休ませるために会話を終了することをお勧めします。",
         "modelSwitched": "モデルを切り替えました",
         "screenSource": {
@@ -1543,6 +1588,7 @@
             "noSources": "利用可能な画面ソースがありません",
             "loadFailed": "画面ソースの読み込みに失敗しました",
             "screens": "画面",
+            "screenLabel": "画面 {{index}}",
             "windows": "ウィンドウ",
             "selected": "{{source}}を選択しました",
             "sourceLost": "画面共有で以前選択したウィンドウが見つかりません。全画面共有に切り替えました"
@@ -1620,6 +1666,7 @@
             "browserUse": "ブラウザ制御",
             "focusMode": "割り込み許可",
             "unavailable": "{{name}}は利用できません",
+            "toggleFailed": "{{name}}の切り替えに失敗しました: {{error}}",
             "checking": "確認中...",
             "serverOffline": "ネコクローサーバーがオフラインです",
             "masterRequired": "先にネコクローマスタースイッチを有効にしてください",
@@ -1655,7 +1702,8 @@
     },
     "subtitle": {
         "title": "リアルタイム字幕",
-        "enable": "翻訳を有効にする"
+        "enable": "字幕翻訳",
+        "enableAriaLabel": "字幕翻訳の切り替え"
     },
     "viewer": {
         "title": "ビューアー - Project N.E.K.O."
@@ -1673,7 +1721,8 @@
             "freeModelWarning": "クォータの制限により、無料モデルではネコクローモードがブロックされやすくなります。有料モデルへの切り替えをお勧めします。\n\nすでに有料APIを設定済みの場合は、NEKOを再起動してみてください。",
             "freeModelWarningTitle": "無料モデルのお知らせ",
             "connectivityCheck": "ネコクロー LLM 接続チェック中...",
-            "precheckFailed": "ネコクローのプリチェックに失敗しました：{{reason}}"
+            "precheckFailed": "ネコクローのプリチェックに失敗しました：{{reason}}",
+            "toggleFailed": "Agentの切り替えに失敗しました: {{error}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "接続チェック中...",
@@ -1806,9 +1855,12 @@
             "title": "待機アニメーション",
             "selectHint": "待機モーションを選択",
             "selectedCount": "{{count}} 件選択中",
-            "changed": "待機アニメーションが変更されました: {{name}}",
+            "changed": "待機アニメーションが変更されました",
             "changeFailed": "待機アニメーションの変更に失敗しました"
-        }
+        },
+        "managerInitFailed": "MMD マネージャーの初期化に失敗しました",
+        "modelLoading": "MMD モデルを読み込み中...",
+        "modelLoaded": "MMD モデルの読み込みに成功しました"
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] 依存モジュールの読み込みを開始しています",
@@ -1914,11 +1966,11 @@
         },
         "step1b": {
             "title": "🖱️ ドラッグ＆ズーム",
-            "desc": "ネコをドラッグして移動、マウスホイールで拡大縮小できます。試してみて~"
+            "desc": "ネコをドラッグして移動、<strong>マウスホイール</strong>で拡大縮小できます。試してみて~"
         },
         "step1c": {
             "title": "🔒 ネコをロック",
-            "desc": "このロックをクリックするとネコの位置を固定し、誤操作を防げます。再度クリックで解除~"
+            "desc": "このロックをクリックするとネコの位置を固定し、誤操作を防げます。ロック中はフローティングツールバーも表示されなくなります。再度クリックで解除~"
         },
         "step2": {
             "title": "💬 チャットエリア",
@@ -1942,15 +1994,15 @@
         },
         "step7": {
             "title": "🖥️ 画面共有",
-            "desc": "画面/ウィンドウ/タブをネコと共有~"
+            "desc": "有効にすると画面がネコに継続的に共有されます。この機能は音声セッション中のみ使用できます~"
         },
         "step8": {
             "title": "🔨 ネコクロー",
-            "desc": "ネコクローのパネルを開いて、computer use・browser use・plugin などの機能を使えます~"
+            "desc": "ネコクローのパネルを開いて、キーボード/マウス操作・ブラウザ制御・ユーザープラグインなどの機能を使えます。ネコにPCを操作してもらったり、仕事を手伝ってもらったり、一緒にゲームしたり~"
         },
         "step9": {
             "title": "💤 ネコを去らせる",
-            "desc": "ネコを一時的に去らせる。\"戻ってくるよう頼む\"で復帰~"
+            "desc": "ネコを一時的に去らせる。\"戻ってくるよう頼む\"で復帰~ <strong>ネコに問題が起きた時は、一度去らせて休ませると解決することが多いです。</strong>"
         },
         "step10": {
             "title": "⚙️ 設定",
@@ -1962,7 +2014,7 @@
         },
         "step14": {
             "title": "👀 プロアクティブビジョン",
-            "desc": "ネコが画面情報を積極的に読み取る。間隔をここで調整~"
+            "desc": "音声セッション中にリアルタイムで配信する画面共有とは異なり、プロアクティブビジョンを有効にするとネコが時々自分から画面をチラッと見ます。間隔をここで調整~"
         },
         "step15": {
             "title": "👤 キャラクターマネージャー",
@@ -1989,10 +2041,10 @@
             },
             "menu": {
                 "title": "📋 トレイメニュー",
-                "desc": "画面右下のトレイにN.E.K.Oのアイコンがあります。右クリックすると多くの項目が表示されます。よく使う2つの機能はこちら："
+                "desc": "システムトレイ（前のヒントを参照）の N.E.K.O アイコンを右クリックしてメニューを開きます。よく使う機能："
             },
             "reset": {
-                "title": "🔄 モデル位置をリセット",
+                "title": "🔄 アバター位置をリセット",
                 "desc": "ネコが画面外に移動したり、位置が気に入らない場合、このオプションでデフォルト位置に戻せます~"
             },
             "switchMode": "デスクトップ/モバイルモード切替",
@@ -2008,11 +2060,15 @@
                 "title": "🎉 チュートリアル完了！",
                 "desc": "すべてのチュートリアルが完了しました！N.E.K.Oの主な機能を理解できました。ネコとの交流を楽しんでください！チュートリアルを再度見るには、設定で「チュートリアルをリセット」をクリックしてください~"
             },
-            "resetPosition": "モデル位置をリセット",
+            "resetPosition": "アバター位置をリセット",
+            "resetPositionDesc": "ネコが画面外に出た時、デフォルト位置に戻します~",
+            "openChat": "チャットウィンドウを開く",
+            "openChatDesc": "テキスト会話用の独立チャットウィンドウを開きます~",
+            "important": "重要：",
             "compatibility": "互換モード",
-            "hotkeyDesc": "ここでグローバルホットキーを設定して、N.E.K.Oをより効率的に操作できます~",
+            "hotkeyDesc": "グローバルホットキーでN.E.K.Oを効率的に操作~",
             "uploadLogs": "ログをアップロード",
-            "exitDesc": "N.E.K.Oを閉じたい時は、ここで終了をクリックします。ウィンドウは枠なしなので、トレイメニューがアプリを終了する主な方法です~"
+            "exitDesc": "N.E.K.Oを終了します。トレイメニューが主な終了方法です~"
         },
         "completed": "✨ チュートリアル完了！楽しんでください~",
         "resetHint": {
@@ -2092,6 +2148,24 @@
                 "step9": {
                     "title": "🎞️ トーンマッピング",
                     "desc": "異なるトーンマッピングアルゴリズムを選択して、画像のハイライトとシャドウの表現スタイルを決定してください。"
+                }
+            },
+            "mmd": {
+                "step1": {
+                    "title": "🎭 MMD モデルを選択",
+                    "desc": "Live3D（MMD）モードでは、ここから使用するモデルを選択します。MMD と VRM は同じモデルリストを共有しています。"
+                },
+                "step2": {
+                    "title": "💃 VMD アニメーション",
+                    "desc": "MMD モデルに VMD モーションを選択します。「VMD をインポート」からカスタムモーションファイルを追加できます。"
+                },
+                "step3": {
+                    "title": "🌟 MMD ライティング",
+                    "desc": "「MMD モデル設定」で環境光、メインライト、露出、トーンマッピングを調整し、3D 画面の効果を制御します。"
+                },
+                "step4": {
+                    "title": "😄 エモーション設定",
+                    "desc": "モデルを選択した後、ここからエモーション設定に入ります。Live3D では MMD と VRM がこのボタンを共有しており、Live2D の「エモーション設定」とは別のボタンです。"
                 }
             }
         },
@@ -2653,6 +2727,7 @@
             "openQR": "📱 QRログインを開く",
             "loading": "QRコードを取得中...",
             "scanTitle": "📱 {{platform}} QRログイン",
+            "qrCodeAlt": "ログイン用QRコード",
             "waiting": "スキャン待ち...",
             "validFor": "QRコード有効期限: {{seconds}}秒",
             "refreshQR": "QRコードを更新",
@@ -2664,6 +2739,12 @@
                 "expired": "❌ {{message}}、更新してください",
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
+            },
+            "statusMessage": {
+                "success": "ログインに成功しました",
+                "expired": "QRコードの有効期限が切れました",
+                "scanned": "スキャン済みです。スマートフォンで確認してください",
+                "waiting": "スキャン待ち"
             },
             "successAlert": "QRログイン成功！Cookieが自動入力されました。「設定を保存」をクリックしてください",
             "extractFailed": "⚠️ QRログインは成功しましたが、フィールドの自動抽出に失敗しました。手動で確認してください。"
@@ -2686,7 +2767,9 @@
         "loadError": "音楽プレイヤーの読み込みに失敗しました",
         "autoplayBlocked": "ブラウザが自動再生をブロックしました。再生ボタンをクリックしてください",
         "ended": "終了",
-        "nowPlayingCard": "🎵 再生中"
+        "unknownState": "不明な状態",
+        "volume": "音量: ",
+        "unsafeSource": "安全でない音源をブロックしました: {{domain}}"
     },
     "Jukebox": {
         "title": "ジュークボックス",
@@ -2697,6 +2780,10 @@
         "playing": "再生中: {{name}} - {{artist}}",
         "error": "エラー: {{message}}",
         "volume": "音量",
+        "mute": "ミュート",
+        "noSongPlaying": "再生中の曲がありません",
+        "noActionBound": "現在の曲にはアニメーションが紐付けられていません",
+        "adjustOffsetFailed": "オフセットの調整に失敗しました",
         "stop": "停止",
         "sequence": "番号",
         "song": "曲",
@@ -2740,7 +2827,7 @@
         "idleRestoreFailed": "待機アニメーションの復元に失敗しました",
         "btnNotFoundGiveUp": "ジュークボックスボタンが見つかりません、バインドを中止",
         "minimizeBtnNotFoundGiveUp": "最小化ボタンが見つかりません、監視を中止",
-        "noticeDance": "💃 ダンス機能は MMD アバター読み込み時のみ利用可能です",
+        "noticeDance": "💃 ダンス機能は現在 MMD アバター読み込み時のみ利用可能です。今後さらに多くのインタラクションが追加される予定です",
         "noticeMusic": "⚠️ 現在の楽曲はテスト用です。今後のバージョンで著作権楽曲は削除されますので、ご自身でインポートしてください",
         "manager": "マネージャー",
         "managerTitle": "マネージャー",
@@ -2840,5 +2927,8 @@
             "title": "ミーム",
             "loadError": "ミームの読み込みに失敗しました"
         }
+    },
+    "achievement": {
+        "unlocked": "🏆 実績解除: {{description}}"
     }
 }

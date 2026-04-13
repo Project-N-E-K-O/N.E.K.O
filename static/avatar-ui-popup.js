@@ -101,7 +101,7 @@ function injectPopupStyles(prefix) {
             white-space: nowrap;
         }
         .${prefix}-toggle-item:focus-within {
-            outline: 2px solid var(--neko-popup-active, #2a7bc4);
+            outline: 2px solid var(--neko-popup-accent, #44b7fe);
             outline-offset: 2px;
         }
         .${prefix}-toggle-item[aria-disabled="true"] {
@@ -123,8 +123,8 @@ function injectPopupStyles(prefix) {
             justify-content: center;
         }
         .${prefix}-toggle-indicator[aria-checked="true"] {
-            background-color: var(--neko-popup-active, #2a7bc4);
-            border-color: var(--neko-popup-active, #2a7bc4);
+            background-color: var(--neko-popup-accent, #44b7fe);
+            border-color: var(--neko-popup-accent, #44b7fe);
         }
         .${prefix}-toggle-checkmark {
             color: #fff;
@@ -147,6 +147,14 @@ function injectPopupStyles(prefix) {
         }
         .${prefix}-toggle-item:hover:not([aria-disabled="true"]) {
             background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));
+        }
+        .${prefix}-toggle-item.${prefix}-toggle-item-static,
+        .${prefix}-toggle-item.${prefix}-toggle-item-static:hover:not([aria-disabled="true"]) {
+            background: var(--neko-popup-selected-bg, rgba(68, 183, 254, 0.1)) !important;
+        }
+        .${prefix}-toggle-item.${prefix}-toggle-item-static .${prefix}-toggle-indicator[aria-checked="true"] {
+            background-color: #69c5ff;
+            border-color: #69c5ff;
         }
         .${prefix}-settings-menu-item {
             display: flex;
@@ -200,6 +208,19 @@ function injectPopupStyles(prefix) {
  * 创建弹出框（按 buttonId 区分类型）
  */
 function createPopup(manager, prefix, buttonId) {
+    // 去重守卫：如果同 ID 弹窗已存在，先移除旧的及其侧面板
+    const existingPopup = document.getElementById(`${prefix}-popup-${buttonId}`);
+    if (existingPopup) {
+        const existingId = existingPopup.id;
+        document.querySelectorAll(`[data-neko-sidepanel-owner="${existingId}"]`).forEach(panel => {
+            if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+            if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+            panel.remove();
+        });
+        if (existingPopup._hideTimeoutId) { clearTimeout(existingPopup._hideTimeoutId); }
+        existingPopup.remove();
+    }
+
     const popup = document.createElement('div');
     popup.id = `${prefix}-popup-${buttonId}`;
     popup.className = `${prefix}-popup`;
@@ -224,9 +245,13 @@ function createPopup(manager, prefix, buttonId) {
         popup.style.overflowY = 'auto';
     } else if (buttonId === 'agent') {
         popup.classList.add(`${prefix}-popup-agent`);
+        popup.style.gap = '0';
+        popup.style.cursor = 'pointer';
         window.AgentHUD._createAgentPopupContent.call(manager, popup);
     } else if (buttonId === 'settings') {
         popup.classList.add(`${prefix}-popup-settings`);
+        popup.style.gap = '0';
+        popup.style.cursor = 'pointer';
         manager._createSettingsPopupContent(popup);
     }
 
@@ -300,10 +325,10 @@ function createSettingsPopupContent(manager, prefix, popup) {
                 const AUTH_FALLBACK_LABEL = '配置媒体凭证';
                 const authLink = document.createElement('div');
                 Object.assign(authLink.style, {
-                    display: 'flex', alignItems: 'center', gap: '6px',
-                    padding: '4px 8px', marginLeft: '-6px', fontSize: '12px',
+                    display: 'flex', alignItems: 'center', gap: '4px',
+                    padding: '6px 10px', marginLeft: '0', fontSize: '12px',
                     color: 'var(--neko-popup-text, #333)', cursor: 'pointer',
-                    borderRadius: '6px', transition: 'background 0.2s ease', width: '100%'
+                    borderRadius: '6px', transition: 'background 0.2s ease', width: '100%', boxSizing: 'border-box'
                 });
 
                 const authIcon = document.createElement('img');
@@ -427,17 +452,18 @@ function createSettingsMenuButton(manager, prefix, config) {
  */
 function createChatSettingsSidePanel(manager, prefix, popup) {
     const container = manager._createSidePanelContainer();
+    container.setAttribute('data-neko-sidepanel-type', 'chat-settings');
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
-    container.style.gap = '2px';
+    container.style.gap = '0';
     container.style.width = '200px';
     container.style.minWidth = '0';
     container.style.padding = '4px 4px';
 
     const chatToggles = [
-        { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages' },
-        { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true },
-        { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled' },
+        { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages', alwaysTinted: true },
+        { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
+        { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
     ];
 
     chatToggles.forEach(toggle => {
@@ -447,6 +473,7 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
 
     // 字数限制滑动条
     const textGuardContainer = manager._createTextGuardSlider();
+    textGuardContainer.style.marginTop = '12px';
     container.appendChild(textGuardContainer);
 
     document.body.appendChild(container);
@@ -462,7 +489,9 @@ function createTextGuardSlider(manager, prefix) {
         display: 'flex',
         flexDirection: 'column',
         gap: '4px',
-        padding: '4px 0'
+        padding: '4px 0',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
     });
 
     // 标签和数值行
@@ -480,7 +509,9 @@ function createTextGuardSlider(manager, prefix) {
     Object.assign(label.style, {
         fontSize: '12px',
         color: 'var(--neko-popup-text, #333)',
-        flexShrink: '0'
+        flexShrink: '0',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
     });
 
     const valueDisplay = document.createElement('span');
@@ -489,7 +520,9 @@ function createTextGuardSlider(manager, prefix) {
         color: 'var(--neko-popup-active, #2a7bc4)',
         fontWeight: '500',
         minWidth: '60px',
-        textAlign: 'right'
+        textAlign: 'right',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
     });
 
     labelRow.appendChild(label);
@@ -546,45 +579,9 @@ function createTextGuardSlider(manager, prefix) {
 
     updateDisplay(currentPosition);
 
-    // 警告提示
-    const warningRow = document.createElement('div');
-    Object.assign(warningRow.style, {
-        fontSize: '11px',
-        color: '#ff6b6b',
-        lineHeight: '1.4',
-        minHeight: '16px',
-        opacity: '0',
-        transition: 'opacity 0.2s ease'
-    });
-
-    const updateWarning = (position) => {
-        const pos = parseInt(position);
-        const value = 50 + pos * 150;
-        if (pos === 11) {
-            // 无限制
-            const warningText = (typeof window.t === 'function')
-                ? window.t('settings.toggles.textGuardUnlimitedWarning')
-                : '无限制可能导致模型生成过长回复，消耗较多Token';
-            warningRow.textContent = warningText;
-            warningRow.style.opacity = '1';
-        } else if (value > 500) {
-            // 超过500字显示提示
-            const warningText = (typeof window.t === 'function')
-                ? window.t('settings.toggles.textGuardHighWarning')
-                : '设置过大可能导致回复过长，建议保持在500字以内';
-            warningRow.textContent = warningText;
-            warningRow.style.opacity = '1';
-        } else {
-            warningRow.style.opacity = '0';
-        }
-    };
-
-    updateWarning(currentPosition);
-
     slider.addEventListener('input', () => {
         const position = parseInt(slider.value);
         updateDisplay(position);
-        updateWarning(position);
     });
 
     slider.addEventListener('change', () => {
@@ -611,7 +608,9 @@ function createTextGuardSlider(manager, prefix) {
         fontSize: '10px',
         color: '#888',
         lineHeight: '1.4',
-        marginTop: '4px'
+        marginTop: '0',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
     });
     const noteText = (typeof window.t === 'function')
         ? window.t('settings.toggles.textGuardNote')
@@ -620,7 +619,6 @@ function createTextGuardSlider(manager, prefix) {
 
     container.appendChild(labelRow);
     container.appendChild(sliderRow);
-    container.appendChild(warningRow);
     container.appendChild(noteRow);
 
     return container;
@@ -631,6 +629,7 @@ function createTextGuardSlider(manager, prefix) {
  */
 function createCharacterSettingsSidePanel(manager, prefix) {
     const container = manager._createSidePanelContainer();
+    container.setAttribute('data-neko-sidepanel-type', 'character-settings');
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
     container.style.gap = '2px';
@@ -651,6 +650,26 @@ function createCharacterSettingsSidePanel(manager, prefix) {
 /**
  * 创建侧边面板菜单项
  */
+// 跟踪所有已打开的模型管理子窗口，只有全部关闭后才恢复主页渲染
+const _activeManagerWindows = new Set();
+let _managerWindowCheckTimer = null;
+
+function _startManagerWindowWatcher() {
+    if (_managerWindowCheckTimer) return;
+    _managerWindowCheckTimer = setInterval(() => {
+        for (const win of _activeManagerWindows) {
+            if (win.closed) _activeManagerWindows.delete(win);
+        }
+        if (_activeManagerWindows.size === 0) {
+            clearInterval(_managerWindowCheckTimer);
+            _managerWindowCheckTimer = null;
+            if (typeof window.handleShowMainUI === 'function') {
+                window.handleShowMainUI();
+            }
+        }
+    }, 1000);
+}
+
 function createSidePanelMenuItem(manager, prefix, item) {
     const menuItem = document.createElement('div');
     menuItem.id = `${prefix}-sidepanel-${item.id}`;
@@ -711,6 +730,23 @@ function createSidePanelMenuItem(manager, prefix, item) {
 
     let isOpening = false;
 
+    // 打开子窗口并暂停主页渲染，所有管理窗口关闭后自动恢复
+    function openAndPauseMainUI(url, name, feat) {
+        let childWin;
+        if (typeof window.openOrFocusWindow === 'function') {
+            childWin = window.openOrFocusWindow(url, name, feat);
+        } else {
+            childWin = window.open(url, name, feat);
+        }
+        // 弹窗被拦截或打开失败时不隐藏主页，避免无法恢复
+        if (!childWin) return;
+        if (typeof window.handleHideMainUI === 'function') {
+            window.handleHideMainUI();
+        }
+        _activeManagerWindows.add(childWin);
+        _startManagerWindowWatcher();
+    }
+
     menuItem.addEventListener('click', (e) => {
         e.stopPropagation();
         if (isOpening) return;
@@ -724,7 +760,8 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 isOpening = true;
-                window.location.href = finalUrl;
+                windowName = `neko_${item.id}_${encodeURIComponent(lanlanName || 'default')}`;
+                openAndPauseMainUI(finalUrl, windowName);
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -894,12 +931,13 @@ function createSettingsLinkItem(manager, prefix, item, popup) {
  */
 function createAnimationSettingsSidePanel(manager, prefix) {
     const container = manager._createSidePanelContainer();
+    container.setAttribute('data-neko-sidepanel-type', 'animation-settings');
     container.style.flexDirection = 'column';
     container.style.alignItems = 'stretch';
-    container.style.gap = '8px';
+    container.style.gap = '0';
     container.style.width = '200px';
     container.style.minWidth = '0';
-    container.style.padding = '10px 14px';
+    container.style.padding = '10px 14px 2px';
 
     const LABEL_STYLE = { width: '36px', flexShrink: '0', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
     const VALUE_STYLE = { width: '36px', flexShrink: '0', textAlign: 'right', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
@@ -937,16 +975,22 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         qualityValue.textContent = window.t ? window.t(qualityLabelKeys[idx]) : qualityDefaults[idx];
         qualityValue.setAttribute('data-i18n', qualityLabelKeys[idx]);
     });
+    let _qualityChangeTimer = null;
     qualitySlider.addEventListener('change', () => {
         const idx = parseInt(qualitySlider.value, 10);
         const quality = qualityNames[idx];
         window.renderQuality = quality;
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
-        window.dispatchEvent(new CustomEvent('neko-render-quality-changed', { detail: { quality } }));
-        // 调用系统特定的回调
-        if (typeof manager._onQualityChange === 'function') {
-            manager._onQualityChange(quality);
-        }
+        // 防抖：避免快速连续切换画质触发多次模型重载
+        if (_qualityChangeTimer) clearTimeout(_qualityChangeTimer);
+        _qualityChangeTimer = setTimeout(() => {
+            _qualityChangeTimer = null;
+            window.dispatchEvent(new CustomEvent('neko-render-quality-changed', { detail: { quality: window.renderQuality } }));
+            // 调用系统特定的回调
+            if (typeof manager._onQualityChange === 'function') {
+                manager._onQualityChange(window.renderQuality);
+            }
+        }, 300);
     });
     qualitySlider.addEventListener('click', (e) => e.stopPropagation());
     qualitySlider.addEventListener('mousedown', (e) => e.stopPropagation());
@@ -1004,9 +1048,19 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 
     // ── 跟踪相关开关（统一三行间距） ──
     const trackingRow = document.createElement('div');
-    Object.assign(trackingRow.style, { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '4px', width: '100%', marginTop: '4px' });
+    Object.assign(trackingRow.style, { display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '0', width: '100%', marginTop: '0' });
 
-    const trackingToggleRowStyle = { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', width: '100%' };
+    const trackingToggleRowStyle = {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        cursor: 'pointer',
+        width: '100%',
+        padding: '8px 12px',
+        borderRadius: '6px',
+        boxSizing: 'border-box',
+        transition: 'background 0.2s ease'
+    };
 
     // 鼠标跟踪复选框
     const checkbox = document.createElement('input');
@@ -1244,6 +1298,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
         transform: 'translateX(-6px)',
         pointerEvents: 'auto',
+        cursor: 'pointer',
         flexWrap: options.flexWrap || 'wrap',
         width: options.width || 'auto',
         maxWidth: '300px'
@@ -1360,13 +1415,14 @@ function createIntervalControl(manager, prefix, toggle) {
     const container = document.createElement('div');
     container.className = `${prefix}-interval-control-${toggle.id}`;
     container.setAttribute('data-neko-sidepanel', '');
+    container.setAttribute('data-neko-sidepanel-type', `interval-${toggle.id}`);
     Object.assign(container.style, {
         position: 'fixed',
         display: 'none',
         alignItems: 'stretch',
         flexDirection: 'column',
-        gap: '6px',
-        padding: '6px 12px',
+        gap: toggle.id === 'proactive-chat' ? '0' : '6px',
+        padding: toggle.id === 'proactive-chat' ? '10px 10px 1px' : '6px 12px',
         fontSize: '12px',
         color: 'var(--neko-popup-text, #333)',
         opacity: '0',
@@ -1379,6 +1435,7 @@ function createIntervalControl(manager, prefix, toggle) {
         transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
         transform: 'translateX(-6px)',
         pointerEvents: 'auto',
+        cursor: 'pointer',
         flexWrap: 'nowrap',
         width: 'max-content',
         maxWidth: 'min(320px, calc(100vw - 24px))'
@@ -1391,7 +1448,13 @@ function createIntervalControl(manager, prefix, toggle) {
     container.addEventListener('click', stopEventPropagation);
 
     const sliderRow = document.createElement('div');
-    Object.assign(sliderRow.style, { display: 'flex', alignItems: 'center', gap: '4px', width: 'auto' });
+    Object.assign(sliderRow.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '4px',
+        width: 'auto',
+        marginBottom: toggle.id === 'proactive-chat' ? '8px' : '0'
+    });
 
     const labelKey = toggle.id === 'proactive-chat' ? 'settings.interval.chatIntervalBase' : 'settings.interval.visionInterval';
     const defaultLabel = toggle.id === 'proactive-chat' ? '基础间隔' : '读取间隔';
@@ -1521,8 +1584,8 @@ function createCheckIndicator(manager, prefix) {
 
     const updateStyle = (checked) => {
         if (checked) {
-            indicator.style.backgroundColor = 'var(--neko-popup-active, #2a7bc4)';
-            indicator.style.borderColor = 'var(--neko-popup-active, #2a7bc4)';
+            indicator.style.backgroundColor = 'var(--neko-popup-accent, #44b7fe)';
+            indicator.style.borderColor = 'var(--neko-popup-accent, #44b7fe)';
             checkmark.style.opacity = '1';
         } else {
             indicator.style.backgroundColor = 'transparent';
@@ -1667,6 +1730,9 @@ function createToggleItem(manager, prefix, toggle, popup) {
 function createSettingsToggleItem(manager, prefix, toggle) {
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
+    if (toggle.alwaysTinted) {
+        toggleItem.classList.add(`${prefix}-toggle-item-static`);
+    }
     toggleItem.id = `${prefix}-toggle-${toggle.id}`;
     toggleItem.setAttribute('role', 'switch');
     toggleItem.setAttribute('tabIndex', '0');
@@ -1722,8 +1788,9 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const updateIndicatorStyle = (checked) => {
         if (checked) {
-            indicator.style.backgroundColor = 'var(--neko-popup-active, #2a7bc4)';
-            indicator.style.borderColor = 'var(--neko-popup-active, #2a7bc4)';
+            const activeColor = toggle.alwaysTinted ? '#69c5ff' : 'var(--neko-popup-accent, #44b7fe)';
+            indicator.style.backgroundColor = activeColor;
+            indicator.style.borderColor = activeColor;
             checkmark.style.opacity = '1';
         } else {
             indicator.style.backgroundColor = 'transparent';
@@ -1751,7 +1818,9 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         updateIndicatorStyle(isChecked);
-        toggleItem.style.background = isChecked
+        toggleItem.style.background = toggle.alwaysTinted
+            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
+            : isChecked
             ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
             : 'transparent';
     };
@@ -1762,16 +1831,18 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     toggleItem.appendChild(indicator);
     toggleItem.appendChild(label);
 
-    toggleItem.addEventListener('mouseenter', () => {
-        if (checkbox.checked) {
-            toggleItem.style.background = 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))';
-        } else {
-            toggleItem.style.background = 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
-        }
-    });
-    toggleItem.addEventListener('mouseleave', () => {
-        updateStyle();
-    });
+    if (!toggle.alwaysTinted) {
+        toggleItem.addEventListener('mouseenter', () => {
+            if (checkbox.checked) {
+                toggleItem.style.background = 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))';
+            } else {
+                toggleItem.style.background = 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
+            }
+        });
+        toggleItem.addEventListener('mouseleave', () => {
+            updateStyle();
+        });
+    }
 
     const handleToggleChange = (isChecked) => {
         updateStyle();
@@ -2098,7 +2169,7 @@ const AvatarPopupMixin = {
             if (typeof popup._showToken !== 'number') popup._showToken = 0;
 
             if (buttonId === 'agent' && !isVisible) {
-                window.dispatchEvent(new CustomEvent('live2d-agent-popup-opening'));
+                window.dispatchEvent(new CustomEvent('neko-popup-opening'));
             }
 
             if (isVisible) {
@@ -2107,9 +2178,10 @@ const AvatarPopupMixin = {
                 popup.style.opacity = '0';
                 const closingOpensLeft = popup.dataset.opensLeft === 'true';
                 popup.style.transform = closingOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
-                const triggerIcon = document.querySelector(`.${prefix}-trigger-icon-${buttonId}`);
-                if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
-                if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+                if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                    this.updateSeparatePopupTriggerIcon(buttonId, false);
+                }
+                if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('neko-popup-closed'));
 
                 // 关闭该 popup 所属的所有侧面板
                 const closingPopupId = popup.id;
@@ -2147,6 +2219,9 @@ const AvatarPopupMixin = {
                 popup.style.opacity = '0';
                 popup.style.visibility = 'visible';
                 popup.classList.add('is-positioning');
+                if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                    this.updateSeparatePopupTriggerIcon(buttonId, true);
+                }
 
                 const hasSeparatePopupTrigger = this._buttonConfigs && this._buttonConfigs.find(c => c.id === buttonId && c.separatePopupTrigger);
                 if (!hasSeparatePopupTrigger && typeof this.setButtonActive === 'function') {
@@ -2178,8 +2253,9 @@ const AvatarPopupMixin = {
                         popup.style.visibility = 'visible';
                         popup.style.opacity = '1';
                         popup.classList.remove('is-positioning');
-                        const triggerIcon = document.querySelector(`.${prefix}-trigger-icon-${buttonId}`);
-                        if (triggerIcon) triggerIcon.style.transform = 'rotate(180deg)';
+                        if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                            this.updateSeparatePopupTriggerIcon(buttonId);
+                        }
                         requestAnimationFrame(() => {
                             if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
                             popup.style.transform = 'translateX(0)';
@@ -2199,7 +2275,7 @@ const AvatarPopupMixin = {
             const popup = document.getElementById(`${prefix}-popup-${buttonId}`);
             if (!popup || popup.style.display !== 'flex') return false;
 
-            if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+            if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('neko-popup-closed'));
             popup._showToken = (popup._showToken || 0) + 1;
             if (popup._hideTimeoutId) { clearTimeout(popup._hideTimeoutId); popup._hideTimeoutId = null; }
 
@@ -2220,8 +2296,9 @@ const AvatarPopupMixin = {
                 });
             }
 
-            const triggerIcon = document.querySelector(`.${prefix}-trigger-icon-${buttonId}`);
-            if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
+            if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                this.updateSeparatePopupTriggerIcon(buttonId, false);
+            }
 
             popup._hideTimeoutId = setTimeout(() => {
                 finalizePopupClosedState(popup);
@@ -2287,7 +2364,14 @@ const AvatarPopupMixin = {
         };
 
         ManagerProto.renderScreenSourceList = async function (popup) {
-            if (!popup) return;
+            if (!popup) return false;
+            const popupId = popup.id;
+            const isPopupAvailable = () => {
+                if (!popup || !popup.isConnected) return false;
+                if (popupId && document.getElementById(popupId) !== popup) return false;
+                return popup.style.display === 'flex' && popup.style.opacity !== '0';
+            };
+            if (!isPopupAvailable()) return false;
             popup.innerHTML = '';
 
             if (!window.electronDesktopCapturer || typeof window.electronDesktopCapturer.getSources !== 'function') {
@@ -2295,7 +2379,7 @@ const AvatarPopupMixin = {
                 noElectron.textContent = window.t ? window.t('app.screenSource.notAvailable') : '屏幕捕获不可用';
                 Object.assign(noElectron.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
                 popup.appendChild(noElectron);
-                return;
+                return true;
             }
 
             const loading = document.createElement('div');
@@ -2305,6 +2389,7 @@ const AvatarPopupMixin = {
 
             try {
                 const sources = await window.electronDesktopCapturer.getSources({ types: ['window', 'screen'] });
+                if (!isPopupAvailable()) return false;
                 popup.innerHTML = '';
 
                 if (!sources || sources.length === 0) {
@@ -2312,7 +2397,7 @@ const AvatarPopupMixin = {
                     noSrc.textContent = window.t ? window.t('app.screenSource.noSources') : '未找到可用源';
                     Object.assign(noSrc.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
                     popup.appendChild(noSrc);
-                    return;
+                    return true;
                 }
 
                 const screens = sources.filter(s => s.id.startsWith('screen:'));
@@ -2328,7 +2413,10 @@ const AvatarPopupMixin = {
                     const grid = document.createElement('div');
                     Object.assign(grid.style, { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', padding: '6px' });
 
-                    items.forEach(source => {
+                    items.forEach((source, index) => {
+                        const displayName = typeof window.getScreenSourceDisplayName === 'function'
+                            ? window.getScreenSourceDisplayName(source, index)
+                            : source.name;
                         const option = document.createElement('div');
                         option.className = 'screen-source-option';
                         option.dataset.sourceId = source.id;
@@ -2350,7 +2438,11 @@ const AvatarPopupMixin = {
                         thumb.onerror = () => { thumb.style.display = 'none'; };
 
                         const name = document.createElement('div');
-                        name.textContent = source.name;
+                        name.textContent = displayName || source.name || '';
+                        if (source.name) {
+                            name.title = source.name;
+                            option.title = source.name;
+                        }
                         Object.assign(name.style, {
                             fontSize: '11px', textAlign: 'center', maxWidth: '90px',
                             overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box',
@@ -2373,7 +2465,7 @@ const AvatarPopupMixin = {
                         option.addEventListener('click', (e) => {
                             e.stopPropagation();
                             if (typeof window.selectScreenSource === 'function') {
-                                window.selectScreenSource(source.id, source.name);
+                                window.selectScreenSource(source.id, source.name, displayName);
                             }
                         });
 
@@ -2385,12 +2477,15 @@ const AvatarPopupMixin = {
 
                 createGrid(window.t ? window.t('app.screenSource.screens') : '屏幕', screens);
                 createGrid(window.t ? window.t('app.screenSource.windows') : '窗口', windows);
+                return true;
             } catch (err) {
+                if (!isPopupAvailable()) return false;
                 popup.innerHTML = '';
                 const errDiv = document.createElement('div');
                 errDiv.textContent = window.t ? window.t('app.screenSource.loadFailed') : '获取屏幕源失败';
                 Object.assign(errDiv.style, { padding: '12px', fontSize: '13px', color: '#ff4d4f', textAlign: 'center' });
                 popup.appendChild(errDiv);
+                return true;
             }
         };
 

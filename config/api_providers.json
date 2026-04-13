@@ -4,7 +4,7 @@
       "key": "free",
       "name": "免费版（猫娘专属福利）",
       "description": "阶跃星辰赞助，智能水平高且完全免费，无需API Key",
-      "core_url": "wss://api.lanlan.tech/core",
+      "core_url": "wss://www.lanlan.tech/core",
       "core_model": "free-model",
       "core_api_key": "free-access",
       "is_free_version": true
@@ -49,7 +49,7 @@
       "key": "free",
       "name": "免费版（猫娘专属福利）",
       "description": "阶跃星辰赞助，完全免费，无需API Key，但不支持自定义语音",
-      "openrouter_url": "https://api.lanlan.tech/text/v1",
+      "openrouter_url": "https://www.lanlan.tech/text/v1",
       "conversation_model": "free-model",
       "summary_model": "free-model",
       "correction_model": "free-model",

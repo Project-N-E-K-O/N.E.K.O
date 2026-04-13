@@ -1,10 +1,12 @@
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useMemo } from 'react';
 import MessageBubble from './MessageBubble';
+import { i18n } from './i18n';
 import { type ChatMessage, type MessageAction } from './message-schema';
+
+const MAX_DISPLAY_MESSAGES = 50;
 
 type MessageListProps = {
   messages: ChatMessage[];
-  emptyText?: string;
   ariaLabel?: string;
   failedStatusLabel?: string;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
@@ -25,15 +27,21 @@ function shouldGroupWithPrevious(current: ChatMessage, previous?: ChatMessage) {
 
 export default function MessageList({
   messages,
-  emptyText = '聊天内容接入后会显示在这里。',
-  ariaLabel = 'Chat messages',
-  failedStatusLabel = '发送失败',
+  ariaLabel = i18n('chat.messageListAriaLabel', 'Chat messages'),
+  failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
   onAction,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldScrollRef = useRef(true);
 
-  const isStreaming = messages.some(m => m.status === 'streaming');
+  const displayMessages = useMemo(
+    () => messages.length > MAX_DISPLAY_MESSAGES
+      ? messages.slice(-MAX_DISPLAY_MESSAGES)
+      : messages,
+    [messages],
+  );
+
+  const isStreaming = displayMessages.some(m => m.status === 'streaming');
 
   const scrollToBottom = useCallback(() => {
     const container = containerRef.current;
@@ -51,7 +59,7 @@ export default function MessageList({
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, scrollToBottom]);
+  }, [displayMessages, scrollToBottom]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -68,7 +76,7 @@ export default function MessageList({
     }
 
     return () => observer.disconnect();
-  }, [messages.length]);
+  }, [displayMessages.length]);
 
   const handleScroll = () => {
     const container = containerRef.current;
@@ -79,21 +87,20 @@ export default function MessageList({
     shouldScrollRef.current = isNearBottom;
   };
 
-  if (messages.length === 0) {
+  if (displayMessages.length === 0) {
     return (
       <div className="message-list" ref={containerRef} aria-label={ariaLabel}>
-        <div className="message-empty-state">{emptyText}</div>
       </div>
     );
   }
 
   return (
     <div className="message-list" ref={containerRef} aria-label={ariaLabel} onScroll={handleScroll}>
-      {messages.map((message, index) => (
+      {displayMessages.map((message, index) => (
         <MessageBubble
           key={message.id}
           message={message}
-          isGroupedWithPrevious={shouldGroupWithPrevious(message, messages[index - 1])}
+          isGroupedWithPrevious={shouldGroupWithPrevious(message, displayMessages[index - 1])}
           failedStatusLabel={failedStatusLabel}
           onAction={onAction}
         />

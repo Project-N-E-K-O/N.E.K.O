@@ -54,8 +54,10 @@ import httpx
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
 
-# TTS 错误码中不应自动重试的类型（欠费 / 配额耗尽）
-NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_QUOTA_TIME'}
+# TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
+NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED'}
+# TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
+IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
 
 # ---------------------------------------------------------------------------
 # 重要通知缓冲池
@@ -262,6 +264,7 @@ class LLMSessionManager:
         self._tts_respawn_task: Optional[asyncio.Task] = None  # 延迟重试 Task，end_session 时取消
         self._last_tts_error_code: str = ''  # 上次 TTS 错误码
         self._tts_retry_notify_count: int = 0  # TTS 重试通知计数，前3次不通知前端
+        self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -339,9 +342,10 @@ class LLMSessionManager:
         # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
         self.audio_resampler.clear()
         await self._clear_tts_pipeline()
-        
+        self._tts_done_queued_for_turn = False  # 新轮次重置 TTS 结束信号标记
+
         await self.send_user_activity()
-        
+
         # 立即生成新的 speech_id，确保新回复不会使用被打断的 ID
         # 这样即使 handle_input_transcript 先于 handle_new_message 执行，
         # 新回复的 audio_chunk 也不会被错误丢弃
@@ -395,10 +399,14 @@ class LLMSessionManager:
         exclusively to user-initiated conversation turns.
         """
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            try:
-                self.tts_request_queue.put((None, None))
-            except Exception as e:
-                logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
+            if self._tts_done_queued_for_turn:
+                logger.debug("handle_proactive_complete: TTS done 已排入队列，跳过重复信号")
+            else:
+                try:
+                    self.tts_request_queue.put((None, None))
+                    self._tts_done_queued_for_turn = True
+                except Exception as e:
+                    logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
         if self.sync_message_queue:
             self.sync_message_queue.put({'type': 'system', 'data': 'turn end agent_callback'})
         try:
@@ -414,11 +422,15 @@ class LLMSessionManager:
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            logger.info("📨 Response complete (LLM 回复结束)")
-            try:
-                self.tts_request_queue.put((None, None))
-            except Exception as e:
-                logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
+            if self._tts_done_queued_for_turn:
+                logger.debug("📨 Response complete: TTS done 已排入队列，跳过重复信号")
+            else:
+                logger.info("📨 Response complete (LLM 回复结束)")
+                try:
+                    self.tts_request_queue.put((None, None))
+                    self._tts_done_queued_for_turn = True
+                except Exception as e:
+                    logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
         self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
 
         # 直接向前端发送turn end消息
@@ -590,34 +602,44 @@ class LLMSessionManager:
 
     async def send_lanlan_response(self, text: str, is_first_chunk: bool = False, turn_id: str | None = None):
         """Qwen输出转录回调: 可用于前端显示/缓存/同步。"""
+        text_clean = self.emotion_pattern.sub('', text)
+        effective_turn_id = turn_id or self.current_speech_id
+        message = {
+            "type": "gemini_response",
+            "text": text_clean,
+            "isNewMessage": is_first_chunk,
+            "turn_id": effective_turn_id
+        }
+
+        # 无论 WS 发送成功与否，始终将消息写入 sync_message_queue 和 message_cache，
+        # 确保 cross_server 历史组装不因 WS 断连而丢失 assistant 内容。
+        if is_first_chunk:
+            logger.debug("[%s] send_lanlan_response: first chunk (len=%d)", self.lanlan_name, len(text_clean))
+        self.sync_message_queue.put({"type": "json", "data": message})
+        if hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
+            if not hasattr(self, 'message_cache_for_new_session'):
+                self.message_cache_for_new_session = []
+            # 注意：缓存使用原始文本，不翻译（用于记忆等内部处理）
+            if len(self.message_cache_for_new_session) == 0 or self.message_cache_for_new_session[-1]['role']==self.master_name:
+                self.message_cache_for_new_session.append(
+                    {"role": self.lanlan_name, "text": text_clean})
+            elif self.message_cache_for_new_session[-1]['role'] == self.lanlan_name:
+                self.message_cache_for_new_session[-1]['text'] += text_clean
+
+        # WS 发送（可能失败，但 sync/cache 已保存）
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                text = self.emotion_pattern.sub('', text)
+            async def _do_send():
+                if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                    await self.websocket.send_json(message)
+                    return True
+                return False
 
-                # 优先使用传入的 turn_id, 兜底使用当前会话记录的 speech_id (即 turn id)
-                effective_turn_id = turn_id or self.current_speech_id
-
-                message = {
-                    "type": "gemini_response",
-                    "text": text,
-                    "isNewMessage": is_first_chunk,
-                    "turn_id": effective_turn_id
-                }
-                await self.websocket.send_json(message)
-                if is_first_chunk:
-                    logger.debug("[%s] send_lanlan_response: first chunk sent via WS (len=%d)", self.lanlan_name, len(text))
-                self.sync_message_queue.put({"type": "json", "data": message})
-                if hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
-                    if not hasattr(self, 'message_cache_for_new_session'):
-                        self.message_cache_for_new_session = []
-                    # 注意：缓存使用原始文本，不翻译（用于记忆等内部处理）
-                    if len(self.message_cache_for_new_session) == 0 or self.message_cache_for_new_session[-1]['role']==self.master_name:
-                        self.message_cache_for_new_session.append(
-                            {"role": self.lanlan_name, "text": text})
-                    elif self.message_cache_for_new_session[-1]['role'] == self.lanlan_name:
-                        self.message_cache_for_new_session[-1]['text'] += text
-                return True
-            return False
+            if self.websocket_lock:
+                async with self.websocket_lock:
+                    ws_ok = await _do_send()
+            else:
+                ws_ok = await _do_send()
+            return ws_ok
 
         except WebSocketDisconnect:
             logger.info("Frontend disconnected.")
@@ -725,6 +747,10 @@ class LLMSessionManager:
                 await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
             elif '429' in message_text_lower or 'too many' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_RATE_LIMIT"}))
+            elif ('401' in message_text_lower or 'unauthorized' in message_text_lower
+                    or 'authentication' in message_text_lower
+                    or ('invalid' in message_text_lower and 'key' in message_text_lower)):
+                await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
             elif 'policy violation' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": message_text}}))
             elif '1008' in message_text_lower:
@@ -902,6 +928,7 @@ class LLMSessionManager:
         self._last_tts_error_code = ''
         self._last_tts_respawn_time = 0.0
         self._tts_retry_notify_count = 0
+        self._tts_done_queued_for_turn = False
 
     async def _teardown_tts_runtime(self, handler_task_ref, thread_ref,
                                      req_queue_ref, resp_queue_ref):
@@ -1582,7 +1609,9 @@ class LLMSessionManager:
                         await self.send_status(json.dumps({"code": "MEMORY_SERVER_CRASHED", "details": {"port": self.memory_server_port}}))
                     else:
                         await self.send_status(json.dumps({"code": "CONNECTION_REFUSED"}))
-                elif '401' in error_str:
+                elif ('401' in error_str or 'unauthorized' in error_str.lower()
+                        or 'authentication' in error_str.lower()
+                        or ('invalid' in error_str.lower() and 'key' in error_str.lower())):
                     await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
                 elif '429' in error_str:
                     await self.send_status(json.dumps({"code": "API_RATE_LIMIT_SESSION"}))
@@ -2012,6 +2041,7 @@ class LLMSessionManager:
                 return False
         async with self.lock:
             self.current_speech_id = str(uuid4())
+            self._tts_done_queued_for_turn = False
         return True
 
     async def feed_tts_chunk(self, text: str):
@@ -2039,9 +2069,10 @@ class LLMSessionManager:
             if self.session and hasattr(self.session, '_conversation_history'):
                 self.session._conversation_history.append(_AIMsg(content=full_text))
 
-            if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+            if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
                     self.tts_request_queue.put((None, None))
+                    self._tts_done_queued_for_turn = True
                 except Exception:
                     pass
 
@@ -2120,6 +2151,7 @@ class LLMSessionManager:
                 async with self._proactive_write_lock:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
+                        self._tts_done_queued_for_turn = False
                     logger.debug("[%s] trigger_agent_callbacks: text session ready, calling prompt_ephemeral", self.lanlan_name)
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
@@ -2143,6 +2175,7 @@ class LLMSessionManager:
                     async with self._proactive_write_lock:
                         async with self.lock:
                             self.current_speech_id = str(uuid4())
+                            self._tts_done_queued_for_turn = False
                         # 更新字数限制（可能用户在对话期间修改了设置）
                         if hasattr(self.session, 'update_max_response_length'):
                             self.session.update_max_response_length(self._get_text_guard_max_length())
@@ -2232,6 +2265,7 @@ class LLMSessionManager:
         async with self._proactive_write_lock:
             async with self.lock:
                 self.current_speech_id = str(uuid4())
+                self._tts_done_queued_for_turn = False
             delivered = await self.session.prompt_ephemeral(instruction)
             logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
 
@@ -2368,6 +2402,7 @@ class LLMSessionManager:
             await self._flush_hot_swap_audio_cache()
             self.session = self.pending_session
             self.current_speech_id = str(uuid4())
+            self._tts_done_queued_for_turn = False
             self.session_start_time = datetime.now()
             self._session_turn_count = 0
             
@@ -2602,6 +2637,7 @@ class LLMSessionManager:
                     # 再为本次新回复生成新的speech_id（用于TTS和lipsync）
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
+                        self._tts_done_queued_for_turn = False
 
                     # 文本模式：在发送用户输入前，将挂起的 agent 任务回调通过
                     # prompt_ephemeral 注入 — 指令不持久化，只保留 AI 回复。
@@ -3084,7 +3120,7 @@ class LLMSessionManager:
                     elif data[0] == "__reconnecting__":
                         self._tts_retry_notify_count += 1
                         logger.info(f"🌊 TTS 正在自动重连 (retry {self._tts_retry_notify_count})")
-                        if self._tts_retry_notify_count > 3:
+                        if self._tts_retry_notify_count >= 3:
                             user_msg = json.dumps({"code": "TTS_RECONNECTING", "level": "info"})
                             self._fire_task(self.send_status(user_msg))
                         continue
@@ -3095,29 +3131,42 @@ class LLMSessionManager:
 
                         # 优先尝试从结构化 JSON 中提取明确的 code 字段
                         _known_codes = {
-                            'API_ARREARS', 'API_QUOTA_TIME', 'API_RATE_LIMIT',
-                            'API_POLICY_VIOLATION', 'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
+                            'API_ARREARS', 'API_QUOTA_TIME', 'API_KEY_REJECTED',
+                            'API_RATE_LIMIT', 'API_POLICY_VIOLATION',
+                            'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
                         }
                         _parsed_code = None
+                        _keyword_target = error_msg_text  # 非 JSON 错误时回退使用
                         try:
                             _parsed = json.loads(error_msg_text)
                             if isinstance(_parsed, dict):
+                                # 结构化错误：关键词匹配只看 data.message，避免元数据误判
+                                _keyword_target = ""
+                                # 先检查顶层 code
                                 _candidate = _parsed.get('code', '')
                                 if isinstance(_candidate, str) and _candidate in _known_codes:
                                     _parsed_code = _candidate
+                                # 再检查 data.code（TTS 事件结构）
+                                if not _parsed_code:
+                                    _data = _parsed.get('data', {})
+                                    if isinstance(_data, dict):
+                                        _candidate = _data.get('code', '')
+                                        if isinstance(_candidate, str) and _candidate in _known_codes:
+                                            _parsed_code = _candidate
+                                        # 关键词匹配仅针对 message 字段
+                                        _keyword_target = str(_data.get('message', '') or "")
                         except (json.JSONDecodeError, TypeError):
                             # JSON parsing may fail for free-form error strings from
                             # tts.response.error events; this is expected and harmless —
                             # the keyword-based fallback below will handle classification.
-                            # self._last_tts_error_code is only set when a valid code is parsed.
                             pass
 
                         if _parsed_code:
                             user_msg = json.dumps({"code": _parsed_code, "details": {"msg": error_msg_text}})
                             self._last_tts_error_code = _parsed_code
                         else:
-                            # 回退到关键词匹配
-                            error_msg_lower = error_msg_text.lower()
+                            # 回退到关键词匹配（仅匹配 message 字段，不匹配 UUID/时间戳等元数据）
+                            error_msg_lower = _keyword_target.lower()
                             if '欠费' in error_msg_lower or 'standing' in error_msg_lower:
                                 user_msg = json.dumps({"code": "API_ARREARS"})
                                 self._last_tts_error_code = 'API_ARREARS'
@@ -3133,13 +3182,18 @@ class LLMSessionManager:
                             elif '1008' in error_msg_lower:
                                 user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'API_1008_FALLBACK'
+                            elif ('401' in error_msg_lower or 'unauthorized' in error_msg_lower
+                                    or 'authentication' in error_msg_lower
+                                    or ('invalid' in error_msg_lower and 'key' in error_msg_lower)):
+                                user_msg = json.dumps({"code": "API_KEY_REJECTED", "details": {"msg": error_msg_text}})
+                                self._last_tts_error_code = 'API_KEY_REJECTED'
                             else:
                                 user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
-                        # 可重试的错误：前3次不通知前端，第3次失败后再发
-                        if self._last_tts_error_code not in NO_RETRY_TTS_CODES:
+                        # 可重试的错误：前2次静默重试，第3次失败时上报前端
+                        if self._last_tts_error_code not in IMMEDIATE_REPORT_TTS_CODES:
                             self._tts_retry_notify_count += 1
-                            if self._tts_retry_notify_count <= 3:
+                            if self._tts_retry_notify_count < 3:
                                 logger.info(f"TTS 错误重试 {self._tts_retry_notify_count}/3，暂不通知前端")
                                 continue
                         self._fire_task(self.send_status(user_msg))

@@ -280,12 +280,14 @@ class OmniRealtimeClient:
         self._is_throttled = False  # 503检测后节流状态
         self._throttle_until = 0.0  # 节流结束时间戳
         self._throttle_duration = 2.0  # 节流持续时间（秒）
+        self._server_busy_count: int = 0  # 503 过载计数，第3次起通知前端
         
         # Fatal error detection - 检测到致命错误后立即中断
         self._fatal_error_occurred = False  # 致命错误标志
 
         # Interruption state - suppress output after user interruption until next response
         self._interrupted = False  # 打断状态标志，防止重复消息块
+        self._suppressed_delta_logged_resp_id = None  # 限流：每个 response 只记录一次 text.delta 被拦截的日志
 
         # Native image input rate limiting
         self._last_native_image_time = 0.0  # 上次原生图片输入时间戳
@@ -1445,8 +1447,10 @@ class OmniRealtimeClient:
                     if '503' in error_msg or 'overloaded' in error_msg.lower():
                         self._is_throttled = True
                         self._throttle_until = time.time() + self._throttle_duration
-                        logger.warning(f"⚡ 503 detected, throttling for {self._throttle_duration}s")
-                        if self.on_status_message:
+                        self._server_busy_count += 1
+                        logger.warning(f"⚡ 503 detected (count={self._server_busy_count}), throttling for {self._throttle_duration}s")
+                        # 前2次静默节流，第3次起通知前端
+                        if self._server_busy_count >= 3 and self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "SERVER_BUSY_THROTTLE"}))
                         continue
                     
@@ -1488,6 +1492,7 @@ class OmniRealtimeClient:
                     self._current_response_id = None
                     self._current_item_id = None
                     self._skip_until_next_response = False
+                    self._interrupted = False  # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
                     # 响应完成，检测重复度
                     if self._current_response_transcript:
                         print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...' | audio_deltas={self._audio_delta_count}")
@@ -1581,6 +1586,15 @@ class OmniRealtimeClient:
                     
                     elif event_type in self.extra_event_handlers:
                         await self.extra_event_handlers[event_type](event)
+                else:
+                    # 调试日志：text.delta 被 _interrupted/_skip 标志拦截（每个 response 仅记录一次）
+                    if event_type in ["response.text.delta", "response.output_text.delta"]:
+                        if self._suppressed_delta_logged_resp_id != self._current_response_id:
+                            self._suppressed_delta_logged_resp_id = self._current_response_id
+                            logger.warning(
+                                "⚠️ text.delta suppressed: _skip=%s, _interrupted=%s, resp_id=%s",
+                                self._skip_until_next_response, self._interrupted, self._current_response_id
+                            )
 
         except websockets.exceptions.ConnectionClosedOK:
             logger.info("Connection closed as expected")

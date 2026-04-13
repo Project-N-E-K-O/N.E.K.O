@@ -6,7 +6,7 @@
 // 引导页面列表常量 - 包含所有页面类型及子类型的存储键集合
 // 注意：此列表包含 localStorage 使用的存储子键（如 model_manager_*），
 // 并不完全等同于 detectPage() 返回的逻辑页面集合。
-const TUTORIAL_PAGES = Object.freeze(['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser']);
+const TUTORIAL_PAGES = Object.freeze(['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser']);
 
 class UniversalTutorialManager {
     constructor() {
@@ -34,6 +34,11 @@ class UniversalTutorialManager {
         this.cachedValidSteps = null;
         this._refreshTimers = [];
         this._pendingI18nStart = false;
+        this._modelManagerTutorialRecheckTimer = null;
+        this._modelManagerModeListenerAttached = false;
+        this._modelManagerTutorialDebounceTimer = null;
+        this._modelManagerBootstrapFallbackTimer = null;
+        this._modelManagerReceivedModeEvent = false;
 
         // 刷新延迟常量
         this.LAYOUT_REFRESH_DELAY = 100;
@@ -43,6 +48,12 @@ class UniversalTutorialManager {
         this.modifiedElementsMap = new Map();
 
         console.log('[Tutorial] 当前页面:', this.currentPage);
+
+        // 必须在 waitForDriver 之前注册：model_manager 里 await switchModelDisplay 常在 initDriver（可能 setTimeout 延后）之前就结束并派发 neko-model-manager-mode-set，否则首屏已是 MMD 时会丢事件。
+        if (this.currentPage.startsWith('model_manager')) {
+            this.setupModelManagerModeListener();
+            this.scheduleModelManagerBootstrapFallback();
+        }
 
         // 等待 driver.js 库加载
         this.waitForDriver();
@@ -72,6 +83,10 @@ class UniversalTutorialManager {
      * 等待 i18n 就绪后再启动引导，避免回退到硬编码文案
      */
     startTutorialWhenI18nReady(delayMs = 0) {
+        if (this.isTutorialRunning || window.isInTutorial) {
+            return;
+        }
+
         if (this._pendingI18nStart) {
             return;
         }
@@ -190,6 +205,58 @@ class UniversalTutorialManager {
         }
 
         return 'unknown';
+    }
+
+    /**
+     * 模型管理页当前展示模式（与 #model-type-select、localStorage live3dSubType 一致）
+     * @returns {'live2d'|'vrm'|'mmd'}
+     */
+    static getModelManagerDisplayMode() {
+        const typeSelect = document.getElementById('model-type-select');
+        let val = typeSelect && typeSelect.value;
+
+        // model_manager 初始化时先 await PIXI/列表，#model-type-select 仍为 HTML 默认 live2d，
+        // 教程的 checkAndStartTutorial 若此时跑在 switchModelDisplay 之前，会与完成时写入的键（如 mmd）不一致。
+        if (typeSelect && val === 'live2d') {
+            try {
+                let saved = (localStorage.getItem('modelType') || 'live2d').toLowerCase();
+                if (saved === 'vrm') saved = 'live3d';
+                if (saved === 'live3d') {
+                    val = 'live3d';
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        if (val === 'live3d') {
+            let sub = '';
+            try {
+                sub = (localStorage.getItem('live3dSubType') || '').toLowerCase();
+            } catch (e) {
+                sub = '';
+            }
+            if (sub === 'mmd') return 'mmd';
+            const mmdSec = document.getElementById('mmd-settings-section');
+            if (mmdSec) {
+                try {
+                    const cs = window.getComputedStyle(mmdSec);
+                    if (cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0') {
+                        return 'mmd';
+                    }
+                } catch (e) { /* ignore */ }
+            }
+            return 'vrm';
+        }
+        return 'live2d';
+    }
+
+    /**
+     * 模型管理页展示模式 → localStorage 页键（与 getStorageKey 一致）
+     * @param {'live2d'|'vrm'|'mmd'} mode
+     */
+    static modelManagerModeToPageKey(mode) {
+        if (mode === 'mmd') return 'model_manager_mmd';
+        if (mode === 'vrm') return 'model_manager_vrm';
+        return 'model_manager_live2d';
     }
 
     /**
@@ -368,17 +435,15 @@ class UniversalTutorialManager {
     }
 
     /**
-     * 获取当前页面的存储键（区分 Live2D 和 VRM）
+     * 获取当前页面的存储键（模型管理页区分 Live2D / VRM / MMD）
      */
     getStorageKey() {
         let pageKey = this.currentPage;
 
-        // 对于模型管理页面，需要区分 Live2D 和 VRM
         if (this.currentPage === 'model_manager') {
-            const modelTypeText = document.getElementById('model-type-text');
-            const isVRM = modelTypeText && modelTypeText.textContent.includes('VRM');
-            pageKey = isVRM ? 'model_manager_vrm' : 'model_manager_live2d';
-            console.log('[Tutorial] 检测到模型管理页面，模型类型:', isVRM ? 'VRM' : 'Live2D');
+            const mode = UniversalTutorialManager.getModelManagerDisplayMode();
+            pageKey = UniversalTutorialManager.modelManagerModeToPageKey(mode);
+            console.log('[Tutorial] 模型管理页存储键，展示模式:', mode, '→', pageKey);
         }
 
         return this.STORAGE_KEY_PREFIX + pageKey;
@@ -396,6 +461,7 @@ class UniversalTutorialManager {
             keys.push(this.STORAGE_KEY_PREFIX + 'model_manager');
             keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_live2d');
             keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_vrm');
+            keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_mmd');
             keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_common');
         } else {
             keys.push(this.STORAGE_KEY_PREFIX + targetPage);
@@ -404,17 +470,69 @@ class UniversalTutorialManager {
         return keys;
     }
 
+    clearModelManagerTutorialRecheckTimer() {
+        if (this._modelManagerTutorialRecheckTimer) {
+            clearTimeout(this._modelManagerTutorialRecheckTimer);
+            this._modelManagerTutorialRecheckTimer = null;
+        }
+        if (this._modelManagerBootstrapFallbackTimer) {
+            clearInterval(this._modelManagerBootstrapFallbackTimer);
+            this._modelManagerBootstrapFallbackTimer = null;
+        }
+    }
+
+    /**
+     * 模型管理页：首次启动时 switchModelDisplay 可能尚未完成，validSteps 会为空；
+     * 记忆浏览重置后若不刷新页面，也不会再次执行 checkAndStartTutorial。延迟补检一次。
+     */
+    scheduleModelManagerTutorialRecheck(delayMs = 8200) {
+        if (this.currentPage !== 'model_manager') return;
+        this.clearModelManagerTutorialRecheckTimer();
+        this._modelManagerTutorialRecheckTimer = setTimeout(() => {
+            this._modelManagerTutorialRecheckTimer = null;
+            if (this.isTutorialRunning || window.isInTutorial) return;
+            const sk = this.getStorageKey();
+            if (localStorage.getItem(sk) === 'true') return;
+            if (this._pendingI18nStart) {
+                console.log('[Tutorial] 模型管理页补检时 i18n 仍在排队，延后由 i18n 就绪回调启动');
+                return;
+            }
+            console.log('[Tutorial] 模型管理页延迟补检：未标记已看过，尝试再次启动引导');
+            this.startTutorialWhenI18nReady(0);
+        }, delayMs);
+    }
+
+    /**
+     * 记忆浏览等处重置引导后，若当前就在模型管理页则重新检查是否应弹出教程
+     */
+    notifyTutorialResetForCurrentPageIfNeeded(pageKey) {
+        if (pageKey !== 'model_manager' && pageKey !== 'all') return;
+        if (this.currentPage !== 'model_manager') return;
+        this.clearModelManagerTutorialRecheckTimer();
+        this._pendingI18nStart = false;
+        setTimeout(() => {
+            if (this.isTutorialRunning || window.isInTutorial) return;
+            this.setupModelManagerModeListener();
+            this.maybeStartModelManagerTutorial(300, 'reset', null);
+        }, 400);
+    }
+
     /**
      * 检查是否需要自动启动引导
      */
     checkAndStartTutorial() {
+        if (this.isTutorialRunning || window.isInTutorial) {
+            console.log('[Tutorial] 引导进行中，跳过启动检查');
+            return;
+        }
+
         const storageKey = this.getStorageKey();
         const hasSeen = localStorage.getItem(storageKey);
 
-        console.log('[Tutorial] 检查引导状态:');
-        console.log('  - 当前页面:', this.currentPage);
-        console.log('  - 存储键:', storageKey);
-        console.log('  - 已看过引导:', hasSeen);
+        console.log('[Tutorial] 检查引导状态:',
+            '页面:', this.currentPage,
+            '键:', storageKey,
+            '已看过:', hasSeen);
 
         if (!hasSeen) {
             // 对于主页，需要等待浮动按钮创建
@@ -431,55 +549,135 @@ class UniversalTutorialManager {
                     // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
                     this.startTutorialWhenI18nReady(500);
                 });
+            } else if (this.currentPage === 'model_manager') {
+                // 首次加载由 neko-model-manager-mode-set 事件触发；restartCurrentTutorial 等
+                // 清完存储键后重新走到这里时事件不会再次派发，需主动尝试启动
+                this.maybeStartModelManagerTutorial(400, 'checkAndStart', null);
             } else {
                 // 其他页面延迟启动，并等待 i18n 准备完成
                 this.startTutorialWhenI18nReady(1500);
             }
         }
+    }
 
-        // 对于模型管理页面，监听模型类型切换
-        if (this.currentPage.startsWith('model_manager')) {
-            this.setupModelTypeChangeListener();
+    /**
+     * 模型管理页：在展示模式就绪后尝试启动引导（eventMode 来自 neko-model-manager-mode-set 时优先）
+     */
+    maybeStartModelManagerTutorial(delayMs = 400, reason = '', eventMode = null) {
+        if (this.currentPage !== 'model_manager') return;
+        if (this.isTutorialRunning || window.isInTutorial) {
+            console.log('[Tutorial] maybeStart 跳过: 引导正在运行', reason);
+            return;
+        }
+
+        const resolvePageKey = () => {
+            const mode = eventMode || UniversalTutorialManager.getModelManagerDisplayMode();
+            return UniversalTutorialManager.modelManagerModeToPageKey(mode);
+        };
+
+        const pageKey = resolvePageKey();
+        const storageKey = this.STORAGE_KEY_PREFIX + pageKey;
+        if (localStorage.getItem(storageKey) === 'true') {
+            console.log('[Tutorial] maybeStart 跳过: 已看过', reason, pageKey);
+            return;
+        }
+
+        if (this._modelManagerTutorialDebounceTimer) {
+            clearTimeout(this._modelManagerTutorialDebounceTimer);
+        }
+        this._modelManagerTutorialDebounceTimer = setTimeout(() => {
+            this._modelManagerTutorialDebounceTimer = null;
+            if (this.currentPage !== 'model_manager') return;
+            if (this.isTutorialRunning || window.isInTutorial) {
+                console.log('[Tutorial] maybeStart debounce 跳过: 引导正在运行', reason);
+                return;
+            }
+            const pk = resolvePageKey();
+            const sk = this.STORAGE_KEY_PREFIX + pk;
+            if (localStorage.getItem(sk) === 'true') {
+                console.log('[Tutorial] maybeStart debounce 跳过: 已看过', reason, pk);
+                return;
+            }
+            console.log('[Tutorial] 模型管理页尝试启动引导:', reason, pk);
+            this._pendingI18nStart = false;
+            this.startTutorialWhenI18nReady(delayMs);
+            this.scheduleModelManagerTutorialRecheck(8500);
+        }, 320);
+    }
+
+    /**
+     * 监听 model_manager 展示模式稳定事件（由 switchModelDisplay 派发）
+     */
+    setupModelManagerModeListener() {
+        if (this._modelManagerModeListenerAttached) return;
+        this._modelManagerModeListenerAttached = true;
+        this._modelManagerModeHandler = (ev) => {
+            if (this.currentPage !== 'model_manager') return;
+            const mode = ev.detail && ev.detail.mode;
+            console.log('[Tutorial] 收到 neko-model-manager-mode-set 事件, mode:', mode);
+            if (!mode || !['live2d', 'vrm', 'mmd'].includes(mode)) {
+                return;
+            }
+            this._modelManagerReceivedModeEvent = true;
+            setTimeout(() => {
+                this.maybeStartModelManagerTutorial(200, 'mode-set', mode);
+            }, 80);
+        };
+        window.addEventListener('neko-model-manager-mode-set', this._modelManagerModeHandler);
+        console.log('[Tutorial] neko-model-manager-mode-set 监听器已设置');
+    }
+
+    /**
+     * 清理模型管理页相关的事件监听和定时器，防止实例替换后幽灵回调
+     */
+    teardownModelManagerListeners() {
+        if (this._modelManagerModeHandler) {
+            window.removeEventListener('neko-model-manager-mode-set', this._modelManagerModeHandler);
+            this._modelManagerModeHandler = null;
+        }
+        this._modelManagerModeListenerAttached = false;
+        this._modelManagerReceivedModeEvent = false;
+        this.clearModelManagerTutorialRecheckTimer();
+        if (this._modelManagerTutorialDebounceTimer) {
+            clearTimeout(this._modelManagerTutorialDebounceTimer);
+            this._modelManagerTutorialDebounceTimer = null;
         }
     }
 
     /**
-     * 设置模型类型切换监听器（仅用于模型管理页面）
+     * 模型管理页定时轮询兜底：switchModelDisplay 可能因 VRM 初始化耗时（最长 8s）而延迟派发事件，
+     * 单次定时器容易在事件到达前就已过期。改为每 3 秒轮询一次，直到引导启动或确认已看过。
      */
-    setupModelTypeChangeListener() {
-        const modelTypeSelect = document.getElementById('model-type-select');
-        if (!modelTypeSelect) {
-            console.warn('[Tutorial] 未找到模型类型选择器');
-            return;
+    scheduleModelManagerBootstrapFallback() {
+        if (this.currentPage !== 'model_manager') return;
+        if (this._modelManagerBootstrapFallbackTimer) {
+            clearInterval(this._modelManagerBootstrapFallbackTimer);
         }
-
-        // 避免重复添加监听器
-        if (modelTypeSelect.dataset.tutorialListenerAdded) {
-            return;
-        }
-
-        modelTypeSelect.addEventListener('change', () => {
-            console.log('[Tutorial] 检测到模型类型切换');
-
-            // 延迟一点，等待 UI 更新
-            setTimeout(() => {
-                // 检查新模型类型是否已看过引导
-                const newStorageKey = this.getStorageKey();
-                const hasSeenNew = localStorage.getItem(newStorageKey);
-
-                console.log('[Tutorial] 模型类型切换后的引导状态:');
-                console.log('  - 存储键:', newStorageKey);
-                console.log('  - 已看过引导:', hasSeenNew ? '已看过' : '未看过');
-
-                // 如果没看过，自动启动引导
-                if (!hasSeenNew) {
-                    this.startTutorialWhenI18nReady(1000);
-                }
-            }, 500);
-        });
-
-        modelTypeSelect.dataset.tutorialListenerAdded = 'true';
-        console.log('[Tutorial] 模型类型切换监听器已设置');
+        let pollCount = 0;
+        const maxPolls = 8;
+        this._modelManagerBootstrapFallbackTimer = setInterval(() => {
+            pollCount++;
+            if (this.currentPage !== 'model_manager' || pollCount > maxPolls) {
+                clearInterval(this._modelManagerBootstrapFallbackTimer);
+                this._modelManagerBootstrapFallbackTimer = null;
+                return;
+            }
+            if (this.isTutorialRunning || window.isInTutorial) {
+                console.log('[Tutorial] 模型管理页兜底轮询: 引导已在运行，停止轮询');
+                clearInterval(this._modelManagerBootstrapFallbackTimer);
+                this._modelManagerBootstrapFallbackTimer = null;
+                return;
+            }
+            const sk = this.getStorageKey();
+            if (localStorage.getItem(sk) === 'true') {
+                console.log('[Tutorial] 模型管理页兜底轮询: 已看过', sk);
+                clearInterval(this._modelManagerBootstrapFallbackTimer);
+                this._modelManagerBootstrapFallbackTimer = null;
+                return;
+            }
+            console.log('[Tutorial] 模型管理页兜底轮询 #' + pollCount + ' 尝试启动引导');
+            this.maybeStartModelManagerTutorial(0, 'bootstrap-poll-' + pollCount, null);
+        }, 3000);
     }
 
     /**
@@ -552,17 +750,8 @@ class UniversalTutorialManager {
             {
                 element: '#live2d-container',
                 popover: {
-                    title: window.t ? window.t('tutorial.step1a.title', '🎭 点击体验表情动作') : '🎭 点击体验表情动作',
-                    description: window.t ? window.t('tutorial.step1a.desc', '试试点击猫娘吧！每次点击都会触发不同的表情和动作变化。体验完后点击「下一步」继续~') : '试试点击猫娘吧！每次点击都会触发不同的表情和动作变化。体验完后点击「下一步」继续~',
-                },
-                disableActiveInteraction: false,
-                enableModelInteraction: true
-            },
-            {
-                element: '#live2d-container',
-                popover: {
                     title: window.t ? window.t('tutorial.step1b.title', '🖱️ 拖拽与缩放') : '🖱️ 拖拽与缩放',
-                    description: window.t ? window.t('tutorial.step1b.desc', '你可以拖拽猫娘移动位置，也可以用鼠标滚轮放大缩小，试试看吧~') : '你可以拖拽猫娘移动位置，也可以用鼠标滚轮放大缩小，试试看吧~',
+                    description: window.t ? window.t('tutorial.step1b.desc', '你可以拖拽猫娘移动位置，也可以用<strong>鼠标滚轮</strong>放大缩小，试试看吧~') : '你可以拖拽猫娘移动位置，也可以用<strong>鼠标滚轮</strong>放大缩小，试试看吧~',
                 },
                 disableActiveInteraction: false,
                 enableModelInteraction: true
@@ -571,15 +760,7 @@ class UniversalTutorialManager {
                 element: '#live2d-lock-icon',
                 popover: {
                     title: window.t ? window.t('tutorial.step1c.title', '🔒 锁定猫娘') : '🔒 锁定猫娘',
-                    description: window.t ? window.t('tutorial.step1c.desc', '点击这个锁可以锁定猫娘位置，防止误触移动。再次点击可以解锁~') : '点击这个锁可以锁定猫娘位置，防止误触移动。再次点击可以解锁~',
-                },
-                disableActiveInteraction: true
-            },
-            {
-                element: '#chat-container',
-                popover: {
-                    title: window.t ? window.t('tutorial.step2.title', '💬 对话区域') : '💬 对话区域',
-                    description: window.t ? window.t('tutorial.step2.desc', '在这里可以和猫娘进行文字对话。输入您的想法，她会给您有趣的回应呢~') : '在这里可以和猫娘进行文字对话。输入您的想法，她会给您有趣的回应呢~',
+                    description: window.t ? window.t('tutorial.step1c.desc', '点击这个锁可以锁定猫娘位置，防止误触移动。锁定后周围的浮动工具栏也不会再出现。再次点击可以解锁~') : '点击这个锁可以锁定猫娘位置，防止误触移动。锁定后周围的浮动工具栏也不会再出现。再次点击可以解锁~',
                 },
                 disableActiveInteraction: true
             },
@@ -603,7 +784,7 @@ class UniversalTutorialManager {
                 element: '#live2d-btn-screen',
                 popover: {
                     title: window.t ? window.t('tutorial.step7.title', '🖥️ 屏幕分享') : '🖥️ 屏幕分享',
-                    description: window.t ? window.t('tutorial.step7.desc', '分享屏幕/窗口/标签页，让猫娘看到你的画面~') : '分享屏幕/窗口/标签页，让猫娘看到你的画面~',
+                    description: window.t ? window.t('tutorial.step7.desc', '开启后会持续地将屏幕分享给猫娘，只能在语音对话期间使用~') : '开启后会持续地将屏幕分享给猫娘，只能在语音对话期间使用~',
                 },
                 disableActiveInteraction: true
             },
@@ -611,7 +792,7 @@ class UniversalTutorialManager {
                 element: '#live2d-btn-agent',
                 popover: {
                     title: window.t ? window.t('tutorial.step8.title', '🔨 OpenClaw') : '🔨 OpenClaw',
-                    description: window.t ? window.t('tutorial.step8.desc', '打开 OpenClaw 面板，使用 computer use、browser use 和 plugin 等功能~') : '打开 OpenClaw 面板，使用 computer use、browser use 和 plugin 等功能~',
+                    description: window.t ? window.t('tutorial.step8.desc', '打开猫爪面板，使用 computer use、browser use 和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~') : '打开猫爪面板，使用 computer use、browser use 和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~',
                 },
                 disableActiveInteraction: true
             },
@@ -619,7 +800,7 @@ class UniversalTutorialManager {
                 element: '#live2d-btn-goodbye',
                 popover: {
                     title: window.t ? window.t('tutorial.step9.title', '💤 请她离开') : '💤 请她离开',
-                    description: window.t ? window.t('tutorial.step9.desc', '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~') : '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~',
+                    description: window.t ? window.t('tutorial.step9.desc', '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~ <strong>当她出现问题时，让她离开休息一会儿，往往能解决问题。</strong>') : '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~ <strong>当她出现问题时，让她离开休息一会儿，往往能解决问题。</strong>',
                 },
                 disableActiveInteraction: true
             },
@@ -644,7 +825,7 @@ class UniversalTutorialManager {
                 element: '#live2d-toggle-proactive-vision',
                 popover: {
                     title: window.t ? window.t('tutorial.step14.title', '👀 自主视觉') : '👀 自主视觉',
-                    description: window.t ? window.t('tutorial.step14.desc', '开启后猫娘会主动读取画面信息，间隔可在此调整~') : '开启后猫娘会主动读取画面信息，间隔可在此调整~',
+                    description: window.t ? window.t('tutorial.step14.desc', '与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~') : '与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~',
                 },
                 disableActiveInteraction: true
             },
@@ -709,15 +890,34 @@ class UniversalTutorialManager {
                     description: `
                         <div class="neko-systray-menu">
                             <div class="neko-systray-menu__hint">
-                                ${this.safeEscapeHtml(t('tutorial.systray.menu.desc', '右下角托盘里会有 N.E.K.O 的图标，右键点击会出现很多选项。下面是两个常用功能：'))}
+                                <strong>${this.safeEscapeHtml(t('tutorial.systray.important', '重要：'))}</strong>
+                                ${this.safeEscapeHtml(t('tutorial.systray.menu.desc', '右键点击系统托盘（见上一步提示）中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：'))}
                             </div>
                             <div class="neko-systray-menu__panel">
+                                <div class="neko-systray-menu__item">
+                                    <div class="neko-systray-menu__item-label">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.resetPosition', '重置角色位置'))}
+                                    </div>
+                                    <div class="neko-systray-menu__item-desc">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.resetPositionDesc', '猫娘跑到屏幕外时，点此恢复默认位置~'))}
+                                    </div>
+                                </div>
+                                <div class="neko-systray-menu__separator"></div>
+                                <div class="neko-systray-menu__item">
+                                    <div class="neko-systray-menu__item-label">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.openChat', '打开对话框'))}
+                                    </div>
+                                    <div class="neko-systray-menu__item-desc">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.openChatDesc', '打开独立的对话框进行文字对话~'))}
+                                    </div>
+                                </div>
+                                <div class="neko-systray-menu__separator"></div>
                                 <div class="neko-systray-menu__item">
                                     <div class="neko-systray-menu__item-label">
                                         ${this.safeEscapeHtml(t('tutorial.systray.hotkey', '快捷键设置'))}
                                     </div>
                                     <div class="neko-systray-menu__item-desc">
-                                        ${this.safeEscapeHtml(t('tutorial.systray.hotkeyDesc', '在这里可以设置全局快捷键，让你更高效地控制 N.E.K.O~'))}
+                                        ${this.safeEscapeHtml(t('tutorial.systray.hotkeyDesc', '设置全局快捷键，更高效地控制 N.E.K.O~'))}
                                     </div>
                                 </div>
                                 <div class="neko-systray-menu__separator"></div>
@@ -726,7 +926,7 @@ class UniversalTutorialManager {
                                         ${this.safeEscapeHtml(t('tutorial.systray.exit', '退出'))}
                                     </div>
                                     <div class="neko-systray-menu__item-desc">
-                                        ${this.safeEscapeHtml(t('tutorial.systray.exitDesc', '想要关闭 N.E.K.O 时，在这里点击退出即可。'))}
+                                        ${this.safeEscapeHtml(t('tutorial.systray.exitDesc', '关闭 N.E.K.O。托盘菜单是退出应用的主要方式~'))}
                                     </div>
                                 </div>
                             </div>
@@ -742,11 +942,8 @@ class UniversalTutorialManager {
      * 模型管理页面引导步骤
      */
     getModelManagerSteps() {
-        // 检测当前模型类型
-        const modelTypeText = document.getElementById('model-type-text');
-        const isVRM = modelTypeText && modelTypeText.textContent.includes('VRM');
-
-        console.log('[Tutorial] 模型管理页面 - 当前模型类型:', isVRM ? 'VRM' : 'Live2D');
+        const mode = UniversalTutorialManager.getModelManagerDisplayMode();
+        console.log('[Tutorial] 模型管理页面 - 展示模式:', mode);
 
         // Live2D 特定步骤
         const live2dSteps = [
@@ -805,12 +1002,41 @@ class UniversalTutorialManager {
             }
         ];
 
-        // 根据当前模型类型返回对应的步骤
-        if (isVRM) {
-            return vrmSteps;
-        } else {
-            return live2dSteps;
-        }
+        // MMD（Live3D 子类型）：常驻表情/捏脸/Live2D 情感按钮在此模式下隐藏，勿用 Live2D 步骤
+        const mmdSteps = [
+            {
+                element: '#vrm-model-select-btn',
+                popover: {
+                    title: this.t('tutorial.model_manager.mmd.step1.title', '🎭 选择 MMD 模型'),
+                    description: this.t('tutorial.model_manager.mmd.step1.desc', '在 Live3D（MMD）模式下从这里选择要使用的模型。MMD 与 VRM 共用同一模型列表。'),
+                }
+            },
+            {
+                element: '#mmd-animation-select-btn',
+                popover: {
+                    title: this.t('tutorial.model_manager.mmd.step2.title', '💃 VMD 动画'),
+                    description: this.t('tutorial.model_manager.mmd.step2.desc', '为 MMD 模型选择 VMD 动作。也可使用「导入 VMD 动画」添加自定义动作文件。'),
+                }
+            },
+            {
+                element: '#mmd-ambient-intensity-slider',
+                popover: {
+                    title: this.t('tutorial.model_manager.mmd.step3.title', '🌟 MMD 光照'),
+                    description: this.t('tutorial.model_manager.mmd.step3.desc', '在「MMD 模型设置」中调节环境光、主光源、曝光与色调映射等，控制 3D 画面效果。'),
+                }
+            },
+            {
+                element: '#live3d-emotion-config-btn',
+                popover: {
+                    title: this.t('tutorial.model_manager.mmd.step4.title', '😄 情感配置'),
+                    description: this.t('tutorial.model_manager.mmd.step4.desc', '先选好模型后，可由此进入情感配置，为不同情感设置表现（Live3D 下 MMD 与 VRM 共用此入口）。'),
+                }
+            }
+        ];
+
+        if (mode === 'mmd') return mmdSteps;
+        if (mode === 'vrm') return vrmSteps;
+        return live2dSteps;
     }
 
     /**
@@ -900,9 +1126,11 @@ class UniversalTutorialManager {
      * 设置页面引导步骤
      */
     getSettingsSteps() {
+        // 原生 #coreApiSelect 增强后为 1×1 隐藏；Driver 按 getBoundingClientRect() 画框，必须高亮可见按钮。
+        // 使用 api_key_settings.js 为 trigger 分配的固定 id（不依赖 :has()，避免旧版 Chromium/CEF 与 querySelector 多分支顺序问题）。
         return [
             {
-                element: '#coreApiSelect',
+                element: '#coreApiSelect-dropdown-trigger',
                 popover: {
                     title: this.t('tutorial.settings.step2.title', '🔑 核心 API 服务商'),
                     description: this.t('tutorial.settings.step2.desc', '这是最重要的设置。核心 API 负责对话功能。\n\n• 免费版：完全免费，无需 API Key，适合新手体验\n• 阿里：有免费额度，功能全面\n• 智谱：有免费额度，支持联网搜索\n• OpenAI：智能水平最高，但需要翻墙且价格昂贵'),
@@ -1275,7 +1503,8 @@ class UniversalTutorialManager {
         const diffTop = Math.abs(highlightRect.top - (rect.top - padding));
         const diffWidth = Math.abs(highlightRect.width - (rect.width + padding * 2));
         const diffHeight = Math.abs(highlightRect.height - (rect.height + padding * 2));
-        const threshold = 12;
+        // 模型管理页在 MMD/VRM 加载、画布出现时侧栏会长时间连续重排，阈值过小会反复触发回滚（遮罩/高亮被隐藏）
+        const threshold = this.currentPage === 'model_manager' ? 120 : 12;
         const hasOffset = diffLeft > threshold || diffTop > threshold || diffWidth > threshold || diffHeight > threshold;
         if (hasOffset) {
             console.error('[Tutorial] 检测到高亮框偏移，执行回滚', {
@@ -1299,18 +1528,39 @@ class UniversalTutorialManager {
     }
 
     async refreshAndValidateTutorialLayout(currentElement, context) {
-        if (this.driver && typeof this.driver.refresh === 'function') {
-            this.driver.refresh();
-        }
-        // 等待驱动程序完成高亮框重定位（匹配 onHighlighted 的延迟）
-        await new Promise(r => setTimeout(r, this.LAYOUT_REFRESH_DELAY));
+        const isModelManager = this.currentPage === 'model_manager';
+        // 模型管理页：多轮等待 WebGL/MMD 布局稳定；仍失败时也不回滚（回滚会隐藏遮罩/高亮，而此处多为误判）
+        const extraRetries = isModelManager ? 7 : 0;
+        const attempts = 1 + extraRetries;
 
-        void document.body.offsetHeight;
-        const ok = this.validateTutorialLayout(currentElement, context);
-        if (!ok) {
-            this.rollbackTutorialInteractionState();
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            if (this.driver && typeof this.driver.refresh === 'function') {
+                this.driver.refresh();
+            }
+            await new Promise(r => setTimeout(r, this.LAYOUT_REFRESH_DELAY));
+            void document.body.offsetHeight;
+
+            const ok = this.validateTutorialLayout(currentElement, context);
+            if (ok) {
+                return true;
+            }
+
+            if (attempt < attempts - 1) {
+                const waitMs = isModelManager ? (200 + attempt * 160) : (280 + attempt * 220);
+                await new Promise(r => setTimeout(r, waitMs));
+            }
         }
-        return ok;
+
+        if (isModelManager) {
+            console.warn('[Tutorial] 模型管理页布局校验在多次重试后仍未对齐，跳过回滚并最后刷新一次高亮（避免 MMD 重排误清遮罩）');
+            if (this.driver && typeof this.driver.refresh === 'function') {
+                this.driver.refresh();
+            }
+            return true;
+        }
+
+        this.rollbackTutorialInteractionState();
+        return false;
     }
 
     rollbackTutorialInteractionState() {
@@ -2447,6 +2697,18 @@ class UniversalTutorialManager {
                             if (this._refreshTimers) this._refreshTimers.push(timer);
                         }
                     }
+
+                    if (this.currentPage === 'model_manager') {
+                        [900, 1800].forEach(delay => {
+                            const t = setTimeout(() => {
+                                if (window.isInTutorial && this.driver && typeof this.driver.refresh === 'function') {
+                                    this.driver.refresh();
+                                    console.log(`[Tutorial] 模型管理页延迟刷新高亮 (${delay}ms)`);
+                                }
+                            }, delay);
+                            if (this._refreshTimers) this._refreshTimers.push(t);
+                        });
+                    }
                 }
             }
 
@@ -2524,6 +2786,14 @@ class UniversalTutorialManager {
         // 标记用户已看过该页面的引导
         const storageKey = this.getStorageKey();
         localStorage.setItem(storageKey, 'true');
+        console.log('[Tutorial] onTutorialEnd 写入存储键:', storageKey, '当前页面:', this.currentPage);
+        if (storageKey.includes('model_manager')) {
+            console.trace('[Tutorial] model_manager 存储键写入调用栈');
+        }
+
+        if (this.currentPage === 'model_manager') {
+            this.clearModelManagerTutorialRecheckTimer();
+        }
 
         // 对于模型管理页面，同时标记通用步骤为已看过
         if (this.currentPage === 'model_manager') {
@@ -2837,6 +3107,7 @@ class UniversalTutorialManager {
             localStorage.removeItem(this.STORAGE_KEY_PREFIX + page);
         });
         console.log('[Tutorial] 已重置所有页面引导');
+        this.notifyTutorialResetForCurrentPageIfNeeded('all');
     } 
 
     /**
@@ -2850,15 +3121,19 @@ class UniversalTutorialManager {
 
         // 特殊处理模型管理页面
         if (pageKey === 'model_manager') {
-            localStorage.removeItem(this.STORAGE_KEY_PREFIX + 'model_manager');
-            localStorage.removeItem(this.STORAGE_KEY_PREFIX + 'model_manager_live2d');
-            localStorage.removeItem(this.STORAGE_KEY_PREFIX + 'model_manager_vrm');
-            localStorage.removeItem(this.STORAGE_KEY_PREFIX + 'model_manager_common');
+            const keysToRemove = ['model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common'];
+            keysToRemove.forEach(k => {
+                const fullKey = this.STORAGE_KEY_PREFIX + k;
+                const oldVal = localStorage.getItem(fullKey);
+                localStorage.removeItem(fullKey);
+                if (oldVal) console.log('[Tutorial] 重置: 移除', fullKey, '(旧值:', oldVal, ')');
+            });
         } else {
             localStorage.removeItem(this.STORAGE_KEY_PREFIX + pageKey);
         }
 
         console.log('[Tutorial] 已重置页面引导:', pageKey);
+        this.notifyTutorialResetForCurrentPageIfNeeded(pageKey);
     }
 
     /**
@@ -2914,6 +3189,7 @@ function initUniversalTutorialManager() {
             if (window.universalTutorialManager.driver) {
                 window.universalTutorialManager.driver.destroy();
             }
+            window.universalTutorialManager.teardownModelManagerListeners();
             // 创建新实例
             window.universalTutorialManager = new UniversalTutorialManager();
             console.log('[Tutorial] 通用教程管理器已重新初始化，页面:', currentPageType);
@@ -2948,6 +3224,7 @@ function resetAllTutorials() {
  */
 function resetTutorialForPage(pageKey) {
     if (!pageKey) return;
+    console.log('%c[Tutorial] resetTutorialForPage 被调用, pageKey:', 'color: red; font-weight: bold', pageKey);
 
     if (pageKey === 'all') {
         resetAllTutorials();
@@ -2962,10 +3239,19 @@ function resetTutorialForPage(pageKey) {
             localStorage.removeItem(prefix + 'model_manager');
             localStorage.removeItem(prefix + 'model_manager_live2d');
             localStorage.removeItem(prefix + 'model_manager_vrm');
+            localStorage.removeItem(prefix + 'model_manager_mmd');
             localStorage.removeItem(prefix + 'model_manager_common');
         } else {
             localStorage.removeItem(prefix + pageKey);
         }
+    }
+
+    // 验证重置结果
+    if (pageKey === 'model_manager') {
+        const mmdVal = localStorage.getItem('neko_tutorial_model_manager_mmd');
+        const vrmVal = localStorage.getItem('neko_tutorial_model_manager_vrm');
+        const l2dVal = localStorage.getItem('neko_tutorial_model_manager_live2d');
+        console.log('%c[Tutorial] 重置后验证 → mmd:', 'color: red; font-weight: bold', mmdVal, 'vrm:', vrmVal, 'live2d:', l2dVal);
     }
 
     const pageNames = {
