@@ -1018,6 +1018,32 @@
                     }
                     clearPendingAssistantTurnStart();
 
+                    // 主动消息 / 热切换回调也产生了 AI 文本（来自 send_lanlan_response），
+                    // 同样需要为字幕翻译。情感分析 / proactive backoff 维持原行为不动。
+                    (function () {
+                        var bufferedFullText = typeof window._geminiTurnFullText === 'string'
+                            ? window._geminiTurnFullText
+                            : '';
+                        var fallbackFromBubble = (window.currentGeminiMessage &&
+                            window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
+                            window.currentGeminiMessage.isConnected &&
+                            typeof window.currentGeminiMessage.textContent === 'string')
+                            ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /, '')
+                            : '';
+                        var fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
+                        fullText = fullText.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
+                        if (!fullText) return;
+                        (async function () {
+                            try {
+                                if (typeof window.translateAndShowSubtitle === 'function') {
+                                    await window.translateAndShowSubtitle(fullText);
+                                }
+                            } catch (transError) {
+                                console.error('[Subtitle] agent_callback translate failed:', transError);
+                            }
+                        })();
+                    })();
+
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log(window.t('console.turnEndReceived'));
