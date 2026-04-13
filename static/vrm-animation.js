@@ -31,6 +31,10 @@ class VRMAnimation {
         this._loaderPromise = null;
         this._fadeTimer = null;
         this._springBoneRestoreTimer = null;
+        // crossfade 时给每个 outgoing action schedule 的 stop 定时器。Set 允许
+        // 多个 in-flight fadeOut 同时等待 stop，reset() 时统一清干净，防止
+        // 重建 VRMAnimation 实例后残留回调打到旧 action。
+        this._outgoingStopTimers = new Set();
         this.playbackSpeed = 1.0;
         this.skeletonHelper = null;
         this.debug = false;
@@ -504,7 +508,12 @@ class VRMAnimation {
                 const outgoing = this.currentAction;
                 outgoing.fadeOut(fadeDuration);
                 const stopDelayMs = Math.ceil(fadeDuration * 1000) + 50;
-                setTimeout(() => {
+                // 定时器登记到 _outgoingStopTimers，reset() 统一清——防止
+                // 实例 dispose 后回调仍打到已释放的 action（CodeRabbit on PR #772）。
+                let timerId;
+                timerId = setTimeout(() => {
+                    this._outgoingStopTimers.delete(timerId);
+                    if (this._disposed) return;
                     try {
                         // 只有当 outgoing 已经不是当前 action 时才 stop，避免把同一
                         // action 反复切入/切出时误杀正在 fadeIn 的自己。
@@ -515,6 +524,7 @@ class VRMAnimation {
                         // action 可能已被 mixer 清理；stop 幂等，忽略异常
                     }
                 }, stopDelayMs);
+                this._outgoingStopTimers.add(timerId);
                 newAction.enabled = true;
                 if (options.noReset) {
                     newAction.fadeIn(fadeDuration).play();
@@ -818,6 +828,10 @@ class VRMAnimation {
         if (this._springBoneRestoreTimer) {
             clearTimeout(this._springBoneRestoreTimer);
             this._springBoneRestoreTimer = null;
+        }
+        if (this._outgoingStopTimers && this._outgoingStopTimers.size > 0) {
+            for (const id of this._outgoingStopTimers) clearTimeout(id);
+            this._outgoingStopTimers.clear();
         }
 
         this._skinnedMeshes = [];
