@@ -322,13 +322,16 @@ def test_chara_manager_unsaved_draft_branch_does_not_commit_cloudsave_sync_times
 
 
 @pytest.mark.unit
-def test_partial_save_voice_failed_key_is_not_duplicated_in_en_and_ko_locales():
+def test_partial_save_voice_failed_key_is_not_duplicated_in_en_ko_and_zh_tw_locales():
     en_raw = (LOCALE_DIR / "en.json").read_text(encoding="utf-8")
     ko_raw = (LOCALE_DIR / "ko.json").read_text(encoding="utf-8")
+    zh_tw_raw = (LOCALE_DIR / "zh-TW.json").read_text(encoding="utf-8")
 
     assert en_raw.count('"partialSaveVoiceFailed"') == 1
     assert ko_raw.count('"partialSaveVoiceFailed"') == 1
+    assert zh_tw_raw.count('"partialSaveVoiceFailed"') == 1
     assert "음성 업데이트에 실패했습니다" in ko_raw
+    assert "角色已保存，但音色更新失敗" in zh_tw_raw
 
 
 @pytest.mark.unit

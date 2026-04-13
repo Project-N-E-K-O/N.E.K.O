@@ -1855,7 +1855,7 @@
             "nameAuditFailed": "角色名称未通过云存档校验规则。",
             "uploadFailed": "上传失败：{{message}}",
             "downloadFailed": "下载失败：{{message}}",
-            "localReloadFailedRolledBack": "下载已应用，但本地重载失败。"
+            "localReloadFailedRolledBack": "下载结果不保证已生效。"
         }
     },
     "settings": {

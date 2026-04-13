@@ -1482,7 +1482,6 @@
         "unregisterVoiceTitle": "解除聲音注冊",
         "voiceUnregistered": "聲音注冊已解除",
         "unregisterFailed": "解除注冊失敗",
-        "partialSaveVoiceFailed": "角色已儲存，但音色更新失敗: {{error}}",
         "unregisterError": "解除注冊時發生錯誤",
         "switchFailed": "切換失敗",
         "switchError": "切換貓娘時發生錯誤",

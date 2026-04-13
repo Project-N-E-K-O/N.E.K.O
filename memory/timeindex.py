@@ -293,16 +293,24 @@ class TimeIndexedMemory:
         return []
 
     def retrieve_original_by_timeframe(self, lanlan_name, start_time, end_time):
-        if lanlan_name not in self.engines:
+        try:
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                return []
+        except MaintenanceModeError as exc:
+            logger.debug(f"[TimeIndexedMemory] 维护态跳过读取 {lanlan_name} 的历史对话: {exc}")
             return []
         table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
-        # 查询指定时间范围内的对话
-        with self.engines[lanlan_name].connect() as conn:
-            result = conn.execute(
-                text(f"SELECT session_id, message FROM {table_name} WHERE timestamp BETWEEN :start_time AND :end_time"),
-                {"start_time": start_time, "end_time": end_time}
-            )
-            return result.fetchall()
+        try:
+            # 查询指定时间范围内的对话
+            with self.engines[lanlan_name].connect() as conn:
+                result = conn.execute(
+                    text(f"SELECT session_id, message FROM {table_name} WHERE timestamp BETWEEN :start_time AND :end_time"),
+                    {"start_time": start_time, "end_time": end_time}
+                )
+                return result.fetchall()
+        except Exception as e:
+            logger.warning(f"[TimeIndexedMemory] 按时间范围读取原始对话失败: {e}")
+            return []
 
     # ── FTS5 事实索引 ─────────────────────────────────────────────
 
