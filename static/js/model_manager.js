@@ -1013,6 +1013,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // VRM crossfade 结束后收尾旧 action 的定时器集合（防止 fadeOut 后 action 残留占用 binding）。
     // 用 Set 而不是单一 slot：快速连续切换时每个 previousAction 有独立的定时器，不能被后续切换取消，
     // 否则中间那些 action 会以权重 0 永远留在 mixer 里。
+    // 每个条目是 { tid, action }：stopIdleRotation 中断时光 clearTimeout 还不够——
+    // 对应的 action 也要主动 stop()，否则同样会以权重 0 常驻 mixer。
     const _idleCrossfadeCleanupTimers = { vrm: new Set() };
     // VRM 待机动作 crossfade 时长（秒）。代替 immediate: true，让 mixer 对每根骨做加权 slerp，
     // 稀释单帧姿态跳变，避开 LookAtQuaternionProxy Euler 拆分在奇点附近的脖子甩动。
@@ -4711,9 +4713,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             _idlePhysicsRestoreTimers[type] = null;
         }
         _alignAndRestoreIdlePhysics(type);
-        // 取消所有挂起的 crossfade 收尾定时器
+        // 取消所有挂起的 crossfade 收尾定时器，并把对应的旧 action 主动 stop()。
+        // 只 clearTimeout 会漏掉 action：它们已 fadeOut 到 0，但没 stop() 就会以权重 0
+        // 常驻 mixer，绑定也不会释放，和本 patch 想避免的残留是同一个坑。
         if (type === 'vrm' && _idleCrossfadeCleanupTimers.vrm.size > 0) {
-            for (const tid of _idleCrossfadeCleanupTimers.vrm) clearTimeout(tid);
+            const currentAction = vrmManager?.animation?.currentAction || null;
+            for (const entry of _idleCrossfadeCleanupTimers.vrm) {
+                clearTimeout(entry.tid);
+                try {
+                    if (entry.action && entry.action !== currentAction) {
+                        entry.action.stop();
+                    }
+                } catch (e) { /* noop */ }
+            }
             _idleCrossfadeCleanupTimers.vrm.clear();
         }
         _idleRotationLast[type] = null;
@@ -4855,17 +4867,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // 每个 previousAction 都注册自己的定时器，绝不互相取消——否则快速连续切换时
                     // 中间那些 action 会丢失 stop() 机会，以权重 0 永驻 mixer。
                     if (previousAction && previousAction !== vrmManager.animation.currentAction) {
-                        let tid = null;
-                        tid = setTimeout(() => {
-                            _idleCrossfadeCleanupTimers.vrm.delete(tid);
+                        const entry = { tid: null, action: previousAction };
+                        entry.tid = setTimeout(() => {
+                            _idleCrossfadeCleanupTimers.vrm.delete(entry);
                             try {
                                 // 再确认它确实不是"当前" action，防止竞态把新 action 误停
-                                if (previousAction !== vrmManager.animation?.currentAction) {
-                                    previousAction.stop();
+                                if (entry.action !== vrmManager.animation?.currentAction) {
+                                    entry.action.stop();
                                 }
                             } catch (e) { /* noop */ }
                         }, Math.ceil(IDLE_VRM_FADE_SEC * 1000) + 50);
-                        _idleCrossfadeCleanupTimers.vrm.add(tid);
+                        _idleCrossfadeCleanupTimers.vrm.add(entry);
                     }
 
                     // 动画加载成功后再启动回退定时器（从实际播放开始计时）
