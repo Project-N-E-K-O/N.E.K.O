@@ -2829,7 +2829,7 @@
         "idleRestoreFailed": "Failed to restore idle animation",
         "btnNotFoundGiveUp": "Jukebox button not found after retries, giving up",
         "minimizeBtnNotFoundGiveUp": "Minimize button not found after retries, giving up",
-        "noticeDance": "💃 Dance service is currently only available when an MMD avatar is loaded. More interactions coming soon",
+        "noticeDance": "💃 Dance service is currently only available when a 3D model (MMD / VRM) is loaded. More interactions coming soon",
         "noticeMusic": "⚠️ Current songs are for testing only — copyrighted tracks will be removed in future versions, please import your own",
         "manager": "Manager",
         "managerTitle": "Manager",
