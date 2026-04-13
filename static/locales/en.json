@@ -2930,5 +2930,25 @@
     },
     "achievement": {
         "unlocked": "🏆 Achievement unlocked: {{description}}"
+    },
+    "cardExport": {
+        "title": "Character Card Export",
+        "loadingModel": "Loading model...",
+        "selectCharacter": "Select Character",
+        "selectCharacterHint": "-- Select a character --",
+        "loading": "Loading...",
+        "preview": "Card Preview",
+        "adjustHint": "Drag to adjust position, scroll to zoom",
+        "composition": "Composition",
+        "offsetX": "Horizontal",
+        "offsetY": "Vertical",
+        "scale": "Scale",
+        "resetComposition": "Reset",
+        "refreshPreview": "Refresh Preview",
+        "exportFull": "Export Character Card",
+        "exportSettings": "Export Settings Only",
+        "exporting": "Exporting...",
+        "exportError": "Export failed: ",
+        "back": "Back"
     }
 }

@@ -2930,5 +2930,25 @@
     },
     "achievement": {
         "unlocked": "🏆 実績解除: {{description}}"
+    },
+    "cardExport": {
+        "title": "キャラカードエクスポート",
+        "loadingModel": "モデルを読み込み中...",
+        "selectCharacter": "キャラクターを選択",
+        "selectCharacterHint": "-- キャラクターを選択 --",
+        "loading": "読み込み中...",
+        "preview": "カードプレビュー",
+        "adjustHint": "ドラッグで位置調整、スクロールで拡大縮小",
+        "composition": "構図調整",
+        "offsetX": "水平オフセット",
+        "offsetY": "垂直オフセット",
+        "scale": "拡大率",
+        "resetComposition": "構図リセット",
+        "refreshPreview": "プレビュー更新",
+        "exportFull": "キャラカードをエクスポート",
+        "exportSettings": "設定のみエクスポート",
+        "exporting": "エクスポート中...",
+        "exportError": "エクスポート失敗: ",
+        "back": "戻る"
     }
 }

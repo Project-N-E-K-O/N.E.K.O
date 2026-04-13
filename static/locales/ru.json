@@ -2930,5 +2930,25 @@
     },
     "achievement": {
         "unlocked": "🏆 Достижение разблокировано: {{description}}"
+    },
+    "cardExport": {
+        "title": "Экспорт карточки персонажа",
+        "loadingModel": "Загрузка модели...",
+        "selectCharacter": "Выбрать персонажа",
+        "selectCharacterHint": "-- Выберите персонажа --",
+        "loading": "Загрузка...",
+        "preview": "Предпросмотр карточки",
+        "adjustHint": "Перетащите для перемещения, прокрутите для масштабирования",
+        "composition": "Композиция",
+        "offsetX": "По горизонтали",
+        "offsetY": "По вертикали",
+        "scale": "Масштаб",
+        "resetComposition": "Сбросить",
+        "refreshPreview": "Обновить",
+        "exportFull": "Экспорт карточки",
+        "exportSettings": "Только настройки",
+        "exporting": "Экспорт...",
+        "exportError": "Ошибка экспорта: ",
+        "back": "Назад"
     }
 }

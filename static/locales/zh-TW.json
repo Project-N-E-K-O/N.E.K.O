@@ -2930,5 +2930,25 @@
     },
     "achievement": {
         "unlocked": "🏆 成就解鎖: {{description}}"
+    },
+    "cardExport": {
+        "title": "角色卡匯出",
+        "loadingModel": "正在載入模型...",
+        "selectCharacter": "選擇角色",
+        "selectCharacterHint": "-- 請選擇角色 --",
+        "loading": "載入中...",
+        "preview": "卡片預覽",
+        "adjustHint": "拖曳調整位置，滾輪縮放",
+        "composition": "構圖調整",
+        "offsetX": "水平偏移",
+        "offsetY": "垂直偏移",
+        "scale": "縮放",
+        "resetComposition": "重置構圖",
+        "refreshPreview": "重新整理預覽",
+        "exportFull": "匯出角色卡",
+        "exportSettings": "僅匯出設定",
+        "exporting": "匯出中...",
+        "exportError": "匯出失敗: ",
+        "back": "返回"
     }
 }

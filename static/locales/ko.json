@@ -2930,5 +2930,25 @@
     },
     "achievement": {
         "unlocked": "🏆 업적 달성: {{description}}"
+    },
+    "cardExport": {
+        "title": "캐릭터 카드 내보내기",
+        "loadingModel": "모델 로딩 중...",
+        "selectCharacter": "캐릭터 선택",
+        "selectCharacterHint": "-- 캐릭터를 선택하세요 --",
+        "loading": "로딩 중...",
+        "preview": "카드 미리보기",
+        "adjustHint": "드래그하여 위치 조정, 스크롤하여 확대/축소",
+        "composition": "구도 조정",
+        "offsetX": "수평 오프셋",
+        "offsetY": "수직 오프셋",
+        "scale": "배율",
+        "resetComposition": "구도 초기화",
+        "refreshPreview": "미리보기 새로고침",
+        "exportFull": "캐릭터 카드 내보내기",
+        "exportSettings": "설정만 내보내기",
+        "exporting": "내보내는 중...",
+        "exportError": "내보내기 실패: ",
+        "back": "뒤로"
     }
 }

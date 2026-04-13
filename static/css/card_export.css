@@ -1,0 +1,325 @@
+/* ============================================================
+ *  card_export.css – 角色卡导出页面样式
+ *  布局：左侧大尺寸卡片预览 + 右侧控制面板
+ * ============================================================ */
+
+/* --- 全局 --- */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+}
+
+body {
+    display: flex;
+    flex-direction: row;
+}
+
+/* --- 隐藏的模型渲染层 --- */
+/* 全屏渲染（保持正确宽高比），z-index 置后、不可见、不接受交互 */
+#model-viewport {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: -1;
+    opacity: 0;
+    pointer-events: none;
+}
+
+#model-viewport #live2d-container,
+#model-viewport #vrm-container,
+#model-viewport #mmd-container {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+#model-viewport canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+/* --- 左侧：卡片预览与编辑区域 --- */
+#card-edit-area {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    background: #0f0f23;
+    padding: 24px;
+    min-width: 0;
+}
+
+#card-preview {
+    height: min(88vh, 640px);
+    aspect-ratio: 3 / 4;
+    max-width: 100%;
+    background: #E8F4F8;
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+    flex-shrink: 0;
+    cursor: grab;
+    user-select: none;
+}
+
+#card-preview:active { cursor: grabbing; }
+
+#card-header-area {
+    height: calc(100% / 6);
+    background: #40C5F1;
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    position: relative;
+    z-index: 1;
+}
+
+#card-preview-name {
+    color: white;
+    font-size: 20px;
+    font-weight: 700;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.25);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#card-portrait-area {
+    position: relative;
+    width: 100%;
+    height: calc(100% - 100% / 6);
+    overflow: hidden;
+    background: #daeef4;
+}
+
+#card-portrait-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+}
+
+#portrait-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 14px;
+    color: #8899aa;
+    padding: 20px;
+    pointer-events: none;
+}
+
+#portrait-placeholder.hidden {
+    display: none;
+}
+
+/* 加载遮罩（覆盖左侧卡片区域） */
+#model-loading-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 15, 35, 0.85);
+    z-index: 100;
+    transition: opacity 0.3s;
+    border-radius: 12px;
+}
+
+#model-loading-overlay.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.loading-spinner {
+    width: 48px;
+    height: 48px;
+    border: 4px solid rgba(64, 197, 241, 0.2);
+    border-top-color: #40C5F1;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loading-text {
+    margin-top: 16px;
+    font-size: 14px;
+    color: #8899aa;
+}
+
+/* --- 右侧：控制面板 --- */
+#control-panel {
+    width: 340px;
+    min-width: 300px;
+    height: 100%;
+    background: #16213e;
+    border-left: 1px solid #0f3460;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: 20px;
+    gap: 16px;
+}
+
+#panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+#panel-header h2 {
+    font-size: 18px;
+    font-weight: 600;
+    color: #40C5F1;
+}
+
+.btn-icon {
+    background: none;
+    border: none;
+    color: #8899aa;
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 6px;
+    transition: background 0.2s, color 0.2s;
+}
+
+.btn-icon:hover {
+    background: rgba(64, 197, 241, 0.15);
+    color: #40C5F1;
+}
+
+/* --- 控制分区 --- */
+.control-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.control-section > label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #8899aa;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* 角色选择下拉框 */
+#character-select {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid #0f3460;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-size: 14px;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+#character-select:focus {
+    border-color: #40C5F1;
+}
+
+/* --- 构图控件行 --- */
+.control-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.control-row > span:first-child {
+    font-size: 13px;
+    color: #b0b8c0;
+    min-width: 64px;
+    flex-shrink: 0;
+}
+
+.control-row input[type="range"] {
+    flex: 1;
+    accent-color: #40C5F1;
+    height: 4px;
+    cursor: pointer;
+}
+
+.range-val {
+    font-size: 12px;
+    color: #8899aa;
+    min-width: 40px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+/* --- 按钮 --- */
+.btn-primary,
+.btn-secondary {
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: background 0.2s, opacity 0.2s;
+}
+
+.btn-primary {
+    background: #40C5F1;
+    color: #fff;
+    width: 100%;
+}
+
+.btn-primary:hover { background: #35b0d8; }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-secondary {
+    background: rgba(64, 197, 241, 0.12);
+    color: #40C5F1;
+    border: 1px solid rgba(64, 197, 241, 0.25);
+    flex: 1;
+}
+
+.btn-secondary:hover { background: rgba(64, 197, 241, 0.22); }
+
+.export-actions {
+    margin-top: auto;
+    gap: 10px;
+}
+
+/* --- 移动端适配 --- */
+@media (max-width: 768px) {
+    body { flex-direction: column; }
+
+    #card-edit-area {
+        flex: none;
+        height: 55vh;
+        padding: 12px;
+    }
+
+    #card-preview {
+        height: 100%;
+    }
+
+    #control-panel {
+        width: 100%;
+        height: 45vh;
+        border-left: none;
+        border-top: 1px solid #0f3460;
+    }
+}
