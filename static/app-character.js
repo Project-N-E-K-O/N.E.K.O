@@ -518,84 +518,88 @@
 
                 // 确保 VRM 管理器已初始化
                 console.log('[猫娘切换] 检查VRM管理器 - 存在:', !!window.vrmManager, '已初始化:', window.vrmManager?._isInitialized);
-                if (!window.vrmManager || !window.vrmManager._isInitialized) {
-                    console.log('[猫娘切换] VRM管理器需要初始化');
 
-                    // 等待 VRM 模块加载（双保险：事件 + 轮询）
-                    if (typeof window.VRMManager === 'undefined') {
-                        await new Promise((resolve, reject) => {
-                            // 先检查是否已经就绪（事件可能已经发出）
-                            if (window.VRMManager) {
-                                return resolve();
+                // 等待 VRM 模块加载（双保险：事件 + 轮询）
+                // VRMManager 与 VRMCore 由 vrm-init.js 并行加载，加载顺序不确定；
+                // 只检查 VRMManager 会在 VRMCore 未就绪时放行，导致 initThreeJS
+                // 抛 "VRMCore 尚未加载"。因此就绪条件需同时覆盖两者。
+                const isVRMRuntimeReady = () =>
+                    typeof window.VRMManager !== 'undefined' &&
+                    typeof window.VRMCore !== 'undefined';
+
+                if (!isVRMRuntimeReady()) {
+                    await new Promise((resolve, reject) => {
+                        // 先检查是否已经就绪（事件可能已经发出）
+                        if (isVRMRuntimeReady()) {
+                            return resolve();
+                        }
+
+                        let resolved = false;
+                        const timeoutId = setTimeout(() => {
+                            if (!resolved) {
+                                resolved = true;
+                                reject(new Error('VRM 模块加载超时'));
                             }
+                        }, 5000);
 
-                            let resolved = false;
-                            const timeoutId = setTimeout(() => {
+                        // 方法1：监听事件
+                        const eventHandler = () => {
+                            if (!resolved && isVRMRuntimeReady()) {
+                                resolved = true;
+                                clearTimeout(timeoutId);
+                                window.removeEventListener('vrm-modules-ready', eventHandler);
+                                resolve();
+                            }
+                        };
+                        window.addEventListener('vrm-modules-ready', eventHandler, { once: true });
+
+                        // 方法2：轮询检查（双保险）
+                        const pollInterval = setInterval(() => {
+                            if (isVRMRuntimeReady()) {
                                 if (!resolved) {
                                     resolved = true;
-                                    reject(new Error('VRM 模块加载超时'));
-                                }
-                            }, 5000);
-
-                            // 方法1：监听事件
-                            const eventHandler = () => {
-                                if (!resolved && window.VRMManager) {
-                                    resolved = true;
                                     clearTimeout(timeoutId);
+                                    clearInterval(pollInterval);
                                     window.removeEventListener('vrm-modules-ready', eventHandler);
                                     resolve();
                                 }
-                            };
-                            window.addEventListener('vrm-modules-ready', eventHandler, { once: true });
+                            }
+                        }, 100); // 每100ms检查一次
 
-                            // 方法2：轮询检查（双保险）
-                            const pollInterval = setInterval(() => {
-                                if (window.VRMManager) {
-                                    if (!resolved) {
-                                        resolved = true;
-                                        clearTimeout(timeoutId);
-                                        clearInterval(pollInterval);
-                                        window.removeEventListener('vrm-modules-ready', eventHandler);
-                                        resolve();
-                                    }
-                                }
-                            }, 100); // 每100ms检查一次
+                        // 清理轮询（在超时或成功时）
+                        const originalResolve = resolve;
+                        const originalReject = reject;
+                        resolve = (...args) => {
+                            clearInterval(pollInterval);
+                            originalResolve(...args);
+                        };
+                        reject = (...args) => {
+                            clearInterval(pollInterval);
+                            originalReject(...args);
+                        };
+                    });
+                }
 
-                            // 清理轮询（在超时或成功时）
-                            const originalResolve = resolve;
-                            const originalReject = reject;
-                            resolve = (...args) => {
-                                clearInterval(pollInterval);
-                                originalResolve(...args);
-                            };
-                            reject = (...args) => {
-                                clearInterval(pollInterval);
-                                originalReject(...args);
-                            };
-                        });
-                    }
+                if (!window.vrmManager) {
+                    window.vrmManager = new window.VRMManager();
+                }
+                // 每次都清除 goodbyeClicked 标志，确保新模型可以正常显示
+                window.vrmManager._goodbyeClicked = false;
 
-                    if (!window.vrmManager) {
-                        window.vrmManager = new window.VRMManager();
-                        // 初始化时确保 _goodbyeClicked 为 false
-                        window.vrmManager._goodbyeClicked = false;
-                    } else {
-                        // 如果 vrmManager 已存在，也清除 goodbyeClicked 标志，确保新模型可以正常显示
-                        window.vrmManager._goodbyeClicked = false;
-                    }
-
-                    // 确保容器和 canvas 存在
-                    const vrmContainer = document.getElementById('vrm-container');
-                    if (vrmContainer && !vrmContainer.querySelector('canvas')) {
+                // 确保容器和 canvas 存在，并初始化 Three.js 场景。
+                // 即使 vrmManager 已初始化也要调用 initThreeJS：在已初始化时是幂等的，
+                // 但会无条件恢复容器/canvas 可见性——修复在 Live2D/VRM 反复切换后，
+                // 容器/canvas 仍保持 display:none 导致 VRM 模型加载不出来的问题。
+                {
+                    const vrmContainerEl = document.getElementById('vrm-container');
+                    if (vrmContainerEl && !vrmContainerEl.querySelector('canvas')) {
                         const canvas = document.createElement('canvas');
                         canvas.id = 'vrm-canvas';
-                        vrmContainer.appendChild(canvas);
+                        vrmContainerEl.appendChild(canvas);
                     }
-
-                    // 初始化 Three.js 场景，传入光照配置（如果存在）
-                    const lightingConfig = catgirlConfig.lighting || null;
-                    await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
                 }
+                const lightingConfig = catgirlConfig.lighting || null;
+                await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
 
                 // 转换路径为 URL（基本格式处理，vrm-core.js 会处理备用路径）
                 // 再次验证 vrmModelPath 的有效性

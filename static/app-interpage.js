@@ -262,6 +262,13 @@
                 var oldLive3dSubType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
                 var typeChanged = oldModelType !== newModelType ||
                     (newModelType === 'live3d' && oldLive3dSubType !== live3dSubType);
+
+                // 提前更新 config，防止异步间隙中其他代码基于过时类型重建按钮
+                if (typeChanged && window.lanlan_config) {
+                    window.lanlan_config.model_type = newModelType;
+                    window.lanlan_config.live3d_sub_type = live3dSubType;
+                }
+
                 if (typeChanged) {
                     if (oldModelType === 'live2d') cleanupLive2DOverlayUI();
                     if (oldModelType === 'vrm') cleanupVRMOverlayUI();
@@ -635,6 +642,12 @@
             }
         } catch (error) {
             console.error('[Model] 模型热切换失败:', error);
+            // 回滚提前写入的 config，防止残留错误的模型类型
+            if (typeChanged && window.lanlan_config) {
+                window.lanlan_config.model_type = oldModelType;
+                window.lanlan_config.live3d_sub_type = oldLive3dSubType || '';
+                console.warn('[Model] 已回滚 config:', { model_type: oldModelType, live3d_sub_type: oldLive3dSubType });
+            }
             window.showStatusToast(
                 window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',
                 3000
@@ -715,6 +728,13 @@
             if (window.mmdManager && typeof window.mmdManager.pauseRendering === 'function') {
                 window.mmdManager.pauseRendering();
             }
+
+            // 隐藏所有悬浮按钮、锁图标和返回按钮（它们挂载在 document.body 上，不随容器隐藏）
+            document.querySelectorAll(
+                '#live2d-floating-buttons, #vrm-floating-buttons, #mmd-floating-buttons, ' +
+                '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, ' +
+                '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container'
+            ).forEach(function (el) { el.style.display = 'none'; });
         } catch (error) {
             console.error('[UI] 隐藏主界面失败:', error);
         }

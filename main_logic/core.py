@@ -602,34 +602,44 @@ class LLMSessionManager:
 
     async def send_lanlan_response(self, text: str, is_first_chunk: bool = False, turn_id: str | None = None):
         """Qwen输出转录回调: 可用于前端显示/缓存/同步。"""
+        text_clean = self.emotion_pattern.sub('', text)
+        effective_turn_id = turn_id or self.current_speech_id
+        message = {
+            "type": "gemini_response",
+            "text": text_clean,
+            "isNewMessage": is_first_chunk,
+            "turn_id": effective_turn_id
+        }
+
+        # 无论 WS 发送成功与否，始终将消息写入 sync_message_queue 和 message_cache，
+        # 确保 cross_server 历史组装不因 WS 断连而丢失 assistant 内容。
+        if is_first_chunk:
+            logger.debug("[%s] send_lanlan_response: first chunk (len=%d)", self.lanlan_name, len(text_clean))
+        self.sync_message_queue.put({"type": "json", "data": message})
+        if hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
+            if not hasattr(self, 'message_cache_for_new_session'):
+                self.message_cache_for_new_session = []
+            # 注意：缓存使用原始文本，不翻译（用于记忆等内部处理）
+            if len(self.message_cache_for_new_session) == 0 or self.message_cache_for_new_session[-1]['role']==self.master_name:
+                self.message_cache_for_new_session.append(
+                    {"role": self.lanlan_name, "text": text_clean})
+            elif self.message_cache_for_new_session[-1]['role'] == self.lanlan_name:
+                self.message_cache_for_new_session[-1]['text'] += text_clean
+
+        # WS 发送（可能失败，但 sync/cache 已保存）
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                text = self.emotion_pattern.sub('', text)
+            async def _do_send():
+                if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                    await self.websocket.send_json(message)
+                    return True
+                return False
 
-                # 优先使用传入的 turn_id, 兜底使用当前会话记录的 speech_id (即 turn id)
-                effective_turn_id = turn_id or self.current_speech_id
-
-                message = {
-                    "type": "gemini_response",
-                    "text": text,
-                    "isNewMessage": is_first_chunk,
-                    "turn_id": effective_turn_id
-                }
-                await self.websocket.send_json(message)
-                if is_first_chunk:
-                    logger.debug("[%s] send_lanlan_response: first chunk sent via WS (len=%d)", self.lanlan_name, len(text))
-                self.sync_message_queue.put({"type": "json", "data": message})
-                if hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
-                    if not hasattr(self, 'message_cache_for_new_session'):
-                        self.message_cache_for_new_session = []
-                    # 注意：缓存使用原始文本，不翻译（用于记忆等内部处理）
-                    if len(self.message_cache_for_new_session) == 0 or self.message_cache_for_new_session[-1]['role']==self.master_name:
-                        self.message_cache_for_new_session.append(
-                            {"role": self.lanlan_name, "text": text})
-                    elif self.message_cache_for_new_session[-1]['role'] == self.lanlan_name:
-                        self.message_cache_for_new_session[-1]['text'] += text
-                return True
-            return False
+            if self.websocket_lock:
+                async with self.websocket_lock:
+                    ws_ok = await _do_send()
+            else:
+                ws_ok = await _do_send()
+            return ws_ok
 
         except WebSocketDisconnect:
             logger.info("Frontend disconnected.")

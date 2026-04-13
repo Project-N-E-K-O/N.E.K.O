@@ -1069,22 +1069,51 @@ body.react-chat-window-dragging {
     display: none;
 }
 
-#chat-avatar-preview-card {
+/* 独立头像预览弹窗（chat.html / index.html 共用）
+   作为一个浮动窗口定位在触发按钮附近。 */
+#chat-avatar-preview-popup {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 320px;
+    max-width: calc(100vw - 24px);
     display: flex;
     flex-direction: column;
     gap: 12px;
-    padding: 12px;
+    padding: 14px;
     border-radius: 16px;
-    border: 1px solid rgba(68, 183, 254, 0.18);
+    border: 1px solid rgba(68, 183, 254, 0.22);
     background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 250, 252, 0.92));
+        linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 252, 0.96));
     box-shadow:
-        0 8px 22px rgba(33, 95, 144, 0.08),
+        0 20px 48px rgba(12, 20, 34, 0.24),
+        0 8px 22px rgba(33, 95, 144, 0.12),
         inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    z-index: 100010;
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+    transform-origin: top right;
+    transition: opacity 0.16s ease, transform 0.18s cubic-bezier(0.2, 0, 0, 1);
+    pointer-events: auto;
 }
 
-#chat-avatar-preview-card[hidden] {
+#chat-avatar-preview-popup.is-visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+
+#chat-avatar-preview-popup[hidden] {
     display: none !important;
+}
+
+[data-theme="dark"] #chat-avatar-preview-popup {
+    border-color: rgba(68, 183, 254, 0.28);
+    background:
+        linear-gradient(180deg, rgba(30, 38, 52, 0.96), rgba(22, 28, 40, 0.96));
+    box-shadow:
+        0 20px 48px rgba(0, 0, 0, 0.5),
+        0 8px 22px rgba(0, 0, 0, 0.28),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .chat-avatar-preview-card-header {
@@ -2081,7 +2110,10 @@ body.react-chat-window-dragging {
         background: transparent;
     }
 
-    #react-chat-window-shell {
+    /* React chat window 移动端规则仅作用于 index.html 等真正的浏览器手机端。
+       chat.html 是 Electron 独立窗口（无论拖得多窄都应走 PC 逻辑），
+       在 <body> 加 .electron-chat-window 从此媒体查询中排除。 */
+    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
         width: calc(100vw - 12px);
         height: auto;
         max-height: 50vh;
@@ -2095,57 +2127,81 @@ body.react-chat-window-dragging {
         overflow: hidden;
     }
 
-    #react-chat-window-shell #react-chat-window-root {
+    body:not(.electron-chat-window) #react-chat-window-shell #react-chat-window-root {
         height: 100%;
         flex: 1 1 auto;
         overflow: hidden;
         min-height: 0;
     }
 
-    #react-chat-window-shell .app-shell {
+    body:not(.electron-chat-window) #react-chat-window-shell .app-shell {
         height: 100%;
         display: flex;
         flex-direction: column;
         min-height: 0;
     }
 
-    #react-chat-window-shell .chat-window {
+    /* 窄屏与桌面统一用 grid 布局：auto(顶栏) 1fr(消息) auto(输入) +
+       overflow:hidden 保证输入区不会被消息挤出。shell 尺寸仍由
+       syncMobileContentLayout() 写成显式像素（根据内容 50vh 上限）。 */
+    body:not(.electron-chat-window) #react-chat-window-shell .chat-window {
         height: 100%;
-        display: flex;
-        flex-direction: column;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
         min-height: 0;
-    }
-
-    #react-chat-window-shell .chat-body {
-        flex: 1 1 auto;
-        min-height: 60px;
-        display: flex;
-        flex-direction: column;
         overflow: hidden;
     }
 
-    #react-chat-window-shell .message-list {
-        flex: 1 1 auto;
-        min-height: 60px;
-        height: auto;
-        overflow-y: hidden;
+    body:not(.electron-chat-window) #react-chat-window-shell .chat-body {
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    body:not(.electron-chat-window) #react-chat-window-shell .message-list {
+        height: 100%;
+        min-height: 0;
+        overflow-y: auto;
         -webkit-overflow-scrolling: touch;
     }
 
-    #react-chat-window-shell.is-mobile-content-capped .message-list {
+    /* .is-mobile-content-capped 现在不再影响布局（message-list 始终可滚），
+       保留空规则以免其他位置若有依赖时出现样式回退。 */
+    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-content-capped .message-list {
         overflow-y: auto;
     }
 
     /* Mobile: hide the divider between translate and jukebox plus the last tool button (jukebox)
        to reduce clutter on small screens. If the tool order changes, replace these positional
        selectors with a dedicated class or data attribute on the affected controls. */
-    #react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2),
-    #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
+    body:not(.electron-chat-window) #react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2),
+    body:not(.electron-chat-window) #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
         display: none;
     }
 
-    #react-chat-window-drag-handle {
+    body:not(.electron-chat-window) #react-chat-window-drag-handle {
         cursor: default;
+    }
+
+    /* ---- 手机端最小化：全宽底部胶囊（替代 50px 圆球）----
+       胶囊横跨屏幕底部，点击即展开；比左下角小圆球更符合手机底栏交互习惯。
+       具体最小化尺寸由 JS 通过 transform scale 动画过渡到此 CSS 终态。 */
+    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized {
+        width: calc(100vw - 12px) !important;
+        height: 48px !important;
+        border-radius: 24px;
+    }
+
+    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized .react-chat-minimized-icon {
+        width: 28px;
+        height: 28px;
+        /* 居中显示而非填满整条胶囊 */
+        object-fit: contain;
     }
 
     #chat-container.minimized::before {
