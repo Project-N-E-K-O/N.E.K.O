@@ -716,13 +716,8 @@
         }
 
         function looksLikeStructuredRichText(text) {
-            var s = normalizeGeminiText(text || '');
-            return /```[\s\S]*```/.test(s)
-                || /(?:^|\n)```/.test(s)
-                || /\$\$[\s\S]*\$\$/.test(s)
-                || /(?<!\$)\$(?!\$)[^$\n]+(?<!\$)\$(?!\$)/.test(s)
-                || /(?:^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s)/.test(s)
-                || /(?:^|\n)\|.+\|.+(?:\n|\r\n)\|(?:[-: ]+\|){1,}/.test(s);
+            // 统一复用 app-chat-text-utils.js 里的唯一实现，避免与 adapter 路径分叉。
+            return window.appChatTextUtils.looksLikeStructuredRichText(text);
         }
 
         function renderStructuredGeminiMessage(fullText) {

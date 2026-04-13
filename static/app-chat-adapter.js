@@ -178,16 +178,11 @@
         return S && S.mergeMessagesEnabled;
     }
 
-    // ======================== 结构化文本检测（从 app-chat.js 复刻） ========================
+    // ======================== 结构化文本检测（委托给共享 util） ========================
 
     function looksLikeStructuredRichText(text) {
-        var s = normalizeGeminiText(text || '');
-        return /```[\s\S]*```/.test(s)
-            || /(?:^|\n)```/.test(s)
-            || /\$\$[\s\S]*\$\$/.test(s)
-            || /(?<!\$)\$(?!\$)[^$\n]+(?<!\$)\$(?!\$)/.test(s)
-            || /(?:^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s)/.test(s)
-            || /(?:^|\n)\|.+\|.+(?:\n|\r\n)\|(?:[-: ]+\|){1,}/.test(s);
+        // 统一复用 app-chat-text-utils.js 里的唯一实现，避免与 DOM 路径分叉。
+        return window.appChatTextUtils.looksLikeStructuredRichText(text);
     }
 
     // ======================== 音乐指令清洗（从 app-chat.js 复刻） ========================
