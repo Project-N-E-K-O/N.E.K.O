@@ -398,12 +398,14 @@ class VRMInteraction {
             const currentScale = scene.scale.x || 1;
             const newScale = Math.max(minScale, Math.min(maxScale, currentScale * scaleFactor));
 
-            // 通过 manager.setModelScaleScalar 统一缩放，同时同步 SpringBone 碰撞体半径
-            if (typeof this.manager.setModelScaleScalar === 'function') {
-                this.manager.setModelScaleScalar(newScale);
-            } else {
-                scene.scale.setScalar(newScale);
+            // 通过 manager.setModelScaleScalar 统一缩放，同时同步 SpringBone 碰撞体半径。
+            // 这里不走 scene.scale.setScalar 的静默回退：那样只会缩视觉 mesh、不同步 collider，
+            // 反而把状态失配藏起来。API 不可用时显式告警并中止，以便尽早暴露问题。
+            if (typeof this.manager.setModelScaleScalar !== 'function') {
+                console.warn('[VRM Interaction] manager.setModelScaleScalar 不可用，跳过缩放以避免 SpringBone 状态失配');
+                return;
             }
+            this.manager.setModelScaleScalar(newScale);
 
             // 缩放结束后防抖保存位置
             this._debouncedSavePosition();
