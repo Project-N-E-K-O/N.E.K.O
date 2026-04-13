@@ -433,10 +433,18 @@
     window.dispatchMusicPlay = async function (trackInfo, options) {
         options = options || {};
 
-        // 拦截逻辑：如果是主动搭话触发的切歌，且当前正在放歌，则拦截
-        if (options.source === 'proactive' && typeof window.isMusicPlaying === 'function' && window.isMusicPlaying()) {
-            console.log('[MusicDispatch] 拦截来自主动搭话的切歌请求，保持当前播放');
-            return false;
+        // 拦截逻辑：如果是主动搭话触发的切歌，且本地正在放歌 / 加载中 /
+        // 其他窗口（chat.html 与 index.html 互为兄弟）也在放歌，则拦截。
+        // 单纯的 isMusicPlaying() 在"已 dispatch 但 audio 还没 play"的窗口里
+        // 会返回 false，导致并发的第二次 dispatch 被放行，最终两首歌同时响。
+        if (options.source === 'proactive') {
+            var localPlaying = typeof window.isMusicPlaying === 'function' && window.isMusicPlaying();
+            var localPending = typeof window.isMusicPending === 'function' && window.isMusicPending();
+            var remoteActive = typeof window.isRemoteMusicActive === 'function' && window.isRemoteMusicActive();
+            if (localPlaying || localPending || remoteActive) {
+                console.log('[MusicDispatch] 拦截来自主动搭话的切歌请求 (playing=' + localPlaying + ', pending=' + localPending + ', remote=' + remoteActive + ')');
+                return false;
+            }
         }
 
         if (!trackInfo || !trackInfo.url) {
