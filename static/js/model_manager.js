@@ -1016,7 +1016,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 逐帧小幅位移，避开 LookAt 奇点 / 四元数跨半球长路径 / 物理飞甩。
     // previousAction 的延迟 stop 已下沉到 vrm-animation.js `_playAction` 的每次 fadeOut，
     // 跟 idle/手动切换路径解耦，不在此处维护 pending 槽。
-    const IDLE_VRM_FADE_SEC = 0.15;
+    //
+    // 0.35s 选型理由：aa2458e 之后的保护（LookAt proxy 永久 no-op / _alignClipToCurrentPose
+    // 跨 clip 同半球对齐）都是根因修复，与 fadeDuration 无关，窗口可自由放宽。配合下方
+    // 视觉 fade：fade-in 在 ~370ms 完成，若 crossfade 仍取 0.15s（300ms 结束），用户第一眼
+    // 看到的是已定格的新 pose —— 正是主诉「硬直」的来源。拉到 0.35s 让 fade-in 完成后仍有
+    // ~130ms 可见 slerp 尾巴，用户看到的第一帧是「正在微动」而不是「突然定格」，才真正
+    // 消除硬直感。再长（>0.6s）无视觉 fade 配合会暴露两段无关 pose 中间态的「融化感」。
+    const IDLE_VRM_FADE_SEC = 0.35;
 
     // 待机动作切换的视觉渐隐渐显（material opacity）。骨骼 crossfade 只平滑骨旋转，
     // 无法掩盖两段不相关待机 clip 之间的「pose 跳变感」（用户主诉的 VRM 硬直）；
