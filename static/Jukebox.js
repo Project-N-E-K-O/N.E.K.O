@@ -1669,21 +1669,29 @@ window.Jukebox = {
 
       dropZone.addEventListener('drop', async (e) => {
         const files = Array.from(e.dataTransfer.files);
+        const audioExts = ['mp3', 'wav', 'ogg', 'flac'];
+        const actionExts = ['vmd', 'bvh', 'fbx', 'vrma'];
 
         if (fileType === 'audio') {
-          const audioFiles = files.filter(f => f.name.toLowerCase().endsWith('.mp3'));
+          const audioFiles = files.filter(f => {
+            const ext = f.name.split('.').pop().toLowerCase();
+            return audioExts.includes(ext);
+          });
           if (audioFiles.length === 0) {
-            console.log('[SongActionManager] 没有检测到 MP3 文件');
+            console.log('[SongActionManager] 没有检测到音频文件');
             return;
           }
           await this.uploadSongs(audioFiles);
         } else if (fileType === 'action') {
-          const vmdFiles = files.filter(f => f.name.toLowerCase().endsWith('.vmd'));
-          if (vmdFiles.length === 0) {
-            console.log('[SongActionManager] 没有检测到 VMD 文件');
+          const actionFiles = files.filter(f => {
+            const ext = f.name.split('.').pop().toLowerCase();
+            return actionExts.includes(ext);
+          });
+          if (actionFiles.length === 0) {
+            console.log('[SongActionManager] 没有检测到动画文件');
             return;
           }
-          await this.uploadActions(vmdFiles);
+          await this.uploadActions(actionFiles);
         }
       });
     },
