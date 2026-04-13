@@ -10,15 +10,18 @@ Handles Steam Workshop-related endpoints including:
 """
 
 import os
+import sys
 import json
 import time
 import asyncio
 import threading
+import mimetypes
+import platform
 from datetime import datetime
 from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
 from utils.file_utils import atomic_write_json
@@ -53,6 +56,18 @@ _ugc_sync_lock = asyncio.Lock()
 # 全局互斥锁，用于序列化 UGC 批量查询（CreateQuery → SendQuery → 回调），
 # 避免并发调用 override_callback=True 导致回调覆盖竞态
 _ugc_query_lock = asyncio.Lock()
+WORKSHOP_VOICE_MANIFEST_NAME = 'voice_manifest.json'
+WORKSHOP_REFERENCE_AUDIO_EXTENSIONS = {'.mp3', '.wav'}
+WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES = {
+    'audio/mpeg': '.mp3',
+    'audio/mp3': '.mp3',
+    'audio/wav': '.wav',
+    'audio/wave': '.wav',
+    'audio/x-wav': '.wav',
+    'audio/x-pn-wav': '.wav',
+}
+WORKSHOP_REFERENCE_LANGUAGES = {'ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru'}
+WORKSHOP_REFERENCE_PROVIDER_HINTS = {'cosyvoice', 'minimax', 'minimax_intl'}
 
 
 def _is_item_cache_valid(item_id: int) -> bool:
@@ -492,6 +507,156 @@ def find_preview_image_in_folder(folder_path):
     
     return None
 
+
+def _sanitize_voice_prefix(prefix: str, default_prefix: str = 'voice') -> str:
+    normalized = ''.join(ch for ch in str(prefix or '') if ch.isascii() and ch.isalnum())[:10]
+    if normalized:
+        return normalized
+    fallback = ''.join(ch for ch in str(default_prefix or '') if ch.isascii() and ch.isalnum())[:10]
+    return fallback or 'voice'
+
+
+def _normalize_workshop_voice_manifest(raw_manifest: dict, *, default_prefix: str = 'voice',
+                                       default_display_name: str = '') -> dict:
+    if not isinstance(raw_manifest, dict):
+        raise ValueError('voice_manifest.json 格式无效')
+
+    reference_audio = os.path.basename(str(raw_manifest.get('reference_audio', '')).strip())
+    if not reference_audio:
+        raise ValueError('voice_manifest.json 缺少 reference_audio')
+
+    audio_ext = os.path.splitext(reference_audio)[1].lower()
+    if audio_ext not in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS:
+        raise ValueError('参考语音格式只支持 mp3 或 wav')
+
+    prefix = _sanitize_voice_prefix(raw_manifest.get('prefix', ''), default_prefix=default_prefix)
+
+    ref_language = str(raw_manifest.get('ref_language', 'ch') or 'ch').strip().lower()
+    if ref_language not in WORKSHOP_REFERENCE_LANGUAGES:
+        ref_language = 'ch'
+
+    provider_hint = str(raw_manifest.get('provider_hint', 'cosyvoice') or 'cosyvoice').strip().lower()
+    if provider_hint not in WORKSHOP_REFERENCE_PROVIDER_HINTS:
+        provider_hint = 'cosyvoice'
+
+    display_name = str(raw_manifest.get('display_name', '') or '').strip()
+    if not display_name:
+        display_name = str(default_display_name or prefix).strip() or prefix
+
+    version = raw_manifest.get('version', 1)
+    try:
+        version = int(version)
+    except (TypeError, ValueError):
+        version = 1
+
+    return {
+        'version': version,
+        'reference_audio': reference_audio,
+        'prefix': prefix,
+        'ref_language': ref_language,
+        'display_name': display_name,
+        'provider_hint': provider_hint,
+    }
+
+
+def _resolve_workshop_voice_reference(item_dir: str) -> dict | None:
+    manifest_path = os.path.join(item_dir, WORKSHOP_VOICE_MANIFEST_NAME)
+    if not os.path.exists(manifest_path):
+        return None
+
+    try:
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            raw_manifest = json.load(f)
+    except Exception as e:
+        raise ValueError(f'读取参考语音清单失败: {e}') from e
+
+    manifest = _normalize_workshop_voice_manifest(
+        raw_manifest,
+        default_prefix=os.path.basename(item_dir),
+        default_display_name=os.path.basename(item_dir),
+    )
+    audio_path = _assert_under_base(os.path.join(item_dir, manifest['reference_audio']), item_dir)
+    if not os.path.exists(audio_path) or not os.path.isfile(audio_path):
+        raise FileNotFoundError(f'参考语音文件不存在: {manifest["reference_audio"]}')
+
+    return {
+        'manifest': manifest,
+        'audio_path': audio_path,
+        'manifest_path': manifest_path,
+    }
+
+
+def _cleanup_workshop_voice_reference(content_folder: str) -> None:
+    manifest_path = os.path.join(content_folder, WORKSHOP_VOICE_MANIFEST_NAME)
+    if not os.path.exists(manifest_path):
+        return
+
+    try:
+        voice_ref = _resolve_workshop_voice_reference(content_folder)
+    except Exception as e:
+        logger.warning(f'删除旧参考语音时解析 manifest 失败，将仅移除 manifest 文件: {e}')
+        voice_ref = None
+
+    if voice_ref:
+        audio_path = voice_ref.get('audio_path')
+        if audio_path and os.path.exists(audio_path):
+            try:
+                os.remove(audio_path)
+            except OSError as e:
+                logger.warning(f'删除旧参考语音文件失败: {audio_path}, {e}')
+
+    try:
+        os.remove(manifest_path)
+    except OSError as e:
+        logger.warning(f'删除旧参考语音清单失败: {manifest_path}, {e}')
+
+
+def _build_workshop_voice_reference_summary(install_folder: str) -> dict | None:
+    try:
+        voice_ref = _resolve_workshop_voice_reference(install_folder)
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logger.warning(f'解析工坊参考语音失败: {install_folder}, {e}')
+        return None
+
+    if not voice_ref:
+        return None
+
+    manifest = voice_ref['manifest']
+    return {
+        'available': True,
+        'displayName': manifest['display_name'],
+        'prefix': manifest['prefix'],
+        'refLanguage': manifest['ref_language'],
+        'providerHint': manifest['provider_hint'],
+        'referenceAudio': manifest['reference_audio'],
+    }
+
+
+async def _get_subscribed_items_payload() -> dict:
+    result = await get_subscribed_workshop_items()
+    if isinstance(result, JSONResponse):
+        try:
+            return json.loads(result.body.decode('utf-8'))
+        except Exception:
+            return {'success': False, 'error': '无法解析订阅物品响应'}
+    if isinstance(result, dict):
+        return result
+    return {'success': False, 'error': '获取订阅物品响应异常'}
+
+
+async def _find_subscribed_item_by_id(item_id: str) -> dict | None:
+    payload = await _get_subscribed_items_payload()
+    if not payload.get('success'):
+        error = payload.get('error') or '获取订阅物品失败'
+        raise RuntimeError(error)
+
+    for item in payload.get('items', []):
+        if str(item.get('publishedFileId')) == str(item_id):
+            return item
+    return None
+
 @router.post('/upload-preview-image')
 async def upload_preview_image(request: Request):
     """
@@ -569,6 +734,136 @@ async def upload_preview_image(request: Request):
             "success": False,
             "error": "内部错误",
             "message": "文件上传失败"
+        }, status_code=500)
+
+
+@router.post('/upload-reference-audio')
+async def upload_reference_audio(request: Request):
+    """上传参考语音并在内容目录中生成 voice_manifest.json。"""
+    try:
+        form = await request.form()
+        file = form.get('file')
+        content_folder = unquote(str(form.get('content_folder', '') or '').strip())
+        workshop_export_dir = os.path.join(get_workshop_path(), 'WorkshopExport')
+
+        if not file:
+            return JSONResponse({
+                "success": False,
+                "error": "没有选择参考语音",
+            }, status_code=400)
+
+        if not content_folder:
+            return JSONResponse({
+                "success": False,
+                "error": "缺少内容目录",
+            }, status_code=400)
+
+        try:
+            content_folder = _assert_under_base(content_folder, workshop_export_dir)
+        except PermissionError:
+            return JSONResponse({
+                "success": False,
+                "error": "参考语音只能上传到工坊临时目录",
+            }, status_code=403)
+
+        if not os.path.exists(content_folder) or not os.path.isdir(content_folder):
+            return JSONResponse({
+                "success": False,
+                "error": "内容目录不存在",
+            }, status_code=404)
+
+        file_name = getattr(file, 'filename', '') or ''
+        file_ext = os.path.splitext(file_name)[1].lower()
+        if file_ext not in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS:
+            file_ext = WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES.get(getattr(file, 'content_type', ''), '')
+
+        if file_ext not in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS:
+            return JSONResponse({
+                "success": False,
+                "error": "参考语音格式只支持 mp3 或 wav",
+            }, status_code=400)
+
+        prefix = _sanitize_voice_prefix(
+            form.get('prefix', ''),
+            default_prefix=os.path.basename(content_folder),
+        )
+        display_name = str(form.get('display_name', '') or '').strip() or prefix
+        ref_language = str(form.get('ref_language', 'ch') or 'ch').strip().lower()
+        if ref_language not in WORKSHOP_REFERENCE_LANGUAGES:
+            ref_language = 'ch'
+
+        provider_hint = str(form.get('provider_hint', 'cosyvoice') or 'cosyvoice').strip().lower()
+        if provider_hint not in WORKSHOP_REFERENCE_PROVIDER_HINTS:
+            provider_hint = 'cosyvoice'
+
+        _cleanup_workshop_voice_reference(content_folder)
+
+        reference_audio_name = f'voice_sample{file_ext}'
+        reference_audio_path = os.path.join(content_folder, reference_audio_name)
+        with open(reference_audio_path, 'wb') as f:
+            f.write(await file.read())
+
+        manifest = _normalize_workshop_voice_manifest({
+            'version': 1,
+            'reference_audio': reference_audio_name,
+            'prefix': prefix,
+            'ref_language': ref_language,
+            'display_name': display_name,
+            'provider_hint': provider_hint,
+        }, default_prefix=prefix, default_display_name=display_name)
+        atomic_write_json(
+            os.path.join(content_folder, WORKSHOP_VOICE_MANIFEST_NAME),
+            manifest,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+        return JSONResponse({
+            "success": True,
+            "manifest": manifest,
+            "message": "参考语音已写入工坊内容目录",
+        })
+    except Exception as e:
+        logger.error(f"上传参考语音失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+        }, status_code=500)
+
+
+@router.post('/remove-reference-audio')
+async def remove_reference_audio(request: Request):
+    """删除内容目录中的参考语音和 voice_manifest.json。"""
+    try:
+        data = await request.json()
+        content_folder = unquote(str(data.get('content_folder', '') or '').strip())
+        workshop_export_dir = os.path.join(get_workshop_path(), 'WorkshopExport')
+        if not content_folder:
+            return JSONResponse({
+                "success": False,
+                "error": "缺少内容目录",
+            }, status_code=400)
+
+        try:
+            content_folder = _assert_under_base(content_folder, workshop_export_dir)
+        except PermissionError:
+            return JSONResponse({
+                "success": False,
+                "error": "内容目录不在允许范围内",
+            }, status_code=403)
+
+        if os.path.exists(content_folder) and os.path.isdir(content_folder):
+            _cleanup_workshop_voice_reference(content_folder)
+
+        return JSONResponse({
+            "success": True,
+            "message": "参考语音已清理",
+        })
+    except Exception as e:
+        logger.error(f"删除参考语音失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
         }, status_code=500)
 
 @router.get('/status')
@@ -867,6 +1162,13 @@ async def get_subscribed_workshop_items():
                 # 添加预览图URL到物品信息
                 if preview_url:
                     item_info['previewUrl'] = preview_url
+
+                voice_reference_summary = None
+                if install_folder and os.path.exists(install_folder):
+                    voice_reference_summary = _build_workshop_voice_reference_summary(install_folder)
+                item_info['voiceReferenceAvailable'] = bool(voice_reference_summary)
+                if voice_reference_summary:
+                    item_info['voiceReference'] = voice_reference_summary
                 
                 # 添加物品信息到结果列表
                 items_info.append(item_info)
@@ -984,6 +1286,116 @@ def get_workshop_item_path(item_id: str):
             "error": "获取路径失败",
             "message": str(e)
         }, status_code=500)
+
+
+@router.get('/voice-reference/{item_id}')
+async def get_workshop_voice_reference(item_id: str):
+    """按 publishedFileId 返回订阅工坊物品中的参考语音 manifest。"""
+    try:
+        item = await _find_subscribed_item_by_id(item_id)
+    except RuntimeError as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+        }, status_code=503)
+
+    if not item:
+        return JSONResponse({
+            "success": False,
+            "available": False,
+            "error": "未找到对应的订阅工坊物品",
+        }, status_code=404)
+
+    install_folder = item.get('installedFolder')
+    if not install_folder or not os.path.exists(install_folder):
+        return JSONResponse({
+            "success": False,
+            "available": False,
+            "error": "工坊物品尚未安装",
+        }, status_code=404)
+
+    try:
+        voice_ref = _resolve_workshop_voice_reference(install_folder)
+    except FileNotFoundError as e:
+        return JSONResponse({
+            "success": False,
+            "available": False,
+            "error": str(e),
+        }, status_code=404)
+    except ValueError as e:
+        return JSONResponse({
+            "success": False,
+            "available": False,
+            "error": str(e),
+        }, status_code=400)
+
+    if not voice_ref:
+        return JSONResponse({
+            "success": True,
+            "available": False,
+            "item_id": str(item_id),
+            "title": item.get('title') or '',
+        })
+
+    return JSONResponse({
+        "success": True,
+        "available": True,
+        "item_id": str(item_id),
+        "title": item.get('title') or '',
+        "manifest": voice_ref['manifest'],
+    })
+
+
+@router.get('/voice-reference/{item_id}/audio')
+async def get_workshop_voice_reference_audio(item_id: str):
+    """返回订阅工坊物品中的参考语音音频流。"""
+    try:
+        item = await _find_subscribed_item_by_id(item_id)
+    except RuntimeError as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+        }, status_code=503)
+
+    if not item:
+        return JSONResponse({
+            "success": False,
+            "error": "未找到对应的订阅工坊物品",
+        }, status_code=404)
+
+    install_folder = item.get('installedFolder')
+    if not install_folder or not os.path.exists(install_folder):
+        return JSONResponse({
+            "success": False,
+            "error": "工坊物品尚未安装",
+        }, status_code=404)
+
+    try:
+        voice_ref = _resolve_workshop_voice_reference(install_folder)
+    except FileNotFoundError as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+        }, status_code=404)
+    except ValueError as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+        }, status_code=400)
+
+    if not voice_ref:
+        return JSONResponse({
+            "success": False,
+            "error": "该工坊物品没有参考语音",
+        }, status_code=404)
+
+    audio_path = voice_ref['audio_path']
+    media_type = mimetypes.guess_type(audio_path)[0] or 'application/octet-stream'
+    return FileResponse(
+        audio_path,
+        media_type=media_type,
+        filename=os.path.basename(audio_path),
+    )
 
 
 @router.get('/item/{item_id}')
@@ -1838,6 +2250,11 @@ def _assert_under_base(path: str, base: str) -> str:
         raise PermissionError("path not allowed")
     return full
 
+
+def _is_workshop_publish_native_crash_risk() -> bool:
+    """SteamworksPy on macOS arm64 crashes in CreateItem/SubmitItemUpdate callbacks."""
+    return sys.platform == 'darwin' and platform.machine().lower() in {'arm64', 'aarch64'}
+
 @router.get('/read-file')
 async def read_workshop_file(path: str):
     """读取创意工坊文件内容"""
@@ -2408,6 +2825,17 @@ async def publish_to_workshop(request: Request):
                             logger.error(f'重命名自动预览图片失败: {e}')
                             # 如果重命名失败，继续使用原始路径
                             logger.warning(f'继续使用原始预览图片路径: {preview_image}')
+
+        try:
+            voice_ref = _resolve_workshop_voice_reference(content_folder)
+            if voice_ref:
+                logger.info(f"检测到参考语音清单: {voice_ref['manifest']['reference_audio']}")
+        except (ValueError, FileNotFoundError) as e:
+            return JSONResponse(content={
+                "success": False,
+                "error": "参考语音清单无效",
+                "message": str(e)
+            }, status_code=400)
         
         # 记录将要上传的内容信息
         logger.info(f"准备发布创意工坊物品: {title}")
@@ -2417,6 +2845,16 @@ async def publish_to_workshop(request: Request):
         logger.info(f"标签: {tags}")
         logger.info(f"内容文件夹包含文件数量: {len([f for f in os.listdir(content_folder) if os.path.isfile(os.path.join(content_folder, f))])}")
         logger.info(f"内容文件夹包含子文件夹数量: {len([f for f in os.listdir(content_folder) if os.path.isdir(os.path.join(content_folder, f))])}")
+
+        if _is_workshop_publish_native_crash_risk():
+            logger.error(
+                "已阻止创意工坊上传：macOS ARM64 上的 SteamworksPy 回调会在 CreateItem/SubmitItemUpdate 阶段触发原生崩溃"
+            )
+            return JSONResponse(content={
+                "success": False,
+                "error": "当前平台暂不支持创意工坊上传",
+                "message": "macOS Apple Silicon 环境下的 SteamworksPy 上传回调会导致主进程崩溃，请改用 Windows/Linux 环境或等待底层库修复。"
+            }, status_code=503)
         
         # 使用线程池执行Steamworks API调用（因为这些是阻塞操作）
         loop = asyncio.get_event_loop()
@@ -2654,6 +3092,7 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                     logger.error(f"创建创意工坊物品失败: {error_msg}")
                 
                     # 针对错误码10（权限不足）提供更详细的错误信息和解决方案
+                    detailed_error = error_msg
                     if create_result[0] == 10:
                         detailed_error = f"""权限不足 - 请确保:
 1. Steam客户端已启动并登录

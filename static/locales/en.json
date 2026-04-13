@@ -160,6 +160,7 @@
         "uploadReady": "Ready to upload {{itemName}}",
         "pageDescription": "Browse, subscribe, download, and manage Live2D models and voices from Steam Workshop",
         "voiceNote": "For voice settings, please go to the Live2D settings page to register manually",
+        "openVoiceClone": "Open in Voice Clone",
         "searchLocalItems": "Search local items...",
         "scanLocalItems": "Scan Local Items",
         "configurePath": "Configure Path",

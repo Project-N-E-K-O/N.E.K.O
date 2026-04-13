@@ -618,6 +618,75 @@ body .container-header {
     margin-bottom: 8px;
 }
 
+.workshop-source-card {
+    width: 100%;
+    max-width: 640px;
+    margin-bottom: 18px;
+    padding: 14px 16px;
+    border-radius: 18px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(240, 250, 255, 0.96));
+    border: 1px solid rgba(64, 197, 241, 0.28);
+    box-shadow: 0 8px 20px rgba(64, 197, 241, 0.08);
+}
+
+.workshop-source-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+.workshop-source-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(64, 197, 241, 0.12);
+    color: #188dc2;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.workshop-source-title {
+    color: #40C5F1;
+    font-size: 0.95rem;
+    font-weight: 700;
+}
+
+.workshop-source-meta,
+.workshop-source-status {
+    font-size: 0.9rem;
+    line-height: 1.5;
+    color: #347ea4;
+}
+
+.workshop-source-status {
+    margin-top: 8px;
+}
+
+.workshop-source-status.error {
+    color: #d63b5c;
+}
+
+.workshop-source-audio {
+    width: 100%;
+    margin-top: 12px;
+}
+
+[data-theme="dark"] .workshop-source-card {
+    background: linear-gradient(180deg, rgba(34, 50, 66, 0.96), rgba(24, 39, 56, 0.98));
+    border-color: rgba(78, 160, 201, 0.35);
+}
+
+[data-theme="dark"] .workshop-source-title,
+[data-theme="dark"] .workshop-source-meta,
+[data-theme="dark"] .workshop-source-status {
+    color: #9dd8f2;
+}
+
 .register-voice-btn .register-text {
     position: relative;
     z-index: 20;
@@ -1356,4 +1425,3 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     color: #fff;
     box-shadow: 0 2px 8px rgba(42, 123, 196, 0.3);
 }
-

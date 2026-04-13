@@ -160,6 +160,7 @@
         "uploadReady": "准备上传 {{itemName}}",
         "pageDescription": "通过此页面，您可以浏览、订阅、下载和管理Steam创意工坊中的Live2D模型和声音",
         "voiceNote": "如有语音音色请前往live2d设置页面手动注册",
+        "openVoiceClone": "在语音克隆页打开",
         "searchLocalItems": "搜索本地物品...",
         "scanLocalItems": "扫描本地物品",
         "configurePath": "配置路径",

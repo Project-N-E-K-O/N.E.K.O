@@ -33,6 +33,15 @@
             <div id="provider-notice" class="alibaba-api-notice">
                 <span data-i18n="voice.alibabaApiRequired">此功能只支持特定语音模型，请在API密钥设置页中保存对应API Key（不要求启用辅助API）或配置本地语音服务器</span>
             </div>
+            <div id="workshopVoiceSource" class="workshop-source-card" style="display: none;">
+                <div class="workshop-source-header">
+                    <span class="workshop-source-badge">创意工坊参考语音</span>
+                    <span id="workshopVoiceSourceTitle" class="workshop-source-title"></span>
+                </div>
+                <div id="workshopVoiceSourceMeta" class="workshop-source-meta"></div>
+                <audio id="workshopVoicePreview" class="workshop-source-audio" controls style="display: none;"></audio>
+                <div id="workshopVoiceSourceStatus" class="workshop-source-status"></div>
+            </div>
             <!-- 克隆方式切换 -->
             <div class="field-row">
                 <label data-i18n="voice.cloneMethod">克隆方式</label>
