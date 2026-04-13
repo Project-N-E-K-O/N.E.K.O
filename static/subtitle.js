@@ -101,6 +101,19 @@ let isCurrentTurnFinalized = false;
 // 当前 turn 是否判定为结构化富文本（markdown/code/table/latex 等）。
 // 结构化 turn 的字幕显示 [markdown] 占位符，不做翻译也不回落原文。
 let currentTurnIsStructured = false;
+// 闸门：标记"本轮 turn 边界已在 isNewMessage 路径被提前复位过"。
+// 背景：neko-assistant-turn-start 事件只在首个可见 bubble 创建后才派发，
+// 但 appendMessage 处理首个 chunk 时就已经调了 updateSubtitleStreamingText。
+// 没有这个闸门就会：
+//   a) isNewMessage 路径先调 updateSubtitleStreamingText → 被上一轮残留的
+//      isCurrentTurnFinalized=true 闸门吞掉，首个 chunk / 单 chunk 回复
+//      完全不上屏，直到 turn_end。（Codex P2 / CodeRabbit Major）
+//   b) 若仅在事件里复位，事件到达时已经过了首个 chunk，onAssistantTurnStart
+//      会把刚写好的字幕再 writeSubtitleText('') 抹掉，产生闪烁。
+// 解法：isNewMessage 入口立即 beginSubtitleTurn() 复位状态并拉高此闸门；
+// 稍后到来的 neko-assistant-turn-start 事件看到闸门已拉高，仅同步显示可见性，
+// 不再二次擦除 currentTurnOriginalText / 字幕文本。
+let turnBoundaryLatched = false;
 
 // 结构化/不可朗读内容的字幕占位符
 function getStructuredPlaceholder() {
@@ -208,10 +221,10 @@ function finalizeSubtitleAsStructured() {
 }
 
 /**
- * 新 turn 开始：清空当前字幕和翻译状态。
- * 由 'neko-assistant-turn-start' 事件触发。
+ * 纯状态复位：bump turnId、清空累积文本与闸门、取消在途翻译。
+ * 不动显示文本（调用方自行决定是否 writeSubtitleText('')）。
  */
-function onAssistantTurnStart() {
+function resetSubtitleTurnState() {
     currentTurnId += 1;
     currentTurnOriginalText = '';
     isCurrentTurnFinalized = false;
@@ -220,6 +233,41 @@ function onAssistantTurnStart() {
         currentTranslateAbortController.abort();
         currentTranslateAbortController = null;
     }
+}
+
+/**
+ * 供 app-chat.js / app-chat-adapter.js 在 isNewMessage 分支、首个
+ * updateSubtitleStreamingText 调用之前先行触发的复位入口。
+ *
+ * 为什么不能只靠事件：
+ *   neko-assistant-turn-start 事件要等 ensureAssistantTurnStarted 确认
+ *   首个可见气泡创建后才会派发（app-websocket.js:385），比首个 chunk
+ *   进入 appendMessage 晚一拍。如果只在事件里解锁，上一轮残留的
+ *   isCurrentTurnFinalized=true 会把本轮首个 chunk / 单 chunk 回复的
+ *   流式写入全部吞掉。
+ */
+function beginSubtitleTurn() {
+    resetSubtitleTurnState();
+    turnBoundaryLatched = true;
+}
+
+/**
+ * 'neko-assistant-turn-start' 事件处理：
+ *   - 如果 isNewMessage 路径已经 beginSubtitleTurn 过（闸门为真），只同步
+ *     显示可见性，不再二次抹字幕 —— 否则会把首个 chunk 已经写好的文本擦掉。
+ *   - 反之（事件在没有前置 isNewMessage 的通道上独立到达）走完整复位路径。
+ */
+function onAssistantTurnStart() {
+    if (turnBoundaryLatched) {
+        turnBoundaryLatched = false;
+        if (subtitleEnabled) {
+            ensureSubtitleVisibleIfEnabled();
+        } else {
+            hideSubtitle();
+        }
+        return;
+    }
+    resetSubtitleTurnState();
     // 开关开启时保留显示框（保持空白等待新文本），关闭时连框一起隐藏
     if (subtitleEnabled) {
         writeSubtitleText('');
@@ -556,6 +604,8 @@ window.subtitleBridge = {
         }
         localStorage.setItem('userLanguage', userLanguage);
     },
+    /** 供 app-chat.js / app-chat-adapter.js 在 isNewMessage 分支首个 chunk 前调用 */
+    beginTurn: beginSubtitleTurn,
     /** 供 app-chat.js 在 _geminiTurnFullText 累积时调用 */
     updateStreamingText: updateSubtitleStreamingText,
     /** 供 app-chat.js / app-chat-adapter.js 命中结构化富文本检测时调用 */
@@ -569,6 +619,7 @@ window.subtitleBridge = {
 // 向后兼容：保留全局函数名，但函数体已经精简
 window.translateAndShowSubtitle = translateAndShowSubtitle;
 window.updateSubtitleStreamingText = updateSubtitleStreamingText;
+window.beginSubtitleTurn = beginSubtitleTurn;
 window.markSubtitleStructured = markSubtitleStructured;
 window.finalizeSubtitleAsStructured = finalizeSubtitleAsStructured;
 window.getUserLanguage = getUserLanguage;
