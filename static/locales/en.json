@@ -1274,6 +1274,8 @@
         "prefixShouldBeEnglishLetterAndNumber": "Prefix should be English letters and numbers",
         "invalidApiKeyProvided": "Invalid API-key provided",
         "requestError": "Request error: {{error}}",
+        "serverNonJsonError": "Server returned a non-JSON response (HTTP {{status}}): {{snippet}}",
+        "serverRouteNotFound": "API route not found (HTTP {{status}}). Please ensure the server is deployed and restarted.",
         "voiceIdSaveFailed": "Failed to automatically save voice_id: {{error}}",
         "voiceIdSaved": "voice_id has been automatically saved to character",
         "pageWillRefresh": "Current page will automatically refresh to apply new voice",

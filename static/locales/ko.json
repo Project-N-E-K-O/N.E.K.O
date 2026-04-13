@@ -1274,6 +1274,8 @@
         "prefixShouldBeEnglishLetterAndNumber": "접두사는 영어 문자와 숫자여야 합니다",
         "invalidApiKeyProvided": "제공된 API 키가 유효하지 않습니다",
         "requestError": "요청 오류: {{error}}",
+        "serverNonJsonError": "서버가 JSON이 아닌 응답을 반환했습니다 (HTTP {{status}}): {{snippet}}",
+        "serverRouteNotFound": "API 경로를 찾을 수 없습니다 (HTTP {{status}}). 서버가 올바르게 배포되고 재시작되었는지 확인하세요.",
         "voiceIdSaveFailed": "voice_id를 자동으로 저장하지 못했습니다: {{error}}",
         "voiceIdSaved": "voice_id가 자동으로 캐릭터에 저장되었습니다.",
         "pageWillRefresh": "새 음성을 적용하기 위해 현재 페이지가 자동으로 새로 고쳐집니다.",

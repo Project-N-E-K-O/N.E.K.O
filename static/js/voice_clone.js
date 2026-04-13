@@ -12,6 +12,42 @@ function openApiSettings() {
     }
 }
 
+// 安全地解析 fetch 响应：当后端/反向代理返回 HTML（404/502/504/网关错误等）时
+// 不应抛出 "Unexpected token '<', '<html>...' is not valid JSON"，而应返回带状态码的可读错误。
+async function safeReadResponse(res) {
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (contentType.includes('application/json')) {
+        try {
+            return { data: await res.json(), nonJson: false, text: '' };
+        } catch (_) {
+            // Content-Type 声明 JSON 但解析失败，落到文本分支
+        }
+    }
+    let text = '';
+    try { text = await res.text(); } catch (_) { text = ''; }
+    return { data: null, nonJson: true, text };
+}
+
+function buildNonJsonError(res, text) {
+    // 去除 HTML 标签并截断，避免把整段 HTML 报告给用户
+    const snippet = text
+        ? text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
+        : '';
+    if (window.t) {
+        if (res.status === 404) {
+            return window.t('voice.serverRouteNotFound', { status: res.status });
+        }
+        return window.t('voice.serverNonJsonError', {
+            status: res.status,
+            snippet: snippet || res.statusText || ''
+        });
+    }
+    if (res.status === 404) {
+        return `接口未找到 (HTTP 404)，请确认服务端已正确部署并重启`;
+    }
+    return `服务端返回了非JSON响应 (HTTP ${res.status})${snippet ? ': ' + snippet : ''}`;
+}
+
 function parseVoiceRegisterError(errorObj) {
     const errorCode = errorObj?.code;
     const errorMsg = errorObj?.message || errorObj?.error || errorObj || '';
@@ -436,11 +472,19 @@ function registerVoice() {
 
     fetch(apiUrl, requestOptions)
         .then(async res => {
-            const data = await res.json();
+            const { data, nonJson, text } = await safeReadResponse(res);
             if (!res.ok) {
-                // 从响应体中提取详细错误信息
-                const errorMsg = (data.code && window.t) ? window.t('errors.' + data.code, data.details || {}) : (data.error || data.detail || `API returned ${res.status}`);
-                throw new Error(errorMsg);
+                if (data) {
+                    // 从响应体中提取详细错误信息
+                    const errorMsg = (data.code && window.t) ? window.t('errors.' + data.code, data.details || {}) : (data.error || data.detail || `API returned ${res.status}`);
+                    throw new Error(errorMsg);
+                }
+                // 后端/网关返回了 HTML（如 404/502/504），构造可读错误而不是 "Unexpected token '<'"
+                throw new Error(buildNonJsonError(res, text));
+            }
+            if (nonJson) {
+                // 状态码 2xx 但响应体不是 JSON——不应发生，但仍优雅处理
+                throw new Error(buildNonJsonError(res, text));
             }
             return data;
         })
@@ -494,11 +538,18 @@ function registerVoice() {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ voice_id: data.voice_id })
-                    }).then(resp => {
+                    }).then(async resp => {
+                        const { data: respData, nonJson, text } = await safeReadResponse(resp);
                         if (!resp.ok) {
-                            throw new Error(`API returned ${resp.status}`);
+                            if (respData && (respData.error || respData.detail)) {
+                                throw new Error(respData.error || respData.detail);
+                            }
+                            throw new Error(buildNonJsonError(resp, text));
                         }
-                        return resp.json();
+                        if (nonJson) {
+                            throw new Error(buildNonJsonError(resp, text));
+                        }
+                        return respData;
                     }).then(res => {
                         if (!res.success) {
                             const errorMsg = res.error || (window.t ? window.t('common.unknownError') : '未知错误');
@@ -590,10 +641,16 @@ async function playPreview(voiceId, btn) {
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
             const response = await fetch(`/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}`);
-            if (response.status === 404) {
-                throw new Error('API route not found (404). Please ensure the server has been restarted.');
+            const { data, nonJson, text } = await safeReadResponse(response);
+            if (!response.ok) {
+                if (data && (data.error || data.detail)) {
+                    throw new Error(data.error || data.detail);
+                }
+                throw new Error(buildNonJsonError(response, text));
             }
-            const data = await response.json();
+            if (nonJson) {
+                throw new Error(buildNonJsonError(response, text));
+            }
 
             if (data.success && data.audio) {
                 audioSrc = `data:${data.mime_type || 'audio/mpeg'};base64,${data.audio}`;
@@ -652,10 +709,16 @@ async function loadVoices() {
 
     try {
         const response = await fetch('/api/characters/voices');
+        const { data, nonJson, text } = await safeReadResponse(response);
         if (!response.ok) {
-            throw new Error(`API returned ${response.status}`);
+            if (data && (data.error || data.detail)) {
+                throw new Error(data.error || data.detail);
+            }
+            throw new Error(buildNonJsonError(response, text));
         }
-        const data = await response.json();
+        if (nonJson) {
+            throw new Error(buildNonJsonError(response, text));
+        }
 
         if ((!data.voices || Object.keys(data.voices).length === 0) &&
             (!data.free_voices || Object.keys(data.free_voices).length === 0)) {
@@ -860,7 +923,15 @@ async function deleteVoice(voiceId, voiceName) {
             headers: { 'Content-Type': 'application/json' }
         });
 
-        const data = await response.json();
+        const { data: parsed, nonJson, text } = await safeReadResponse(response);
+        if (!response.ok && !parsed) {
+            // 后端/网关返回了 HTML（如 404/502），抛出可读错误
+            throw new Error(buildNonJsonError(response, text));
+        }
+        if (nonJson) {
+            throw new Error(buildNonJsonError(response, text));
+        }
+        const data = parsed || {};
 
         if (response.ok && data.success) {
             // 删除本地缓存的预览音频

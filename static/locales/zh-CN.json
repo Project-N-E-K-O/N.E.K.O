@@ -1274,6 +1274,8 @@
         "prefixShouldBeEnglishLetterAndNumber": "前缀应为英文字母和数字",
         "invalidApiKeyProvided": "提供的API密钥无效",
         "requestError": "请求出错：{{error}}",
+        "serverNonJsonError": "服务端返回了非JSON响应 (HTTP {{status}})：{{snippet}}",
+        "serverRouteNotFound": "接口未找到 (HTTP {{status}})，请确认服务端已正确部署并重启",
         "voiceIdSaveFailed": "voice_id自动保存失败: {{error}}",
         "voiceIdSaved": "voice_id已自动保存到角色",
         "pageWillRefresh": "当前页面即将自动刷新以应用新语音",
