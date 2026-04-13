@@ -367,6 +367,8 @@ class VRMInteraction {
         };
 
         // 6. 滚轮缩放
+        // 对齐 MMD 行为：直接缩放 scene.scale，围绕模型自身原点进行，
+        // 避免因 "相机靠近固定 _cameraTarget" 在角色被拖到边缘时把角色甩出屏幕。
         this.wheelHandler = (e) => {
             if (this.checkLocked() || !this.manager.currentModel) return;
 
@@ -386,42 +388,27 @@ class VRMInteraction {
             e.preventDefault();
             e.stopPropagation();
 
-            if (!THREE) {
-                console.error('[VRM Interaction] THREE.js 未加载，无法处理滚轮缩放');
+            const scene = this.manager.currentModel.scene;
+            if (!scene) return;
+
+            const scaleFactor = e.deltaY > 0 ? 0.95 : 1.05;
+            // 夹到一个合理范围，避免反复滚轮把模型缩到 0 或爆炸大
+            const minScale = 0.1;
+            const maxScale = 50.0;
+            const currentScale = scene.scale.x || 1;
+            const newScale = Math.max(minScale, Math.min(maxScale, currentScale * scaleFactor));
+
+            // 通过 manager.setModelScaleScalar 统一缩放，同时同步 SpringBone 碰撞体半径。
+            // 这里不走 scene.scale.setScalar 的静默回退：那样只会缩视觉 mesh、不同步 collider，
+            // 反而把状态失配藏起来。API 不可用时显式告警并中止，以便尽早暴露问题。
+            if (typeof this.manager.setModelScaleScalar !== 'function') {
+                console.warn('[VRM Interaction] manager.setModelScaleScalar 不可用，跳过缩放以避免 SpringBone 状态失配');
                 return;
             }
+            this.manager.setModelScaleScalar(newScale);
 
-            const delta = e.deltaY;
-            const zoomSpeed = 0.05;
-            const zoomFactor = delta > 0 ? (1 + zoomSpeed) : (1 - zoomSpeed);
-
-            if (this.manager.currentModel.scene && this.manager.camera) {
-                // 使用统一的 _cameraTarget 作为缩放中心
-                const zoomCenter = this.manager._cameraTarget
-                    ? this.manager._cameraTarget.clone()
-                    : new THREE.Vector3(0, 0, 0);
-
-                const oldDistance = this.manager.camera.position.distanceTo(zoomCenter);
-                const minDist = 0.5;
-                const maxDist = 20.0;
-
-                let newDistance = oldDistance * zoomFactor;
-                newDistance = Math.max(minDist, Math.min(maxDist, newDistance));
-
-                const direction = new THREE.Vector3()
-                    .subVectors(this.manager.camera.position, zoomCenter)
-                    .normalize();
-
-                this.manager.camera.position.copy(zoomCenter)
-                    .add(direction.multiplyScalar(newDistance));
-
-                if (this.manager.controls && this.manager.controls.update) {
-                    this.manager.controls.update();
-                }
-
-                // 缩放结束后防抖保存位置
-                this._debouncedSavePosition();
-            }
+            // 缩放结束后防抖保存位置
+            this._debouncedSavePosition();
         };
 
         this.auxClickHandler = (e) => {
