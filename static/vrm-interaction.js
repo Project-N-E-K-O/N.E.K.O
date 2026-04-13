@@ -265,6 +265,8 @@ class VRMInteraction {
                     const posDelta = finalPosition.clone().sub(oldPosition);
                     this.manager._cameraTarget.add(posDelta);
                 }
+                // 位置变了，清除缓存的包围盒，下次缩放时重新获取
+                this._cachedBox = null;
             } else if (this.dragMode === 'orbit' && this.manager.camera && this._orbitCenter) {
                 // 右键拖拽：相机绕模型中心旋转，同时补偿 lookAt 使模型保持在屏幕原位
                 const camera = this.manager.camera;
