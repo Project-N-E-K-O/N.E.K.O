@@ -922,7 +922,7 @@
                 if (window.mmdManager && window.mmdManager.scene && window.mmdManager.renderer && !window.mmdManager._isDisposed) {
                     // 复用现有场景：清理旧模型（core._clearModel），保留 renderer/scene/camera
                     if (window.mmdManager.core) {
-                        window.mmdManager.core._clearModel();
+                        try { window.mmdManager.core._clearModel(); } catch (e) { console.warn('[猫娘切换] _clearModel 失败:', e); }
                     }
                     // 重置动画状态
                     if (window.mmdManager.animationModule) {
