@@ -403,10 +403,17 @@ class VRMInteraction {
             const zoomFactor = delta > 0 ? (1 + zoomSpeed) : (1 - zoomSpeed);
 
             if (this.manager.currentModel.scene && this.manager.camera) {
-                // 使用统一的 _cameraTarget 作为缩放中心
-                const zoomCenter = this.manager._cameraTarget
-                    ? this.manager._cameraTarget.clone()
-                    : new THREE.Vector3(0, 0, 0);
+                // 使用模型包围盒的实际中心作为缩放中心，确保缩放始终围绕模型正中心
+                const vrm = this.manager.currentModel.vrm;
+                let zoomCenter;
+                if (vrm && vrm.scene) {
+                    const box = new THREE.Box3().setFromObject(vrm.scene);
+                    zoomCenter = box.getCenter(new THREE.Vector3());
+                } else {
+                    zoomCenter = this.manager._cameraTarget
+                        ? this.manager._cameraTarget.clone()
+                        : new THREE.Vector3(0, 0, 0);
+                }
 
                 const oldDistance = this.manager.camera.position.distanceTo(zoomCenter);
                 const minDist = 0.5;
@@ -421,6 +428,9 @@ class VRMInteraction {
 
                 this.manager.camera.position.copy(zoomCenter)
                     .add(direction.multiplyScalar(newDistance));
+
+                // 同步 _cameraTarget 到模型中心
+                this.manager._cameraTarget = zoomCenter.clone();
 
                 if (this.manager.controls && this.manager.controls.update) {
                     this.manager.controls.update();
