@@ -2476,8 +2476,27 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else {
                 // MMD 子类型：暂停 VRM 渲染循环，避免后台仍然绘制已缓存的 VRM 模型
                 // （即使容器 display:none，某些浏览器在过渡/重排时仍可能短暂显示 canvas）
+                //
+                // 【修复 MMD→VRM 切换闪现】额外把当前 VRM 模型节点隐藏：
+                // 仅靠 pauseRendering + canvas display:none 不足以覆盖从 MMD 切回 VRM 的缝隙。
+                // 切回 VRM 时，switchModelDisplay 的 VRM 分支会显式 resumeRendering +
+                // 显示 canvas（见上方"对称恢复"），而真正替换模型的 vrmManager.loadModel
+                // 要等到 switchModelDisplay 之后才被 vrmModelSelect handler 调用。
+                // 期间 loadLive3DModels / loadIdleAnimationOptions / restoreVrmIdleAnimation
+                // 等多处 await 都会让浏览器绘制若干帧，此时旧 sister1.0 仍留在 scene 中
+                // 就会被画出来。把 scene.visible 置 false 后，即便 canvas 可见也画不出内容
+                // （renderer 使用 alpha:true，画面为透明）；新模型加载时 disposeVRM 会清掉
+                // 旧节点，新节点走自己的 visible=false → fadeIn 流水线，不受影响。
+                if (vrmManager && vrmManager.currentModel &&
+                    vrmManager.currentModel.vrm && vrmManager.currentModel.vrm.scene) {
+                    vrmManager.currentModel.vrm.scene.visible = false;
+                }
                 if (vrmManager && typeof vrmManager.pauseRendering === 'function') {
                     try { vrmManager.pauseRendering(); } catch (_) { /* ignore */ }
+                }
+                // 【修复】清除 VRM canvas 缓存帧，防止 canvas 内容在容器短暂可见时被绘制
+                if (vrmManager && vrmManager.renderer) {
+                    try { vrmManager.renderer.clear(); } catch (_) { /* ignore */ }
                 }
                 if (vrmManager && vrmManager.renderer && vrmManager.renderer.domElement) {
                     vrmManager.renderer.domElement.style.display = 'none';
@@ -2863,9 +2882,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 // 更新 sub_type 并刷新控件可见性
                 stopIdleRotation('vrm');
+                // 【修复】MMD→MMD 同类型切换时跳过冗余的 switchModelDisplay，
+                // 避免触发 loadLive3DModels 等异步操作和 VRM 场景重建，减少切换闪烁窗口期。
+                const wasAlreadyMmd = currentLive3dSubType === 'mmd';
                 currentLive3dSubType = 'mmd';
                 localStorage.setItem('live3dSubType', 'mmd');
-                await switchModelDisplay('live3d', 'mmd');
+                if (!wasAlreadyMmd) {
+                    await switchModelDisplay('live3d', 'mmd');
+                }
 
                 // switchModelDisplay 重建了 vrmModelSelect，需要重新选中当前模型
                 if (vrmModelSelect) {
@@ -3997,6 +4021,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (vrmContainer) {
                 vrmContainer.classList.add('hidden');
                 vrmContainer.style.display = 'none';
+            }
+            // 【修复】清除 VRM canvas 缓存帧，防止旧 VRM 模型在切换窗口期短暂闪现
+            if (window.vrmManager && window.vrmManager.renderer) {
+                try { window.vrmManager.renderer.clear(); } catch (_) { /* ignore */ }
             }
             // 显示 MMD 容器
             if (mmdContainer) {
