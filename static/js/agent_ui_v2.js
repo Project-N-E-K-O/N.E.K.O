@@ -543,7 +543,12 @@
                     setGlobalBusy(false);
                     fetchSnapshot().catch(() => {});
                     if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(`${openfangName}切换失败: ${err.message}`, 2500);
+                        window.showStatusToast(
+                            window.t
+                                ? window.t('settings.toggles.toggleFailed', { name: openfangName, error: err.message })
+                                : `${openfangName}切换失败: ${err.message}`,
+                            2500
+                        );
                     }
                     return;
                 } finally {
