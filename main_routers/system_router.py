@@ -976,7 +976,12 @@ async def weak_idle_chat(request: Request):
         session_manager = get_session_manager()
         _, her_name_current, _, _, _, _, _, _, _ = _config_manager.get_character_data()
 
-        data = await request.json()
+        try:
+            data = await request.json()
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return JSONResponse({"success": False, "error": "invalid request body"}, status_code=400)
+        if not isinstance(data, dict):
+            return JSONResponse({"success": False, "error": "invalid request body"}, status_code=400)
         lanlan_name = data.get('lanlan_name') or her_name_current
         message_text = str(data.get('message') or '').strip()
         if not message_text:
@@ -1000,6 +1005,7 @@ async def weak_idle_chat(request: Request):
                 logger.warning(f"[{lanlan_name}] 弱化版搭话未投递：websocket 不存在或不可用 turn_id={turn_id}")
                 return False
 
+            sent_first_frame = False
             try:
                 if websocket.client_state != websocket.client_state.CONNECTED:
                     logger.warning(
@@ -1015,9 +1021,22 @@ async def weak_idle_chat(request: Request):
                     "turn_id": turn_id,
                     "skip_assistant_effects": True,
                 })
-                await websocket.send_json({"type": "system", "data": "turn end"})
+                sent_first_frame = True
+                try:
+                    await websocket.send_json({"type": "system", "data": "turn end"})
+                except Exception as turn_end_error:
+                    logger.warning(
+                        f"[{lanlan_name}] 弱化版搭话发送 turn end 失败 "
+                        f"turn_id={turn_id}: {turn_end_error}"
+                    )
                 return True
             except Exception as ws_error:
+                if sent_first_frame:
+                    logger.warning(
+                        f"[{lanlan_name}] 弱化版搭话首帧已送达，但后续发送异常 "
+                        f"turn_id={turn_id}: {ws_error}"
+                    )
+                    return True
                 logger.warning(f"[{lanlan_name}] 弱化版搭话发送到前端失败 turn_id={turn_id}: {ws_error}")
                 return False
 
@@ -2385,7 +2404,12 @@ async def proactive_chat(request: Request):
         # 获取当前角色数据（包括完整人设）
         master_name_current, her_name_current, _, _, _, lanlan_prompt_map, _, _, _ = _config_manager.get_character_data()
         
-        data = await request.json()
+        try:
+            data = await request.json()
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return JSONResponse({"success": False, "error": "invalid request body"}, status_code=400)
+        if not isinstance(data, dict):
+            return JSONResponse({"success": False, "error": "invalid request body"}, status_code=400)
         lanlan_name = data.get('lanlan_name') or her_name_current
         is_playing_music = data.get('is_playing_music', False)
         current_track = data.get('current_track', None)
