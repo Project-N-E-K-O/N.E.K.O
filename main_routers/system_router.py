@@ -1038,6 +1038,7 @@ async def weak_idle_chat(request: Request):
         if current_session and hasattr(current_session, '_conversation_history'):
             current_session._conversation_history.append(AIMessage(content=message_text))
 
+        memory_cached = True
         try:
             memory_payload = [{
                 "role": "assistant",
@@ -1050,12 +1051,14 @@ async def weak_idle_chat(request: Request):
                     timeout=5.0,
                 )
                 if not memory_response.is_success:
+                    memory_cached = False
                     logger.warning(
                         f"[{lanlan_name}] 弱化版搭话写入 recent memory 失败 "
                         f"turn_id={turn_id} status={memory_response.status_code} "
                         f"body={memory_response.text[:500]}"
                     )
         except Exception as memory_error:
+            memory_cached = False
             logger.warning(f"[{lanlan_name}] 弱化版搭话写入 recent memory 异常 turn_id={turn_id}: {memory_error}")
 
         return JSONResponse({
@@ -1063,6 +1066,7 @@ async def weak_idle_chat(request: Request):
             "action": "chat",
             "message": message_text,
             "turn_id": turn_id,
+            "memory_cached": memory_cached,
         })
     except Exception as e:
         logger.error(f"弱化版空闲搭话失败: {e}", exc_info=True)

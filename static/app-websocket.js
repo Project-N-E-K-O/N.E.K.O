@@ -1085,19 +1085,21 @@
                             window._realisticGeminiBuffer = '';
                             window._structuredGeminiStreaming = false;
                         } else {
-                        var rest = typeof window._realisticGeminiBuffer === 'string'
-                            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
-                            : '';
-                        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                        window._realisticGeminiBuffer = '';
-                        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
-                        if (trimmed) {
-                            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-                            window._realisticGeminiQueue.push(trimmed);
-                            if (typeof window.processRealisticQueue === 'function') {
-                                window.processRealisticQueue(window._realisticGeminiVersion || 0);
+                            var rest = typeof window._realisticGeminiBuffer === 'string'
+                                ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
+                                : '';
+                            rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+                            window._realisticGeminiBuffer = '';
+                            if (!skipAssistantEffectsOnTurnEnd) {
+                                var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
+                                if (trimmed) {
+                                    window._realisticGeminiQueue = window._realisticGeminiQueue || [];
+                                    window._realisticGeminiQueue.push(trimmed);
+                                    if (typeof window.processRealisticQueue === 'function') {
+                                        window.processRealisticQueue(window._realisticGeminiVersion || 0);
+                                    }
+                                }
                             }
-                        }
                         }
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
@@ -1135,7 +1137,9 @@
                         var fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
 
                         // Trigger music bubble generation
-                        if (typeof window.processMusicCommands === 'function' && fullText) {
+                        if (!skipAssistantEffectsOnTurnEnd &&
+                            typeof window.processMusicCommands === 'function' &&
+                            fullText) {
                             window.processMusicCommands(fullText);
                         }
 
