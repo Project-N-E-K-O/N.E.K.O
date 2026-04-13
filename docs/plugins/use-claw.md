@@ -35,11 +35,11 @@
 
 ### 2.2 实际路由优先级已经存在
 
-[brain/task_executor.py](../../brain/task_executor.py#L171) 已定义优先级：
+[brain/task_executor.py](../../brain/task_executor.py) 中定义了 `_CHANNEL_PRIORITY`：
 
 `copaw > openfang > browser_use > computer_use`
 
-在 [brain/task_executor.py](../../brain/task_executor.py#L1105) 中，如果统一评估结果里多个渠道都可执行，系统会按这个优先级选最终执行通道。
+在 [brain/task_executor.py](../../brain/task_executor.py) 的统一渠道选择逻辑里，如果多个渠道都可执行，系统会按这个优先级选最终执行通道。
 
 这意味着：
 
@@ -50,7 +50,7 @@
 
 #### Browser Use
 
-[brain/browser_use_adapter.py](../../brain/browser_use_adapter.py#L651) 的 `run_instruction()` 已经具备：
+[brain/browser_use_adapter.py](../../brain/browser_use_adapter.py) 的 `run_instruction()` 已经具备：
 
 - preflight 检查
 - mode fallback（`schema` / `text`）
@@ -58,7 +58,7 @@
 - session 复用
 - 超时、取消、断连处理
 
-尤其是 [brain/browser_use_adapter.py](../../brain/browser_use_adapter.py#L723) 到 [brain/browser_use_adapter.py](../../brain/browser_use_adapter.py#L880) 这一段，已经属于“执行时自纠错”，但它纠正的是：
+尤其是 [brain/browser_use_adapter.py](../../brain/browser_use_adapter.py) 中 `run_instruction()` 的 fallback / retry 相关逻辑，已经属于“执行时自纠错”，但它纠正的是：
 
 - LLM 输出格式错误
 - browser-use schema 不兼容
@@ -69,14 +69,14 @@
 
 #### Computer Use
 
-[brain/computer_use.py](../../brain/computer_use.py#L858) 的 `run_instruction()` 已经具备：
+[brain/computer_use.py](../../brain/computer_use.py) 的 `run_instruction()` 已经具备：
 
 - 截图 -> 预测 -> 执行 的循环
 - 多步 GUI 操作
 - 取消
 - step 内错误恢复
 
-并且 [brain/computer_use.py](../../brain/computer_use.py#L60) 的系统 prompt 已经明确要求模型：
+并且 [brain/computer_use.py](../../brain/computer_use.py) 的系统 prompt 已经明确要求模型：
 
 - 如果失败就调整策略
 - 不要重复失败动作
@@ -86,12 +86,12 @@
 
 ### 2.4 任务状态与取消链路已经存在
 
-[agent_server.py](../../agent_server.py#L64) 已维护 `task_registry`。  
+[agent_server.py](../../agent_server.py) 已维护 `task_registry`。  
 对于 `computer_use` 和 `browser_use`：
 
 - 会记录任务状态
 - 会发 `task_update`
-- 已有取消接口 [agent_server.py](../../agent_server.py#L2647)
+- 已有取消接口 [agent_server.py](../../agent_server.py) 中的 `/tasks/{task_id}/cancel`
 
 所以做“用户纠正”时，不需要新造整套任务系统，只要在当前任务记录基础上补一层“纠正事件上报”即可。
 
@@ -213,9 +213,10 @@
 
 ```text
 [Historical correction lessons]
-- Similar request: ...
+- Routing lesson:
+  Intent: 在网页中搜索目标内容
   Wrong choice: computer_use
-  User correction: this is a web task, use browser_use directly.
+  Correct tool: browser_use
 ```
 
 这样不会破坏现有 JSON 输出约束。
@@ -224,7 +225,7 @@
 
 文件：
 
-- [agent_server.py](../../agent_server.py#L2647)
+- [agent_server.py](../../agent_server.py)
 
 当前已经有：
 
@@ -402,19 +403,19 @@ def _sanitize_correction_text(text: str) -> str:
 ### 6.1 正常路径
 
 1. 用户发起请求。
-2. [brain/task_executor.py](../../brain/task_executor.py) `analyze_and_execute()` 开始做渠道评估。
+2. [brain/task_executor.py](../../brain/task_executor.py) 中的 `analyze_and_execute()` 开始做渠道评估。
 3. 在 [brain/task_executor.py](../../brain/task_executor.py) 构造统一评估 prompt 前，先检索 `correction_memory.json`。
 4. 如果命中相似纠正记录，则将历史教训追加到 `system_prompt`。
 5. LLM 继续输出统一 JSON 决策。
 6. 系统照常分发到：
-   - [brain/browser_use_adapter.py](../../brain/browser_use_adapter.py#L651)
-   - 或 [brain/computer_use.py](../../brain/computer_use.py#L858)
+   - [brain/browser_use_adapter.py](../../brain/browser_use_adapter.py)
+   - 或 [brain/computer_use.py](../../brain/computer_use.py)
 
 ### 6.2 用户纠正路径
 
 1. 系统错误地把网页任务分配到 `computer_use`。
 2. 用户通过现有取消接口：
-   - [agent_server.py](../../agent_server.py#L2647)
+   - [agent_server.py](../../agent_server.py) 中的 `/tasks/{task_id}/cancel`
 3. 由前端弹出一个简单纠正输入框，或者先通过调试接口/手动 API 提交纠正：
    - 正确工具是什么
    - 纠正说明是什么
@@ -486,9 +487,9 @@ async def submit_task_correction(task_id: str, body: CorrectionPayload):
 同时在以下位置补充少量字段，便于回写：
 
 - `computer_use` 任务注册处：
-  - [agent_server.py](../../agent_server.py#L1317)
+  - [agent_server.py](../../agent_server.py)
 - `browser_use` 任务注册处：
-  - [agent_server.py](../../agent_server.py#L1797)
+  - [agent_server.py](../../agent_server.py)
 
 建议存入：
 
@@ -521,7 +522,7 @@ async def submit_task_correction(task_id: str, body: CorrectionPayload):
 
 ### 8.1 Browser Use 的内部 memory 不是这里说的“纠正记忆”
 
-在 [brain/browser_use_adapter.py](../../brain/browser_use_adapter.py#L272) 的 `_dump_history()` 中，可以看到 browser-use 内部有 `include_in_memory` 等字段。
+在 [brain/browser_use_adapter.py](../../brain/browser_use_adapter.py) 的 `_dump_history()` 中，可以看到 browser-use 内部有 `include_in_memory` 等字段。
 
 这属于 browser-use 框架自己的执行历史，不等于我们需要的：
 
@@ -532,7 +533,7 @@ async def submit_task_correction(task_id: str, body: CorrectionPayload):
 
 ### 8.2 Computer Use 的 CoT/history 也不是这里的“纠正记忆”
 
-[brain/computer_use.py](../../brain/computer_use.py#L485) 开始维护的：
+[brain/computer_use.py](../../brain/computer_use.py) 开始维护的：
 
 - `actions`
 - `observations`

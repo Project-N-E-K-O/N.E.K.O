@@ -490,6 +490,7 @@ class DirectTaskExecutor:
                 r"(?i)(\b(?:otp|pin|verification(?:\s+code)?|sms\s*code|one[-\s]?time(?:\s+password|\s+code)?|验证码|校验码|短信码|动态码)\b(?:\s*(?:is|为|是))?[\s:：=#-]{0,6})\d{4,8}\b",
                 r"\1[REDACTED_OTP]",
             ),
+            (r"\b(?:\d{15}|\d{17}[0-9Xx])\b", "[REDACTED_ID]"),
             (r"\b\d{15,19}\b", "[REDACTED_NUMBER]"),
             (r"\b1[3-9]\d{9}\b", "[REDACTED_PHONE]"),
         ]
@@ -1258,11 +1259,6 @@ class DirectTaskExecutor:
         latest_user_request = self._extract_latest_user_intent(conversation)
         recent_context = self._extract_recent_context(messages)
         normalized_intent = self._normalize_user_intent(latest_user_request, recent_context)
-        task_context_kwargs = {
-            "latest_user_request": latest_user_request,
-            "normalized_intent": normalized_intent,
-            "recent_context": recent_context,
-        }
 
         # ── 可用性检查 ──────────────────────────────────────
         cu_available = False
@@ -1369,7 +1365,6 @@ class DirectTaskExecutor:
                 tool_args=up_decision.plugin_args,
                 entry_id=up_decision.entry_id,
                 reason=up_decision.reason,
-                **task_context_kwargs,
             )
 
         # 2. 统一渠道 — 按优先级 copaw > openfang > browser_use > computer_use
@@ -1389,6 +1384,13 @@ class DirectTaskExecutor:
                 tool_args = None
                 if method == "openclaw":
                     tool_args = {"instruction": user_intent}
+                result_context_kwargs = {}
+                if method in {"browser_use", "computer_use"}:
+                    result_context_kwargs = {
+                        "latest_user_request": latest_user_request,
+                        "normalized_intent": normalized_intent,
+                        "recent_context": recent_context,
+                    }
 
                 return TaskResult(
                     task_id=task_id,
@@ -1398,7 +1400,7 @@ class DirectTaskExecutor:
                     success=False,
                     tool_args=tool_args,
                     reason=reason,
-                    **task_context_kwargs,
+                    **result_context_kwargs,
                 )
 
         # 3. 没有可执行的分支，汇总原因
@@ -1433,7 +1435,6 @@ class DirectTaskExecutor:
                 execution_method='none',
                 success=False,
                 reason=" | ".join(reason_parts) if reason_parts else "No suitable method",
-                **task_context_kwargs,
             )
 
         logger.debug("[TaskExecutor] No task detected")
