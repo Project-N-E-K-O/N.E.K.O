@@ -1007,6 +1007,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const _idleRotationTimers = { vrm: null, mmd: null };
     const _idleRotationLast = { vrm: null, mmd: null };
     const _idleLoopCleanup = { vrm: null, mmd: null };
+    // 待机动作切换期间临时禁用物理，防止头发/裙摆因瞬时姿态跳变而飞甩
+    const _idlePhysicsRestoreTimers = { vrm: null, mmd: null };
+    const _idlePhysicsSavedState = { vrm: null, mmd: null };
 
     // 更新模型类型按钮文字的函数（使用统一管理器）
     function updateModelTypeButtonText() {
@@ -4613,6 +4616,72 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    /**
+     * 冻结物理模拟以渡过待机动作切换。
+     * 若用户本来就关闭了物理，或物理系统尚未就绪，则不改变现状（saved=null 表示无需恢复）。
+     */
+    function _freezeIdlePhysics(type) {
+        // 若上次切换的恢复定时器还未执行，先取消它——让冻结一直持续到本次切换完成
+        if (_idlePhysicsRestoreTimers[type]) {
+            clearTimeout(_idlePhysicsRestoreTimers[type]);
+            _idlePhysicsRestoreTimers[type] = null;
+        }
+        if (type === 'vrm') {
+            if (!vrmManager || !vrmManager.currentModel) return;
+            // 只在用户本来启用物理时才记录"需要恢复"；否则保持用户设置
+            if (_idlePhysicsSavedState.vrm === null && vrmManager.enablePhysics) {
+                _idlePhysicsSavedState.vrm = true;
+            }
+            vrmManager.enablePhysics = false;
+        } else {
+            const mmd = window.mmdManager;
+            if (!mmd || !mmd.currentModel) return;
+            if (_idlePhysicsSavedState.mmd === null && mmd.enablePhysics) {
+                _idlePhysicsSavedState.mmd = true;
+            }
+            mmd.enablePhysics = false;
+        }
+    }
+
+    /**
+     * 新动画已落位后调用：把物理初始状态对齐到新姿态，然后恢复物理。
+     * 延迟 ~250ms 让 mixer 把新动画的首帧稳定应用到骨架上。
+     */
+    function _scheduleRestoreIdlePhysics(type) {
+        if (_idlePhysicsRestoreTimers[type]) {
+            clearTimeout(_idlePhysicsRestoreTimers[type]);
+        }
+        _idlePhysicsRestoreTimers[type] = setTimeout(() => {
+            _idlePhysicsRestoreTimers[type] = null;
+            try {
+                if (type === 'vrm') {
+                    const vrm = vrmManager?.currentModel?.vrm;
+                    // 把弹簧骨的初始状态对齐到当前（新动画首帧）的骨架姿态，避免被解释为巨大位移
+                    if (vrm?.springBoneManager && typeof vrm.springBoneManager.setInitState === 'function') {
+                        try { vrm.springBoneManager.setInitState(); } catch (e) { /* noop */ }
+                    }
+                    if (_idlePhysicsSavedState.vrm === true && vrmManager) {
+                        vrmManager.enablePhysics = true;
+                    }
+                    _idlePhysicsSavedState.vrm = null;
+                } else {
+                    const mmd = window.mmdManager;
+                    const model = mmd?.currentModel;
+                    if (model?.physics && typeof model.physics.reset === 'function') {
+                        if (model.mesh) model.mesh.updateMatrixWorld(true);
+                        try { model.physics.reset(); } catch (e) { /* noop */ }
+                    }
+                    if (_idlePhysicsSavedState.mmd === true && mmd) {
+                        mmd.enablePhysics = true;
+                    }
+                    _idlePhysicsSavedState.mmd = null;
+                }
+            } catch (err) {
+                console.warn(`[${type.toUpperCase()} IdleAnimation] 恢复物理失败:`, err);
+            }
+        }, 250);
+    }
+
     /** 停止待机动作轮换 */
     function stopIdleRotation(type) {
         if (_idleRotationTimers[type]) {
@@ -4620,6 +4689,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             _idleRotationTimers[type] = null;
         }
         _cleanupIdleLoopListener(type);
+        // 若物理仍处于冻结状态，立即恢复，避免轮换停掉后物理永远关着
+        if (_idlePhysicsRestoreTimers[type]) {
+            clearTimeout(_idlePhysicsRestoreTimers[type]);
+            _idlePhysicsRestoreTimers[type] = null;
+        }
+        if (_idlePhysicsSavedState[type] === true) {
+            if (type === 'vrm' && vrmManager) vrmManager.enablePhysics = true;
+            else if (type === 'mmd' && window.mmdManager) window.mmdManager.enablePhysics = true;
+        }
+        _idlePhysicsSavedState[type] = null;
         _idleRotationLast[type] = null;
     }
 
@@ -4720,6 +4799,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 播放新动画前先清理旧的 loop 监听器
         _cleanupIdleLoopListener(type);
 
+        // 切换窗口期间冻结物理，避免瞬时姿态跳变导致头发/裙摆飞甩
+        _freezeIdlePhysics(type);
+
+        let played = false;
         try {
             if (type === 'vrm') {
                 if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
@@ -4727,6 +4810,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         vrmManager.stopVRMAAnimation();
                     }
                     await vrmManager.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
+                    played = true;
                     console.log('[VRM IdleAnimation] 待机动作已切换:', url.split('/').pop());
 
                     // 注册 loop 事件监听：动画一轮播完时自动切换
@@ -4748,6 +4832,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (window.mmdManager && window.mmdManager.currentModel) {
                     await window.mmdManager.loadAnimation(url);
                     window.mmdManager.playAnimation();
+                    played = true;
                     isMmdIdlePlaying = true;
                     console.log('[MMD IdleAnimation] 待机动作已切换:', url.split('/').pop());
 
@@ -4761,6 +4846,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         } catch (err) {
             console.warn(`[${type.toUpperCase()} IdleAnimation] 切换待机动作失败:`, err);
+        } finally {
+            if (played) {
+                // 新动画已启动：等 mixer 把首帧应用到骨架上，再对齐物理初始态并解冻
+                _scheduleRestoreIdlePhysics(type);
+            } else {
+                // 切换未发生（模型未就绪等）：立即解冻，避免物理被永久关闭
+                if (_idlePhysicsRestoreTimers[type]) {
+                    clearTimeout(_idlePhysicsRestoreTimers[type]);
+                    _idlePhysicsRestoreTimers[type] = null;
+                }
+                if (_idlePhysicsSavedState[type] === true) {
+                    if (type === 'vrm' && vrmManager) vrmManager.enablePhysics = true;
+                    else if (type === 'mmd' && window.mmdManager) window.mmdManager.enablePhysics = true;
+                }
+                _idlePhysicsSavedState[type] = null;
+            }
         }
     }
 
