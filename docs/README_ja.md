@@ -392,7 +392,8 @@ cd N.E.K.O
 # 2. Python依存関係をインストール
 uv sync
 
-# 3. フロントエンドプロジェクトをビルド（初回実行時またはフロントエンドコード変更後に必要）
+# 3. フロントエンドプロジェクトをビルド（Node.js >= 20.19 が必要。初回実行時またはフロントエンドコード変更後に必要）
+#    一括ビルドスクリプトも利用可能：build_frontend.bat（Windows）/ ./build_frontend.sh（Linux/macOS）
 cd frontend/react-neko-chat && npm install && npm run build && cd ../..
 cd frontend/plugin-manager && npm install && npm run build && cd ../..
 
@@ -452,6 +453,7 @@ uv run python agent_server.py
 
 ```
 N.E.K.O/
+├── 📁 .agent/                   # 🤖 AIコーディングアシスタントのルールとスキル（Claude Code が自動読み込み、他のツールは手動インポート可）
 ├── 📁 brain/                    # 🧠 エージェントモジュール
 │   ├── computer_use.py          # PC操作
 │   ├── browser_use_adapter.py   # ブラウザ自動化
@@ -487,6 +489,8 @@ N.E.K.O/
 ├── agent_server.py              # 🤖 AIエージェントサーバー
 └── memory_server.py             # 🧠 記憶サーバー
 ```
+
+> **AI支援開発**：`.agent/` ディレクトリには、AIコーディングアシスタント（Claude Code、Cursor など）向けの開発ルールとスキルセットが含まれています。これらのツールをサポートするAIエージェントは、自動的にルールを読み込んで従います。詳細は[開発者ドキュメント](https://project-neko.online/contributing/ai-assisted-dev)をご覧ください。
 
 **データフロー**
 

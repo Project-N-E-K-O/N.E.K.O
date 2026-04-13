@@ -457,7 +457,8 @@ cd N.E.K.O
 # 2. 安装 Python 依赖
 uv sync
 
-# 3. 构建前端项目（首次运行或前端代码变更后需要）
+# 3. 构建前端项目（需要 Node.js >= 20.19，首次运行或前端代码变更后需要）
+#    也可用一键脚本：Windows 运行 build_frontend.bat，Linux/macOS 运行 ./build_frontend.sh
 cd frontend/react-neko-chat && npm install && npm run build && cd ../..
 cd frontend/plugin-manager && npm install && npm run build && cd ../..
 
@@ -517,6 +518,7 @@ uv run python agent_server.py
 
 ```
 N.E.K.O/
+├── 📁 .agent/                   # 🤖 AI 编程助手规范与技能集（Claude Code 自动加载，其他工具可手动导入）
 ├── 📁 brain/                    # 🧠 Agent 智能体模块
 │   ├── computer_use.py          # 电脑操控
 │   ├── browser_use_adapter.py   # 浏览器自动化
@@ -552,6 +554,8 @@ N.E.K.O/
 ├── agent_server.py              # 🤖 AI智能体服务器
 └── memory_server.py             # 🧠 记忆服务器
 ```
+
+> **AI 辅助开发**：`.agent/` 目录包含面向 AI 编程助手（Claude Code、Cursor 等）的开发规范和技能集。支持这些工具的 AI Agent 会自动读取并遵循其中的规则，详见[开发者文档](https://project-neko.online/contributing/ai-assisted-dev)。
 
 **数据流向**
 
