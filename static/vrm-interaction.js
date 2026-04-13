@@ -394,7 +394,7 @@ class VRMInteraction {
             const scaleFactor = e.deltaY > 0 ? 0.95 : 1.05;
             // 夹到一个合理范围，避免反复滚轮把模型缩到 0 或爆炸大
             const minScale = 0.1;
-            const maxScale = 10.0;
+            const maxScale = 50.0;
             const currentScale = scene.scale.x || 1;
             const newScale = Math.max(minScale, Math.min(maxScale, currentScale * scaleFactor));
 
