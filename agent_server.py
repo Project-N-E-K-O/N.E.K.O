@@ -16,6 +16,7 @@ import httpx
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from utils.logger_config import setup_logging, ThrottledLogger
 
@@ -46,6 +47,12 @@ except Exception as e:
 
 
 app = FastAPI(title="N.E.K.O Tool Server")
+
+
+class ToolCorrectionPayload(BaseModel):
+    correct_tool: str = Field(min_length=1)
+    correct_instruction: str = Field(min_length=1)
+    user_note: str = ""
 
 class Modules:
     computer_use: ComputerUseAdapter | None = None
@@ -1317,6 +1324,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     ti = _spawn_task("computer_use", {"instruction": result.task_description, "screenshot": None})
                     ti["lanlan_name"] = lanlan_name
                     ti["session_id"] = cu_session.session_id
+                    ti["decision_reason"] = result.reason or ""
+                    ti["task_description"] = result.task_description or ""
+                    ti["latest_user_request"] = result.latest_user_request or ""
+                    ti["normalized_intent"] = result.normalized_intent or ""
+                    ti["recent_context"] = result.recent_context or []
                     _task_tracker.record_assigned(
                         lanlan_name, task_id=ti["id"], method="computer_use",
                         desc=result.task_description or "",
@@ -1804,6 +1816,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     "params": {"instruction": result.task_description},
                     "lanlan_name": lanlan_name,
                     "session_id": bu_session.session_id,
+                    "decision_reason": result.reason or "",
+                    "task_description": result.task_description or "",
+                    "latest_user_request": result.latest_user_request or "",
+                    "normalized_intent": result.normalized_intent or "",
+                    "recent_context": result.recent_context or [],
                     "result": None,
                     "error": None,
                 }
@@ -2714,6 +2731,48 @@ async def cancel_task(task_id: str):
         pass
     logger.info("[Agent] Task %s (%s) cancelled by user", task_id, task_type)
     return {"success": True, "task_id": task_id, "status": "cancelled"}
+
+
+@app.post("/api/agent/tasks/{task_id}/correction")
+async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
+    info = Modules.task_registry.get(task_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task_type = str(info.get("type") or "").strip()
+    if task_type not in {"computer_use", "browser_use"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Only computer_use/browser_use tasks support tool correction",
+        )
+    if Modules.task_executor is None:
+        raise HTTPException(status_code=503, detail="Task executor not ready")
+
+    correct_tool = str(body.correct_tool or "").strip()
+    if correct_tool not in {"computer_use", "browser_use"}:
+        raise HTTPException(
+            status_code=400,
+            detail="correct_tool must be computer_use or browser_use",
+        )
+
+    try:
+        event = Modules.task_executor.record_tool_correction(
+            info,
+            correct_tool=correct_tool,
+            correct_instruction=body.correct_instruction,
+            user_note=body.user_note,
+        )
+    except Exception as exc:
+        logger.exception("[CorrectionMemory] Failed to record correction for %s: %s", task_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to record correction") from exc
+
+    logger.info(
+        "[CorrectionMemory] Recorded correction: task_id=%s chosen=%s correct=%s",
+        task_id,
+        task_type,
+        correct_tool,
+    )
+    return {"success": True, "task_id": task_id, "event": event}
 
 
 @app.post("/api/agent/tasks/{task_id}/complete")

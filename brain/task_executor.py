@@ -6,8 +6,11 @@ DirectTaskExecutor: 合并 Analyzer + Planner 的功能
 import json
 import re
 import asyncio
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable, Awaitable
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import uuid
 from openai import APIConnectionError, InternalServerError, RateLimitError
 import httpx
 from config import USER_PLUGIN_SERVER_PORT
@@ -108,6 +111,9 @@ class TaskResult:
     tool_args: Optional[Dict] = None
     entry_id: Optional[str] = None
     reason: str = ""
+    latest_user_request: str = ""
+    normalized_intent: str = ""
+    recent_context: Optional[List[Dict[str, str]]] = None
 
 
 @dataclass
@@ -200,6 +206,7 @@ class DirectTaskExecutor:
         self._cleanup_tasks: set = set()  # 持有关闭任务的强引用，防止 GC 回收
         # plugin_id -> (full_description, generated_short_description)
         self._short_desc_cache: dict[str, tuple[str, str]] = {}
+        self._correction_memory_filename = "correction_memory.json"
     
     
     def set_plugin_list_provider(self, provider: Callable[[bool], Awaitable[List[Dict[str, Any]]]]):
@@ -419,6 +426,242 @@ class DirectTaskExecutor:
                     break
         return user_intent
 
+    @staticmethod
+    def _message_text(message: Dict[str, Any]) -> str:
+        return str(message.get("text") or message.get("content") or "").strip()
+
+    def _extract_recent_context(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        limit: int = 4,
+    ) -> List[Dict[str, str]]:
+        items: List[Dict[str, str]] = []
+        for message in messages:
+            role = str(message.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            text = self._message_text(message)
+            if not text:
+                continue
+            items.append({"role": role, "content": text})
+        return items[-limit:]
+
+    def _normalize_user_intent(
+        self,
+        latest_user_request: str,
+        recent_context: List[Dict[str, str]],
+    ) -> str:
+        latest = re.sub(r"\s+", " ", (latest_user_request or "").strip())
+        if not latest:
+            return ""
+
+        vague_markers = (
+            "这个", "那个", "一下", "继续", "继续弄", "处理一下", "帮我弄一下",
+            "就这个", "刚才那个", "上一条", "发给他", "发给她", "发给它",
+            "打开它", "打开这个", "继续这个", "继续那个",
+        )
+        user_turns = [
+            item.get("content", "").strip()
+            for item in recent_context
+            if item.get("role") == "user" and item.get("content", "").strip()
+        ]
+        latest_is_vague = len(latest) <= 12 or any(marker in latest for marker in vague_markers)
+        if not latest_is_vague:
+            return latest
+
+        context_candidates: List[str] = []
+        for text in user_turns[-3:]:
+            if text and text != latest:
+                context_candidates.append(text)
+        if context_candidates:
+            return " / ".join(context_candidates[-2:] + [latest])[:300]
+        return latest[:300]
+
+    @staticmethod
+    def _sanitize_correction_text(text: str) -> str:
+        cleaned = str(text or "")
+        cleaned = cleaned.replace("\r", " ").replace("\n", " ")
+        patterns = [
+            (r"(?i)(password|passwd|pwd)\s*[:=]\s*\S+", r"\1=[REDACTED_PASSWORD]"),
+            (r"(?i)(token|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+", r"\1=[REDACTED_TOKEN]"),
+            (r"(?i)(cookie)\s*[:=]\s*\S+", r"\1=[REDACTED_COOKIE]"),
+            (r"\b\d{6}\b", "[REDACTED_OTP]"),
+            (r"\b\d{15,19}\b", "[REDACTED_NUMBER]"),
+            (r"\b1[3-9]\d{9}\b", "[REDACTED_PHONE]"),
+        ]
+        for pattern, replacement in patterns:
+            cleaned = re.sub(pattern, replacement, cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned[:500]
+
+    def _sanitize_recent_context(self, recent_context: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        sanitized: List[Dict[str, str]] = []
+        total_chars = 0
+        for item in recent_context[-4:]:
+            role = str(item.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            content = self._sanitize_correction_text(item.get("content", ""))
+            if not content:
+                continue
+            total_chars += len(content)
+            if total_chars > 1200:
+                break
+            sanitized.append({"role": role, "content": content})
+        return sanitized
+
+    def _get_correction_memory_path(self) -> Path:
+        self._config_manager.ensure_config_directory()
+        return Path(self._config_manager.config_dir) / self._correction_memory_filename
+
+    def _load_correction_memory(self) -> Dict[str, Any]:
+        path = self._get_correction_memory_path()
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except FileNotFoundError:
+            return {"version": 1, "correction_events": []}
+        except Exception as exc:
+            logger.warning("[CorrectionMemory] Failed to load %s: %s", path, exc)
+            return {"version": 1, "correction_events": []}
+        if not isinstance(data, dict):
+            return {"version": 1, "correction_events": []}
+        events = data.get("correction_events")
+        if not isinstance(events, list):
+            data["correction_events"] = []
+        data.setdefault("version", 1)
+        return data
+
+    def _save_correction_memory(self, data: Dict[str, Any]) -> None:
+        path = self._get_correction_memory_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+        tmp_path.replace(path)
+
+    @staticmethod
+    def _extract_search_terms(text: str) -> List[str]:
+        lowered = str(text or "").lower()
+        terms = re.findall(r"[a-z0-9][a-z0-9._/-]{2,}|[\u4e00-\u9fff]{2,}", lowered)
+        seen: set[str] = set()
+        result: List[str] = []
+        for term in terms:
+            if term in seen:
+                continue
+            seen.add(term)
+            result.append(term)
+        return result[:24]
+
+    def _retrieve_relevant_corrections(
+        self,
+        latest_user_request: str,
+        *,
+        normalized_intent: str = "",
+        recent_context: Optional[List[Dict[str, str]]] = None,
+        limit: int = 3,
+    ) -> List[Dict[str, Any]]:
+        memory = self._load_correction_memory()
+        events = memory.get("correction_events", [])
+        if not isinstance(events, list) or not events:
+            return []
+
+        query_blob_parts = [normalized_intent, latest_user_request]
+        for item in recent_context or []:
+            query_blob_parts.append(item.get("content", ""))
+        query_terms = self._extract_search_terms(" ".join(part for part in query_blob_parts if part))
+        if not query_terms:
+            return []
+
+        scored: List[tuple[int, str, Dict[str, Any]]] = []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_context = " ".join(
+                [
+                    str(event.get("normalized_intent", "")),
+                    str(event.get("user_query", "")),
+                    str(event.get("correct_instruction", "")),
+                    str(event.get("chosen_tool", "")),
+                    str(event.get("correct_tool", "")),
+                    " ".join(
+                        str(item.get("content", ""))
+                        for item in event.get("recent_context", [])
+                        if isinstance(item, dict)
+                    ),
+                ]
+            ).lower()
+            score = 0
+            for term in query_terms:
+                if term and term in event_context:
+                    score += max(1, min(len(term), 8))
+            if score <= 0:
+                continue
+            scored.append((score, str(event.get("timestamp", "")), event))
+
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [item[2] for item in scored[:limit]]
+
+    def _build_correction_lessons_block(self, events: List[Dict[str, Any]]) -> str:
+        if not events:
+            return ""
+        lines = ["[Historical correction lessons]"]
+        for event in events[:3]:
+            user_query = self._sanitize_correction_text(event.get("user_query", ""))
+            normalized_intent = self._sanitize_correction_text(event.get("normalized_intent", ""))
+            chosen_tool = self._sanitize_correction_text(event.get("chosen_tool", ""))
+            correct_tool = self._sanitize_correction_text(event.get("correct_tool", ""))
+            correct_instruction = self._sanitize_correction_text(event.get("correct_instruction", ""))
+            if normalized_intent:
+                lines.append(f"- Similar intent: {normalized_intent}")
+            elif user_query:
+                lines.append(f"- Similar request: {user_query}")
+            if chosen_tool:
+                lines.append(f"  Wrong choice: {chosen_tool}")
+            if correct_tool:
+                lines.append(f"  Correct tool: {correct_tool}")
+            if correct_instruction:
+                lines.append(f"  User correction: {correct_instruction}")
+        return "\n".join(lines)
+
+    def _append_correction_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        memory = self._load_correction_memory()
+        events = memory.setdefault("correction_events", [])
+        events.append(event)
+        if len(events) > 300:
+            del events[:-300]
+        self._save_correction_memory(memory)
+        return event
+
+    def record_tool_correction(
+        self,
+        task_info: Dict[str, Any],
+        *,
+        correct_tool: str,
+        correct_instruction: str,
+        user_note: str = "",
+    ) -> Dict[str, Any]:
+        chosen_tool = str(task_info.get("type") or "").strip()
+        event = {
+            "event_id": f"corr_{uuid.uuid4().hex[:12]}",
+            "timestamp": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+            "user_query": self._sanitize_correction_text(task_info.get("latest_user_request", "")),
+            "normalized_intent": self._sanitize_correction_text(task_info.get("normalized_intent", "")),
+            "recent_context": self._sanitize_recent_context(task_info.get("recent_context") or []),
+            "chosen_tool": chosen_tool,
+            "chosen_reason": self._sanitize_correction_text(
+                task_info.get("decision_reason") or task_info.get("reason", "")
+            ),
+            "task_type": chosen_tool,
+            "task_description": self._sanitize_correction_text(task_info.get("task_description", "")),
+            "correct_tool": self._sanitize_correction_text(correct_tool),
+            "correct_instruction": self._sanitize_correction_text(correct_instruction),
+            "user_note": self._sanitize_correction_text(user_note),
+            "resolved": True,
+        }
+        return self._append_correction_event(event)
+
     async def _assess_unified_channels(
         self,
         conversation: str,
@@ -427,6 +670,9 @@ class DirectTaskExecutor:
         openfang_available: bool = False,
         browser_available: bool = False,
         cu_available: bool = False,
+        latest_user_request: str = "",
+        normalized_intent: str = "",
+        recent_context: Optional[List[Dict[str, str]]] = None,
         lang: str = "en",
     ) -> UnifiedChannelDecision:
         """一次 LLM 调用评估所有非 plugin 渠道（copaw / openfang / browser / computer）。
@@ -469,6 +715,15 @@ class DirectTaskExecutor:
             keys_json=keys_json,
             json_fields=json_fields,
         )
+        lessons = self._build_correction_lessons_block(
+            self._retrieve_relevant_corrections(
+                latest_user_request,
+                normalized_intent=normalized_intent,
+                recent_context=recent_context,
+            )
+        )
+        if lessons:
+            system_prompt = f"{system_prompt}\n\n{lessons}"
 
         user_prompt = f"Conversation:\n{conversation}"
 
@@ -972,7 +1227,6 @@ class DirectTaskExecutor:
         Plugin 单独判定；copaw/openfang/browser/computer 合并为一次 LLM 调用。
         实际执行由 agent_server 统一 dispatch。
         """
-        import uuid
         task_id = str(uuid.uuid4())
 
         if agent_flags is None:
@@ -997,6 +1251,14 @@ class DirectTaskExecutor:
         conversation = self._format_messages(messages)
         if not conversation.strip():
             return None
+        latest_user_request = self._extract_latest_user_intent(conversation)
+        recent_context = self._extract_recent_context(messages)
+        normalized_intent = self._normalize_user_intent(latest_user_request, recent_context)
+        task_context_kwargs = {
+            "latest_user_request": latest_user_request,
+            "normalized_intent": normalized_intent,
+            "recent_context": recent_context,
+        }
 
         # ── 可用性检查 ──────────────────────────────────────
         cu_available = False
@@ -1051,6 +1313,9 @@ class DirectTaskExecutor:
                 openfang_available=of_available,
                 browser_available=browser_available,
                 cu_available=cu_available,
+                latest_user_request=latest_user_request,
+                normalized_intent=normalized_intent,
+                recent_context=recent_context,
                 lang=lang,
             )))
 
@@ -1100,6 +1365,7 @@ class DirectTaskExecutor:
                 tool_args=up_decision.plugin_args,
                 entry_id=up_decision.entry_id,
                 reason=up_decision.reason,
+                **task_context_kwargs,
             )
 
         # 2. 统一渠道 — 按优先级 copaw > openfang > browser_use > computer_use
@@ -1128,6 +1394,7 @@ class DirectTaskExecutor:
                     success=False,
                     tool_args=tool_args,
                     reason=reason,
+                    **task_context_kwargs,
                 )
 
         # 3. 没有可执行的分支，汇总原因
@@ -1162,6 +1429,7 @@ class DirectTaskExecutor:
                 execution_method='none',
                 success=False,
                 reason=" | ".join(reason_parts) if reason_parts else "No suitable method",
+                **task_context_kwargs,
             )
 
         logger.debug("[TaskExecutor] No task detected")

@@ -23,6 +23,7 @@ UNIFIED_CHANNEL_SYSTEM_PROMPT = {
    如果两个渠道同样适合，你可以为两者都设置 can_execute=true — 系统会用优先级规则选择一个。
 4. 如果没有渠道能处理请求（如纯聊天、事实性问答），对所有渠道设置 can_execute=false。
 5. 如果存在 `LATEST_USER_REQUEST`，以它为准，而非助手声称"已完成"。
+6. 纯网页任务（网页搜索、打开 URL、填写网页表单、网页内点击）优先 `browser_use`；只有明确需要本地桌面应用、系统窗口、原生 GUI、跨应用键鼠操作时，才使用 `computer_use`。
 
 输出格式（严格 JSON，不含其他内容）：
 {{
@@ -44,6 +45,7 @@ INSTRUCTIONS:
    If two Agents are equally suitable, you MAY set can_execute=true for both — the system will use priority rules to pick one.
 4. If NO Agent can handle the request (e.g., pure conversation, factual Q&A), set can_execute=false for all.
 5. If `LATEST_USER_REQUEST` exists, prioritize it over assistant claims like "already done".
+6. Prefer `browser_use` for pure web tasks (web search, opening URLs, filling forms, clicking inside webpages). Use `computer_use` only when the task clearly requires local desktop apps, system windows, native GUI elements, or cross-application keyboard/mouse control.
 
 OUTPUT FORMAT (strict JSON, nothing else):
 {{
@@ -161,11 +163,13 @@ CHANNEL_DESC_OPENFANG = {
 CHANNEL_DESC_BROWSER_USE = {
     'zh': ("- **browser_use**: 本地浏览器自动化。"
            "快速且经济，适合简单网页交互：打开 URL、填写网页表单、网页搜索、从网络下载。"
-           "仅限本地浏览器任务 — 无法与操作系统应用交互。"),
+           "仅限本地浏览器任务 — 无法与操作系统应用交互。"
+           "如果任务能在网页内完成，应优先选择它，而不是 `computer_use`。"),
     'en': ("- **browser_use**: Local browser automation. "
            "Fast and cheap for simple web interactions: opening URLs, filling web forms, "
            "web search, downloading from the internet. "
-           "Limited to local browser tasks — cannot interact with OS applications."),
+           "Limited to local browser tasks — cannot interact with OS applications. "
+           "Prefer it over `computer_use` whenever the task can be completed entirely inside webpages."),
     'ja': ("- **browser_use**: ローカルブラウザ自動化。"
            "単純なWeb操作に高速かつ低コスト：URL を開く、Webフォーム入力、Web検索、ダウンロード。"
            "ローカルブラウザタスクに限定 — OSアプリとの連携不可。"),
@@ -182,12 +186,14 @@ CHANNEL_DESC_COMPUTER_USE = {
     'zh': ("- **computer_use**: 直接控制本地键盘和鼠标。"
            "唯一可以与本地操作系统交互的渠道（打开桌面应用、点击原生 UI 元素、控制鼠标键盘）。"
            "较慢、较贵，且会占用用户的鼠标键盘。"
-           "在任务明确需要本地操作系统 GUI 交互时使用。"),
+           "在任务明确需要本地操作系统 GUI 交互时使用。"
+           "如果网页内就能完成，不要优先选择它。"),
     'en': ("- **computer_use**: Direct local keyboard & mouse control. "
            "The ONLY channel that can interact with the local operating system "
            "(open desktop apps, click native UI elements, control the mouse/keyboard). "
            "Slower, more expensive, and takes over the user's mouse/keyboard. "
-           "Use when the task clearly requires local OS GUI interaction."),
+           "Use when the task clearly requires local OS GUI interaction. "
+           "Do not prefer it when the same task can be completed entirely inside the browser."),
     'ja': ("- **computer_use**: ローカルキーボード＆マウスの直接操作。"
            "ローカルOSと対話できる唯一のチャネル"
            "（デスクトップアプリ起動、ネイティブUI要素クリック、マウス/キーボード操作）。"
