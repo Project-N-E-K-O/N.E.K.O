@@ -57,7 +57,7 @@ const AvatarButtonMixin = {
                 this._returnButtonDragHandlers = null;
             }
 
-            // 清理旧 DOM
+            // 清理旧 DOM（自身类型）
             document.querySelectorAll(`#${options.containerElementId}, #${options.lockIconId}, #${options.returnContainerId}`)
                 .forEach(el => el.remove());
             if (options.excludeLiveD2Elements && options.excludeLiveD2Elements.length > 0) {
@@ -66,11 +66,59 @@ const AvatarButtonMixin = {
                 });
             }
 
-            // 清理旧的侧边面板（防止画质切换等场景导致重复 UI）
-            document.querySelectorAll(`[data-neko-sidepanel-owner^="${options.popupPrefix}-popup-"]`).forEach(panel => {
-                if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
-                if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
-                panel.remove();
+            // 清理所有其他模型类型的悬浮按钮 DOM（全类型互斥，防止模型切换后出现多组按钮）
+            const allButtonIds = [
+                'live2d-floating-buttons', 'live2d-lock-icon', 'live2d-return-button-container',
+                'vrm-floating-buttons', 'vrm-lock-icon', 'vrm-return-button-container',
+                'mmd-floating-buttons', 'mmd-lock-icon', 'mmd-return-button-container'
+            ];
+            const selfIds = [options.containerElementId, options.lockIconId, options.returnContainerId];
+            allButtonIds.forEach(id => {
+                if (selfIds.indexOf(id) === -1) {
+                    const el = document.getElementById(id);
+                    if (el) el.remove();
+                }
+            });
+
+            // 调用其他管理器的完整清理 API，防止幽灵回调及残留事件监听
+            const otherPrefixes = ['live2d', 'vrm', 'mmd'].filter(p => p !== prefix);
+            otherPrefixes.forEach(p => {
+                const mgr = p === 'live2d' ? window.live2dManager
+                          : p === 'vrm'    ? window.vrmManager
+                          :                   window.mmdManager;
+                if (!mgr) return;
+                const manualCleanup = () => {
+                    if (mgr._uiUpdateLoopId !== null && mgr._uiUpdateLoopId !== undefined) {
+                        cancelAnimationFrame(mgr._uiUpdateLoopId);
+                        mgr._uiUpdateLoopId = null;
+                    }
+                    if (mgr._floatingButtonsTicker && mgr.pixi_app && mgr.pixi_app.ticker) {
+                        try { mgr.pixi_app.ticker.remove(mgr._floatingButtonsTicker); } catch (_) {}
+                        mgr._floatingButtonsTicker = null;
+                    }
+                    if (mgr._uiWindowHandlers) {
+                        mgr._uiWindowHandlers.forEach(({ event, handler, target, options: opts }) => {
+                            (target || window).removeEventListener(event, handler, opts);
+                        });
+                        mgr._uiWindowHandlers = [];
+                    }
+                    mgr._floatingButtonsContainer = null;
+                    mgr._returnButtonContainer = null;
+                };
+                if (typeof mgr.cleanupFloatingButtons === 'function') {
+                    try { mgr.cleanupFloatingButtons(); } catch (_) { manualCleanup(); }
+                } else {
+                    manualCleanup();
+                }
+            });
+
+            // 清理所有模型类型的侧边面板
+            ['live2d', 'vrm', 'mmd'].forEach(p => {
+                document.querySelectorAll(`[data-neko-sidepanel-owner^="${p}-popup-"]`).forEach(panel => {
+                    if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+                    if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                    panel.remove();
+                });
             });
 
             // 创建按钮容器
