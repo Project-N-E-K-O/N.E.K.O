@@ -1010,8 +1010,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 待机动作切换期间临时禁用物理，防止头发/裙摆因瞬时姿态跳变而飞甩
     const _idlePhysicsRestoreTimers = { vrm: null, mmd: null };
     const _idlePhysicsSavedState = { vrm: null, mmd: null };
-    // VRM crossfade 结束后收尾旧 action 的定时器（防止 fadeOut 后 action 残留占用 binding）
-    const _idleCrossfadeCleanupTimers = { vrm: null };
+    // VRM crossfade 结束后收尾旧 action 的定时器集合（防止 fadeOut 后 action 残留占用 binding）。
+    // 用 Set 而不是单一 slot：快速连续切换时每个 previousAction 有独立的定时器，不能被后续切换取消，
+    // 否则中间那些 action 会以权重 0 永远留在 mixer 里。
+    const _idleCrossfadeCleanupTimers = { vrm: new Set() };
     // VRM 待机动作 crossfade 时长（秒）。代替 immediate: true，让 mixer 对每根骨做加权 slerp，
     // 稀释单帧姿态跳变，避开 LookAtQuaternionProxy Euler 拆分在奇点附近的脖子甩动。
     const IDLE_VRM_FADE_SEC = 0.15;
@@ -4704,10 +4706,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             else if (type === 'mmd' && window.mmdManager) window.mmdManager.enablePhysics = true;
         }
         _idlePhysicsSavedState[type] = null;
-        // 取消挂起的 crossfade 收尾定时器（若有）
-        if (type === 'vrm' && _idleCrossfadeCleanupTimers.vrm) {
-            clearTimeout(_idleCrossfadeCleanupTimers.vrm);
-            _idleCrossfadeCleanupTimers.vrm = null;
+        // 取消所有挂起的 crossfade 收尾定时器
+        if (type === 'vrm' && _idleCrossfadeCleanupTimers.vrm.size > 0) {
+            for (const tid of _idleCrossfadeCleanupTimers.vrm) clearTimeout(tid);
+            _idleCrossfadeCleanupTimers.vrm.clear();
         }
         _idleRotationLast[type] = null;
     }
@@ -4844,11 +4846,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                         _idleLoopCleanup['vrm'] = () => mixer.removeEventListener('loop', handler);
                     }
 
-                    // crossfade 完成后把旧 action 彻底 stop()，避免 fadeOut 残留累积
+                    // crossfade 完成后把旧 action 彻底 stop()，避免 fadeOut 残留累积。
+                    // 每个 previousAction 都注册自己的定时器，绝不互相取消——否则快速连续切换时
+                    // 中间那些 action 会丢失 stop() 机会，以权重 0 永驻 mixer。
                     if (previousAction && previousAction !== vrmManager.animation.currentAction) {
-                        if (_idleCrossfadeCleanupTimers.vrm) clearTimeout(_idleCrossfadeCleanupTimers.vrm);
-                        _idleCrossfadeCleanupTimers.vrm = setTimeout(() => {
-                            _idleCrossfadeCleanupTimers.vrm = null;
+                        let tid = null;
+                        tid = setTimeout(() => {
+                            _idleCrossfadeCleanupTimers.vrm.delete(tid);
                             try {
                                 // 再确认它确实不是"当前" action，防止竞态把新 action 误停
                                 if (previousAction !== vrmManager.animation?.currentAction) {
@@ -4856,6 +4860,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 }
                             } catch (e) { /* noop */ }
                         }, Math.ceil(IDLE_VRM_FADE_SEC * 1000) + 50);
+                        _idleCrossfadeCleanupTimers.vrm.add(tid);
                     }
 
                     // 动画加载成功后再启动回退定时器（从实际播放开始计时）
