@@ -249,7 +249,8 @@ class VRMInteraction {
                 const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
 
                 // 计算新位置：鼠标移动的像素 × 每像素对应的世界空间距离
-                const newPosition = this.manager.currentModel.scene.position.clone();
+                const oldPosition = this.manager.currentModel.scene.position.clone();
+                const newPosition = oldPosition.clone();
                 newPosition.add(right.multiplyScalar(deltaX * pixelToWorldX));
                 newPosition.add(up.multiplyScalar(-deltaY * pixelToWorldY));
 
@@ -258,6 +259,12 @@ class VRMInteraction {
 
                 // 应用位置（按钮和锁图标位置由 _startUIUpdateLoop 自动更新）
                 this.manager.currentModel.scene.position.copy(finalPosition);
+
+                // 同步更新 _cameraTarget，使缩放中心跟随模型移动
+                if (this.manager._cameraTarget) {
+                    const posDelta = finalPosition.clone().sub(oldPosition);
+                    this.manager._cameraTarget.add(posDelta);
+                }
             } else if (this.dragMode === 'orbit' && this.manager.camera && this._orbitCenter) {
                 // 右键拖拽：相机绕模型中心旋转，同时补偿 lookAt 使模型保持在屏幕原位
                 const camera = this.manager.camera;
@@ -840,12 +847,22 @@ class VRMInteraction {
             return false;
         }
 
+        // 计算回弹产生的位移，用于同步更新 _cameraTarget
+        const snapDelta = targetPosition.clone().sub(startPosition);
+
         if (!animate) {
             scene.position.copy(targetPosition);
+            if (this.manager._cameraTarget) {
+                this.manager._cameraTarget.add(snapDelta);
+            }
             return true;
         }
 
-        return await this._animateModelToPosition(startPosition, targetPosition);
+        const result = await this._animateModelToPosition(startPosition, targetPosition);
+        if (result && this.manager._cameraTarget) {
+            this.manager._cameraTarget.add(snapDelta);
+        }
+        return result;
     }
 
 
