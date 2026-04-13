@@ -1025,15 +1025,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 消除硬直感。再长（>0.6s）无视觉 fade 配合会暴露两段无关 pose 中间态的「融化感」。
     const IDLE_VRM_FADE_SEC = 0.35;
 
-    // 待机动作切换的视觉渐隐渐显（material opacity）。骨骼 crossfade 只平滑骨旋转，
-    // 无法掩盖两段不相关待机 clip 之间的「pose 跳变感」（用户主诉的 VRM 硬直）；
-    // MMD 侧 loadAnimation 走 skeleton.pose() → mixer.update(0)，期间会短暂显露
-    // T-pose（bind pose）。两者统一用 fade-out → 切换 → fade-in 遮盖过渡瞬间。
-    // 时间窗口要覆盖：fade-out 完成前切换骨骼，fade-in 在 MMD 物理 reset 后再显形。
+    // 待机动作切换的视觉渐隐渐显（material opacity），仅 VRM 使用。
+    // 骨骼 crossfade 只平滑骨旋转，无法掩盖两段不相关待机 clip 之间的「pose 跳变感」
+    // （用户主诉的 VRM 硬直），所以 VRM 叠一层 fade-out → 切换 → fade-in 遮盖过渡。
+    //
+    // MMD 不走 visual fade：OutlineEffect 把描边作为独立 pass 渲染，主材质 opacity 归零时
+    // 描边仍全不透明，会出现「只剩描边」的视觉 bug；强制 transparent=true 还会让 MMDToonMaterial
+    // 从不透明走 alpha blend 排序、face/hair/body 多层 z-sort 错乱。原本 MMD fade 要遮盖的
+    // T-pose 闪帧已在 mmd-init.js 移除 stopAnimation 调用后根治（loadAnimation 内部的
+    // skeleton.pose() → mixer.update(0) 是同步块，RAF 无法插入）。
     const IDLE_VRM_VISUAL_FADE_OUT_MS = 150;
     const IDLE_VRM_VISUAL_FADE_IN_MS = 220;
-    const IDLE_MMD_VISUAL_FADE_OUT_MS = 180;
-    const IDLE_MMD_VISUAL_FADE_IN_MS = 220;
     const IDLE_MMD_PHYSICS_RESTORE_MS = 250;
 
     // 更新模型类型按钮文字的函数（使用统一管理器）
@@ -4982,12 +4984,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             mmdFrozen = true;
         }
 
-        // 视觉渐隐：在骨骼层切换之前把模型 opacity tween 到 0，遮盖
-        //   - VRM: 两段待机 clip 姿态差异造成的「硬直」感（mixer 0.15s slerp 视觉上仍突兀）
-        //   - MMD: loadAnimation 内部 skeleton.pose() → mixer.update(0) 的 T-pose 闪帧
-        // 失败分支（guard return / model 未就绪）会在 finally 里 fade-in 还原，不留残影。
-        const fadeOutMs = type === 'vrm' ? IDLE_VRM_VISUAL_FADE_OUT_MS : IDLE_MMD_VISUAL_FADE_OUT_MS;
-        await _fadeAlpha(type, 0, fadeOutMs);
+        // 视觉渐隐：仅 VRM 走这条路径，遮盖两段待机 clip 姿态差异造成的「硬直」感
+        // （mixer 0.35s slerp 视觉上仍突兀）。失败分支（guard return / model 未就绪）
+        // 会在 finally 里 fade-in 还原，不留残影。
+        //
+        // MMD 不再走 visual fade：
+        //   1. OutlineEffect 把描边作为独立 pass 用内部 outline material 渲染，不会跟着
+        //      `mesh.material[i].opacity` 一起 fade，tween 到 0 时就会出现「只剩描边」的视觉 bug。
+        //   2. 强制 `transparent=true` 会让 MMDToonMaterial 从不透明走 alpha blend 排序，
+        //      face/hair/body 多层材质之间的 z-sort 会错乱。
+        //   3. 原本这个 fade 要遮盖的 T-pose 闪帧，根源在主页面 _startMmdIdleRotation 调用
+        //      `stopAnimation()`（skeleton.pose() → T-pose）后才 `await loadAnimation`；该问题
+        //      已在 mmd-init.js 移除 stopAnimation 修复，loadAnimation 内部 pose() → mixer.update(0)
+        //      是同步的，RAF 无法插入，不会暴露 T-pose。
+        //   4. MMD 物理飞甩由 freeze → physics.reset → unfreeze 独立覆盖，与视觉 fade 无关。
+        if (type === 'vrm') {
+            await _fadeAlpha('vrm', 0, IDLE_VRM_VISUAL_FADE_OUT_MS);
+        }
 
         // await 期间可能发生：stopIdleRotation 清空轮换（会 drain pendingResolve 唤醒这里）/
         // 用户手动播 VRMA/VMD / 切模式。原先 `_cancelFadeTween` 不 resolve Promise，await
@@ -5068,35 +5081,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            // 视觉渐显：骨骼层已切换完毕，把 opacity tween 回原值。
-            // - VRM：playVRMAAnimation 已 await 返回，currentAction 已是新 action，立即淡入。
-            // - MMD：loadAnimation 一步落位但 physics.reset 还在 IDLE_MMD_PHYSICS_RESTORE_MS
-            //   后执行；等物理稳定再淡入，避免让用户看到头发/裙摆 reset 瞬间的跳变。
-            // 失败分支（played=false）也淡入还原，防止模型永久不可见。
+            // 视觉渐显：仅 VRM 走这条路径。playVRMAAnimation 已 await 返回，currentAction
+            // 已是新 action，立即淡入即可。失败分支（played=false）也淡入还原，防止模型永久不可见。
             //
-            // 延迟 timer 登记到 state.delayTimerId，stopIdleRotation / _cancelFadeTween
-            // 能一并清掉；否则上一轮 MMD 切换残留的 setTimeout 会在下一轮 fade-out
-            // 期间触发 `_fadeAlpha(type, 1, ...)`，cancel 当前 tween 并让新 await 挂住
-            // （Codex PR#774 P2 / CodeRabbit）。回调内再校一次 `_idleFadeState[type] === st`
-            // 防御 state 被另一条路径（stopIdleRotation → _restoreFadeMaterials）清空后
-            // 重建的情况。
-            const fadeInMs = type === 'vrm' ? IDLE_VRM_VISUAL_FADE_IN_MS : IDLE_MMD_VISUAL_FADE_IN_MS;
-            const fadeInDelayMs = (type === 'mmd' && played) ? IDLE_MMD_PHYSICS_RESTORE_MS + 30 : 0;
-            if (fadeInDelayMs > 0) {
-                const st = _ensureFadeState(type);
-                if (st) {
-                    if (st.delayTimerId) clearTimeout(st.delayTimerId);
-                    st.delayTimerId = setTimeout(() => {
-                        if (_idleFadeState[type] !== st) return; // state 已被替换/清空，回调过期
-                        st.delayTimerId = null;
-                        _fadeAlpha(type, 1, fadeInMs);
-                    }, fadeInDelayMs);
-                } else {
-                    // state 建不起来（模型未就绪）：直接 fade-in（会 resolve 空 Promise）
-                    _fadeAlpha(type, 1, fadeInMs);
-                }
-            } else {
-                _fadeAlpha(type, 1, fadeInMs);
+            // MMD 不走 visual fade（原因见 fade-out 处注释）。头发/裙摆 physics.reset
+            // 瞬间的跳变本身由 _freezeMmdIdlePhysics / _scheduleRestoreMmdIdlePhysics
+            // 的冻结窗口覆盖：冻结期间物理完全不推进，reset 在窗口末端执行后解冻，用户不会看到
+            // 物理飞甩，也就不需要用视觉 fade 掩盖。
+            if (type === 'vrm') {
+                _fadeAlpha('vrm', 1, IDLE_VRM_VISUAL_FADE_IN_MS);
             }
         }
     }
