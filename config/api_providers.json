@@ -4,17 +4,24 @@
       "key": "free",
       "name": "免费版（猫娘专属福利）",
       "description": "阶跃星辰赞助，智能水平高且完全免费，无需API Key",
-      "core_url": "wss://lanlan.tech/core",
+      "core_url": "wss://www.lanlan.tech/core",
       "core_model": "free-model",
       "core_api_key": "free-access",
       "is_free_version": true
     },
     "qwen": {
       "key": "qwen",
-      "name": "Qwen-Omni（阿里）",
-      "description": "有免费额度，功能最全面",
+      "name": "Qwen-Omni（阿里百炼）",
+      "description": "有免费额度，功能最全面，国内版",
       "core_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
-      "core_model": "qwen3.5-omni-plus-realtime-2026-03-15"
+      "core_model": "qwen3.5-omni-flash-realtime-2026-03-15"
+    },
+    "qwen_intl": {
+      "key": "qwen_intl",
+      "name": "Qwen-Omni（阿里国际版）",
+      "description": "阿里云国际版，适合海外用户",
+      "core_url": "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime",
+      "core_model": "qwen3.5-omni-flash-realtime-2026-03-15"
     },
     "openai": {
       "key": "openai",
@@ -42,7 +49,7 @@
       "key": "free",
       "name": "免费版（猫娘专属福利）",
       "description": "阶跃星辰赞助，完全免费，无需API Key，但不支持自定义语音",
-      "openrouter_url": "https://lanlan.tech/text/v1",
+      "openrouter_url": "https://www.lanlan.tech/text/v1",
       "conversation_model": "free-model",
       "summary_model": "free-model",
       "correction_model": "free-model",
@@ -55,15 +62,27 @@
     },
     "qwen": {
       "key": "qwen",
-      "name": "阿里（推荐）",
-      "description": "推荐选择，支持自定义语音和Agent模式，价格适中",
+      "name": "阿里百炼（推荐）",
+      "description": "推荐选择，支持自定义语音和Agent模式，价格适中，国内版",
       "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "conversation_model": "qwen3.5-plus",
-      "summary_model": "qwen-plus",
-      "correction_model": "qwen3.5-plus",
+      "conversation_model": "qwen3.6-plus",
+      "summary_model": "qwen3.6-plus",
+      "correction_model": "qwen3.6-plus",
       "emotion_model": "qwen-flash",
-      "vision_model": "qwen3.5-plus",
-      "agent_model": "qwen3.5-plus"
+      "vision_model": "qwen3.6-plus",
+      "agent_model": "qwen3.6-plus"
+    },
+    "qwen_intl": {
+      "key": "qwen_intl",
+      "name": "阿里国际版",
+      "description": "阿里云国际版，适合海外用户，支持自定义语音和Agent模式",
+      "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "conversation_model": "qwen3.6-plus",
+      "summary_model": "qwen3.6-plus",
+      "correction_model": "qwen3.6-plus",
+      "emotion_model": "qwen-flash",
+      "vision_model": "qwen3.6-plus",
+      "agent_model": "qwen3.6-plus"
     },
     "openai": {
       "key": "openai",
@@ -154,12 +173,12 @@
       "name": "豆包（字节跳动）",
       "description": "国内可用，价格适中，不支持自定义语音",
       "openrouter_url": "https://ark.cn-beijing.volces.com/api/v3",
-      "conversation_model": "doubao-1.5-pro-32k",
-      "summary_model": "doubao-1.5-lite-32k",
-      "correction_model": "doubao-1.5-pro-32k",
-      "emotion_model": "doubao-1.5-lite-32k",
-      "vision_model": "doubao-1.5-vision-pro-32k",
-      "agent_model": "doubao-1.5-pro-32k"
+      "conversation_model": "doubao-seed-2-0-lite-260215",
+      "summary_model": "doubao-seed-2-0-lite-260215",
+      "correction_model": "doubao-seed-2-0-lite-260215",
+      "emotion_model": "doubao-seed-2-0-mini",
+      "vision_model": "doubao-seed-2-0-lite-260215",
+      "agent_model": "doubao-seed-2-0-pro-260215"
     },
     "minimax": {
       "key": "minimax",
@@ -171,31 +190,43 @@
       "correction_model": "MiniMax-Text-01",
       "emotion_model": "MiniMax-Text-01",
       "vision_model": "MiniMax-Text-01",
-      "agent_model": "MiniMax-Text-01"
+      "agent_model": "MiniMax-M2.7"
     },
     "minimax_intl": {
       "key": "minimax_intl",
       "name": "MiniMax（国际服）",
       "description": "支持语音克隆（TTS），国际服版本",
-      "openrouter_url": "https://api.minimax.chat/v1",
+      "openrouter_url": "https://api.minimax.io/v1",
       "conversation_model": "MiniMax-Text-01",
       "summary_model": "MiniMax-Text-01",
       "correction_model": "MiniMax-Text-01",
       "emotion_model": "MiniMax-Text-01",
       "vision_model": "MiniMax-Text-01",
-      "agent_model": "MiniMax-Text-01"
+      "agent_model": "MiniMax-M2.7"
+    },
+    "claude": {
+      "key": "claude",
+      "name": "Claude（Anthropic）",
+      "description": "Anthropic的强力模型，国内无法使用，不支持自定义语音",
+      "openrouter_url": "https://api.anthropic.com/v1",
+      "conversation_model": "claude-sonnet-4-6",
+      "summary_model": "claude-sonnet-4-6",
+      "correction_model": "claude-sonnet-4-6",
+      "emotion_model": "claude-haiku-4-5-20251001",
+      "vision_model": "claude-sonnet-4-6",
+      "agent_model": "claude-opus-4-6"
     },
     "grok": {
       "key": "grok",
       "name": "Grok（xAI）",
       "description": "xAI的强力模型，国内版不支持",
       "openrouter_url": "https://api.x.ai/v1",
-      "conversation_model": "grok-3-mini-fast",
-      "summary_model": "grok-3-mini-fast",
-      "correction_model": "grok-3-mini-fast",
+      "conversation_model": "grok-4-1-fast-non-reasoning",
+      "summary_model": "grok-4-1-fast-non-reasoning",
+      "correction_model": "grok-4-1-fast-non-reasoning",
       "emotion_model": "grok-3-mini-fast",
-      "vision_model": "grok-2-vision-latest",
-      "agent_model": "grok-3-mini"
+      "vision_model": "grok-4-1-fast-non-reasoning",
+      "agent_model": "grok-4-1-fast-non-reasoning"
     }
   },
   "default_models": {
@@ -210,10 +241,12 @@
     "vision_model": "qwen3-vl-plus-2025-09-23",
     "core_model": "qwen3-omni-flash-realtime",
     "core_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
-    "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "cosyvoice_clone_model": "cosyvoice-v3.5-plus"
   },
   "assist_api_key_fields": {
     "qwen": "ASSIST_API_KEY_QWEN",
+    "qwen_intl": "ASSIST_API_KEY_QWEN_INTL",
     "openai": "ASSIST_API_KEY_OPENAI",
     "glm": "ASSIST_API_KEY_GLM",
     "step": "ASSIST_API_KEY_STEP",
@@ -224,12 +257,17 @@
     "doubao": "ASSIST_API_KEY_DOUBAO",
     "minimax": "ASSIST_API_KEY_MINIMAX",
     "minimax_intl": "ASSIST_API_KEY_MINIMAX_INTL",
+    "claude": "ASSIST_API_KEY_CLAUDE",
     "grok": "ASSIST_API_KEY_GROK"
   },
   "api_key_registry": {
     "qwen": {
       "config_field": "assistApiKeyQwen",
       "restricted": false
+    },
+    "qwen_intl": {
+      "config_field": "assistApiKeyQwenIntl",
+      "restricted": true
     },
     "openai": {
       "config_field": "assistApiKeyOpenai",
@@ -271,21 +309,26 @@
       "config_field": "assistApiKeyMinimaxIntl",
       "restricted": false
     },
+    "claude": {
+      "config_field": "assistApiKeyClaude",
+      "restricted": true
+    },
     "grok": {
       "config_field": "assistApiKeyGrok",
       "restricted": true
     }
   },
+  "_comment_free_voices": "Shape: {voiceKey: voice_id}. Keys are i18n identifiers (e.g., playfulGirl, cuteGirl) that the frontend must localize for display. Do not treat keys as display names.",
   "free_voices": {
-    "俏皮女孩": "voice-tone-PGLiTXeJCS",
-    "可爱女孩": "voice-tone-PGLiyZt65w",
-    "可爱少女": "voice-tone-PGLjbHIMbI",
-    "女少侠": "voice-tone-PGLk8KQgrI",
-    "活泼女孩": "voice-tone-PGLkr9LeGu",
-    "清冷御姐": "voice-tone-PGLlMvr0Ai",
-    "温柔少女": "voice-tone-PGLlrd5SNM",
-    "甜美御姐": "voice-tone-PGLmTEeUOu",
-    "病弱少女": "voice-tone-PGLmzXEX44",
-    "稚气少女": "voice-tone-PGLnVNQn7A"
+    "playfulGirl": "voice-tone-PGLiTXeJCS",
+    "cuteGirl": "voice-tone-PGLiyZt65w",
+    "cuteMaiden": "voice-tone-PGLjbHIMbI",
+    "heroine": "voice-tone-PGLk8KQgrI",
+    "livelyGirl": "voice-tone-PGLkr9LeGu",
+    "coolLady": "voice-tone-PGLlMvr0Ai",
+    "gentleMaiden": "voice-tone-PGLlrd5SNM",
+    "sweetLady": "voice-tone-PGLmTEeUOu",
+    "frailMaiden": "voice-tone-PGLmzXEX44",
+    "childishMaiden": "voice-tone-PGLnVNQn7A"
   }
 }

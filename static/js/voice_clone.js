@@ -1,6 +1,17 @@
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
 
+// 打开API设置页（带弹窗拦截回退）
+function openApiSettings() {
+    const win = window.open('/api_key', 'apiSettings', 'width=820,height=700,scrollbars=yes,resizable=yes');
+    if (win) {
+        const modal = document.getElementById('noApiModal');
+        if (modal) modal.style.display = 'none';
+    } else {
+        location.href = '/api_key';
+    }
+}
+
 function parseVoiceRegisterError(errorObj) {
     const errorCode = errorObj?.code;
     const errorMsg = errorObj?.message || errorObj?.error || errorObj || '';
@@ -230,6 +241,28 @@ if (window.i18n && window.i18n.isInitialized) {
             lanlanInput.value = "";
         }
     }
+
+    // 检查是否已设置可用于克隆的API Key
+    try {
+        const resp = await fetch('/api/config/core_api');
+        if (resp.ok) {
+            const cfg = await resp.json();
+            if (!cfg || cfg.success === false) {
+                console.warn('获取核心配置失败:', cfg?.error);
+            } else {
+                // 本地TTS服务器(ws/wss协议)不需要云端API Key
+                const ttsUrl = cfg.ttsModelUrl || '';
+                const isLocalTts = cfg.enableCustomApi && (ttsUrl.startsWith('ws://') || ttsUrl.startsWith('wss://'));
+                const hasCloneApi = isLocalTts || !!(cfg.assistApiKeyQwen || cfg.assistApiKeyMinimax || cfg.assistApiKeyMinimaxIntl);
+                if (!hasCloneApi) {
+                    const modal = document.getElementById('noApiModal');
+                    if (modal) modal.style.display = 'flex';
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('检查克隆API Key失败:', e);
+    }
 })();
 
 // 服务商切换时更新提示横幅
@@ -331,16 +364,30 @@ function registerVoice() {
 
     // 根据克隆方式验证输入
     if (currentCloneMethod === 'file') {
-        if (!fileInput.files.length || !prefix) {
-            resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请上传音频文件并填写前缀';
+        // 先检查文件
+        if (!fileInput.files.length) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请选择音频文件';
+            resultDiv.className = 'result error';
+            return;
+        }
+        // 再检查前缀
+        if (!prefix) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterPrefix') : '请填写自定义前缀';
             resultDiv.className = 'result error';
             return;
         }
     } else {
         // 直链克隆
         const url = directLinkUrl.value.trim();
-        if (!url || !prefix) {
-            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterDirectLink') : '请输入音频直链URL并填写前缀';
+        // 先检查URL
+        if (!url) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterDirectLink') : '请输入音频直链URL';
+            resultDiv.className = 'result error';
+            return;
+        }
+        // 再检查前缀
+        if (!prefix) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterPrefix') : '请填写自定义前缀';
             resultDiv.className = 'result error';
             return;
         }
@@ -720,14 +767,16 @@ async function loadVoices() {
 
         // 渲染免费预设音色（不可删除，放在最后）
         if (data.free_voices && Object.keys(data.free_voices).length > 0) {
-            // 添加分隔线
-            const divider = document.createElement('div');
-            divider.style.cssText = 'border-top: 1px dashed rgba(255,255,255,0.2); margin: 12px 0; padding-top: 8px; color: rgba(255,255,255,0.5); font-size: 12px; text-align: center;';
-            const freeLabel = window.t ? window.t('voice.freePresetLabel') : '免费预设音色';
-            divider.textContent = '── ' + freeLabel + ' ──';
-            container.appendChild(divider);
+            // 用户注册音色与预设音色之间的分隔线
+            if (voicesArray.length > 0) {
+                const divider = document.createElement('div');
+                divider.style.cssText = 'border-top: 1px dashed #b0d4f1; margin: 12px 0; padding-top: 8px; color: #90b8d8; font-size: 12px; text-align: center;';
+                const freeLabel = window.t ? window.t('voice.freePresetLabel') : '免费预设音色';
+                divider.textContent = '── ' + freeLabel + ' ──';
+                container.appendChild(divider);
+            }
 
-            Object.entries(data.free_voices).forEach(([displayName, voiceId]) => {
+            Object.entries(data.free_voices).forEach(([voiceKey, voiceId]) => {
                 const item = document.createElement('div');
                 item.className = 'voice-list-item';
                 item.style.opacity = '0.85';
@@ -737,6 +786,8 @@ async function loadVoices() {
 
                 const nameDiv = document.createElement('div');
                 nameDiv.className = 'voice-name';
+                // 使用 i18n 翻译键获取显示名称
+                const displayName = window.t ? window.t(`voice.freeVoice.${voiceKey}`) : voiceKey;
                 nameDiv.textContent = displayName;
                 // 添加预设标签
                 const badge = document.createElement('span');

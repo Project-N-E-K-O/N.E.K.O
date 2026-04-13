@@ -14,6 +14,7 @@ import sys
 import asyncio
 import base64
 import difflib
+import math
 import re
 import time
 from collections import deque
@@ -22,16 +23,17 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
-from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
 import httpx
 from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
-from config import get_extra_body, MEMORY_SERVER_PORT
+from main_logic.omni_realtime_client import OmniRealtimeClient
+from config import MEMORY_SERVER_PORT
 from config.prompts_sys import _loc
-from config.prompts_memory import emotion_analysis_prompt, PROACTIVE_FOLLOWUP_HEADER
+from config.prompts_emotion import get_outward_emotion_analysis_prompt
+from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
 from config.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
@@ -45,6 +47,8 @@ from config.prompts_proactive import (
     SCREEN_SECTION_HEADER, SCREEN_SECTION_FOOTER,
     SCREEN_WINDOW_TITLE, SCREEN_IMG_HINT,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
+    MUSIC_SECTION_HEADER, MUSIC_SECTION_FOOTER,
+    MEME_SECTION_HEADER, MEME_SECTION_FOOTER,
     PROACTIVE_SOURCE_LABELS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
@@ -67,6 +71,413 @@ router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
+
+_EMOTION_LABEL_ALIASES = {
+    "happy": "happy",
+    "happiness": "happy",
+    "joy": "happy",
+    "joyful": "happy",
+    "excited": "happy",
+    "cute": "happy",
+    "playful": "happy",
+    "开心": "happy",
+    "高兴": "happy",
+    "兴奋": "happy",
+    "快乐": "happy",
+    "嬉しい": "happy",
+    "うれしい": "happy",
+    "喜び": "happy",
+    "幸せ": "happy",
+    "楽しい": "happy",
+    "행복": "happy",
+    "행복해": "happy",
+    "행복하다": "happy",
+    "기쁨": "happy",
+    "신남": "happy",
+    "радость": "happy",
+    "счастье": "happy",
+    "счастливый": "happy",
+    "счастлива": "happy",
+    "доволен": "happy",
+    "довольна": "happy",
+    "sad": "sad",
+    "sadness": "sad",
+    "down": "sad",
+    "upset": "sad",
+    "depressed": "sad",
+    "难过": "sad",
+    "伤心": "sad",
+    "失落": "sad",
+    "委屈": "sad",
+    "悲しい": "sad",
+    "かなしい": "sad",
+    "悲しみ": "sad",
+    "寂しい": "sad",
+    "슬퍼": "sad",
+    "슬픈": "sad",
+    "슬픔": "sad",
+    "우울": "sad",
+    "우울함": "sad",
+    "속상해": "sad",
+    "서운해": "sad",
+    "грустно": "sad",
+    "грусть": "sad",
+    "грустный": "sad",
+    "грустная": "sad",
+    "печаль": "sad",
+    "расстроен": "sad",
+    "расстроена": "sad",
+    "angry": "angry",
+    "anger": "angry",
+    "mad": "angry",
+    "annoyed": "angry",
+    "irritated": "angry",
+    "生气": "angry",
+    "愤怒": "angry",
+    "烦躁": "angry",
+    "恼火": "angry",
+    "怒り": "angry",
+    "怒ってる": "angry",
+    "怒った": "angry",
+    "腹が立つ": "angry",
+    "화남": "angry",
+    "화난": "angry",
+    "분노": "angry",
+    "짜증남": "angry",
+    "злой": "angry",
+    "злая": "angry",
+    "злость": "angry",
+    "сержусь": "angry",
+    "рассержен": "angry",
+    "рассержена": "angry",
+    "surprised": "surprised",
+    "surprise": "surprised",
+    "shock": "surprised",
+    "shocked": "surprised",
+    "astonished": "surprised",
+    "惊讶": "surprised",
+    "震惊": "surprised",
+    "意外": "surprised",
+    "驚き": "surprised",
+    "驚いた": "surprised",
+    "驚いてる": "surprised",
+    "びっくり": "surprised",
+    "놀람": "surprised",
+    "놀란": "surprised",
+    "놀랐어": "surprised",
+    "깜짝": "surprised",
+    "удивлен": "surprised",
+    "удивлена": "surprised",
+    "удивление": "surprised",
+    "шок": "surprised",
+    "neutral": "neutral",
+    "calm": "neutral",
+    "平静": "neutral",
+    "冷静": "neutral",
+    "中性": "neutral",
+    "普通": "neutral",
+    "平穏": "neutral",
+    "穏やか": "neutral",
+    "落ち着いてる": "neutral",
+    "보통": "neutral",
+    "차분": "neutral",
+    "차분함": "neutral",
+    "평온": "neutral",
+    "нейтрально": "neutral",
+    "спокойно": "neutral",
+    "спокойный": "neutral",
+    "спокойная": "neutral",
+}
+
+_EMOTION_CANONICAL_LABELS = ("happy", "sad", "angry", "surprised", "neutral")
+_EMOTION_NORMALIZED_ALIAS_LOOKUP = {}
+_EMOTION_COMPACT_ALIAS_LOOKUP = {}
+for _alias, _canonical in _EMOTION_LABEL_ALIASES.items():
+    _normalized_alias = re.sub(r"[\s\-_]+", " ", str(_alias).strip().lower())
+    if not _normalized_alias:
+        continue
+    _EMOTION_NORMALIZED_ALIAS_LOOKUP[_normalized_alias] = _canonical
+    _compact_alias = re.sub(r"[\W_]+", "", _normalized_alias, flags=re.UNICODE)
+    if _compact_alias and _compact_alias not in _EMOTION_COMPACT_ALIAS_LOOKUP:
+        _EMOTION_COMPACT_ALIAS_LOOKUP[_compact_alias] = _canonical
+
+_EMOTION_FUZZY_ALIAS_KEYS = tuple(_EMOTION_NORMALIZED_ALIAS_LOOKUP.keys())
+_EMOTION_FUZZY_COMPACT_KEYS = tuple(_EMOTION_COMPACT_ALIAS_LOOKUP.keys())
+
+_ASCII_EMOTION_ALIAS_RE = re.compile(r"^[a-z0-9]+(?:\s+[a-z0-9]+)*$")
+_EMOTION_NEGATION_WORDS = frozenset((
+    "not", "no", "never", "without",
+    "안", "아니", "못", "않", "아니다", "아닌", "아님",
+    "не", "нет", "никогда",
+))
+_EMOTION_NEGATION_PREFIXES = (
+    "不是", "并不", "并非", "不太", "没那么", "没有", "并没有",
+    "不", "没", "無", "无", "非", "别", "別",
+    "안", "아니", "못",
+    "не", "нет", "никогда",
+)
+_EMOTION_NEGATION_SUFFIXES = (
+    "지 않", "지않", "지 않아", "지않아", "지 않다", "지않다", "지 않음", "지않음",
+    "지 못", "지못", "지 못해", "지못해", "지 못하다", "지못하다",
+    "않", "않아", "않다", "않음", "아냐", "아니야", "아니다", "아닌", "아님",
+)
+_EMOTION_TOKEN_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
+_EMOTION_NEGATION_COMPACT_PREFIXES = tuple(sorted({
+    re.sub(r"[\W_]+", "", str(negation).strip().lower(), flags=re.UNICODE)
+    for negation in (*_EMOTION_NEGATION_PREFIXES, *_EMOTION_NEGATION_WORDS)
+    if str(negation).strip()
+}, key=len, reverse=True))
+_EMOTION_NEGATION_COMPACT_SUFFIXES = tuple(sorted({
+    re.sub(r"[\W_]+", "", str(negation).strip().lower(), flags=re.UNICODE)
+    for negation in _EMOTION_NEGATION_SUFFIXES
+    if str(negation).strip()
+}, key=len, reverse=True))
+_EMOTION_NEGATION_CONTEXT_WINDOW = max(
+    (len(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES),
+    default=6,
+)
+
+
+def _looks_like_emotion_compact_candidate(candidate, cutoff):
+    if not candidate:
+        return False
+    if candidate in _EMOTION_COMPACT_ALIAS_LOOKUP:
+        return True
+    return bool(difflib.get_close_matches(
+        candidate,
+        _EMOTION_FUZZY_COMPACT_KEYS,
+        n=1,
+        cutoff=cutoff,
+    ))
+
+
+def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cutoff):
+    tokens = [token for token in _EMOTION_TOKEN_RE.findall(normalized_text) if token]
+    if tokens and any(token in _EMOTION_NEGATION_WORDS for token in tokens):
+        remaining_compact = re.sub(
+            r"[\W_]+",
+            "",
+            "".join(token for token in tokens if token not in _EMOTION_NEGATION_WORDS),
+            flags=re.UNICODE,
+        )
+        if _looks_like_emotion_compact_candidate(remaining_compact, fuzzy_compact_cutoff):
+            return True
+
+    for negation in _EMOTION_NEGATION_COMPACT_PREFIXES:
+        if not compact_text.startswith(negation):
+            continue
+        if _looks_like_emotion_compact_candidate(compact_text[len(negation):], fuzzy_compact_cutoff):
+            return True
+
+    for negation in _EMOTION_NEGATION_COMPACT_SUFFIXES:
+        marker_index = compact_text.find(negation)
+        if marker_index <= 0:
+            continue
+        if _looks_like_emotion_compact_candidate(compact_text[:marker_index], fuzzy_compact_cutoff):
+            return True
+
+    return False
+
+_EMOTION_KEYWORDS = {
+    "happy": ("哈哈", "嘿嘿", "嘻嘻", "开心", "高兴", "喜欢", "太棒", "可爱", "好耶", "真好", "好开心", "爱你",
+              "haha", "hehe", "happy", "glad", "love", "lovely", "cute", "yay", "great", "awesome",
+              "うれしい", "嬉しい", "楽しい", "かわいい", "好き", "やった", "最高",
+              "좋아", "행복", "기뻐", "신나", "귀여워", "좋다", "최고",
+              "счастлив", "рада", "рад", "весело", "люблю", "милый", "класс"),
+    "sad": ("难过", "伤心", "委屈", "想哭", "要哭", "哭了", "哭", "呜呜", "呜", "遗憾", "失落", "沮丧", "低落", "心疼", "欺负", "最怕",
+            "sad", "cry", "upset", "depressed", "sorry", "regret", "heartbroken",
+            "悲しい", "つらい", "寂しい", "落ち込", "しんどい", "泣きたい",
+            "슬퍼", "우울", "속상", "서운", "힘들", "울고",
+            "грустно", "печально", "обидно", "жаль", "тоск", "плак"),
+    "angry": ("气死", "生气", "烦死", "烦", "恼火", "可恶", "离谱", "无语", "讨厌", "炸毛", "火大",
+              "angry", "mad", "annoyed", "irritated", "furious", "damn", "hate",
+              "ムカつく", "腹立", "うざい", "最悪", "イライラ", "ふざけ",
+              "짜증", "화나", "열받", "빡쳐", "어이없", "최악",
+              "злюсь", "бесит", "раздраж", "ужас", "ненавиж", "достал"),
+    "surprised": ("哇", "居然", "竟然", "不会吧", "诶", "欸", "啊这", "天哪", "真的假的", "怎么会",
+                  "wow", "whoa", "omg", "really", "seriously", "what", "unexpected", "surprised",
+                  "えっ", "うそ", "まじ", "本当", "びっくり", "なんで",
+                  "헉", "우와", "진짜", "설마", "뭐야", "깜짝",
+                  "ого", "ничего себе", "серьезно", "правда", "внезапно", "удив"),
+}
+
+_SAD_VULNERABLE_PATTERNS = (
+    "委屈", "想哭", "要哭", "哭了", "哭", "呜呜", "呜", "别欺负", "不要欺负", "欺负我",
+    "不要这样对我", "别这样对我", "最怕", "怕你这样说", "心里难受", "好难过", "可怜"
+)
+
+_ANGRY_ATTACK_PATTERNS = (
+    "气死", "生气", "烦死", "恼火", "可恶", "讨厌", "离谱", "无语", "火大",
+    "别烦", "闭嘴", "滚", "受不了"
+)
+
+_HAPPY_PLAYFUL_PATTERNS = (
+    "哈哈", "嘿嘿", "嘻嘻", "贴贴", "撒娇", "可爱", "好耶"
+)
+
+
+def _normalize_emotion_label(raw_emotion, raw_confidence=None):
+    emotion_text = str(raw_emotion or "").strip().lower()
+    if not emotion_text:
+        return "neutral"
+    normalized_text = re.sub(r"[\s\-_]+", " ", emotion_text)
+    if normalized_text in _EMOTION_NORMALIZED_ALIAS_LOOKUP:
+        return _EMOTION_NORMALIZED_ALIAS_LOOKUP[normalized_text]
+
+    compact_text = re.sub(r"[\W_]+", "", emotion_text, flags=re.UNICODE)
+    if compact_text in _EMOTION_COMPACT_ALIAS_LOOKUP:
+        return _EMOTION_COMPACT_ALIAS_LOOKUP[compact_text]
+
+    high_confidence = raw_confidence is not None and _coerce_emotion_confidence(raw_confidence, 0.0) >= 0.72
+    fuzzy_alias_cutoff = 0.74 if high_confidence else 0.9
+    fuzzy_compact_cutoff = 0.72 if high_confidence else 0.88
+
+    if _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cutoff):
+        return "neutral"
+
+    def _is_negated_ascii_match(match_start):
+        prefix_tokens = _EMOTION_TOKEN_RE.findall(normalized_text[:match_start])
+        return any(token in _EMOTION_NEGATION_WORDS for token in prefix_tokens[-3:])
+
+    def _is_negated_compact_match(match_start):
+        prefix = compact_text[max(0, match_start - _EMOTION_NEGATION_CONTEXT_WINDOW):match_start]
+        return any(prefix.endswith(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES)
+
+    alias_items = sorted(
+        _EMOTION_NORMALIZED_ALIAS_LOOKUP.items(),
+        key=lambda item: len(item[0]),
+        reverse=True
+    )
+    for alias, canonical in alias_items:
+        if not alias:
+            continue
+        if _ASCII_EMOTION_ALIAS_RE.match(alias):
+            pattern = r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])"
+            for match in re.finditer(pattern, normalized_text):
+                if not _is_negated_ascii_match(match.start()):
+                    return canonical
+            continue
+
+        compact_alias = re.sub(r"[\W_]+", "", alias, flags=re.UNICODE)
+        if not compact_alias:
+            continue
+        search_start = 0
+        while True:
+            match_start = compact_text.find(compact_alias, search_start)
+            if match_start < 0:
+                break
+            if not _is_negated_compact_match(match_start):
+                return canonical
+            search_start = match_start + len(compact_alias)
+
+    fuzzy_alias_match = difflib.get_close_matches(
+        normalized_text,
+        _EMOTION_FUZZY_ALIAS_KEYS,
+        n=1,
+        cutoff=fuzzy_alias_cutoff
+    )
+    if fuzzy_alias_match:
+        return _EMOTION_NORMALIZED_ALIAS_LOOKUP[fuzzy_alias_match[0]]
+
+    if compact_text:
+        fuzzy_compact_match = difflib.get_close_matches(
+            compact_text,
+            _EMOTION_FUZZY_COMPACT_KEYS,
+            n=1,
+            cutoff=fuzzy_compact_cutoff
+        )
+        if fuzzy_compact_match:
+            return _EMOTION_COMPACT_ALIAS_LOOKUP[fuzzy_compact_match[0]]
+
+    if high_confidence:
+        fuzzy_canonical = difflib.get_close_matches(
+            normalized_text,
+            _EMOTION_CANONICAL_LABELS,
+            n=1,
+            cutoff=0.55
+        )
+        if fuzzy_canonical:
+            return fuzzy_canonical[0]
+
+    return "neutral"
+
+
+def _push_emotion_update(lanlan_name, emotion, confidence):
+    sync_message_queue = get_sync_message_queue()
+    if lanlan_name and lanlan_name in sync_message_queue:
+        sync_message_queue[lanlan_name].put({
+            "type": "json",
+            "data": {
+                "type": "emotion",
+                "emotion": emotion,
+                "confidence": confidence
+            }
+        })
+
+
+def _emotion_response(emotion, confidence):
+    return {
+        "emotion": emotion,
+        "confidence": confidence
+    }
+
+
+def _coerce_emotion_confidence(raw_confidence, default=0.5):
+    try:
+        confidence = float(raw_confidence)
+    except (TypeError, ValueError):
+        confidence = float(default)
+    if not math.isfinite(confidence):
+        confidence = float(default)
+    return max(0.0, min(1.0, confidence))
+
+
+def _infer_emotion_from_text(text):
+    text_value = str(text or "").lower()
+    if not text_value:
+        return None, 0
+
+    scores = {key: 0 for key in _EMOTION_KEYWORDS}
+    for emotion, keywords in _EMOTION_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword and keyword in text_value:
+                scores[emotion] += 1
+
+    if "!!" in text_value or "！？" in text_value or "!?" in text_value or "??" in text_value:
+        scores["surprised"] += 1
+
+    sad_vulnerable_hits = sum(1 for pattern in _SAD_VULNERABLE_PATTERNS if pattern in text_value)
+    angry_attack_hits = sum(1 for pattern in _ANGRY_ATTACK_PATTERNS if pattern in text_value)
+    happy_playful_hits = sum(1 for pattern in _HAPPY_PLAYFUL_PATTERNS if pattern in text_value)
+
+    if sad_vulnerable_hits:
+        scores["sad"] += sad_vulnerable_hits * 2
+    if angry_attack_hits:
+        scores["angry"] += angry_attack_hits * 2
+    if happy_playful_hits and not sad_vulnerable_hits and not angry_attack_hits:
+        scores["happy"] += 1
+    if sad_vulnerable_hits and happy_playful_hits:
+        # 撒娇外壳下的委屈/想哭，优先视为 sad 而不是 happy
+        scores["sad"] += 1
+
+    best_emotion = None
+    best_score = 0
+    for emotion, score in scores.items():
+        if score > best_score:
+            best_emotion = emotion
+            best_score = score
+
+    if best_score <= 0:
+        return None, 0
+    return best_emotion, best_score
+
+
+def _resolve_emotion_prompt_language(text):
+    try:
+        detected_lang = detect_language(str(text or ""))
+        return normalize_language_code(detected_lang, format='short')
+    except Exception:
+        return 'zh'
 
 
 @router.get("/token-usage")
@@ -99,6 +510,70 @@ async def ack_pending_notices(request: Request):
         cursor = 0
     drain_prominent_notices(cursor)
     return {"ok": True}
+
+
+# --- 版本更新日志 ---
+
+@router.get("/changelog")
+async def get_changelog(since: str = "", lang: str = ""):
+    """返回自指定版本以来的所有更新日志。
+
+    前端传入 localStorage 中保存的 lastNotifiedVersion，后端返回所有 > since 的
+    changelog 条目（按版本升序），以及当前版本号。
+    lang 参数为前端 locale（如 zh-CN / en / ja / ko / ru / zh-TW），非中文时
+    优先返回对应语言翻译，不存在则 fallback 到 en，再 fallback 到中文原文。
+    """
+    from config import APP_VERSION
+    import glob as _glob
+
+    def _parse_ver(s: str) -> tuple[int, ...]:
+        """将 '0.7.3' 转为可比较的 int 元组；解析失败返回 (0,)。"""
+        try:
+            return tuple(int(x) for x in s.strip().split("."))
+        except (ValueError, AttributeError):
+            return (0,)
+
+    changelog_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "changelog")
+    entries: list[dict] = []
+    since_ver = _parse_ver(since) if since else (0,)
+
+    # 确定 fallback 链：用户语言 -> en -> 中文原文
+    is_chinese = lang.startswith("zh") if lang else True
+    fallback_langs: list[str] = []
+    if not is_chinese:
+        if lang:
+            fallback_langs.append(lang)
+        if "en" not in fallback_langs:
+            fallback_langs.append("en")
+
+    def _read_localized(stem: str, zh_content: str) -> str:
+        """按 fallback 链查找本地化版本，找不到返回中文原文。"""
+        for loc in fallback_langs:
+            loc_file = os.path.join(changelog_dir, loc, f"{stem}.md")
+            try:
+                with open(loc_file, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                continue
+        return zh_content
+
+    if os.path.isdir(changelog_dir):
+        for md_file in sorted(_glob.glob(os.path.join(changelog_dir, "*.md")),
+                              key=lambda p: _parse_ver(os.path.splitext(os.path.basename(p))[0])):
+            stem = os.path.splitext(os.path.basename(md_file))[0]
+            file_ver = _parse_ver(stem)
+            if file_ver == (0,):
+                continue
+            if file_ver > since_ver:
+                try:
+                    with open(md_file, "r", encoding="utf-8") as f:
+                        zh_content = f.read()
+                except Exception:
+                    zh_content = ""
+                content = _read_localized(stem, zh_content) if not is_chinese else zh_content
+                entries.append({"version": stem, "content": content})
+
+    return {"current_version": APP_VERSION, "entries": entries}
 
 
 # --- 主动搭话近期记录暂存区 ---
@@ -744,9 +1219,9 @@ def _log_music_content(lanlan_name: str, music_content: dict):
         tracks = music_content.get('data', [])
         titles = [f"{t.get('name', '')} - {t.get('artist', '')}" for t in tracks[:5]]
         if titles:
-            logger.info(f"[{lanlan_name}] 成功获取音乐推荐:")
+            logger.debug(f"[{lanlan_name}] 成功获取音乐推荐:")
             for title in titles:
-                logger.info(f"  - {title}")
+                logger.debug(f"  - {title}")
     else:
         logger.warning(f"[{lanlan_name}] 音乐获取失败: {music_content.get('error', '未知错误')}")
 
@@ -871,6 +1346,13 @@ async def emotion_analysis(request: Request):
             return {"error": "请求体中必须包含text字段"}
         
         text = data['text']
+        lanlan_name = data.get('lanlan_name')
+        if text is None or str(text).strip() == "":
+            emotion = "neutral"
+            confidence = 0.5
+            _push_emotion_update(lanlan_name, emotion, confidence)
+            return _emotion_response(emotion, confidence)
+
         api_key = data.get('api_key')
         model = data.get('model')
         
@@ -889,12 +1371,14 @@ async def emotion_analysis(request: Request):
         
         if not model:
             return {"error": "情绪分析模型配置缺失: 模型名称未提供且配置中未设置默认模型"}
-        
+       
+        prompt_lang = _resolve_emotion_prompt_language(text)
+
         # 构建请求消息
         messages = [
             {
                 "role": "system", 
-                "content": emotion_analysis_prompt
+                "content": get_outward_emotion_analysis_prompt(prompt_lang)
             },
             {
                 "role": "user", 
@@ -902,29 +1386,23 @@ async def emotion_analysis(request: Request):
             }
         ]
 
-        # 异步调用模型
-        request_params = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.3,
-            # Gemini 模型可能返回 markdown 格式，需要更多 token
-            "max_completion_tokens": 40
-        }
-        
-        # 只有在需要时才添加 extra_body
-        extra_body = get_extra_body(model)
-        if extra_body:
-            request_params["extra_body"] = extra_body
-        
         from utils.token_tracker import set_call_type
         set_call_type("emotion")
-        
-        # 使用异步上下文管理器确保 client 正确关闭
-        async with AsyncOpenAI(api_key=api_key, base_url=emotion_base_url) as client:
-            response = await client.chat.completions.create(**request_params)
+
+        # 异步调用模型（使用统一工厂，自动处理 extra_body / provider 兼容）
+        llm = create_chat_llm(
+            model,
+            emotion_base_url,
+            api_key,
+            temperature=0.3,
+            # Gemini 模型可能返回 markdown 格式，需要更多 token
+            max_completion_tokens=40,
+        )
+        async with llm:
+            result = await llm.ainvoke(messages)
 
         # 解析响应
-        result_text = response.choices[0].message.content.strip()
+        result_text = result.content.strip()
 
         # 处理 markdown 代码块格式（Gemini 可能返回 ```json {...} ``` 格式）
         # 首先尝试使用正则表达式提取第一个代码块
@@ -941,40 +1419,58 @@ async def emotion_analysis(request: Request):
             result_text = "\n".join(lines).strip()
         
         # 尝试解析JSON响应
+        emotion = "neutral"
+        confidence = 0.5
+
+        def _apply_degraded_emotion_fallback():
+            heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
+            if heuristic_emotion:
+                return heuristic_emotion, min(0.62, 0.34 + heuristic_score * 0.1)
+            # 当模型结果不可用或缺少足够关键词线索时，回退到 neutral。
+            return "neutral", 0.5
+
         try:
-            import json
-            result = json.loads(result_text)
-            # 获取emotion和confidence
-            emotion = result.get("emotion", "neutral")
-            confidence = result.get("confidence", 0.5)
-            
-            # 当confidence小于0.3时，自动将emotion设置为neutral
-            if confidence < 0.3:
-                emotion = "neutral"
-            
-            # 获取 lanlan_name 并推送到 monitor
-            lanlan_name = data.get('lanlan_name')
-            sync_message_queue = get_sync_message_queue()
-            if lanlan_name and lanlan_name in sync_message_queue:
-                sync_message_queue[lanlan_name].put({
-                    "type": "json",
-                    "data": {
-                        "type": "emotion",
-                        "emotion": emotion,
-                        "confidence": confidence
-                    }
-                })
-            
-            return {
-                "emotion": emotion,
-                "confidence": confidence
-            }
-        except json.JSONDecodeError:
-            # 如果JSON解析失败，返回简单的情感判断
-            return {
-                "emotion": "neutral",
-                "confidence": 0.5
-            }
+            from utils.file_utils import robust_json_loads
+            result = robust_json_loads(result_text)
+            if not isinstance(result, dict):
+                # 有效 JSON 也可能是 null/[]/"text"，此时复用降级启发式处理。
+                emotion, confidence = _apply_degraded_emotion_fallback()
+            else:
+                # 获取emotion和confidence
+                raw_emotion = result.get("emotion", "neutral")
+                raw_confidence = result.get("confidence", 0.5)
+                emotion = _normalize_emotion_label(raw_emotion, raw_confidence)
+                confidence = _coerce_emotion_confidence(raw_confidence)
+                decision_source = "model"
+
+                heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
+                if heuristic_emotion:
+                    if heuristic_emotion != emotion and heuristic_score >= 4 and confidence < 0.85:
+                        emotion = heuristic_emotion
+                        confidence = max(confidence, min(0.86, 0.44 + heuristic_score * 0.07))
+                        decision_source = "heuristic_strong_override"
+                    elif heuristic_emotion == "sad" and emotion == "happy" and heuristic_score >= 2:
+                        emotion = heuristic_emotion
+                        confidence = max(confidence, min(0.84, 0.5 + heuristic_score * 0.08))
+                        decision_source = "heuristic_sad_override"
+                    elif emotion == "neutral" and confidence < 0.6:
+                        emotion = heuristic_emotion
+                        confidence = max(confidence, min(0.78, 0.42 + heuristic_score * 0.12))
+                        decision_source = "heuristic_from_neutral"
+                    elif confidence < 0.25:
+                        emotion = heuristic_emotion
+                        confidence = max(confidence, min(0.65, 0.35 + heuristic_score * 0.1))
+                        decision_source = "heuristic_from_low_confidence"
+
+                # 当confidence很低时，自动将emotion设置为neutral，避免误报
+                if confidence < 0.2:
+                    emotion = "neutral"
+                    decision_source = "neutral_fallback"
+        except ValueError:
+            emotion, confidence = _apply_degraded_emotion_fallback()
+
+        _push_emotion_update(lanlan_name, emotion, confidence)
+        return _emotion_response(emotion, confidence)
             
     except Exception as e:
         logger.error(f"情感分析失败: {e}")
@@ -1457,6 +1953,7 @@ async def proxy_meme_image(url: str):
         logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
+
 # 辅助函数
 
 @router.get('/steam/proxy-image')
@@ -1777,6 +2274,7 @@ async def proactive_chat(request: Request):
         lanlan_name = data.get('lanlan_name') or her_name_current
         is_playing_music = data.get('is_playing_music', False)
         current_track = data.get('current_track', None)
+        music_cooldown = data.get('music_cooldown', False)
         
         # 获取session manager
         mgr = session_manager.get(lanlan_name)
@@ -1786,11 +2284,21 @@ async def proactive_chat(request: Request):
         # 检查是否正在响应中（如果正在说话，不打断）
         if mgr.is_active and hasattr(mgr.session, '_is_responding') and mgr.session._is_responding:
             return JSONResponse({
-                "success": False, 
+                "success": False,
                 "error": "AI正在响应中，无法主动搭话",
                 "message": "请等待当前响应完成"
             }, status_code=409)
-        
+
+        # ========== Voice mode fast path ==========
+        # 语音模式下不走 Phase1/Phase2，直接注入预录音频触发 AI 回复
+        if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
+            delivered = await mgr.trigger_voice_proactive_nudge()
+            return JSONResponse({
+                "success": True,
+                "action": "chat" if delivered else "pass",
+                "message": "voice proactive triggered" if delivered else "voice proactive skipped (guard)",
+            })
+
         print(f"[{lanlan_name}] 开始主动搭话流程（两阶段架构）...")
         
         # ========== 解析 enabled_modes ==========
@@ -1986,39 +2494,37 @@ async def proactive_chat(request: Request):
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(lanlan_name, proactive_lang)
 
-        # ========== 3.5 反思 + 回调话题（融合主动搭话，几乎免费） ==========
+        # ========== 3.5 反思 + 回调话题（通过 memory_server API） ==========
         # 认知框架：Facts → Reflection(pending) → 主动搭话自然提及 → 用户反馈 → Persona
         followup_topics_prompt = ""
         _surfaced_reflection_ids = []  # 记录本次搭话提及了哪些 pending 反思
-        _reflection_engine = None
-        _persona_mgr = None
         try:
-            from memory import ReflectionEngine, FactStore, PersonaManager
-            _fact_store = FactStore()
-            _persona_mgr = PersonaManager()
-            _reflection_engine = ReflectionEngine(_fact_store, _persona_mgr)
+            _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
+            async with httpx.AsyncClient(proxy=None, trust_env=False) as _mem_client:
+                # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
+                _reflect_resp = await _mem_client.post(
+                    f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
+                )
+                if _reflect_resp.status_code == 200:
+                    _reflect_data = _reflect_resp.json()
+                    if _reflect_data.get('auto_transitions'):
+                        print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
+                    if _reflect_data.get('reflection'):
+                        print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
 
-            # 1. 自动状态迁移：pending→confirmed→promoted
-            _auto_transitions = _reflection_engine.auto_promote_stale(lanlan_name)
-            if _auto_transitions:
-                print(f"[{lanlan_name}] 自动迁移 {_auto_transitions} 条反思状态")
-
-            # 2. 异步反思（>=3 条新事实才触发 LLM 调用）
-            _reflection_result = await _reflection_engine.reflect(lanlan_name)
-            if _reflection_result:
-                print(f"[{lanlan_name}] 反思完成(pending): {_reflection_result['text'][:50]}...")
-
-            # 3. 获取回调话题候选（list[dict]，带 id）
-            #    注意：此处只获取候选，不标记为 surfaced。
-            #    surfaced 标记在 Phase 2 生成回复后才做。
-            _followup_topics = _reflection_engine.get_followup_topics(lanlan_name)
-            if _followup_topics:
-                followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
-                for topic in _followup_topics:
-                    followup_topics_prompt += f"- {topic['text']}\n"
-                    if topic.get('id'):
-                        _surfaced_reflection_ids.append(topic['id'])
-                print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
+                # 2. 获取回调话题候选
+                _topics_resp = await _mem_client.get(
+                    f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
+                )
+                if _topics_resp.status_code == 200:
+                    _followup_topics = _topics_resp.json().get('topics', [])
+                    if _followup_topics:
+                        followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
+                        for topic in _followup_topics:
+                            followup_topics_prompt += f"- {topic['text']}\n"
+                            if topic.get('id'):
+                                _surfaced_reflection_ids.append(topic['id'])
+                        print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
 
@@ -2129,8 +2635,8 @@ async def proactive_chat(request: Request):
         vision_content = sources.get('vision')  # 仅保留给 Phase 2 使用，Phase 1 不处理
         music_content = sources.get('music')
         meme_content = sources.get('meme')
-        logger.info(f"[{lanlan_name}] 主动搭话-音乐内容: type={type(music_content)}, success={music_content.get('success') if music_content else 'N/A'}")
-        logger.info(f"[{lanlan_name}] 主动搭话-表情包内容: type={type(meme_content)}, success={meme_content.get('success') if meme_content else 'N/A'}")
+        logger.debug(f"[{lanlan_name}] 主动搭话-音乐内容: type={type(music_content)}, success={music_content.get('success') if music_content else 'N/A'}")
+        logger.debug(f"[{lanlan_name}] 主动搭话-表情包内容: type={type(meme_content)}, success={meme_content.get('success') if meme_content else 'N/A'}")
         
         all_web_links: list[dict] = []
         
@@ -2209,21 +2715,23 @@ async def proactive_chat(request: Request):
         selected_meme_link = None
         selected_meme_topic_key = None
 
-        # 【加固】如果正在放歌，强制在此环节清空 music_content，彻底跳过 Phase 1 的所有搜歌逻辑
-        if is_playing_music:
+        # 【加固】如果正在放歌或处于冷却期，强制清空 music 通道，彻底跳过搜歌逻辑
+        if is_playing_music or music_cooldown:
             if music_content:
-                logger.info(f"[{lanlan_name}]-音乐正在播放，强制屏蔽 Phase 1 搜歌逻辑")
+                reason = "音乐正在播放" if is_playing_music else "用户连续秒关，音乐冷却中"
+                logger.debug(f"[{lanlan_name}]-{reason}，强制屏蔽 Phase 1 搜歌逻辑")
             music_content = None
+            sources.pop('music', None)
 
         # ============================================================
-        # 来源动态权重过滤（vision 不参与权重计算）
+        # 来源动态权重过滤（vision / 已屏蔽的 music 不参与权重计算）
         # ============================================================
-        non_vision_modes = [m for m in enabled_modes if m != 'vision']
+        non_vision_modes = [m for m in enabled_modes if m != 'vision' and m in sources]
         if non_vision_modes:
             source_weights = _compute_source_weights(lanlan_name, non_vision_modes)
             suppressed = _filter_sources_by_weight(source_weights)
             weight_str = ' '.join(f"{ch}={w:.3f}" for ch, w in source_weights.items())
-            logger.info(f"[{lanlan_name}] 来源权重: {weight_str} | 剔除: {suppressed or '无'}")
+            logger.debug(f"[{lanlan_name}] 来源权重: {weight_str} | 剔除: {suppressed or '无'}")
 
             for ch in suppressed:
                 sources.pop(ch, None)
@@ -2321,7 +2829,7 @@ async def proactive_chat(request: Request):
                 unified_result_text = await _llm_call_with_retry(unified_prompt, "unified_phase1")
                 print(f"[{lanlan_name}] Phase 1 合并 LLM 结果: {unified_result_text[:500]}")
                 unified_parsed = _parse_unified_phase1_result(unified_result_text)
-                logger.info(f"[{lanlan_name}] Phase 1 解析: web={'有' if unified_parsed.get('web') else '无'}, "
+                logger.debug(f"[{lanlan_name}] Phase 1 解析: web={'有' if unified_parsed.get('web') else '无'}, "
                            f"music_kw={unified_parsed.get('music_keyword', 'N/A')}, "
                            f"meme_kw={unified_parsed.get('meme_keyword', 'N/A')}")
             except Exception as e:
@@ -2452,7 +2960,7 @@ async def proactive_chat(request: Request):
                     if _is_recent_topic_used(lanlan_name, music_topic_key):
                         print(f"[{lanlan_name}]- Phase 1 音乐话题去重命中，跳过: {track_name}")
                     else:
-                        logger.info(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                        logger.debug(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
                         selected_music_link = {
                             'title': track_name,
                             'artist': track_artist,
@@ -2464,7 +2972,7 @@ async def proactive_chat(request: Request):
                         selected_music_topic_key = music_topic_key
                         phase1_topics.append(('music', music_topic))
                 else:
-                    logger.info(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                    logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
                     phase1_topics.append(('music', music_topic))
 
         # ============================================================
@@ -2485,10 +2993,10 @@ async def proactive_chat(request: Request):
                         topic_url=meme_url
                     )
                     if meme_topic_key and _is_recent_topic_used(lanlan_name, meme_topic_key):
-                        logger.info(f"[{lanlan_name}]- Phase 1 表情包话题去重命中，跳过: {meme_title[:30]}")
+                        logger.debug(f"[{lanlan_name}]- Phase 1 表情包话题去重命中，跳过: {meme_title[:30]}")
                         continue
                     single_meme_topic = f"发现一个很有意思的[表情包]：'{meme_title}' (来自 {meme_source})"
-                    logger.info(f"[{lanlan_name}]- Phase 1 表情包话题已添加 (限额1张): {single_meme_topic}")
+                    logger.debug(f"[{lanlan_name}]- Phase 1 表情包话题已添加 (限额1张): {single_meme_topic}")
                     phase1_topics.append(('meme', single_meme_topic))
                     selected_meme_link = {
                         'title': meme_title,
@@ -2497,10 +3005,10 @@ async def proactive_chat(request: Request):
                         'type': candidate_meme.get('type', 'meme')
                     }
                     selected_meme_topic_key = meme_topic_key
-                    logger.info(f"[{lanlan_name}] 预选表情包话题: {meme_title[:30]}")
+                    logger.debug(f"[{lanlan_name}] 预选表情包话题: {meme_title[:30]}")
                     break
                 else:
-                    logger.info(f"[{lanlan_name}]- Phase 1 所有表情包候选均被去重，跳过表情包话题")
+                    logger.debug(f"[{lanlan_name}]- Phase 1 所有表情包候选均被去重，跳过表情包话题")
             else:
                 logger.warning(f"[{lanlan_name}] Phase 1 表情包数据为空，跳过表情包话题")
         
@@ -2576,12 +3084,15 @@ async def proactive_chat(request: Request):
             external_section = f"{el}\n{web_topic}\n{ef}"
         
         music_section = ""
-        # 如果正在放歌，强行屏蔽音乐素材推荐，避免 AI 误触
-        if music_topic and not is_playing_music:
+        # 如果正在放歌或处于冷却期，强行屏蔽音乐素材推荐，避免 AI 误触
+        if music_topic and not is_playing_music and not music_cooldown:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
-            music_section = f"======音乐推荐素材======\n{music_topic}\n======音乐素材结束======"
-        elif is_playing_music:
-            print(f"[{lanlan_name}] 正在播放音乐，已屏蔽音乐推荐素材（仅保留 playing_hint）")
+            msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
+            msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
+            music_section = f"{msh}\n{music_topic}\n{msf}"
+        elif is_playing_music or music_cooldown:
+            reason = "正在播放音乐" if is_playing_music else "音乐冷却期"
+            print(f"[{lanlan_name}] {reason}，已屏蔽音乐推荐素材（仅保留 playing_hint）")
             music_section = ""
         
         # 构建表情包段（meme 通道）
@@ -2592,7 +3103,9 @@ async def proactive_chat(request: Request):
                 meme_topic = topic
                 break
         if meme_topic:
-            meme_section = f"======表情包素材======\n{meme_topic}\n======表情包素材结束======"
+            meh = _loc(MEME_SECTION_HEADER, proactive_lang)
+            mef = _loc(MEME_SECTION_FOOTER, proactive_lang)
+            meme_section = f"{meh}\n{meme_topic}\n{mef}"
         
         source_instruction, output_format_section = get_proactive_format_sections(
             has_screen=bool(screen_section),
@@ -2636,7 +3149,7 @@ async def proactive_chat(request: Request):
             if raw_data.get('best_match', {}).get('status') == 'fuzzy':
                 dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(proactive_lang)
 
-        if is_playing_music:
+        if is_playing_music or music_cooldown:
             dynamic_context_for_phase2 += get_proactive_music_strict_constraint(proactive_lang)
         print(f"[{lanlan_name}] Phase 2 prompt 长度: {len(generate_prompt)}, 动态上下文: {len(dynamic_context_for_phase2)} 字符")
 
@@ -2759,7 +3272,7 @@ async def proactive_chat(request: Request):
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")
         if aborted or not full_text.strip():
             await mgr.handle_new_message()
-            logger.info(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
+            logger.debug(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
             return JSONResponse({
                 "success": True,
                 "action": "pass",
@@ -2767,7 +3280,7 @@ async def proactive_chat(request: Request):
             })
         
         response_text = full_text.strip()
-        logger.info(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
+        logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
 
         has_music_topic = 'music' in active_channels
@@ -2776,8 +3289,8 @@ async def proactive_chat(request: Request):
         is_music_used = has_music_topic and source_tag == 'MUSIC'
         ai_wants_music = source_tag == 'MUSIC'
 
-        if is_playing_music and ai_wants_music:
-            print(f"[{lanlan_name}] 数据级锁触发：AI 在播放中尝试推荐新歌，已强制拦截并清空曲目列表")
+        if (is_playing_music or music_cooldown) and ai_wants_music:
+            print(f"[{lanlan_name}] 数据级锁触发：{'播放中' if is_playing_music else '冷却期'}尝试推荐新歌，已强制拦截并清空曲目列表")
             is_music_used = False
             music_content = None
             source_tag = 'PASS'
@@ -2804,7 +3317,7 @@ async def proactive_chat(request: Request):
 
         # 兜底：当最终主通道已经落到 music，或当前实际上只剩音乐通道时，
         # 【逻辑加固】如果 active_channels 里包含 meme 且 primary_channel 是 meme，不触发 fallback
-        should_try_music_fallback = not is_playing_music and (
+        should_try_music_fallback = not is_playing_music and not music_cooldown and (
             primary_channel == 'music'
             or (has_music_topic and not any(ch in ('vision', 'web', 'meme') for ch in active_channels))
         )
@@ -2829,16 +3342,21 @@ async def proactive_chat(request: Request):
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
 
-        # 后台长期记忆维护（同步，轻量操作）
+        # 后台长期记忆维护（通过 memory_server API）
         try:
-            # 保存本次搭话实际提及的 pending 反思 ID（供下次 /process 做反馈检查）
-            if _reflection_engine is not None and _surfaced_reflection_ids:
-                _reflection_engine.record_surfaced(lanlan_name, _surfaced_reflection_ids)
-                print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")
+            _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
+            async with httpx.AsyncClient(proxy=None, trust_env=False) as _mem_client:
+                # 保存本次搭话实际提及的 pending 反思 ID（供下次 /process 做反馈检查）
+                if _surfaced_reflection_ids:
+                    await _mem_client.post(
+                        f"{_mem_base}/record_surfaced/{lanlan_name}",
+                        json={"reflection_ids": _surfaced_reflection_ids},
+                        timeout=5.0,
+                    )
+                    print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")
 
-            # 记录 persona 提及次数（疲劳跟踪）
-            if _persona_mgr is not None:
-                _persona_mgr.record_mentions(lanlan_name, response_text)
+                # 记录 persona 提及次数（疲劳跟踪） — persona 文件由 memory_server 管理
+                # record_mentions 已在 memory_server 的 _extract_facts_and_check_feedback 中调用
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 长期记忆后处理失败（不影响主流程）: {e}")
 

@@ -411,7 +411,7 @@ export default defineConfig({
   cleanUrls: true,
 
   // Exclude project README translations from the doc build
-  srcExclude: ['README_en.md', 'README_ja.md'],
+  srcExclude: ['README_en.md', 'README_ja.md', 'README_ru.md'],
 
   /* ---- i18n ---- */
   locales: {

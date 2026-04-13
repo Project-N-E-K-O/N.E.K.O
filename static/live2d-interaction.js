@@ -622,6 +622,10 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     const startHideTimer = (delay = 1000) => {
         const lockIcon = document.getElementById('live2d-lock-icon');
         const floatingButtons = document.getElementById('live2d-floating-buttons');
+        const hasOpenOverlay = () => {
+            const popupUi = window.AvatarPopupUI || null;
+            return !!(popupUi && typeof popupUi.hasVisibleOverlay === 'function' && popupUi.hasVisibleOverlay('live2d'));
+        };
         const isPointerNearLock = () => {
             if (!lockIcon || lockIcon.style.display !== 'block') return false;
             const x = this._lastMouseX;
@@ -649,7 +653,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             }
 
             // 再次检查鼠标是否在按钮区域内
-            if (this._isMouseOverButtons || isPointerNearLock()) {
+            if (this._isMouseOverButtons || isPointerNearLock() || hasOpenOverlay()) {
                 // 鼠标在按钮上，不隐藏，重新启动定时器
                 this._hideButtonsTimer = null;
                 startHideTimer(delay);
@@ -670,9 +674,23 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     let stationaryFadeActive = false; // 静止1秒淡化
     const applyFade = () => {
         if (!live2dContainer) return;
-        const shouldFade = ctrlFadeActive || stationaryFadeActive;
+        const shouldFade = (ctrlFadeActive || stationaryFadeActive) && window.lockedHoverFadeEnabled !== false;
         live2dContainer.classList.toggle('locked-hover-fade', shouldFade);
     };
+
+    // 监听锁定悬停淡化设置变更
+    const onLockedHoverFadeChanged = () => {
+        if (window.lockedHoverFadeEnabled === false) {
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
+        }
+    };
+    if (this._lockedHoverFadeChangedListener) {
+        window.removeEventListener('neko-locked-hover-fade-changed', this._lockedHoverFadeChangedListener);
+    }
+    this._lockedHoverFadeChangedListener = onLockedHoverFadeChanged;
+    window.addEventListener('neko-locked-hover-fade-changed', onLockedHoverFadeChanged);
 
     // 跟踪 Ctrl 键状态（作为备用，主要从事件中直接读取）
     let isCtrlPressed = false;
@@ -843,7 +861,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 distance = Math.sqrt(dx * dx + dy * dy);
             } else {
                 // 椭圆半径比例（相对于边界框）
-                const ellipseRadiusX = width * 0.35;
+                const ellipseRadiusX = width * 0.3;
                 const ellipseRadiusY = height * 0.45;
 
                 // 计算点到椭圆的归一化距离
@@ -877,8 +895,30 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
             const isNearModel = distance < HoverFadethreshold;
 
-            // 静止时启动定时器，移出范围时清除
-            if (this.isLocked && isNearModel) {
+            // 鼠标在 UI 元素（锁图标 / 浮动按钮）上时，重置淡化状态，
+            // 防止离开 UI 后残留的 stationaryFadeActive 立即重新触发淡化
+            const live2dLockIcon = document.getElementById('live2d-lock-icon');
+            const live2dFloatingBtns = document.getElementById('live2d-floating-buttons');
+            let isOverUi = false;
+            if (live2dLockIcon && live2dLockIcon.style.display !== 'none') {
+                const lr = live2dLockIcon.getBoundingClientRect();
+                if (pointer.x >= lr.left && pointer.x <= lr.right && pointer.y >= lr.top && pointer.y <= lr.bottom) isOverUi = true;
+            }
+            if (!isOverUi && live2dFloatingBtns && live2dFloatingBtns.style.display !== 'none') {
+                const br = live2dFloatingBtns.getBoundingClientRect();
+                if (pointer.x >= br.left && pointer.x <= br.right && pointer.y >= br.top && pointer.y <= br.bottom) isOverUi = true;
+            }
+            if (isOverUi) {
+                clearStationaryFadeTimer();
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                this._hasEnteredHoverRange = false;
+                applyFade();
+            }
+
+            // 静止时启动定时器，移出范围时清除（移动端无鼠标悬停，跳过）
+            const isMobileDevice = (window.appUtils && typeof window.appUtils.isMobile === 'function' && window.appUtils.isMobile()) || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            if (!isMobileDevice && this.isLocked && isNearModel && !isOverUi) {
                 // 首次进入范围：设置标志并启动定时器
                 if (!this._hasEnteredHoverRange) {
                     this._hasEnteredHoverRange = true;
@@ -900,8 +940,8 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 this._hasEnteredHoverRange = false;
             }
 
-            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化）
-            ctrlFadeActive = this.isLocked && ctrlKeyPressed && isNearModel;
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化，移动端跳过，UI 上时跳过）
+            ctrlFadeActive = !isMobileDevice && this.isLocked && ctrlKeyPressed && isNearModel && !isOverUi;
             applyFade();
 
             const canvasEl = document.getElementById('live2d-canvas');
@@ -909,7 +949,14 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             if (distance < threshold) {
                 showButtons();
                 if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
-                    canvasEl.style.cursor = 'grab';
+                    // hitTest + 椭圆内部判定（0.3w × 0.45h），不外扩
+                    let isOnModel = false;
+                    try {
+                        const hitAreas = model.hitTest(pointer.x, pointer.y);
+                        if (hitAreas && hitAreas.length > 0) isOnModel = true;
+                    } catch (_) {}
+                    if (!isOnModel) isOnModel = distance === 0;
+                    canvasEl.style.cursor = isOnModel ? 'grab' : '';
                 }
                 const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
                 if (this.isFocusing) {
@@ -956,12 +1003,15 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     // 窗口失去焦点时，只重置淡化效果，不重置 Ctrl 键状态
     // 这样窗口重新获得焦点后，如果 Ctrl 仍被按住，淡化功能可以恢复
     const onBlur = () => {
+        // blur 时 Ctrl 键事件无法到达，必须主动清除 Ctrl 状态
+        isCtrlPressed = false;
+        ctrlFadeActive = false;
         clearStationaryFadeTimer();
         // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
         if (stationaryFadeActive) {
             stationaryFadeActive = false;
-            applyFade();
         }
+        applyFade();
         this._hasEnteredHoverRange = false;
     };
 
@@ -1476,6 +1526,12 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     if (this._windowBlurListener) {
         window.removeEventListener('blur', this._windowBlurListener);
         this._windowBlurListener = null;
+    }
+
+    // 清理锁定悬停淡化监听器
+    if (this._lockedHoverFadeChangedListener) {
+        window.removeEventListener('neko-locked-hover-fade-changed', this._lockedHoverFadeChangedListener);
+        this._lockedHoverFadeChangedListener = null;
     }
 
     // 清理静止淡化定时器

@@ -11,8 +11,9 @@ from types import MappingProxyType
 
 from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
 
-# 应用程序名称配置
+# 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
+APP_VERSION = "0.7.4"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -27,6 +28,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "voice_id",
     "system_prompt",
     "model_type",
+    "live3d_sub_type",
     "vrm",
     "vrm_animation",
     "lighting",
@@ -34,9 +36,11 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "live2d_item_id",
     "item_id",
     "idleAnimation",
+    "idleAnimations",
     "mmd",
     "mmd_animation",
     "mmd_idle_animation",
+    "mmd_idle_animations",
     "touch_set",
 )
 
@@ -69,6 +73,7 @@ RESERVED_FIELD_SCHEMA = {
     "system_prompt": str,
     "avatar": {
         "model_type": str,
+        "live3d_sub_type": str,
         "asset_source": str,
         "asset_source_id": str,
         "live2d": {
@@ -77,14 +82,14 @@ RESERVED_FIELD_SCHEMA = {
         "vrm": {
             "model_path": str,
             "animation": (str, dict, list, type(None)),
-            "idle_animation": str,
+            "idle_animation": (str, list, type(None)),
             "lighting": (dict, type(None)),
             "cursor_follow": (dict, type(None)),
         },
         "mmd": {
             "model_path": str,
             "animation": (str, dict, list, type(None)),
-            "idle_animation": str,
+            "idle_animation": (str, list, type(None)),
             "lighting": (dict, type(None)),
             "rendering": (dict, type(None)),
             "physics": (dict, type(None)),
@@ -100,16 +105,19 @@ LEGACY_FLAT_TO_RESERVED = {
     "voice_id": ("voice_id",),
     "system_prompt": ("system_prompt",),
     "model_type": ("avatar", "model_type"),
+    "live3d_sub_type": ("avatar", "live3d_sub_type"),
     "live2d_item_id": ("avatar", "asset_source_id"),
     "item_id": ("avatar", "asset_source_id"),
     "live2d": ("avatar", "live2d", "model_path"),
     "vrm": ("avatar", "vrm", "model_path"),
     "vrm_animation": ("avatar", "vrm", "animation"),
     "idleAnimation": ("avatar", "vrm", "idle_animation"),
+    "idleAnimations": ("avatar", "vrm", "idle_animation"),
     "lighting": ("avatar", "vrm", "lighting"),
     "mmd": ("avatar", "mmd", "model_path"),
     "mmd_animation": ("avatar", "mmd", "animation"),
     "mmd_idle_animation": ("avatar", "mmd", "idle_animation"),
+    "mmd_idle_animations": ("avatar", "mmd", "idle_animation"),
 }
 
 # 从 Electron userData 目录读取端口覆盖配置（由前端端口设置窗口写入）
@@ -245,8 +253,8 @@ DEFAULT_VISION_MODEL = "qwen3-vl-plus-2025-09-23"
 DEFAULT_AGENT_MODEL = "qwen3.5-plus"
 
 # 用户自定义模型配置（可选，暂未使用）
-DEFAULT_REALTIME_MODEL = "Qwen3-Omni-30B-A3B-Instruct"  # 全模态模型(语音+文字+图片)
-DEFAULT_TTS_MODEL = "Qwen3-Omni-30B-A3B-Instruct"   # 与Realtime对应的TTS模型(Native TTS)
+DEFAULT_REALTIME_MODEL = "qwen3-omni-flash-realtime"  # 全模态模型(语音+文字+图片)，与 api_providers.json 对齐
+DEFAULT_TTS_MODEL = "qwen3-omni-flash-realtime"   # 与Realtime对应的TTS模型(Native TTS)，与 api_providers.json 对齐
 
 
 CONFIG_FILES = [
@@ -281,13 +289,13 @@ DEFAULT_LANLAN_TEMPLATE = {
                 "vrm": {
                     "model_path": "",
                     "animation": None,
-                    "idle_animation": "",
+                    "idle_animation": [],
                     "lighting": None,
                 },
                 "mmd": {
                     "model_path": "",
                     "animation": None,
-                    "idle_animation": "",
+                    "idle_animation": [],
                 },
             },
         },
@@ -295,14 +303,16 @@ DEFAULT_LANLAN_TEMPLATE = {
 }
 
 _DEFAULT_VRM_LIGHTING_MUTABLE = {
-    "ambient": 0.4,  # HemisphereLight 强度
-    "main": 1.2,     # 主光源强度
-    "fill": 0.5,     # 补光强度
-    "rim": 0.8,      # 轮廓光强度
-    "top": 0.3,      # 顶光强度
-    "bottom": 0.15,  # 底光强度
-    "exposure": 0.0, # 曝光值
-    "toneMapping": 0 # 色调映射类型
+    # 与前端 vrm-core.js defaultLighting 保持一致
+    "ambient": 0.83,  # HemisphereLight 强度
+    "main": 1.91,     # 主光源强度
+    "fill": 0.0,      # 补光强度（简化模式下禁用）
+    "rim": 0.0,       # 轮廓光强度（简化模式下禁用，MToon 内建处理）
+    "top": 0.0,       # 顶光强度（简化模式下禁用）
+    "bottom": 0.0,    # 底光强度（简化模式下禁用）
+    "exposure": 1.1,  # 曝光值
+    "toneMapping": 7, # 色调映射类型 (7 = NeutralToneMapping)
+    "outlineWidthScale": 1.0, # 描边粗细倍率
 }
 
 DEFAULT_VRM_LIGHTING = MappingProxyType(_DEFAULT_VRM_LIGHTING_MUTABLE)
@@ -315,7 +325,8 @@ VRM_LIGHTING_RANGES = {
     'top': (0, 1.0),
     'bottom': (0, 0.5),
     'exposure': (-10.0, 10.0),
-    'toneMapping': (0, 5),
+    'toneMapping': (0, 7),
+    'outlineWidthScale': (0, 3.0),
 }
 
 
@@ -340,7 +351,7 @@ MMD_LIGHTING_RANGES = {
 }
 
 _DEFAULT_MMD_RENDERING_MUTABLE = {
-    "toneMapping": 0,
+    "toneMapping": 7,
     "exposure": 1.0,
     "outline": True,
     "pixelRatio": 0,
@@ -417,6 +428,12 @@ _VALUE_TRANSLATIONS = {
         '女': '女',
         'T酱, 小T': 'T醬, 小T',
     },
+    'ru': {
+        '哥哥': 'Братик',
+        '男': 'Мужской',
+        '女': 'Женский',
+        'T酱, 小T': 'Тян-тян, малышка Т',
+    },
     # zh 和 zh-CN 使用原始中文值（不需要翻译）
 }
 
@@ -460,7 +477,9 @@ def get_localized_default_characters(language: str | None = None) -> dict:
             value_trans = _VALUE_TRANSLATIONS.get('ja')
         elif lang_lower.startswith('en'):
             value_trans = _VALUE_TRANSLATIONS.get('en')
-    
+        elif lang_lower.startswith('ru'):
+            value_trans = _VALUE_TRANSLATIONS.get('ru')
+
     # 如果不需要翻译（简体中文），直接返回原始配置
     if value_trans is None:
         return deepcopy(DEFAULT_CHARACTERS_CONFIG)
@@ -506,7 +525,9 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyStep": "",
     "assistApiKeySilicon": "",
     "assistApiKeyGemini": "",
+    "assistApiKeyQwenIntl": "",
     "assistApiKeyMinimax": "",
+    "assistApiKeyClaude": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
@@ -524,7 +545,7 @@ DEFAULT_VOICE_STORAGE = {}
 # 默认API配置（供 utils.api_config_loader 作为回退选项使用）
 DEFAULT_CORE_API_PROFILES = {
     'free': {
-        'CORE_URL': "wss://lanlan.tech/core",
+        'CORE_URL': "wss://www.lanlan.tech/core",
         'CORE_MODEL': "free-model",
         'CORE_API_KEY': "free-access",
         'IS_FREE_VERSION': True,
@@ -553,7 +574,7 @@ DEFAULT_CORE_API_PROFILES = {
 
 DEFAULT_ASSIST_API_PROFILES = {
     'free': {
-        'OPENROUTER_URL': "https://lanlan.tech/text/v1",
+        'OPENROUTER_URL': "https://www.lanlan.tech/text/v1",
         'CONVERSATION_MODEL' : "free-model" ,
         'SUMMARY_MODEL': "free-model",
         'CORRECTION_MODEL': "free-model",
@@ -566,12 +587,12 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        'CONVERSATION_MODEL' : "qwen3-235b-a22b-instruct-2507",
-        'SUMMARY_MODEL': "qwen3-next-80b-a3b-instruct",
-        'CORRECTION_MODEL': "qwen3-235b-a22b-instruct-2507",
+        'CONVERSATION_MODEL' : "qwen3.6-plus",
+        'SUMMARY_MODEL': "qwen3.6-plus",
+        'CORRECTION_MODEL': "qwen3.6-plus",
         'EMOTION_MODEL': "qwen-flash",
-        'VISION_MODEL': "qwen3-vl-plus-2025-09-23",
-        'AGENT_MODEL': "qwen3.5-plus",
+        'VISION_MODEL': "qwen3.6-plus",
+        'AGENT_MODEL': "qwen3.6-plus",
     },
     'openai': {
         'OPENROUTER_URL': "https://api.openai.com/v1",
@@ -627,6 +648,15 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "kimi-latest",
         'AGENT_MODEL': "kimi-latest",
     },
+    'claude': {
+        'OPENROUTER_URL': "https://api.anthropic.com/v1",
+        'CONVERSATION_MODEL': "claude-sonnet-4-6",
+        'SUMMARY_MODEL': "claude-sonnet-4-6",
+        'CORRECTION_MODEL': "claude-sonnet-4-6",
+        'EMOTION_MODEL': "claude-haiku-4-5-20251001",
+        'VISION_MODEL': "claude-sonnet-4-6",
+        'AGENT_MODEL': "claude-opus-4-6",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -637,7 +667,9 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'silicon': 'ASSIST_API_KEY_SILICON',
     'gemini': 'ASSIST_API_KEY_GEMINI',
     'kimi': 'ASSIST_API_KEY_KIMI',
+    'qwen_intl': 'ASSIST_API_KEY_QWEN_INTL',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
+    'claude': 'ASSIST_API_KEY_CLAUDE',
 }
 
 DEFAULT_CONFIG_DATA = {
@@ -666,6 +698,7 @@ from config.providers import (  # noqa: E402, F401
 
 __all__ = [
     'APP_NAME',
+    'APP_VERSION',
     'GSV_VOICE_PREFIX',
     'CHARACTER_SYSTEM_RESERVED_FIELDS',
     'CHARACTER_WORKSHOP_RESERVED_FIELDS',

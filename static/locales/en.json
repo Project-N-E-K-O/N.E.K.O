@@ -7,6 +7,7 @@
         "save": "Save",
         "cancel": "Cancel",
         "confirm": "Confirm",
+        "next": "Next",
         "ok": "OK",
         "delete": "Delete",
         "edit": "Edit",
@@ -27,7 +28,19 @@
         "fieldSeparator": ", ",
         "tryAgainLater": "Please try again later",
         "user": "User",
-        "project": "Project"
+        "project": "Project",
+        "collapse": "Collapse",
+        "play": "Play",
+        "pause": "Pause",
+        "on": "ON",
+        "off": "OFF",
+        "toneMappingNone": "None",
+        "toneMappingLinear": "Linear",
+        "toneMappingReinhard": "Reinhard",
+        "toneMappingCineon": "Cineon",
+        "toneMappingACESFilmic": "ACES Filmic",
+        "toneMappingAgX": "AgX",
+        "toneMappingNeutral": "Neutral"
     },
     "characterProfile": {
         "gender": "Gender",
@@ -44,7 +57,14 @@
             "档案名": "Profile Name",
             "性别": "Gender",
             "年龄": "Age",
-            "昵称": "Nickname"
+            "昵称": "Nickname",
+            "性格原型": "Personality Archetype",
+            "种族": "Race",
+            "自称": "Self-Reference",
+            "核心特质": "Core Traits",
+            "行为特点": "Behavioral Traits",
+            "厌恶": "Dislikes",
+            "一句话台词": "Signature Line"
         }
     },
     "steam": {
@@ -64,6 +84,10 @@
         "tagsPreview": "Tags",
         "notesPreview": "Notes",
         "selectCharaToPreview": "Please select a character to preview",
+        "coverBgBottom": "Background Base Layer",
+        "characterCardCover": "Character Card Cover",
+        "coverBgTop": "Background Top Layer",
+        "selectCharacterForCover": "Select a character to view the cover",
         "characterModelNotSet": "Character model not set",
         "selectCharacterCard": "Please select a character card",
         "characterCardNotFound": "Character card data not found",
@@ -92,6 +116,14 @@
         "live2dInitFailed": "Live2D preview environment initialization failed",
         "live2dPreviewLoaded": "Live2D model preview loaded successfully",
         "live2dPreviewLoadFailed": "Live2D model preview loading failed: {{error}} ",
+        "searchAriaLabel": "Search subscriptions",
+        "sortAriaLabel": "Sort options",
+        "vrmModuleLoadFailed": "Failed to load VRM module",
+        "vrmPreviewLoaded": "VRM model preview loaded",
+        "vrmPreviewFailed": "Failed to load VRM model preview",
+        "mmdModuleLoadFailed": "Failed to load MMD module",
+        "mmdPreviewLoaded": "MMD model preview loaded",
+        "mmdPreviewFailed": "Failed to load MMD model preview",
         "placeholderCharacterName": "Enter character name",
         "placeholderDescription": "Enter description",
         "placeholderCharacterSetting": "Enter character setting",
@@ -306,6 +338,7 @@
         "default": "Default",
         "noVoiceSelected": "No Voice Selected",
         "noDescription": "No Description",
+            "characterSettingsFile": "Character Settings File",
         "workshopAgreementText": "By clicking \"Upload\" you agree to the Steam Workshop Terms of Service, including the Workshop Legal Agreement:",
         "alreadyUploaded": "Uploaded to Workshop",
         "uploadTime": "Upload Time",
@@ -451,6 +484,7 @@
         "API_RATE_LIMIT": "💥 Too many requests (429) or quota limit reached. Please try again later.",
         "API_POLICY_VIOLATION": "💥 Policy violation or security block: {{msg}}",
         "API_1008_FALLBACK": "💥 Connection disconnected (1008): {{msg}}",
+        "API_IDLE_TIMEOUT": "💥 Voice connection closed due to inactivity, auto-reconnecting...",
         "API_UNKNOWN_ERROR": "💥 API error: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 Memory server not started! Please run memory_server.py first.",
         "MEMORY_SERVER_CRASHED": "🧠 Memory server (port {{port}}) has crashed. Please restart memory_server.py.",
@@ -476,6 +510,7 @@
         "RESPONSE_INVALID": "AI response did not meet requirements, output discarded",
         "NO_USER_MESSAGE": "⚠️ No user message in conversation history, cannot generate response",
         "LLM_RETRY": "⚠️ LLM {{error_type}}, retrying ({{attempt}}/{{max_retries}})...",
+        "LLM_UPSTREAM_ERROR": "⚠️ Sorry Nya~, upstream AI provider internal error, retrying automatically...",
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM connection failed ({{error_type}}), exhausted {{max_retries}} retries: {{error}}",
         "TEXT_GEN_ERROR": "💥 Text generation error: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM returned no response. Please check your API connection and configuration.",
@@ -517,17 +552,103 @@
         "title": "Chat",
         "viewerTitle": "Chat (Viewer Mode)",
         "tooltip": "Chat Area",
-        "textInputPlaceholder": "Text chat mode...Press Enter to send, Shift+Enter for new line",
+        "textInputPlaceholder": "Press Enter to send, Shift+Enter for new line",
         "send": "Send",
+        "importImage": "Import Image",
+        "importImageAriaLabel": "Import image",
         "screenshot": "Screenshot",
+        "screenshotAriaLabel": "Take screenshot",
         "takePhoto": "Take Photo",
+        "takePhotoAriaLabel": "Take photo",
         "screenshotsTitle": "Pending Screenshots",
         "clearAll": "Clear All",
         "screenshotAlt": "Screenshot {{index}}",
         "screenshotTitle": "Click to view screenshot {{index}}",
         "removeScreenshot": "Remove this screenshot",
         "avatarPreview": "Show current avatar",
-        "avatarPreviewLabel": "Current avatar"
+        "avatarPreviewLabel": "Current avatar",
+        "avatarPreviewCardTitle": "Current Avatar",
+        "avatarPreviewCardStatus": "Click the button above to generate the current model avatar",
+        "avatarPreviewClose": "Close avatar preview",
+        "avatarPreviewImageAlt": "Current avatar preview",
+        "avatarPreviewPlaceholder": "AVATAR",
+        "avatarPreviewCardNote": "An avatar will be generated from the currently displayed Live2D / VRM / MMD model.",
+        "avatarPreviewRefresh": "Refresh Avatar",
+        "avatarPreviewReady": "Avatar updated",
+        "avatarPreviewReadyHint": "This avatar preview was extracted live from the current model canvas.",
+        "avatarPreviewWaiting": "Waiting for the current model avatar cache to be generated",
+        "avatarPreviewUnavailable": "Avatar preview is not available yet.",
+        "avatarPreviewInputHidden": "The input area is currently hidden. Return to the text chat view to see the avatar.",
+        "avatarPreviewCachedHint": "Showing the cached avatar for the current model. Click refresh to generate it again.",
+        "avatarPreviewRefreshing": "Refreshing current avatar...",
+        "avatarPreviewGenerating": "Generating current avatar...",
+        "avatarPreviewFailed": "Failed to generate avatar",
+        "emptyState": "Messages will appear here after the chat feed is connected.",
+        "messageStreaming": "Generating",
+        "messageFailed": "Send failed",
+        "reactWindowOpen": "Open new chat window",
+        "reactWindowLabel": "New Chat Window",
+        "reactWindowClose": "Close new chat window",
+        "reactWindowMinimize": "Minimize new chat window",
+        "reactWindowMinimizeShort": "Minimize",
+        "reactWindowRestore": "Restore new chat window",
+        "reactWindowRestoreShort": "Restore",
+        "reactWindowMountFailed": "Failed to mount the new chat window",
+        "reactWindowLoadFailed": "Failed to load new chat window resources",
+        "reactWindowAriaLabel": "Neko chat window",
+        "reactWindowInputHint": "Press Enter to send, Shift + Enter for a new line",
+        "messageListAriaLabel": "Chat messages",
+        "composerToolsAriaLabel": "Composer tools",
+        "pendingImagesAriaLabel": "Pending images",
+        "pendingImageAlt": "Image {{index}}",
+        "removePendingImage": "Remove image",
+        "emojiButtonAriaLabel": "Emoji",
+        "attachmentButtonAriaLabel": "Attachment",
+        "jukebox": "Jukebox",
+        "jukeboxLabel": "Jukebox",
+        "exportConversation": "Export Conversation",
+        "exportSelected": "Export Selected",
+        "exportPreviewTitle": "Export Preview",
+        "exportPreviewSummary": "{{count}} selected item(s)",
+        "exportPreviewEmpty": "There is nothing selected to preview.",
+        "exportFormatLabel": "Export Format",
+        "exportFormatMarkdown": "Markdown",
+        "exportFormatImage": "Image",
+        "exportImageFormatPng": "PNG",
+        "exportImageFormatJpeg": "JPEG",
+        "exportImageFormatWebp": "WebP",
+        "exportImageStyleNeko": "N.E.K.O",
+        "exportImageStyleOriginal": "Original",
+        "exportImageStylePoster": "Fresh",
+        "exportImageStyleLyrics": "Lyrics",
+        "exportPosterTitle": "Conversation Highlights",
+        "exportPosterSubtitle": "Shared from N.E.K.O",
+        "exportImageFormatUnsupported": "{{format}} export is not supported in the current environment.",
+        "confirmExportAs": "Export {{format}}",
+        "exportMarkdownPreviewSubtitle": "Rendered preview of the exported Markdown content.",
+        "exportPreviewLoading": "Generating preview...",
+        "exportPreviewFailed": "Failed to build the preview.",
+        "previewOpenWindow": "Open In Window",
+        "previewClose": "Close",
+        "previewOpenBlocked": "Unable to open a new preview window.",
+        "previewOpenFailed": "Failed to open the preview window.",
+        "copyMarkdown": "Copy Markdown",
+        "copyMarkdownSuccess": "Markdown copied to clipboard.",
+        "copyMarkdownFailed": "Failed to copy Markdown.",
+        "exportEmpty": "There is no conversation to export yet.",
+        "exportSelectionEmpty": "Select at least one message to export.",
+        "exportSuccess": "Conversation exported successfully",
+        "exportFileTitle": "Project N.E.K.O Conversation Export",
+        "exportGeneratedAt": "Exported At",
+        "exportUser": "User",
+        "exportAssistant": "N.E.K.O.",
+        "exportImageLabel": "Image",
+        "exportAudioLabel": "Audio",
+        "exportVideoLabel": "Video",
+        "exportSelectAll": "Select All",
+        "exportSelectNone": "Clear",
+        "exportSelectInvert": "Invert",
+        "exportSelectionCount": "{{selected}} / {{total}} selected"
     },
     "voiceControl": {
         "startVoice": "Start Voice",
@@ -562,7 +683,9 @@
         "volumeHintDetecting": "Detecting microphone input...",
         "volumeHintNoSound": "No sound detected, check microphone",
         "volumeHintLow": "Volume is low, try increasing gain",
-        "volumeHintOk": "Microphone working properly"
+        "volumeHintOk": "Microphone working properly",
+        "noiseReduction": "Noise Reduction",
+        "noiseReductionHint": "RNNoise AI noise reduction for clearer voice"
     },
     "speaker": {
         "volumeLabel": "Speaker Volume",
@@ -616,9 +739,9 @@
         "aliFeature": "Alibaba: Free quota available, most comprehensive features",
         "glmFeature": "GLM: Rate limits are extremely strict. Audio/video model has been discontinued and cannot be used as Core API",
         "stepFeature": "StepFun: Has free quota, very good value, but does not support Agent mode",
-        "openaiFeature": "OpenAI: Not available in China, expensive, high intelligence level",
+        "openaiFeature": "OpenAI: Expensive, high intelligence level",
         "siliconFeature": "SiliconFlow: Has free quota, good value, limited features, only for Assist API",
-        "geminiFeature": "Gemini: Excellent intelligence and value, but not available in China domestic version",
+        "geminiFeature": "Gemini: Excellent intelligence and value",
         "configSuggestion": "Configuration Suggestions:",
         "freeVersionSuggestion": "Free Version: Completely free, no API Key needed, suitable for beginners (custom voice and Agent mode not supported)",
         "coreApiSuggestion": "Core API: Handles conversation functionality, choose based on budget and needs",
@@ -628,8 +751,8 @@
         "aliCore": "Alibaba: Free quota available, comprehensive features",
         "glmCore": "GLM: Model has been temporarily discontinued, unavailable",
         "stepCore": "StepFun: Completely free, high intelligence level, but rate limits are too strict, not recommended",
-        "openaiCore": "OpenAI: Highest intelligence level, but not available in China and expensive",
-        "geminiCore": "Gemini: Excellent intelligence and value, but not available in China domestic version",
+        "openaiCore": "OpenAI: Highest intelligence level, but expensive",
+        "geminiCore": "Gemini: Excellent intelligence and value",
         "assistApiTitle": "Assist API handles memory management, text chat, Agent mode, and custom voice:",
         "freeVersionAssist": "Free Version: Completely free, no API Key needed, but custom voice not supported",
         "aliAssist": "Alibaba: Recommended choice, supports custom voice and Agent mode",
@@ -637,8 +760,8 @@
         "stepAssist": "StepFun: Cheap, but concurrency/RPM limits are extremely strict, not recommended",
         "siliconAssist": "SiliconFlow: Good value, supports Agent mode",
         "openaiAssist": "OpenAI: Strong memory management capability",
-        "geminiAssist": "Gemini: Excellent intelligence and value, but not available in China domestic version",
-        "kimiAssist": "Kimi: Available in China, supports long context and vision",
+        "geminiAssist": "Gemini: Excellent intelligence and value",
+        "kimiAssist": "Kimi: Supports long context and vision",
         "assistApiNote": "Note: Only Alibaba supports custom voice functionality. GLM and StepFun are not recommended.",
         "assistApiKeyQwen": "Assist API Key - Alibaba",
         "assistApiKeyOpenai": "Assist API Key - OpenAI",
@@ -659,7 +782,8 @@
         },
         "coreProviderNames": {
             "free": "Free Version (N.E.K.O. Exclusive Benefit, Supports Web Search)",
-            "qwen": "Qwen-Omni (Alibaba, Fastest Speed, Recommended)",
+            "qwen": "Qwen-Omni (Alibaba Bailian, Fastest Speed, Recommended)",
+            "qwen_intl": "Qwen-Omni (Alibaba Intl)",
             "openai": "GPT-Realtime (OpenAI)",
             "glm": "GLM-realtime (GLM)",
             "step": "Step-2-Audio (StepFun)",
@@ -667,17 +791,19 @@
         },
         "assistProviderNames": {
             "free": "Free Version (N.E.K.O. Exclusive Benefit)",
-            "qwen": "Alibaba (Qwen, Most Complete Features, Recommended)",
+            "qwen": "Alibaba Bailian (Qwen, Most Complete Features, Recommended)",
+            "qwen_intl": "Alibaba Intl (Qwen)",
             "openai": "OpenAI (ChatGPT)",
             "glm": "GLM",
             "step": "StepFun",
             "silicon": "SiliconFlow (Good Value, Recommended)",
-            "gemini": "Gemini (Google, High Intelligence, not available in China)",
-            "kimi": "Kimi (Moonshot, Available in China, Long Context)",
+            "gemini": "Gemini (Google, High Intelligence)",
+            "kimi": "Kimi (Moonshot, Long Context)",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance (Doubao)",
-            "minimax": "MiniMax (Domestic)",
+            "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
+            "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)"
         },
         "coreApiAutoFillHint": "Key auto-filled from API Key Book, or enter directly",
@@ -691,11 +817,14 @@
         "keyAutoFilledFromKeyBook": "Key auto-filled from API Key Book. Configure it there.",
         "goToKeyBook": "Go to Key Book",
         "providerLabel": "Provider",
+        "providerSelectPlaceholder": "Select a provider",
+        "noOptionsAvailable": "No options available",
         "customModelProviderFollowCore": "Follow Core API",
         "customModelProviderFollowAssist": "Follow Assist API",
         "customModelProviderCustom": "Custom",
         "keyBook": {
-            "qwen": "Alibaba (Qwen)",
+            "qwen": "Alibaba Bailian (Qwen)",
+            "qwen_intl": "Alibaba Intl (Qwen)",
             "openai": "OpenAI",
             "deepseek": "DeepSeek",
             "glm": "Zhipu (GLM)",
@@ -704,8 +833,9 @@
             "gemini": "Gemini (Google)",
             "kimi": "Moonshot (Kimi)",
             "doubao": "ByteDance (Doubao)",
-            "minimax": "MiniMax (Domestic)",
+            "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
+            "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)"
         },
         "freeVersionNoApiKey": "Free version does not require API Key",
@@ -766,7 +896,7 @@
         "apiUrl": "API URL",
         "apiKey": "API Key",
         "modelId": "Model ID",
-        "agentApiConfigTitle": "Agent API Config",
+        "agentApiConfigTitle": "Agent API Config (Vision-capable required)",
         "providerPlaceholder": "e.g., openai, azure, local",
         "apiUrlPlaceholder": "e.g., https://api.openai.com/v1",
         "modelIdPlaceholder": "e.g., gpt-5.1-chat-latest, qwen-flash",
@@ -868,6 +998,7 @@
             "hitAreaId": "Touch Area",
             "close": "Close",
             "configSaved": "Touch reaction config saved",
+            "saved": "Saved",
             "noHitAreas": "Model has no hit areas defined",
             "modelNotFound": "No model loaded",
             "modelDataNotReady": "Model internal data not ready",
@@ -977,6 +1108,7 @@
             "deleteModelTitle": "Delete Imported MMD Models",
             "deleteWarning": "Below are all imported user MMD models. Select models to delete (model folder and textures will be deleted together).",
             "noUserModels": "No user MMD models to delete",
+            "noModels": "No MMD models found",
             "deleteSelected": "Delete Selected"
         },
         "mmdAnimation": {
@@ -1112,13 +1244,16 @@
     },
     "voice": {
         "title": "Voice Registration",
-        "alibabaApiRequired": "⚠️ This feature requires the CosyVoice model. Please save the Alibaba Bailian API Key in API Keys settings (enabling Assist API is not required), or configure a local voice server.",
-        "minimaxApiRequired": "⚠️ This feature requires the MiniMax model (Domestic). Please save the MiniMax API Key in API Keys settings (enabling Assist API is not required).",
-        "minimaxIntlApiRequired": "⚠️ This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
+        "gotoApiSettings": "Go to API Settings",
+        "noApiKeyPrompt": "No API key for voice cloning has been configured. Would you like to set one up?",
+        "dismissNoApiPrompt": "Later",
+        "alibabaApiRequired": "This feature requires the CosyVoice model. Please save the Alibaba Bailian API Key in API Keys settings (enabling Assist API is not required), or configure a local voice server.",
+        "minimaxApiRequired": "This feature requires the MiniMax model (China). Please save the MiniMax API Key in API Keys settings (enabling Assist API is not required).",
+        "minimaxIntlApiRequired": "This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
         "providerLabel": "Voice Clone Provider",
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
-            "minimax": "MiniMax (Domestic)",
+            "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)"
         },
         "selectFile": "Select local audio file (8 seconds recommended, max 20 seconds, wav/mp3 format)",
@@ -1132,6 +1267,8 @@
         "prefixFormatError": "Prefix format error: Maximum 10 characters, numbers and English letters only",
         "registering": "Registering voice, please wait!",
         "registerSuccess": "Registration successful! voice_id: {{voiceId}}",
+        "registerSuccessButSaveFailed": "Voice registration successful, but local save failed",
+        "pleaseCopyVoiceId": "Please copy the voice_id above and save it manually",
         "reusedExisting": "Reused existing voice, upload skipped. voice_id: {{voiceId}}",
         "registerFailed": "Registration failed: {{error}}",
         "prefixShouldBeEnglishLetterAndNumber": "Prefix should be English letters and numbers",
@@ -1171,13 +1308,25 @@
         "deleteError": "Delete failed: {{error}}",
         "freePresetLabel": "Free Preset Voices",
         "freePresetBadge": "Preset",
+        "freeVoice": {
+            "playfulGirl": "Playful Girl",
+            "cuteGirl": "Cute Girl",
+            "cuteMaiden": "Cute Maiden",
+            "heroine": "Heroine",
+            "livelyGirl": "Lively Girl",
+            "coolLady": "Cool Lady",
+            "gentleMaiden": "Gentle Maiden",
+            "sweetLady": "Sweet Lady",
+            "frailMaiden": "Frail Maiden",
+            "childishMaiden": "Childish Maiden"
+        },
         "cloneMethod": "Clone Method",
         "cloneMethodFile": "Local File",
         "cloneMethodDirectLink": "Direct Link",
         "directLinkUrl": "Audio Direct Link URL (8 seconds recommended, max 20 seconds, wav/mp3 format)",
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "Enter a publicly accessible audio file direct link. The system will skip the upload step and use this link directly to register the voice.",
-        "pleaseEnterDirectLink": "Please enter audio direct link URL and prefix",
+        "pleaseEnterDirectLink": "Please enter audio direct link URL",
         "invalidDirectLink": "Please enter a valid HTTP/HTTPS link",
         "silenceModal": {
             "title": "Smart Silence Detection Results",
@@ -1256,10 +1405,12 @@
         "apiKeySettings": "API Key",
         "masterProfile": "Master Profile (Unique): Profile name is required, others are optional and can be deleted.",
         "profileName": "Profile Name",
-        "profileNameMaxHint": "Max 20 characters",
+        "profileNameMaxHint": "Max 60 characters",
         "profileNameTooLong": "Profile name is too long",
         "profileNameContainsSlash": "Profile name cannot contain path separators (/ or \\)",
         "profileNameContainsDot": "Profile name cannot contain dots (.)",
+        "profileNameInvalidChars": "Profile name can only contain letters, numbers, spaces, underscores, hyphens, parentheses, middle dots (·/・), and apostrophes",
+        "profileNameReservedRoute": "This name is a reserved system route and cannot be used as a profile name",
         "newProfileNameRequired": "New profile name cannot be empty",
         "newProfileNameTooLong": "Profile name is too long",
         "required": "*",
@@ -1329,6 +1480,7 @@
         "unregisterVoiceTitle": "Unregister Voice",
         "voiceUnregistered": "Voice registration unregistered",
         "unregisterFailed": "Failed to unregister",
+        "partialSaveVoiceFailed": "Character saved, but failed to update voice: {{error}}",
         "unregisterError": "An error occurred while unregistering",
         "switchFailed": "Switch failed",
         "switchError": "An error occurred while switching neko",
@@ -1392,6 +1544,8 @@
         "initializingText": "Initializing text chat...",
         "textChattingShort": "Text chatting",
         "capturing": "Capturing...",
+        "importImageAdded": "Added {{count}} image(s); they will be sent together",
+        "importImageFailed": "Failed to import image",
         "screenshotAdded": "Screenshot added, click send to send together",
         "screenshotFailed": "Screenshot failed",
         "screenshotCancelled": "User cancelled screenshot",
@@ -1402,11 +1556,12 @@
         "switchingCatgirl": "Switching to {{name}}...",
         "switchedCatgirl": "Switched to {{name}}",
         "switchCatgirlFailed": "Failed to switch to {{name}}",
+        "switchCatgirlError": "Switch failed: {{error}}",
         "started": "{{name}} started",
         "voiceUpdated": "{{name}}'s voice updated",
         "audioWorkletFailed": "AudioWorklet failed to load",
         "audioContextError": "Audio system error, please retry",
-        "sessionTimeout": "Session timeout",
+        "sessionTimeout": "Startup timed out, server may be busy. Please retry manually",
         "websocketNotConnectedError": "WebSocket not connected",
         "sessionStartFailed": "Session start failed {{count}} times, auto-retry stopped. Please check network and API config.",
         "sessionStartFailedCount": "Error starting session: {{error}} (Failed {{count}} times)",
@@ -1424,6 +1579,7 @@
         "connectingToServer": "Connecting to server...",
         "readyToSpeak": "Ready to speak!",
         "screenShareRequiresVoice": "Screen share is only for audio/video calls",
+        "screenRecordingPermissionDenied": "⚠️ Screen recording permission denied. Please allow screen recording in System Settings",
         "repetitionDetected": "High repetition detected. Suggest ending conversation to let {{name}} rest.",
         "modelSwitched": "Model switched",
         "screenSource": {
@@ -1432,6 +1588,7 @@
             "noSources": "No screen sources available",
             "loadFailed": "Failed to load screen sources",
             "screens": "Screens",
+            "screenLabel": "Screen {{index}}",
             "windows": "Windows",
             "selected": "Selected {{source}}",
             "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing"
@@ -1485,6 +1642,7 @@
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
             "mergeMessages": "Merge Messages",
+            "avatarReactionBubble": "Expression Bubble",
             "proactiveChat": "Proactive Chat",
             "proactiveVision": "Proactive Vision",
             "proactiveVisionChat": "Screen Share",
@@ -1508,6 +1666,7 @@
             "browserUse": "Browser Control",
             "focusMode": "Allow Interrupt",
             "unavailable": "{{name}} Unavailable",
+            "toggleFailed": "{{name}} toggle failed: {{error}}",
             "checking": "Checking...",
             "serverOffline": "NekoClaw Server Offline",
             "masterRequired": "Please enable NekoClaw Master Switch first",
@@ -1515,7 +1674,7 @@
             "enabled": "{{name}} Enabled",
             "disabled": "{{name}} Disabled",
             "enableFailed": "{{name}} Enable Failed",
-            "openfang": "Virtual Machine",
+            "openfang": "Her Desktop",
             "userPluginAdapting": "User Plugin (Developing)",
             "openclawConnect": "OpenClaw",
             "chatSettings": "Chat Settings",
@@ -1531,12 +1690,20 @@
             "frameRateUnlimited": "Unlimited(VSync)",
             "mouseTracking": "Mouse Tracking",
             "fullscreenTracking": "Fullscreen Tracking",
-            "localTracking": "Local Tracking"
+            "localTracking": "Local Tracking",
+            "lockedHoverFade": "Locked Hover Fade",
+            "textGuardMaxLength": "Response Length Limit",
+            "unlimited": "Unlimited",
+            "characters": " chars",
+            "textGuardUnlimitedWarning": "May cause serious issues with the cat girl, not recommended unless necessary",
+            "textGuardHighWarning": "Setting too high may cause memory and language confusion, recommended within 500 chars",
+            "textGuardNote": "Applies to text replies only; does not affect voice sessions"
         }
     },
     "subtitle": {
         "title": "Real-time Subtitles",
-        "enable": "Enable Translation"
+        "enable": "Subtitle Translation",
+        "enableAriaLabel": "Toggle subtitle translation"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -1554,7 +1721,8 @@
             "freeModelWarning": "Due to quota limitations, free models are prone to blocking in NekoClaw mode. It is recommended to switch to a paid model.\n\nIf you have already configured a paid API, please try restarting NEKO.",
             "freeModelWarningTitle": "Free Model Notice",
             "connectivityCheck": "NekoClaw LLM connectivity check in progress...",
-            "precheckFailed": "NekoClaw precheck failed: {{reason}}"
+            "precheckFailed": "NekoClaw precheck failed: {{reason}}",
+            "toggleFailed": "Agent toggle failed: {{error}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "Connectivity check in progress...",
@@ -1582,13 +1750,15 @@
             "statusQueued": "Queued",
             "statusCompleted": "Completed",
             "statusFailed": "Failed",
+            "statusCancelled": "Cancelled",
             "minimize": "Collapse/Expand",
             "cancelAll": "Cancel all tasks",
             "cancelConfirm": "Cancel all running tasks?",
             "typeUserPlugin": "User Plugin",
             "typeComputerUse": "Computer Use",
             "typeBrowserUse": "Browser Control",
-            "typeMCP": "MCP Tool"
+            "typeMCP": "MCP Tool",
+            "typeOpenFang": "Her Desktop"
         }
     },
     "vrm": {
@@ -1621,6 +1791,7 @@
             "bottomLight": "Bottom Light",
             "exposure": "Exposure",
             "toneMapping": "Tone Mapping",
+            "outlineWidth": "Outline Width",
             "resetLighting": "Reset Default",
             "saveLighting": "Save Lighting",
             "selectPreset": "Select Preset",
@@ -1634,6 +1805,8 @@
         "emotionConfig": "VRM Emotion Config",
         "idleAnimation": {
             "title": "Idle Animation",
+            "selectHint": "Select Idle Animations",
+            "selectedCount": "{{count}} selected",
             "changed": "Idle animation changed: {{name}}",
             "changeFailed": "Failed to change idle animation"
         },
@@ -1680,9 +1853,14 @@
         },
         "idleAnimation": {
             "title": "Idle Animation",
+            "selectHint": "Select Idle Animations",
+            "selectedCount": "{{count}} selected",
             "changed": "Idle animation changed",
             "changeFailed": "Failed to change idle animation"
-        }
+        },
+        "managerInitFailed": "MMD manager initialization failed",
+        "modelLoading": "Loading MMD model...",
+        "modelLoaded": "MMD model loaded successfully"
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] Starting to load dependency modules",
@@ -1788,11 +1966,11 @@
         },
         "step1b": {
             "title": "🖱️ Drag & Zoom",
-            "desc": "You can drag your Neko to move her, and use mouse wheel to zoom in/out. Give it a try~"
+            "desc": "You can drag your Neko to move her, and use <strong>mouse wheel</strong> to zoom in/out. Give it a try~"
         },
         "step1c": {
             "title": "🔒 Lock Neko",
-            "desc": "Click this lock to lock your Neko's position, preventing accidental moves. Click again to unlock~"
+            "desc": "Click this lock to lock your Neko's position, preventing accidental moves. The Floating Toolbar around her will also stop appearing. Click again to unlock~"
         },
         "step2": {
             "title": "💬 Chat Area",
@@ -1816,15 +1994,15 @@
         },
         "step7": {
             "title": "🖥️ Screen Share",
-            "desc": "Share your screen/window/tab with your Neko~"
+            "desc": "Once enabled, your screen will be continuously shared with your Neko. This feature can only be used during a voice session~"
         },
         "step8": {
             "title": "🔨 NekoClaw",
-            "desc": "Open the NekoClaw panel for computer use, browser use, plugin, and more~"
+            "desc": "Open the NekoClaw panel for Keyboard/Mouse Control, Browser Control, user plugins, and more. Let Neko use your computer, help you work, and play games with you~"
         },
         "step9": {
             "title": "💤 Ask Her to Leave",
-            "desc": "Let your Neko leave temporarily. Click \"Ask Her Back\" to restore~"
+            "desc": "Let your Neko leave temporarily. Click \"Ask Her to Return\" to restore~ <strong>When she's having issues, letting her leave for a break often fixes the problem.</strong>"
         },
         "step10": {
             "title": "⚙️ Settings",
@@ -1836,7 +2014,7 @@
         },
         "step14": {
             "title": "👀 Proactive Vision",
-            "desc": "Your Neko actively reads screen information. Adjust interval here~"
+            "desc": "Unlike Screen Share which continuously streams during voice sessions, Proactive Vision lets your Neko glance at your screen from time to time on her own. Adjust the interval here~"
         },
         "step15": {
             "title": "👤 Character Manager",
@@ -1863,10 +2041,10 @@
             },
             "menu": {
                 "title": "📋 Tray Menu",
-                "desc": "You'll find a N.E.K.O icon in the bottom-right tray. Right-click it to see many options. Here are two commonly used features:"
+                "desc": "Right-click the N.E.K.O icon in the system tray (see the previous hint) to access the menu. Here are some commonly used features:"
             },
             "reset": {
-                "title": "🔄 Reset Model Position",
+                "title": "🔄 Reset Avatar Position",
                 "desc": "If your catgirl moves off-screen or to an undesirable position, click this option to return her to the default position~"
             },
             "switchMode": "Switch Desktop/Mobile Mode",
@@ -1882,11 +2060,15 @@
                 "title": "🎉 Tutorial Complete!",
                 "desc": "Congratulations on completing all tutorials! You now understand N.E.K.O's main features. Enjoy interacting with your catgirl! To review the tutorial, click \"Reset Tutorial\" in settings~"
             },
-            "resetPosition": "Reset Model Position",
+            "resetPosition": "Reset Avatar Position",
+            "resetPositionDesc": "Return your Neko to the default position if she goes off-screen~",
+            "openChat": "Open Chat Window",
+            "openChatDesc": "Open a separate chat window for text conversations~",
+            "important": "IMPORTANT:",
             "compatibility": "Compatibility Mode",
-            "hotkeyDesc": "Configure global hotkeys here to control N.E.K.O more efficiently~",
+            "hotkeyDesc": "Set global hotkeys to control N.E.K.O more efficiently~",
             "uploadLogs": "Upload Logs",
-            "exitDesc": "When you want to close N.E.K.O, click Exit here. Since the window is borderless, the tray menu is the primary way to exit the application~"
+            "exitDesc": "Close N.E.K.O. The tray menu is the primary way to exit~"
         },
         "completed": "✨ Tutorial complete! Enjoy~",
         "resetHint": {
@@ -1967,6 +2149,24 @@
                     "title": "🎞️ Tone Mapping",
                     "desc": "Select different tone mapping algorithms to control highlight and shadow rendering."
                 }
+            },
+            "mmd": {
+                "step1": {
+                    "title": "🎭 Select MMD Model",
+                    "desc": "In Live3D (MMD) mode, choose your model here. MMD shares the same model list as VRM."
+                },
+                "step2": {
+                    "title": "💃 VMD Animation",
+                    "desc": "Pick a VMD motion for your MMD model. Use \"Import VMD\" to add custom motion files."
+                },
+                "step3": {
+                    "title": "🌟 MMD Lighting",
+                    "desc": "Under \"MMD Model Settings\", adjust ambient and main lights, exposure, and tone mapping for the 3D look."
+                },
+                "step4": {
+                    "title": "😄 Emotion Config",
+                    "desc": "After selecting a model, open emotion settings here. MMD and VRM share this Live3D button (not the Live2D one)."
+                }
             }
         },
         "parameter_editor": {
@@ -2008,7 +2208,7 @@
             },
             "step2": {
                 "title": "📝 Set Profile Name",
-                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 20 characters."
+                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 60 characters."
             },
             "step3": {
                 "title": "👥 Gender Setting",
@@ -2399,6 +2599,7 @@
         "weibo": "🌏 Weibo",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 NetEase Cloud Music",
         "saveConfig": "Save Configuration",
         "encryptStorage": "Securely encrypt and store to local file",
         "localMonitoring": "Local Status Monitoring",
@@ -2424,7 +2625,8 @@
             "kuaishou": "📌 <b>Target:</b> Go to <b>kuaishou.com</b> to fetch these cookies.",
             "weibo": "📌 <b>Target:</b> Go to <b>weibo.com</b> to fetch these cookies.",
             "twitter": "📌 <b>Target:</b> Go to <b>x.com</b> to fetch these cookies.",
-            "reddit": "📌 <b>Target:</b> Go to <b>reddit.com</b> to fetch these cookies."
+            "reddit": "📌 <b>Target:</b> Go to <b>reddit.com</b> to fetch these cookies.",
+            "netease": "📌 <b>Target:</b> Go to <b>music.163.com</b> to fetch these cookies."
         },
         "guide": {
             "title": "Universal Guide for Beginners",
@@ -2506,6 +2708,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF token"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "Core identity credential (Required)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "Device identifier (Optional)"
             }
         },
         "status": {
@@ -2517,6 +2727,7 @@
             "openQR": "📱 Open QR Login",
             "loading": "Getting QR code...",
             "scanTitle": "📱 Scan to Login {{platform}}",
+            "qrCodeAlt": "Login QR code",
             "waiting": "Waiting for scan...",
             "validFor": "QR code valid for: {{seconds}}s",
             "refreshQR": "Refresh QR Code",
@@ -2529,7 +2740,14 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "QR login successful! Cookies have been filled in automatically, please click Save Configuration"
+            "statusMessage": {
+                "success": "Login successful",
+                "expired": "QR code expired",
+                "scanned": "Scanned, please confirm on your phone",
+                "waiting": "Waiting for scan"
+            },
+            "successAlert": "QR login successful! Cookies have been filled in automatically, please click Save Configuration",
+            "extractFailed": "⚠️ QR login succeeded but failed to extract fields automatically. Please check manually."
         }
     },
     "music": {
@@ -2548,11 +2766,160 @@
         "playError": "Music playback failed to load",
         "loadError": "Music player failed to load",
         "autoplayBlocked": "Browser blocked autoplay, please click the play button",
-        "ended": "Ended"
+        "ended": "Ended",
+        "unknownState": "Unknown state",
+        "volume": "Volume: ",
+        "unsafeSource": "Blocked unsafe audio source: {{domain}}"
+    },
+    "Jukebox": {
+        "title": "Jukebox",
+        "minimize": "Minimize",
+        "close": "Close",
+        "loading": "Loading...",
+        "ready": "Ready",
+        "playing": "Now Playing: {{name}} - {{artist}}",
+        "error": "Error: {{message}}",
+        "volume": "Volume",
+        "mute": "Mute",
+        "noSongPlaying": "No song is currently playing",
+        "noActionBound": "The current song has no animation bound",
+        "adjustOffsetFailed": "Failed to adjust offset",
+        "stop": "Stop",
+        "sequence": "No.",
+        "song": "Song",
+        "artist": "Artist",
+        "duration": "Duration",
+        "action": "Action",
+        "play": "Play",
+        "playError": "Music player not initialized",
+        "notFound": "Song not found",
+        "mp3Ended": "mp3 playback ended",
+        "vmdNotInit": "MMD Manager not initialized, skipping animation",
+        "vmdPlayFailed": "VMD playback failed",
+        "vmdPlayed": "VMD animation played",
+        "useAPlayer": "Using APlayer to play mp3 file",
+        "startPlay": "Starting mp3 audio playback",
+        "nonMp3Error": "Attempting to play non-mp3 format file",
+        "nonMp3Info": "Non-mp3 audio info",
+        "btnNotFound": "Jukebox button not found, waiting...",
+        "btnBound": "Jukebox button bound",
+        "minimizeBtnNotFound": "Minimize button not found, waiting...",
+        "minimizeListenerSet": "Minimize button listener set",
+        "closeListenerSet": "Close listener set",
+        "minimizeDetected": "Dialog minimize detected, destroying jukebox",
+        "removedDetected": "Jukebox removal detected",
+        "uiCreated": "Jukebox UI created",
+        "songsLoaded": "Song list loaded",
+        "songsRendered": "Song list rendered",
+        "statusUpdated": "Status updated",
+        "volumeSet": "Volume set to",
+        "initialized": "Initializing jukebox",
+        "loadFailed": "Failed to load song list",
+        "listContainerNotFound": "Song list container not found",
+        "noSongs": "No songs available",
+        "playFailed": "Playback failed",
+        "pause": "Pause",
+        "resume": "Resume",
+        "paused": "Paused",
+        "resumed": "Resumed",
+        "pausedStatus": "Paused: {{name}}",
+        "idleRestored": "Idle animation restored",
+        "idleRestoreFailed": "Failed to restore idle animation",
+        "btnNotFoundGiveUp": "Jukebox button not found after retries, giving up",
+        "minimizeBtnNotFoundGiveUp": "Minimize button not found after retries, giving up",
+        "noticeDance": "💃 Dance service is currently only available when an MMD avatar is loaded. More interactions coming soon",
+        "noticeMusic": "⚠️ Current songs are for testing only — copyrighted tracks will be removed in future versions, please import your own",
+        "manager": "Manager",
+        "managerTitle": "Manager",
+        "songs": "Songs",
+        "actions": "Actions",
+        "bindings": "Bindings",
+        "import": "Import",
+        "export": "Export",
+        "exportAll": "Export All",
+        "exportAllIgnoreHidden": "Export All (Ignore Hidden)",
+        "exportAllIncludeHidden": "Export All (Include Hidden)",
+        "exportSelected": "Export Selected",
+        "dragZipHint": "Drag and drop ZIP files or folders here to import",
+        "unifiedDropHint": "Drag and drop songs, animations, or import packages here",
+        "clickToAdd": "Click to add",
+        "dragMp3Hint": "Drag MP3 files here to add songs",
+        "dragVmdHint": "Drag VMD files here to add animations",
+        "showHiddenSongs": "Show hidden songs",
+        "selectAll": "Select All",
+        "noActions": "No animations",
+        "show": "Show",
+        "hide": "Hide",
+        "delete": "Delete",
+        "unknown": "Unknown",
+        "defaultAction": "Default Animation",
+        "clickSetDefault": "Click to set as default",
+        "format": "Format",
+        "addSong": "Add Song",
+        "addAction": "Add Animation",
+        "songList": "Song List (Drag to right)",
+        "actionList": "Animation List (Drag to left)",
+        "unbind": "Unbind",
+        "addBinding": "Add Binding",
+        "addSongBinding": "Add Song Binding",
+        "addActionBinding": "Add Animation Binding",
+        "cancel": "Cancel",
+        "confirm": "Confirm",
+        "confirmDeleteSong": "Are you sure you want to delete the song \"{{name}}\"?\nThis action cannot be undone!",
+        "confirmDeleteAction": "Are you sure you want to delete the animation \"{{name}}\"?\nThis action cannot be undone!",
+        "deleteFailed": "Delete failed",
+        "setDefaultFailed": "Set default failed",
+        "exportFailed": "Export failed",
+        "selectExportFirst": "Please select songs or animations to export first",
+        "notExist": "{{type}} does not exist",
+        "songNotExist": "Song does not exist",
+        "actionNotExist": "Animation does not exist",
+        "inputIndexOrName": "Enter index or name",
+        "frame": "frame",
+        "offset": "Offset",
+        "selectedSongs": "{{count}} songs selected",
+        "selectedActions": "{{count}} animations selected",
+        "selectedSeparator": ", ",
+        "selectedInfo": "{{songCount}} songs and {{actionCount}} animations selected",
+        "missing": "Missing",
+        "unknownError": "Unknown error",
+        "calibration": "Calibrate Animation",
+        "calibrationTitle": "Animation Calibration",
+        "fps": "FPS",
+        "currentFrame": "Current Frame",
+        "reset": "Reset",
+        "calibrationHint": "Use buttons to fine-tune or drag the progress bar to calibrate",
+        "calibrateAnimation": "Calibrate Animation",
+        "animationCalibration": "Animation Calibration",
+        "closeCalibration": "Close Calibration Panel",
+        "advance1s": "Animation advances 1 second",
+        "advance10f": "Animation advances 10 frames",
+        "advance1f": "Animation advances 1 frame",
+        "delay1f": "Animation delays 1 frame",
+        "delay10f": "Animation delays 10 frames",
+        "delay1s": "Animation delays 1 second",
+        "frames": "frames",
+        "operationFailed": "Operation failed",
+        "saveFailed": "Save failed",
+        "importSuccess": "Import successful!",
+        "importFailed": "Import failed",
+        "importSongsAdded": "Added {{count}} songs",
+        "importSongsMerged": "Merged {{count}} songs",
+        "importActionsAdded": "Added {{count}} animations",
+        "importActionsMerged": "Merged {{count}} animations",
+        "importBindingsAdded": "Added {{count}} bindings",
+        "noChanges": "No changes",
+        "noImportFilesFound": "No importable files found",
+        "missingConfigJson": "Missing config.json file in folder",
+        "folderImportFailed": "Folder import failed"
     },
     "notice": {
         "voiceMigration": {
-            "legacyRemoved": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices."
+            "legacyRemoved": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices.",
+            "legacyDetected": "Legacy CosyVoice voices detected that may no longer work. Consider re-cloning your voices."
+        },
+        "changelog": {
+            "title": "What's New"
         }
     },
     "proactive": {
@@ -2560,5 +2927,8 @@
             "title": "Meme",
             "loadError": "Failed to load meme"
         }
+    },
+    "achievement": {
+        "unlocked": "🏆 Achievement unlocked: {{description}}"
     }
 }

@@ -10,15 +10,19 @@ Handles MMD model-related endpoints including:
 """
 
 import json
+import os
+import re
 import shutil
 import tempfile
 import zipfile
 from pathlib import Path
 
+import charset_normalizer
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
+from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
 
@@ -89,80 +93,126 @@ def _ensure_mmd_directory(config_mgr) -> Path | None:
 # 导致日文/中文文件名变为乱码。
 #
 # 处理策略：
-#   1. 检查 ZIP 条目的 UTF-8 标志位（bit 11），有则直接使用
-#   2. 否则将 CP437 解码结果反转为原始字节
-#   3. 按优先级尝试 UTF-8 → CP932 → GBK → EUC-KR 解码
-#   4. 用修正后的文件名进行解压，避免乱码目录/文件
-
+#   1. 尝试拼接文件名字节流，使用 charset_normalizer 全局推测编码
+#   2. 如果推测成功，优先使用全局编码；若失败，降级进行单文件推断
+#   3. 对解码后的文件名进行清理（保留中文/日文），避免操作系统非法字符
 
 def _detect_zip_encoding(zf: zipfile.ZipFile) -> str | None:
-    """检测 ZIP 压缩包中非 UTF-8 条目的实际文件名编码。
-
-    通过将 CP437 解码结果反编码为原始字节，再依次尝试常见 CJK 编码，
-    找到能成功解码所有非 ASCII 文件名的编码。
-
-    Returns:
-        检测到的编码名（如 'cp932'），或 None（全部为 ASCII / 已标记 UTF-8）。
-    """
+    """检测 ZIP 压缩包中非 UTF-8 条目的实际文件名编码（严格限制在中日韩范围）。"""
     non_utf8_infos = [info for info in zf.infolist() if not (info.flag_bits & 0x800)]
     if not non_utf8_infos:
         return None
 
-    # 收集含非 ASCII 字节的原始文件名
-    raw_names = []
+    # 1. 尝试拼接前 100 个非 ASCII 文件名进行全局探测
+    raw_bytes_blob = b""
+    count = 0
     for info in non_utf8_infos:
         try:
             raw_bytes = info.filename.encode('cp437')
         except (UnicodeEncodeError, UnicodeDecodeError):
             continue
+        
         if any(b > 127 for b in raw_bytes):
-            raw_names.append(raw_bytes)
+            raw_bytes_blob += raw_bytes + b" "
+            count += 1
+            if count >= 100:
+                break
 
-    if not raw_names:
-        return None  # 全部为纯 ASCII
+    if not raw_bytes_blob:
+        return None
 
-    # 按优先级尝试：UTF-8 → Shift-JIS(CP932) → GBK → EUC-KR
-    for encoding in ('utf-8', 'cp932', 'gbk', 'euc-kr'):
+    # 2. 优先防线：强推 UTF-8
+    try:
+        raw_bytes_blob.decode('utf-8')
+        return 'utf-8'
+    except UnicodeDecodeError:
+        pass
+
+    # 3. 核心修改：给探测器戴上“紧箍咒”，只允许中日韩常见编码
+    ALLOWED_ENCODINGS = {'cp932', 'shift_jis', 'gbk', 'gb18030', 'gb2312', 'big5', 'euc-kr'}
+    
+    results = charset_normalizer.from_bytes(raw_bytes_blob)
+    for result in results:
+        if result.encoding and result.encoding.lower() in ALLOWED_ENCODINGS:
+            return result.encoding.lower()
+
+    # 4. 降级安全网：调整顺序为日文优先，并加入严格的“往返校验”
+    for fallback_enc in ('cp932', 'gbk', 'big5', 'euc-kr'):
         try:
-            for raw in raw_names:
-                raw.decode(encoding)
-            return encoding
+            test_decoded = raw_bytes_blob.decode(fallback_enc)
+            # 往返校验：解码后再编码回去，看是否与原始字节一致，防止强行解码成乱码
+            if test_decoded.encode(fallback_enc) == raw_bytes_blob:
+                return fallback_enc
         except (UnicodeDecodeError, UnicodeEncodeError):
             continue
 
     return None
 
 
+def _sanitize_filename(filename: str) -> str:
+    """清理文件名，将反斜杠转为正斜杠保留目录结构，并移除非法字符。"""
+    # 接受 CodeRabbit 建议：先将 Windows 风格的反斜杠统一转为 Web/Linux 标准的正斜杠
+    normalized = filename.replace('\\', '/')
+    # 按目录层级拆分，清理每一层，再拼装回去
+    return '/'.join(
+        re.sub(r'[<>:"|?*]', '_', part)
+        for part in normalized.split('/')
+    )
+
+
 def _build_zip_name_map(zf: zipfile.ZipFile) -> dict[str, str]:
-    """为 ZIP 中所有条目构建「原始名 → 正确解码名」的映射表。
-
-    如果检测到非 UTF-8 编码（如 CP932），会将 CP437 误解码的文件名
-    反转为原始字节后用正确编码重新解码。
-
-    Returns:
-        dict：键为 zipfile 返回的原始名，值为修正后的名称。
-    """
-    encoding = _detect_zip_encoding(zf)
+    """为 ZIP 中所有条目构建「原始名 → 正确解码并清理后名称」的映射表。"""
+    global_encoding = _detect_zip_encoding(zf)
     name_map = {}
 
-    for info in zf.infolist():
-        if encoding and not (info.flag_bits & 0x800):
-            try:
-                raw = info.filename.encode('cp437')
-                name_map[info.filename] = raw.decode(encoding)
-            except (UnicodeEncodeError, UnicodeDecodeError):
-                name_map[info.filename] = info.filename
-        else:
-            name_map[info.filename] = info.filename
+    # MMD 常用的兜底编码列表，日文优先
+    FALLBACK_ENCODINGS = ['cp932', 'gbk', 'big5', 'euc-kr']
 
-    if encoding:
-        # 取一个示例展示编码修正效果
+    for info in zf.infolist():
+        if not (info.flag_bits & 0x800):  # 非标记为 UTF-8 的条目
+            try:
+                raw_bytes = info.filename.encode('cp437')
+                decoded = None
+                
+                # 尝试应用全局编码
+                if global_encoding:
+                    try:
+                        test_decoded = raw_bytes.decode(global_encoding)
+                        if test_decoded.encode(global_encoding) == raw_bytes:
+                            decoded = test_decoded
+                    except (UnicodeDecodeError, UnicodeEncodeError):
+                        pass
+                
+                # 如果全局编码在这个具体文件上失败，暴力尝试备选列表，加入往返校验
+                if not decoded:
+                    for enc in FALLBACK_ENCODINGS:
+                        try:
+                            test_decoded = raw_bytes.decode(enc)
+                            if test_decoded.encode(enc) == raw_bytes:
+                                decoded = test_decoded
+                                break
+                        except (UnicodeDecodeError, UnicodeEncodeError):
+                            continue
+                            
+                # 终极兜底：强行 utf-8 替换错误字符，至少保证程序不崩溃
+                if not decoded:
+                    decoded = raw_bytes.decode('utf-8', errors='replace')
+                
+                name_map[info.filename] = _sanitize_filename(decoded)
+                
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                name_map[info.filename] = _sanitize_filename(info.filename)
+        else:
+            # 已明确标记为 UTF-8 的条目，仅做清理
+            name_map[info.filename] = _sanitize_filename(info.filename)
+
+    if global_encoding:
         sample = next(
             ((orig, decoded) for orig, decoded in name_map.items() if orig != decoded),
             None
         )
         if sample:
-            logger.info(f"ZIP 文件名编码修正 ({encoding}): {sample[0]!r} → {sample[1]!r}")
+            logger.info(f"ZIP 文件名编码推断及修正 ({global_encoding}): {sample[0]!r} → {sample[1]!r}")
 
     return name_map
 
@@ -503,7 +553,7 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
 
 
 @router.get('/models')
-def get_mmd_models():
+async def get_mmd_models():
     """获取 MMD 模型列表（PMX/PMD），包括子目录"""
     try:
         config_mgr = get_config_manager()
@@ -574,6 +624,41 @@ def get_mmd_models():
                         "location": "user",
                         "broken": True
                     })
+
+        # 3. 搜索Steam创意工坊中的MMD文件
+        try:
+            workshop_items_result = await get_subscribed_workshop_items()
+            if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):
+                items = workshop_items_result.get('items', [])
+                for item in items:
+                    installed_folder = item.get('installedFolder')
+                    item_id = item.get('publishedFileId')
+                    if installed_folder and os.path.exists(installed_folder) and os.path.isdir(installed_folder) and item_id:
+                        # 递归搜索安装目录下的PMX/PMD文件
+                        installed_path = Path(installed_folder)
+                        for ext in ALLOWED_MODEL_EXTENSIONS:
+                            for model_file in installed_path.rglob(f'*{ext}'):
+                                try:
+                                    rel_path = model_file.relative_to(installed_path)
+                                except ValueError:
+                                    continue
+                                url = f"/workshop/{item_id}/{rel_path.as_posix()}"
+                                if url in seen_urls:
+                                    continue
+                                seen_urls.add(url)
+                                models.append({
+                                    "name": model_file.stem,
+                                    "filename": model_file.name,
+                                    "url": url,
+                                    "rel_path": rel_path.as_posix(),
+                                    "type": model_file.suffix.lstrip('.'),
+                                    "size": model_file.stat().st_size,
+                                    "location": "steam_workshop",
+                                    "source": "steam_workshop",
+                                    "item_id": str(item_id)
+                                })
+        except Exception as e:
+            logger.error(f"获取创意工坊MMD模型时出错: {e}")
 
         return JSONResponse(content={"success": True, "models": models})
     except Exception as e:

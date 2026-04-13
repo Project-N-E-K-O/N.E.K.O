@@ -10,6 +10,8 @@ def seed_memory_file(clean_user_data_dir):
     """Create a seed memory file in the test memory directory."""
     memory_dir = Path(clean_user_data_dir) / "N.E.K.O" / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
+    catgirl_dir = memory_dir / "测试猫娘"
+    catgirl_dir.mkdir(parents=True, exist_ok=True)
     
     # Create a minimal recent memory file for a test catgirl
     test_data = [
@@ -54,7 +56,7 @@ def seed_memory_file(clean_user_data_dir):
         }
     ]
     
-    memory_file = memory_dir / "recent_测试猫娘.json"
+    memory_file = catgirl_dir / "recent.json"
     atomic_write_json(memory_file, test_data, ensure_ascii=False, indent=2)
     
     return memory_file

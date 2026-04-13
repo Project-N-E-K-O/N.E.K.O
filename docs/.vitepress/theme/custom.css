@@ -40,6 +40,17 @@
   border-radius: 50%;
 }
 
+/* Hero image – make banner larger */
+.VPHero .VPImage {
+  max-width: 420px !important;
+  max-height: unset !important;
+}
+@media (min-width: 960px) {
+  .VPHero .VPImage {
+    max-width: 520px !important;
+  }
+}
+
 /* Feature card hover effect */
 .VPFeature {
   transition: transform 0.2s ease, box-shadow 0.2s ease;

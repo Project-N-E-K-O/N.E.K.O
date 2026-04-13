@@ -324,18 +324,7 @@ async function translateAndShowSubtitle(text) {
                 subtitleDisplayAfter.style.opacity = '1';
                 console.log('字幕已更新（已翻译）:', result.translated_text.substring(0, 50) + '...');
 
-                if (subtitleTimeout) {
-                    clearTimeout(subtitleTimeout);
-                    subtitleTimeout = null;
-                }
-
-                subtitleTimeout = setTimeout(() => {
-                    const subtitleDisplayForTimeout = document.getElementById('subtitle-display');
-                    if (subtitleDisplayForTimeout && subtitleDisplayForTimeout.classList.contains('show')) {
-                        hideSubtitle();
-                        console.log('字幕30秒后自动隐藏');
-                    }
-                }, 30000);
+                // 不自动隐藏，由用户手动关闭
             } else {
                 const subtitleText = document.getElementById('subtitle-text');
                 if (subtitleText) subtitleText.textContent = '';
@@ -476,11 +465,11 @@ function showSubtitlePrompt() {
     // 使用i18n翻译，如果i18n未加载或翻译不存在则根据浏览器语言提供fallback
     const browserLang = normalizeLanguageCode(navigator.language);
     const fallbacks = {
-        'zh': '开启字幕翻译',
-        'en': 'Enable Subtitle Translation',
-        'ja': '字幕翻訳を有効にする',
-        'ko': '자막 번역 켜기',
-        'ru': 'Включить перевод субтитров'
+        'zh': '字幕翻译',
+        'en': 'Subtitle Translation',
+        'ja': '字幕翻訳',
+        'ko': '자막 번역',
+        'ru': 'Перевод субтитров'
     };
     if (window.t) {
         const translated = window.t('subtitle.enable');
@@ -841,6 +830,88 @@ window.subtitleBridge = {
             window.appState.subtitleEnabled = subtitleEnabled;
         }
         localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
+
+        // 立即显示/隐藏字幕框
+        var display = document.getElementById('subtitle-display');
+        if (display) {
+            if (subtitleEnabled) {
+                display.classList.remove('hidden');
+                display.classList.add('show');
+                display.style.opacity = '1';
+            } else {
+                var text = document.getElementById('subtitle-text');
+                if (text) text.textContent = '';
+                display.classList.remove('show');
+                display.classList.add('hidden');
+                display.style.opacity = '0';
+            }
+        }
+    },
+    /** 完整切换：翻转开关 + 执行运行时副作用（隐藏/重新翻译字幕） */
+    toggle: function() {
+        subtitleEnabled = !subtitleEnabled;
+        if (typeof window.appState !== 'undefined') {
+            window.appState.subtitleEnabled = subtitleEnabled;
+        }
+        localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
+        if (typeof window.appSettings !== 'undefined' && window.appSettings.saveSettings) {
+            window.appSettings.saveSettings();
+        }
+
+        // 更新旧版提示框的指示器（如果存在）
+        var indicator = document.querySelector('.subtitle-toggle-indicator');
+        if (indicator) {
+            if (subtitleEnabled) {
+                indicator.classList.add('active');
+            } else {
+                indicator.classList.remove('active');
+            }
+        }
+
+        console.log('字幕开关:', subtitleEnabled ? '开启' : '关闭');
+
+        if (!subtitleEnabled) {
+            // 关闭：隐藏字幕、清除定时器
+            var display = document.getElementById('subtitle-display');
+            if (display) {
+                var text = document.getElementById('subtitle-text');
+                if (text) text.textContent = '';
+                display.classList.remove('show');
+                display.classList.add('hidden');
+                display.style.opacity = '0';
+            }
+            if (subtitleTimeout) {
+                clearTimeout(subtitleTimeout);
+                subtitleTimeout = null;
+            }
+        } else {
+            // 开启：立即显示字幕框
+            var subtitleDisplay = document.getElementById('subtitle-display');
+            if (subtitleDisplay) {
+                subtitleDisplay.classList.remove('hidden');
+                subtitleDisplay.classList.add('show');
+                subtitleDisplay.style.opacity = '1';
+            }
+
+            // 如果有当前消息，重新翻译
+            if (currentTranslateAbortController) {
+                currentTranslateAbortController.abort();
+                currentTranslateAbortController = null;
+            }
+            pendingTranslation = null;
+
+            if (window.currentGeminiMessage &&
+                window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
+                window.currentGeminiMessage.isConnected &&
+                typeof window.currentGeminiMessage.textContent === 'string') {
+                var fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
+                if (fullText && fullText.trim()) {
+                    translateAndShowSubtitle(fullText);
+                }
+            }
+        }
+
+        return subtitleEnabled;
     },
     setUserLanguage: function(lang) {
         // 空值时回退到默认值

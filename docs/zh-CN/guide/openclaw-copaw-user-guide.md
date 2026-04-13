@@ -8,7 +8,7 @@
 本文基于当前项目中的实现：
 
 - N.E.K.O 侧适配器：`brain/openclaw_adapter.py`
-- CoPaw 自定义通道脚本：`scripts/custom_channels/openclaw.py`
+- CoPaw 自定义通道脚本：`scripts/custom_channels/neko_channel.py`
 
 ## 1. 前提说明
 
@@ -205,22 +205,22 @@ CoPaw 加载自定义通道的目录是：
 当前项目中的 OpenClaw 自定义通道脚本已经放在：
 
 ```text
-N.E.K.O/scripts/custom_channels/openclaw.py
+N.E.K.O/scripts/custom_channels/neko_channel.py
 ```
 
 你需要把它复制到 CoPaw 的实际加载目录：
 
 ```bash
 mkdir -p ~/.copaw/custom_channels
-cp /你的/N.E.K.O/scripts/custom_channels/openclaw.py ~/.copaw/custom_channels/openclaw.py
+cp /你的/N.E.K.O/scripts/custom_channels/neko_channel.py ~/.copaw/custom_channels/neko_channel.py
 ```
 或者手动复制到对应目录。
 
 ## 4. CoPaw 侧要启用什么配置
 
-### 4.1 启用 `openclaw` channel
+### 4.1 启用 `neko` channel
 
-启动服务后，打开127.0.0.1:8088，点击 ‘控制-频道’ ，找到Openclaw，点击后，找到已启用开关并打开。
+启动服务后，打开127.0.0.1:8088，点击 ‘控制-频道’ ，找到 `N.E.K.O`（配置键为 `neko`），点击后，找到已启用开关并打开。
 
 ### 4.2 必须配置活动模型
 
@@ -246,7 +246,7 @@ API Key：填入前面获取的百炼 API Key。
 
 这是最容易漏掉的一步。
 
-即使 `openclaw.py` 放对了、CoPaw 也启动了，只要 **CoPaw 没有配置 active model**，请求仍然会失败，并报：
+即使 `neko_channel.py` 放对了、CoPaw 也启动了，只要 **CoPaw 没有配置 active model**，请求仍然会失败，并报：
 
 ```text
 ValueError: No active model configured.
@@ -293,7 +293,7 @@ http://127.0.0.1:8089
 推荐顺序：
 
 1. 启动 CoPaw
-2. 确认 CoPaw 已加载 `openclaw` 自定义通道
+2. 确认 CoPaw 已加载 `neko` 自定义通道
 3. 确认 CoPaw 已配置活动模型
 4. 启动 N.E.K.O
 5. 在 N.E.K.O 中打开 OpenClaw 开关
@@ -304,9 +304,9 @@ http://127.0.0.1:8089
 关键文件如下：
 
 - N.E.K.O OpenClaw 适配器：`brain/openclaw_adapter.py`
-- CoPaw 自定义通道源码：`scripts/custom_channels/openclaw.py`
+- CoPaw 自定义通道源码：`scripts/custom_channels/neko_channel.py`
 - CoPaw 实际加载目录：
-  `~/.copaw/custom_channels/openclaw.py`
+  `~/.copaw/custom_channels/neko_channel.py`
 - CoPaw 主配置：
   `~/.copaw/config.json`
 - CoPaw 工作区配置示例：

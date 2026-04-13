@@ -331,6 +331,38 @@ function applyVRMLighting(lighting, vrmManager) {
     }
 }
 
+/**
+ * 应用 VRM 描边粗细设置
+ * @param {number} scale - 描边粗细倍率
+ * @param {Object} vrmManager - VRM 管理器实例
+ */
+function applyVRMOutlineWidth(scale, vrmManager) {
+    // 参数验证：确保 scale 是有效的有限数字且非负
+    const parsedScale = Number(scale);
+    if (!Number.isFinite(parsedScale) || parsedScale < 0) {
+        console.warn('[VRM Outline] 无效的描边粗细值:', scale, '使用默认值 1.0');
+        scale = 1.0;
+    } else {
+        scale = parsedScale;
+    }
+
+    if (!vrmManager?.currentModel?.vrm?.scene) return;
+    vrmManager.currentModel.vrm.scene.traverse((object) => {
+        if (!object.isMesh && !object.isSkinnedMesh) return;
+        const mats = Array.isArray(object.material) ? object.material : [object.material];
+        mats.forEach(mat => {
+            if (!mat || !(mat._isOutline || mat.isOutline)) return;
+            if (mat._originalOutlineWidthFactor === undefined) {
+                mat._originalOutlineWidthFactor = mat.outlineWidthFactor !== undefined ? mat.outlineWidthFactor : 0.002;
+            }
+            if (mat.outlineWidthFactor !== undefined) {
+                mat.outlineWidthFactor = mat._originalOutlineWidthFactor * scale;
+                mat.needsUpdate = true;
+            }
+        });
+    });
+}
+
 function initializeVRMManager() {
     if (window.vrmManager) return;
 
@@ -409,6 +441,8 @@ async function initVRMModel() {
                         if (charData.vrm) window.lanlan_config.vrm = charData.vrm;
                         // 待机动作配置传播到全局，供 vrm-manager.js loadModel 使用
                         if (charData.idleAnimation) window.lanlan_config.vrmIdleAnimation = charData.idleAnimation;
+                        // 完整动画列表用于主页面待机轮换
+                        if (Array.isArray(charData.idleAnimations)) window.lanlan_config.vrmIdleAnimations = charData.idleAnimations;
                     }
                 } else {
                     if (res.status === 404) {
@@ -555,8 +589,25 @@ async function initVRMModel() {
         // 如果模型背对屏幕，会自动翻转180度并保存，下次加载时直接应用
         await window.vrmManager.loadModel(modelUrl);
 
+        // 启动主页面待机动作轮换（loadModel 已播放第一个，这里只调度后续切换）
+        _startVrmIdleRotation(window.lanlan_config?.vrmIdleAnimations);
+
         // 页面加载时立即应用打光配置（如果初始化时没有传入，这里会应用）
         applyVRMLighting(window.lanlan_config?.lighting, window.vrmManager);
+
+        // 确保描边设置在模型完全加载后应用（延迟一帧确保材质已准备好）
+        const currentModelRef = window.vrmManager?.currentModel;
+        const outlineScale = window.lanlan_config?.lighting?.outlineWidthScale;
+        requestAnimationFrame(() => {
+            // 防止竞态条件：验证模型是否仍然是同一个
+            if (window.vrmManager?.currentModel !== currentModelRef) {
+                console.debug('[VRM Outline] 模型已切换，跳过描边设置应用');
+                return;
+            }
+            if (outlineScale !== undefined) {
+                applyVRMOutlineWidth(outlineScale, window.vrmManager);
+            }
+        });
 
     } catch (error) {
         console.error('[VRM Init] 错误详情:', error.stack);
@@ -565,6 +616,97 @@ async function initVRMModel() {
         window._isVRMLoading = false;
     }
 }
+
+// ── 主页面 VRM 待机动作轮换 ──────────────────────────────
+// 策略：优先在动画一轮播完（loop 事件）时切换，避免动作中途跳变；
+//       20 秒回退定时器仅在动画过长时强制切换。
+let _vrmIdleTimer = null;
+let _vrmIdleLastUrl = null;
+let _vrmIdleLoopCleanup = null;
+
+function _clearVrmIdleSchedule() {
+    if (_vrmIdleTimer) {
+        clearTimeout(_vrmIdleTimer);
+        _vrmIdleTimer = null;
+    }
+    if (_vrmIdleLoopCleanup) {
+        _vrmIdleLoopCleanup();
+        _vrmIdleLoopCleanup = null;
+    }
+}
+
+function _startVrmIdleRotation(urls) {
+    _stopVrmIdleRotation();
+    if (!Array.isArray(urls) || urls.length < 2) return;
+
+    function pickRandom() {
+        const candidates = urls.filter(u => u !== _vrmIdleLastUrl);
+        return candidates[Math.floor(Math.random() * candidates.length)] || urls[0];
+    }
+
+    async function switchToNext() {
+        _clearVrmIdleSchedule();
+
+        const mgr = window.vrmManager;
+        if (!mgr || !mgr.currentModel || !mgr.animation) return;
+
+        try {
+            const url = pickRandom();
+            if (url) {
+                if (mgr.vrmaAction) mgr.stopVRMAAnimation();
+                await mgr.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
+                _vrmIdleLastUrl = url;
+                console.debug('[VRM IdleRotation] 切换待机动作:', url.split('/').pop());
+
+                // 注册 loop 事件监听：动画一轮播完时自动切换
+                const mixer = mgr.animation?.vrmaMixer;
+                if (mixer) {
+                    const handler = () => {
+                        console.debug('[VRM IdleRotation] 动画循环完成，切换下一个');
+                        switchToNext();
+                    };
+                    mixer.addEventListener('loop', handler);
+                    _vrmIdleLoopCleanup = () => mixer.removeEventListener('loop', handler);
+                }
+            }
+        } catch (e) {
+            console.warn('[VRM IdleRotation] 切换失败:', e);
+        }
+        scheduleFallback();
+    }
+
+    /** 设置回退定时器 */
+    function scheduleFallback() {
+        if (_vrmIdleTimer) clearTimeout(_vrmIdleTimer);
+        _vrmIdleTimer = setTimeout(() => {
+            console.debug('[VRM IdleRotation] 回退定时器触发，强制切换');
+            switchToNext();
+        }, 20000);
+    }
+
+    scheduleFallback();
+
+    // 如果动画已经在播放（如外部预先播放的第一个待机动作），
+    // 立即注册 loop 监听器，不必等 20 秒回退定时器
+    const mixer = window.vrmManager?.animation?.vrmaMixer;
+    if (mixer) {
+        const handler = () => {
+            console.debug('[VRM IdleRotation] 初始动画循环完成，切换下一个');
+            switchToNext();
+        };
+        mixer.addEventListener('loop', handler);
+        _vrmIdleLoopCleanup = () => mixer.removeEventListener('loop', handler);
+    }
+}
+
+function _stopVrmIdleRotation() {
+    _clearVrmIdleSchedule();
+    _vrmIdleLastUrl = null;
+}
+
+// 暴露给外部（如 app-interpage.js 切模型时停止旧轮换��
+window._stopVrmIdleRotation = _stopVrmIdleRotation;
+window._startVrmIdleRotation = _startVrmIdleRotation;
 
 // 添加强制解锁函数
 window.forceUnlockVRM = function () {
@@ -695,6 +837,20 @@ window.checkAndLoadVRM = async function () {
 
         // 应用打光配置
         applyVRMLighting(lighting, window.vrmManager);
+
+        // 确保描边设置在模型完全加载后应用（延迟一帧确保材质已准备好）
+        const currentModelRef = window.vrmManager?.currentModel;
+        const outlineScale = lighting?.outlineWidthScale;
+        requestAnimationFrame(() => {
+            // 防止竞态条件：验证模型是否仍然是同一个
+            if (window.vrmManager?.currentModel !== currentModelRef) {
+                console.debug('[VRM Outline] 模型已切换，跳过描边设置应用');
+                return;
+            }
+            if (outlineScale !== undefined) {
+                applyVRMOutlineWidth(outlineScale, window.vrmManager);
+            }
+        });
 
         // 顺便更新一下全局变量，以防万一
         if (lighting && window.lanlan_config) {

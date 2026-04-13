@@ -57,7 +57,7 @@ const AvatarButtonMixin = {
                 this._returnButtonDragHandlers = null;
             }
 
-            // 清理旧 DOM
+            // 清理旧 DOM（自身类型）
             document.querySelectorAll(`#${options.containerElementId}, #${options.lockIconId}, #${options.returnContainerId}`)
                 .forEach(el => el.remove());
             if (options.excludeLiveD2Elements && options.excludeLiveD2Elements.length > 0) {
@@ -65,6 +65,61 @@ const AvatarButtonMixin = {
                     document.querySelectorAll(selector).forEach(el => el.remove());
                 });
             }
+
+            // 清理所有其他模型类型的悬浮按钮 DOM（全类型互斥，防止模型切换后出现多组按钮）
+            const allButtonIds = [
+                'live2d-floating-buttons', 'live2d-lock-icon', 'live2d-return-button-container',
+                'vrm-floating-buttons', 'vrm-lock-icon', 'vrm-return-button-container',
+                'mmd-floating-buttons', 'mmd-lock-icon', 'mmd-return-button-container'
+            ];
+            const selfIds = [options.containerElementId, options.lockIconId, options.returnContainerId];
+            allButtonIds.forEach(id => {
+                if (selfIds.indexOf(id) === -1) {
+                    const el = document.getElementById(id);
+                    if (el) el.remove();
+                }
+            });
+
+            // 调用其他管理器的完整清理 API，防止幽灵回调及残留事件监听
+            const otherPrefixes = ['live2d', 'vrm', 'mmd'].filter(p => p !== prefix);
+            otherPrefixes.forEach(p => {
+                const mgr = p === 'live2d' ? window.live2dManager
+                          : p === 'vrm'    ? window.vrmManager
+                          :                   window.mmdManager;
+                if (!mgr) return;
+                const manualCleanup = () => {
+                    if (mgr._uiUpdateLoopId !== null && mgr._uiUpdateLoopId !== undefined) {
+                        cancelAnimationFrame(mgr._uiUpdateLoopId);
+                        mgr._uiUpdateLoopId = null;
+                    }
+                    if (mgr._floatingButtonsTicker && mgr.pixi_app && mgr.pixi_app.ticker) {
+                        try { mgr.pixi_app.ticker.remove(mgr._floatingButtonsTicker); } catch (_) {}
+                        mgr._floatingButtonsTicker = null;
+                    }
+                    if (mgr._uiWindowHandlers) {
+                        mgr._uiWindowHandlers.forEach(({ event, handler, target, options: opts }) => {
+                            (target || window).removeEventListener(event, handler, opts);
+                        });
+                        mgr._uiWindowHandlers = [];
+                    }
+                    mgr._floatingButtonsContainer = null;
+                    mgr._returnButtonContainer = null;
+                };
+                if (typeof mgr.cleanupFloatingButtons === 'function') {
+                    try { mgr.cleanupFloatingButtons(); } catch (_) { manualCleanup(); }
+                } else {
+                    manualCleanup();
+                }
+            });
+
+            // 清理所有模型类型的侧边面板
+            ['live2d', 'vrm', 'mmd'].forEach(p => {
+                document.querySelectorAll(`[data-neko-sidepanel-owner^="${p}-popup-"]`).forEach(panel => {
+                    if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+                    if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                    panel.remove();
+                });
+            });
 
             // 创建按钮容器
             const buttonsContainer = document.createElement('div');
@@ -671,6 +726,33 @@ const AvatarButtonMixin = {
         };
 
         /**
+         * 同步独立弹窗触发器（三角形）方向
+         */
+        ManagerPrototype.updateSeparatePopupTriggerIcon = function(buttonId, expanded) {
+            if (!buttonId) return;
+
+            const buttonData = this._floatingButtons && this._floatingButtons[buttonId];
+            const triggerIcon = buttonData && buttonData.triggerImg
+                ? buttonData.triggerImg
+                : document.querySelector(`.${this._avatarPrefix}-trigger-icon-${buttonId}`);
+            if (!triggerIcon) return;
+
+            if (typeof expanded === 'boolean') {
+                triggerIcon.style.transform = expanded ? 'rotate(180deg)' : 'rotate(0deg)';
+                return;
+            }
+
+            const buttonActive = !!(buttonData && buttonData.button && buttonData.button.dataset.active === 'true');
+            const popup = document.getElementById(`${this._avatarPrefix}-popup-${buttonId}`);
+            const popupExpanded = !!(
+                popup &&
+                popup.style.display === 'flex' &&
+                (popup.style.opacity !== '0' || popup.classList.contains('is-positioning'))
+            );
+            triggerIcon.style.transform = (buttonActive || popupExpanded) ? 'rotate(180deg)' : 'rotate(0deg)';
+        };
+
+        /**
          * 设置按钮激活状态
          */
         ManagerPrototype.setButtonActive = function(buttonId, active) {
@@ -688,6 +770,8 @@ const AvatarButtonMixin = {
             if (buttonData.imgOn) {
                 buttonData.imgOn.style.opacity = active ? '1' : '0';
             }
+
+            this.updateSeparatePopupTriggerIcon(buttonId);
 
             // 同步静音按钮的显示状态
             if (buttonId === 'mic') {
@@ -750,6 +834,13 @@ const AvatarButtonMixin = {
             document.querySelectorAll(`#${opts.containerElementId}, #${opts.lockIconId}, #${opts.returnContainerId}`)
                 .forEach(el => el.remove());
 
+            // 移除侧边面板
+            document.querySelectorAll(`[data-neko-sidepanel-owner^="${opts.popupPrefix}-popup-"]`).forEach(panel => {
+                if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+                if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                panel.remove();
+            });
+
             // 移除事件监听
             if (this._uiWindowHandlers) {
                 this._uiWindowHandlers.forEach(({ event, handler, target, options: opts }) => {
@@ -770,6 +861,25 @@ const AvatarButtonMixin = {
                 clearTimeout(this._physicsRestoreTimer);
                 this._physicsRestoreTimer = null;
             }
+
+            // 清理锁定淡化相关的键盘 / blur 监听器
+            if (this._mmdCtrlKeyDownListener) {
+                window.removeEventListener('keydown', this._mmdCtrlKeyDownListener);
+                this._mmdCtrlKeyDownListener = null;
+            }
+            if (this._mmdCtrlKeyUpListener) {
+                window.removeEventListener('keyup', this._mmdCtrlKeyUpListener);
+                this._mmdCtrlKeyUpListener = null;
+            }
+            if (this._mmdWindowBlurListener) {
+                window.removeEventListener('blur', this._mmdWindowBlurListener);
+                this._mmdWindowBlurListener = null;
+            }
+            if (this._mmdLockedHoverFadeChangedListener) {
+                window.removeEventListener('neko-locked-hover-fade-changed', this._mmdLockedHoverFadeChangedListener);
+                this._mmdLockedHoverFadeChangedListener = null;
+            }
+            this._setMmdLockedHoverFade = null;
 
             // 清理引用
             this._floatingButtons = null;

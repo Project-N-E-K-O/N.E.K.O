@@ -13,6 +13,7 @@ import json
 import os
 import re
 import asyncio
+import threading
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -20,7 +21,7 @@ from config import SETTING_PROPOSER_MODEL
 from config.prompts_memory import get_fact_extraction_prompt
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, robust_json_loads
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -30,32 +31,8 @@ if TYPE_CHECKING:
 logger = get_module_logger(__name__, "Memory")
 
 
-def _sanitize_json(raw: str) -> str:
-    """尝试修复 LLM 输出中常见的 JSON 格式问题。
-
-    处理：双花括号→单花括号、单引号→双引号、尾部逗号、Python 字面值等。
-    仅在标准 json.loads 失败后调用。
-    """
-    # LLM 模仿 prompt 模板中的 {{ }} 转义 → 还原为正常花括号
-    s = raw.replace("{{", "{").replace("}}", "}")
-    # Python 风格 True/False/None → JSON
-    s = s.replace("True", "true").replace("False", "false").replace("None", "null")
-    # 尾部逗号：,] 或 ,}
-    s = re.sub(r',\s*([}\]])', r'\1', s)
-    # 单引号→双引号（简单替换，适用于大多数 LLM 输出）
-    # 只在整个字符串不含双引号 key 时才做替换，避免破坏已正确的 JSON
-    if '"' not in s:
-        s = s.replace("'", '"')
-    else:
-        # 混合引号情况：逐步替换单引号 key/value
-        # 1) key: 'xxx': → "xxx":
-        s = re.sub(r"'([^']*?)'\s*:", r'"\1":', s)
-        # 2) value: : 'xxx' → : "xxx"
-        s = re.sub(r":\s*'([^']*?)'", r': "\1"', s)
-        # 3) 数组内单引号元素: ['a', 'b'] → ["a", "b"]
-        s = re.sub(r"'\s*([,\]\}])", r'"\1', s)
-        s = re.sub(r"([,\[\{])\s*'", r'\1"', s)
-    return s
+_ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
+_ARCHIVE_COOLDOWN_HOURS = 24   # 两次归档尝试之间的最小间隔
 
 
 class FactStore:
@@ -65,6 +42,16 @@ class FactStore:
         self._config_manager = get_config_manager()
         self._time_indexed = time_indexed_memory
         self._facts: dict[str, list[dict]] = {}  # {lanlan_name: [fact, ...]}
+        self._locks: dict[str, threading.Lock] = {}  # per-character 文件锁
+        self._locks_guard = threading.Lock()  # 保护 _locks 字典本身
+
+    def _get_lock(self, name: str) -> threading.Lock:
+        """获取角色专属的文件锁（懒创建）"""
+        if name not in self._locks:
+            with self._locks_guard:
+                if name not in self._locks:  # double-check
+                    self._locks[name] = threading.Lock()
+        return self._locks[name]
 
     # ── persistence ──────────────────────────────────────────────────
 
@@ -79,20 +66,24 @@ class FactStore:
         path = self._facts_path(name)
         if name in self._facts:
             return self._facts[name]
-        if os.path.exists(path):
-            try:
-                with open(path, encoding='utf-8') as f:
-                    data = json.load(f)
-                if isinstance(data, list):
-                    if self._migrate_v1_entity_values(data):
-                        atomic_write_json(path, data, indent=2, ensure_ascii=False)
-                        logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
-                    self._facts[name] = data
-                    return data
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning(f"[FactStore] 加载 facts 文件失败: {e}")
-        self._facts[name] = []
-        return self._facts[name]
+        with self._get_lock(name):
+            # double-check: 另一个线程可能在等锁期间已经加载了
+            if name in self._facts:
+                return self._facts[name]
+            if os.path.exists(path):
+                try:
+                    with open(path, encoding='utf-8') as f:
+                        data = json.load(f)
+                    if isinstance(data, list):
+                        if self._migrate_v1_entity_values(data):
+                            atomic_write_json(path, data, indent=2, ensure_ascii=False)
+                            logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
+                        self._facts[name] = data
+                        return data
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"[FactStore] 加载 facts 文件失败: {e}")
+            self._facts[name] = []
+            return self._facts[name]
 
     @classmethod
     def _migrate_v1_entity_values(cls, facts: list[dict]) -> bool:
@@ -107,8 +98,89 @@ class FactStore:
         return changed
 
     def save_facts(self, name: str) -> None:
+        with self._get_lock(name):
+            facts = self._facts.get(name, [])
+            path = self._facts_path(name)
+            # Read-merge-write: 保护其他进程写入的 absorbed 标记
+            if os.path.exists(path):
+                try:
+                    with open(path, encoding='utf-8') as f:
+                        disk_facts = json.load(f)
+                    if isinstance(disk_facts, list):
+                        absorbed_ids = {
+                            f['id'] for f in disk_facts
+                            if isinstance(f, dict) and f.get('absorbed')
+                        }
+                        if absorbed_ids:
+                            for f in facts:
+                                if f.get('id') in absorbed_ids:
+                                    f['absorbed'] = True
+                except (json.JSONDecodeError, OSError):
+                    pass
+            atomic_write_json(path, facts, indent=2, ensure_ascii=False)
+            # 基于文件修改时间节流归档：距上次归档超过 _ARCHIVE_COOLDOWN_HOURS 才尝试
+            try:
+                archive_path = self._facts_archive_path(name)
+                if os.path.exists(archive_path):
+                    mtime = datetime.fromtimestamp(os.path.getmtime(archive_path))
+                    if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
+                        return
+                # 用 marker 文件记录上次归档尝试时间（即使归档文件尚不存在）
+                marker_path = archive_path + '.last_attempt'
+                if os.path.exists(marker_path):
+                    mtime = datetime.fromtimestamp(os.path.getmtime(marker_path))
+                    if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
+                        return
+                self._archive_absorbed(name)
+                # 更新 marker（无论归档是否有实际条目都 touch 一次）
+                with open(marker_path, 'w') as f:
+                    f.write(datetime.now().isoformat())
+            except Exception:
+                pass
+
+    def _facts_archive_path(self, name: str) -> str:
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts_archive.json')
+
+    def _archive_absorbed(self, name: str) -> int:
+        """将已 absorbed 且超过 _ARCHIVE_AGE_DAYS 的 facts 移入归档文件。"""
+        from datetime import timedelta
         facts = self._facts.get(name, [])
+        cutoff = datetime.now() - timedelta(days=_ARCHIVE_AGE_DAYS)
+        active, to_archive = [], []
+        for f in facts:
+            try:
+                created = datetime.fromisoformat(f.get('created_at', ''))
+            except (ValueError, TypeError):
+                active.append(f)
+                continue
+            if f.get('absorbed') and created < cutoff:
+                to_archive.append(f)
+            else:
+                active.append(f)
+        if not to_archive:
+            return 0
+        # 追加到归档文件
+        archive_path = self._facts_archive_path(name)
+        existing_archive: list[dict] = []
+        if os.path.exists(archive_path):
+            try:
+                with open(archive_path, encoding='utf-8') as fh:
+                    data = json.load(fh)
+                if isinstance(data, list):
+                    existing_archive = data
+            except (json.JSONDecodeError, OSError) as e:
+                # 归档文件损坏 → 放弃本次归档，避免覆盖丢数据
+                logger.warning(f"[FactStore] {name}: 读取归档文件失败，跳过本次归档: {e}")
+                return 0
+        existing_archive.extend(to_archive)
+        atomic_write_json(archive_path, existing_archive, indent=2, ensure_ascii=False)
+        # 原地更新活跃列表（保持对象引用不变，避免外部持有旧引用导致修改丢失）
+        facts.clear()
+        facts.extend(active)
         atomic_write_json(self._facts_path(name), facts, indent=2, ensure_ascii=False)
+        logger.info(f"[FactStore] {name}: 归档 {len(to_archive)} 条已吸收的旧 facts，剩余 {len(active)} 条")
+        return len(to_archive)
 
     # ── extraction ───────────────────────────────────────────────────
 
@@ -166,12 +238,7 @@ class FactStore:
                         raw = match.group(1).strip()
                     else:
                         raw = raw.replace("```json", "").replace("```", "").strip()
-                try:
-                    extracted = json.loads(raw)
-                except json.JSONDecodeError:
-                    # 尝试修复常见 LLM 格式问题后重新解析
-                    sanitized = _sanitize_json(raw)
-                    extracted = json.loads(sanitized)
+                extracted = robust_json_loads(raw)
                 if not isinstance(extracted, list):
                     logger.warning(f"[FactStore] {lanlan_name}: LLM 返回非数组类型 {type(extracted).__name__}，重试")
                     retries += 1

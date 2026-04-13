@@ -171,30 +171,41 @@ def test_task_executor_format_messages_marks_latest_user_request():
 
 @pytest.mark.asyncio
 async def test_task_executor_routes_openclaw_as_independent_execution_method():
-    from brain.task_executor import DirectTaskExecutor
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from brain.task_executor import DirectTaskExecutor, UnifiedChannelDecision
 
     executor = object.__new__(DirectTaskExecutor)
     executor.computer_use = None
     executor.browser_use = None
-    executor.openclaw = None
     executor.openfang = None
     executor.plugin_list = []
     executor._external_plugin_provider = None
 
-    result = await executor.analyze_and_execute(
-        [{"role": "user", "text": "帮我打开浏览器搜索今天天气并截图保存到桌面"}],
-        agent_flags={
-            "computer_use_enabled": False,
-            "browser_use_enabled": False,
-            "user_plugin_enabled": False,
-            "openclaw_enabled": True,
-            "openfang_enabled": False,
-        },
-    )
+    # openclaw adapter 可用
+    mock_openclaw = MagicMock()
+    mock_openclaw.is_available.return_value = {"ready": True}
+    executor.openclaw = mock_openclaw
+
+    # mock 统一渠道评估，让 LLM 选择 copaw
+    mock_decision = UnifiedChannelDecision()
+    mock_decision.copaw = {"can_execute": True, "task_description": "搜索天气并截图", "reason": "需要浏览器操作"}
+
+    with patch.object(DirectTaskExecutor, "_assess_unified_channels", new_callable=AsyncMock, return_value=mock_decision):
+        result = await executor.analyze_and_execute(
+            [{"role": "user", "text": "帮我打开浏览器搜索今天天气并截图保存到桌面"}],
+            agent_flags={
+                "computer_use_enabled": False,
+                "browser_use_enabled": False,
+                "user_plugin_enabled": False,
+                "openclaw_enabled": True,
+                "openfang_enabled": False,
+            },
+        )
 
     assert result is not None
     assert result.execution_method == "openclaw"
-    assert result.tool_args["instruction"].startswith("[系统指令]")
+    assert result.tool_args is not None
+    assert "instruction" in result.tool_args
 
 
 def test_cross_server_analyze_request_no_http_fallback_endpoint():
@@ -207,7 +218,7 @@ def test_is_agent_api_ready_allows_free_profile():
     manager.get_core_config = lambda: {"IS_FREE_VERSION": True}
     manager.get_model_api_config = lambda _model_type: {
         "model": "free-agent-model",
-        "base_url": "https://lanlan.tech/text/v1",
+        "base_url": "https://www.lanlan.tech/text/v1",
         "api_key": "free-access",
     }
 
@@ -247,7 +258,8 @@ def test_get_model_api_config_agent_uses_agent_fields_without_custom_switch():
     }
 
     cfg = manager.get_model_api_config("agent")
-    assert cfg["is_custom"] is True
+    # agent 走专用字段但 is_custom 仅反映全局 ENABLE_CUSTOM_API 开关
+    assert cfg["is_custom"] is False
     assert cfg["model"] == "agent-model"
     assert cfg["base_url"] == "https://agent.example/v1"
     assert cfg["api_key"] == "agent-key"

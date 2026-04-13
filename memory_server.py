@@ -6,8 +6,8 @@ from memory import (
     CompressedRecentHistoryManager, ImportantSettingsManager, TimeIndexedMemory,
     FactStore, PersonaManager, ReflectionEngine,
 )
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import PlainTextResponse, JSONResponse
 import json
 import uvicorn
 from utils.llm_client import convert_to_messages
@@ -17,11 +17,12 @@ from config.prompts_sys import _loc
 from config.prompts_memory import (
     INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
     CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, CHAT_GAP_CURRENT_TIME,
-    ELAPSED_TIME_HM, ELAPSED_TIME_H,
+    CHAT_HOLIDAY_CONTEXT,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
 )
 from utils.language_utils import get_global_language
+from utils.character_name import validate_character_name
 from utils.config_manager import get_config_manager
 from pydantic import BaseModel
 import re
@@ -34,6 +35,9 @@ from utils.frontend_utils import get_timestamp
 # 配置日志
 from utils.logger_config import setup_logging
 logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
+
+from utils.time_format import format_elapsed as _format_elapsed
+
 
 class HistoryRequest(BaseModel):
     input_history: str
@@ -52,17 +56,12 @@ async def health():
 
 
 def validate_lanlan_name(name: str) -> str:
-    name = name.strip()
-    if not name or len(name) > 50:
+    result = validate_character_name(name, allow_dots=True, max_length=50)
+    if result.code in {"empty", "too_long_length"}:
         raise HTTPException(status_code=400, detail="Invalid lanlan_name length")
-    # 支持：字母、数字、下划线、连字符、空白、中日韩文字、括号
-    # 与 characters_router.py / memory_router.py 的规则保持一致
-    if not re.match(r"^[\w\-\s\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af()（）]+$", name):
+    if result.code is not None:
         raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
-    # 禁止路径遍历
-    if '/' in name or '\\' in name or '..' in name:
-        raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
-    return name
+    return result.normalized
 
 # 初始化组件（迁移必须在实例化之前，否则旧路径文件找不到）
 _config_manager = get_config_manager()
@@ -409,6 +408,59 @@ def _extract_user_messages(messages: list) -> list[str]:
                         if text:
                             user_msgs.append(text)
     return user_msgs
+
+
+# --- Reflection API（供 main_server/system_router 通过 HTTP 调用） ---
+
+@app.post("/reflect/{lanlan_name}")
+async def api_reflect(lanlan_name: str):
+    """合成反思 + 自动状态迁移，返回结果。
+
+    集中在 memory_server 进程内执行，避免 main_server 本地实例化导致的
+    absorbed 标记竞态问题。
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    auto_transitions = 0
+    reflection_result = None
+    try:
+        auto_transitions = reflection_engine.auto_promote_stale(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: auto_promote_stale 失败: {e}")
+    try:
+        reflection_result = await reflection_engine.reflect(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: reflect 失败: {e}")
+    return {
+        "reflection": reflection_result,
+        "auto_transitions": auto_transitions,
+    }
+
+
+@app.get("/followup_topics/{lanlan_name}")
+async def api_followup_topics(lanlan_name: str):
+    """获取回调话题候选（不标记 surfaced，调用方需后续调 /record_surfaced）。"""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    try:
+        topics = reflection_engine.get_followup_topics(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: get_followup_topics 失败: {e}")
+        topics = []
+    return {"topics": topics}
+
+
+@app.post("/record_surfaced/{lanlan_name}")
+async def api_record_surfaced(request: Request, lanlan_name: str):
+    """记录本次主动搭话提及了哪些反思，刷新 cooldown。"""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    body = await request.json()
+    reflection_ids = body.get("reflection_ids", [])
+    if not reflection_ids:
+        return {"ok": True}
+    try:
+        reflection_engine.record_surfaced(lanlan_name, reflection_ids)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: record_surfaced 失败: {e}")
+    return {"ok": True}
 
 
 async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
@@ -796,15 +848,10 @@ async def new_dialog(lanlan_name: str):
             if last_time:
                 gap = _dt.now() - last_time
                 gap_seconds = gap.total_seconds()
-                if gap_seconds >= 3600:  # ≥ 1小时才显示
-                    hours = int(gap_seconds // 3600)
-                    minutes = int((gap_seconds % 3600) // 60)
-                    if minutes:
-                        elapsed = _loc(ELAPSED_TIME_HM, _lang).format(h=hours, m=minutes)
-                    else:
-                        elapsed = _loc(ELAPSED_TIME_H, _lang).format(h=hours)
+                if gap_seconds >= 1800:  # ≥ 30分钟才显示
+                    elapsed = _format_elapsed(_lang, gap_seconds)
 
-                    if gap_seconds >= 18000:  # ≥ 5小时：当前时间 + 间隔 + 长间隔提示，不额外换行
+                    if gap_seconds >= 18000:  # ≥ 5小时：当前时间 + 间隔 + 长间隔提示
                         now_str = _dt.now().strftime("%Y-%m-%d %H:%M")
                         result += _loc(CHAT_GAP_CURRENT_TIME, _lang).format(now=now_str)
                         result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed)
@@ -814,7 +861,30 @@ async def new_dialog(lanlan_name: str):
         except Exception as e:
             logger.warning(f"计算聊天间隔失败: {e}")
 
+        # ── 节日/假期上下文（无关消费，始终注入） ──
+        try:
+            from utils.holiday_cache import get_holiday_context_line
+            holiday_name = get_holiday_context_line(_lang)
+            if holiday_name:
+                result += _loc(CHAT_HOLIDAY_CONTEXT, _lang).format(holiday=holiday_name)
+        except Exception as e:
+            logger.debug(f"Holiday context injection skipped: {e}")
+
         return PlainTextResponse(result)
+
+@app.get("/last_conversation_gap/{lanlan_name}")
+async def last_conversation_gap(lanlan_name: str):
+    """返回距上次对话的间隔秒数，供主服务判断是否触发主动搭话。"""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    try:
+        last_time = time_manager.get_last_conversation_time(lanlan_name)
+        if last_time is None:
+            return {"gap_seconds": -1}
+        gap = (datetime.now() - last_time).total_seconds()
+        return {"gap_seconds": gap}
+    except Exception as e:
+        logger.exception(f"查询对话间隔失败: {e}")
+        return JSONResponse({"gap_seconds": -1, "error": "server_error"}, status_code=500)
 
 if __name__ == "__main__":
     import threading

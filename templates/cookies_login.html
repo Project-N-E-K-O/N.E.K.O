@@ -66,15 +66,15 @@
         .tabs { 
             display: flex; background: #f1f5f9; 
             border-bottom: 1px solid #e2e8f0; 
-            overflow-x: auto; 
-            scrollbar-width: none; 
+            flex-wrap: wrap;
+            align-items: stretch;
         }
-        .tabs::-webkit-scrollbar { display: none; }
         .tab-btn { 
-            flex: 1; min-width: 100px; padding: 16px 0; 
+            flex: 1 1 auto; min-width: 0; padding: 16px 18px; 
             border: none; background: none; 
             font-size: 14px; font-weight: 600; color: #64748b; 
-            cursor: pointer; transition: all 0.2s; white-space: nowrap; 
+            cursor: pointer; transition: all 0.2s;
+            text-align: center;
         }
         .tab-btn:hover { background: #e2e8f0; color: #334155; }
         .tab-btn.active { background: var(--card-bg); color: var(--primary); box-shadow: inset 0 -3px 0 var(--primary); font-weight: 700; }
@@ -350,19 +350,66 @@
             color: white;
         }
     }
+        /* 二维码容器动画 */
+        #QRLogin {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            overflow: hidden;
+            max-height: 500px; /* 控制展开高度 */
+            opacity: 1;
+            margin-bottom: 20px;
+        }
+        #QRLogin.collapsed {
+            max-height: 0;
+            opacity: 0;
+            margin-bottom: 0;
+            padding: 0;
+        }
+
+        /* 二维码收起按钮 - 绿色主题 */
+        .qr-collapse-btn {
+            background: #dcfce7;
+            color: #166534;
+            border: 1px solid #bef26400;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            float: right;
+            margin-top: -5px;
+            box-shadow: 0 2px 4px rgba(22, 101, 52, 0.1);
+        }
+        .qr-collapse-btn:hover {
+            background: #bbf7d0;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 6px rgba(22, 101, 52, 0.15);
+        }
+        [data-theme="dark"] .qr-collapse-btn {
+            background: #065f46;
+            color: #ecfdf5;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+        [data-theme="dark"] .qr-collapse-btn:hover {
+            background: #047857;
+        }
     </style>
 </head>
 <body>
     <div class="container-header">
         <h2 data-i18n="cookiesLogin.header">🔐 凭证获取中心</h2>
-        <button class="close-btn" onclick="window.close()" title="关闭">
-            <img src="/static/icons/close_button.png" alt="关闭">
+        <button class="close-btn" onclick="window.close()" title="关闭" aria-label="关闭" data-i18n-title="common.close" data-i18n-aria="common.close">
+            <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="common.close">
         </button>
     </div>
     <div class="dashboard-wrapper">
     <div class="dashboard">
         <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('bilibili', this)" data-i18n="cookiesLogin.bilibili">📺 Bilibili</button>
+            <button class="tab-btn active" onclick="switchTab('netease', this)" data-i18n="cookiesLogin.netease">🎶 网易云音乐</button>
+            <button class="tab-btn" onclick="switchTab('bilibili', this)" data-i18n="cookiesLogin.bilibili">📺 Bilibili</button>
             <button class="tab-btn" onclick="switchTab('douyin', this)" data-i18n="cookiesLogin.douyin">🎵 抖音</button>
             <button class="tab-btn" onclick="switchTab('kuaishou', this)" data-i18n="cookiesLogin.kuaishou">🧡 快手</button>
             <button class="tab-btn" onclick="switchTab('weibo', this)" data-i18n="cookiesLogin.weibo">🌏 微博</button>
@@ -408,7 +455,7 @@
             
             <button class="submit-btn" id="submit-btn" onclick="submitCurrentCookie()">
                 <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path></svg>
-                <span id="submit-text">保存配置</span>
+                <span id="submit-text" data-i18n="cookiesLogin.saveConfig">保存配置</span>
             </button>
             <div id="main-alert" class="alert"></div>
         </div>
@@ -420,6 +467,6 @@
     </div>
 
     </div>
-    <script src="/static/js/cookies_login.js"></script>
+    <script src="/static/js/cookies_login.js?v=2.2"></script>
 </body>
 </html>
