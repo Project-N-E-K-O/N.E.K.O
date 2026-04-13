@@ -4651,8 +4651,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     /**
-     * 新动画已落位后调用：把物理初始状态对齐到新姿态，然后恢复物理。
-     * 延迟 ~250ms 让 mixer 把新动画的首帧稳定应用到骨架上。
+     * 把物理初始状态对齐到当前骨架姿态，然后按 savedState 恢复 enablePhysics。
+     * VRM: springBoneManager.setInitState()；MMD: physics.reset()。
+     * 不对齐就恢复的话，物理引擎会用旧模拟状态去撞上新骨架姿态，正是这个 patch 想避免的。
+     */
+    function _alignAndRestoreIdlePhysics(type) {
+        try {
+            if (type === 'vrm') {
+                const vrm = vrmManager?.currentModel?.vrm;
+                if (vrm?.springBoneManager && typeof vrm.springBoneManager.setInitState === 'function') {
+                    try { vrm.springBoneManager.setInitState(); } catch (e) { /* noop */ }
+                }
+                if (_idlePhysicsSavedState.vrm === true && vrmManager) {
+                    vrmManager.enablePhysics = true;
+                }
+                _idlePhysicsSavedState.vrm = null;
+            } else {
+                const mmd = window.mmdManager;
+                const model = mmd?.currentModel;
+                if (model?.physics && typeof model.physics.reset === 'function') {
+                    if (model.mesh) model.mesh.updateMatrixWorld(true);
+                    try { model.physics.reset(); } catch (e) { /* noop */ }
+                }
+                if (_idlePhysicsSavedState.mmd === true && mmd) {
+                    mmd.enablePhysics = true;
+                }
+                _idlePhysicsSavedState.mmd = null;
+            }
+        } catch (err) {
+            console.warn(`[${type.toUpperCase()} IdleAnimation] 恢复物理失败:`, err);
+        }
+    }
+
+    /**
+     * 新动画已落位后调用：延迟 ~250ms 让 mixer 把新动画的首帧稳定应用到骨架上，
+     * 再对齐物理初始态并恢复。
      */
     function _scheduleRestoreIdlePhysics(type) {
         if (_idlePhysicsRestoreTimers[type]) {
@@ -4660,32 +4693,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         _idlePhysicsRestoreTimers[type] = setTimeout(() => {
             _idlePhysicsRestoreTimers[type] = null;
-            try {
-                if (type === 'vrm') {
-                    const vrm = vrmManager?.currentModel?.vrm;
-                    // 把弹簧骨的初始状态对齐到当前（新动画首帧）的骨架姿态，避免被解释为巨大位移
-                    if (vrm?.springBoneManager && typeof vrm.springBoneManager.setInitState === 'function') {
-                        try { vrm.springBoneManager.setInitState(); } catch (e) { /* noop */ }
-                    }
-                    if (_idlePhysicsSavedState.vrm === true && vrmManager) {
-                        vrmManager.enablePhysics = true;
-                    }
-                    _idlePhysicsSavedState.vrm = null;
-                } else {
-                    const mmd = window.mmdManager;
-                    const model = mmd?.currentModel;
-                    if (model?.physics && typeof model.physics.reset === 'function') {
-                        if (model.mesh) model.mesh.updateMatrixWorld(true);
-                        try { model.physics.reset(); } catch (e) { /* noop */ }
-                    }
-                    if (_idlePhysicsSavedState.mmd === true && mmd) {
-                        mmd.enablePhysics = true;
-                    }
-                    _idlePhysicsSavedState.mmd = null;
-                }
-            } catch (err) {
-                console.warn(`[${type.toUpperCase()} IdleAnimation] 恢复物理失败:`, err);
-            }
+            _alignAndRestoreIdlePhysics(type);
         }, 250);
     }
 
@@ -4696,16 +4704,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             _idleRotationTimers[type] = null;
         }
         _cleanupIdleLoopListener(type);
-        // 若物理仍处于冻结状态，立即恢复，避免轮换停掉后物理永远关着
+        // 若物理仍处于冻结状态，立即走对齐+恢复，避免跳过 setInitState/physics.reset
+        // 直接开物理导致残留的旧模拟状态撞上新骨架姿态
         if (_idlePhysicsRestoreTimers[type]) {
             clearTimeout(_idlePhysicsRestoreTimers[type]);
             _idlePhysicsRestoreTimers[type] = null;
         }
-        if (_idlePhysicsSavedState[type] === true) {
-            if (type === 'vrm' && vrmManager) vrmManager.enablePhysics = true;
-            else if (type === 'mmd' && window.mmdManager) window.mmdManager.enablePhysics = true;
-        }
-        _idlePhysicsSavedState[type] = null;
+        _alignAndRestoreIdlePhysics(type);
         // 取消所有挂起的 crossfade 收尾定时器
         if (type === 'vrm' && _idleCrossfadeCleanupTimers.vrm.size > 0) {
             for (const tid of _idleCrossfadeCleanupTimers.vrm) clearTimeout(tid);
@@ -4890,16 +4895,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 新动画已启动：等 mixer 把首帧应用到骨架上，再对齐物理初始态并解冻
                 _scheduleRestoreIdlePhysics(type);
             } else {
-                // 切换未发生（模型未就绪等）：立即解冻，避免物理被永久关闭
+                // 切换未发生（模型未就绪等）：立即走对齐+解冻。
+                // 姿态没变，setInitState/physics.reset 基本是 no-op，但保持路径一致，
+                // 避免未来加逻辑时漏掉这条分支。
                 if (_idlePhysicsRestoreTimers[type]) {
                     clearTimeout(_idlePhysicsRestoreTimers[type]);
                     _idlePhysicsRestoreTimers[type] = null;
                 }
-                if (_idlePhysicsSavedState[type] === true) {
-                    if (type === 'vrm' && vrmManager) vrmManager.enablePhysics = true;
-                    else if (type === 'mmd' && window.mmdManager) window.mmdManager.enablePhysics = true;
-                }
-                _idlePhysicsSavedState[type] = null;
+                _alignAndRestoreIdlePhysics(type);
             }
         }
     }
