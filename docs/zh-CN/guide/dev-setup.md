@@ -70,6 +70,8 @@ http://localhost:48911
 
 ### 一键构建
 
+> **前置条件**：构建前端需要 [Node.js](https://nodejs.org/)（>= 20.19），请确保已安装。
+
 ```bash
 # Windows
 build_frontend.bat

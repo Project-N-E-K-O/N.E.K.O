@@ -232,6 +232,12 @@ function _startMmdIdleRotation(urls) {
     async function switchToNext() {
         _clearMmdIdleSchedule();
 
+        // Jukebox 舞蹈播放中：不打断，续期定时器等舞蹈结束后再轮换
+        if (window.Jukebox?.State?.isVMDPlaying) {
+            scheduleFallback();
+            return;
+        }
+
         const mgr = window.mmdManager;
         if (!mgr || !mgr.currentModel) return;
 

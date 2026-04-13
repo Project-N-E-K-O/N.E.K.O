@@ -4718,6 +4718,7 @@ window.Jukebox = {
     // 独立窗口模式：复用 VMD 桥接通道发送到 Pet（Pet 侧根据模型类型分发）
     if (window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge) {
       window.nekoJukeboxBridge.playVMD(vrmaPath);
+      Jukebox.State.isVMDPlaying = true;
       console.log('[Jukebox] VRMA 动画已发送 (IPC):', vrmaPath);
       return;
     }
@@ -4729,6 +4730,8 @@ window.Jukebox = {
     try {
       console.log('[Jukebox] 播放 VRMA 动画:', vrmaPath);
 
+      Jukebox.stopVMD(true); // 停止之前的舞蹈动画
+
       // 使用 VRMManager 的动画模块播放 VRMA
       if (window.vrmManager.animationModule) {
         await window.vrmManager.animationModule.playVRMAAnimation(vrmaPath, {
@@ -4736,6 +4739,7 @@ window.Jukebox = {
           fadeInDuration: 0.5,
           fadeOutDuration: 0.5
         });
+        Jukebox.State.isVMDPlaying = true;
         console.log('[Jukebox] VRMA 动画已播放:', vrmaPath);
       } else {
         console.warn('[Jukebox] VRM AnimationModule 未初始化');
@@ -4976,14 +4980,21 @@ window.Jukebox = {
       return;
     }
 
-    if (!window.mmdManager?.animationModule) return;
-
-    // 没有在播放舞蹈 VMD 时，不要停止当前动画（可能是 idle 待机）
+    // 没有在播放舞蹈动画时，不要停止当前动画（可能是 idle 待机）
     if (!Jukebox.State.isVMDPlaying) return;
 
-    // 直接停止动画模块，不通过 stopAnimation()
-    // 避免在 idle 加载完成前改变 cursor follow 状态
-    window.mmdManager.animationModule.stop();
+    // 根据模型类型停止对应的动画模块
+    var modelType = Jukebox.getModelType();
+    if (modelType === 'vrm') {
+      if (window.vrmManager) window.vrmManager.stopVRMAAnimation();
+    } else {
+      if (window.mmdManager?.animationModule) {
+        // 直接停止动画模块，不通过 stopAnimation()
+        // 避免在 idle 加载完成前改变 cursor follow 状态
+        window.mmdManager.animationModule.stop();
+      }
+    }
+
     Jukebox.State.isVMDPlaying = false;
     Jukebox.State.isPaused = false;
 
@@ -5051,16 +5062,21 @@ window.Jukebox = {
   },
 
   togglePause: function() {
-    if (!Jukebox.State.currentSong) return;
+    // Pet 窗口通过 IPC 调用时 currentSong 为 null，用 isVMDPlaying 兜底
+    if (!Jukebox.State.currentSong && !Jukebox.State.isVMDPlaying) return;
 
     const player = Jukebox.getPlayer();
     var isStandalone = window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge;
+    var modelType = Jukebox.getModelType();
 
     if (Jukebox.State.isPaused) {
       // 恢复播放
       if (player) player.play();
       if (isStandalone) {
         window.nekoJukeboxBridge.resumeVMD();
+      } else if (modelType === 'vrm') {
+        var vrmAnim = window.vrmManager?.animationModule || window.vrmManager?.animation;
+        if (vrmAnim?.currentAction) vrmAnim.currentAction.paused = false;
       } else if (window.mmdManager?.animationModule) {
         // 直接恢复动画模块（不通过 playAnimation 避免重置动画进度）
         window.mmdManager.animationModule.play();
@@ -5070,13 +5086,16 @@ window.Jukebox = {
       }
       Jukebox.State.isPaused = false;
       Jukebox.State.isPlaying = true;
-      Jukebox.updatePlayingStatus(Jukebox.State.currentSong);
+      if (Jukebox.State.currentSong) Jukebox.updatePlayingStatus(Jukebox.State.currentSong);
       console.log('[Jukebox]', window.t('Jukebox.resumed', '已恢复播放'));
-    } else if (Jukebox.State.isPlaying) {
+    } else if (Jukebox.State.isPlaying || Jukebox.State.isVMDPlaying) {
       // 暂停
       if (player) player.pause();
       if (isStandalone) {
         window.nekoJukeboxBridge.pauseVMD();
+      } else if (modelType === 'vrm') {
+        var vrmAnim = window.vrmManager?.animationModule || window.vrmManager?.animation;
+        if (vrmAnim?.currentAction) vrmAnim.currentAction.paused = true;
       } else if (window.mmdManager?.animationModule) {
         window.mmdManager.animationModule.pause();
         // 暂停时提升跟踪权重，让视线追踪更明显
@@ -5086,7 +5105,7 @@ window.Jukebox = {
       }
       Jukebox.State.isPaused = true;
       Jukebox.State.isPlaying = false;
-      Jukebox.updatePausedStatus(Jukebox.State.currentSong);
+      if (Jukebox.State.currentSong) Jukebox.updatePausedStatus(Jukebox.State.currentSong);
       console.log('[Jukebox]', window.t('Jukebox.paused', '已暂停'));
     }
   },
@@ -5269,9 +5288,15 @@ window.Jukebox = {
     console.log('[Jukebox] APlayer已创建，音量:', Jukebox.State.player.audio.volume);
   },
   
-  // 获取当前模型类型
+  // 获取当前模型类型（拆分 live3d 子类型，返回 'mmd' / 'vrm' / 'live2d'）
   getModelType: function() {
-    return window.lanlan_config?.model_type || 'live2d';
+    var mt = window.lanlan_config?.model_type || 'live2d';
+    if (mt === 'live3d') {
+      var sub = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
+      if (sub === 'vrm') return 'vrm';
+      return 'mmd'; // live3d 默认走 MMD
+    }
+    return mt;
   },
 
   // 检查当前模型是否支持动画
