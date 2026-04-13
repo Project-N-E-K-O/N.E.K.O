@@ -186,6 +186,10 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         return;
     }
 
+    // 防御性检查：当前模型类型不是 Live2D 时不创建按钮（防止过时的异步回调）
+    var cfgType = (window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
+    if (cfgType && cfgType !== 'live2d') return;
+
     if (this._floatingButtonsResizeHandler) {
         window.removeEventListener('resize', this._floatingButtonsResizeHandler);
         this._floatingButtonsResizeHandler = null;
