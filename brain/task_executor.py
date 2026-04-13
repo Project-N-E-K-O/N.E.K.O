@@ -475,7 +475,7 @@ class DirectTaskExecutor:
             if text and text != latest:
                 context_candidates.append(text)
         if context_candidates:
-            return " / ".join(context_candidates[-2:] + [latest])[:300]
+            return " / ".join([*context_candidates[-2:], latest])[:300]
         return latest[:300]
 
     @staticmethod
@@ -486,7 +486,10 @@ class DirectTaskExecutor:
             (r"(?i)(password|passwd|pwd)\s*[:=]\s*\S+", r"\1=[REDACTED_PASSWORD]"),
             (r"(?i)(token|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+", r"\1=[REDACTED_TOKEN]"),
             (r"(?i)(cookie)\s*[:=]\s*\S+", r"\1=[REDACTED_COOKIE]"),
-            (r"\b\d{6}\b", "[REDACTED_OTP]"),
+            (
+                r"(?i)(\b(?:otp|pin|verification(?:\s+code)?|sms\s*code|one[-\s]?time(?:\s+password|\s+code)?|验证码|校验码|短信码|动态码)\b(?:\s*(?:is|为|是))?[\s:：=#-]{0,6})\d{4,8}\b",
+                r"\1[REDACTED_OTP]",
+            ),
             (r"\b\d{15,19}\b", "[REDACTED_NUMBER]"),
             (r"\b1[3-9]\d{9}\b", "[REDACTED_PHONE]"),
         ]
@@ -643,6 +646,7 @@ class DirectTaskExecutor:
         user_note: str = "",
     ) -> Dict[str, Any]:
         chosen_tool = str(task_info.get("type") or "").strip()
+        task_type = chosen_tool  # Backward-compatible alias for existing readers of correction events.
         event = {
             "event_id": f"corr_{uuid.uuid4().hex[:12]}",
             "timestamp": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
@@ -653,7 +657,7 @@ class DirectTaskExecutor:
             "chosen_reason": self._sanitize_correction_text(
                 task_info.get("decision_reason") or task_info.get("reason", "")
             ),
-            "task_type": chosen_tool,
+            "task_type": task_type,
             "task_description": self._sanitize_correction_text(task_info.get("task_description", "")),
             "correct_tool": self._sanitize_correction_text(correct_tool),
             "correct_instruction": self._sanitize_correction_text(correct_instruction),

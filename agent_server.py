@@ -54,6 +54,16 @@ class ToolCorrectionPayload(BaseModel):
     correct_instruction: str = Field(min_length=1)
     user_note: str = ""
 
+
+_LEGACY_CORRECTION_PUBLIC_KEYS = {
+    "decision_reason",
+    "task_description",
+    "latest_user_request",
+    "normalized_intent",
+    "recent_context",
+}
+
+
 class Modules:
     computer_use: ComputerUseAdapter | None = None
     browser_use: BrowserUseAdapter | None = None
@@ -1042,6 +1052,31 @@ def _spawn_task(kind: str, args: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"Unknown task kind: {kind}")
 
 
+def _set_internal_correction_context(task_info: Dict[str, Any], result: Any) -> None:
+    task_info["_internal_corrections"] = {
+        "decision_reason": getattr(result, "reason", "") or "",
+        "task_description": getattr(result, "task_description", "") or "",
+        "latest_user_request": getattr(result, "latest_user_request", "") or "",
+        "normalized_intent": getattr(result, "normalized_intent", "") or "",
+        "recent_context": getattr(result, "recent_context", None) or [],
+    }
+
+
+def _get_internal_correction_context(task_info: Dict[str, Any]) -> Dict[str, Any]:
+    internal = task_info.get("_internal_corrections")
+    if isinstance(internal, dict):
+        return internal
+    return {key: task_info.get(key) for key in _LEGACY_CORRECTION_PUBLIC_KEYS if key in task_info}
+
+
+def _public_task_info(task_info: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in task_info.items()
+        if not key.startswith("_") and key not in _LEGACY_CORRECTION_PUBLIC_KEYS
+    }
+
+
 async def _run_computer_use_task(
     task_id: str,
     instruction: str,
@@ -1324,11 +1359,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     ti = _spawn_task("computer_use", {"instruction": result.task_description, "screenshot": None})
                     ti["lanlan_name"] = lanlan_name
                     ti["session_id"] = cu_session.session_id
-                    ti["decision_reason"] = result.reason or ""
-                    ti["task_description"] = result.task_description or ""
-                    ti["latest_user_request"] = result.latest_user_request or ""
-                    ti["normalized_intent"] = result.normalized_intent or ""
-                    ti["recent_context"] = result.recent_context or []
+                    _set_internal_correction_context(ti, result)
                     _task_tracker.record_assigned(
                         lanlan_name, task_id=ti["id"], method="computer_use",
                         desc=result.task_description or "",
@@ -1816,14 +1847,10 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     "params": {"instruction": result.task_description},
                     "lanlan_name": lanlan_name,
                     "session_id": bu_session.session_id,
-                    "decision_reason": result.reason or "",
-                    "task_description": result.task_description or "",
-                    "latest_user_request": result.latest_user_request or "",
-                    "normalized_intent": result.normalized_intent or "",
-                    "recent_context": result.recent_context or [],
                     "result": None,
                     "error": None,
                 }
+                _set_internal_correction_context(bu_info, result)
                 Modules.task_registry[bu_task_id] = bu_info
                 Modules.active_browser_use_task_id = bu_task_id
                 _task_tracker.record_assigned(
@@ -2656,8 +2683,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
 async def get_task(task_id: str):
     info = Modules.task_registry.get(task_id)
     if info:
-        out = {k: v for k, v in info.items() if k != "_proc"}
-        return out
+        return _public_task_info(info)
     raise HTTPException(404, "task not found")
 
 
@@ -2754,12 +2780,29 @@ async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
             status_code=400,
             detail="correct_tool must be computer_use or browser_use",
         )
+    if correct_tool == task_type:
+        raise HTTPException(
+            status_code=400,
+            detail="correct_tool must be different from the current task type",
+        )
+
+    instr = str(body.correct_instruction or "").strip()
+    if not instr:
+        raise HTTPException(
+            status_code=400,
+            detail="correct_instruction cannot be blank",
+        )
+
+    correction_info = _get_internal_correction_context(info)
 
     try:
         event = Modules.task_executor.record_tool_correction(
-            info,
+            {
+                **correction_info,
+                "type": task_type,
+            },
             correct_tool=correct_tool,
-            correct_instruction=body.correct_instruction,
+            correct_instruction=instr,
             user_note=body.user_note,
         )
     except Exception as exc:
