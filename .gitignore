@@ -162,3 +162,4 @@ static/jukebox/*.vmd
 static/jukebox/*.vrma
 static/jukebox/*.bvh
 static/jukebox/*.fbx
+tests/prompt_dump.json
