@@ -50,12 +50,13 @@
         // 从后端获取当前模型类型，供 Jukebox 判断是否需要播放 VMD/VRMA
         async function _fetchModelType() {
             try {
-                var res = await fetch('/api/config/');
+                var res = await fetch('/api/config/page_config');
                 if (res.ok) {
                     var cfg = await res.json();
                     window.lanlan_config = window.lanlan_config || {};
                     window.lanlan_config.model_type = cfg.model_type || 'live2d';
-                    window.lanlan_config.catgirl_name = cfg.catgirl_name || '';
+                    window.lanlan_config.live3d_sub_type = cfg.live3d_sub_type || '';
+                    window.lanlan_config.catgirl_name = cfg.lanlan_name || '';
                 }
             } catch (_) { /* ignore */ }
         }

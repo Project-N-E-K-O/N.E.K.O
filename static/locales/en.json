@@ -1274,6 +1274,8 @@
         "prefixShouldBeEnglishLetterAndNumber": "Prefix should be English letters and numbers",
         "invalidApiKeyProvided": "Invalid API-key provided",
         "requestError": "Request error: {{error}}",
+        "serverNonJsonError": "Server returned a non-JSON response (HTTP {{status}}): {{snippet}}",
+        "serverRouteNotFound": "API route not found (HTTP {{status}}). Please ensure the server is deployed and restarted.",
         "voiceIdSaveFailed": "Failed to automatically save voice_id: {{error}}",
         "voiceIdSaved": "voice_id has been automatically saved to character",
         "pageWillRefresh": "Current page will automatically refresh to apply new voice",
@@ -1677,6 +1679,7 @@
             "openfang": "Her Desktop",
             "userPluginAdapting": "User Plugin (Developing)",
             "openclawConnect": "OpenClaw",
+            "openclawGuide": "OpenClaw Setup Guide",
             "chatSettings": "Chat Settings",
             "animationSettings": "Animation Settings",
             "renderQuality": "Quality",
@@ -1700,10 +1703,20 @@
             "textGuardNote": "Applies to text replies only; does not affect voice sessions"
         }
     },
+    "openclawGuide": {
+        "windowTitle": "OpenClaw Setup Guide - N.E.K.O.",
+        "pageTitle": "OpenClaw Setup Guide",
+        "pageSubtitle": "Connect CoPaw installation, channel placement, health checks, and N.E.K.O configuration in one clear path.",
+        "sourceLabel": "Guide Source",
+        "contentLanguageNotice": "The guide body switches with the selected language.",
+        "languageLabel": "Language",
+        "guideUnavailable": "Guide content is empty."
+    },
     "subtitle": {
         "title": "Real-time Subtitles",
         "enable": "Subtitle Translation",
-        "enableAriaLabel": "Toggle subtitle translation"
+        "enableAriaLabel": "Toggle subtitle translation",
+        "markdownPlaceholder": "[formatted content]"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -2827,7 +2840,7 @@
         "idleRestoreFailed": "Failed to restore idle animation",
         "btnNotFoundGiveUp": "Jukebox button not found after retries, giving up",
         "minimizeBtnNotFoundGiveUp": "Minimize button not found after retries, giving up",
-        "noticeDance": "💃 Dance service is currently only available when an MMD avatar is loaded. More interactions coming soon",
+        "noticeDance": "💃 Dance service is currently only available when a 3D model (MMD / VRM) is loaded. More interactions coming soon",
         "noticeMusic": "⚠️ Current songs are for testing only — copyrighted tracks will be removed in future versions, please import your own",
         "manager": "Manager",
         "managerTitle": "Manager",

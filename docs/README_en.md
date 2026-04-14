@@ -400,9 +400,13 @@ cd N.E.K.O
 # 2. Install Python dependencies
 uv sync
 
-# 3. Build frontend projects (required on first run or after frontend changes)
-cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build && cd ../..
+# 3. Build frontend projects (requires Node.js >= 20.19; needed on first run or after frontend changes)
+#    Recommended: use the convenience script (this is the officially supported build path)
+#      Windows:      build_frontend.bat
+#      Linux/macOS:  ./build_frontend.sh
+#    Manual build (must match what the script runs):
+# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 # 4. Start services (main_server and memory_server required at minimum)
 uv run python memory_server.py
@@ -460,6 +464,7 @@ Visit `http://localhost:48911/api_key` to configure directly through the Web int
 
 ```
 N.E.K.O/
+├── 📁 .agent/                   # 🤖 AI coding assistant rules & skills (Google Antigravity convention)
 ├── 📁 brain/                    # 🧠 Agent modules
 │   ├── computer_use.py          # Computer control
 │   ├── browser_use_adapter.py   # Browser automation
@@ -495,6 +500,8 @@ N.E.K.O/
 ├── agent_server.py              # 🤖 AI agent server
 └── memory_server.py             # 🧠 Memory server
 ```
+
+> **AI-Assisted Development**: The `.agent/` directory follows the Google Antigravity open convention and contains the project's development rules and skill sets. Only Antigravity auto-reads it; all other AI tools (including Claude Code) need to import manually. See the [adaptation guide](https://project-neko.online/contributing/ai-assisted-dev).
 
 **Data Flow**
 

@@ -392,9 +392,13 @@ cd N.E.K.O
 # 2. Установить Python-зависимости
 uv sync
 
-# 3. Собрать фронтенд-проекты (необходимо при первом запуске или после изменений фронтенда)
-cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build && cd ../..
+# 3. Собрать фронтенд-проекты (требуется Node.js >= 20.19; необходимо при первом запуске или после изменений фронтенда)
+#    Рекомендуется: используйте скрипт (это официально поддерживаемый способ сборки)
+#      Windows:      build_frontend.bat
+#      Linux/macOS:  ./build_frontend.sh
+#    Ручная сборка (должна совпадать с тем, что делает скрипт):
+# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 # 4. Запустить сервисы (минимум main_server и memory_server)
 uv run python memory_server.py
@@ -452,6 +456,7 @@ uv run python agent_server.py
 
 ```
 N.E.K.O/
+├── 📁 .agent/                   # 🤖 Правила и навыки для ИИ-ассистентов (конвенция Google Antigravity)
 ├── 📁 brain/                    # 🧠 Модули агента
 │   ├── computer_use.py          # Управление компьютером
 │   ├── browser_use_adapter.py   # Автоматизация браузера
@@ -487,6 +492,8 @@ N.E.K.O/
 ├── agent_server.py              # 🤖 Сервер ИИ-агента
 └── memory_server.py             # 🧠 Сервер памяти
 ```
+
+> **Разработка с помощью ИИ**: Каталог `.agent/` следует открытой конвенции Google Antigravity и содержит правила разработки и наборы навыков проекта. Только Antigravity загружает автоматически; все остальные ИИ-инструменты (включая Claude Code) требуют ручного импорта. См. [руководство по адаптации](https://project-neko.online/contributing/ai-assisted-dev).
 
 **Поток данных**
 
