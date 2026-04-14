@@ -433,10 +433,24 @@
     window.dispatchMusicPlay = async function (trackInfo, options) {
         options = options || {};
 
-        // 拦截逻辑：如果是主动搭话触发的切歌，且当前正在放歌，则拦截
-        if (options.source === 'proactive' && typeof window.isMusicPlaying === 'function' && window.isMusicPlaying()) {
-            console.log('[MusicDispatch] 拦截来自主动搭话的切歌请求，保持当前播放');
-            return false;
+        // 拦截逻辑：如果是主动搭话触发的切歌，且本地正在放歌 / 加载中 /
+        // 其他窗口（chat.html 与 index.html 互为兄弟）也在放歌，则拦截。
+        // 单纯的 isMusicPlaying() 在"已 dispatch 但 audio 还没 play"的窗口里
+        // 会返回 false，导致并发的第二次 dispatch 被放行，最终两首歌同时响。
+        //
+        // 注意：这是有意的不对称拦截 —— 仅 source==='proactive'（主动搭话）
+        // 的推荐会被当前播放拦下；用户主动搜索、插件 music_play_url、
+        // [play_music:] 指令等（app-websocket.js 的 dispatchMusicPlay 调用不带
+        // source 字段）仍允许直接切歌。用户/插件意图 > 被动推荐。
+        if (options.source === 'proactive') {
+            var localPlaying = typeof window.isMusicPlaying === 'function' && window.isMusicPlaying();
+            var localPending = typeof window.isMusicPending === 'function' && window.isMusicPending();
+            var remoteActive = typeof window.isRemoteMusicActive === 'function' && window.isRemoteMusicActive();
+            var rateLimited = typeof window.isMusicRecommendRateLimited === 'function' && window.isMusicRecommendRateLimited();
+            if (localPlaying || localPending || remoteActive || rateLimited) {
+                console.log('[MusicDispatch] 拦截来自主动搭话的切歌请求 (playing=' + localPlaying + ', pending=' + localPending + ', remote=' + remoteActive + ', rateLimited=' + rateLimited + ')');
+                return false;
+            }
         }
 
         if (!trackInfo || !trackInfo.url) {
@@ -448,6 +462,10 @@
 
         if (window.sendMusicMessage) {
             var accepted = await window.sendMusicMessage(trackInfo);
+            // proactive 来源成功派发后打上限流时间戳，阻止接下来 18s 内的再次 proactive 推荐
+            if (accepted && options.source === 'proactive' && typeof window.markProactiveMusicRecommended === 'function') {
+                window.markProactiveMusicRecommended();
+            }
             return accepted; // 返回布尔值表示是否成功派发
         } else {
             console.warn('[MusicDispatch] sendMusicMessage \u5C1A\u672A\u5C31\u7EEA\uFF0C\u542F\u52A8\u7B49\u5F85 (ID: ' + currentDispatchId + ')...');
