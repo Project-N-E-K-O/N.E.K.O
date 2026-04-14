@@ -4053,6 +4053,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const modelPath = e.target.value;
             updateMMDModelSelectButtonText();
             if (!modelPath) return;
+            const mmdCanvas = document.getElementById('mmd-canvas');
             const loadingSessionId = window._createMMDLoadingSessionId
                 ? window._createMMDLoadingSessionId('mmd-manager')
                 : `mmd-manager-${Date.now()}`;
@@ -4073,6 +4074,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (mmdContainer) {
                 mmdContainer.classList.remove('hidden');
                 mmdContainer.style.display = 'block';
+            }
+            if (mmdCanvas) {
+                // 预览页加载 MMD 时，物理初始化会持续一段时间；
+                // 在 ready 之前保持 canvas 不可见，避免模型从 overlay 背后透出。
+                mmdCanvas.style.display = 'block';
+                mmdCanvas.style.visibility = 'hidden';
+                mmdCanvas.style.pointerEvents = 'none';
             }
 
             try {
@@ -4199,6 +4207,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 if (window.MMDLoadingOverlay) {
                     window.MMDLoadingOverlay.end(loadingSessionId);
+                }
+                if (mmdCanvas) {
+                    mmdCanvas.style.visibility = 'visible';
+                    mmdCanvas.style.pointerEvents = 'auto';
                 }
             } catch (error) {
                 console.error('加载MMD模型失败:', error);

@@ -484,7 +484,11 @@
     const mmdContainer = document.getElementById('mmd-container');
     if (mmdContainer) { mmdContainer.classList.remove('hidden'); mmdContainer.style.display = 'block'; mmdContainer.style.visibility = 'visible'; }
     const mmdCanvas = document.getElementById('mmd-canvas');
-    if (mmdCanvas) { mmdCanvas.style.visibility = 'visible'; mmdCanvas.style.pointerEvents = 'auto'; }
+    if (mmdCanvas) {
+        // 保持 canvas 隐藏直到模型真正 ready，避免旧帧或首帧透过 loading overlay 露出。
+        mmdCanvas.style.visibility = 'hidden';
+        mmdCanvas.style.pointerEvents = 'none';
+    }
 
     try {
         await window._waitForMMDModules(10000);
@@ -562,6 +566,10 @@
             window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'done' });
             await window._waitForMMDRenderFrame(window.mmdManager);
             window.MMDLoadingOverlay.end(loadingSessionId);
+            if (mmdCanvas) {
+                mmdCanvas.style.visibility = 'visible';
+                mmdCanvas.style.pointerEvents = 'auto';
+            }
             console.log('[MMD Init] MMD 模型自动加载完成');
         }
     } catch (e) {

@@ -1340,6 +1340,14 @@ class MMDCore {
 
         this._clearModel();
 
+        // 显式清空最后一帧，避免下次重新显示 canvas 时透出旧模型残留。
+        if (this.manager.renderer) {
+            try {
+                this.manager.renderer.setRenderTarget(null);
+                this.manager.renderer.clear(true, true, true);
+            } catch (_) { /* ignore clear failures during teardown */ }
+        }
+
         // 清理光照
         [this.manager.ambientLight, this.manager.directionalLight].forEach(light => {
             if (light && light.parent) {

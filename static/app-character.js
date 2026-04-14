@@ -911,8 +911,9 @@
                 const mmdCanvasShow = document.getElementById('mmd-canvas');
                 if (mmdCanvasShow) {
                     mmdCanvasShow.style.display = 'block';
-                    mmdCanvasShow.style.visibility = 'visible';
-                    mmdCanvasShow.style.pointerEvents = 'auto';
+                    // 先隐藏 canvas，避免旧帧或新模型首帧在半透明 loading overlay 后面透出。
+                    mmdCanvasShow.style.visibility = 'hidden';
+                    mmdCanvasShow.style.pointerEvents = 'none';
                 }
                 const loadingSessionId = window._createMMDLoadingSessionId
                     ? window._createMMDLoadingSessionId('mmd-character')
@@ -989,6 +990,12 @@
                         await window._waitForMMDRenderFrame(window.mmdManager);
                     }
                     window.MMDLoadingOverlay?.end(loadingSessionId);
+                    const mmdCanvasReady = document.getElementById('mmd-canvas');
+                    if (mmdCanvasReady) {
+                        mmdCanvasReady.style.display = 'block';
+                        mmdCanvasReady.style.visibility = 'visible';
+                        mmdCanvasReady.style.pointerEvents = 'auto';
+                    }
                 } else {
                     console.error('[猫娘切换] MMD 管理器初始化失败');
                     window.MMDLoadingOverlay?.fail(loadingSessionId, {

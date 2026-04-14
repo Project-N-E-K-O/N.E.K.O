@@ -436,8 +436,9 @@
                     }
                     var mmdCanvasShow = document.getElementById('mmd-canvas');
                     if (mmdCanvasShow) {
-                        mmdCanvasShow.style.visibility = 'visible';
-                        mmdCanvasShow.style.pointerEvents = 'auto';
+                        // 先隐藏 canvas，避免旧帧或加载中的模型透过半透明 overlay 露出。
+                        mmdCanvasShow.style.visibility = 'hidden';
+                        mmdCanvasShow.style.pointerEvents = 'none';
                     }
                     const loadingSessionId = window._createMMDLoadingSessionId
                         ? window._createMMDLoadingSessionId('mmd-interpage')
@@ -517,6 +518,11 @@
                             await window._waitForMMDRenderFrame(window.mmdManager);
                         }
                         window.MMDLoadingOverlay?.end(loadingSessionId);
+                        var mmdCanvasReady = document.getElementById('mmd-canvas');
+                        if (mmdCanvasReady) {
+                            mmdCanvasReady.style.visibility = 'visible';
+                            mmdCanvasReady.style.pointerEvents = 'auto';
+                        }
                         mmdRequestSessionId = '';
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
