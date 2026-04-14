@@ -37,7 +37,7 @@
 
 [brain/task_executor.py](../../brain/task_executor.py) 中定义了 `_CHANNEL_PRIORITY`：
 
-`copaw > openfang > browser_use > computer_use`
+`openclaw > openfang > browser_use > computer_use`
 
 在 [brain/task_executor.py](../../brain/task_executor.py) 的统一渠道选择逻辑里，如果多个渠道都可执行，系统会按这个优先级选最终执行通道。
 
@@ -256,7 +256,7 @@
 2. 组装纠正事件。
 3. 调用 `TaskExecutor` 或共享 helper 将事件追加到 JSON 文件。
 
-为了让这个接口能拿到更多上下文，建议顺手在注册任务时把以下字段写进 `task_registry`：
+为了让这个接口能拿到更多上下文，建议顺手在注册任务时把以下字段写进 `agent_server.py` 中任务对象的私有结构 `task_info["_internal_corrections"]`：
 
 - `decision_reason`
 - `task_description`
@@ -264,7 +264,7 @@
 - `normalized_intent`
 - `recent_context`
 
-这属于小改动，不需要改执行流程。
+这些字段用于纠正记忆写回，不应直接暴露在公开 `task_registry` 响应里；对外查询会经过 `_public_task_info()` 过滤，避免把内部纠正上下文返回给前端。
 
 ---
 

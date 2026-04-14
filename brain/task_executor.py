@@ -457,17 +457,33 @@ class DirectTaskExecutor:
         if not latest:
             return ""
 
+        normalized_latest = re.sub(r"[^\w\u4e00-\u9fff]+", " ", latest.lower()).strip()
         vague_markers = (
             "这个", "那个", "一下", "继续", "继续弄", "处理一下", "帮我弄一下",
             "就这个", "刚才那个", "上一条", "发给他", "发给她", "发给它",
             "打开它", "打开这个", "继续这个", "继续那个",
+            "this", "that", "this one", "that one", "it", "do it", "continue",
+            "go on", "keep going", "same one", "the same", "open it", "send it",
+            "上一個", "這個", "那個", "继续做", "接着做",
+            "これ", "それ", "これを", "それを", "続けて", "続ける", "やって", "やってね",
+            "이거", "저거", "이것", "그것", "계속", "계속해", "해줘", "그거 해줘",
         )
         user_turns = [
             item.get("content", "").strip()
             for item in recent_context
             if item.get("role") == "user" and item.get("content", "").strip()
         ]
-        latest_is_vague = len(latest) <= 12 or any(marker in latest for marker in vague_markers)
+        def _matches_vague_marker(marker: str) -> bool:
+            marker_norm = re.sub(r"[^\w\u4e00-\u9fff]+", " ", marker.lower()).strip()
+            if not marker_norm:
+                return False
+            if re.search(r"[a-z0-9]", marker_norm):
+                return re.search(rf"\b{re.escape(marker_norm)}\b", normalized_latest) is not None
+            return marker_norm in latest or marker_norm in normalized_latest
+
+        latest_is_vague = len(normalized_latest or latest) <= 12 or any(
+            _matches_vague_marker(marker) for marker in vague_markers
+        )
         if not latest_is_vague:
             return latest
 
