@@ -3190,6 +3190,26 @@ async def proactive_chat(request: Request):
         # 滚动尾部缓冲区：保留最近 5 个字符以检测跨 chunk 的 "[PASS]"（长度 6）
         pass_probe = ""
         _PASS_PROBE_LEN = 5  # len("[PASS]") - 1
+
+        async def _emit_safe(text: str) -> bool:
+            """通过 fence/长度检查后送入 TTS。返回 True 表示应 abort。"""
+            nonlocal pipe_count, full_text, aborted
+            if not text:
+                return False
+            for ch in text:
+                if ch in ('|', '｜'):
+                    pipe_count += 1
+                    if pipe_count >= 2:
+                        print(f"[{lanlan_name}] Phase 2 fence 触发 (pipe_count={pipe_count})，abort")
+                        aborted = True
+                        return True
+            if len(full_text) + len(text) > 400:
+                print(f"[{lanlan_name}] Phase 2 长度超限 ({len(full_text)+len(text)} > 400)，abort")
+                aborted = True
+                return True
+            full_text += text
+            await mgr.feed_tts_chunk(text)
+            return False
         
         try:
             async with asyncio.timeout(25.0):
@@ -3232,9 +3252,8 @@ async def proactive_chat(request: Request):
                                     break
                                 safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
                                 pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
-                                if safe_text:
-                                    full_text += safe_text
-                                    await mgr.feed_tts_chunk(safe_text)
+                                if await _emit_safe(safe_text):
+                                    break
                             continue
                         
                         # --- 在线拦截: [PASS]（含跨 chunk 检测）---
@@ -3247,30 +3266,8 @@ async def proactive_chat(request: Request):
                         safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
                         pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
                         
-                        if not safe_text:
-                            continue
-                        
-                        # --- 在线拦截: fence ---
-                        fence_hit = False
-                        for ch in safe_text:
-                            if ch in ('|', '｜'):
-                                pipe_count += 1
-                                if pipe_count >= 2:
-                                    fence_hit = True
-                                    break
-                        if fence_hit:
-                            print(f"[{lanlan_name}] Phase 2 流式 fence 触发 (pipe_count={pipe_count})，abort")
-                            aborted = True
+                        if safe_text and await _emit_safe(safe_text):
                             break
-                        
-                        # --- 在线拦截: 长度 ---
-                        if len(full_text) + len(safe_text) > 400:
-                            print(f"[{lanlan_name}] Phase 2 流式长度超限 ({len(full_text)+len(safe_text)} > 400)，abort")
-                            aborted = True
-                            break
-                        
-                        full_text += safe_text
-                        await mgr.feed_tts_chunk(safe_text)
         
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning(f"[{lanlan_name}] Phase 2 流式调用异常: {type(e).__name__}: {e}")
@@ -3281,8 +3278,7 @@ async def proactive_chat(request: Request):
             if '[PASS]' in pass_probe.upper():
                 aborted = True
             else:
-                full_text += pass_probe
-                await mgr.feed_tts_chunk(pass_probe)
+                await _emit_safe(pass_probe)
         pass_probe = ""
         
         # --- 流结束后 buffer 未 flush 的兜底处理 ---
@@ -3298,8 +3294,7 @@ async def proactive_chat(request: Request):
             if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
                 aborted = True
             elif cleaned.strip():
-                full_text += cleaned
-                await mgr.feed_tts_chunk(cleaned)
+                await _emit_safe(cleaned)
         
         # --- 结果处理 ---
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")
