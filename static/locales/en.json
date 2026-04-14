@@ -535,6 +535,8 @@
         "AGENT_CU_CAPABILITY_LOST": "Computer Use unavailable: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS service connection failed: {{msg}}",
         "TTS_RECONNECTING": "🔄 TTS service is reconnecting, please wait...",
+        "TTS_DEGRADED_BUFFERING": "⚠️ TTS stream is slow. Next response will switch to sentence-buffered playback",
+        "TTS_STREAM_RECOVERED": "✅ TTS streaming has recovered",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URL not configured. Please enable and configure custom TTS in API settings.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL must be localhost",
         "TTS_AUDIO_API_KEY_MISSING": "Audio API key (AUDIO_API_KEY) not configured",

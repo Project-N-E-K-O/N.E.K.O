@@ -535,6 +535,8 @@
         "AGENT_CU_CAPABILITY_LOST": "Computer Use 不可用：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS服务连接失败: {{msg}}",
         "TTS_RECONNECTING": "🔄 语音服务正在自动重连，请稍候...",
+        "TTS_DEGRADED_BUFFERING": "⚠️ 当前语音链路较慢，下一轮将切换为句级缓冲播放",
+        "TTS_STREAM_RECOVERED": "✅ 语音链路已恢复流式播放",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "未配置 GPT-SoVITS API URL，请先在 API 设置中启用并配置自定义 TTS",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL 必须为 localhost",
         "TTS_AUDIO_API_KEY_MISSING": "未配置音频 API 密钥 (AUDIO_API_KEY)",

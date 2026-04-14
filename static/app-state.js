@@ -51,6 +51,8 @@
         incomingAudioEpoch: 0,
         isProcessingIncomingAudioBlob: false,
         decoderResetPromise: null,
+        _isReBuffering: false,
+        _preBufferForceStartTimer: null,
 
         // --- Audio (录音/麦克风) ---
         audioContext: null,

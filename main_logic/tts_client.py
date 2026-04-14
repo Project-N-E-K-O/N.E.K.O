@@ -7,6 +7,7 @@ import soxr
 import time
 import json
 import base64
+import binascii
 import websockets
 import io
 import wave
@@ -17,6 +18,7 @@ from urllib.parse import urlparse, urlunparse
 from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
+from utils.frontend_utils import split_paragraph
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
@@ -161,6 +163,93 @@ def _get_minimax_tts_ws_url(base_url: str | None = None) -> str:
     if not parsed.netloc:
         raise ValueError(f"无效的 MiniMax base_url: {base_url!r}")
     return urlunparse((parsed.scheme, parsed.netloc, "/ws/v1/t2a_v2", "", "", ""))
+
+
+def _get_minimax_tts_http_url(base_url: str | None = None) -> str:
+    """将 MiniMax API base URL 规范化为 TTS HTTP 地址。"""
+    raw_url = (base_url or "https://api.minimaxi.com").strip().rstrip("/")
+    if raw_url.startswith("ws://"):
+        raw_url = "http://" + raw_url[5:]
+    elif raw_url.startswith("wss://"):
+        raw_url = "https://" + raw_url[6:]
+    elif not raw_url.startswith(("http://", "https://")):
+        raw_url = "https://" + raw_url
+
+    parsed = urlparse(raw_url)
+    if not parsed.netloc:
+        raise ValueError(f"无效的 MiniMax base_url: {base_url!r}")
+    return urlunparse((parsed.scheme, parsed.netloc, "/v1/t2a_v2", "", "", ""))
+
+
+async def _minimax_http_synthesize_pcm(
+    audio_api_key: str,
+    voice_id: str,
+    text: str,
+    *,
+    base_url: str | None = None,
+    model: str = "speech-2.8-turbo",
+) -> bytes:
+    """调用 MiniMax 非流式 TTS，返回 24k PCM bytes。"""
+    if not text or not text.strip():
+        return b""
+
+    http_url = _get_minimax_tts_http_url(base_url)
+    payload = {
+        "model": model,
+        "text": text,
+        "stream": False,
+        "voice_setting": {
+            "voice_id": voice_id,
+            "speed": 1.0,
+            "vol": 1.0,
+            "pitch": 0,
+        },
+        "audio_setting": {
+            "sample_rate": 24000,
+            "bitrate": 128000,
+            "format": "pcm",
+            "channel": 1,
+        },
+        "subtitle_enable": False,
+    }
+    timeout = aiohttp.ClientTimeout(total=40, connect=10, sock_read=30)
+    session_kwargs = aiohttp_session_kwargs_for_url(http_url)
+
+    try:
+        async with aiohttp.ClientSession(
+            timeout=timeout,
+            headers={
+                "Authorization": f"Bearer {audio_api_key}",
+                "Content-Type": "application/json",
+            },
+            **session_kwargs,
+        ) as session:
+            async with session.post(http_url, json=payload) as resp:
+                body_text = await resp.text()
+                if resp.status != 200:
+                    raise RuntimeError(
+                        f"HTTP {resp.status}: {body_text[:300]}"
+                    )
+        result = json.loads(body_text)
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError("request timed out") from exc
+    except aiohttp.ClientError as exc:
+        raise RuntimeError(f"request failed ({type(exc).__name__}: {exc})") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"响应不是合法JSON: {exc}") from exc
+
+    base_resp = result.get("base_resp") or {}
+    if base_resp.get("status_code", 0) != 0:
+        raise RuntimeError(base_resp.get("status_msg", "Unknown error"))
+
+    audio_hex = (result.get("data") or {}).get("audio", "")
+    if not audio_hex:
+        raise RuntimeError(f"响应缺少 audio 字段: {result}")
+
+    try:
+        return binascii.unhexlify(audio_hex)
+    except (binascii.Error, ValueError) as exc:
+        raise RuntimeError("音频 hex 解码失败") from exc
 
 
 try:
@@ -1966,17 +2055,32 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         ws_url = _get_minimax_tts_ws_url(base_url)
         headers = {"Authorization": f"Bearer {audio_api_key}"}
         model_name = "speech-2.8-turbo"
+        is_minimax = base_url and "minimax" in base_url
+        is_minimax_intl = base_url and "minimax.io" in base_url
         min_buffer_chars = 6
-        agg_flush_bytes = 4096
+        agg_flush_bytes = 1024 if is_minimax else 4096
+        chunk_gap_notice_ms = 120.0
+        chunk_gap_warn_ms = 250.0
+        max_chunk_gap_warning_logs = 3
         connect_timeout = 10.0
         task_start_timeout = 10.0
         task_finish_timeout = 10.0
         idle_auto_finish_seconds = 105.0
+        connect_retry_backoff_seconds = 0.5
+        degraded_hold_turns = 3
+        recover_streaming_turns = 3
+        degrade_warn_gaps_threshold = 3
+        degrade_max_gap_threshold_ms = 500.0
+        degrade_slow_gap_threshold = 8
+        degrade_throughput_threshold = 0.6
+        recover_max_gap_threshold_ms = 150.0
+        recover_throughput_threshold = 0.9
 
         ws = None
         receive_task = None
         current_speech_id = None
         pending_text = ""
+        buffered_text = ""
         task_started = False
         accepted_speech_id = None
         expected_close = False
@@ -1987,6 +2091,37 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         audio_chunk_buffer = bytearray()
         resampler = None
         last_send_monotonic = None
+        last_connect_failure_monotonic = None
+        current_turn_mode = None
+        current_turn_received_audio = False
+        current_turn_received_audio_ms = 0.0
+        current_turn_first_audio_monotonic = None
+        current_turn_last_audio_monotonic = None
+        current_turn_audio_chunk_count = 0
+        current_turn_slow_gaps = 0
+        current_turn_warn_gaps = 0
+        current_turn_max_gap_ms = 0.0
+        current_turn_max_gap_chunk_audio_ms = 0.0
+        current_turn_mark_future_degrade = False
+        current_turn_degrade_reasons = []
+        degraded_active = False
+        degraded_hold_turns_remaining = 0
+        degrade_scheduled = False
+        recovery_streaming_streak = 0
+
+        try:
+            from utils.language_utils import get_global_language
+            _split_lang_raw = (get_global_language() or "zh").lower()
+        except Exception:
+            _split_lang_raw = "zh"
+        split_lang = "zh" if _split_lang_raw.startswith(("zh", "cmn")) else _split_lang_raw[:2]
+
+        def _summarize_exception(exc: Exception) -> str:
+            exc_type = type(exc).__name__
+            detail = str(exc).strip()
+            if not detail:
+                return exc_type
+            return f"{exc_type}: {detail}"
 
         def _reset_protocol_events():
             nonlocal task_started_event, task_finished_event, disconnect_event
@@ -1994,9 +2129,179 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
             task_finished_event = asyncio.Event()
             disconnect_event = asyncio.Event()
 
-        def _reset_task_state(*, clear_sid: bool, clear_pending: bool = True) -> None:
-            nonlocal current_speech_id, pending_text, task_started, accepted_speech_id
+        def _reset_turn_metrics(*, preserve_degrade_mark: bool = False) -> None:
+            nonlocal current_turn_received_audio, current_turn_received_audio_ms
+            nonlocal current_turn_first_audio_monotonic, current_turn_last_audio_monotonic
+            nonlocal current_turn_audio_chunk_count
+            nonlocal current_turn_slow_gaps, current_turn_warn_gaps, current_turn_max_gap_ms
+            nonlocal current_turn_max_gap_chunk_audio_ms
+            nonlocal current_turn_mark_future_degrade, current_turn_degrade_reasons
+            current_turn_received_audio = False
+            current_turn_received_audio_ms = 0.0
+            current_turn_first_audio_monotonic = None
+            current_turn_last_audio_monotonic = None
+            current_turn_audio_chunk_count = 0
+            current_turn_slow_gaps = 0
+            current_turn_warn_gaps = 0
+            current_turn_max_gap_ms = 0.0
+            current_turn_max_gap_chunk_audio_ms = 0.0
+            if not preserve_degrade_mark:
+                current_turn_mark_future_degrade = False
+                current_turn_degrade_reasons = []
+
+        def _current_turn_throughput_ratio() -> float:
+            receive_wall_ms = 0.0
+            if (
+                current_turn_first_audio_monotonic is not None
+                and current_turn_last_audio_monotonic is not None
+            ):
+                receive_wall_ms = max(
+                    0.0,
+                    (current_turn_last_audio_monotonic - current_turn_first_audio_monotonic) * 1000.0,
+                )
+            baseline_ms = max(current_turn_received_audio_ms, receive_wall_ms)
+            if baseline_ms <= 0:
+                return 0.0
+            return current_turn_received_audio_ms / baseline_ms
+
+        def _cadence_diagnostics(throughput_ratio: float | None = None) -> str:
+            if throughput_ratio is None:
+                throughput_ratio = _current_turn_throughput_ratio()
+            avg_chunk_ms = (
+                current_turn_received_audio_ms / current_turn_audio_chunk_count
+                if current_turn_audio_chunk_count > 0 else 0.0
+            )
+            ref_chunk_ms = current_turn_max_gap_chunk_audio_ms or avg_chunk_ms
+            peak_burst_ratio = (
+                current_turn_max_gap_ms / ref_chunk_ms
+                if ref_chunk_ms > 0 else 0.0
+            )
+            if throughput_ratio < degrade_throughput_threshold:
+                interpretation = "平均吞吐低于实时"
+            elif peak_burst_ratio >= 3.0 or current_turn_warn_gaps > 0:
+                interpretation = "平均吞吐接近实时，但瞬时吐包抖动明显"
+            else:
+                interpretation = "整体 cadence 基本平稳"
+            return (
+                f"chunks={current_turn_audio_chunk_count} "
+                f"avg_chunk={avg_chunk_ms:.0f}ms "
+                f"peak_burst={peak_burst_ratio:.1f}x "
+                f"interpretation={interpretation}"
+            )
+
+        def _log_chunk_gap_summary() -> None:
+            if current_turn_slow_gaps <= 0:
+                return
+            throughput_ratio = _current_turn_throughput_ratio()
+            logger.info(
+                "MiniMax TTS chunk cadence summary: slow_gaps=%d warn_gaps=%d max_gap=%.0fms ratio=%.2f %s intl=%s",
+                current_turn_slow_gaps,
+                current_turn_warn_gaps,
+                current_turn_max_gap_ms,
+                throughput_ratio,
+                _cadence_diagnostics(throughput_ratio),
+                bool(is_minimax_intl),
+            )
+
+        def _degrade_reason_label(reason_kind: str) -> str:
+            if reason_kind == "connect_failure":
+                return "建链失败"
+            if reason_kind == "cadence":
+                return "吐包抖动"
+            return "未知原因"
+
+        def _primary_degrade_reason():
+            if current_turn_degrade_reasons:
+                return current_turn_degrade_reasons[0]
+            return None
+
+        def _mark_future_degrade(reason_kind: str, reason: str) -> None:
+            nonlocal current_turn_mark_future_degrade, recovery_streaming_streak
+            nonlocal current_turn_degrade_reasons
+            reason_entry = {"kind": reason_kind, "detail": reason}
+            if not any(
+                existing.get("kind") == reason_kind and existing.get("detail") == reason
+                for existing in current_turn_degrade_reasons
+            ):
+                current_turn_degrade_reasons.append(reason_entry)
+            if not current_turn_mark_future_degrade:
+                logger.warning(
+                    "MiniMax TTS 将在下一轮切换句级缓冲 [%s]: %s",
+                    _degrade_reason_label(reason_kind),
+                    reason,
+                )
+            elif len(current_turn_degrade_reasons) > 1:
+                logger.info(
+                    "MiniMax TTS 附加降级原因 [%s]: %s",
+                    _degrade_reason_label(reason_kind),
+                    reason,
+                )
+            current_turn_mark_future_degrade = True
+            recovery_streaming_streak = 0
+
+        def _enter_degraded_mode() -> None:
+            nonlocal degraded_active, degraded_hold_turns_remaining
+            nonlocal degrade_scheduled, recovery_streaming_streak
+            was_degraded = degraded_active
+            degraded_active = True
+            degraded_hold_turns_remaining = degraded_hold_turns
+            degrade_scheduled = False
+            recovery_streaming_streak = 0
+            if not was_degraded:
+                logger.warning(
+                    "MiniMax TTS 进入 degraded 句级缓冲模式 (voice_id=%s intl=%s)",
+                    voice_id,
+                    bool(is_minimax_intl),
+                )
+                response_queue.put(("__status__", "TTS_DEGRADED_BUFFERING"))
+            else:
+                logger.info(
+                    "MiniMax TTS degraded hold reset: remaining_turns=%d",
+                    degraded_hold_turns_remaining,
+                )
+
+        def _recover_streaming_mode() -> None:
+            nonlocal degraded_active, degraded_hold_turns_remaining
+            nonlocal degrade_scheduled, recovery_streaming_streak
+            degraded_active = False
+            degraded_hold_turns_remaining = 0
+            degrade_scheduled = False
+            recovery_streaming_streak = 0
+            logger.info("MiniMax TTS 已恢复纯流式模式 (voice_id=%s intl=%s)", voice_id, bool(is_minimax_intl))
+            response_queue.put(("__status__", "TTS_STREAM_RECOVERED"))
+
+        def _resolve_turn_mode() -> str:
+            if degrade_scheduled:
+                _enter_degraded_mode()
+            if degraded_active and degraded_hold_turns_remaining > 0:
+                return "buffered"
+            return "streaming"
+
+        def _start_turn(sid: str) -> None:
+            nonlocal current_speech_id, pending_text, buffered_text, task_started
+            nonlocal accepted_speech_id, audio_chunk_buffer, resampler
+            nonlocal last_send_monotonic, last_connect_failure_monotonic, current_turn_mode
+            current_speech_id = sid
+            pending_text = ""
+            buffered_text = ""
+            task_started = False
+            current_turn_mode = _resolve_turn_mode()
+            accepted_speech_id = sid if current_turn_mode == "buffered" else None
+            audio_chunk_buffer = bytearray()
+            resampler = None
+            last_send_monotonic = None
+            last_connect_failure_monotonic = None
+            _reset_turn_metrics()
+
+        def _reset_task_state(
+            *,
+            clear_sid: bool,
+            clear_pending: bool = True,
+            reset_turn_state: bool = True,
+        ) -> None:
+            nonlocal current_speech_id, pending_text, buffered_text, task_started, accepted_speech_id
             nonlocal audio_chunk_buffer, resampler, last_send_monotonic
+            nonlocal last_connect_failure_monotonic, current_turn_mode
             if clear_sid:
                 current_speech_id = None
             if clear_pending:
@@ -2006,6 +2311,11 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
             audio_chunk_buffer = bytearray()
             resampler = None
             last_send_monotonic = None
+            if reset_turn_state:
+                buffered_text = ""
+                current_turn_mode = None
+                last_connect_failure_monotonic = None
+                _reset_turn_metrics()
 
         def _flush_audio(force: bool = False) -> None:
             nonlocal audio_chunk_buffer
@@ -2019,6 +2329,133 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
             if force and audio_chunk_buffer:
                 response_queue.put(("__audio__", accepted_speech_id, bytes(audio_chunk_buffer)))
                 audio_chunk_buffer.clear()
+
+        def _enqueue_pcm_audio(pcm_bytes: bytes, *, force_flush: bool = False) -> None:
+            nonlocal resampler
+            if not accepted_speech_id or not pcm_bytes:
+                return
+            audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
+            if current_turn_mode == "streaming":
+                if resampler is None:
+                    resampler = soxr.ResampleStream(24000, 48000, 1, dtype="float32")
+                resampled_chunk = _resample_audio(audio_array, 24000, 48000, resampler)
+            else:
+                resampled_chunk = _resample_audio(audio_array, 24000, 48000)
+            audio_chunk_buffer.extend(resampled_chunk)
+            _flush_audio(force=force_flush)
+
+        def _complete_buffered_turn() -> None:
+            nonlocal degraded_hold_turns_remaining, recovery_streaming_streak
+            if degraded_active and degraded_hold_turns_remaining > 0:
+                degraded_hold_turns_remaining -= 1
+                if degraded_hold_turns_remaining == 0:
+                    logger.info("MiniMax TTS degraded hold completed，下一轮开始尝试恢复流式")
+            recovery_streaming_streak = 0
+
+        def _complete_streaming_turn() -> None:
+            nonlocal degrade_scheduled, recovery_streaming_streak
+            throughput_ratio = _current_turn_throughput_ratio()
+            if current_turn_warn_gaps >= degrade_warn_gaps_threshold:
+                _mark_future_degrade(
+                    "cadence",
+                    f"warn_gaps={current_turn_warn_gaps} >= {degrade_warn_gaps_threshold}"
+                )
+            elif current_turn_max_gap_ms >= degrade_max_gap_threshold_ms:
+                _mark_future_degrade(
+                    "cadence",
+                    f"max_gap={current_turn_max_gap_ms:.0f}ms >= {degrade_max_gap_threshold_ms:.0f}ms"
+                )
+            elif (
+                current_turn_slow_gaps >= degrade_slow_gap_threshold
+                and throughput_ratio < degrade_throughput_threshold
+            ):
+                _mark_future_degrade(
+                    "cadence",
+                    "stream throughput below real-time "
+                    f"(slow_gaps={current_turn_slow_gaps}, ratio={throughput_ratio:.2f})"
+                )
+
+            if current_turn_mark_future_degrade:
+                degrade_scheduled = True
+                primary_reason = _primary_degrade_reason() or {"kind": "unknown", "detail": ""}
+                reason_label = _degrade_reason_label(primary_reason.get("kind", "unknown"))
+                if primary_reason.get("kind") == "connect_failure":
+                    logger.info(
+                        "MiniMax TTS 下一轮将进入 degraded 模式: primary_reason=%s detail=%s cadence_after_reconnect={slow_gaps=%d warn_gaps=%d max_gap=%.0fms ratio=%.2f %s}",
+                        reason_label,
+                        primary_reason.get("detail", ""),
+                        current_turn_slow_gaps,
+                        current_turn_warn_gaps,
+                        current_turn_max_gap_ms,
+                        throughput_ratio,
+                        _cadence_diagnostics(throughput_ratio),
+                    )
+                else:
+                    logger.info(
+                        "MiniMax TTS 下一轮将进入 degraded 模式: primary_reason=%s detail=%s cadence={slow_gaps=%d warn_gaps=%d max_gap=%.0fms ratio=%.2f %s}",
+                        reason_label,
+                        primary_reason.get("detail", ""),
+                        current_turn_slow_gaps,
+                        current_turn_warn_gaps,
+                        current_turn_max_gap_ms,
+                        throughput_ratio,
+                        _cadence_diagnostics(throughput_ratio),
+                    )
+                return
+
+            if not degraded_active:
+                recovery_streaming_streak = 0
+                return
+
+            if (
+                current_turn_warn_gaps == 0
+                and current_turn_max_gap_ms < recover_max_gap_threshold_ms
+                and throughput_ratio >= recover_throughput_threshold
+            ):
+                recovery_streaming_streak += 1
+                logger.info(
+                    "MiniMax TTS 流式恢复探测通过: streak=%d/%d ratio=%.2f max_gap=%.0fms",
+                    recovery_streaming_streak,
+                    recover_streaming_turns,
+                    throughput_ratio,
+                    current_turn_max_gap_ms,
+                )
+                if recovery_streaming_streak >= recover_streaming_turns:
+                    _recover_streaming_mode()
+            else:
+                recovery_streaming_streak = 0
+
+        async def _flush_buffered_text(*, force_process: bool) -> bool:
+            nonlocal buffered_text
+            if current_turn_mode != "buffered":
+                return True
+            ready_text, remaining_text = split_paragraph(
+                buffered_text,
+                force_process=force_process,
+                lang=split_lang,
+                comma_split=False,
+            )
+            buffered_text = remaining_text
+            ready_text = (ready_text or "").strip()
+            if not ready_text:
+                return True
+            try:
+                _record_tts_telemetry("minimax", ready_text)
+                pcm_bytes = await _minimax_http_synthesize_pcm(
+                    audio_api_key,
+                    voice_id,
+                    ready_text,
+                    base_url=base_url,
+                    model=model_name,
+                )
+                _enqueue_pcm_audio(pcm_bytes, force_flush=True)
+                return True
+            except ValueError as exc:
+                _enqueue_error(response_queue, f"MiniMax TTS 句级音频处理失败: {exc}")
+                return False
+            except Exception as exc:
+                _enqueue_error(response_queue, f"MiniMax TTS 句级合成失败: {_summarize_exception(exc)}")
+                return False
 
         async def _wait_for_event(target_event: asyncio.Event, timeout_s: float) -> bool:
             target_task = asyncio.create_task(target_event.wait())
@@ -2065,7 +2502,12 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
             expected_close = False
 
         async def _receive_loop(ws_conn):
-            nonlocal disconnect_reason, resampler
+            nonlocal disconnect_reason
+            nonlocal current_turn_received_audio, current_turn_received_audio_ms
+            nonlocal current_turn_first_audio_monotonic, current_turn_last_audio_monotonic
+            nonlocal current_turn_audio_chunk_count
+            nonlocal current_turn_slow_gaps, current_turn_warn_gaps, current_turn_max_gap_ms
+            nonlocal current_turn_max_gap_chunk_audio_ms
             try:
                 while True:
                     raw_message = await ws_conn.recv()
@@ -2080,30 +2522,62 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
 
                     event_type = message.get("event") or message.get("type") or ""
                     if event_type == "task_started":
+                        _reset_turn_metrics(preserve_degrade_mark=True)
                         task_started_event.set()
                         continue
 
                     if event_type == "task_continued":
                         data = message.get("data") or {}
                         audio_hex = data.get("audio", "")
-                        if accepted_speech_id and audio_hex:
+                        pcm_bytes = b""
+                        if audio_hex:
                             try:
                                 pcm_bytes = binascii.unhexlify(audio_hex)
-                                if pcm_bytes:
-                                    audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
-                                    if resampler is None:
-                                        resampler = soxr.ResampleStream(24000, 48000, 1, dtype="float32")
-                                    audio_chunk_buffer.extend(
-                                        _resample_audio(audio_array, 24000, 48000, resampler)
-                                    )
-                                    _flush_audio(force=bool(message.get("is_final")))
                             except (binascii.Error, ValueError) as exc:
+                                _enqueue_error(response_queue, f"MiniMax TTS 音频解码失败: {exc}")
+                                continue
+
+                        if pcm_bytes:
+                            now_mono = time.monotonic()
+                            chunk_duration_ms = (len(pcm_bytes) / 2 / 24000) * 1000
+                            current_turn_audio_chunk_count += 1
+                            current_turn_received_audio_ms += chunk_duration_ms
+                            if not current_turn_received_audio:
+                                current_turn_received_audio = True
+                                current_turn_first_audio_monotonic = now_mono
+                            elif current_turn_last_audio_monotonic is not None:
+                                gap_ms = (now_mono - current_turn_last_audio_monotonic) * 1000
+                                if gap_ms >= chunk_gap_notice_ms:
+                                    current_turn_slow_gaps += 1
+                                    if gap_ms > current_turn_max_gap_ms:
+                                        current_turn_max_gap_ms = gap_ms
+                                        current_turn_max_gap_chunk_audio_ms = chunk_duration_ms
+                                    if gap_ms >= chunk_gap_warn_ms:
+                                        current_turn_warn_gaps += 1
+                                        if current_turn_warn_gaps <= max_chunk_gap_warning_logs:
+                                            logger.warning(
+                                                "MiniMax TTS chunk 间隔较大: %.0fms (chunk=%.0fms intl=%s pcm=%dB)",
+                                                gap_ms,
+                                                chunk_duration_ms,
+                                                bool(is_minimax_intl),
+                                                len(pcm_bytes),
+                                            )
+                                        elif current_turn_warn_gaps == max_chunk_gap_warning_logs + 1:
+                                            logger.warning(
+                                                "MiniMax TTS chunk 间隔告警过多，后续将仅在 task_finished 时汇总 (intl=%s)",
+                                                bool(is_minimax_intl),
+                                            )
+                            current_turn_last_audio_monotonic = now_mono
+                            try:
+                                _enqueue_pcm_audio(pcm_bytes, force_flush=bool(message.get("is_final")))
+                            except ValueError as exc:
                                 _enqueue_error(response_queue, f"MiniMax TTS 音频解码失败: {exc}")
                         elif message.get("is_final"):
                             _flush_audio(force=True)
                         continue
 
                     if event_type == "task_finished":
+                        _log_chunk_gap_summary()
                         _flush_audio(force=True)
                         task_finished_event.set()
                         continue
@@ -2112,6 +2586,8 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                         base_resp = message.get("base_resp") or {}
                         status_code = base_resp.get("status_code")
                         status_msg = base_resp.get("status_msg") or ""
+                        if not current_turn_received_audio and current_turn_mode == "streaming":
+                            _mark_future_degrade("connect_failure", "task_failed before first audio")
                         if status_code == 2201:
                             logger.info("MiniMax TTS 连接因空闲超时被服务端关闭: %s", status_msg or message)
                             disconnect_reason = "idle_timeout"
@@ -2147,20 +2623,36 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
 
         async def _connect_with_handshake():
             logger.debug("MiniMax TTS 建立连接: %s", ws_url)
-            ws_conn = await websockets.connect(
-                ws_url,
-                additional_headers=headers,
-                ping_interval=None,
-                max_size=10 * 1024 * 1024,
-            )
+            try:
+                ws_conn = await websockets.connect(
+                    ws_url,
+                    additional_headers=headers,
+                    ping_interval=20,
+                    ping_timeout=10,
+                    max_size=10 * 1024 * 1024,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"websocket connect failed ({_summarize_exception(exc)})"
+                ) from exc
             try:
                 handshake_raw = await asyncio.wait_for(ws_conn.recv(), timeout=connect_timeout)
-            except Exception:
+            except asyncio.TimeoutError as exc:
                 try:
                     await ws_conn.close()
                 except Exception:
                     pass
-                raise
+                raise RuntimeError(
+                    f"等待 connected_success 超时 ({connect_timeout:.1f}s)"
+                ) from exc
+            except Exception as exc:
+                try:
+                    await ws_conn.close()
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"握手接收失败 ({_summarize_exception(exc)})"
+                ) from exc
             try:
                 handshake = json.loads(handshake_raw)
             except json.JSONDecodeError as exc:
@@ -2195,31 +2687,39 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         async def _handle_disconnect(*, notify_status: bool) -> None:
             nonlocal disconnect_reason
             preserve_pending = current_speech_id is not None and not task_started and bool(pending_text.strip())
+            if (
+                current_turn_mode == "streaming"
+                and current_speech_id is not None
+                and not current_turn_received_audio
+            ):
+                _mark_future_degrade("connect_failure", "connection lost before first audio")
             if notify_status:
                 response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
             try:
                 await _close_connection(expect_close=True)
             finally:
                 if preserve_pending:
-                    # 仅保留尚未发出的首段缓冲文本；已开始任务的文本不重放
-                    _reset_task_state(clear_sid=False, clear_pending=False)
+                    _reset_task_state(clear_sid=False, clear_pending=False, reset_turn_state=False)
+                    logger.debug("MiniMax TTS 连接恢复：保留未发送缓冲文本")
                 else:
                     _reset_task_state(clear_sid=True)
-                if preserve_pending:
-                    logger.debug("MiniMax TTS 连接恢复：保留未发送缓冲文本")
             _reset_protocol_events()
             disconnect_reason = None
 
         async def _ensure_started() -> bool:
             nonlocal task_started, accepted_speech_id, resampler, audio_chunk_buffer
-            nonlocal disconnect_reason, last_send_monotonic
+            nonlocal disconnect_reason, last_send_monotonic, last_connect_failure_monotonic
             if task_started:
                 return True
             if not _ws_is_open(ws):
                 try:
                     await _open_task_connection()
+                    last_connect_failure_monotonic = None
                 except Exception as exc:
-                    _enqueue_error(response_queue, f"MiniMax TTS 建立连接失败: {exc}")
+                    if current_turn_mode == "streaming" and not current_turn_received_audio:
+                        _mark_future_degrade("connect_failure", "connect/handshake failed before first audio")
+                    last_connect_failure_monotonic = time.monotonic()
+                    _enqueue_error(response_queue, f"MiniMax TTS 建立连接失败: {_summarize_exception(exc)}")
                     disconnect_reason = "unexpected_disconnect"
                     disconnect_event.set()
                     return False
@@ -2247,12 +2747,16 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                 await ws.send(json.dumps(payload))
                 last_send_monotonic = time.monotonic()
             except Exception as exc:
+                if current_turn_mode == "streaming" and not current_turn_received_audio:
+                    _mark_future_degrade("connect_failure", "task_start send failed before first audio")
                 _enqueue_error(response_queue, f"MiniMax TTS task_start 发送失败: {exc}")
                 disconnect_reason = "unexpected_disconnect"
                 disconnect_event.set()
                 return False
 
             if not await _wait_for_event(task_started_event, task_start_timeout):
+                if current_turn_mode == "streaming" and not current_turn_received_audio:
+                    _mark_future_degrade("connect_failure", "task_start failed before first audio")
                 if disconnect_reason is None:
                     _enqueue_error(response_queue, "MiniMax TTS task_start 超时")
                     disconnect_reason = "task_failed"
@@ -2263,6 +2767,7 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
             accepted_speech_id = current_speech_id
             audio_chunk_buffer = bytearray()
             resampler = soxr.ResampleStream(24000, 48000, 1, dtype="float32")
+            last_connect_failure_monotonic = None
             return True
 
         async def _send_text_chunk(text: str) -> bool:
@@ -2282,10 +2787,18 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                 return False
 
         async def _finish_current_task() -> None:
-            nonlocal current_speech_id, pending_text, task_started
-            nonlocal disconnect_reason, last_send_monotonic
+            nonlocal pending_text, buffered_text, last_send_monotonic
             if current_speech_id is None:
                 pending_text = ""
+                buffered_text = ""
+                return
+
+            if current_turn_mode == "buffered":
+                if not await _flush_buffered_text(force_process=True):
+                    return
+                _flush_audio(force=True)
+                _complete_buffered_turn()
+                _reset_task_state(clear_sid=True)
                 return
 
             if disconnect_event.is_set():
@@ -2296,9 +2809,9 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
             if not task_started and pending_text.strip():
                 if not await _ensure_started():
                     return
-                buffered_text = pending_text
+                buffered_payload = pending_text
                 pending_text = ""
-                if not await _send_text_chunk(buffered_text):
+                if not await _send_text_chunk(buffered_payload):
                     return
 
             if not task_started:
@@ -2318,6 +2831,7 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
 
             await _wait_for_event(task_finished_event, task_finish_timeout)
             await _close_connection(expect_close=True)
+            _complete_streaming_turn()
             _reset_task_state(clear_sid=True)
 
         async def _interrupt_current_task(*, clear_sid: bool) -> bool:
@@ -2355,7 +2869,26 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                     )
                 except stdlib_queue.Empty:
                     if (
-                        task_started
+                        current_turn_mode == "streaming"
+                        and current_speech_id is not None
+                        and not task_started
+                        and pending_text.strip()
+                        and not disconnect_event.is_set()
+                        and not _ws_is_open(ws)
+                        and (
+                            last_connect_failure_monotonic is None
+                            or time.monotonic() - last_connect_failure_monotonic >= connect_retry_backoff_seconds
+                        )
+                    ):
+                        logger.info("MiniMax TTS 自动重试保留缓冲文本: %d chars", len(pending_text))
+                        if await _ensure_started():
+                            buffered_payload = pending_text
+                            pending_text = ""
+                            if not await _send_text_chunk(buffered_payload):
+                                continue
+                    if (
+                        current_turn_mode == "streaming"
+                        and task_started
                         and last_send_monotonic is not None
                         and time.monotonic() - last_send_monotonic > idle_auto_finish_seconds
                     ):
@@ -2375,13 +2908,19 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                     continue
 
                 if current_speech_id is None:
-                    current_speech_id = sid
+                    _start_turn(sid)
                 elif current_speech_id != sid:
                     if not await _interrupt_current_task(clear_sid=False):
                         return
-                    current_speech_id = sid
+                    _start_turn(sid)
 
                 if not tts_text or not tts_text.strip():
+                    continue
+
+                if current_turn_mode == "buffered":
+                    buffered_text += tts_text
+                    if not await _flush_buffered_text(force_process=False):
+                        continue
                     continue
 
                 if not task_started:
@@ -2390,9 +2929,9 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                         continue
                     if not await _ensure_started():
                         continue
-                    buffered_text = pending_text
+                    buffered_payload = pending_text
                     pending_text = ""
-                    if not await _send_text_chunk(buffered_text):
+                    if not await _send_text_chunk(buffered_payload):
                         continue
                     continue
 

@@ -120,6 +120,7 @@ def _wait_for_queue_item(q, predicate, timeout=3.0):
 def test_get_minimax_tts_ws_url():
     assert tts_client._get_minimax_tts_ws_url("https://api.minimaxi.com/v1") == "wss://api.minimaxi.com/ws/v1/t2a_v2"
     assert tts_client._get_minimax_tts_ws_url("https://api.minimax.io") == "wss://api.minimax.io/ws/v1/t2a_v2"
+    assert tts_client._get_minimax_tts_http_url("https://api.minimax.io") == "https://api.minimax.io/v1/t2a_v2"
 
 
 @pytest.mark.unit
@@ -341,6 +342,159 @@ def test_minimax_worker_preserves_tail_audio_until_close_flush(monkeypatch):
     assert audio_item[1] == "speech-tail"
     assert len(audio_item[2]) > 0
     assert [msg["event"] for msg in task_ws.sent_messages] == ["task_start", "task_continue", "task_finish"]
+
+    request_queue.close()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_degrades_next_turn_after_slow_stream(monkeypatch):
+    slow_pcm = (np.arange(3000, dtype=np.int16)).tobytes()
+    buffered_pcm = (np.arange(2200, dtype=np.int16)).tobytes()
+
+    async def slow_turn_on_send(ws, message):
+        event = message.get("event")
+        if event == "task_start":
+            ws.queue_event({"event": "task_started"})
+        elif event == "task_continue":
+            ws.queue_event(
+                {
+                    "event": "task_continued",
+                    "data": {"audio": slow_pcm.hex()},
+                    "is_final": False,
+                }
+            )
+            await asyncio.sleep(0.55)
+            ws.queue_event(
+                {
+                    "event": "task_continued",
+                    "data": {"audio": slow_pcm.hex()},
+                    "is_final": True,
+                }
+            )
+        elif event == "task_finish":
+            ws.queue_event({"event": "task_finished"})
+
+    async def fake_buffered_synthesize(*args, **kwargs):
+        return buffered_pcm
+
+    probe_ws = FakeMiniMaxWebSocket()
+    slow_ws = FakeMiniMaxWebSocket(on_send=slow_turn_on_send)
+    factory = FakeConnectFactory(probe_ws, slow_ws)
+    monkeypatch.setattr(tts_client.websockets, "connect", factory)
+    monkeypatch.setattr(tts_client, "_minimax_http_synthesize_pcm", fake_buffered_synthesize)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue, base_url="https://api.minimax.io")
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    request_queue.put(("speech-slow", "abcdef"))
+    request_queue.put((None, None))
+    request_queue.put(("speech-buffered", "这是下一轮句级缓冲播放测试。"))
+    request_queue.put((None, None))
+
+    buffered_audio, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__" and item[1] == "speech-buffered",
+        timeout=6.0,
+    )
+    assert buffered_audio[1] == "speech-buffered"
+    assert ("__status__", "TTS_DEGRADED_BUFFERING") in seen
+    assert len(factory.calls) == 2
+    assert [msg["event"] for msg in slow_ws.sent_messages] == ["task_start", "task_continue", "task_finish"]
+
+    request_queue.close()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_recovers_streaming_after_buffered_hold(monkeypatch):
+    slow_pcm = (np.arange(3000, dtype=np.int16)).tobytes()
+    healthy_pcm = (np.arange(2600, dtype=np.int16)).tobytes()
+    buffered_pcm = (np.arange(2200, dtype=np.int16)).tobytes()
+
+    async def slow_turn_on_send(ws, message):
+        event = message.get("event")
+        if event == "task_start":
+            ws.queue_event({"event": "task_started"})
+        elif event == "task_continue":
+            ws.queue_event(
+                {
+                    "event": "task_continued",
+                    "data": {"audio": slow_pcm.hex()},
+                    "is_final": False,
+                }
+            )
+            await asyncio.sleep(0.55)
+            ws.queue_event(
+                {
+                    "event": "task_continued",
+                    "data": {"audio": slow_pcm.hex()},
+                    "is_final": True,
+                }
+            )
+        elif event == "task_finish":
+            ws.queue_event({"event": "task_finished"})
+
+    def make_healthy_turn_ws():
+        async def healthy_turn_on_send(ws, message):
+            event = message.get("event")
+            if event == "task_start":
+                ws.queue_event({"event": "task_started"})
+            elif event == "task_continue":
+                ws.queue_event(
+                    {
+                        "event": "task_continued",
+                        "data": {"audio": healthy_pcm.hex()},
+                        "is_final": True,
+                    }
+                )
+            elif event == "task_finish":
+                ws.queue_event({"event": "task_finished"})
+
+        return FakeMiniMaxWebSocket(on_send=healthy_turn_on_send)
+
+    async def fake_buffered_synthesize(*args, **kwargs):
+        return buffered_pcm
+
+    probe_ws = FakeMiniMaxWebSocket()
+    slow_ws = FakeMiniMaxWebSocket(on_send=slow_turn_on_send)
+    healthy_ws_1 = make_healthy_turn_ws()
+    healthy_ws_2 = make_healthy_turn_ws()
+    healthy_ws_3 = make_healthy_turn_ws()
+    factory = FakeConnectFactory(probe_ws, slow_ws, healthy_ws_1, healthy_ws_2, healthy_ws_3)
+    monkeypatch.setattr(tts_client.websockets, "connect", factory)
+    monkeypatch.setattr(tts_client, "_minimax_http_synthesize_pcm", fake_buffered_synthesize)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue, base_url="https://api.minimax.io")
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    request_queue.put(("speech-1", "abcdef"))
+    request_queue.put((None, None))
+
+    for sid in ("speech-2", "speech-3", "speech-4"):
+        request_queue.put((sid, "这是降级模式下的句级缓冲播放测试。"))
+        request_queue.put((None, None))
+
+    for sid in ("speech-5", "speech-6", "speech-7"):
+        request_queue.put((sid, "健康流式恢复测试文本abcdef。"))
+        request_queue.put((None, None))
+
+    recovered_item, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__status__", "TTS_STREAM_RECOVERED"),
+        timeout=8.0,
+    )
+    assert recovered_item == ("__status__", "TTS_STREAM_RECOVERED")
+    assert ("__status__", "TTS_DEGRADED_BUFFERING") in seen
+    assert len(factory.calls) == 5
 
     request_queue.close()
     thread.join(timeout=2.0)

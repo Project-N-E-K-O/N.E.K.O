@@ -27,6 +27,10 @@
     let _assistantTurnCompletionFallbackTimer = 0;
     let _assistantTurnCompletionFallbackTurnId = null;
 
+    var INITIAL_PRE_BUFFER_MS = 1000;
+    var PRE_BUFFER_FORCE_START_MS = 2000;
+    var RE_BUFFER_MS = 800;
+
     function audioTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
     }
@@ -399,6 +403,10 @@
     async function clearAudioQueue() {
         dispatchAssistantSpeechCancel('clear_audio_queue');
         clearAssistantTurnCompletion();
+        if (S._preBufferForceStartTimer) {
+            clearTimeout(S._preBufferForceStartTimer);
+            S._preBufferForceStartTimer = null;
+        }
         S.scheduledSources.forEach(function (source) {
             try { source.stop(); } catch (_) { /* noop */ }
         });
@@ -408,6 +416,7 @@
         S.isPlaying = false;
         S.audioStartTime = 0;
         S.nextChunkTime = 0;
+        S._isReBuffering = false;
 
         await resetOggOpusDecoder();
     }
@@ -420,6 +429,10 @@
     function clearAudioQueueWithoutDecoderReset() {
         dispatchAssistantSpeechCancel('clear_audio_queue_without_decoder_reset');
         clearAssistantTurnCompletion();
+        if (S._preBufferForceStartTimer) {
+            clearTimeout(S._preBufferForceStartTimer);
+            S._preBufferForceStartTimer = null;
+        }
         S.scheduledSources.forEach(function (source) {
             try { source.stop(); } catch (_) { /* noop */ }
         });
@@ -429,6 +442,7 @@
         S.isPlaying = false;
         S.audioStartTime = 0;
         S.nextChunkTime = 0;
+        S._isReBuffering = false;
         // Note: decoder is NOT reset here.
     }
 
@@ -533,6 +547,12 @@
         S.scheduleAudioChunksRunning = true;
 
         try {
+            // Re-buffering: pause scheduling until threshold is met
+            if (S._isReBuffering) {
+                setTimeout(scheduleAudioChunks, 10);
+                return;
+            }
+
             var scheduleAheadTime = 5;
 
             initializeGlobalAnalyser();
@@ -626,8 +646,25 @@
                 }
             }
 
+            // Detect buffer underrun: queue is empty and playback has caught up
+            if (S.isPlaying && S.audioBufferQueue.length === 0) {
+                var headroom = S.nextChunkTime - S.audioPlayerContext.currentTime;
+                if (headroom <= 0) {
+                    if (window.DEBUG_AUDIO) {
+                        console.warn('[Audio] buffer underrun -> enter rebuffer', {
+                            headroomMs: Math.round(headroom * 1000),
+                            currentTime: S.audioPlayerContext.currentTime,
+                            nextChunkTime: S.nextChunkTime,
+                            speechId: S.currentPlayingSpeechId
+                        });
+                    }
+                    S._isReBuffering = true;
+                    S.isPlaying = false;
+                }
+            }
+
             // Continue the scheduling loop
-            setTimeout(scheduleAudioChunks, 25);
+            setTimeout(scheduleAudioChunks, 10);
 
         } finally {
             S.scheduleAudioChunksRunning = false;
@@ -720,11 +757,80 @@
         }
 
         if (!S.isPlaying) {
-            var gap = (S.seqCounter <= 1) ? 0.03 : 0;
-            S.nextChunkTime = Math.max(
-                S.audioPlayerContext.currentTime + gap,
-                S.nextChunkTime
-            );
+            // Pre-buffer / Re-buffer: accumulate enough audio before starting/resuming playback
+            var bufferedDurationMs = 0;
+            for (var bi = 0; bi < S.audioBufferQueue.length; bi++) {
+                if (S.audioBufferQueue[bi] && S.audioBufferQueue[bi].buffer) {
+                    bufferedDurationMs += S.audioBufferQueue[bi].buffer.duration * 1000;
+                }
+            }
+
+            var threshold = S._isReBuffering ? RE_BUFFER_MS : INITIAL_PRE_BUFFER_MS;
+            if (bufferedDurationMs < threshold) {
+                if (window.DEBUG_AUDIO) {
+                    console.debug('[Audio] buffering before playback', {
+                        bufferedDurationMs: Math.round(bufferedDurationMs),
+                        thresholdMs: threshold,
+                        rebuffering: !!S._isReBuffering,
+                        queueLength: S.audioBufferQueue.length,
+                        speechId: S.currentPlayingSpeechId
+                    });
+                }
+                // Not enough buffered yet — set a safety timeout to force-start
+                if (!S._preBufferForceStartTimer) {
+                    S._preBufferForceStartTimer = setTimeout(function () {
+                        S._preBufferForceStartTimer = null;
+                        if (!S.isPlaying && S.audioBufferQueue.length > 0) {
+                            var forceBufferedDurationMs = 0;
+                            for (var fi = 0; fi < S.audioBufferQueue.length; fi++) {
+                                if (S.audioBufferQueue[fi] && S.audioBufferQueue[fi].buffer) {
+                                    forceBufferedDurationMs += S.audioBufferQueue[fi].buffer.duration * 1000;
+                                }
+                            }
+                            if (window.DEBUG_AUDIO) {
+                                console.warn('[Audio] force-start playback after prebuffer timeout', {
+                                    bufferedDurationMs: Math.round(forceBufferedDurationMs),
+                                    thresholdMs: threshold,
+                                    queueLength: S.audioBufferQueue.length,
+                                    speechId: S.currentPlayingSpeechId
+                                });
+                            }
+                            S._isReBuffering = false;
+                            S.nextChunkTime = S.audioPlayerContext.currentTime;
+                            S.isPlaying = true;
+                            scheduleAudioChunks();
+                        }
+                    }, PRE_BUFFER_FORCE_START_MS);
+                }
+                return;
+            }
+
+            // Buffer threshold met — clear any pending force-start and begin playback
+            if (S._preBufferForceStartTimer) {
+                clearTimeout(S._preBufferForceStartTimer);
+                S._preBufferForceStartTimer = null;
+            }
+
+            if (window.DEBUG_AUDIO) {
+                console.debug('[Audio] start playback from buffer', {
+                    bufferedDurationMs: Math.round(bufferedDurationMs),
+                    thresholdMs: threshold,
+                    rebuffering: !!S._isReBuffering,
+                    queueLength: S.audioBufferQueue.length,
+                    speechId: S.currentPlayingSpeechId
+                });
+            }
+
+            if (S._isReBuffering) {
+                S._isReBuffering = false;
+                S.nextChunkTime = S.audioPlayerContext.currentTime;
+            } else {
+                var gap = (S.seqCounter <= 1) ? 0.03 : 0;
+                S.nextChunkTime = Math.max(
+                    S.audioPlayerContext.currentTime + gap,
+                    S.nextChunkTime
+                );
+            }
             S.isPlaying = true;
             scheduleAudioChunks();
         }

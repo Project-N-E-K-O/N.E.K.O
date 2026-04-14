@@ -535,6 +535,8 @@
         "AGENT_CU_CAPABILITY_LOST": "Computer Use が利用できません：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTSサービス接続失敗: {{msg}}",
         "TTS_RECONNECTING": "🔄 音声サービスが自動再接続中です。しばらくお待ちください...",
+        "TTS_DEGRADED_BUFFERING": "⚠️ 音声ストリームが遅いため、次の応答から文単位バッファ再生に切り替えます",
+        "TTS_STREAM_RECOVERED": "✅ 音声ストリーミングが回復しました",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URLが設定されていません。API設定でカスタムTTSを有効にして設定してください。",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URLはlocalhostである必要があります",
         "TTS_AUDIO_API_KEY_MISSING": "音声APIキー（AUDIO_API_KEY）が設定されていません",

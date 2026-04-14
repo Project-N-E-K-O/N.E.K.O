@@ -3066,15 +3066,38 @@ class LLMSessionManager:
         import queue as _queue_mod
         q = self.tts_response_queue
         logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
+
+        # Audio batching: smooth out bursty delivery without adding too much
+        # startup latency on the frontend.
+        _batch_buf = bytearray()
+        _batch_sid = None
+        _batch_last_flush = time.monotonic()
+        _batch_interval = 0.04   # flush every 40ms
+        _batch_max_bytes = 8192  # forced flush at 8KB
+
+        async def _flush_audio_batch():
+            nonlocal _batch_buf, _batch_sid, _batch_last_flush
+            if _batch_buf and _batch_sid:
+                await self.send_speech(bytes(_batch_buf), speech_id=_batch_sid)
+            _batch_buf.clear()
+            _batch_sid = None
+            _batch_last_flush = time.monotonic()
+
         while True:
             try:
                 try:
                     data = q.get_nowait()
                 except _queue_mod.Empty:
-                    await asyncio.sleep(0.01)
+                    # Time-based batch flush
+                    if _batch_buf and time.monotonic() - _batch_last_flush >= _batch_interval:
+                        await _flush_audio_batch()
+                    await asyncio.sleep(0.002)
                     continue
 
                 if isinstance(data, tuple) and len(data) == 2:
+                    # Flush any pending audio before handling control signals
+                    if _batch_buf:
+                        await _flush_audio_batch()
                     if data[0] == "__ready__":
                         ready_flag = bool(data[1])
                         async with self.tts_cache_lock:
@@ -3122,6 +3145,13 @@ class LLMSessionManager:
                         logger.info(f"🌊 TTS 正在自动重连 (retry {self._tts_retry_notify_count})")
                         if self._tts_retry_notify_count >= 3:
                             user_msg = json.dumps({"code": "TTS_RECONNECTING", "level": "info"})
+                            self._fire_task(self.send_status(user_msg))
+                        continue
+                    elif data[0] == "__status__":
+                        status_code = str(data[1] or "").strip()
+                        if status_code:
+                            logger.info("ℹ️ TTS 状态变更: %s", status_code)
+                            user_msg = json.dumps({"code": status_code, "level": "info"})
                             self._fire_task(self.send_status(user_msg))
                         continue
                     elif data[0] == "__error__":
@@ -3199,16 +3229,31 @@ class LLMSessionManager:
                         self._fire_task(self.send_status(user_msg))
                         continue
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
-                    _, speech_id, audio_payload = data
-                    await self.send_speech(audio_payload, speech_id=speech_id)
+                    _, sid, chunk = data
+                    # Flush on speech_id change
+                    if _batch_sid is not None and _batch_sid != sid:
+                        await _flush_audio_batch()
+                    _batch_buf.extend(chunk)
+                    _batch_sid = sid
+                    # Flush when buffer is large or interval elapsed
+                    if len(_batch_buf) >= _batch_max_bytes:
+                        await _flush_audio_batch()
+                    elif time.monotonic() - _batch_last_flush >= _batch_interval:
+                        await _flush_audio_batch()
                     continue
 
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
                 logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
                 await self.send_speech(data)
             except asyncio.CancelledError:
+                if _batch_buf:
+                    try: await _flush_audio_batch()
+                    except Exception: pass
                 logger.info("🎧 tts_response_handler cancelled")
                 raise
             except Exception as e:
+                if _batch_buf:
+                    try: await _flush_audio_batch()
+                    except Exception: pass
                 logger.error(f"💥 tts_response_handler error (will retry): {e}")
                 await asyncio.sleep(0.01)

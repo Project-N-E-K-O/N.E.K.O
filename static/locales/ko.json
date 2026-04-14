@@ -535,6 +535,8 @@
         "AGENT_CU_CAPABILITY_LOST": "Computer Use를 사용할 수 없습니다: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS 서비스 연결 실패: {{msg}}",
         "TTS_RECONNECTING": "🔄 음성 서비스가 자동 재연결 중입니다. 잠시만 기다려주세요...",
+        "TTS_DEGRADED_BUFFERING": "⚠️ 음성 스트림이 느려 다음 응답부터 문장 단위 버퍼 재생으로 전환됩니다",
+        "TTS_STREAM_RECOVERED": "✅ 음성 스트리밍이 복구되었습니다",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URL이 설정되지 않았습니다. API 설정에서 커스텀 TTS를 활성화하고 설정하세요.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL은 localhost여야 합니다",
         "TTS_AUDIO_API_KEY_MISSING": "오디오 API 키(AUDIO_API_KEY)가 설정되지 않았습니다",
