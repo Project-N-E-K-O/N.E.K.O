@@ -46,16 +46,42 @@
       "uploadDate": "2024-01-01T00:00:00",
       "missing": false,
       "isBuiltin": true
+    },
+    "action_003": {
+      "id": "action_003",
+      "name": "桃源恋歌",
+      "file": "actions/song_001.vrma",
+      "fileMd5": "e4b85f670b0722982dab3591ff2d9f64",
+      "format": "vrma",
+      "uploadDate": "2024-01-01T00:00:00",
+      "missing": false,
+      "isBuiltin": true
+    },
+    "action_004": {
+      "id": "action_004",
+      "name": "甩葱歌",
+      "file": "actions/song_002.vrma",
+      "fileMd5": "0f9a0f206140f80d01d177952da6a650",
+      "format": "vrma",
+      "uploadDate": "2024-01-01T00:00:00",
+      "missing": false,
+      "isBuiltin": true
     }
   },
   "bindings": {
     "song_001": {
       "action_001": {
         "offset": 13
+      },
+      "action_003": {
+        "offset": 0
       }
     },
     "song_002": {
       "action_002": {
+        "offset": 0
+      },
+      "action_004": {
         "offset": 0
       }
     }
@@ -67,7 +93,9 @@
     },
     "actions": {
       "f088920fd9c03e4b76c14dee67790b0e": "action_001",
-      "3eac125726bee615ec6ba246ce7e6f53": "action_002"
+      "3eac125726bee615ec6ba246ce7e6f53": "action_002",
+      "e4b85f670b0722982dab3591ff2d9f64": "action_003",
+      "0f9a0f206140f80d01d177952da6a650": "action_004"
     }
   }
 }

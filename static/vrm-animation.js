@@ -657,33 +657,45 @@ class VRMAnimation {
         }
 
         if (this.currentAction) {
-            // 捕获要停止的 action，防止竞态条件（新 action 可能在定时器回调执行前启动）
-            const actionAtStop = this.currentAction;
-            this.currentAction.fadeOut(0.5);
-
-            this._fadeTimer = setTimeout(() => {
-                if (this._disposed) return;
-                // 只有当 currentAction 仍然是 actionAtStop 时才执行清理（防止取消新启动的 action）
-                if (this.currentAction === actionAtStop) {
-                    if (this.vrmaMixer) {
-                        this.vrmaMixer.stopAllAction();
-                    }
-                    this.currentAction = null;
-                    this.vrmaIsPlaying = false;
-                    this.isIdleAnimation = false;
-                    this._fadeTimer = null;
-
-                    // 动画停止后恢复物理
-                    this._springBoneRestoreTimer = setTimeout(() => {
-                        if (this.currentAction === null) {
-                            this._restorePhysics();
-                        }
-                        this._springBoneRestoreTimer = null;
-                    }, 100);
-                } else {
-                    this._fadeTimer = null;
+            // paused action 上 fadeOut 无效（mixer 不 update paused action 的权重），
+            // 直接立即清理，避免 500ms 后骨骼硬跳到 rest pose
+            if (this.currentAction.paused) {
+                if (this.vrmaMixer) {
+                    this.vrmaMixer.stopAllAction();
                 }
-            }, 500);
+                this.currentAction = null;
+                this.vrmaIsPlaying = false;
+                this.isIdleAnimation = false;
+                this._restorePhysics();
+            } else {
+                // 捕获要停止的 action，防止竞态条件（新 action 可能在定时器回调执行前启动）
+                const actionAtStop = this.currentAction;
+                this.currentAction.fadeOut(0.5);
+
+                this._fadeTimer = setTimeout(() => {
+                    if (this._disposed) return;
+                    // 只有当 currentAction 仍然是 actionAtStop 时才执行清理（防止取消新启动的 action）
+                    if (this.currentAction === actionAtStop) {
+                        if (this.vrmaMixer) {
+                            this.vrmaMixer.stopAllAction();
+                        }
+                        this.currentAction = null;
+                        this.vrmaIsPlaying = false;
+                        this.isIdleAnimation = false;
+                        this._fadeTimer = null;
+
+                        // 动画停止后恢复物理
+                        this._springBoneRestoreTimer = setTimeout(() => {
+                            if (this.currentAction === null) {
+                                this._restorePhysics();
+                            }
+                            this._springBoneRestoreTimer = null;
+                        }, 100);
+                    } else {
+                        this._fadeTimer = null;
+                    }
+                }, 500);
+            }
         } else {
             if (this.vrmaMixer) {
                 this.vrmaMixer.stopAllAction();
