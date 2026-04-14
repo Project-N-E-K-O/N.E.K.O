@@ -491,13 +491,18 @@ async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
 - `browser_use` 任务注册处：
   - [agent_server.py](../../agent_server.py)
 
-建议存入：
+建议存入纠正字段：
 
 - `decision_reason`
 - `task_description`
 - `latest_user_request`
 - `normalized_intent`
 - `recent_context`
+- `task_id`
+- `type`
+
+元数据字段可继续保留在任务对象中，但不属于 `_internal_corrections` / `correction_memory.json` 的纠正写回内容：
+
 - `lanlan_name`
 - `session_id`
 
