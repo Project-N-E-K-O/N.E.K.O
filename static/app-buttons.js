@@ -474,9 +474,12 @@
             for (var index = 0; index < pending.length; index += 1) {
                 nextPendingIndex = index;
                 var submission = pending[index];
-                await sendHandler(submission.text, Object.assign({}, submission.options, {
+                var sent = await sendHandler(submission.text, Object.assign({}, submission.options, {
                     skipAvatarInteractionDeferral: true
                 }));
+                if (sent === false) {
+                    queueDeferredTextSubmission(submission.text, submission.options);
+                }
                 nextPendingIndex = index + 1;
             }
         })().catch(function (error) {
@@ -687,7 +690,7 @@
         }
 
         var touchZone = String(payload.touchZone || payload.touch_zone || '').trim().toLowerCase();
-        if (toolId !== 'lollipop' && AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES.indexOf(touchZone) !== -1) {
+        if (AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES.indexOf(touchZone) !== -1) {
             normalized.touch_zone = touchZone;
         }
 
@@ -1388,7 +1391,7 @@
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
 
-            if (!text && !hasScreenshots) return;
+            if (!text && !hasScreenshots) return false;
 
             // Record user input time and reset proactive chat
             window.lastUserInputTime = Date.now();
@@ -1470,7 +1473,7 @@
                     textInputBox.disabled = false;
                     screenshotButton.disabled = false;
 
-                    return; // Don't send if session start failed
+                    return false; // Don't send if session start failed
                 }
             }
 
@@ -1568,8 +1571,10 @@
                 }
 
                 window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
+                return true;
             } else {
                 window.showStatusToast(window.t ? window.t('app.websocketNotConnected') : 'WebSocket\u672A\u8FDE\u63A5\uFF01', 4000);
+                return false;
             }
         }
 

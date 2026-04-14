@@ -25,7 +25,8 @@ const defaultMessages: ChatMessage[] = [];
 
 type ToolIconItem = {
   id: string;
-  label: string;
+  labelKey: string;
+  labelFallback: string;
   iconImagePath: string;
   iconImagePathAlt?: string;
   iconImagePathAlt2?: string;
@@ -46,7 +47,8 @@ type ToolIconItem = {
 const toolIconItems: ToolIconItem[] = [
   {
     id: 'lollipop',
-    label: '棒棒糖',
+    labelKey: 'chat.toolLollipop',
+    labelFallback: '棒棒糖',
     iconImagePath: '/static/icons/chat_sugar1.png',
     iconImagePathAlt: '/static/icons/chat_sugar2.png',
     iconImagePathAlt2: '/static/icons/chat_sugar3.png',
@@ -58,7 +60,8 @@ const toolIconItems: ToolIconItem[] = [
   },
   {
     id: 'fist',
-    label: '猫爪',
+    labelKey: 'chat.toolFist',
+    labelFallback: '猫爪',
     iconImagePath: '/static/icons/cat_claw1.png',
     iconImagePathAlt: '/static/icons/cat_claw2.png',
     cursorImagePath: '/static/icons/cat_claw1_cursor.png',
@@ -68,7 +71,8 @@ const toolIconItems: ToolIconItem[] = [
   },
   {
     id: 'hammer',
-    label: '锤子',
+    labelKey: 'chat.toolHammer',
+    labelFallback: '锤子',
     iconImagePath: '/static/icons/chat_hammer1.png',
     iconImagePathAlt: '/static/icons/chat_hammer2.png',
     cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
@@ -88,6 +92,11 @@ const hammerOverlayTransformOrigin = {
   x: 60,
   y: 118,
 };
+
+function getToolItemLabel(item: ToolIconItem): string {
+  return i18n(item.labelKey, item.labelFallback);
+}
+
 const avatarToolRangePadding = 100;
 const compactCursorZoneSelector = [
   '.composer-bottom-tools',
@@ -597,8 +606,9 @@ export default function App({
   const activeToolMenuVisual = activeToolItem
     ? resolveMenuIconVisual(activeToolItem, effectiveCursorVariant)
     : null;
+  const activeToolLabel = activeToolItem ? getToolItemLabel(activeToolItem) : '';
   const selectedEmojiButtonAriaLabel = activeToolItem
-    ? `${emojiButtonAriaLabel}: ${activeToolItem.label}`
+    ? `${emojiButtonAriaLabel}: ${activeToolLabel}`
     : emojiButtonAriaLabel;
 
   useEffect(() => {
@@ -920,6 +930,9 @@ export default function App({
           }, 520),
           window.setTimeout(() => {
             setHammerSwingPhase('idle');
+            if (shouldTriggerInnerHammerEasterEgg) {
+              setIsInnerHammerEasterEggActive(false);
+            }
             hammerSwingTimeoutIdsRef.current = [];
           }, 620),
         ];
@@ -1349,6 +1362,7 @@ export default function App({
                         aria-label={toolIconsAriaLabel}
                       >
                         {toolIconItems.map(item => {
+                          const itemLabel = getToolItemLabel(item);
                           const menuVariant = activeCursorToolId === item.id
                             ? effectiveCursorVariant
                             : 'primary';
@@ -1359,8 +1373,8 @@ export default function App({
                             className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
                             type="button"
                             aria-pressed={activeCursorToolId === item.id}
-                            aria-label={item.label}
-                            title={item.label}
+                            aria-label={itemLabel}
+                            title={itemLabel}
                             onClick={(event) => {
                               latestPointerPositionRef.current = {
                                 x: event.clientX,

@@ -449,7 +449,7 @@ let interruptCount = 0;
 2. 立即停止当前配音队列、气泡更新和 ghost cursor 动画。
 3. 播放一次短促的生气语音，并显示怒气符号/表情特效。
 4. 将当前退出原因标记为 `angry_exit`。
-5. 进入与右上角跳过等价的统一退出路径，调用 `YuiGuideDirector.skip('angry_exit')` 或等价封装；该路径内部应最终且仅最终调用一次 `destroy()` 清理临时 DOM、监听器和状态。
+5. 进入与右上角跳过等价的统一退出路径，调用 `YuiGuideDirector.skip('angry_exit')` 或等价封装；`skip / abortAsAngryExit / destroy` 以及更高层调用者必须共享一个原子 `isTerminating`（或等价 termination promise / compare-and-set 标记），只有首个进入者负责调度统一 `finally / cleanup`，并在该清理例程内最终且仅最终调用一次 `destroy()` 清理临时 DOM、监听器和状态，后续并发触发应立即 early-return。
 6. 如果产品希望 Yui 真的“离开首页”，可在清理尾声复用现有“请她离开”业务链路。
 
 ### 与现有业务代码的衔接建议
@@ -528,6 +528,8 @@ interface YuiGuideDirector {
 - `skip(reason)` 负责写入教程结束原因，并在内部最终调用一次 `destroy()`
 - `destroy()` 只负责最终清理，不承担业务判定，也不建议在正常退出流程里被外部重复调用
 - `abortAsAngryExit()` 负责怒气演出和“特殊跳过”编排，避免把该逻辑散落在多个 `step` 回调里
+- `skip / abortAsAngryExit / destroy` 应共享 `isTerminating`（或等价原子终止标记）与单一 `finalizeTermination()` 例程；首个入口负责设置标记并执行清理，重复触发只复用已有终止流程，不得重复跑半套清理
+- 更高层调用方优先走 `skip()` 或 `abortAsAngryExit()`，不要在业务代码里直接多处调用 `destroy()`；`destroy()` 只允许被统一清理例程最终落点调用一次
 - `handleInterrupt()` 内部应只做“状态迁移 + 节流判定 + 调度”，不要把弹簧动画细节都堆在 Director 本体
 
 ## 10.2 `YuiGuideBubble`
@@ -632,14 +634,27 @@ cancel()
 ```json
 {
   "token": "uuid",
+  "token_version": 1,
   "flow_id": "home_yui_guide_v1",
   "source_page": "home",
+  "source_origin": "app://home",
   "target_page": "api_key",
   "resume_scene": "api_keys_intro",
+  "nonce": "uuid",
   "created_at": 1770000000000,
-  "expires_at": 1770000005000
+  "expires_at": 1770000005000,
+  "consumed_at": null,
+  "signature": "base64(hmac-sha256(payload))"
 }
 ```
+
+补充要求：
+
+- token 必须具备单次消费语义。推荐在记录中增加 `consumed_at` / `used`，或等价的一次性 nonce 状态，并在恢复成功时原子标记为“已消费”
+- 恢复时必须校验来源绑定字段（至少 `source_page`，更推荐额外校验 `source_origin` / `source_id`）；若当前请求来源与 token 记录不一致，应拒绝恢复
+- 推荐加入 `token_version` 与 `signature`（例如 HMAC）校验，避免旧格式 token 或被篡改 payload 被重放
+- 消费流程建议固定为：读取 token → 原子检查 `expires_at` / `consumed_at` / `signature` / 来源绑定 → 校验通过后立即写入 `consumed_at` → 再恢复 `resume_scene`
+- 错误处理上，`expired / used / signature_invalid / source_mismatch` 都应直接拒绝恢复并清理本地 token；只有在“尚未写入 consumed 状态就发生存储或通信失败”时才允许重试，已消费 token 不应再次复用
 
 ---
 
@@ -858,14 +873,50 @@ type YuiGuideStep = {
 
 ```css
 body.yui-taking-over,
-body.yui-taking-over * {
+body.yui-taking-over [data-yui-cursor-hidden='true'] {
   cursor: none !important;
+}
+
+body.yui-taking-over :is(
+  [data-yui-skip-control],
+  [data-yui-emergency-exit],
+  button,
+  [href],
+  input,
+  select,
+  textarea,
+  summary,
+  [role='button'],
+  [role='link'],
+  [tabindex]:not([tabindex='-1'])
+) {
+  cursor: auto !important;
+}
+
+body.yui-taking-over :is(
+  [data-yui-skip-control],
+  [data-yui-emergency-exit],
+  button,
+  [href],
+  input,
+  select,
+  textarea,
+  summary,
+  [role='button'],
+  [role='link'],
+  [tabindex]:not([tabindex='-1'])
+):focus-visible {
+  outline: 2px solid var(--yui-focus-ring, #fff);
+  outline-offset: 3px;
 }
 ```
 
 说明：
 
 - 这只是页面级视觉隐藏，不等于控制真实鼠标位置
+- 不要对“跳过按钮 / 紧急退出控件 / 其他可交互控件”应用 `cursor: none`；若产品希望接管阶段统一隐藏光标，只应对明确标记为演出层或非交互层的元素（如 `data-yui-cursor-hidden="true"`）执行隐藏
+- 接管场景必须提供键盘兜底退出，例如把 `Esc` 绑定到与跳过按钮相同的统一退出路径
+- 接管期间的跳过 / 紧急退出控件必须保留可见 `:focus-visible` 样式，确保用户能通过键盘恢复常规交互
 - `SKIPPED / ANGRY_EXIT / CANCELLED / COMPLETED` 时都必须移除该类
 - 若遇到系统级菜单、原生窗口边框或浏览器外区域，真实鼠标仍可能可见，这属于可接受边界
 
@@ -1032,7 +1083,7 @@ body.yui-taking-over * {
 应对：
 
 - 光标类的增删必须集中在 `YuiGuideDirector` 的统一生命周期中管理
-- `skip / destroy / abortAsAngryExit / page unload` 都要走同一套 `finally` 清理
+- `skip / destroy / abortAsAngryExit / page unload` 都要走同一套 `finally` 清理，并由共享的 `isTerminating` / termination promise 防止重复清理
 - 开发阶段加入 watchdog 日志或断言，便于快速发现“教程结束但光标仍隐藏”的问题
 
 ---

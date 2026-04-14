@@ -184,8 +184,13 @@ async def test_handle_avatar_interaction_ack_reports_error_when_prompt_ephemeral
     session.update_max_response_length = lambda _max_length: None
     event_log = []
 
-    async def prompt_ephemeral(_instruction, *, completion_mode="proactive"):
-        event_log.append(("prompt", completion_mode, manager.current_speech_id))
+    async def prompt_ephemeral(
+        _instruction,
+        *,
+        completion_mode: str = "proactive",
+        persist_response: bool = True,
+    ):
+        event_log.append(("prompt", completion_mode, persist_response, manager.current_speech_id))
         raise RuntimeError("boom")
 
     session.prompt_ephemeral = prompt_ephemeral
@@ -204,7 +209,7 @@ async def test_handle_avatar_interaction_ack_reports_error_when_prompt_ephemeral
         "intensity": "normal",
     })
 
-    assert event_log[0][0:2] == ("prompt", "response")
+    assert event_log[0][0:3] == ("prompt", "response", False)
     assert event_log[1] == ("ack", "int-err", False, "error", "")
     assert result == {"accepted": False, "reason": "error", "interaction_id": "int-err"}
     assert manager._last_avatar_interaction_speak_at == 0
@@ -279,8 +284,13 @@ async def test_handle_avatar_interaction_ack_follows_prompt_result(delivered, ex
     session.update_max_response_length = lambda _max_length: None
     event_log = []
 
-    async def prompt_ephemeral(_instruction, *, completion_mode="proactive"):
-        event_log.append(("prompt", completion_mode, manager.current_speech_id))
+    async def prompt_ephemeral(
+        _instruction,
+        *,
+        completion_mode: str = "proactive",
+        persist_response: bool = True,
+    ):
+        event_log.append(("prompt", completion_mode, persist_response, manager.current_speech_id))
         return delivered
 
     session.prompt_ephemeral = prompt_ephemeral
@@ -299,13 +309,13 @@ async def test_handle_avatar_interaction_ack_follows_prompt_result(delivered, ex
         "intensity": "normal",
     })
 
-    assert event_log[0][0:2] == ("prompt", "response")
+    assert event_log[0][0:3] == ("prompt", "response", False)
     assert event_log[1] == (
         "ack",
         "int-001",
         delivered,
         expected_reason,
-        event_log[0][2] if delivered else "",
+        event_log[0][3] if delivered else "",
     )
     if delivered:
         assert result == {"accepted": True, "interaction_id": "int-001"}
