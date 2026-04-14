@@ -437,6 +437,11 @@
         // 其他窗口（chat.html 与 index.html 互为兄弟）也在放歌，则拦截。
         // 单纯的 isMusicPlaying() 在"已 dispatch 但 audio 还没 play"的窗口里
         // 会返回 false，导致并发的第二次 dispatch 被放行，最终两首歌同时响。
+        //
+        // 注意：这是有意的不对称拦截 —— 仅 source==='proactive'（主动搭话）
+        // 的推荐会被当前播放拦下；用户主动搜索、插件 music_play_url、
+        // [play_music:] 指令等（app-websocket.js 的 dispatchMusicPlay 调用不带
+        // source 字段）仍允许直接切歌。用户/插件意图 > 被动推荐。
         if (options.source === 'proactive') {
             var localPlaying = typeof window.isMusicPlaying === 'function' && window.isMusicPlaying();
             var localPending = typeof window.isMusicPending === 'function' && window.isMusicPending();

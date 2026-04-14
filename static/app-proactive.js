@@ -147,18 +147,24 @@
         console.log('[Proactive] 主备状态切换：自己现在' + (nowLeader ? '是 leader（开始调度 proactive_chat / vision）' : '是 follower（停止调度，等待 leader 失联）'));
         if (nowLeader) {
             // 接班：立刻安排一次 proactive_chat
-            try { scheduleProactiveChat(); } catch (_) {}
+            try { scheduleProactiveChat(); } catch (e) {
+                console.warn('[Proactive] 接班时调度 proactive_chat 失败:', e);
+            }
             // 接班：如果当前正在录音，启动 vision-during-speech
             try {
                 if (S.isRecording) startProactiveVisionDuringSpeech();
-            } catch (_) {}
+            } catch (e) {
+                console.warn('[Proactive] 接班时启动 vision-during-speech 失败:', e);
+            }
         } else {
             // 让位：清掉本地 proactive 定时器和 vision 心跳
             if (S.proactiveChatTimer) {
                 clearTimeout(S.proactiveChatTimer);
                 S.proactiveChatTimer = null;
             }
-            try { stopProactiveVisionDuringSpeech(); } catch (_) {}
+            try { stopProactiveVisionDuringSpeech(); } catch (e) {
+                console.warn('[Proactive] 让位时停止 vision-during-speech 失败:', e);
+            }
         }
     }
 
