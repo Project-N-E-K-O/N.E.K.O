@@ -289,7 +289,27 @@
             await manager.core.waitForRenderFrame(timeoutMs);
             return;
         }
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        await new Promise((resolve) => {
+            let settled = false;
+            let timeoutId = null;
+
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                if (timeoutId) {
+                    clearTimeout(timeoutId);
+                    timeoutId = null;
+                }
+                resolve();
+            };
+
+            requestAnimationFrame(() => {
+                if (settled) return;
+                requestAnimationFrame(finish);
+            });
+
+            timeoutId = window.setTimeout(finish, Math.max(0, Number(timeoutMs) || 0));
+        });
     };
 
     window.MMDLoadingOverlay = {
