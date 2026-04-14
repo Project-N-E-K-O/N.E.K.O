@@ -129,6 +129,7 @@ _AVATAR_INTERACTION_ALLOWED_ACTIONS = {
 }
 _AVATAR_INTERACTION_ALLOWED_INTENSITIES = {"normal", "rapid", "burst", "easter_egg"}
 _AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES = {"ear", "head", "face", "body"}
+_AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS = {"fist", "hammer"}
 _AVATAR_INTERACTION_TOOL_LABELS = {
     "zh": {
         "lollipop": "棒棒糖",
@@ -367,6 +368,16 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
         },
     },
 }
+_AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES = {
+    "zh": {
+        "reaction_focus": "保持即时、贴合角色的反应。",
+        "style_hint": "短促、自然、贴合当场反应。",
+    },
+    "en": {
+        "reaction_focus": "Keep the reaction immediate and in character.",
+        "style_hint": "Short, natural, and grounded in the moment.",
+    },
+}
 
 
 def _avatar_interaction_locale(language: str | None) -> str:
@@ -407,6 +418,32 @@ def _sanitize_avatar_interaction_text_context(text: str, max_length: int = 80) -
     return json.dumps(cleaned, ensure_ascii=False)
 
 
+def _parse_avatar_interaction_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1"}:
+            return True
+        if normalized in {"false", "0"}:
+            return False
+    return default
+
+
+def _get_avatar_interaction_payload_value(payload: dict, snake_key: str, camel_key: str, default=None):
+    if snake_key in payload and payload.get(snake_key) is not None:
+        return payload.get(snake_key)
+    if camel_key in payload and payload.get(camel_key) is not None:
+        return payload.get(camel_key)
+    return default
+
+
 def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
     if not isinstance(payload, dict):
         return None
@@ -428,8 +465,18 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
     if tool_id != "hammer" and intensity == "easter_egg":
         intensity = "normal"
 
-    reward_drop = bool(payload.get("reward_drop", payload.get("rewardDrop", False))) if tool_id == "fist" else False
-    easter_egg = bool(payload.get("easter_egg", payload.get("easterEgg", False))) if tool_id == "hammer" else False
+    reward_drop = (
+        _parse_avatar_interaction_bool(
+            _get_avatar_interaction_payload_value(payload, "reward_drop", "rewardDrop", False)
+        )
+        if tool_id == "fist" else False
+    )
+    easter_egg = (
+        _parse_avatar_interaction_bool(
+            _get_avatar_interaction_payload_value(payload, "easter_egg", "easterEgg", False)
+        )
+        if tool_id == "hammer" else False
+    )
     if easter_egg:
         intensity = "easter_egg"
 
@@ -473,21 +520,26 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
 
 def _build_avatar_interaction_instruction(manager: "LLMSessionManager", payload: dict) -> str:
     locale = _avatar_interaction_locale(getattr(manager, "user_language", None))
+    tool_id = payload["tool_id"]
     tool_label = _AVATAR_INTERACTION_TOOL_LABELS[locale].get(payload["tool_id"], payload["tool_id"])
     action_label = _AVATAR_INTERACTION_ACTION_LABELS[locale].get(payload["tool_id"], {}).get(payload["action_id"], payload["action_id"])
     intensity_label = _AVATAR_INTERACTION_INTENSITY_LABELS[locale].get(payload["intensity"], payload["intensity"])
     text_context = payload.get("text_context", "")
     touch_zone = str(payload.get("touch_zone") or "").strip().lower()
-    touch_zone_label = _AVATAR_INTERACTION_TOUCH_ZONE_LABELS[locale].get(touch_zone, "")
+    touch_zone_label = (
+        _AVATAR_INTERACTION_TOUCH_ZONE_LABELS[locale].get(touch_zone, "")
+        if tool_id in _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS else ""
+    )
     wrapper = _AVATAR_INTERACTION_SYSTEM_WRAPPER[locale]
-    action_profiles = _AVATAR_INTERACTION_REACTION_PROFILES[locale].get(payload["tool_id"], {}).get(payload["action_id"], {})
+    action_profiles = _AVATAR_INTERACTION_REACTION_PROFILES[locale].get(tool_id, {}).get(payload["action_id"], {})
     if payload.get("reward_drop") and action_profiles.get("reward_drop"):
         reaction_profile = action_profiles["reward_drop"]
     else:
-        reaction_profile = action_profiles.get(payload["intensity"]) or action_profiles.get("normal") or {
-            "reaction_focus": "保持即时、贴合角色的反应。",
-            "style_hint": "短促、自然、贴合当场反应。",
-        }
+        reaction_profile = (
+            action_profiles.get(payload["intensity"])
+            or action_profiles.get("normal")
+            or _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES[locale]
+        )
 
     if locale == "zh":
         lines = [
@@ -772,11 +824,6 @@ class LLMSessionManager:
         self.last_audio_send_error_time = 0.0  # 上次音频发送错误的时间戳
         self.audio_error_log_interval = 2.0  # 音频错误log间隔（秒）
 
-        self.user_language = None
-        self._translation_service = None
-        self.session_closed_by_server = False
-        self.last_audio_send_error_time = 0.0
-        self.audio_error_log_interval = 2.0
         self._recent_avatar_interaction_ids = deque(maxlen=32)
         self._recent_avatar_interaction_id_set = set()
         self._last_avatar_interaction_at = 0
@@ -902,7 +949,7 @@ class LLMSessionManager:
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
-    async def handle_proactive_complete(self):
+    async def handle_proactive_complete(self, content_committed: bool = True):
         """Lightweight completion for proactive (agent callback) replies.
 
         Only flushes TTS and sends turn_end to the frontend so that the
@@ -910,6 +957,9 @@ class LLMSessionManager:
         analyze_request, or agent-callback re-delivery — those belong
         exclusively to user-initiated conversation turns.
         """
+        if not content_committed:
+            logger.debug("[%s] handle_proactive_complete: no content committed, skipping completion flush", self.lanlan_name)
+            return
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             if self._tts_done_queued_for_turn:
                 logger.debug("handle_proactive_complete: TTS done 已排入队列，跳过重复信号")
@@ -2684,10 +2734,16 @@ class LLMSessionManager:
                     },
                 })
 
-            await self.send_avatar_interaction_ack(interaction_id, True, turn_id=self.current_speech_id)
+            current_turn_id = self.current_speech_id
             delivered = await self.session.prompt_ephemeral(
                 instruction,
                 completion_mode="response",
+            )
+            await self.send_avatar_interaction_ack(
+                interaction_id,
+                bool(delivered),
+                "delivered" if delivered else "empty_response",
+                turn_id=current_turn_id if delivered else "",
             )
 
         if delivered:
@@ -3650,7 +3706,7 @@ class LLMSessionManager:
             logger.error(f"💥 WS Send Session Failed Error: {e}")
 
     async def send_avatar_interaction_ack(self, interaction_id: str, accepted: bool, reason: str = '', turn_id: str = ''):
-        """尽早向前端确认点触互动是否进入说话链路，便于前端做发送排队仲裁。"""
+        """向前端确认点触互动的投递结果，便于前端做续发与状态收口。"""
         if not interaction_id:
             return
         try:

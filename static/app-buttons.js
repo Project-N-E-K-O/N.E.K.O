@@ -584,6 +584,10 @@
             }
             if (detail.accepted === true) {
                 noteAvatarInteractionSpeakCooldown(interactionId);
+                if (String(detail.reason || '').trim() === 'delivered') {
+                    releaseDeferredTextAfterAvatarInteraction();
+                    return;
+                }
                 markAvatarInteractionAccepted(interactionId, turnId);
                 return;
             }
@@ -848,6 +852,63 @@
 
     mod.normalizeAvatarInteractionPayload = normalizeAvatarInteractionPayload;
     mod.sendAvatarInteractionPayload = sendAvatarInteractionPayload;
+
+    function clearReactChatWindowHostBindingPoll() {
+        if (!mod._reactChatWindowHostBindingPollId) {
+            return;
+        }
+        window.clearInterval(mod._reactChatWindowHostBindingPollId);
+        mod._reactChatWindowHostBindingPollId = 0;
+    }
+
+    function bindReactChatWindowHostCallbacks() {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.setOnComposerSubmit !== 'function') {
+            return false;
+        }
+        if (mod._boundReactChatWindowHost === host) {
+            mod.syncPendingComposerAttachments();
+            return true;
+        }
+
+        host.setOnComposerSubmit(function (detail) {
+            return mod.sendTextPayload(detail && detail.text, { source: 'react-chat-window' });
+        });
+        host.setOnComposerImportImage(function () {
+            return mod.openImageImportPicker();
+        });
+        host.setOnComposerScreenshot(function () {
+            return mod.captureScreenshotToPendingList();
+        });
+        host.setOnComposerRemoveAttachment(function (attachmentId) {
+            return mod.removePendingAttachmentById(attachmentId);
+        });
+        host.setOnAvatarInteraction(function (payload) {
+            return mod.sendAvatarInteractionPayload(payload);
+        });
+
+        mod._boundReactChatWindowHost = host;
+        mod.syncPendingComposerAttachments();
+        return true;
+    }
+
+    function ensureReactChatWindowHostCallbacks() {
+        if (bindReactChatWindowHostCallbacks()) {
+            clearReactChatWindowHostBindingPoll();
+            return;
+        }
+        if (mod._reactChatWindowHostBindingPollId) {
+            return;
+        }
+
+        var remainingAttempts = 80;
+        mod._reactChatWindowHostBindingPollId = window.setInterval(function () {
+            remainingAttempts--;
+            if (bindReactChatWindowHostCallbacks() || remainingAttempts <= 0) {
+                clearReactChatWindowHostBindingPoll();
+            }
+        }, 250);
+    }
 
     // ======================== init — wire up all event listeners ========================
 
@@ -1717,32 +1778,7 @@
             }
         });
 
-        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerSubmit === 'function') {
-            window.reactChatWindowHost.setOnComposerSubmit(function (detail) {
-                return mod.sendTextPayload(detail && detail.text, { source: 'react-chat-window' });
-            });
-        }
-        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerImportImage === 'function') {
-            window.reactChatWindowHost.setOnComposerImportImage(function () {
-                return mod.openImageImportPicker();
-            });
-        }
-        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerScreenshot === 'function') {
-            window.reactChatWindowHost.setOnComposerScreenshot(function () {
-                return mod.captureScreenshotToPendingList();
-            });
-        }
-        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerRemoveAttachment === 'function') {
-            window.reactChatWindowHost.setOnComposerRemoveAttachment(function (attachmentId) {
-                return mod.removePendingAttachmentById(attachmentId);
-            });
-        }
-        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnAvatarInteraction === 'function') {
-            window.reactChatWindowHost.setOnAvatarInteraction(function (payload) {
-                return mod.sendAvatarInteractionPayload(payload);
-            });
-        }
-
+        ensureReactChatWindowHostCallbacks();
         mod.ensureImportImageInput();
         mod.syncPendingComposerAttachments();
     };

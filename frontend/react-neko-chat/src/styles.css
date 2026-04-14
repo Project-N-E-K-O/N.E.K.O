@@ -60,6 +60,7 @@ button * {
 }
 
 .avatar-cursor-overlay {
+  --avatar-cursor-overlay-scale: 1;
   position: fixed;
   top: 0;
   left: 0;
@@ -68,9 +69,13 @@ button * {
   will-change: transform;
 }
 
+.avatar-cursor-overlay.is-compact {
+  --avatar-cursor-overlay-scale: 0.56;
+}
+
 .avatar-cursor-overlay-stage {
   opacity: 0;
-  transform: scale(0.84);
+  transform: scale(calc(var(--avatar-cursor-overlay-scale) * 0.84));
   will-change: transform, opacity;
   transition:
     opacity 180ms cubic-bezier(0.22, 0.78, 0.2, 1),
@@ -79,7 +84,7 @@ button * {
 
 .avatar-cursor-overlay.is-visible .avatar-cursor-overlay-stage {
   opacity: 1;
-  transform: scale(1);
+  transform: scale(var(--avatar-cursor-overlay-scale));
 }
 
 .avatar-cursor-overlay-image {
@@ -240,12 +245,17 @@ button * {
   --hammer-overlay-scale: 1;
   --hammer-overlay-anchor-fix-x: 0px;
   --hammer-overlay-anchor-fix-y: 0px;
+  --hammer-overlay-visual-scale: 1;
   position: fixed;
   top: 0;
   left: 0;
   z-index: 9999;
   pointer-events: none;
   will-change: transform;
+}
+
+.hammer-cursor-overlay.is-compact {
+  --hammer-overlay-visual-scale: 0.52;
 }
 
 .hammer-cursor-overlay.is-easter-egg {
@@ -256,7 +266,7 @@ button * {
 
 .hammer-cursor-overlay-stage {
   opacity: 0;
-  transform: scale(0.82);
+  transform: scale(calc(var(--hammer-overlay-visual-scale) * 0.82));
   will-change: transform, opacity;
   transition:
     opacity 200ms cubic-bezier(0.22, 0.78, 0.2, 1),
@@ -265,7 +275,17 @@ button * {
 
 .hammer-cursor-overlay.is-visible .hammer-cursor-overlay-stage {
   opacity: 1;
-  transform: scale(1);
+  transform: scale(var(--hammer-overlay-visual-scale));
+}
+
+.hammer-cursor-overlay-compact-image {
+  display: block;
+  width: 100px;
+  height: 96px;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+  filter: drop-shadow(0 4px 8px rgba(22, 34, 58, 0.16));
 }
 
 .hammer-cursor-overlay-visual {

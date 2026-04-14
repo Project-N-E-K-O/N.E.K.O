@@ -308,6 +308,18 @@ function resolveCursorValue(item: ToolIconItem, variant: CursorVariant): string 
   return `url("${imagePath}") ${hotspotX} ${hotspotY}, auto`;
 }
 
+function supportsDesktopFinePointer(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return true;
+  }
+
+  try {
+    return window.matchMedia('(pointer: fine)').matches;
+  } catch {
+    return true;
+  }
+}
+
 function isElementVisible(elementId: string): boolean {
   const element = document.getElementById(elementId);
   if (!element) return false;
@@ -536,14 +548,31 @@ export default function App({
     ? (avatarRangeCursorVariants[activeCursorToolId] ?? 'primary')
     : 'primary';
   const activeToolItem = toolIconItems.find(item => item.id === activeCursorToolId) ?? null;
+  const activeToolImagePaths = activeToolItem
+    ? resolveToolImagePaths(activeToolItem, avatarRangeCursorVariant)
+    : null;
+  const shouldUseDesktopCursorOverlay = !!activeToolItem && supportsDesktopFinePointer();
   const shouldRenderAvatarRangeOverlay = isCursorOverAvatarRange && !isCursorOverCompactCursorZone;
   const avatarCursorOverlayActive = !!activeToolItem
     && activeCursorToolId !== 'hammer'
-    && shouldRenderAvatarRangeOverlay;
-  const hammerCursorOverlayActive = activeCursorToolId === 'hammer' && shouldRenderAvatarRangeOverlay;
+    && shouldUseDesktopCursorOverlay;
+  const avatarCursorOverlayCompact = avatarCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
+  const hammerCursorOverlayActive = activeCursorToolId === 'hammer' && shouldUseDesktopCursorOverlay;
+  const hammerCursorOverlayCompact = hammerCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
   const hammerCursorOverlayMotionActive = hammerSwingPhase !== 'idle';
+  const hammerCompactImagePaths = hammerToolItem
+    ? resolveToolImagePaths(hammerToolItem, effectiveCursorVariant)
+    : null;
+  const hammerCursorOverlayUsesCompactImage = hammerCursorOverlayCompact && !hammerCursorOverlayMotionActive;
   const avatarCursorOverlayImagePath = activeToolItem && activeCursorToolId !== 'hammer'
-    ? resolveToolImagePaths(activeToolItem, avatarRangeCursorVariant).iconImagePath
+    ? (
+      avatarCursorOverlayCompact
+        ? (activeToolImagePaths?.cursorImagePath ?? '')
+        : (activeToolImagePaths?.iconImagePath ?? '')
+    )
+    : '';
+  const hammerCursorOverlayCompactImagePath = hammerCursorOverlayUsesCompactImage
+    ? (hammerCompactImagePaths?.cursorImagePath ?? '')
     : '';
   const hammerCursorOverlayPrimaryImagePath = hammerToolItem
     ? resolveToolImagePaths(hammerToolItem, 'primary').iconImagePath
@@ -999,7 +1028,9 @@ export default function App({
 
     const applyResolvedCursor = async () => {
       let cursorValue: string;
-      if ((selected.id === 'hammer' && hammerCursorOverlayActive) || avatarCursorOverlayActive) {
+      if (shouldUseDesktopCursorOverlay) {
+        cursorValue = 'none';
+      } else if ((selected.id === 'hammer' && hammerCursorOverlayActive) || avatarCursorOverlayActive) {
         cursorValue = 'none';
       } else if (isCursorOverAvatarRange && !isCursorOverCompactCursorZone) {
         cursorValue = resolveCursorValue(selected, effectiveCursorVariant);
@@ -1015,7 +1046,7 @@ export default function App({
     return () => {
       cancelled = true;
     };
-  }, [activeCursorToolId, avatarCursorOverlayActive, effectiveCursorVariant, hammerCursorOverlayActive, isCursorOverAvatarRange, isCursorOverCompactCursorZone]);
+  }, [activeCursorToolId, avatarCursorOverlayActive, effectiveCursorVariant, hammerCursorOverlayActive, isCursorOverAvatarRange, isCursorOverCompactCursorZone, shouldUseDesktopCursorOverlay]);
 
   useEffect(() => {
     if (!activeToolItem) return;
@@ -1107,7 +1138,7 @@ export default function App({
       {activeToolItem && activeCursorToolId !== 'hammer' && avatarCursorOverlayActive ? (
         <div
           ref={avatarCursorOverlayRef}
-          className={`avatar-cursor-overlay avatar-cursor-overlay-${activeToolItem.id}${avatarCursorOverlayActive ? ' is-visible' : ''}`}
+          className={`avatar-cursor-overlay avatar-cursor-overlay-${activeToolItem.id}${avatarCursorOverlayActive ? ' is-visible' : ''}${avatarCursorOverlayCompact ? ' is-compact' : ''}`}
           aria-hidden="true"
         >
           <div
@@ -1127,7 +1158,7 @@ export default function App({
       {hammerToolItem && hammerCursorOverlayActive ? (
         <div
           ref={hammerCursorOverlayRef}
-          className={`hammer-cursor-overlay${hammerCursorOverlayActive ? ' is-visible' : ''}${isInnerHammerEasterEggActive ? ' is-easter-egg' : ''}`}
+          className={`hammer-cursor-overlay${hammerCursorOverlayActive ? ' is-visible' : ''}${hammerCursorOverlayCompact ? ' is-compact' : ''}${isInnerHammerEasterEggActive ? ' is-easter-egg' : ''}`}
           aria-hidden="true"
         >
           <div
@@ -1136,23 +1167,31 @@ export default function App({
               transformOrigin: `${hammerToolItem.cursorHotspotX ?? 18}px ${hammerToolItem.cursorHotspotY ?? 18}px`,
             }}
           >
-            <div
-              className={`hammer-cursor-overlay-visual${hammerCursorOverlayMotionActive ? ' is-active' : ' is-idle'}${hammerSwingPhase === 'impact' ? ' is-impact' : ''}`}
-              style={{
-                transformOrigin: `${hammerOverlayTransformOrigin.x}px ${hammerOverlayTransformOrigin.y}px`,
-              }}
-            >
+            {hammerCursorOverlayUsesCompactImage ? (
               <img
-                className="hammer-cursor-overlay-image hammer-cursor-overlay-image-primary"
-                src={hammerCursorOverlayPrimaryImagePath}
+                className="hammer-cursor-overlay-compact-image"
+                src={hammerCursorOverlayCompactImagePath}
                 alt=""
               />
-              <img
-                className="hammer-cursor-overlay-image hammer-cursor-overlay-image-secondary"
-                src={hammerCursorOverlaySecondaryImagePath}
-                alt=""
-              />
-            </div>
+            ) : (
+              <div
+                className={`hammer-cursor-overlay-visual${hammerCursorOverlayMotionActive ? ' is-active' : ' is-idle'}${hammerSwingPhase === 'impact' ? ' is-impact' : ''}`}
+                style={{
+                  transformOrigin: `${hammerOverlayTransformOrigin.x}px ${hammerOverlayTransformOrigin.y}px`,
+                }}
+              >
+                <img
+                  className="hammer-cursor-overlay-image hammer-cursor-overlay-image-primary"
+                  src={hammerCursorOverlayPrimaryImagePath}
+                  alt=""
+                />
+                <img
+                  className="hammer-cursor-overlay-image hammer-cursor-overlay-image-secondary"
+                  src={hammerCursorOverlaySecondaryImagePath}
+                  alt=""
+                />
+              </div>
+            )}
           </div>
         </div>
       ) : null}

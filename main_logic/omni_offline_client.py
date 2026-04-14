@@ -86,7 +86,7 @@ class OmniOfflineClient:
         self.handle_connection_error = on_connection_error
         self.on_status_message = on_status_message
         self.on_response_done = on_response_done
-        self.on_proactive_done: Optional[Callable[[], Awaitable[None]]] = None
+        self.on_proactive_done: Optional[Callable[[bool], Awaitable[None]]] = None
         self.on_repetition_detected = on_repetition_detected
         self.on_response_discarded = on_response_discarded
         
@@ -669,8 +669,10 @@ class OmniOfflineClient:
         Completion behaviour is caller-selectable:
 
         - ``completion_mode="proactive"``:
-          Uses ``on_proactive_done()`` when available. This keeps the
-          existing lightweight proactive / agent-callback completion path.
+          Uses ``on_proactive_done(content_committed)`` when available.
+          This keeps the existing lightweight proactive / agent-callback
+          completion path while exposing whether any content was actually
+          emitted.
         - ``completion_mode="response"``:
           Uses ``on_response_done()`` so the reply goes through the
           regular user-visible completion path while still keeping the
@@ -765,15 +767,18 @@ class OmniOfflineClient:
             self._is_responding = False
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
+            content_committed = bool(assistant_message)
             if assistant_message:
                 self._conversation_history.append(AIMessage(content=assistant_message))
             if completion_mode == "response":
-                done_cb = self.on_response_done
+                if self.on_response_done:
+                    await self.on_response_done()
             else:
-                # Preserve existing behavior for proactive / agent callback callers.
-                done_cb = getattr(self, "on_proactive_done", None) or self.on_response_done
-            if done_cb:
-                await done_cb()
+                proactive_done_cb = getattr(self, "on_proactive_done", None)
+                if proactive_done_cb:
+                    await proactive_done_cb(content_committed)
+                elif self.on_response_done:
+                    await self.on_response_done()
 
         return bool(assistant_message)
 

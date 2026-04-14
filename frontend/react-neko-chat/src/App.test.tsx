@@ -337,4 +337,48 @@ describe('App', () => {
 
     expect(screen.getByRole('button', { name: '棒棒糖' })).toHaveAttribute('aria-pressed', 'true');
   });
+
+  it('shows the hammer secondary cursor asset on outside-range desktop clicks', () => {
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      const { container } = render(<App />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '锤子' }));
+
+      const compactImageBefore = container.querySelector('.hammer-cursor-overlay-compact-image');
+      expect(compactImageBefore).not.toBeNull();
+      expect(compactImageBefore).toHaveAttribute('src', '/static/icons/chat_hammer1_cursor.png');
+
+      fireEvent.pointerDown(window, { button: 0, clientX: 20, clientY: 20 });
+
+      const compactImageAfter = container.querySelector('.hammer-cursor-overlay-compact-image');
+      expect(compactImageAfter).not.toBeNull();
+      expect(compactImageAfter).toHaveAttribute('src', '/static/icons/chat_hammer2_cursor.png');
+    } finally {
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
 });
