@@ -128,6 +128,19 @@ _AVATAR_INTERACTION_ALLOWED_ACTIONS = {
     "hammer": {"bonk"},
 }
 _AVATAR_INTERACTION_ALLOWED_INTENSITIES = {"normal", "rapid", "burst", "easter_egg"}
+_AVATAR_INTERACTION_ALLOWED_INTENSITY_COMBINATIONS = {
+    "lollipop": {
+        "offer": {"normal"},
+        "tease": {"normal"},
+        "tap_soft": {"rapid", "burst"},
+    },
+    "fist": {
+        "poke": {"normal", "rapid"},
+    },
+    "hammer": {
+        "bonk": {"normal", "rapid", "burst", "easter_egg"},
+    },
+}
 _AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES = {"ear", "head", "face", "body"}
 _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS = {"fist", "hammer"}
 _AVATAR_INTERACTION_TOOL_LABELS = {
@@ -1051,6 +1064,18 @@ def _sanitize_avatar_interaction_text_context(text: str, max_length: int = 80) -
     return json.dumps(cleaned, ensure_ascii=False)
 
 
+def _normalize_avatar_interaction_intensity(tool_id: str, action_id: str, intensity: str | None) -> str:
+    normalized = str(intensity or "").strip().lower()
+    if normalized not in _AVATAR_INTERACTION_ALLOWED_INTENSITIES:
+        return "normal"
+
+    allowed = _AVATAR_INTERACTION_ALLOWED_INTENSITY_COMBINATIONS.get(tool_id, {}).get(action_id)
+    if not allowed or normalized not in allowed:
+        return "normal"
+
+    return normalized
+
+
 def _parse_avatar_interaction_bool(value, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -1094,9 +1119,7 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
         return None
 
     raw_intensity = str(payload.get("intensity") or "").strip().lower()
-    intensity = raw_intensity if raw_intensity in _AVATAR_INTERACTION_ALLOWED_INTENSITIES else "normal"
-    if tool_id != "hammer" and intensity == "easter_egg":
-        intensity = "normal"
+    intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, raw_intensity)
 
     reward_drop = (
         _parse_avatar_interaction_bool(
@@ -1111,7 +1134,7 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
         if tool_id == "hammer" else False
     )
     if easter_egg:
-        intensity = "easter_egg"
+        intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, "easter_egg")
 
     raw_touch_zone = str(payload.get("touch_zone") or payload.get("touchZone") or "").strip().lower()
     touch_zone = raw_touch_zone if raw_touch_zone in _AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES else ""
@@ -1156,16 +1179,20 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
 def _build_avatar_interaction_instruction(manager: "LLMSessionManager", payload: dict) -> str:
     locale = _avatar_interaction_locale(getattr(manager, "user_language", None))
     tool_id = payload["tool_id"]
+    action_id = str(payload.get("action_id") or "").strip().lower()
+    intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, payload.get("intensity"))
+    if tool_id == "hammer" and payload.get("easter_egg"):
+        intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, "easter_egg")
     prompt_text = _AVATAR_INTERACTION_PROMPT_TEXT.get(locale, _AVATAR_INTERACTION_PROMPT_TEXT["en"])
     tool_label = _AVATAR_INTERACTION_TOOL_LABELS.get(locale, _AVATAR_INTERACTION_TOOL_LABELS["en"]).get(payload["tool_id"], payload["tool_id"])
     action_label = (
         _AVATAR_INTERACTION_ACTION_LABELS.get(locale, _AVATAR_INTERACTION_ACTION_LABELS["en"])
         .get(payload["tool_id"], {})
-        .get(payload["action_id"], payload["action_id"])
+        .get(action_id, action_id)
     )
     intensity_label = _AVATAR_INTERACTION_INTENSITY_LABELS.get(locale, _AVATAR_INTERACTION_INTENSITY_LABELS["en"]).get(
-        payload["intensity"],
-        payload["intensity"],
+        intensity,
+        intensity,
     )
     text_context = payload.get("text_context", "")
     touch_zone = str(payload.get("touch_zone") or "").strip().lower()
@@ -1174,12 +1201,12 @@ def _build_avatar_interaction_instruction(manager: "LLMSessionManager", payload:
         if tool_id in _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS else ""
     )
     wrapper = _AVATAR_INTERACTION_SYSTEM_WRAPPER.get(locale, _AVATAR_INTERACTION_SYSTEM_WRAPPER["en"])
-    action_profiles = _AVATAR_INTERACTION_REACTION_PROFILES.get(locale, _AVATAR_INTERACTION_REACTION_PROFILES["en"]).get(tool_id, {}).get(payload["action_id"], {})
+    action_profiles = _AVATAR_INTERACTION_REACTION_PROFILES.get(locale, _AVATAR_INTERACTION_REACTION_PROFILES["en"]).get(tool_id, {}).get(action_id, {})
     if payload.get("reward_drop") and action_profiles.get("reward_drop"):
         reaction_profile = action_profiles["reward_drop"]
     else:
         reaction_profile = (
-            action_profiles.get(payload["intensity"])
+            action_profiles.get(intensity)
             or action_profiles.get("normal")
             or _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES.get(locale, _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES["en"])
         )
@@ -1222,7 +1249,9 @@ def _build_avatar_interaction_memory_meta(language: str | None, payload: dict) -
     templates = _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES.get(locale, {})
     tool_id = str(payload.get("tool_id") or "").strip().lower()
     action_id = str(payload.get("action_id") or "").strip().lower()
-    intensity = str(payload.get("intensity") or "normal").strip().lower() or "normal"
+    intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, payload.get("intensity") or "normal")
+    if tool_id == "hammer" and payload.get("easter_egg"):
+        intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, "easter_egg")
 
     memory_note = ""
     dedupe_key = tool_id or "avatar_interaction"
@@ -1230,7 +1259,7 @@ def _build_avatar_interaction_memory_meta(language: str | None, payload: dict) -
 
     if tool_id == "lollipop":
         dedupe_key = "lollipop_feed"
-        if action_id == "tap_soft" or intensity in {"rapid", "burst"}:
+        if action_id == "tap_soft" and intensity in {"rapid", "burst"}:
             memory_note = templates.get("lollipop", {}).get("tap_soft", "")
             dedupe_rank = 4 if intensity == "burst" else 3
         elif action_id == "tease":
