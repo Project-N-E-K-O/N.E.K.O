@@ -150,9 +150,7 @@
             try { scheduleProactiveChat(); } catch (_) {}
             // 接班：如果当前正在录音，启动 vision-during-speech
             try {
-                if (S.isRecording && typeof startProactiveVisionDuringSpeech === 'function') {
-                    startProactiveVisionDuringSpeech();
-                }
+                if (S.isRecording) startProactiveVisionDuringSpeech();
             } catch (_) {}
         } else {
             // 让位：清掉本地 proactive 定时器和 vision 心跳
@@ -160,11 +158,7 @@
                 clearTimeout(S.proactiveChatTimer);
                 S.proactiveChatTimer = null;
             }
-            try {
-                if (typeof stopProactiveVisionDuringSpeech === 'function') {
-                    stopProactiveVisionDuringSpeech();
-                }
-            } catch (_) {}
+            try { stopProactiveVisionDuringSpeech(); } catch (_) {}
         }
     }
 
