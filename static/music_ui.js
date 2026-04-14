@@ -147,6 +147,74 @@
         return remoteMusicSenders.size > 0;
     };
 
+    // --- 跨窗口 React 聊天镜像：把本窗口写入 reactChatWindowHost 的
+    // append/update 动作同步广播给其他窗口，解决 PR #780 之后的问题 ——
+    // proactive 聊天只在 leader（通常是 Pet/index.html）触发，后端下发的
+    // 音乐卡片 / meme 气泡只会出现在 leader 的 React chat 里，chat.html
+    // 作为 follower 不再发 /api/proactive_chat 也就收不到响应，它的 React
+    // chat 里只能看到 WS 推的纯文字消息。通过这里的 mirror 把 leader 的
+    // 卡片/气泡广播到 follower，让 chat.html 也能同步渲染。
+    //
+    // 不走 'neko_music_coord' 是为了职责分离：那个 channel 仅用于
+    // "谁在播音乐/是否占用"的互斥协调，这里是 UI 层消息镜像，语义不同。
+    const CHAT_MIRROR_CHANNEL_NAME = 'neko_chat_ui_mirror';
+    let chatMirrorChannel = null;
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            chatMirrorChannel = new BroadcastChannel(CHAT_MIRROR_CHANNEL_NAME);
+            chatMirrorChannel.onmessage = (event) => {
+                const data = event && event.data;
+                if (!data || typeof data !== 'object') return;
+                if (!data.sender || data.sender === MUSIC_COORD_SENDER_ID) return;
+                const host = window.reactChatWindowHost;
+                if (!host) return;
+                try {
+                    if (data.type === 'append' && typeof host.appendMessage === 'function' && data.message) {
+                        host.appendMessage(data.message);
+                    } else if (data.type === 'update' && typeof host.updateMessage === 'function' && data.messageId) {
+                        host.updateMessage(data.messageId, data.patch || {});
+                    }
+                } catch (e) {
+                    console.warn('[Music UI] 镜像 React chat 消息失败:', e);
+                }
+            };
+            window.addEventListener('beforeunload', () => {
+                try {
+                    if (chatMirrorChannel) { chatMirrorChannel.close(); chatMirrorChannel = null; }
+                } catch (_) { /* ignore */ }
+            });
+        }
+    } catch (e) {
+        console.log('[Music UI] chat mirror channel 不可用:', e);
+    }
+
+    const broadcastChatMirror = (payload) => {
+        if (!chatMirrorChannel) return;
+        try {
+            chatMirrorChannel.postMessage(Object.assign({ sender: MUSIC_COORD_SENDER_ID, ts: Date.now() }, payload));
+        } catch (_) { /* ignore */ }
+    };
+
+    // 对外暴露的"本地 append + 广播镜像"两合一 helper —— 供 app-proactive.js
+    // 等下游在想让一条消息同时落到所有窗口的 React chat 时使用。
+    // 下游不要直接调 reactChatWindowHost.appendMessage，否则就只在本窗口显示。
+    const mirrorHostAppend = (host, message) => {
+        if (!message) return;
+        if (host && typeof host.appendMessage === 'function') {
+            host.appendMessage(message);
+        }
+        broadcastChatMirror({ type: 'append', message: message });
+    };
+    const mirrorHostUpdate = (host, messageId, patch) => {
+        if (!messageId) return;
+        if (host && typeof host.updateMessage === 'function') {
+            host.updateMessage(messageId, patch || {});
+        }
+        broadcastChatMirror({ type: 'update', messageId: messageId, patch: patch || {} });
+    };
+    window.__nekoMirrorChatAppend = mirrorHostAppend;
+    window.__nekoMirrorChatUpdate = mirrorHostUpdate;
+
     // --- 更新 React 聊天窗口音乐卡片 ---
     const updateMusicCard = (state, track) => {
         const host = window.reactChatWindowHost;
@@ -160,7 +228,8 @@
         else if (state === 'error') { prefix = '❌'; text = (window.t && window.t('music.playError')) || '播放失败'; }
         else { prefix = '❓'; text = (window.t && window.t('music.unknownState')) || '未知状态'; }
 
-        host.updateMessage(musicCardMessageId, {
+        // 镜像到所有窗口：leader 本地 update + 广播给 follower
+        mirrorHostUpdate(host, musicCardMessageId, {
             blocks: [{
                 type: 'link',
                 url: track?.url || '#',
@@ -699,9 +768,10 @@
             if (host && typeof host.appendMessage === 'function') {
                 // 切歌时，先把上一首的卡片标记为"已结束"，避免覆盖 musicCardMessageId
                 // 之后旧卡片永远停在"播放中"。注意要用旧 id + 旧 track。
-                if (previousCardId && typeof host.updateMessage === 'function') {
+                if (previousCardId) {
                     try {
-                        host.updateMessage(previousCardId, {
+                        // 镜像到所有窗口：follower 也要把上一首标成已播完
+                        mirrorHostUpdate(host, previousCardId, {
                             blocks: [{
                                 type: 'link',
                                 url: (previousTrackForCard && previousTrackForCard.url) || '#',
@@ -726,7 +796,9 @@
                 const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
                 const msgId = 'music-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
                 musicCardMessageId = msgId;
-                host.appendMessage({
+                // 镜像到所有窗口：leader 本地 append + 广播给 follower，
+                // 保证 chat.html 里也能出现音乐卡片（见本文件 chat mirror 段的注释）
+                mirrorHostAppend(host, {
                     id: msgId,
                     role: 'assistant',
                     author: assistantName,
