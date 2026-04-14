@@ -85,6 +85,20 @@
                     remoteMusicSenders.delete(sid);
                 }
             };
+            // 窗口关闭时通告一声 music_ended 并关闭 channel，避免对端等 30s TTL 才意识到我退出
+            window.addEventListener('beforeunload', () => {
+                try {
+                    if (musicCoordChannel) {
+                        musicCoordChannel.postMessage({
+                            type: 'music_ended',
+                            sender: MUSIC_COORD_SENDER_ID,
+                            ts: Date.now()
+                        });
+                        musicCoordChannel.close();
+                        musicCoordChannel = null;
+                    }
+                } catch (_) { /* ignore */ }
+            });
         }
     } catch (e) {
         console.log('[Music UI] BroadcastChannel 不可用，跨窗口协调失效:', e);
