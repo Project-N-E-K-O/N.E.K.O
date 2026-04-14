@@ -874,7 +874,10 @@ class MMDCore {
     }
 
     _render() {
-        if (!this.manager._shouldRender || this.manager._isDisposed) return;
+        if (!this.manager._shouldRender || this.manager._isDisposed) {
+            this._flushRenderWaiters();
+            return;
+        }
 
         this.manager._animationFrameId = requestAnimationFrame(() => this._render());
 
@@ -1332,6 +1335,8 @@ class MMDCore {
             cancelAnimationFrame(this.manager._animationFrameId);
             this.manager._animationFrameId = null;
         }
+
+        this._flushRenderWaiters();
 
         this._clearModel();
 

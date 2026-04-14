@@ -7,7 +7,17 @@ def test_model_manager_mmd_loading_overlay(mock_page: Page, running_server: str)
     url = f"{running_server}/model_manager"
     mock_page.goto(url)
     mock_page.wait_for_load_state("networkidle")
-    mock_page.wait_for_function("() => !!window.MMDLoadingOverlay", timeout=15000)
+    mock_page.wait_for_function(
+        """
+        () => {
+            const select = document.querySelector('#mmd-model-select');
+            return !!window.MMDLoadingOverlay
+                && !!select
+                && typeof window.initMMDModel === 'function';
+        }
+        """,
+        timeout=15000,
+    )
 
     mock_page.evaluate(
         """

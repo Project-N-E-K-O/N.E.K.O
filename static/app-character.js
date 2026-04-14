@@ -992,7 +992,7 @@
                 } else {
                     console.error('[猫娘切换] MMD 管理器初始化失败');
                     window.MMDLoadingOverlay?.fail(loadingSessionId, {
-                        detail: 'MMD 管理器初始化失败'
+                        detail: (window.t && window.t('mmd.managerInitFailed')) || 'MMD 管理器初始化失败'
                     });
                 }
 
