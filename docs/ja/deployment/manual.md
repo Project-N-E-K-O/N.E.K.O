@@ -19,11 +19,23 @@ uv sync
 
 ## フロントエンドのビルド
 
-プロジェクトには `frontend/` 配下に2つのフロントエンドプロジェクトがあり、実行前にビルドが必要です：
+プロジェクトには `frontend/` 配下に2つのフロントエンドプロジェクトがあり、実行前にビルドが必要です。
+
+**推奨** -- プロジェクトルートから一括ビルドスクリプトを使用してください。これが公式にサポートされているビルド方法です：
+
+```bash
+# Windows
+build_frontend.bat
+
+# Linux / macOS
+./build_frontend.sh
+```
+
+手動で実行する場合は、スクリプトと同じコマンドを使用してください：
 
 ```bash
 cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build && cd ../..
+cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 ```
 
 ## 起動
