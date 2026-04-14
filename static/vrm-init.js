@@ -647,6 +647,12 @@ function _startVrmIdleRotation(urls) {
     async function switchToNext() {
         _clearVrmIdleSchedule();
 
+        // Jukebox 舞蹈播放中：不打断，续期定时器等舞蹈结束后再轮换
+        if (window.Jukebox?.State?.isVMDPlaying) {
+            scheduleFallback();
+            return;
+        }
+
         const mgr = window.vrmManager;
         if (!mgr || !mgr.currentModel || !mgr.animation) return;
 

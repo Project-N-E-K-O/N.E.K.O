@@ -336,9 +336,6 @@
             window.ensureAssistantTurnStarted('create_gemini_bubble');
         }
 
-        // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
-        checkAndShowSubtitlePrompt(cleanSentence);
-
         // 如果是AI第一次回复，更新状态并检查成就
         if (isFirstAIResponse) {
             isFirstAIResponse = false;
@@ -436,10 +433,24 @@
     window.dispatchMusicPlay = async function (trackInfo, options) {
         options = options || {};
 
-        // 拦截逻辑：如果是主动搭话触发的切歌，且当前正在放歌，则拦截
-        if (options.source === 'proactive' && typeof window.isMusicPlaying === 'function' && window.isMusicPlaying()) {
-            console.log('[MusicDispatch] 拦截来自主动搭话的切歌请求，保持当前播放');
-            return false;
+        // 拦截逻辑：如果是主动搭话触发的切歌，且本地正在放歌 / 加载中 /
+        // 其他窗口（chat.html 与 index.html 互为兄弟）也在放歌，则拦截。
+        // 单纯的 isMusicPlaying() 在"已 dispatch 但 audio 还没 play"的窗口里
+        // 会返回 false，导致并发的第二次 dispatch 被放行，最终两首歌同时响。
+        //
+        // 注意：这是有意的不对称拦截 —— 仅 source==='proactive'（主动搭话）
+        // 的推荐会被当前播放拦下；用户主动搜索、插件 music_play_url、
+        // [play_music:] 指令等（app-websocket.js 的 dispatchMusicPlay 调用不带
+        // source 字段）仍允许直接切歌。用户/插件意图 > 被动推荐。
+        if (options.source === 'proactive') {
+            var localPlaying = typeof window.isMusicPlaying === 'function' && window.isMusicPlaying();
+            var localPending = typeof window.isMusicPending === 'function' && window.isMusicPending();
+            var remoteActive = typeof window.isRemoteMusicActive === 'function' && window.isRemoteMusicActive();
+            var rateLimited = typeof window.isMusicRecommendRateLimited === 'function' && window.isMusicRecommendRateLimited();
+            if (localPlaying || localPending || remoteActive || rateLimited) {
+                console.log('[MusicDispatch] 拦截来自主动搭话的切歌请求 (playing=' + localPlaying + ', pending=' + localPending + ', remote=' + remoteActive + ', rateLimited=' + rateLimited + ')');
+                return false;
+            }
         }
 
         if (!trackInfo || !trackInfo.url) {
@@ -451,6 +462,10 @@
 
         if (window.sendMusicMessage) {
             var accepted = await window.sendMusicMessage(trackInfo);
+            // proactive 来源成功派发后打上限流时间戳，阻止接下来 18s 内的再次 proactive 推荐
+            if (accepted && options.source === 'proactive' && typeof window.markProactiveMusicRecommended === 'function') {
+                window.markProactiveMusicRecommended();
+            }
             return accepted; // 返回布尔值表示是否成功派发
         } else {
             console.warn('[MusicDispatch] sendMusicMessage \u5C1A\u672A\u5C31\u7EEA\uFF0C\u542F\u52A8\u7B49\u5F85 (ID: ' + currentDispatchId + ')...');
@@ -719,13 +734,8 @@
         }
 
         function looksLikeStructuredRichText(text) {
-            var s = normalizeGeminiText(text || '');
-            return /```[\s\S]*```/.test(s)
-                || /(?:^|\n)```/.test(s)
-                || /\$\$[\s\S]*\$\$/.test(s)
-                || /(?<!\$)\$(?!\$)[^$\n]+(?<!\$)\$(?!\$)/.test(s)
-                || /(?:^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s)/.test(s)
-                || /(?:^|\n)\|.+\|.+(?:\n|\r\n)\|(?:[-: ]+\|){1,}/.test(s);
+            // 统一复用 app-chat-text-utils.js 里的唯一实现，避免与 adapter 路径分叉。
+            return window.appChatTextUtils.looksLikeStructuredRichText(text);
         }
 
         function renderStructuredGeminiMessage(fullText) {
@@ -762,8 +772,6 @@
                 window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
                 window.currentTurnGeminiBubbles.push(msgDiv);
 
-                checkAndShowSubtitlePrompt(cleanFullText);
-
                 if (isFirstAIResponse) {
                     isFirstAIResponse = false;
                     console.log(window.t('console.aiFirstReplyDetected'));
@@ -789,12 +797,37 @@
                 window._geminiTurnFullText = '';
                 window._pendingMusicCommand = '';
                 window._structuredGeminiStreaming = false;
+                window._turnIsStructured = false;
                 // ========== 重置本轮气泡追踪 ==========
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
+                // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件要等
+                // 首个可见气泡创建后才发，而 updateSubtitleStreamingText 在
+                // 首个 chunk 就会被调用，必须在此解锁 isCurrentTurnFinalized
+                // 闸门，否则上一轮结束留下的 true 会把本轮首个 chunk 吞掉。
+                if (typeof window.beginSubtitleTurn === 'function') {
+                    window.beginSubtitleTurn();
+                }
             }
             var prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
             window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
+
+            // 结构化富文本（markdown / code / table / latex）→ 字幕显示 [markdown] 占位，
+            // 不再流式写原文，turn_end 也跳过翻译。检测命中后幂等，不会往回切。
+            var streamingText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            if (!window._turnIsStructured && looksLikeStructuredRichText(streamingText)) {
+                window._turnIsStructured = true;
+            }
+
+            if (window._turnIsStructured) {
+                if (typeof window.markSubtitleStructured === 'function') {
+                    window.markSubtitleStructured();
+                }
+            } else if (typeof window.updateSubtitleStreamingText === 'function') {
+                // 把整轮累积的原文流式写入字幕（常驻字幕，跨气泡持续显示）
+                // turn 结束时由 app-websocket.js 调用翻译替换；turn-start 事件清空
+                window.updateSubtitleStreamingText(streamingText);
+            }
         }
 
         if (sender === 'gemini' && !isMergeMessagesEnabled()) {
@@ -889,9 +922,6 @@
                 window.currentGeminiMessage = null;
             }
 
-            // 3. 对干净的文本调用字幕检测
-            checkAndShowSubtitlePrompt(cleanNewText);
-
             if (isFirstAIResponse) {
                 isFirstAIResponse = false;
                 console.log(window.t('console.aiFirstReplyDetected'));
@@ -915,8 +945,6 @@
                     window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
                     window.currentTurnGeminiBubbles.push(msgDiv);
                     createdVisibleBubble = true;
-
-                    checkAndShowSubtitlePrompt(cleanText);
                 } else {
                     // 仅有指令无文本，继续保持指针为空，直到出现有意义的文本块
                     window.currentGeminiMessage = null;
@@ -926,9 +954,6 @@
             else if (window.currentGeminiMessage && window.currentGeminiMessage.isConnected) {
                 var fullText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
 
-
-                // var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /) || [""];
-                // window.currentGeminiMessage.textContent = timePrefix[0] + fullText;
                 var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /u);
                 if (!timePrefix) {
                     timePrefix = "[" + getCurrentTimeString() + "] \u{1F380} ";
@@ -937,41 +962,6 @@
                 }
                 window.currentGeminiMessage.textContent = timePrefix + fullText;
                 updateReactTextMessage(window.currentGeminiMessage, 'assistant', getCurrentAssistantName(), window.currentGeminiMessage.textContent, 'streaming');
-
-                
-                // 触发字幕检测逻辑（防抖）
-                if (S.subtitleCheckDebounceTimer) {
-                    clearTimeout(S.subtitleCheckDebounceTimer);
-                }
-
-                S.subtitleCheckDebounceTimer = setTimeout(function () {
-                    if (!window.currentGeminiMessage ||
-                        window.currentGeminiMessage.nodeType !== Node.ELEMENT_NODE ||
-                        !window.currentGeminiMessage.isConnected) {
-                        S.subtitleCheckDebounceTimer = null;
-                        return;
-                    }
-
-                    var currentFullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /u, '');
-                    if (currentFullText && currentFullText.trim()) {
-                        if (typeof userLanguage !== 'undefined' && userLanguage === null) {
-                            getUserLanguage().then(function () {
-                                if (window.currentGeminiMessage && window.currentGeminiMessage.isConnected) {
-                                    var detectedLang = detectLanguage(currentFullText);
-                                    if (detectedLang !== 'unknown' && detectedLang !== userLanguage) {
-                                        showSubtitlePrompt();
-                                    }
-                                }
-                            }).catch(function (err) { console.warn('[i18n] Stream error:', err); });
-                        } else {
-                            var detectedLang = detectLanguage(currentFullText);
-                            if (detectedLang !== 'unknown' && typeof userLanguage !== 'undefined' && detectedLang !== userLanguage) {
-                                showSubtitlePrompt();
-                            }
-                        }
-                    }
-                    S.subtitleCheckDebounceTimer = null;
-                }, 300);
             }
         } else {
             // 创建新消息 (user / 其他 sender)
@@ -998,9 +988,6 @@
                 // ========== 追踪本轮气泡 ==========
                 window.currentTurnGeminiBubbles.push(newDiv);
                 createdVisibleBubble = true;
-
-                // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
-                checkAndShowSubtitlePrompt(cleanedText);
 
                 // 如果是AI第一次回复，更新状态并检查成就
                 if (isFirstAIResponse) {

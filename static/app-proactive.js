@@ -22,6 +22,172 @@
     const S = window.appState;
     const C = window.appConst;
 
+    // ======================== proactive leader election ========================
+    //
+    // 背景：index.html（Pet 主窗口）和 chat.html（聊天浮窗）共用 app-proactive.js，
+    // 各自跑 setTimeout 调度，会同时发 /api/proactive_chat 请求 / 推屏幕帧。
+    // 后端把它们当两次独立请求处理，结果双倍 LLM 调用、双倍音乐推荐、双倍 vision 帧。
+    //
+    // 约定：Pet (index.html) 为主，chat.html 为从。同时存活时只有 Pet 跑调度；
+    // Pet 关闭后 chat.html 通过 TTL 自动接班。
+    //
+    // 协议：广播 'neko_proactive_leader'。每 5s 心跳，15s TTL。
+    // rank 越小越优先：Pet=0, chat.html=1, 其它页面=99（不参与）。
+    //
+    const PROACTIVE_LEADER_CHANNEL = 'neko_proactive_leader';
+    const PROACTIVE_LEADER_HEARTBEAT_MS = 5000;
+    const PROACTIVE_LEADER_TTL_MS = 15000;
+    const PROACTIVE_LEADER_RECHECK_MS = 8000; // 非 leader 的自检周期
+
+    const PROACTIVE_SELF_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+
+    function _computeSelfRank() {
+        try {
+            const path = (window.location && window.location.pathname) || '';
+            // chat.html 浮窗 → 从节点
+            if (path === '/chat') return 1;
+            // 不参与 proactive 的页面（model_manager / jukebox / subtitle / agenthud / toast / cookies_login 等）
+            // 它们本来就不加载 app-proactive.js，但保险起见显式归类为不参与
+            if (
+                path === '/model_manager' || path === '/l2d' ||
+                path === '/live2d_parameter_editor' || path === '/jukebox' ||
+                path === '/jukebox/manager' || path === '/subtitle' ||
+                path === '/agenthud' || path === '/toast'
+            ) return 99;
+            // 其它（/、/{lanlan_name}）一律视为 Pet 主窗口
+            return 0;
+        } catch (_) {
+            return 0;
+        }
+    }
+    const PROACTIVE_SELF_RANK = _computeSelfRank();
+
+    // peer_id -> { rank, expireAt }
+    const _proactivePeers = new Map();
+    let _proactiveLeaderChannel = null;
+    let _proactiveLeaderHeartbeatTimer = null;
+    let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
+
+    try {
+        if (typeof BroadcastChannel !== 'undefined' && PROACTIVE_SELF_RANK !== 99) {
+            _proactiveLeaderChannel = new BroadcastChannel(PROACTIVE_LEADER_CHANNEL);
+            _proactiveLeaderChannel.onmessage = function (event) {
+                const data = event && event.data;
+                if (!data || typeof data !== 'object') return;
+                if (!data.id || data.id === PROACTIVE_SELF_ID) return;
+                if (data.type === 'announce' || data.type === 'heartbeat') {
+                    const isNewPeer = !_proactivePeers.has(data.id);
+                    _proactivePeers.set(data.id, {
+                        rank: typeof data.rank === 'number' ? data.rank : 99,
+                        expireAt: Date.now() + PROACTIVE_LEADER_TTL_MS
+                    });
+                    // 新 peer 上线：立即回一个 heartbeat，让它在第一次决策前就能感知到我，
+                    // 避免新窗口在 announce 后的"无人响应"窗口里误以为只有自己。
+                    if (data.type === 'announce') {
+                        _proactiveBroadcast('heartbeat');
+                    }
+                    // 拓扑变化（新 peer 或 announce）时重新评估自己的角色
+                    if (isNewPeer || data.type === 'announce') {
+                        _onProactiveLeadershipMaybeChanged();
+                    }
+                } else if (data.type === 'goodbye') {
+                    _proactivePeers.delete(data.id);
+                    _onProactiveLeadershipMaybeChanged();
+                }
+            };
+        }
+    } catch (e) {
+        console.log('[Proactive] BroadcastChannel 不可用，主备协调失效:', e);
+    }
+
+    function _proactiveBroadcast(type) {
+        if (!_proactiveLeaderChannel) return;
+        try {
+            _proactiveLeaderChannel.postMessage({
+                type: type || 'heartbeat',
+                id: PROACTIVE_SELF_ID,
+                rank: PROACTIVE_SELF_RANK,
+                ts: Date.now()
+            });
+        } catch (_) { /* ignore */ }
+    }
+
+    function _purgeStaleProactivePeers() {
+        const now = Date.now();
+        let removed = false;
+        for (const [id, info] of _proactivePeers) {
+            if (now > info.expireAt) {
+                _proactivePeers.delete(id);
+                removed = true;
+            }
+        }
+        return removed;
+    }
+
+    function isProactiveLeader() {
+        if (PROACTIVE_SELF_RANK === 99) return false; // 不参与的页面永远不是
+        _purgeStaleProactivePeers();
+        // 找出存活节点中最优 rank（含自己），同 rank 时 ID 字典序小者胜
+        let bestRank = PROACTIVE_SELF_RANK;
+        let bestId = PROACTIVE_SELF_ID;
+        for (const [id, info] of _proactivePeers) {
+            if (info.rank < bestRank || (info.rank === bestRank && id < bestId)) {
+                bestRank = info.rank;
+                bestId = id;
+            }
+        }
+        return bestId === PROACTIVE_SELF_ID;
+    }
+    mod.isProactiveLeader = isProactiveLeader;
+
+    function _onProactiveLeadershipMaybeChanged() {
+        const nowLeader = isProactiveLeader();
+        if (_wasLeaderLastTick === nowLeader) return;
+        _wasLeaderLastTick = nowLeader;
+        console.log('[Proactive] 主备状态切换：自己现在' + (nowLeader ? '是 leader（开始调度 proactive_chat / vision）' : '是 follower（停止调度，等待 leader 失联）'));
+        if (nowLeader) {
+            // 接班：立刻安排一次 proactive_chat
+            try { scheduleProactiveChat(); } catch (e) {
+                console.warn('[Proactive] 接班时调度 proactive_chat 失败:', e);
+            }
+            // 接班：如果当前正在录音，启动 vision-during-speech
+            try {
+                if (S.isRecording) startProactiveVisionDuringSpeech();
+            } catch (e) {
+                console.warn('[Proactive] 接班时启动 vision-during-speech 失败:', e);
+            }
+        } else {
+            // 让位：清掉本地 proactive 定时器和 vision 心跳
+            if (S.proactiveChatTimer) {
+                clearTimeout(S.proactiveChatTimer);
+                S.proactiveChatTimer = null;
+            }
+            try { stopProactiveVisionDuringSpeech(); } catch (e) {
+                console.warn('[Proactive] 让位时停止 vision-during-speech 失败:', e);
+            }
+        }
+    }
+
+    // 启动：先 announce 一下，再周期性 heartbeat
+    if (_proactiveLeaderChannel) {
+        _proactiveBroadcast('announce');
+        _proactiveLeaderHeartbeatTimer = setInterval(function () {
+            _proactiveBroadcast('heartbeat');
+            // 心跳节奏顺手扫一下过期 peer，防止 leader 被关掉后 follower 不知情
+            if (_purgeStaleProactivePeers()) {
+                _onProactiveLeadershipMaybeChanged();
+            }
+        }, PROACTIVE_LEADER_HEARTBEAT_MS);
+        // 窗口关闭前广播 goodbye，让对端立即接班
+        window.addEventListener('beforeunload', function () {
+            _proactiveBroadcast('goodbye');
+            if (_proactiveLeaderHeartbeatTimer) {
+                clearInterval(_proactiveLeaderHeartbeatTimer);
+                _proactiveLeaderHeartbeatTimer = null;
+            }
+        });
+    }
+
     // ======================== screen-capture helpers (delegate to app-screen.js) ========================
 
     function captureCanvasFrame(video, jpegQuality, detectBlack) {
@@ -121,6 +287,15 @@
             clearTimeout(S.proactiveChatTimer);
             S.proactiveChatTimer = null;
         }
+
+        // 主备协调：非 leader 不调度，只挂一个轻量的 recheck，
+        // 一旦 leader 失联（peer 过期）就自动接班。
+        if (!isProactiveLeader()) {
+            console.log('[Proactive] 当前不是 leader，跳过调度，等待接班 (rank=' + PROACTIVE_SELF_RANK + ')');
+            S.proactiveChatTimer = setTimeout(scheduleProactiveChat, PROACTIVE_LEADER_RECHECK_MS);
+            return;
+        }
+        _wasLeaderLastTick = true;
 
         // 必须开启主动搭话且选择至少一种搭话方式才启动调度
         if (!S.proactiveChatEnabled || !hasAnyChatModeEnabled()) {
@@ -244,6 +419,12 @@
 
     async function triggerProactiveChat() {
         try {
+            // 主备协调：本窗口非 leader 时不触发，避免和 Pet 主窗口重复发请求。
+            // 这里再 guard 一次是为了防止 leader 切换后旧定时器仍然触发。
+            if (!isProactiveLeader()) {
+                console.log('[ProactiveChat] 当前不是 leader，跳过触发');
+                return;
+            }
             // 「请她离开」状态下不触发
             if (isGoodbyeActive()) {
                 console.log('[ProactiveChat] goodbye 状态，跳过本次触发');
@@ -925,6 +1106,13 @@
             S.proactiveVisionFrameTimer = null;
         }
 
+        // 主备协调：proactive vision 也由 Pet 主窗口负责，chat.html 不参与。
+        // 否则两个窗口都会向后端推屏幕帧，带宽和 LLM 调用翻倍。
+        if (!isProactiveLeader()) {
+            console.log('[ProactiveVision] 当前不是 leader，跳过启动');
+            return;
+        }
+
         // 「请她离开」状态下禁止启动
         if (isGoodbyeActive()) {
             return;
@@ -938,6 +1126,11 @@
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
             if (!S.proactiveVisionEnabled || !S.isRecording || isGoodbyeActive()) {
+                stopProactiveVisionDuringSpeech();
+                return;
+            }
+            // leader 切换的兜底：发帧前再核对一次
+            if (!isProactiveLeader()) {
                 stopProactiveVisionDuringSpeech();
                 return;
             }
@@ -1137,6 +1330,7 @@
     window.acquireProactiveVisionStream = acquireProactiveVisionStream;
     window.releaseProactiveVisionStream = releaseProactiveVisionStream;
     window.scheduleProactiveChat = scheduleProactiveChat;
+    window.isProactiveLeader = isProactiveLeader;
     window.captureCanvasFrame = captureCanvasFrame;
     window.fetchBackendScreenshot = fetchBackendScreenshot;
     window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;

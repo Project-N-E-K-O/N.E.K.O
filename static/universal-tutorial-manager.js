@@ -153,6 +153,28 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 检测当前激活的模型类型前缀（live2d / vrm / mmd）
+     * 浮动按钮等 UI 元素的 ID 以此前缀命名，如 vrm-floating-buttons、mmd-btn-mic。
+     */
+    static detectModelPrefix() {
+        // 1. 检查 DOM 中实际存在哪种浮动按钮容器
+        if (document.getElementById('vrm-floating-buttons')) return 'vrm';
+        if (document.getElementById('mmd-floating-buttons')) return 'mmd';
+        if (document.getElementById('live2d-floating-buttons')) return 'live2d';
+
+        // 2. 回退到配置
+        const cfg = window.lanlan_config && window.lanlan_config.model_type;
+        if (cfg === 'vrm') return 'vrm';
+        if (cfg === 'mmd') return 'mmd';
+        if (cfg === 'live3d') {
+            if (window.mmdManager && window.mmdManager.currentModel) return 'mmd';
+            if (window.vrmManager && window.vrmManager.currentModel) return 'vrm';
+        }
+
+        return 'live2d';
+    }
+
+    /**
      * 检测当前页面类型
      */
     static detectPage() {
@@ -537,7 +559,11 @@ class UniversalTutorialManager {
         if (!hasSeen) {
             // 对于主页，需要等待浮动按钮创建
             if (this.currentPage === 'home') {
-                this.waitForFloatingButtons().then(() => {
+                this.waitForFloatingButtons().then((found) => {
+                    if (!found) {
+                        console.warn('[Tutorial] 浮动按钮始终未出现，跳过主页引导');
+                        return;
+                    }
                     // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
                     this.startTutorialWhenI18nReady(1500);
                 });
@@ -737,10 +763,12 @@ class UniversalTutorialManager {
      */
     getHomeSteps() {
         const t = (key, fallback) => this.t(key, fallback);
+        // 根据当前模型类型动态选择元素前缀（live2d / vrm / mmd）
+        const p = UniversalTutorialManager.detectModelPrefix();
 
         return [
             {
-                element: '#live2d-container',
+                element: `#${p}-container`,
                 popover: {
                     title: window.t ? window.t('tutorial.step1.title', '👋 欢迎来到 N.E.K.O') : '👋 欢迎来到 N.E.K.O',
                     description: window.t ? window.t('tutorial.step1.desc', '这是你的猫娘！接下来我会带你熟悉各项功能~') : '这是你的猫娘！接下来我会带你熟悉各项功能~',
@@ -748,7 +776,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: false
             },
             {
-                element: '#live2d-container',
+                element: `#${p}-container`,
                 popover: {
                     title: window.t ? window.t('tutorial.step1b.title', '🖱️ 拖拽与缩放') : '🖱️ 拖拽与缩放',
                     description: window.t ? window.t('tutorial.step1b.desc', '你可以拖拽猫娘移动位置，也可以用<strong>鼠标滚轮</strong>放大缩小，试试看吧~') : '你可以拖拽猫娘移动位置，也可以用<strong>鼠标滚轮</strong>放大缩小，试试看吧~',
@@ -757,7 +785,7 @@ class UniversalTutorialManager {
                 enableModelInteraction: true
             },
             {
-                element: '#live2d-lock-icon',
+                element: `#${p}-lock-icon`,
                 popover: {
                     title: window.t ? window.t('tutorial.step1c.title', '🔒 锁定猫娘') : '🔒 锁定猫娘',
                     description: window.t ? window.t('tutorial.step1c.desc', '点击这个锁可以锁定猫娘位置，防止误触移动。锁定后周围的浮动工具栏也不会再出现。再次点击可以解锁~') : '点击这个锁可以锁定猫娘位置，防止误触移动。锁定后周围的浮动工具栏也不会再出现。再次点击可以解锁~',
@@ -765,7 +793,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: '#live2d-floating-buttons',
+                element: `#${p}-floating-buttons`,
                 popover: {
                     title: window.t ? window.t('tutorial.step5.title', '🎛️ 浮动工具栏') : '🎛️ 浮动工具栏',
                     description: window.t ? window.t('tutorial.step5.desc', '浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~') : '浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~',
@@ -773,7 +801,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: '#live2d-btn-mic',
+                element: `#${p}-btn-mic`,
                 popover: {
                     title: window.t ? window.t('tutorial.step6.title', '🎤 语音控制') : '🎤 语音控制',
                     description: window.t ? window.t('tutorial.step6.desc', '启用语音控制，猫娘通过语音识别理解你的话语~') : '启用语音控制，猫娘通过语音识别理解你的话语~',
@@ -781,7 +809,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: '#live2d-btn-screen',
+                element: `#${p}-btn-screen`,
                 popover: {
                     title: window.t ? window.t('tutorial.step7.title', '🖥️ 屏幕分享') : '🖥️ 屏幕分享',
                     description: window.t ? window.t('tutorial.step7.desc', '开启后会持续地将屏幕分享给猫娘，只能在语音对话期间使用~') : '开启后会持续地将屏幕分享给猫娘，只能在语音对话期间使用~',
@@ -789,7 +817,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: '#live2d-btn-agent',
+                element: `#${p}-btn-agent`,
                 popover: {
                     title: window.t ? window.t('tutorial.step8.title', '🔨 OpenClaw') : '🔨 OpenClaw',
                     description: window.t ? window.t('tutorial.step8.desc', '打开猫爪面板，使用 computer use、browser use 和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~') : '打开猫爪面板，使用 computer use、browser use 和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~',
@@ -797,7 +825,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: '#live2d-btn-goodbye',
+                element: `#${p}-btn-goodbye`,
                 popover: {
                     title: window.t ? window.t('tutorial.step9.title', '💤 请她离开') : '💤 请她离开',
                     description: window.t ? window.t('tutorial.step9.desc', '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~ <strong>当她出现问题时，让她离开休息一会儿，往往能解决问题。</strong>') : '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~ <strong>当她出现问题时，让她离开休息一会儿，往往能解决问题。</strong>',
@@ -805,7 +833,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: '#live2d-btn-settings',
+                element: `#${p}-btn-settings`,
                 popover: {
                     title: window.t ? window.t('tutorial.step10.title', '⚙️ 设置') : '⚙️ 设置',
                     description: window.t ? window.t('tutorial.step10.desc', '打开设置面板，下面会依次介绍设置里的各个项目~') : '打开设置面板，下面会依次介绍设置里的各个项目~',
@@ -814,7 +842,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: '#live2d-toggle-proactive-chat',
+                element: `#${p}-toggle-proactive-chat`,
                 popover: {
                     title: window.t ? window.t('tutorial.step13.title', '💬 主动搭话') : '💬 主动搭话',
                     description: window.t ? window.t('tutorial.step13.desc', '开启后猫娘会主动发起对话，频率可在此调整~') : '开启后猫娘会主动发起对话，频率可在此调整~',
@@ -822,7 +850,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: '#live2d-toggle-proactive-vision',
+                element: `#${p}-toggle-proactive-vision`,
                 popover: {
                     title: window.t ? window.t('tutorial.step14.title', '👀 自主视觉') : '👀 自主视觉',
                     description: window.t ? window.t('tutorial.step14.desc', '与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~') : '与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~',
@@ -830,7 +858,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: '#live2d-menu-character',
+                element: `#${p}-menu-character`,
                 popover: {
                     title: window.t ? window.t('tutorial.step15.title', '👤 角色管理') : '👤 角色管理',
                     description: window.t ? window.t('tutorial.step15.desc', '调整猫娘的性格、形象、声音等~') : '调整猫娘的性格、形象、声音等~',
@@ -838,7 +866,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: '#live2d-menu-api-keys',
+                element: `#${p}-menu-api-keys`,
                 popover: {
                     title: window.t ? window.t('tutorial.step16.title', '🔑 API 密钥') : '🔑 API 密钥',
                     description: window.t ? window.t('tutorial.step16.desc', '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~') : '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~',
@@ -846,7 +874,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: '#live2d-menu-memory',
+                element: `#${p}-menu-memory`,
                 popover: {
                     title: window.t ? window.t('tutorial.step17.title', '🧠 记忆浏览') : '🧠 记忆浏览',
                     description: window.t ? window.t('tutorial.step17.desc', '查看与管理猫娘的记忆内容~') : '查看与管理猫娘的记忆内容~',
@@ -854,7 +882,7 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: '#live2d-menu-steam-workshop',
+                element: `#${p}-menu-steam-workshop`,
                 popover: {
                     title: window.t ? window.t('tutorial.step18.title', '🛠️ 创意工坊') : '🛠️ 创意工坊',
                     description: window.t ? window.t('tutorial.step18.desc', '进入 Steam 创意工坊页面，管理订阅内容~') : '进入 Steam 创意工坊页面，管理订阅内容~',
@@ -1345,7 +1373,7 @@ class UniversalTutorialManager {
         }
 
         // 特殊处理浮动工具栏：确保它在引导中保持可见
-        if (selector === '#live2d-floating-buttons') {
+        if (selector.endsWith('-floating-buttons')) {
             // 标记浮动工具栏在引导中，防止自动隐藏
             element.dataset.inTutorial = 'true';
             console.log('[Tutorial] 浮动工具栏已标记为引导中');
@@ -1356,21 +1384,20 @@ class UniversalTutorialManager {
 
     getTutorialInteractiveSelectors() {
         return [
-            '#live2d-canvas',
-            '#live2d-container',
+            '#live2d-canvas', '#vrm-canvas', '#mmd-canvas',
+            '#live2d-container', '#vrm-container', '#mmd-container',
             '#chat-container',
-            '#live2d-floating-buttons',
-            '#live2d-return-button-container',
-            '#live2d-btn-return',
+            '#live2d-floating-buttons', '#vrm-floating-buttons', '#mmd-floating-buttons',
+            '#live2d-return-button-container', '#vrm-return-button-container', '#mmd-return-button-container',
+            '#live2d-btn-return', '#vrm-btn-return', '#mmd-btn-return',
             '#resetSessionButton',
             '#returnSessionButton',
-            '#live2d-lock-icon',
+            '#live2d-lock-icon', '#vrm-lock-icon', '#mmd-lock-icon',
             '#toggle-chat-btn',
-            '.live2d-floating-btn',
-            '.live2d-trigger-btn',
-            '.vrm-trigger-btn',
-            // 宽泛匹配：所有以 live2d- 开头 ID 的元素都将被教程系统自动识别并控制交互状态
-            '[id^="live2d-"]'
+            '.live2d-floating-btn', '.vrm-floating-btn', '.mmd-floating-btn',
+            '.live2d-trigger-btn', '.vrm-trigger-btn', '.mmd-trigger-btn',
+            // 宽泛匹配：所有以模型前缀开头 ID 的元素都将被教程系统自动识别并控制交互状态
+            '[id^="live2d-"]', '[id^="vrm-"]', '[id^="mmd-"]'
         ];
     }
 
@@ -1644,9 +1671,10 @@ class UniversalTutorialManager {
                 this.enableCurrentStepInteractions(currentElement);
             }
             if (currentStepConfig.enableModelInteraction) {
-                const live2dCanvas = document.getElementById('live2d-canvas');
-                if (live2dCanvas) {
-                    this.setElementInteractive(live2dCanvas, true);
+                const canvasPrefix = this._tutorialModelPrefix || UniversalTutorialManager.detectModelPrefix();
+                const modelCanvas = document.getElementById(`${canvasPrefix}-canvas`);
+                if (modelCanvas) {
+                    this.setElementInteractive(modelCanvas, true);
                 }
             }
 
@@ -1935,21 +1963,22 @@ class UniversalTutorialManager {
             }
         }
 
-        // 将 Live2D 模型移到屏幕右边（在引导中）
-        const live2dContainer = document.getElementById('live2d-container');
-        if (live2dContainer) {
+        // 将模型容器移到屏幕右边（在引导中）
+        const modelPrefix = UniversalTutorialManager.detectModelPrefix();
+        const modelContainer = document.getElementById(`${modelPrefix}-container`);
+        if (modelContainer) {
             this.originalLive2dStyle = {
-                left: live2dContainer.style.left,
-                right: live2dContainer.style.right,
-                transform: live2dContainer.style.transform
+                left: modelContainer.style.left,
+                right: modelContainer.style.right,
+                transform: modelContainer.style.transform
             };
-            live2dContainer.style.left = 'auto';
-            live2dContainer.style.right = '0';
-            console.log('[Tutorial] 将 Live2D 模型移到屏幕右边');
+            modelContainer.style.left = 'auto';
+            modelContainer.style.right = '0';
+            console.log(`[Tutorial] 将模型容器移到屏幕右边 (${modelPrefix})`);
         }
 
         // 立即强制显示浮动工具栏（引导开始时）
-        const floatingButtons = document.getElementById('live2d-floating-buttons');
+        const floatingButtons = document.getElementById(`${modelPrefix}-floating-buttons`);
         if (floatingButtons) {
             // 保存原始的内联样式值
             this._floatingButtonsOriginalStyles = {
@@ -1966,9 +1995,10 @@ class UniversalTutorialManager {
         }
 
         // 立即强制显示锁图标（如果当前页面的引导包含锁图标步骤）
-        const hasLockIconStep = validSteps.some(step => step.element === '#live2d-lock-icon');
+        const lockIconId = `${modelPrefix}-lock-icon`;
+        const hasLockIconStep = validSteps.some(step => step.element === `#${lockIconId}`);
         if (hasLockIconStep) {
-            const lockIcon = document.getElementById('live2d-lock-icon');
+            const lockIcon = document.getElementById(lockIconId);
             if (lockIcon) {
                 // 保存原始的内联样式值
                 this._lockIconOriginalStyles = {
@@ -1986,8 +2016,10 @@ class UniversalTutorialManager {
         }
 
         // 启动浮动工具栏保护定时器（每 500ms 检查一次）
+        this._tutorialModelPrefix = modelPrefix; // 缓存，给定时器用
         this.floatingButtonsProtectionTimer = setInterval(() => {
-            const floatingButtons = document.getElementById('live2d-floating-buttons');
+            const pfx = this._tutorialModelPrefix || 'live2d';
+            const floatingButtons = document.getElementById(`${pfx}-floating-buttons`);
             if (floatingButtons && window.isInTutorial) {
                 // 强制设置所有可能隐藏浮动按钮的样式
                 floatingButtons.style.setProperty('display', 'flex', 'important');
@@ -1997,7 +2029,7 @@ class UniversalTutorialManager {
 
             // 同样保护锁图标（如果当前引导包含锁图标步骤）
             if (this._lockIconOriginalStyles !== undefined && window.isInTutorial) {
-                const lockIcon = document.getElementById('live2d-lock-icon');
+                const lockIcon = document.getElementById(`${pfx}-lock-icon`);
                 if (lockIcon) {
                     lockIcon.style.setProperty('display', 'block', 'important');
                     lockIcon.style.setProperty('visibility', 'visible', 'important');
@@ -2091,31 +2123,53 @@ class UniversalTutorialManager {
 
     /**
      * 检查并等待浮动按钮创建（用于主页引导）
+     * 优先监听 live2d-floating-buttons-ready 事件（Live2D / VRM / MMD 均会派发），
+     * 辅以轮询兜底，解决模型加载慢导致教程跳过按钮步骤的问题。
      */
-    waitForFloatingButtons(maxWaitTime = 3000) {
+    waitForFloatingButtons(maxWaitTime = 60000) {
         return new Promise((resolve) => {
-            const startTime = Date.now();
+            // 检查任意模型类型的浮动按钮容器是否已存在
+            const findExisting = () =>
+                document.getElementById('live2d-floating-buttons') ||
+                document.getElementById('vrm-floating-buttons') ||
+                document.getElementById('mmd-floating-buttons');
 
-            const checkFloatingButtons = () => {
-                const floatingButtons = document.getElementById('live2d-floating-buttons');
+            if (findExisting()) {
+                console.log('[Tutorial] 浮动按钮已存在');
+                resolve(true);
+                return;
+            }
 
-                if (floatingButtons) {
-                    console.log('[Tutorial] 浮动按钮已创建');
-                    resolve(true);
-                    return;
-                }
-
-                const elapsedTime = Date.now() - startTime;
-                if (elapsedTime > maxWaitTime) {
-                    console.warn('[Tutorial] 等待浮动按钮超时（3秒）');
-                    resolve(false);
-                    return;
-                }
-
-                setTimeout(checkFloatingButtons, 100);
+            let resolved = false;
+            const done = (result) => {
+                if (resolved) return;
+                resolved = true;
+                clearTimeout(timer);
+                clearInterval(poller);
+                window.removeEventListener('live2d-floating-buttons-ready', onReady);
+                resolve(result);
             };
 
-            checkFloatingButtons();
+            // 1. 事件监听（所有模型类型都派发 live2d-floating-buttons-ready）
+            const onReady = () => {
+                console.log('[Tutorial] 收到浮动按钮就绪事件');
+                done(true);
+            };
+            window.addEventListener('live2d-floating-buttons-ready', onReady);
+
+            // 2. 轮询兜底（防止事件在监听注册前已派发）
+            const poller = setInterval(() => {
+                if (findExisting()) {
+                    console.log('[Tutorial] 轮询发现浮动按钮已创建');
+                    done(true);
+                }
+            }, 500);
+
+            // 3. 超时兜底
+            const timer = setTimeout(() => {
+                console.warn(`[Tutorial] 等待浮动按钮超时（${maxWaitTime / 1000}秒）`);
+                done(false);
+            }, maxWaitTime);
         });
     }
 
@@ -2809,12 +2863,13 @@ class UniversalTutorialManager {
         // 恢复页面滚动
         this.unlockBodyScroll();
 
-        const live2dContainer = document.getElementById('live2d-container');
-        if (live2dContainer && this.originalLive2dStyle) {
-            live2dContainer.style.left = this.originalLive2dStyle.left;
-            live2dContainer.style.right = this.originalLive2dStyle.right;
-            live2dContainer.style.transform = this.originalLive2dStyle.transform;
-            console.log('[Tutorial] 恢复 Live2D 模型原始位置');
+        const endPrefix = this._tutorialModelPrefix || UniversalTutorialManager.detectModelPrefix();
+        const modelContainer = document.getElementById(`${endPrefix}-container`);
+        if (modelContainer && this.originalLive2dStyle) {
+            modelContainer.style.left = this.originalLive2dStyle.left;
+            modelContainer.style.right = this.originalLive2dStyle.right;
+            modelContainer.style.transform = this.originalLive2dStyle.transform;
+            console.log(`[Tutorial] 恢复 ${endPrefix} 模型原始位置`);
         }
 
         // 清除浮动工具栏保护定时器
@@ -2826,7 +2881,7 @@ class UniversalTutorialManager {
 
         // 恢复浮动工具栏的原始样式
         if (this._floatingButtonsOriginalStyles !== undefined) {
-            const floatingButtons = document.getElementById('live2d-floating-buttons');
+            const floatingButtons = document.getElementById(`${endPrefix}-floating-buttons`);
             if (floatingButtons) {
                 floatingButtons.style.removeProperty('display');
                 floatingButtons.style.removeProperty('visibility');
@@ -2847,7 +2902,7 @@ class UniversalTutorialManager {
 
         // 恢复锁图标的原始样式
         if (this._lockIconOriginalStyles !== undefined) {
-            const lockIcon = document.getElementById('live2d-lock-icon');
+            const lockIcon = document.getElementById(`${endPrefix}-lock-icon`);
             if (lockIcon) {
                 // 先移除 !important 样式
                 lockIcon.style.removeProperty('display');
