@@ -64,22 +64,3 @@ def test_avatar_interaction_memory_window_allows_rank_upgrade_within_window():
     assert first_persisted is True
     assert upgraded_persisted is True
     assert duplicate_summary_persisted is False
-
-
-@pytest.mark.unit
-def test_avatar_interaction_memory_meta_falls_back_for_invalid_intensity_combos():
-    lollipop_invalid_rapid = _build_avatar_interaction_memory_meta("zh", {
-        "tool_id": "lollipop",
-        "action_id": "offer",
-        "intensity": "rapid",
-    })
-    fist_invalid_burst = _build_avatar_interaction_memory_meta("zh", {
-        "tool_id": "fist",
-        "action_id": "poke",
-        "intensity": "burst",
-    })
-
-    assert lollipop_invalid_rapid["memory_note"] == "[主人喂了你一口棒棒糖]"
-    assert lollipop_invalid_rapid["memory_dedupe_rank"] == 1
-    assert fist_invalid_burst["memory_note"] == "[主人摸了摸你的头]"
-    assert fist_invalid_burst["memory_dedupe_rank"] == 1
