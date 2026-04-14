@@ -786,6 +786,10 @@
                         if (latestMusicRequestToken === tokenAtEvent) destroyMusicPlayer(true, true, true);
                     }, MUSIC_CONFIG.timeouts.paused);
                     updateMusicCard('paused', currentPlayingTrack);
+                    // 跨窗口协调：暂停立刻通告，避免对端在 TTL 内以为我还在播而拦截 proactive；
+                    // 若用户点"继续"，play 事件会再次广播 music_started。
+                    stopMusicHeartbeat();
+                    broadcastMusicCoord('music_ended');
                 });
                 boundPlayer.on('ended', () => {
                     updatePlayBtnState(false);
@@ -798,6 +802,9 @@
                         if (latestMusicRequestToken === tokenAtEvent) destroyMusicPlayer(true, true, true);
                     }, MUSIC_CONFIG.timeouts.ended);
                     updateMusicCard('ended', currentPlayingTrack);
+                    // 同上：自然播完时立刻通告，让对端能立即响应新的 proactive 推荐。
+                    stopMusicHeartbeat();
+                    broadcastMusicCoord('music_ended');
                 });
                 boundPlayer.on('error', (err) => {
                     if (boundPlayer._destroying) return;
