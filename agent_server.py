@@ -1062,11 +1062,27 @@ def _set_internal_correction_context(task_info: Dict[str, Any], result: Any) -> 
     }
 
 
-def _get_internal_correction_context(task_info: Dict[str, Any]) -> Dict[str, Any]:
+def _get_internal_correction_context(task_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     internal = task_info.get("_internal_corrections")
     if isinstance(internal, dict):
         return internal
-    return {key: task_info.get(key) for key in _LEGACY_CORRECTION_PUBLIC_KEYS if key in task_info}
+
+    legacy = {key: task_info.get(key) for key in _LEGACY_CORRECTION_PUBLIC_KEYS if key in task_info}
+    if legacy:
+        return legacy
+
+    params = task_info.get("params")
+    if isinstance(params, dict):
+        fallback_text = str(params.get("query") or params.get("instruction") or "").strip()
+        if fallback_text:
+            return {
+                "task_description": fallback_text,
+                "latest_user_request": fallback_text,
+                "normalized_intent": "",
+                "recent_context": [],
+            }
+
+    return None
 
 
 def _public_task_info(task_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -2794,6 +2810,11 @@ async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
         )
 
     correction_info = _get_internal_correction_context(info)
+    if correction_info is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Task correction context is unavailable for this task",
+        )
 
     try:
         event = Modules.task_executor.record_tool_correction(
@@ -2816,7 +2837,7 @@ async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
         task_type,
         correct_tool,
     )
-    return {"success": True, "task_id": task_id, "event": event}
+    return {"success": True, "task_id": task_id}
 
 
 @app.post("/api/agent/tasks/{task_id}/complete")

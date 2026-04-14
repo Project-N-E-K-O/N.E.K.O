@@ -492,6 +492,7 @@ class DirectTaskExecutor:
             ),
             (r"(?i)\bsk-[a-z0-9_-]{10,}\b", "[REDACTED_TOKEN]"),
             (r"(?i)(cookie)\s*[:=]\s*\S+", r"\1=[REDACTED_COOKIE]"),
+            (r"(?i)(cookie)\s*(?:[:=]|is|是)\s*\S+", r"\1=[REDACTED_COOKIE]"),
             (
                 r"(?i)(\b(?:otp|pin|verification(?:\s+code)?|sms\s*code|one[-\s]?time(?:\s+password|\s+code)?|验证码|校验码|短信码|动态码)\b(?:\s*(?:is|为|是))?[\s:：=#-]{0,6})\d{4,8}\b",
                 r"\1[REDACTED_OTP]",
@@ -595,7 +596,6 @@ class DirectTaskExecutor:
                 [
                     str(event.get("normalized_intent", "")),
                     str(event.get("user_query", "")),
-                    str(event.get("correct_instruction", "")),
                     str(event.get("chosen_tool", "")),
                     str(event.get("correct_tool", "")),
                     " ".join(
