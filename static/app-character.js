@@ -940,10 +940,18 @@
                     console.log('[猫娘切换] MMD 管理器已复用');
                 } else {
                     // 首次初始化或管理器已销毁，执行完整初始化
+                    let initializedManager = null;
                     if (typeof window.initMMDModel === 'function') {
-                        await window.initMMDModel();
+                        initializedManager = await window.initMMDModel();
                     } else if (typeof initMMDModel === 'function') {
-                        await initMMDModel();
+                        initializedManager = await initMMDModel();
+                    }
+                    if (!initializedManager || !window.mmdManager || window.mmdManager._isDisposed) {
+                        console.error('[猫娘切换] MMD 管理器初始化失败');
+                        window.MMDLoadingOverlay?.fail(loadingSessionId, {
+                            detail: (window.t && window.t('mmd.managerInitFailed')) || 'MMD 管理器初始化失败'
+                        });
+                        return;
                     }
                 }
 

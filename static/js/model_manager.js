@@ -1045,6 +1045,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     const IDLE_VRM_VISUAL_FADE_IN_MS = 220;
     const IDLE_MMD_PHYSICS_RESTORE_MS = 250;
 
+    function markMMDCanvasLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return;
+        canvas.dataset.mmdLoadingSessionId = String(loadingSessionId);
+        canvas.style.display = 'block';
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
+    function restoreMMDCanvasForLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return false;
+        if (canvas.dataset.mmdLoadingSessionId !== String(loadingSessionId)) {
+            return false;
+        }
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.visibility = 'visible';
+        canvas.style.pointerEvents = 'auto';
+        return true;
+    }
+
     // 更新模型类型按钮文字的函数（使用统一管理器）
     function updateModelTypeButtonText() {
         if (modelTypeManager) {
@@ -4078,9 +4097,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (mmdCanvas) {
                 // 预览页加载 MMD 时，物理初始化会持续一段时间；
                 // 在 ready 之前保持 canvas 不可见，避免模型从 overlay 背后透出。
-                mmdCanvas.style.display = 'block';
-                mmdCanvas.style.visibility = 'hidden';
-                mmdCanvas.style.pointerEvents = 'none';
+                markMMDCanvasLoadingSession(mmdCanvas, loadingSessionId);
             }
 
             try {
@@ -4208,10 +4225,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (window.MMDLoadingOverlay) {
                     window.MMDLoadingOverlay.end(loadingSessionId);
                 }
-                if (mmdCanvas) {
-                    mmdCanvas.style.visibility = 'visible';
-                    mmdCanvas.style.pointerEvents = 'auto';
-                }
+                restoreMMDCanvasForLoadingSession(mmdCanvas, loadingSessionId);
             } catch (error) {
                 console.error('加载MMD模型失败:', error);
                 if (window.MMDLoadingOverlay) {

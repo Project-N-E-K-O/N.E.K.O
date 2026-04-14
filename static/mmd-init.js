@@ -492,7 +492,12 @@
 
     try {
         await window._waitForMMDModules(10000);
-        await initMMDModel();
+        const initializedManager = await initMMDModel();
+        if (!initializedManager || !window.mmdManager || window.mmdManager._isDisposed) {
+            const detail = (window.t && window.t('mmd.managerInitFailed')) || 'MMD 管理器初始化失败';
+            window.MMDLoadingOverlay.fail(loadingSessionId, { detail });
+            return;
+        }
         if (window.mmdManager) {
             // 先获取保存的设置，预置影响加载路径的字段（如物理开关）
             const catgirlName = window.lanlan_config?.lanlan_name;

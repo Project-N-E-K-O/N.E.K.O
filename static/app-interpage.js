@@ -450,7 +450,10 @@
                     if (!window.mmdManager) {
                         console.log('[Model] MMD 管理器未初始化，等待初始化完成');
                         if (typeof initMMDModel === 'function') {
-                            await initMMDModel();
+                            const initializedManager = await initMMDModel();
+                            if (!initializedManager || !window.mmdManager || window.mmdManager._isDisposed) {
+                                throw new Error('MMD 管理器初始化失败');
+                            }
                         }
                     }
 
