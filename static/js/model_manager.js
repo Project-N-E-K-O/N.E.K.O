@@ -4066,8 +4066,38 @@ document.addEventListener('DOMContentLoaded', async () => {
                     } else {
                         await new Promise((resolve, reject) => {
                             if (window.MMDManager || window.mmdModuleLoaded) return resolve();
-                            window.addEventListener('mmd-modules-ready', resolve, { once: true });
-                            setTimeout(() => reject(new Error('MMD Module Load Timeout')), 8000);
+                            const failedModules = window._mmdModulesFailed || window.mmdModulesFailed;
+                            if (failedModules) {
+                                const modules = Array.isArray(failedModules) ? failedModules.join(', ') : failedModules;
+                                return reject(new Error(`MMD modules failed: ${modules}`));
+                            }
+
+                            let timeoutId = null;
+                            const cleanup = () => {
+                                if (timeoutId) {
+                                    clearTimeout(timeoutId);
+                                    timeoutId = null;
+                                }
+                                window.removeEventListener('mmd-modules-ready', onReady);
+                                window.removeEventListener('mmd-modules-failed', onFailed);
+                            };
+                            const onReady = () => {
+                                cleanup();
+                                resolve();
+                            };
+                            const onFailed = (event) => {
+                                cleanup();
+                                const failed = event?.detail?.failedModules || window._mmdModulesFailed || window.mmdModulesFailed || [];
+                                const modules = Array.isArray(failed) ? failed.join(', ') : failed;
+                                reject(new Error(`MMD modules failed: ${modules}`));
+                            };
+
+                            window.addEventListener('mmd-modules-ready', onReady, { once: true });
+                            window.addEventListener('mmd-modules-failed', onFailed, { once: true });
+                            timeoutId = setTimeout(() => {
+                                cleanup();
+                                reject(new Error('MMD Module Load Timeout'));
+                            }, 8000);
                         });
                     }
                 }

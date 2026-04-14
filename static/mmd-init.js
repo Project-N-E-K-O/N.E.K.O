@@ -241,7 +241,7 @@
     };
 
     window._waitForMMDModules = function waitForMMDModules(timeoutMs = 10000) {
-        if (window.mmdModuleLoaded || window.MMDManager) {
+        if (window.mmdModuleLoaded) {
             return Promise.resolve();
         }
         if (window._mmdModulesFailed) {

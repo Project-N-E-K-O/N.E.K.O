@@ -220,6 +220,7 @@
         });
 
         console.log('[Model] 开始热切换模型');
+        let mmdRequestSessionId = '';
 
         try {
             // 1. Re-fetch page config
@@ -441,6 +442,7 @@
                     const loadingSessionId = window._createMMDLoadingSessionId
                         ? window._createMMDLoadingSessionId('mmd-interpage')
                         : `mmd-interpage-${Date.now()}`;
+                    mmdRequestSessionId = loadingSessionId;
                     window.MMDLoadingOverlay?.begin(loadingSessionId, { stage: 'engine' });
 
                     // Ensure MMD manager is initialised
@@ -515,6 +517,7 @@
                             await window._waitForMMDRenderFrame(window.mmdManager);
                         }
                         window.MMDLoadingOverlay?.end(loadingSessionId);
+                        mmdRequestSessionId = '';
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
                         throw new Error('MMD 管理器初始化失败');
@@ -654,9 +657,8 @@
             }
         } catch (error) {
             console.error('[Model] 模型热切换失败:', error);
-            const activeSessionId = document.getElementById('mmd-container')?.dataset?.mmdLoadingSessionId;
-            if (activeSessionId) {
-                window.MMDLoadingOverlay?.fail(activeSessionId, { detail: error?.message || String(error) });
+            if (mmdRequestSessionId) {
+                window.MMDLoadingOverlay?.fail(mmdRequestSessionId, { detail: error?.message || String(error) });
             }
             // 回滚提前写入的 config，防止残留错误的模型类型
             if (typeChanged && window.lanlan_config) {
