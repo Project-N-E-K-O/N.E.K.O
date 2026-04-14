@@ -468,17 +468,20 @@
         avatarInteractionTextContinuationState.drainingDeferredTextSubmissions = true;
         var pending = avatarInteractionTextContinuationState.deferredTextSubmissions.slice();
         avatarInteractionTextContinuationState.deferredTextSubmissions = [];
+        var nextPendingIndex = 0;
 
         (async function () {
             for (var index = 0; index < pending.length; index += 1) {
+                nextPendingIndex = index;
                 var submission = pending[index];
                 await sendHandler(submission.text, Object.assign({}, submission.options, {
                     skipAvatarInteractionDeferral: true
                 }));
+                nextPendingIndex = index + 1;
             }
         })().catch(function (error) {
             console.error('[AvatarInteraction] deferred text flush failed:', error);
-            avatarInteractionTextContinuationState.deferredTextSubmissions = pending.concat(
+            avatarInteractionTextContinuationState.deferredTextSubmissions = pending.slice(nextPendingIndex).concat(
                 avatarInteractionTextContinuationState.deferredTextSubmissions
             );
         }).finally(function () {
@@ -863,7 +866,12 @@
 
     function bindReactChatWindowHostCallbacks() {
         var host = window.reactChatWindowHost;
-        if (!host || typeof host.setOnComposerSubmit !== 'function') {
+        if (!host
+                || typeof host.setOnComposerSubmit !== 'function'
+                || typeof host.setOnComposerImportImage !== 'function'
+                || typeof host.setOnComposerScreenshot !== 'function'
+                || typeof host.setOnComposerRemoveAttachment !== 'function'
+                || typeof host.setOnAvatarInteraction !== 'function') {
             return false;
         }
         if (mod._boundReactChatWindowHost === host) {
@@ -1580,6 +1588,9 @@
                     && !hasScreenshots
                     && hasPendingAvatarInteractionContinuation()) {
                 queueDeferredTextSubmission(text, options);
+                textInputBox.value = '';
+                textInputComposing = false;
+                lastTextCompositionEndAt = 0;
                 return true;
             }
 

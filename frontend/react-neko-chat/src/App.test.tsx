@@ -322,6 +322,59 @@ describe('App', () => {
     }
   });
 
+  it('does not emit avatar interactions when compact UI overlaps the avatar hit range', () => {
+    const onAvatarInteraction = vi.fn();
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    const compactButton = document.createElement('button');
+    compactButton.className = 'live2d-floating-btn';
+    document.body.appendChild(compactButton);
+
+    const originalElementsFromPoint = document.elementsFromPoint;
+    Object.defineProperty(document, 'elementsFromPoint', {
+      configurable: true,
+      value: () => [compactButton],
+    });
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      render(<App onAvatarInteraction={onAvatarInteraction} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+
+      expect(onAvatarInteraction).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(document, 'elementsFromPoint', {
+        configurable: true,
+        value: originalElementsFromPoint || (() => []),
+      });
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      compactButton.remove();
+      live2dContainer.remove();
+    }
+  });
+
   it('exposes avatar tools as a toggle group with pressed state', () => {
     render(<App />);
 
@@ -336,6 +389,20 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Emoji: 棒棒糖' }));
 
     expect(screen.getByRole('button', { name: '棒棒糖' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('anchors the desktop cursor overlay to the current pointer when a tool is activated', () => {
+    const { container } = render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
+      clientX: 240,
+      clientY: 320,
+    });
+
+    const overlay = container.querySelector('.avatar-cursor-overlay');
+    expect(overlay).not.toBeNull();
+    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 280px, 0)');
   });
 
   it('shows the hammer secondary cursor asset on outside-range desktop clicks', () => {

@@ -439,6 +439,20 @@ function isPointerOverCompactCursorZone(target: EventTarget | null): boolean {
   return target instanceof Element && !!target.closest(compactCursorZoneSelector);
 }
 
+function isPointWithinCompactCursorZone(clientX: number, clientY: number): boolean {
+  if (typeof document === 'undefined') return false;
+
+  const hitElements = typeof document.elementsFromPoint === 'function'
+    ? document.elementsFromPoint(clientX, clientY)
+    : (
+      typeof document.elementFromPoint === 'function'
+        ? [document.elementFromPoint(clientX, clientY)].filter((element): element is Element => element instanceof Element)
+        : []
+    );
+
+  return hitElements.some(element => !!element.closest(compactCursorZoneSelector));
+}
+
 function resolveEffectiveCursorVariant(
   toolId: string | null,
   avatarRangeVariants: ToolCursorVariantState,
@@ -796,6 +810,13 @@ export default function App({
 
     const toggleCursorVariantOnPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
+      const isOverCompactCursorZoneAtPointer = isPointWithinCompactCursorZone(event.clientX, event.clientY);
+      setIsCursorOverCompactCursorZone(previousValue => (
+        previousValue === isOverCompactCursorZoneAtPointer ? previousValue : isOverCompactCursorZoneAtPointer
+      ));
+      if (isOverCompactCursorZoneAtPointer) {
+        return;
+      }
       const avatarRangeHit = getAvatarRangeHit(event.clientX, event.clientY);
       const isOverAvatarAtPointer = avatarRangeHit !== null;
       setIsCursorOverAvatarRange(previousValue => (
@@ -1341,7 +1362,14 @@ export default function App({
                             aria-pressed={activeCursorToolId === item.id}
                             aria-label={item.label}
                             title={item.label}
-                            onClick={() => {
+                            onClick={(event) => {
+                              latestPointerPositionRef.current = {
+                                x: event.clientX,
+                                y: event.clientY,
+                              };
+                              latestPointerTargetRef.current = event.currentTarget;
+                              setIsCursorOverCompactCursorZone(true);
+                              setIsCursorOverAvatarRange(isPointerWithinAvatarRange(event.clientX, event.clientY));
                               if (activeCursorToolId === item.id) {
                                 setActiveCursorToolId(null);
                                 setToolMenuOpen(false);

@@ -508,7 +508,9 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
         "tool_id": tool_id,
         "action_id": action_id,
         "target": "avatar",
-        "text_context": _sanitize_avatar_interaction_text_context(payload.get("text_context", payload.get("textContext", ""))),
+        "text_context": _sanitize_avatar_interaction_text_context(
+            _get_avatar_interaction_payload_value(payload, "text_context", "textContext", "")
+        ),
         "timestamp": timestamp_value,
         "intensity": intensity,
         "reward_drop": reward_drop,
@@ -2696,14 +2698,10 @@ class LLMSessionManager:
             await self.send_avatar_interaction_ack(interaction_id, False, "not_text_session")
             return {"accepted": False, "reason": "not_text_session", "interaction_id": interaction_id}
 
-        if now_ms - self._last_avatar_interaction_speak_at < self.avatar_interaction_speak_cooldown_ms:
-            logger.debug("[%s] handle_avatar_interaction: speak cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
-            await self.send_avatar_interaction_ack(interaction_id, False, "speak_cooldown")
-            return {"accepted": False, "reason": "speak_cooldown", "interaction_id": interaction_id}
-
         instruction = _build_avatar_interaction_instruction(self, raw)
         memory_meta = _build_avatar_interaction_memory_meta(getattr(self, "user_language", None), raw)
         memory_note = memory_meta["memory_note"]
+        delivered = False
 
         async with self._proactive_write_lock:
             if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
@@ -2713,6 +2711,11 @@ class LLMSessionManager:
                 logger.debug("[%s] handle_avatar_interaction: text session busy, skipping", self.lanlan_name)
                 await self.send_avatar_interaction_ack(interaction_id, False, "busy")
                 return {"accepted": False, "reason": "busy", "interaction_id": interaction_id}
+            speak_now_ms = int(time.time() * 1000)
+            if speak_now_ms - self._last_avatar_interaction_speak_at < self.avatar_interaction_speak_cooldown_ms:
+                logger.debug("[%s] handle_avatar_interaction: speak cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
+                await self.send_avatar_interaction_ack(interaction_id, False, "speak_cooldown")
+                return {"accepted": False, "reason": "speak_cooldown", "interaction_id": interaction_id}
 
             async with self.lock:
                 self.current_speech_id = str(uuid4())
@@ -2735,10 +2738,22 @@ class LLMSessionManager:
                 })
 
             current_turn_id = self.current_speech_id
-            delivered = await self.session.prompt_ephemeral(
-                instruction,
-                completion_mode="response",
-            )
+            try:
+                delivered = await self.session.prompt_ephemeral(
+                    instruction,
+                    completion_mode="response",
+                )
+            except Exception as e:
+                logger.exception(
+                    "[%s] handle_avatar_interaction: prompt_ephemeral failed interaction_id=%s: %s",
+                    self.lanlan_name,
+                    interaction_id,
+                    e,
+                )
+                await self.send_avatar_interaction_ack(interaction_id, False, "error")
+                return {"accepted": False, "reason": "error", "interaction_id": interaction_id}
+            if delivered:
+                self._last_avatar_interaction_speak_at = int(time.time() * 1000)
             await self.send_avatar_interaction_ack(
                 interaction_id,
                 bool(delivered),
@@ -2747,7 +2762,6 @@ class LLMSessionManager:
             )
 
         if delivered:
-            self._last_avatar_interaction_speak_at = int(time.time() * 1000)
             logger.info(
                 "[%s] handle_avatar_interaction: delivered interaction_id=%s tool=%s action=%s",
                 self.lanlan_name,

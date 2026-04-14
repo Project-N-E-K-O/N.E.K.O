@@ -75,6 +75,21 @@ def test_normalize_avatar_interaction_payload_parses_boolean_variants():
 
 
 @pytest.mark.unit
+def test_normalize_avatar_interaction_payload_falls_back_to_camelcase_text_context_when_snake_is_none():
+    payload = _normalize_avatar_interaction_payload({
+        "interaction_id": "int-text-context",
+        "tool_id": "lollipop",
+        "action_id": "offer",
+        "target": "avatar",
+        "text_context": None,
+        "textContext": "  hello neko  ",
+    })
+
+    assert payload is not None
+    assert payload["text_context"] == '"hello neko"'
+
+
+@pytest.mark.unit
 def test_build_avatar_interaction_instruction_uses_locale_specific_fallback():
     manager = SimpleNamespace(
         user_language="en-US",
@@ -125,6 +140,59 @@ def test_build_avatar_interaction_instruction_omits_touch_zone_for_lollipop():
 
     assert "接触位置" not in lollipop_instruction
     assert "接触位置：头顶" in fist_instruction
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_handle_avatar_interaction_ack_reports_error_when_prompt_ephemeral_raises():
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Neko"
+    manager.master_name = "Master"
+    manager.user_language = "zh-CN"
+    manager.is_active = True
+    manager.websocket = None
+    manager.sync_message_queue = _DummyQueue()
+    manager.lock = asyncio.Lock()
+    manager._proactive_write_lock = asyncio.Lock()
+    manager.current_speech_id = None
+    manager._tts_done_queued_for_turn = False
+    manager._recent_avatar_interaction_ids = deque(maxlen=32)
+    manager._recent_avatar_interaction_id_set = set()
+    manager._last_avatar_interaction_at = 0
+    manager._last_avatar_interaction_speak_at = 0
+    manager.avatar_interaction_cooldown_ms = 0
+    manager.avatar_interaction_speak_cooldown_ms = 0
+    manager._get_text_guard_max_length = lambda: 350
+
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+    session._is_responding = False
+    session.update_max_response_length = lambda _max_length: None
+    event_log = []
+
+    async def prompt_ephemeral(_instruction, *, completion_mode="proactive"):
+        event_log.append(("prompt", completion_mode, manager.current_speech_id))
+        raise RuntimeError("boom")
+
+    session.prompt_ephemeral = prompt_ephemeral
+    manager.session = session
+
+    async def send_avatar_interaction_ack(interaction_id: str, accepted: bool, reason: str = "", turn_id: str = ""):
+        event_log.append(("ack", interaction_id, accepted, reason, turn_id))
+
+    manager.send_avatar_interaction_ack = send_avatar_interaction_ack
+
+    result = await manager.handle_avatar_interaction({
+        "interaction_id": "int-err",
+        "tool_id": "hammer",
+        "action_id": "bonk",
+        "target": "avatar",
+        "intensity": "normal",
+    })
+
+    assert event_log[0][0] == "prompt"
+    assert event_log[1] == ("ack", "int-err", False, "error", "")
+    assert result == {"accepted": False, "reason": "error", "interaction_id": "int-err"}
+    assert manager._last_avatar_interaction_speak_at == 0
 
 
 @pytest.mark.asyncio
