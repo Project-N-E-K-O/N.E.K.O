@@ -1708,7 +1708,7 @@
         "pageTitle": "OpenClaw Setup Guide",
         "pageSubtitle": "Connect CoPaw installation, channel placement, health checks, and N.E.K.O configuration in one clear path.",
         "sourceLabel": "Guide Source",
-        "contentLanguageNotice": "The guide body currently comes from the Chinese document. Language switching only affects the page controls.",
+        "contentLanguageNotice": "The guide body switches with the selected language.",
         "languageLabel": "Language",
         "guideUnavailable": "Guide content is empty."
     },

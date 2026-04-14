@@ -50,16 +50,16 @@ After the service starts, visit `http://127.0.0.1:8088` to open the QwenPaw cons
 
 ## Configure the NEKO Channel: Connect NEKO to QwenPaw
 
-After initialization, QwenPaw automatically creates its configuration directory. On Windows, the default path is `C:\Users\YourUsername\.qwenpaw`. On macOS, the default path is `/Users/mac/.qwenpaw`. All built-in skills are enabled by default.
+After initialization, QwenPaw automatically creates its configuration directory. On Windows, the default path is `C:\Users\YourUsername\.qwenpaw`. On macOS, the default path is `~/.qwenpaw`. All built-in skills are enabled by default.
 
 Find that directory. Because `.qwenpaw` is hidden:
 
 - Windows users should open File Explorer from the taskbar, choose `View > Show`, and then enable hidden items.
-- macOS users should open Finder, go to `/Users/mac`, and press `Command + Shift + .` at the same time.
+- macOS users should open Finder, go to their Home folder, and press `Command + Shift + .` at the same time.
 
 Copy the prepared channel configuration file `custom_channels` into the `.qwenpaw` folder.
 
-Copy the [files from the character folder](assets/openclaw_guide/%E6%9B%BF%E6%8D%A2%E5%86%85%E5%AE%B9.zip) into `qwenpaw/workspaces/default`, then delete `BOOTSTRAP.md`.
+Copy the [files from the character folder](assets/openclaw_guide/%E6%9B%BF%E6%8D%A2%E5%86%85%E5%AE%B9.zip) into `.qwenpaw/workspaces/default`, then delete `BOOTSTRAP.md`.
 
 Next, press `CTRL+C` in the terminal to stop qwenpaw, and run `qwenpaw app` again to restart it.
 

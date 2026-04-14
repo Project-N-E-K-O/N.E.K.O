@@ -50,16 +50,16 @@ INFO:     Uvicorn running on http://127.0.0.1:8088 (Press CTRL+C to quit)
 
 ## NEKO チャンネル設定：NEKO を QwenPaw に接続する
 
-初期化が完了すると、QwenPaw は自動的に設定ディレクトリを作成します。Windows の既定パスは `C:\Users\あなたのユーザー名\.qwenpaw`、macOS の既定パスは `/Users/mac/.qwenpaw` です。すべての内蔵スキルも自動的に有効になります。
+初期化が完了すると、QwenPaw は自動的に設定ディレクトリを作成します。Windows の既定パスは `C:\Users\あなたのユーザー名\.qwenpaw`、macOS の既定パスは `~/.qwenpaw` です。すべての内蔵スキルも自動的に有効になります。
 
 そのパスを見つけてください。`.qwenpaw` は隠しフォルダなので、次の操作が必要です。
 
 - Windows ユーザーは、タスクバーからエクスプローラーを開き、`表示 > 表示` を選んで「隠しファイル」を表示してください。
-- macOS ユーザーは Finder を開き、`/Users/mac` に移動してから `Command + Shift + .` を同時に押してください。
+- macOS ユーザーは Finder を開き、ホームフォルダに移動してから `Command + Shift + .` を同時に押してください。
 
 用意してあるチャンネル設定ファイル `custom_channels` を `.qwenpaw` フォルダにコピーします。
 
-[キャラクターフォルダ内のファイル](assets/openclaw_guide/%E6%9B%BF%E6%8D%A2%E5%86%85%E5%AE%B9.zip)を `qwenpaw/workspaces/default` にコピーし、`BOOTSTRAP.md` を削除します。
+[キャラクターフォルダ内のファイル](assets/openclaw_guide/%E6%9B%BF%E6%8D%A2%E5%86%85%E5%AE%B9.zip)を `.qwenpaw/workspaces/default` にコピーし、`BOOTSTRAP.md` を削除します。
 
 その後、ターミナルで `CTRL+C` を押して qwenpaw を終了し、再度 `qwenpaw app` を実行して再起動します。
 

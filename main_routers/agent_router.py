@@ -65,11 +65,16 @@ def _load_openclaw_guide_markdown(lang: str | None = None) -> str:
     try:
         return candidate.read_text(encoding="utf-8")
     except Exception as exc:
-        logger.warning("Failed to load OpenClaw guide markdown for %s: %s", resolved_lang, exc)
+        logger.warning(
+            "Failed to load OpenClaw guide markdown for %s from %s: %s",
+            resolved_lang,
+            candidate,
+            exc,
+        )
         return (
             "# OpenClaw 接入教程\n\n"
             "教程内容暂时无法加载，请检查文档文件是否存在：\n\n"
-            f"`{candidate}`"
+            f"`{candidate.name}`"
         )
 
 

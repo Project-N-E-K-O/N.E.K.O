@@ -1708,7 +1708,7 @@
         "pageTitle": "OpenClaw 接入教程",
         "pageSubtitle": "把 CoPaw 安装、通道放置、健康检查与 N.E.K.O 配置串起来，按一条路径接通。",
         "sourceLabel": "教程来源",
-        "contentLanguageNotice": "当前正文来自中文文档，语言切换仅影响页面控件文案。",
+        "contentLanguageNotice": "语言切换会同时更新页面控件文案和正文内容。",
         "languageLabel": "语言",
         "guideUnavailable": "教程内容为空。"
     },

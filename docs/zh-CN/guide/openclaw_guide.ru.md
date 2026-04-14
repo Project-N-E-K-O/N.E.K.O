@@ -9,13 +9,17 @@ Python не нужно настраивать вручную. Достаточн
 macOS / Linux:
 
 ```bash
-curl -fsSL https://qwenpaw.agentscope.io/install.sh | bash
+curl -fsSL https://qwenpaw.agentscope.io/install.sh -o install-qwenpaw.sh
+less install-qwenpaw.sh
+bash install-qwenpaw.sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://qwenpaw.agentscope.io/install.ps1 | iex
+Invoke-WebRequest https://qwenpaw.agentscope.io/install.ps1 -OutFile install-qwenpaw.ps1
+Get-Content .\install-qwenpaw.ps1
+powershell -ExecutionPolicy Bypass -File .\install-qwenpaw.ps1
 ```
 
 ### Шаг 2. Инициализация
@@ -50,16 +54,16 @@ INFO:     Uvicorn running on http://127.0.0.1:8088 (Press CTRL+C to quit)
 
 ## Настройка канала NEKO: подключение NEKO к QwenPaw
 
-После инициализации QwenPaw автоматически создаст каталог конфигурации. В Windows путь по умолчанию: `C:\Users\ВашеИмяПользователя\.qwenpaw`, в macOS: `/Users/mac/.qwenpaw`. Все встроенные навыки включаются автоматически.
+После инициализации QwenPaw автоматически создаст каталог конфигурации. В Windows путь по умолчанию: `C:\Users\ВашеИмяПользователя\.qwenpaw`, в macOS: `~/.qwenpaw`. Все встроенные навыки включаются автоматически.
 
 Найдите этот путь. Папка `.qwenpaw` скрыта, поэтому:
 
 - Пользователям Windows нужно открыть Проводник, выбрать `Вид > Показать` и включить отображение скрытых элементов.
-- Пользователям macOS нужно открыть Finder, перейти в `/Users/mac` и одновременно нажать `Command + Shift + .`
+- Пользователям macOS нужно открыть Finder, перейти в домашнюю папку и одновременно нажать `Command + Shift + .`
 
 Скопируйте подготовленный файл конфигурации канала `custom_channels` в папку `.qwenpaw`.
 
-Скопируйте [файлы из папки персонажа](assets/openclaw_guide/%E6%9B%BF%E6%8D%A2%E5%86%85%E5%AE%B9.zip) в `qwenpaw/workspaces/default`, затем удалите `BOOTSTRAP.md`.
+Скопируйте [файлы из папки персонажа](assets/openclaw_guide/%E6%9B%BF%E6%8D%A2%E5%86%85%E5%AE%B9.zip) в `.qwenpaw/workspaces/default`, затем удалите `BOOTSTRAP.md`.
 
 После этого нажмите `CTRL+C` в терминале, чтобы остановить qwenpaw, затем снова запустите его командой `qwenpaw app`.
 

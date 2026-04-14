@@ -50,16 +50,16 @@ INFO:     Uvicorn running on http://127.0.0.1:8088 (Press CTRL+C to quit)
 
 ## NEKO 頻道配置：讓 NEKO 接入 QwenPaw
 
-初始化完成後，QwenPaw 會自動建立配置檔目錄。Windows 預設在 `C:\Users\你的使用者名稱\.qwenpaw`，mac 預設在 `/Users/mac/.qwenpaw`，並啟用所有內建技能。
+初始化完成後，QwenPaw 會自動建立配置檔目錄。Windows 預設在 `C:\Users\你的使用者名稱\.qwenpaw`，mac 預設在 `~/.qwenpaw`，並啟用所有內建技能。
 
 找到該路徑。因為 `.qwenpaw` 是隱藏資料夾：
 
 - Windows 使用者需要從工作列開啟「檔案總管」，選擇「檢視 > 顯示」，然後勾選「隱藏的項目」以查看隱藏的檔案和資料夾。
-- mac 使用者需要開啟 Finder，進入 `/Users/mac` 目錄後，同時按下 `Command + Shift + .`
+- mac 使用者需要開啟 Finder，進入主資料夾後，同時按下 `Command + Shift + .`
 
 將我們準備好的頻道配置檔 `custom_channels` 複製到 `.qwenpaw` 資料夾中。
 
-將[人設資料夾中的檔案](assets/openclaw_guide/%E6%9B%BF%E6%8D%A2%E5%86%85%E5%AE%B9.zip)複製到 `qwenpaw/workspaces/default` 中，並刪除 `BOOTSTRAP.md`。
+將[人設資料夾中的檔案](assets/openclaw_guide/%E6%9B%BF%E6%8D%A2%E5%86%85%E5%AE%B9.zip)複製到 `.qwenpaw/workspaces/default` 中，並刪除 `BOOTSTRAP.md`。
 
 然後在終端按 `CTRL+C` 結束 qwenpaw，再輸入 `qwenpaw app` 重新啟動。
 
