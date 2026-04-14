@@ -130,15 +130,88 @@ def split_paragraph(text: str, force_process=False, lang="zh", token_min_n=2.5, 
 
 # remove blank between chinese character
 def replace_blank(text: str):
+    """保留两侧都是"非空格 ASCII 字符"的空格，其余 ASCII 空格一律去掉。
+
+    用于处理 Gemini Live output transcript 之类把中文词中间插入空格、
+    以及中英交界处的 ASCII 空格场景——这些空格会让 TTS 把中文读断。
+
+    边界字符（i==0 或 i==末尾）没有对应侧的邻居，一律按"非 ASCII/空格"处理
+    直接丢弃，避免 Python 负索引或 IndexError。
+    """
+    n = len(text)
     out_str = []
     for i, c in enumerate(text):
         if c == " ":
-            if ((text[i + 1].isascii() and text[i + 1] != " ") and
-                    (text[i - 1].isascii() and text[i - 1] != " ")):
+            left = text[i - 1] if i > 0 else ""
+            right = text[i + 1] if i + 1 < n else ""
+            if (left and left.isascii() and left != " "
+                    and right and right.isascii() and right != " "):
                 out_str.append(c)
         else:
             out_str.append(c)
     return "".join(out_str)
+
+
+class TtsStreamNormalizer:
+    """跨 chunk 安全的 TTS 文本规范化器。
+
+    Gemini Live 等 realtime 后端的 output transcript 会在中文 token 之间
+    插入 ASCII 空格（"你 好 世 界"），MiniMax / CosyVoice 等 streaming
+    TTS 会把这些断开的中文读成顿挫的短片段。该 normalizer 复用
+    :func:`replace_blank` 的语义（只保留两侧均为非空格 ASCII 的空格），
+    但针对 streaming 场景做了两项关键处理：
+
+    1. 尾部空格**延后决策**：chunk 末尾的 ASCII 空格暂存到下一个 chunk
+       出现时，再结合后一个字符判断是否保留。
+    2. 左侧上下文**跨 chunk 继承**：用上一次 emit 出的最后一个非空格字符
+       作为下个 chunk 首位空格的"左邻居"，避免在 chunk 边界误判。
+
+    每个新的 TTS 轮次（speech_id 切换）必须调用 :meth:`reset`。
+    """
+
+    __slots__ = ("_last_nonspace", "_pending_spaces")
+
+    def __init__(self):
+        self._last_nonspace = ""
+        self._pending_spaces = ""
+
+    def reset(self) -> None:
+        """清空状态。新 speech_id 或中断时调用。"""
+        self._last_nonspace = ""
+        self._pending_spaces = ""
+
+    def feed(self, chunk: str) -> str:
+        """输入一个新 chunk，返回当前可安全 emit 的已规范化文本。"""
+        if not chunk:
+            return ""
+
+        work = self._pending_spaces + chunk
+
+        # 尾部 ASCII 空格暂存，等下一个 chunk 的首字符决定去留
+        stripped = work.rstrip(" ")
+        self._pending_spaces = work[len(stripped):]
+        if not stripped:
+            return ""
+
+        # 用上次 emit 的末位非空格字符当左邻居；非空格保证 replace_blank
+        # 不会丢掉 prefix 本身，可以用长度精确剥离。
+        prefix = self._last_nonspace
+        filtered = replace_blank(prefix + stripped)
+        if prefix and filtered.startswith(prefix):
+            filtered = filtered[len(prefix):]
+
+        for c in reversed(filtered):
+            if c != " ":
+                self._last_nonspace = c
+                break
+
+        return filtered
+
+    def flush(self) -> str:
+        """轮次结束收尾：丢弃悬挂的尾部空格并清空状态。"""
+        self._pending_spaces = ""
+        self._last_nonspace = ""
+        return ""
 
 
 def is_only_punctuation(text):
