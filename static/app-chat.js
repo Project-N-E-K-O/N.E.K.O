@@ -446,8 +446,9 @@
             var localPlaying = typeof window.isMusicPlaying === 'function' && window.isMusicPlaying();
             var localPending = typeof window.isMusicPending === 'function' && window.isMusicPending();
             var remoteActive = typeof window.isRemoteMusicActive === 'function' && window.isRemoteMusicActive();
-            if (localPlaying || localPending || remoteActive) {
-                console.log('[MusicDispatch] 拦截来自主动搭话的切歌请求 (playing=' + localPlaying + ', pending=' + localPending + ', remote=' + remoteActive + ')');
+            var rateLimited = typeof window.isMusicRecommendRateLimited === 'function' && window.isMusicRecommendRateLimited();
+            if (localPlaying || localPending || remoteActive || rateLimited) {
+                console.log('[MusicDispatch] 拦截来自主动搭话的切歌请求 (playing=' + localPlaying + ', pending=' + localPending + ', remote=' + remoteActive + ', rateLimited=' + rateLimited + ')');
                 return false;
             }
         }
@@ -461,6 +462,10 @@
 
         if (window.sendMusicMessage) {
             var accepted = await window.sendMusicMessage(trackInfo);
+            // proactive 来源成功派发后打上限流时间戳，阻止接下来 18s 内的再次 proactive 推荐
+            if (accepted && options.source === 'proactive' && typeof window.markProactiveMusicRecommended === 'function') {
+                window.markProactiveMusicRecommended();
+            }
             return accepted; // 返回布尔值表示是否成功派发
         } else {
             console.warn('[MusicDispatch] sendMusicMessage \u5C1A\u672A\u5C31\u7EEA\uFF0C\u542F\u52A8\u7B49\u5F85 (ID: ' + currentDispatchId + ')...');

@@ -169,6 +169,21 @@
         consecutiveSkipsToTrigger: 2,        // 连续秒关 2 次触发冷却
         cooldownDurationMs: 20 * 60 * 1000   // 冷却 20 分钟
     };
+
+    // --- 主动推荐频率限流 ---
+    // 用户反馈"推荐太频繁"，加一层硬性最小间隔：任意一次 proactive 推荐
+    // 成功派发后，接下来 RECOMMEND_COOLDOWN_MS 内不再放行新的 proactive 推荐。
+    // 非 proactive 来源（用户主动点播、插件直推、[play_music:] 指令）不受影响。
+    const RECOMMEND_COOLDOWN_MS = 18000;
+    let lastProactiveRecommendAt = 0;
+
+    const isMusicRecommendRateLimited = () => {
+        if (lastProactiveRecommendAt <= 0) return false;
+        return (Date.now() - lastProactiveRecommendAt) < RECOMMEND_COOLDOWN_MS;
+    };
+    const markProactiveMusicRecommended = () => {
+        lastProactiveRecommendAt = Date.now();
+    };
     let accumulatedPlaySeconds = 0;   // actual playback seconds (from player.currentTime)
     let lastPlayPosition = 0;         // player.currentTime snapshot at last play/resume
     let consecutiveSkipCount = 0;
@@ -1346,6 +1361,9 @@
     window.isMusicPending = () => musicDispatchPending;
     // 跨窗口协调：其他窗口正在播歌（基于 BroadcastChannel 通报）
     window.isRemoteMusicActive = isRemoteMusicActive;
+    // 推荐频率限流：最近是否刚派发过 proactive 推荐
+    window.isMusicRecommendRateLimited = isMusicRecommendRateLimited;
+    window.markProactiveMusicRecommended = markProactiveMusicRecommended;
 
     // 派发就绪事件，通知提前加载的插件可以开始注册域名了
     window.dispatchEvent(new CustomEvent('music-ui-ready'));
