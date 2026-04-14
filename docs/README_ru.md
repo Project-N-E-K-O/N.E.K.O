@@ -393,9 +393,12 @@ cd N.E.K.O
 uv sync
 
 # 3. Собрать фронтенд-проекты (требуется Node.js >= 20.19; необходимо при первом запуске или после изменений фронтенда)
-#    Или используйте скрипт: build_frontend.bat (Windows) / ./build_frontend.sh (Linux/macOS)
-cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build && cd ../..
+#    Рекомендуется: используйте скрипт (это официально поддерживаемый способ сборки)
+#      Windows:      build_frontend.bat
+#      Linux/macOS:  ./build_frontend.sh
+#    Ручная сборка (должна совпадать с тем, что делает скрипт):
+# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 # 4. Запустить сервисы (минимум main_server и memory_server)
 uv run python memory_server.py

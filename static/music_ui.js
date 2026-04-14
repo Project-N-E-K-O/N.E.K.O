@@ -51,6 +51,102 @@
     let aplayerLoadPromise = null;
     let latestMusicRequestToken = 0;
 
+    // --- 竞态保护：dispatch 入口的"加载中"标记 ---
+    // sendMusicMessage 的 URL 校验/库加载阶段对外暴露，避免并发 dispatch 在
+    // 真正的 audio 还未启动时绕过 isMusicPlaying() 拦截。
+    //
+    // 用计数器而非 boolean：并发的 sendMusicMessage 调用各自 +1 / -1，
+    // 谁先走早退分支都不会把尚在库加载中的兄弟调用误清为 idle。
+    let musicDispatchPendingCount = 0;
+
+    // --- 竞态保护：executePlay 串行化 ---
+    // 两个并发 executePlay 在 await initializeAPlayer 期间会同时把
+    // currentPlayingTrack / musicCardMessageId 覆盖一次，第一个实例还会
+    // 残留一个未受控的 <audio>。用 Promise 链把它们排成单线。
+    let executePlayChain = Promise.resolve();
+
+    // --- 跨窗口协调：当多个窗口（index.html + chat.html）同时开了主动搭话时，
+    // 它们各自的播放器都会响应自己的 proactive_chat 响应。即使本地不在播，
+    // 远程窗口可能正在播；用一个独立 BroadcastChannel 互相通报，
+    // dispatchMusicPlay 在 source==='proactive' 时把远程视作"已占用"。 ---
+    const MUSIC_COORD_SENDER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+    const REMOTE_MUSIC_TTL_MS = 30 * 1000; // 心跳超时
+    // sender_id -> expireAt
+    const remoteMusicSenders = new Map();
+    let musicCoordChannel = null;
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            musicCoordChannel = new BroadcastChannel('neko_music_coord');
+            musicCoordChannel.onmessage = (event) => {
+                const data = event && event.data;
+                if (!data || typeof data !== 'object') return;
+                const sid = data.sender;
+                if (!sid || sid === MUSIC_COORD_SENDER_ID) return;
+                if (data.type === 'music_started' || data.type === 'music_heartbeat') {
+                    remoteMusicSenders.set(sid, Date.now() + REMOTE_MUSIC_TTL_MS);
+                } else if (data.type === 'music_ended') {
+                    remoteMusicSenders.delete(sid);
+                }
+            };
+            // 窗口关闭时通告一声 music_ended 并关闭 channel，避免对端等 30s TTL 才意识到我退出
+            window.addEventListener('beforeunload', () => {
+                try {
+                    if (musicCoordChannel) {
+                        musicCoordChannel.postMessage({
+                            type: 'music_ended',
+                            sender: MUSIC_COORD_SENDER_ID,
+                            ts: Date.now()
+                        });
+                        musicCoordChannel.close();
+                        musicCoordChannel = null;
+                    }
+                } catch (_) { /* ignore */ }
+            });
+        }
+    } catch (e) {
+        console.log('[Music UI] BroadcastChannel 不可用，跨窗口协调失效:', e);
+    }
+
+    const broadcastMusicCoord = (type) => {
+        if (!musicCoordChannel) return;
+        try {
+            musicCoordChannel.postMessage({ type, sender: MUSIC_COORD_SENDER_ID, ts: Date.now() });
+        } catch (_) { /* ignore */ }
+    };
+
+    // 心跳：当本地正在播时定期广播，防止其他窗口误以为对方已退出
+    let musicHeartbeatTimer = null;
+    const startMusicHeartbeat = () => {
+        if (musicHeartbeatTimer) return;
+        musicHeartbeatTimer = setInterval(() => {
+            try {
+                if (localPlayer && localPlayer.audio && !localPlayer.audio.paused) {
+                    broadcastMusicCoord('music_heartbeat');
+                } else {
+                    stopMusicHeartbeat();
+                }
+            } catch (_) {
+                stopMusicHeartbeat();
+            }
+        }, 10 * 1000);
+    };
+    const stopMusicHeartbeat = () => {
+        if (musicHeartbeatTimer) {
+            clearInterval(musicHeartbeatTimer);
+            musicHeartbeatTimer = null;
+        }
+    };
+
+    const isRemoteMusicActive = () => {
+        if (remoteMusicSenders.size === 0) return false;
+        const now = Date.now();
+        // 顺手清理已过期的 sender
+        for (const [sid, exp] of remoteMusicSenders) {
+            if (now > exp) remoteMusicSenders.delete(sid);
+        }
+        return remoteMusicSenders.size > 0;
+    };
+
     // --- 更新 React 聊天窗口音乐卡片 ---
     const updateMusicCard = (state, track) => {
         const host = window.reactChatWindowHost;
@@ -89,6 +185,21 @@
         skipThresholdMs: 10000,              // < 10 秒关闭 = 视为"秒关"
         consecutiveSkipsToTrigger: 2,        // 连续秒关 2 次触发冷却
         cooldownDurationMs: 20 * 60 * 1000   // 冷却 20 分钟
+    };
+
+    // --- 主动推荐频率限流 ---
+    // 用户反馈"推荐太频繁"，加一层硬性最小间隔：任意一次 proactive 推荐
+    // 成功派发后，接下来 RECOMMEND_COOLDOWN_MS 内不再放行新的 proactive 推荐。
+    // 非 proactive 来源（用户主动点播、插件直推、[play_music:] 指令）不受影响。
+    const RECOMMEND_COOLDOWN_MS = 18000;
+    let lastProactiveRecommendAt = 0;
+
+    const isMusicRecommendRateLimited = () => {
+        if (lastProactiveRecommendAt <= 0) return false;
+        return (Date.now() - lastProactiveRecommendAt) < RECOMMEND_COOLDOWN_MS;
+    };
+    const markProactiveMusicRecommended = () => {
+        lastProactiveRecommendAt = Date.now();
     };
     let accumulatedPlaySeconds = 0;   // actual playback seconds (from player.currentTime)
     let lastPlayPosition = 0;         // player.currentTime snapshot at last play/resume
@@ -387,6 +498,10 @@
         }
         currentPlayingTrack = null;
         musicCardMessageId = null;
+
+        // 跨窗口协调：通知其他窗口本地音乐已停
+        stopMusicHeartbeat();
+        broadcastMusicCoord('music_ended');
     };
 
     // --- 查找并替换整个 loadAPlayerLibrary 函数 ---
@@ -446,7 +561,19 @@
 
     // --- 5. 播放器挂载逻辑 (支持原地更新与实例复用) ---
     // 核心逻辑：复用 APlayer 实例可以保留浏览器的“音频解锁”状态，极大提高自动播放成功率
-    const executePlay = async (trackInfo, currentToken, shouldAutoPlay = true) => {
+    //
+    // 【串行化】两次并发调用如果同时进入 needsInit 分支，会同时 await initializeAPlayer，
+    // 都拿到自己的实例后写 currentPlayingTrack/musicCardMessageId，第一份卡片
+    // 会被第二份盖掉，被覆盖的实例如果 destroy 不及时还会残留 <audio>。
+    // 用 executePlayChain 把所有 executePlay 排成单线，保证内部 await 不会被抢跑。
+    const executePlay = (trackInfo, currentToken, shouldAutoPlay = true) => {
+        const run = () => executePlayCore(trackInfo, currentToken, shouldAutoPlay);
+        const next = executePlayChain.then(run, run); // 即使前一次 reject 也继续
+        executePlayChain = next.catch(() => { /* 链路自愈，避免 rejection 阻断后续 */ });
+        return next;
+    };
+
+    const executePlayCore = async (trackInfo, currentToken, shouldAutoPlay = true) => {
         if (currentToken !== latestMusicRequestToken) return;
 
         // 清除可能的自动销毁与 DOM 移除定时器
@@ -535,6 +662,11 @@
             }
         }
 
+        // 切歌前，先把上一首卡片标记为"已结束"。必须在 currentPlayingTrack
+        // 被覆盖之前用旧值更新，否则旧卡片会被改写成新曲目信息。
+        const previousTrackForCard = currentPlayingTrack;
+        const previousCardId = musicCardMessageId;
+
         // --- 2. 原地更新 UI 文本/封面 (始终执行) ---
         currentPlayingTrack = trackInfo;
         setMusicBarTitle(musicBar, trackInfo.name || '');
@@ -565,6 +697,22 @@
         {
             const host = window.reactChatWindowHost;
             if (host && typeof host.appendMessage === 'function') {
+                // 切歌时，先把上一首的卡片标记为"已结束"，避免覆盖 musicCardMessageId
+                // 之后旧卡片永远停在"播放中"。注意要用旧 id + 旧 track。
+                if (previousCardId && typeof host.updateMessage === 'function') {
+                    try {
+                        host.updateMessage(previousCardId, {
+                            blocks: [{
+                                type: 'link',
+                                url: (previousTrackForCard && previousTrackForCard.url) || '#',
+                                title: (previousTrackForCard && previousTrackForCard.name) || '未知曲目',
+                                description: (previousTrackForCard && previousTrackForCard.artist) || '未知艺术家',
+                                siteName: '✅ ' + ((window.t && window.t('music.ended')) || '已播完'),
+                                thumbnailUrl: (previousTrackForCard && previousTrackForCard.cover) || undefined
+                            }]
+                        });
+                    } catch (_) { /* ignore */ }
+                }
                 let assistantName = '';
                 if (window.lanlan_config && window.lanlan_config.lanlan_name) assistantName = window.lanlan_config.lanlan_name;
                 else if (window._currentCatgirl) assistantName = window._currentCatgirl;
@@ -655,6 +803,9 @@
                     autoplayBlocked = false;
                     lastPlayPosition = (boundPlayer.audio && boundPlayer.audio.currentTime) || 0;
                     updateMusicCard('playing', currentPlayingTrack);
+                    // 跨窗口协调：本地真正开始放歌后通知其他窗口
+                    broadcastMusicCoord('music_started');
+                    startMusicHeartbeat();
                 });
                 boundPlayer.on('pause', () => {
                     updatePlayBtnState(false);
@@ -1017,6 +1168,17 @@
     window.sendMusicMessage = async function (trackInfo, shouldAutoPlay = true) {
         if (!trackInfo) return false;
 
+        // 进入 dispatch 流水线就立即 +1 —— 让并发的 dispatchMusicPlay
+        // 能在 isMusicPlaying() 还未变成 true 的"加载中"窗口里也识别到占用。
+        // 用本地 pendingReleased 防止重复释放。
+        musicDispatchPendingCount += 1;
+        let pendingReleased = false;
+        const releasePending = () => {
+            if (pendingReleased) return;
+            pendingReleased = true;
+            musicDispatchPendingCount = Math.max(0, musicDispatchPendingCount - 1);
+        };
+
         // --- 核心修复：更鲁棒的 URL 预清理 ---
         if (trackInfo.url && typeof trackInfo.url === 'string') {
             try {
@@ -1046,6 +1208,7 @@
         // 5秒去重逻辑
         if (lastPlayedMusicUrl === trackInfo.url && (now - lastMusicPlayTime) < 5000 && isPlayerInDOM()) {
             console.log('[Music UI] 5秒内相同音乐且已在播放中，跳过播发请求:', trackInfo.name);
+            releasePending();
             return true;
         }
 
@@ -1085,6 +1248,7 @@
                 var msg = window.t ? window.t('music.unsafeSource', { domain: domain }) : ('已拦截不安全音源: ' + domain);
                 window.showStatusToast(msg, 5000);
             }
+            releasePending();
             return false;
         }
 
@@ -1101,13 +1265,14 @@
                 player.play();
                 showNowPlayingToast(trackInfo.name);
             }
+            releasePending();
             return true;
         }
 
         showNowPlayingToast(trackInfo.name);
 
         loadAPlayerLibrary().then(function () {
-            executePlay(trackInfo, currentToken, shouldAutoPlay);
+            return executePlay(trackInfo, currentToken, shouldAutoPlay);
         }).catch(function (err) {
             // 库加载失败同样需要校验 token，防止关闭后弹出报错
             if (currentToken === latestMusicRequestToken) {
@@ -1116,6 +1281,9 @@
             } else {
                 console.log('[Music UI] 库加载失败，但请求已取消，忽略报错');
             }
+        }).finally(function () {
+            // 每次调用独立释放：不用 token 判断，本次引用计数 -1 就好。
+            releasePending();
         });
 
         return true;
@@ -1209,6 +1377,14 @@
     window.isMusicCooldown = isInMusicCooldown;
     window.getMusicCurrentTrack = getMusicCurrentTrack;
     window.MusicPluginAPI = MusicPluginAPI;
+
+    // 竞态拦截辅助：dispatch 流水线中（URL 校验/库加载/init）的占位标记
+    window.isMusicPending = () => musicDispatchPendingCount > 0;
+    // 跨窗口协调：其他窗口正在播歌（基于 BroadcastChannel 通报）
+    window.isRemoteMusicActive = isRemoteMusicActive;
+    // 推荐频率限流：最近是否刚派发过 proactive 推荐
+    window.isMusicRecommendRateLimited = isMusicRecommendRateLimited;
+    window.markProactiveMusicRecommended = markProactiveMusicRecommended;
 
     // 派发就绪事件，通知提前加载的插件可以开始注册域名了
     window.dispatchEvent(new CustomEvent('music-ui-ready'));

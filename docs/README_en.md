@@ -401,9 +401,12 @@ cd N.E.K.O
 uv sync
 
 # 3. Build frontend projects (requires Node.js >= 20.19; needed on first run or after frontend changes)
-#    Or use the convenience script: build_frontend.bat (Windows) / ./build_frontend.sh (Linux/macOS)
-cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build && cd ../..
+#    Recommended: use the convenience script (this is the officially supported build path)
+#      Windows:      build_frontend.bat
+#      Linux/macOS:  ./build_frontend.sh
+#    Manual build (must match what the script runs):
+# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 # 4. Start services (main_server and memory_server required at minimum)
 uv run python memory_server.py

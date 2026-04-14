@@ -458,9 +458,12 @@ cd N.E.K.O
 uv sync
 
 # 3. 构建前端项目（需要 Node.js >= 20.19，首次运行或前端代码变更后需要）
-#    也可用一键脚本：Windows 运行 build_frontend.bat，Linux/macOS 运行 ./build_frontend.sh
-cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build && cd ../..
+#    推荐：使用一键脚本（这是官方支持的构建方式）
+#      Windows：      build_frontend.bat
+#      Linux/macOS：  ./build_frontend.sh
+#    如需手动构建（命令须与脚本保持一致）：
+# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 # 4. 启动服务（至少需要 main_server 和 memory_server）
 uv run python memory_server.py
