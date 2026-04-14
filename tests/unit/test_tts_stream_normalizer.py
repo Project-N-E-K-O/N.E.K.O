@@ -229,7 +229,7 @@ def test_speech_id_boundary_via_reset_does_not_leak_across_turns():
     assert n.feed("world") == "world"
 
 
-# --- 端到端：拼接全部 emit == 在"完整文本"上跑 replace_blank ------------
+# --- 端到端：拼接全部 emit == 在"完整文本"上跑 drop_cjk_boundary_spaces ----
 
 @pytest.mark.parametrize(
     "full_text",
@@ -250,9 +250,8 @@ def test_speech_id_boundary_via_reset_does_not_leak_across_turns():
 )
 def test_stream_matches_whole_text_except_trailing(full_text):
     """任意切分方式下，拼接所有 emit 加上 flush 应等于对完整文本调用
-    drop_cjk_boundary_spaces 的结果，再去掉首尾空格（flush 丢尾空格是
-    normalizer 的约定；首位空格若 drop_cjk_boundary_spaces 保留则继续
-    保留，但若整段只剩空格则为空）。
+    drop_cjk_boundary_spaces 的结果再去掉**尾部**空格（flush 丢尾空格是
+    normalizer 的约定；首位空格若 drop_cjk_boundary_spaces 保留则继续保留）。
     """
     expected = drop_cjk_boundary_spaces(full_text).rstrip(" ")
 
