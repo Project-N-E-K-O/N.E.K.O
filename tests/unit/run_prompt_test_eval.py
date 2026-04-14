@@ -34,7 +34,7 @@ from utils.llm_client import (
     create_chat_llm,
 )
 from utils.file_utils import atomic_write_json
-from tests.utils.human_like_judger import HumanLikeJudger
+from tests.utils.prompt_test_judger import PromptTestJudger
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -188,7 +188,7 @@ async def call_target_model(
 async def evaluate_file(
     json_path: Path,
     target_cfg: Dict[str, Any],
-    judger: HumanLikeJudger,
+    judger: PromptTestJudger,
 ) -> Dict[str, Any]:
     data = load_prompt_dump(json_path)
     meta = data.get("metadata", {})
@@ -250,7 +250,7 @@ async def evaluate_file(
             f"{reference_response[:160]}{'...' if len(reference_response) > 160 else ''}"
         )
 
-        eval_result = judger.judge_single_response(
+        eval_result = judger.judge(
             system_prompt=system_prompt,
             conversation_context=context_for_judger,
             user_input=user_input,
@@ -305,7 +305,7 @@ async def evaluate_file(
 def generate_reports(
     target_cfg: Dict[str, Any],
     file_summaries: List[Dict[str, Any]],
-    judger: HumanLikeJudger,
+    judger: PromptTestJudger,
 ) -> Path:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -396,7 +396,7 @@ def generate_reports(
             if scores:
                 dim_keys = [
                     "naturalness", "empathy", "lifelikeness",
-                    "context_retention", "engagement", "persona_warmth",
+                    "context_retention", "engagement", "persona_consistency",
                     "ai_ness_penalty",
                 ]
                 dim_line = " | ".join(
@@ -423,7 +423,7 @@ def generate_reports(
     if all_scores:
         dim_keys = [
             "naturalness", "empathy", "lifelikeness",
-            "context_retention", "engagement", "persona_warmth",
+            "context_retention", "engagement", "persona_consistency",
             "ai_ness_penalty",
         ]
         dim_totals: Dict[str, List[float]] = {k: [] for k in dim_keys}
@@ -505,7 +505,7 @@ async def main() -> None:
 
     print(f"Files to test: {[f.name for f in json_files]}")
 
-    judger = HumanLikeJudger(api_keys_path=str(TESTS_DIR / "api_keys.json"))
+    judger = PromptTestJudger(api_keys_path=str(TESTS_DIR / "api_keys.json"))
 
     file_summaries: List[Dict[str, Any]] = []
     for jf in json_files:
