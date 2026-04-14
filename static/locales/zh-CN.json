@@ -1679,6 +1679,7 @@
             "openfang": "专属桌面",
             "userPluginAdapting": "用户插件（开发中）",
             "openclawConnect": "OpenClaw",
+            "openclawGuide": "OpenClaw 接入教程",
             "chatSettings": "对话设置",
             "animationSettings": "动画设置",
             "renderQuality": "画质",
@@ -1701,6 +1702,15 @@
             "textGuardHighWarning": "设置过大可能导致猫娘记忆和语言混乱，建议500字以内",
             "textGuardNote": "仅对文本回复有效，不影响语音对话"
         }
+    },
+    "openclawGuide": {
+        "windowTitle": "OpenClaw 接入教程 - N.E.K.O.",
+        "pageTitle": "OpenClaw 接入教程",
+        "pageSubtitle": "把 OpenClaw 安装、通道放置、健康检查与 N.E.K.O 配置串起来，按一条路径接通。",
+        "sourceLabel": "教程来源",
+        "contentLanguageNotice": "语言切换会同时更新页面控件文案和正文内容。",
+        "languageLabel": "语言",
+        "guideUnavailable": "教程内容为空。"
     },
     "subtitle": {
         "title": "实时字幕",

@@ -10,12 +10,13 @@ Handles agent-related endpoints including:
 """
 
 import time
+from pathlib import Path
 
 from utils.logger_config import get_module_logger
-from fastapi import APIRouter, Request, Body
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 import httpx
-from .shared_state import get_session_manager, get_config_manager
+from .shared_state import get_session_manager, get_config_manager, get_templates
 from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from main_logic.agent_event_bus import publish_session_event
 
@@ -24,6 +25,57 @@ logger = get_module_logger(__name__, "Main")
 TOOL_SERVER_BASE = f"http://127.0.0.1:{TOOL_SERVER_PORT}"
 USER_PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 _HTTP_CLIENT: httpx.AsyncClient | None = None
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_OPENCLAW_GUIDE_PATH = _PROJECT_ROOT / "docs" / "zh-CN" / "guide" / "openclaw_guide.md"
+_OPENCLAW_GUIDE_DIR = _OPENCLAW_GUIDE_PATH.parent
+_OPENCLAW_GUIDE_ASSETS_DIR = _OPENCLAW_GUIDE_DIR / "assets"
+_OPENCLAW_GUIDE_LANG_FILES = {
+    "zh-CN": _OPENCLAW_GUIDE_DIR / "openclaw_guide.md",
+    "zh-TW": _OPENCLAW_GUIDE_DIR / "openclaw_guide.zh-TW.md",
+    "en": _OPENCLAW_GUIDE_DIR / "openclaw_guide.en.md",
+    "ja": _OPENCLAW_GUIDE_DIR / "openclaw_guide.ja.md",
+    "ko": _OPENCLAW_GUIDE_DIR / "openclaw_guide.ko.md",
+    "ru": _OPENCLAW_GUIDE_DIR / "openclaw_guide.ru.md",
+}
+
+
+def _normalize_openclaw_guide_lang(lang: str | None) -> str:
+    text = str(lang or "").strip()
+    if not text:
+        return "zh-CN"
+    lowered = text.lower()
+    if lowered.startswith("zh-tw") or lowered.startswith("zh-hk") or lowered.startswith("zh-hant"):
+        return "zh-TW"
+    if lowered.startswith("zh"):
+        return "zh-CN"
+    if lowered.startswith("en"):
+        return "en"
+    if lowered.startswith("ja"):
+        return "ja"
+    if lowered.startswith("ko"):
+        return "ko"
+    if lowered.startswith("ru"):
+        return "ru"
+    return "zh-CN"
+
+
+def _load_openclaw_guide_markdown(lang: str | None = None) -> str:
+    resolved_lang = _normalize_openclaw_guide_lang(lang)
+    candidate = _OPENCLAW_GUIDE_LANG_FILES.get(resolved_lang, _OPENCLAW_GUIDE_PATH)
+    try:
+        return candidate.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.warning(
+            "Failed to load OpenClaw guide markdown for %s from %s: %s",
+            resolved_lang,
+            candidate,
+            exc,
+        )
+        return (
+            "# OpenClaw 接入教程\n\n"
+            "教程内容暂时无法加载，请检查文档文件是否存在：\n\n"
+            f"`{candidate.name}`"
+        )
 
 
 def _get_http_client() -> httpx.AsyncClient:
@@ -251,6 +303,41 @@ async def proxy_mcp_availability():
 @router.get('/user_plugin/dashboard')
 async def redirect_plugin_dashboard():
     return RedirectResponse(f"{USER_PLUGIN_BASE}/ui")
+
+
+@router.get('/openclaw/guide', response_class=HTMLResponse)
+async def openclaw_guide_page(request: Request):
+    templates = get_templates()
+    return templates.TemplateResponse("templates/openclaw_guide.html", {
+        "request": request,
+    })
+
+
+@router.get('/openclaw/guide/content')
+async def openclaw_guide_content(lang: str | None = None):
+    resolved_lang = _normalize_openclaw_guide_lang(lang)
+    return {
+        "success": True,
+        "lang": resolved_lang,
+        "markdown": _load_openclaw_guide_markdown(resolved_lang),
+    }
+
+
+@router.get('/openclaw/guide/assets/{asset_path:path}')
+async def openclaw_guide_asset(asset_path: str):
+    if not asset_path:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    candidate = (_OPENCLAW_GUIDE_ASSETS_DIR / asset_path).resolve()
+    try:
+        candidate.relative_to(_OPENCLAW_GUIDE_ASSETS_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Asset not found") from exc
+
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    return FileResponse(str(candidate))
 
 
 @router.get('/user_plugin/availability')
