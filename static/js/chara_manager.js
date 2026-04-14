@@ -1487,9 +1487,6 @@ function renderCatgirls() {
         exportBtn.style.background = '#40C5F1';
         exportBtn.style.minWidth = '120px';
         exportBtn.style.marginRight = '8px';
-        if (!isCurrentCatgirl) {
-            exportBtn.style.display = 'none';
-        }
         const exportIconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;margin-right:4px;vertical-align:middle;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
         const exportText = (window.t && typeof window.t === 'function') ? `${exportIconSvg}<span data-i18n="character.exportCard">${window.t('character.exportCard')}</span>` : `${exportIconSvg}导出角色卡`;
         exportBtn.innerHTML = exportText;
@@ -3177,11 +3174,7 @@ function updateSwitchButtons() {
 
                 const exportBtn = document.getElementById(`export-btn-${name}`);
                 if (exportBtn) {
-                    if (name === currentCatgirl) {
-                        exportBtn.style.display = '';
-                    } else {
-                        exportBtn.style.display = 'none';
-                    }
+                    exportBtn.style.display = '';
                 }
 
                 const hideBtn = block ? block.querySelector('.catgirl-hide') : null;

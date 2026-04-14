@@ -9,6 +9,7 @@
     <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
+    <link rel="stylesheet" href="/static/css/base.css">
     <link rel="stylesheet" href="/static/css/card_export.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
@@ -34,7 +35,9 @@
                 <span id="card-preview-name"></span>
             </div>
             <div id="card-portrait-area">
+                <div id="sticker-overlay-below"></div>
                 <canvas id="card-portrait-canvas"></canvas>
+                <div id="sticker-overlay"></div>
                 <div id="portrait-placeholder" data-i18n="cardExport.adjustHint">选择角色后可在此预览和调整构图</div>
             </div>
         </div>
@@ -53,14 +56,14 @@
             </button>
         </div>
 
-        <!-- 角色选择 -->
-        <div class="control-section">
-            <label data-i18n="cardExport.selectCharacter">选择角色</label>
-            <select id="character-select">
-                <option value="" data-i18n="cardExport.loading">加载中...</option>
-            </select>
+        <!-- 标签页切换 -->
+        <div id="panel-tabs">
+            <button class="panel-tab active" data-tab="model-tab" data-i18n="cardExport.modelTab">模型调整</button>
+            <button class="panel-tab" data-tab="decor-tab" data-i18n="cardExport.decorTab">装饰</button>
         </div>
 
+        <!-- 模型调整面板 -->
+        <div id="model-tab" class="tab-content active">
         <!-- 构图调整控件 -->
         <div class="control-section">
             <label data-i18n="cardExport.composition">构图调整</label>
@@ -80,15 +83,61 @@
                 <span id="scale-val" class="range-val">100%</span>
             </div>
             <div class="control-row">
+                <span data-i18n="cardExport.rotation">旋转</span>
+                <input type="range" id="portrait-rotation" min="-180" max="180" value="0" step="1">
+                <span id="rotation-val" class="range-val">0°</span>
+            </div>
+            <div class="control-row">
                 <button id="reset-composition-btn" class="btn-secondary" data-i18n="cardExport.resetComposition">重置构图</button>
                 <button id="refresh-preview-btn" class="btn-secondary" data-i18n="cardExport.refreshPreview">刷新预览</button>
+            </div>
+        </div>
+        </div>
+
+        <!-- 装饰面板 -->
+        <div id="decor-tab" class="tab-content">
+            <div class="control-section">
+                <label data-i18n="cardExport.stickerPick">选择贴纸</label>
+                <div id="sticker-grid"></div>
+            </div>
+            <div class="control-section" id="sticker-controls" style="display:none;">
+                <label data-i18n="cardExport.stickerAdjust">贴纸调整</label>
+                <div class="control-row">
+                    <span data-i18n="cardExport.stickerWidth">宽</span>
+                    <input type="range" id="sticker-w" min="10" max="500" value="60" step="1">
+                    <input type="number" id="sticker-w-num" min="1" max="9999" value="60" step="1" class="num-input">
+                    <span class="range-unit">px</span>
+                </div>
+                <div class="control-row">
+                    <span data-i18n="cardExport.stickerHeight">高</span>
+                    <input type="range" id="sticker-h" min="10" max="500" value="60" step="1">
+                    <input type="number" id="sticker-h-num" min="1" max="9999" value="60" step="1" class="num-input">
+                    <span class="range-unit">px</span>
+                </div>
+                <div class="control-row" style="justify-content:flex-end;">
+                    <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;">
+                        <input type="checkbox" id="sticker-lock-ratio" checked> <span data-i18n="cardExport.lockRatio">锁定比例</span>
+                    </label>
+                </div>
+                <div class="control-row">
+                    <span data-i18n="cardExport.stickerRotation">旋转</span>
+                    <input type="range" id="sticker-rotation" min="-180" max="180" value="0" step="1">
+                    <span id="sticker-rotation-val" class="range-val">0°</span>
+                </div>
+                <div class="control-row">
+                    <span data-i18n="cardExport.stickerLayer">图层</span>
+                    <button id="sticker-layer-toggle" class="btn-secondary layer-toggle" data-i18n="cardExport.layerAbove">模型上方</button>
+                </div>
+                <div class="control-row">
+                    <button id="remove-sticker-btn" class="btn-secondary" data-i18n="cardExport.removeSticker">删除选中</button>
+                    <button id="clear-stickers-btn" class="btn-secondary" data-i18n="cardExport.clearStickers">清除全部</button>
+                </div>
             </div>
         </div>
 
         <!-- 导出按钮 -->
         <div class="control-section export-actions">
             <button id="export-full-btn" class="btn-primary" data-i18n="cardExport.exportFull">导出角色卡</button>
-            <button id="export-settings-btn" class="btn-secondary" data-i18n="cardExport.exportSettings">仅导出设定</button>
         </div>
     </div>
 
