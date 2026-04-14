@@ -19,11 +19,23 @@ uv sync
 
 ## 构建前端
 
-项目在 `frontend/` 下有两个前端项目，运行前需要先构建：
+项目在 `frontend/` 下有两个前端项目，运行前需要先构建。
+
+**推荐** —— 从项目根目录使用一键脚本，这是官方支持的构建方式：
+
+```bash
+# Windows
+build_frontend.bat
+
+# Linux / macOS
+./build_frontend.sh
+```
+
+如需手动执行，命令必须与脚本保持一致：
 
 ```bash
 cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build && cd ../..
+cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 ```
 
 ## 运行
