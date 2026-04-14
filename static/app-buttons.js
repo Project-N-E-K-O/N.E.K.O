@@ -974,16 +974,18 @@
 
         // 工具：将 dataUrl 图片降采样到 720p 上限并重新编码为 JPEG 0.8，保持与既有流水线一致。
         // 如果图片本身已经在 720p 以内，直接返回原 dataUrl，避免无谓的解码/再编码。
+        // 返回 { dataUrl, width, height }：width/height 始终是"返回的这张图"的实际尺寸，
+        // 避免调用方把源尺寸误当成最终尺寸写进日志/UI。
         async function downscaleDataUrlTo720p(srcDataUrl) {
-            if (!srcDataUrl) return null;
+            if (!srcDataUrl) return { dataUrl: null, width: 0, height: 0 };
             var maxW = (window.appConst && window.appConst.MAX_SCREENSHOT_WIDTH) || 1280;
             var maxH = (window.appConst && window.appConst.MAX_SCREENSHOT_HEIGHT) || 720;
             return await new Promise(function (resolve) {
                 var img = new Image();
                 img.onload = function () {
                     var w = img.naturalWidth, h = img.naturalHeight;
-                    if (!w || !h) { resolve(srcDataUrl); return; }
-                    if (w <= maxW && h <= maxH) { resolve(srcDataUrl); return; }
+                    if (!w || !h) { resolve({ dataUrl: srcDataUrl, width: 0, height: 0 }); return; }
+                    if (w <= maxW && h <= maxH) { resolve({ dataUrl: srcDataUrl, width: w, height: h }); return; }
                     var scale = Math.min(maxW / w, maxH / h);
                     var tw = Math.max(1, Math.round(w * scale));
                     var th = Math.max(1, Math.round(h * scale));
@@ -992,15 +994,15 @@
                         cv.width = tw; cv.height = th;
                         var cx = cv.getContext('2d');
                         cx.drawImage(img, 0, 0, tw, th);
-                        resolve(cv.toDataURL('image/jpeg', 0.8));
+                        resolve({ dataUrl: cv.toDataURL('image/jpeg', 0.8), width: tw, height: th });
                     } catch (e) {
                         console.warn('[截图] 降采样失败，使用原图:', e);
-                        resolve(srcDataUrl);
+                        resolve({ dataUrl: srcDataUrl, width: w, height: h });
                     }
                 };
                 img.onerror = function (e) {
                     console.warn('[截图] 图片加载失败，使用原图:', e);
-                    resolve(srcDataUrl);
+                    resolve({ dataUrl: srcDataUrl, width: 0, height: 0 });
                 };
                 img.src = srcDataUrl;
             });
@@ -1053,9 +1055,12 @@
                         try {
                             var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
                             if (direct && direct.success && direct.dataUrl) {
-                                dataUrl = await downscaleDataUrlTo720p(direct.dataUrl);
-                                width = direct.width || 0;
-                                height = direct.height || 0;
+                                var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
+                                dataUrl = scaled.dataUrl;
+                                // 以降采样后的实际尺寸为准；解码失败时 scaled.width/height 为 0，
+                                // 此时回退到主进程上报的原始尺寸，避免日志空值。
+                                width = scaled.width || direct.width || 0;
+                                height = scaled.height || direct.height || 0;
                                 console.log('[截图] 主进程直接捕获成功:', selectedSourceId, width + 'x' + height);
                             } else if (direct && direct.error) {
                                 console.warn('[截图] 主进程直接捕获失败:', direct.error);
@@ -1099,7 +1104,10 @@
                             if (backendResult && backendResult.dataUrl) {
                                 // 后端 pyautogui 返回原生分辨率（2K/4K 显示器会超过 720p 上限），
                                 // 与主进程直接捕获路径保持一致，统一降采样到 MAX_SCREENSHOT_WIDTH/HEIGHT。
-                                dataUrl = await downscaleDataUrlTo720p(backendResult.dataUrl);
+                                var beScaled = await downscaleDataUrlTo720p(backendResult.dataUrl);
+                                dataUrl = beScaled.dataUrl;
+                                width = beScaled.width || 0;
+                                height = beScaled.height || 0;
                             }
                         } catch (beErr) {
                             console.warn('[截图] 后端兜底失败:', beErr);
