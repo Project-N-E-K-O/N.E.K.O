@@ -230,6 +230,9 @@
     let musicBarChannel = null;
     let mirrorBarTrackSig = null; // follower 本地缓存 track 签名，用于判断是否切歌
     let mirrorBarDestroyTimer = null;
+    // follower 记录当前镜像绑定的 leader sender id。所有 ctrl/destroyed 校验
+    // 都要比对这个值，避免 leader 切换重叠时别的 owner 被误触发 pause/close。
+    let mirrorBarLeaderSender = null;
 
     const isBarOwner = () => !!localPlayer;
 
@@ -258,10 +261,15 @@
 
     const broadcastBarCtrl = (action, value) => {
         if (!musicBarChannel) return;
+        // 没绑到 leader（镜像 bar 没建或已 teardown）就不发 ctrl
+        if (!mirrorBarLeaderSender) return;
         try {
             musicBarChannel.postMessage({
                 type: 'ctrl',
                 sender: MUSIC_COORD_SENDER_ID,
+                // target 指明给哪个 leader——owner 侧校验 target 才执行，避免
+                // 非当前绑定的 leader 也一起 pause/seek/close
+                target: mirrorBarLeaderSender,
                 ts: Date.now(),
                 action: action,
                 value: value
@@ -337,6 +345,12 @@
         const progressFill = musicBar.querySelector('.music-bar-progress-fill');
         const timeCurrent = musicBar.querySelector('.music-bar-time-current');
 
+        // teardownMirrorBar 调用此数组里的 cleanup，保证 bar 被删掉时
+        // 未结束的拖拽不会留下悬空的 window-level 监听（否则下一次 mouseup
+        // 会针对已经不存在的旧会话发 seekPercent / volume ctrl）。
+        const teardownCleanups = [];
+        musicBar.__mirrorTeardownCleanups = teardownCleanups;
+
         if (apBtn) apBtn.onclick = (e) => { e.preventDefault(); broadcastBarCtrl('toggle'); };
         if (closeBtn) closeBtn.onclick = (e) => { e.preventDefault(); broadcastBarCtrl('close'); };
 
@@ -370,13 +384,16 @@
                 const y = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : null);
                 if (y !== null) adjustVolume(y);
             };
-            const onEnd = () => {
-                vDragging = false;
+            const detachVolumeListeners = () => {
                 window.removeEventListener('mousemove', onMove);
                 window.removeEventListener('mouseup', onEnd);
                 window.removeEventListener('touchmove', onMove);
                 window.removeEventListener('touchend', onEnd);
                 window.removeEventListener('touchcancel', onEnd);
+            };
+            const onEnd = () => {
+                vDragging = false;
+                detachVolumeListeners();
             };
             volumeSliderWrapper.onmousedown = (e) => {
                 e.preventDefault(); e.stopPropagation();
@@ -393,10 +410,12 @@
                 window.addEventListener('touchend', onEnd);
                 window.addEventListener('touchcancel', onEnd);
             };
+            teardownCleanups.push(() => { vDragging = false; detachVolumeListeners(); });
         }
 
         if (progressContainer) {
             let pDragging = false;
+            let pAborted = false;
             let lastPer = 0;
             const moveProgress = (clientX) => {
                 const rect = progressContainer.getBoundingClientRect();
@@ -415,13 +434,20 @@
                 const x = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : null);
                 if (x !== null) moveProgress(x);
             };
-            const onEnd = () => {
-                if (!pDragging) return;
-                pDragging = false;
+            const detachProgressListeners = () => {
                 window.removeEventListener('mousemove', onMove);
                 window.removeEventListener('mouseup', onEnd);
                 window.removeEventListener('touchmove', onMove);
                 window.removeEventListener('touchend', onEnd);
+                window.removeEventListener('touchcancel', onEnd);
+            };
+            const onEnd = () => {
+                if (!pDragging) return;
+                pDragging = false;
+                detachProgressListeners();
+                // bar 已经被 teardown 掉（或切到了新会话）—— 不要把这次拖拽的
+                // 坐标当成对当前播放会话的 seek 发出去。
+                if (pAborted) return;
                 broadcastBarCtrl('seekPercent', lastPer);
             };
             progressContainer.onmousedown = (e) => {
@@ -439,6 +465,11 @@
                 window.addEventListener('touchmove', onMove);
                 window.addEventListener('touchend', onEnd);
             };
+            teardownCleanups.push(() => {
+                pAborted = true;
+                pDragging = false;
+                detachProgressListeners();
+            });
         }
 
         if (volumeContainer) {
@@ -448,8 +479,7 @@
                 }
             };
             document.addEventListener('mousedown', closeOnOutside);
-            // 清理：destroyMirrorBar 时会整个删 DOM，监听随元素 GC 自然失效
-            // 但 document 级的监听不会自己清，标记到 DOM 上由 teardown 统一清
+            // document 级的监听不会自己清，标记到 DOM 上由 teardown 统一清
             musicBar.__mirrorOutsideClickHandler = closeOnOutside;
         }
     };
@@ -608,6 +638,15 @@
             musicBar.__mirrorOutsideClickHandler = null;
         }
 
+        // 清拖拽装的 window 级 move/end 监听（正在拖就直接打断，防止 mouseup
+        // 到达时对已经不存在的旧会话发 seekPercent / volume ctrl）
+        if (Array.isArray(musicBar.__mirrorTeardownCleanups)) {
+            for (const fn of musicBar.__mirrorTeardownCleanups) {
+                try { fn(); } catch (_) { /* ignore */ }
+            }
+            musicBar.__mirrorTeardownCleanups = null;
+        }
+
         const removeNow = () => {
             if (musicBar.parentNode) musicBar.remove();
             mirrorBarTrackSig = null;
@@ -693,13 +732,23 @@
                         // 另一个窗口的旧 state 覆盖掉自己真实 audio，也让
                         // leader 切换瞬间不会有两份 bar 互相抢。
                         if (isBarOwner()) return;
+                        // 绑定/切换到当前 leader —— 后续 ctrl 会带 target 指向它，
+                        // destroyed 也只接受来自它的那一条，避免多 leader 交接时串窗
+                        mirrorBarLeaderSender = data.sender;
                         renderMirrorBar(data);
                     } else if (data.type === 'destroyed') {
                         if (isBarOwner()) return;
+                        // 只尊重来自当前绑定 leader 的 destroyed；别的 owner 退出
+                        // 不应该把我当前镜像的那条 bar 也一起摘掉
+                        if (data.sender !== mirrorBarLeaderSender) return;
+                        mirrorBarLeaderSender = null;
                         teardownMirrorBar(!!data.fullTeardown);
                     } else if (data.type === 'ctrl') {
-                        // 只有 owner 响应控制命令
-                        if (isBarOwner()) handleRemoteBarCtrl(data.action, data.value);
+                        // owner 只响应明确 target 到自己的 ctrl，避免别的 leader
+                        // 被 follower 的指令误触（leader 交接瞬间最容易发生）
+                        if (!isBarOwner()) return;
+                        if (data.target && data.target !== MUSIC_COORD_SENDER_ID) return;
+                        handleRemoteBarCtrl(data.action, data.value);
                     }
                 } catch (e) {
                     console.warn('[Music UI] bar mirror 处理失败:', e);
@@ -1173,9 +1222,17 @@
                 document.removeEventListener('mousedown', existingBar.__mirrorOutsideClickHandler);
                 existingBar.__mirrorOutsideClickHandler = null;
             }
+            if (Array.isArray(existingBar.__mirrorTeardownCleanups)) {
+                for (const fn of existingBar.__mirrorTeardownCleanups) {
+                    try { fn(); } catch (_) { /* ignore */ }
+                }
+                existingBar.__mirrorTeardownCleanups = null;
+            }
             existingBar.remove();
             mirrorBarTrackSig = null;
             mirrorBarLastState = null;
+            // 自己升成 owner 后就不再持有"绑定到某个 leader"的状态
+            mirrorBarLeaderSender = null;
         }
 
         const hasCover = trackInfo.cover && trackInfo.cover.length > 0 && isSafeUrl(trackInfo.cover);
@@ -1383,6 +1440,11 @@
                 if (!aplayerInstance) throw new Error("APlayer init failed");
                 if (currentToken !== latestMusicRequestToken) {
                     if (aplayerInstance.destroy) aplayerInstance.destroy();
+                    // 回滚：前面 emitBarInitialState 已经让 follower 建起占位
+                    // bar，但现在请求被更新的 token 取代，我们不会再发权威
+                    // state，得主动广播 destroyed 把占位 bar 摘掉，不然 follower
+                    // 会卡在一条假 bar 直到被下一次 state 盖掉。
+                    broadcastBarDestroyed(false);
                     return;
                 }
 
@@ -1761,6 +1823,9 @@
             if (currentToken !== latestMusicRequestToken) return;
             console.error('[Music UI] 播放器处理异常:', err);
             if (isFirstRender && musicBar) musicBar.remove();
+            // 回滚：前面已经发过 emitBarInitialState，但 APlayer 没建起来，
+            // 后续事件不会广播，follower 会卡着占位 bar，这里补一条 destroyed
+            broadcastBarDestroyed(false);
             showErrorToast('music.playError', '音乐播放加载失败');
         }
     };
