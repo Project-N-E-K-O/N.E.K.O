@@ -3223,10 +3223,18 @@ async def proactive_chat(request: Request):
                                 aborted = True
                                 break
                             
-                            # 缓冲中剩余的文本作为首批内容
+                            # 缓冲中剩余的文本经由 pass_probe 逻辑输出
                             if cleaned.strip():
-                                full_text += cleaned
-                                await mgr.feed_tts_chunk(cleaned)
+                                combined = pass_probe + cleaned
+                                if '[PASS]' in combined.upper():
+                                    print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
+                                    aborted = True
+                                    break
+                                safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
+                                pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
+                                if safe_text:
+                                    full_text += safe_text
+                                    await mgr.feed_tts_chunk(safe_text)
                             continue
                         
                         # --- 在线拦截: [PASS]（含跨 chunk 检测）---
