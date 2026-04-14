@@ -1679,6 +1679,7 @@
             "openfang": "專屬桌面",
             "userPluginAdapting": "用戶插件（開發中）",
             "openclawConnect": "OpenClaw",
+            "openclawGuide": "openclaw接入教程",
             "chatSettings": "對話設定",
             "animationSettings": "動畫設定",
             "renderQuality": "畫質",
@@ -1701,6 +1702,15 @@
             "textGuardHighWarning": "設定過大可能導致貓娘記憶和語言混亂，建議500字以內",
             "textGuardNote": "僅對文字回覆有效，不影響語音對話"
         }
+    },
+    "openclawGuide": {
+        "windowTitle": "OpenClaw 接入教程 - N.E.K.O.",
+        "pageTitle": "OpenClaw 接入教程",
+        "pageSubtitle": "把 CoPaw 安裝、通道放置、健康檢查與 N.E.K.O 設定串起來，沿著一條清楚路徑接通。",
+        "sourceLabel": "教學來源",
+        "contentLanguageNotice": "目前正文來自中文文件，語言切換僅影響頁面控制文案。",
+        "languageLabel": "語言",
+        "guideUnavailable": "教學內容為空。"
     },
     "subtitle": {
         "title": "實時字幕",

@@ -1679,6 +1679,7 @@
             "openfang": "전용 데스크톱",
             "userPluginAdapting": "사용자 플러그인(개발 중)",
             "openclawConnect": "OpenClaw",
+            "openclawGuide": "OpenClaw 연동 가이드",
             "chatSettings": "채팅 설정",
             "animationSettings": "애니메이션 설정",
             "renderQuality": "화질",
@@ -1701,6 +1702,15 @@
             "textGuardHighWarning": "설정이 너무 크면 냥이의 기억과 언어가 혼란스러워질 수 있습니다. 500자 이내를 권장합니다",
             "textGuardNote": "텍스트 응답에만 적용되며, 음성 세션에는 영향을 주지 않습니다"
         }
+    },
+    "openclawGuide": {
+        "windowTitle": "OpenClaw 연동 가이드 - N.E.K.O.",
+        "pageTitle": "OpenClaw 연동 가이드",
+        "pageSubtitle": "CoPaw 설치, 채널 배치, 헬스 체크, N.E.K.O 설정을 한 흐름으로 연결합니다.",
+        "sourceLabel": "가이드 출처",
+        "contentLanguageNotice": "본문은 현재 중국어 문서를 표시합니다. 언어 전환은 페이지 컨트롤 문구에만 적용됩니다.",
+        "languageLabel": "언어",
+        "guideUnavailable": "가이드 내용이 비어 있습니다."
     },
     "subtitle": {
         "title": "실시간 자막",
