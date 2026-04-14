@@ -148,8 +148,8 @@ describe('App', () => {
           clientX: 150,
           clientY: 150,
         },
-        touchZone: 'face',
       }));
+      expect(onAvatarInteraction.mock.calls[0]?.[0]).not.toHaveProperty('touchZone');
     } finally {
       delete (window as Window & { live2dManager?: unknown }).live2dManager;
       live2dContainer.remove();

@@ -1814,3 +1814,22 @@ button * {
 [data-theme="dark"] .send-button-circle:hover {
   opacity: 0.85;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .avatar-cursor-overlay-stage,
+  .hammer-cursor-overlay-stage,
+  .fist-floating-drop,
+  .fist-floating-drop-image,
+  .lollipop-floating-heart,
+  .lollipop-floating-heart-glyph,
+  .hammer-cursor-overlay-visual.is-active,
+  .message-row-user,
+  .message-row-assistant,
+  .text-chunk-reveal,
+  .composer-icon-popover,
+  .composer-icon-button {
+    animation: none !important;
+    animation-delay: 0ms !important;
+    transition: none !important;
+  }
+}

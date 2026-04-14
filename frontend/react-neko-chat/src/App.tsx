@@ -130,7 +130,7 @@ type CursorVariant = 'primary' | 'secondary' | 'tertiary';
 type ToolCursorVariantState = Record<string, CursorVariant>;
 type InteractionIntensity = NonNullable<AvatarInteractionPayload['intensity']>;
 type AvatarInteractionToolId = AvatarInteractionPayload['toolId'];
-type AvatarTouchZone = NonNullable<AvatarInteractionPayload['touchZone']>;
+type AvatarTouchZone = 'ear' | 'head' | 'face' | 'body';
 type AvatarInteractionPayloadByTool = {
   [K in AvatarInteractionToolId]: Extract<AvatarInteractionPayload, { toolId: K }>;
 };
@@ -730,8 +730,8 @@ export default function App({
     if (options?.intensity) {
       payload.intensity = options.intensity;
     }
-    if (options?.touchZone) {
-      payload.touchZone = options.touchZone;
+    if (options?.touchZone && toolId !== 'lollipop') {
+      (payload as { touchZone?: AvatarTouchZone }).touchZone = options.touchZone;
     }
     if (options?.rewardDrop && toolId === 'fist') {
       (payload as Extract<AvatarInteractionPayload, { toolId: 'fist' }>).rewardDrop = true;
@@ -839,7 +839,6 @@ export default function App({
             : 'normal';
           emitAvatarInteraction('lollipop', actionId, 'avatar', event.clientX, event.clientY, {
             intensity,
-            touchZone: avatarRangeHit?.touchZone,
           });
 
           if (currentVariant === 'tertiary') {

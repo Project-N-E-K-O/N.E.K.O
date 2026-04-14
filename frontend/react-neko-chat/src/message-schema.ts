@@ -55,7 +55,6 @@ const avatarInteractionPayloadBaseSchema = z.object({
     clientX: z.number().finite(),
     clientY: z.number().finite(),
   }),
-  touchZone: z.enum(['ear', 'head', 'face', 'body']).optional(),
   textContext: z.string().optional(),
   timestamp: z.number().finite(),
   intensity: z.enum(['normal', 'rapid', 'burst', 'easter_egg']).optional(),
@@ -69,11 +68,13 @@ export const avatarInteractionPayloadSchema = z.discriminatedUnion('toolId', [
   avatarInteractionPayloadBaseSchema.extend({
     toolId: z.literal('fist'),
     actionId: z.enum(['poke']),
+    touchZone: z.enum(['ear', 'head', 'face', 'body']).optional(),
     rewardDrop: z.boolean().optional(),
   }).strict(),
   avatarInteractionPayloadBaseSchema.extend({
     toolId: z.literal('hammer'),
     actionId: z.enum(['bonk']),
+    touchZone: z.enum(['ear', 'head', 'face', 'body']).optional(),
     easterEgg: z.boolean().optional(),
   }).strict(),
 ]);

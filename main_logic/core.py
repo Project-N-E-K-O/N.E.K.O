@@ -147,7 +147,7 @@ _AVATAR_INTERACTION_ACTION_LABELS = {
         "lollipop": {
             "offer": "第一口",
             "tease": "第二口",
-            "tap_soft": "连续点触",
+            "tap_soft": "连续投喂",
         },
         "fist": {
             "poke": "轻触",
@@ -160,7 +160,7 @@ _AVATAR_INTERACTION_ACTION_LABELS = {
         "lollipop": {
             "offer": "first bite",
             "tease": "second bite",
-            "tap_soft": "repeated tap",
+            "tap_soft": "repeated feeding",
         },
         "fist": {
             "poke": "light touch",
@@ -225,11 +225,11 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "第三阶段后继续点触，前端已表现为爱心上飘；本次属于连续喂食中的一次。",
+                    "reaction_focus": "第三阶段后继续投喂，前端已表现为爱心上飘；本次属于连续喂食中的一次。",
                     "style_hint": "节奏可以更快、分句可以更短，像连续被打断中的即时反应。",
                 },
                 "burst": {
-                    "reaction_focus": "短时间内连续多次点触，属于更高频的连续喂食。",
+                    "reaction_focus": "短时间内连续多次投喂，属于更高频的连续喂食。",
                     "style_hint": "允许更碎一点、更急一点，保持当场反应感。",
                 },
             },
@@ -287,11 +287,11 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "After the third-stage state, another tap occurs while hearts are already floating; this is one instance within repeated feeding.",
+                    "reaction_focus": "After the third-stage state, another feeding motion happens while hearts are already floating; this is one instance within repeated feeding.",
                     "style_hint": "The rhythm can be quicker and the phrasing shorter, like an immediate response inside repeated feeding.",
                 },
                 "burst": {
-                    "reaction_focus": "Multiple taps happen in a short window, forming a higher-frequency repeated feeding event.",
+                    "reaction_focus": "Multiple feeding motions happen in a short window, forming a higher-frequency repeated feeding event.",
                     "style_hint": "A more rushed or more fragmented rhythm is fine; keep it in-the-moment.",
                 },
             },
@@ -500,7 +500,7 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
     timestamp = payload.get("timestamp")
     try:
         timestamp_value = int(float(timestamp))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         timestamp_value = int(time.time() * 1000)
 
     return {
@@ -544,10 +544,13 @@ def _build_avatar_interaction_instruction(manager: "LLMSessionManager", payload:
         )
 
     if locale == "zh":
+        interaction_intro = "前端刚刚记录到一次已经发生的道具互动。下面只给出这次互动确认发生的事实，请据此做出即时回应。"
+        if tool_id == "lollipop":
+            interaction_intro = "前端刚刚记录到一次已经发生的棒棒糖投喂互动。下面只给出这次互动确认发生的事实，请据此做出即时回应。"
         lines = [
             wrapper["prefix"],
             f"你是{manager.lanlan_name}，正在和{manager.master_name}互动。",
-            "前端刚刚记录到一次已经发生的道具点触。下面只给出这次互动确认发生的事实，请据此做出即时回应。",
+            interaction_intro,
             f"- 道具：{tool_label}",
             f"- 动作：{action_label}",
             f"- 强度：{intensity_label}",
@@ -571,12 +574,17 @@ def _build_avatar_interaction_instruction(manager: "LLMSessionManager", payload:
             "5. 不要提范围外点击、坐标、概率、payload 或后台逻辑。",
             wrapper["suffix"],
         ])
+        if tool_id == "lollipop":
+            lines.insert(-1, "6. 这是棒棒糖投喂，不要写成摸头、轻触、安抚或抚摸。")
         return "\n".join(lines)
 
+    interaction_intro = "The frontend just recorded a tool interaction that has already happened. The lines below describe only the confirmed facts of this interaction; reply from those facts."
+    if tool_id == "lollipop":
+        interaction_intro = "The frontend just recorded a lollipop-feeding interaction that has already happened. The lines below describe only the confirmed facts of this interaction; reply from those facts."
     lines = [
         wrapper["prefix"],
         f"You are {manager.lanlan_name}, reacting to an interaction from {manager.master_name}.",
-        "The frontend just recorded a tool tap that has already happened. The lines below describe only the confirmed facts of this interaction; reply from those facts.",
+        interaction_intro,
         f"- Tool: {tool_label}",
         f"- Action: {action_label}",
         f"- Intensity: {intensity_label}",
@@ -600,6 +608,8 @@ def _build_avatar_interaction_instruction(manager: "LLMSessionManager", payload:
         "5. Do not mention coordinates, probabilities, payloads, or backend rules.",
         wrapper["suffix"],
     ])
+    if tool_id == "lollipop":
+        lines.insert(-1, "6. This is lollipop feeding, not petting, soothing, or a generic touch.")
     return "\n".join(lines)
 
 
@@ -2742,6 +2752,7 @@ class LLMSessionManager:
                 delivered = await self.session.prompt_ephemeral(
                     instruction,
                     completion_mode="response",
+                    persist_response=False,
                 )
             except Exception as e:
                 logger.exception(

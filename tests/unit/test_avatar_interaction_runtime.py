@@ -90,6 +90,21 @@ def test_normalize_avatar_interaction_payload_falls_back_to_camelcase_text_conte
 
 
 @pytest.mark.unit
+def test_normalize_avatar_interaction_payload_falls_back_when_timestamp_overflows():
+    payload = _normalize_avatar_interaction_payload({
+        "interaction_id": "int-overflow-ts",
+        "tool_id": "hammer",
+        "action_id": "bonk",
+        "target": "avatar",
+        "timestamp": "inf",
+    })
+
+    assert payload is not None
+    assert isinstance(payload["timestamp"], int)
+    assert payload["timestamp"] > 0
+
+
+@pytest.mark.unit
 def test_build_avatar_interaction_instruction_uses_locale_specific_fallback():
     manager = SimpleNamespace(
         user_language="en-US",
@@ -189,7 +204,7 @@ async def test_handle_avatar_interaction_ack_reports_error_when_prompt_ephemeral
         "intensity": "normal",
     })
 
-    assert event_log[0][0] == "prompt"
+    assert event_log[0][0:2] == ("prompt", "response")
     assert event_log[1] == ("ack", "int-err", False, "error", "")
     assert result == {"accepted": False, "reason": "error", "interaction_id": "int-err"}
     assert manager._last_avatar_interaction_speak_at == 0
@@ -202,6 +217,7 @@ async def test_handle_avatar_interaction_ack_reports_error_when_prompt_ephemeral
     [
         ("hello there", True),
         ("", False),
+        ("[play_music:some_song]", False),
     ],
 )
 async def test_prompt_ephemeral_forwards_content_committed_to_proactive_callback(chunk_content, expected_committed):
@@ -226,6 +242,7 @@ async def test_prompt_ephemeral_forwards_content_committed_to_proactive_callback
 
     assert delivered is expected_committed
     assert callback_events == [expected_committed]
+    assert len(client._conversation_history) == (1 if expected_committed else 0)
 
 
 @pytest.mark.asyncio
@@ -282,7 +299,7 @@ async def test_handle_avatar_interaction_ack_follows_prompt_result(delivered, ex
         "intensity": "normal",
     })
 
-    assert event_log[0][0] == "prompt"
+    assert event_log[0][0:2] == ("prompt", "response")
     assert event_log[1] == (
         "ack",
         "int-001",

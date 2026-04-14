@@ -687,7 +687,7 @@
         }
 
         var touchZone = String(payload.touchZone || payload.touch_zone || '').trim().toLowerCase();
-        if (AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES.indexOf(touchZone) !== -1) {
+        if (toolId !== 'lollipop' && AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES.indexOf(touchZone) !== -1) {
             normalized.touch_zone = touchZone;
         }
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import time
 from typing import Optional, Callable, Dict, Any, Awaitable
 from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
@@ -12,6 +13,14 @@ from utils.token_tracker import set_call_type
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+_NONVERBAL_DIRECTIVE_PATTERN = re.compile(r"\[play_music:[^\]]*(?:\]|$)", re.IGNORECASE)
+
+
+def _strip_nonverbal_directives(text: str) -> str:
+    if not text:
+        return ""
+    return _NONVERBAL_DIRECTIVE_PATTERN.sub("", text)
 
 class OmniOfflineClient:
     """
@@ -649,13 +658,20 @@ class OmniOfflineClient:
         if instructions and instructions.strip():
             self._conversation_history.append(HumanMessage(content=instructions))
     
-    async def prompt_ephemeral(self, instruction: str, *, completion_mode: str = "proactive") -> bool:
+    async def prompt_ephemeral(
+        self,
+        instruction: str,
+        *,
+        completion_mode: str = "proactive",
+        persist_response: bool = True,
+    ) -> bool:
         """Send a fire-and-forget instruction to the LLM and stream the response.
 
         The *instruction* (typically wrapped in ``======...======`` delimiters)
         is appended as a temporary HumanMessage for this single LLM call
-        but is **not** persisted to ``_conversation_history``.  Only the
-        AI's natural-language response (AIMessage) is kept in history.
+        but is **not** persisted to ``_conversation_history``.  The
+        AI's natural-language response (AIMessage) is kept in history only
+        when ``persist_response`` is True.
 
         This is the correct channel for agent task notifications, greeting
         nudges, and any scenario where the AI should respond to a stage
@@ -678,7 +694,8 @@ class OmniOfflineClient:
           regular user-visible completion path while still keeping the
           injected instruction itself ephemeral.
 
-        Returns True if any text was generated, False if aborted or empty.
+        Returns True if any user-visible text was generated, False if aborted
+        or only nonverbal directives were emitted.
         """
         if not instruction or not instruction.strip():
             return False
@@ -767,8 +784,9 @@ class OmniOfflineClient:
             self._is_responding = False
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
-            content_committed = bool(assistant_message)
-            if assistant_message:
+            committed_text = _strip_nonverbal_directives(assistant_message).strip()
+            content_committed = bool(committed_text)
+            if content_committed and persist_response:
                 self._conversation_history.append(AIMessage(content=assistant_message))
             if completion_mode == "response":
                 if self.on_response_done:
@@ -780,7 +798,7 @@ class OmniOfflineClient:
                 elif self.on_response_done:
                     await self.on_response_done()
 
-        return bool(assistant_message)
+        return content_committed
 
     async def cancel_response(self) -> None:
         """Cancel the current response if possible"""

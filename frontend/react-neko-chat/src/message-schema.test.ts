@@ -125,6 +125,25 @@ describe('message-schema', () => {
     expect(() => props.onAvatarInteraction?.(invalidPayload as never)).toThrow(ZodError);
   });
 
+  it('rejects lollipop payloads with touchZone', () => {
+    const onAvatarInteraction = vi.fn();
+    const props = parseChatWindowProps({ onAvatarInteraction });
+    const invalidPayload = {
+      interactionId: 'avatar-int-5b',
+      toolId: 'lollipop',
+      actionId: 'offer',
+      target: 'avatar',
+      pointer: {
+        clientX: 10,
+        clientY: 20,
+      },
+      touchZone: 'face',
+      timestamp: Date.now(),
+    } as unknown;
+
+    expect(() => props.onAvatarInteraction?.(invalidPayload as never)).toThrow(ZodError);
+  });
+
   it('rejects fist payloads with hammer-only easterEgg', () => {
     const onAvatarInteraction = vi.fn();
     const props = parseChatWindowProps({ onAvatarInteraction });
