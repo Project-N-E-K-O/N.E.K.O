@@ -215,6 +215,511 @@
     window.__nekoMirrorChatAppend = mirrorHostAppend;
     window.__nekoMirrorChatUpdate = mirrorHostUpdate;
 
+    // --- 跨窗口 player bar 镜像 ---
+    // 继承 PR #780 "leader 独占 audio" 的设计：只有一个窗口持有 APlayer 实例
+    // (localPlayer 非空即为 owner)，其他窗口通过 'neko_music_bar' 广播接收
+    // leader 的 track/paused/currentTime/duration/volume，本地只渲染 DOM 不挂
+    // <audio>，避免 #780 修过的"两首同响"竞态重现。
+    //
+    // follower 的 play/pause/volume/seek/close 通过同一 channel 发 ctrl 命令
+    // 回 leader，由 leader 操作真正的 APlayer；这样 isMusicPlaying()、
+    // is_playing_music 等 proactive 拦截输入始终指向 leader 真实状态，拦截语义
+    // 不变。ctrl 'close' 还会触发 leader 的 destroyMusicPlayer，leader 随即
+    // 广播 destroyed 让所有 follower 一起摘掉 bar。
+    const MUSIC_BAR_CHANNEL_NAME = 'neko_music_bar';
+    let musicBarChannel = null;
+    let mirrorBarTrackSig = null; // follower 本地缓存 track 签名，用于判断是否切歌
+    let mirrorBarDestroyTimer = null;
+
+    const isBarOwner = () => !!localPlayer;
+
+    const broadcastBarState = (patch) => {
+        if (!musicBarChannel) return;
+        try {
+            musicBarChannel.postMessage(Object.assign({
+                type: 'state',
+                sender: MUSIC_COORD_SENDER_ID,
+                ts: Date.now()
+            }, patch));
+        } catch (_) { /* ignore */ }
+    };
+
+    const broadcastBarDestroyed = (fullTeardown) => {
+        if (!musicBarChannel) return;
+        try {
+            musicBarChannel.postMessage({
+                type: 'destroyed',
+                sender: MUSIC_COORD_SENDER_ID,
+                ts: Date.now(),
+                fullTeardown: !!fullTeardown
+            });
+        } catch (_) { /* ignore */ }
+    };
+
+    const broadcastBarCtrl = (action, value) => {
+        if (!musicBarChannel) return;
+        try {
+            musicBarChannel.postMessage({
+                type: 'ctrl',
+                sender: MUSIC_COORD_SENDER_ID,
+                ts: Date.now(),
+                action: action,
+                value: value
+            });
+        } catch (_) { /* ignore */ }
+    };
+
+    const computeCurrentBarState = () => {
+        if (!localPlayer) return null;
+        const audio = localPlayer.audio;
+        return {
+            track: currentPlayingTrack ? {
+                name: currentPlayingTrack.name,
+                artist: currentPlayingTrack.artist,
+                cover: currentPlayingTrack.cover,
+                url: currentPlayingTrack.url
+            } : null,
+            paused: audio ? !!audio.paused : true,
+            currentTime: audio ? (audio.currentTime || 0) : 0,
+            duration: audio && isFinite(audio.duration) ? (audio.duration || 0) : 0,
+            volume: (typeof localPlayer.volume === 'function') ? (localPlayer.volume() || 0) : 0,
+            loadError: !!localPlayer._loadError
+        };
+    };
+
+    const emitBarState = () => {
+        const state = computeCurrentBarState();
+        if (!state) return;
+        broadcastBarState(state);
+    };
+
+    // timeupdate 会以 ~4Hz 触发，限速到 500ms 一条，避免 IPC 噪声
+    let lastBarTickTs = 0;
+    const emitBarStateThrottled = (minIntervalMs) => {
+        const now = Date.now();
+        const gap = typeof minIntervalMs === 'number' ? minIntervalMs : 500;
+        if (now - lastBarTickTs < gap) return;
+        lastBarTickTs = now;
+        emitBarState();
+    };
+
+    // track 尚未进 APlayer（executePlay 已写 currentPlayingTrack 但 localPlayer
+    // 还在 await 库加载）阶段，也给 follower 一个先期占位状态，免得它先接到
+    // ended 再接到新歌的 state 空窗。
+    const emitBarInitialState = (trackInfo) => {
+        if (!trackInfo) return;
+        broadcastBarState({
+            track: {
+                name: trackInfo.name,
+                artist: trackInfo.artist,
+                cover: trackInfo.cover,
+                url: trackInfo.url
+            },
+            paused: true,
+            currentTime: 0,
+            duration: 0,
+            volume: MUSIC_CONFIG.defaultVolume,
+            loadError: false,
+            initial: true
+        });
+    };
+
+    const bindMirrorBarControls = (musicBar) => {
+        const apBtn = musicBar.querySelector('.music-bar-play');
+        const closeBtn = musicBar.querySelector('.music-bar-close');
+        const volumeContainer = musicBar.querySelector('.music-bar-volume-container');
+        const volumeBtn = musicBar.querySelector('.music-bar-volume-btn');
+        const volumeSliderWrapper = musicBar.querySelector('.music-bar-volume-slider-wrapper');
+        const volumeSlider = musicBar.querySelector('.music-bar-volume-slider');
+        const volumeFill = musicBar.querySelector('.music-bar-volume-slider-fill');
+        const volumeHandle = musicBar.querySelector('.music-bar-volume-slider-handle');
+        const progressContainer = musicBar.querySelector('.music-bar-progress-container');
+        const progressFill = musicBar.querySelector('.music-bar-progress-fill');
+        const timeCurrent = musicBar.querySelector('.music-bar-time-current');
+
+        if (apBtn) apBtn.onclick = (e) => { e.preventDefault(); broadcastBarCtrl('toggle'); };
+        if (closeBtn) closeBtn.onclick = (e) => { e.preventDefault(); broadcastBarCtrl('close'); };
+
+        if (volumeBtn) volumeBtn.onclick = (e) => {
+            e.preventDefault(); e.stopPropagation();
+            if (volumeContainer) volumeContainer.classList.toggle('expanded');
+        };
+
+        if (volumeSliderWrapper && volumeSlider) {
+            let vDragging = false;
+            const applyVolumeUI = (per) => {
+                if (volumeFill) volumeFill.style.height = (per * 100) + '%';
+                if (volumeHandle) volumeHandle.style.bottom = (per * 100) + '%';
+                if (volumeBtn) {
+                    if (per === 0) volumeBtn.textContent = '🔇';
+                    else if (per < 0.5) volumeBtn.textContent = '🔉';
+                    else volumeBtn.textContent = '🔊';
+                }
+            };
+            const adjustVolume = (clientY) => {
+                const rect = volumeSlider.getBoundingClientRect();
+                if (!rect.height) return;
+                const y = rect.bottom - clientY;
+                const per = Math.max(0, Math.min(y, rect.height)) / rect.height;
+                // 本地立即预览 + ctrl 转给 leader
+                applyVolumeUI(per);
+                broadcastBarCtrl('volume', per);
+            };
+            const onMove = (e) => {
+                if (!vDragging) return;
+                const y = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : null);
+                if (y !== null) adjustVolume(y);
+            };
+            const onEnd = () => {
+                vDragging = false;
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onEnd);
+                window.removeEventListener('touchmove', onMove);
+                window.removeEventListener('touchend', onEnd);
+                window.removeEventListener('touchcancel', onEnd);
+            };
+            volumeSliderWrapper.onmousedown = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                vDragging = true;
+                adjustVolume(e.clientY);
+                window.addEventListener('mousemove', onMove);
+                window.addEventListener('mouseup', onEnd);
+            };
+            volumeSliderWrapper.ontouchstart = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                vDragging = true;
+                if (e.touches && e.touches[0]) adjustVolume(e.touches[0].clientY);
+                window.addEventListener('touchmove', onMove);
+                window.addEventListener('touchend', onEnd);
+                window.addEventListener('touchcancel', onEnd);
+            };
+        }
+
+        if (progressContainer) {
+            let pDragging = false;
+            let lastPer = 0;
+            const moveProgress = (clientX) => {
+                const rect = progressContainer.getBoundingClientRect();
+                if (!rect.width) return;
+                const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+                lastPer = x / rect.width;
+                if (progressFill) progressFill.style.width = (lastPer * 100) + '%';
+                // current time 只能估算（follower 不持有 duration）；leader 广播的
+                // state 会在 seek 成功后覆盖回来，这里不强行 formatTime 避免假信号
+                if (timeCurrent && mirrorBarLastState && mirrorBarLastState.duration) {
+                    timeCurrent.textContent = formatTime(lastPer * mirrorBarLastState.duration);
+                }
+            };
+            const onMove = (e) => {
+                if (!pDragging) return;
+                const x = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : null);
+                if (x !== null) moveProgress(x);
+            };
+            const onEnd = () => {
+                if (!pDragging) return;
+                pDragging = false;
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onEnd);
+                window.removeEventListener('touchmove', onMove);
+                window.removeEventListener('touchend', onEnd);
+                broadcastBarCtrl('seekPercent', lastPer);
+            };
+            progressContainer.onmousedown = (e) => {
+                pDragging = true; moveProgress(e.clientX);
+                window.addEventListener('mousemove', onMove);
+                window.addEventListener('mouseup', onEnd);
+                window.addEventListener('touchmove', onMove);
+                window.addEventListener('touchend', onEnd);
+            };
+            progressContainer.ontouchstart = (e) => {
+                pDragging = true;
+                if (e.touches && e.touches[0]) moveProgress(e.touches[0].clientX);
+                window.addEventListener('mousemove', onMove);
+                window.addEventListener('mouseup', onEnd);
+                window.addEventListener('touchmove', onMove);
+                window.addEventListener('touchend', onEnd);
+            };
+        }
+
+        if (volumeContainer) {
+            const closeOnOutside = (e) => {
+                if (volumeContainer.classList.contains('expanded') && !volumeContainer.contains(e.target)) {
+                    volumeContainer.classList.remove('expanded');
+                }
+            };
+            document.addEventListener('mousedown', closeOnOutside);
+            // 清理：destroyMirrorBar 时会整个删 DOM，监听随元素 GC 自然失效
+            // 但 document 级的监听不会自己清，标记到 DOM 上由 teardown 统一清
+            musicBar.__mirrorOutsideClickHandler = closeOnOutside;
+        }
+    };
+
+    let mirrorBarLastState = null; // 供 seek UI 计算 currentTime 显示
+
+    const renderMirrorBar = (state) => {
+        if (!state) return;
+        if (mirrorBarDestroyTimer) { clearTimeout(mirrorBarDestroyTimer); mirrorBarDestroyTimer = null; }
+        mirrorBarLastState = state;
+
+        const track = state.track || {};
+        const hasCover = track.cover && track.cover.length > 0 && isSafeUrl(track.cover);
+
+        let musicBar = document.getElementById(MUSIC_CONFIG.dom.barId);
+        const firstRender = !musicBar;
+
+        // 已存在但属于本窗口的 owner bar（非 mirror）：说明 leader 是自己，不应覆盖
+        if (musicBar && musicBar.dataset.mirror !== 'true') return;
+
+        if (firstRender) {
+            let mountTarget = document.getElementById('music-player-mount');
+            let insertBeforeEl = null;
+            if (!mountTarget) {
+                mountTarget = document.getElementById(MUSIC_CONFIG.dom.containerId);
+                insertBeforeEl = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
+            }
+            if (!mountTarget) return;
+
+            musicBar = document.createElement('div');
+            musicBar.id = MUSIC_CONFIG.dom.barId;
+            musicBar.className = 'music-player-bar';
+            musicBar.dataset.mirror = 'true';
+            if (insertBeforeEl) mountTarget.insertBefore(musicBar, insertBeforeEl);
+            else mountTarget.appendChild(musicBar);
+
+            const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
+            musicBar.style.setProperty('--dynamic-random-color', randomColor);
+            musicBar.style.setProperty('--dynamic-primary-color', MUSIC_CONFIG.primaryColor);
+            musicBar.style.setProperty('--dynamic-secondary-color', MUSIC_CONFIG.secondaryColor);
+
+            musicBar.innerHTML = `
+                <div class="music-bar-cover">
+                    <img>
+                    <span class="music-bar-fallback">🎵</span>
+                </div>
+                <div class="music-bar-info">
+                    <div class="music-bar-title-wrap">
+                        <div class="music-bar-title-track">
+                            <span class="music-bar-title-seg music-bar-title-seg-primary"></span><span class="music-bar-title-seg music-bar-title-seg-dup" aria-hidden="true"></span>
+                        </div>
+                    </div>
+                    <div class="music-bar-progress-container">
+                        <div class="music-bar-progress-fill"></div>
+                    </div>
+                    <div class="music-bar-time">
+                        <span class="music-bar-time-current">00:00</span>
+                        <span class="music-bar-time-total">00:00</span>
+                    </div>
+                    <div class="music-bar-artist"></div>
+                </div>
+                <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
+                <div class="music-bar-volume-container">
+                    <button type="button" class="music-bar-volume-btn" aria-label="Volume" title="Volume">🔊</button>
+                    <div class="music-bar-volume-slider-wrapper">
+                        <div class="music-bar-volume-slider">
+                            <div class="music-bar-volume-slider-fill"></div>
+                            <div class="music-bar-volume-slider-handle"></div>
+                        </div>
+                    </div>
+                </div>
+                <button type="button" class="music-bar-close" aria-label="Close" title="Close">✕</button>
+            `;
+            ensureTitleMarqueeObserver(musicBar);
+            bindMirrorBarControls(musicBar);
+        } else {
+            musicBar.classList.remove('fading-out');
+        }
+
+        // 切歌 / 首次：刷新标题 + 歌手 + 封面
+        const trackSig = (track.url || '') + '|' + (track.name || '') + '|' + (track.artist || '');
+        if (firstRender || trackSig !== mirrorBarTrackSig) {
+            setMusicBarTitle(musicBar, track.name || '');
+            const artistEl = musicBar.querySelector('.music-bar-artist');
+            if (artistEl) artistEl.textContent = track.artist || '未知艺术家';
+            const coverImg = musicBar.querySelector('img');
+            const fallbackIcon = musicBar.querySelector('.music-bar-fallback');
+            if (coverImg && fallbackIcon) {
+                if (hasCover) {
+                    coverImg.src = track.cover;
+                    coverImg.style.display = 'block';
+                    fallbackIcon.style.display = 'none';
+                    coverImg.onerror = function () {
+                        this.style.display = 'none';
+                        fallbackIcon.style.display = 'flex';
+                    };
+                } else {
+                    coverImg.style.display = 'none';
+                    fallbackIcon.style.display = 'flex';
+                }
+            }
+            mirrorBarTrackSig = trackSig;
+        }
+
+        // 进度 / 时间
+        const progressFill = musicBar.querySelector('.music-bar-progress-fill');
+        const timeCurrent = musicBar.querySelector('.music-bar-time-current');
+        const timeTotal = musicBar.querySelector('.music-bar-time-total');
+        const cur = state.currentTime || 0;
+        const dur = state.duration || 0;
+        if (dur > 0) {
+            if (progressFill) progressFill.style.width = Math.max(0, Math.min(100, (cur / dur) * 100)) + '%';
+            if (timeCurrent) timeCurrent.textContent = formatTime(cur);
+            if (timeTotal) timeTotal.textContent = formatTime(dur);
+        } else {
+            if (progressFill) progressFill.style.width = '0%';
+            if (timeCurrent) timeCurrent.textContent = '00:00';
+            if (timeTotal) timeTotal.textContent = '00:00';
+        }
+
+        // 播放按钮图标
+        const apBtn = musicBar.querySelector('.music-bar-play');
+        if (apBtn) {
+            const playing = !state.paused && !state.loadError;
+            const icon = playing ? '⏸' : '▶';
+            const tText = window.t ? window.t(playing ? 'music.pause' : 'music.play', playing ? 'Pause' : 'Play') : (playing ? 'Pause' : 'Play');
+            apBtn.textContent = icon;
+            apBtn.setAttribute('title', tText);
+            apBtn.setAttribute('aria-label', tText);
+        }
+
+        // 音量 UI
+        if (typeof state.volume === 'number') {
+            const volumeFill = musicBar.querySelector('.music-bar-volume-slider-fill');
+            const volumeHandle = musicBar.querySelector('.music-bar-volume-slider-handle');
+            const volumeBtn = musicBar.querySelector('.music-bar-volume-btn');
+            const per = state.volume * 100;
+            if (volumeFill) volumeFill.style.height = per + '%';
+            if (volumeHandle) volumeHandle.style.bottom = per + '%';
+            if (volumeBtn) {
+                if (state.volume === 0) volumeBtn.textContent = '🔇';
+                else if (state.volume < 0.5) volumeBtn.textContent = '🔉';
+                else volumeBtn.textContent = '🔊';
+            }
+        }
+    };
+
+    const teardownMirrorBar = (fullTeardown) => {
+        const musicBar = document.getElementById(MUSIC_CONFIG.dom.barId);
+        if (!musicBar || musicBar.dataset.mirror !== 'true') return;
+        if (mirrorBarDestroyTimer) { clearTimeout(mirrorBarDestroyTimer); mirrorBarDestroyTimer = null; }
+
+        // 解绑 document 级 outside-click 监听
+        if (musicBar.__mirrorOutsideClickHandler) {
+            document.removeEventListener('mousedown', musicBar.__mirrorOutsideClickHandler);
+            musicBar.__mirrorOutsideClickHandler = null;
+        }
+
+        const removeNow = () => {
+            if (musicBar.parentNode) musicBar.remove();
+            mirrorBarTrackSig = null;
+            mirrorBarLastState = null;
+            mirrorBarDestroyTimer = null;
+        };
+        if (fullTeardown) {
+            musicBar.classList.add('fading-out');
+            mirrorBarDestroyTimer = setTimeout(removeNow, 300);
+        } else {
+            removeNow();
+        }
+    };
+
+    // leader 处理 follower 发来的控制命令。所有动作都只作用于 localPlayer，
+    // 随后由 APlayer 事件回调自然触发一次 emitBarState() 把真实状态广播回来。
+    const handleRemoteBarCtrl = (action, value) => {
+        if (!localPlayer) return;
+        try {
+            if (typeof window.setMusicUserDriven === 'function' &&
+                (action === 'toggle' || action === 'play' || action === 'pause' || action === 'close' || action === 'seekPercent')) {
+                window.setMusicUserDriven();
+            }
+            switch (action) {
+                case 'play':
+                    if (localPlayer.audio && localPlayer.audio.ended) localPlayer.seek(0);
+                    localPlayer.play();
+                    break;
+                case 'pause':
+                    localPlayer.pause();
+                    break;
+                case 'toggle':
+                    if (autoDestroyTimer) { clearTimeout(autoDestroyTimer); autoDestroyTimer = null; }
+                    if (localPlayer._loadError) { destroyMusicPlayer(true, true, true); return; }
+                    if (localPlayer.audio && localPlayer.audio.ended) localPlayer.seek(0);
+                    localPlayer.toggle();
+                    break;
+                case 'volume':
+                    if (typeof value === 'number') {
+                        localPlayer.volume(Math.max(0, Math.min(1, value)));
+                    }
+                    break;
+                case 'seekPercent':
+                    if (localPlayer.audio && isFinite(localPlayer.audio.duration) && typeof value === 'number') {
+                        localPlayer.seek(value * localPlayer.audio.duration);
+                    }
+                    break;
+                case 'close': {
+                    if (localPlayer.audio) {
+                        const cur = localPlayer.audio.currentTime || 0;
+                        accumulatedPlaySeconds += (cur - lastPlayPosition);
+                    }
+                    const playedMs = accumulatedPlaySeconds * 1000;
+                    if (playedMs > 0 && playedMs < SKIP_CONFIG.skipThresholdMs) {
+                        recordMusicSkip();
+                    } else if (playedMs >= SKIP_CONFIG.skipThresholdMs) {
+                        resetSkipCounter();
+                    }
+                    accumulatedPlaySeconds = 0;
+                    lastPlayPosition = 0;
+                    destroyMusicPlayer(true, true, true);
+                    break;
+                }
+                default:
+                    /* unknown action, ignore */
+                    break;
+            }
+        } catch (e) {
+            console.warn('[Music UI] 处理 bar 远程控制失败:', e);
+        }
+    };
+
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            musicBarChannel = new BroadcastChannel(MUSIC_BAR_CHANNEL_NAME);
+            musicBarChannel.onmessage = (event) => {
+                const data = event && event.data;
+                if (!data || typeof data !== 'object') return;
+                if (!data.sender || data.sender === MUSIC_COORD_SENDER_ID) return;
+                try {
+                    if (data.type === 'state') {
+                        // 本地是 owner 时忽略来自别人的 state；既防止 race 下
+                        // 另一个窗口的旧 state 覆盖掉自己真实 audio，也让
+                        // leader 切换瞬间不会有两份 bar 互相抢。
+                        if (isBarOwner()) return;
+                        renderMirrorBar(data);
+                    } else if (data.type === 'destroyed') {
+                        if (isBarOwner()) return;
+                        teardownMirrorBar(!!data.fullTeardown);
+                    } else if (data.type === 'ctrl') {
+                        // 只有 owner 响应控制命令
+                        if (isBarOwner()) handleRemoteBarCtrl(data.action, data.value);
+                    }
+                } catch (e) {
+                    console.warn('[Music UI] bar mirror 处理失败:', e);
+                }
+            };
+            window.addEventListener('beforeunload', () => {
+                try {
+                    if (musicBarChannel) {
+                        // owner 退出时顺手通告一声 destroyed，follower 不用等 TTL
+                        if (isBarOwner()) broadcastBarDestroyed(true);
+                        musicBarChannel.close();
+                        musicBarChannel = null;
+                    }
+                } catch (_) { /* ignore */ }
+            });
+        }
+    } catch (e) {
+        console.log('[Music UI] music bar channel 不可用:', e);
+    }
+
     // --- 更新 React 聊天窗口音乐卡片 ---
     const updateMusicCard = (state, track) => {
         const host = window.reactChatWindowHost;
@@ -571,6 +1076,10 @@
         // 跨窗口协调：通知其他窗口本地音乐已停
         stopMusicHeartbeat();
         broadcastMusicCoord('music_ended');
+
+        // bar 镜像：让 follower 同步摘掉镜像 bar。fullTeardown 传下去
+        // 是为了 follower 能走淡出动画而不是硬删。
+        if (removeDOM) broadcastBarDestroyed(fullTeardown);
     };
 
     // --- 查找并替换整个 loadAPlayerLibrary 函数 ---
@@ -653,6 +1162,20 @@
         if (domRemovalTimer) {
             clearTimeout(domRemovalTimer);
             domRemovalTimer = null;
+        }
+
+        // 本窗口从 follower 切成 owner：之前由别的 leader 推过来的镜像 bar
+        // 上挂的是"按钮发 ctrl"的监听，不能复用。硬清一次让下面 executePlay
+        // 新建一个绑本地 APlayer 的 bar，避免旧的 outside-click / drag 监听泄露。
+        const existingBar = document.getElementById(MUSIC_CONFIG.dom.barId);
+        if (existingBar && existingBar.dataset.mirror === 'true') {
+            if (existingBar.__mirrorOutsideClickHandler) {
+                document.removeEventListener('mousedown', existingBar.__mirrorOutsideClickHandler);
+                existingBar.__mirrorOutsideClickHandler = null;
+            }
+            existingBar.remove();
+            mirrorBarTrackSig = null;
+            mirrorBarLastState = null;
         }
 
         const hasCover = trackInfo.cover && trackInfo.cover.length > 0 && isSafeUrl(trackInfo.cover);
@@ -738,6 +1261,9 @@
 
         // --- 2. 原地更新 UI 文本/封面 (始终执行) ---
         currentPlayingTrack = trackInfo;
+        // 广播一次占位 state —— APlayer 还在初始化/切曲，但 follower 现在
+        // 就能把 bar 刷新到新 track，避免旧歌信息停留或 bar 空白。
+        emitBarInitialState(trackInfo);
         setMusicBarTitle(musicBar, trackInfo.name || '');
         musicBar.querySelector('.music-bar-artist').textContent = trackInfo.artist || '未知艺术家';
 
@@ -878,6 +1404,7 @@
                     // 跨窗口协调：本地真正开始放歌后通知其他窗口
                     broadcastMusicCoord('music_started');
                     startMusicHeartbeat();
+                    emitBarState();
                 });
                 boundPlayer.on('pause', () => {
                     updatePlayBtnState(false);
@@ -890,6 +1417,7 @@
                         if (latestMusicRequestToken === tokenAtEvent) destroyMusicPlayer(true, true, true);
                     }, MUSIC_CONFIG.timeouts.paused);
                     updateMusicCard('paused', currentPlayingTrack);
+                    emitBarState();
                 });
                 boundPlayer.on('ended', () => {
                     updatePlayBtnState(false);
@@ -902,6 +1430,7 @@
                         if (latestMusicRequestToken === tokenAtEvent) destroyMusicPlayer(true, true, true);
                     }, MUSIC_CONFIG.timeouts.ended);
                     updateMusicCard('ended', currentPlayingTrack);
+                    emitBarState();
                 });
                 boundPlayer.on('error', (err) => {
                     if (boundPlayer._destroying) return;
@@ -931,6 +1460,7 @@
                         }, 3000);
 
                         updateMusicCard('error', currentPlayingTrack);
+                        emitBarState();
                     }, 200);
                 });
 
@@ -1065,6 +1595,7 @@
                 // 同步 APlayer 的音量变化
                 boundPlayer.on('volumechange', () => {
                     updateVolumeUI(boundPlayer.volume());
+                    emitBarState();
                 });
 
                 // 进度更新与拖拽 (保持原有逻辑)
@@ -1078,6 +1609,8 @@
                         if (timeCurrent) timeCurrent.textContent = formatTime(cur);
                         if (timeTotal) timeTotal.textContent = formatTime(dur);
                     }
+                    // timeupdate 一秒 ~4 次，限速到 500ms 一条状态镜像
+                    emitBarStateThrottled(500);
                 });
 
                 const handleProgressMove = (e) => {
