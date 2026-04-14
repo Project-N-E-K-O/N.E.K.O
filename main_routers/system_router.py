@@ -3187,6 +3187,9 @@ async def proactive_chat(request: Request):
         full_text = ""
         pipe_count = 0
         aborted = False
+        # 滚动尾部缓冲区：保留最近 5 个字符以检测跨 chunk 的 "[PASS]"（长度 6）
+        pass_probe = ""
+        _PASS_PROBE_LEN = 5  # len("[PASS]") - 1
         
         try:
             async with asyncio.timeout(25.0):
@@ -3226,20 +3229,22 @@ async def proactive_chat(request: Request):
                                 await mgr.feed_tts_chunk(cleaned)
                             continue
                         
-                        # --- 在线拦截: [PASS] ---
-                        if '[PASS]' in content.upper():
-                            # 部分模型会把 [PASS] 嵌在文本中输出
-                            content = re.sub(r'\[PASS\]', '', content, flags=re.IGNORECASE).strip()
-                            if content:
-                                full_text += content
-                                await mgr.feed_tts_chunk(content)
+                        # --- 在线拦截: [PASS]（含跨 chunk 检测）---
+                        combined = pass_probe + content
+                        if '[PASS]' in combined.upper():
                             print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
                             aborted = True
                             break
+                        # 将本次 chunk 的尾部保留到 pass_probe，可安全输出的部分为去掉尾部的前段
+                        safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
+                        pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
+                        
+                        if not safe_text:
+                            continue
                         
                         # --- 在线拦截: fence ---
                         fence_hit = False
-                        for ch in content:
+                        for ch in safe_text:
                             if ch in ('|', '｜'):
                                 pipe_count += 1
                                 if pipe_count >= 2:
@@ -3251,17 +3256,26 @@ async def proactive_chat(request: Request):
                             break
                         
                         # --- 在线拦截: 长度 ---
-                        if len(full_text) + len(content) > 400:
-                            print(f"[{lanlan_name}] Phase 2 流式长度超限 ({len(full_text)+len(content)} > 400)，abort")
+                        if len(full_text) + len(safe_text) > 400:
+                            print(f"[{lanlan_name}] Phase 2 流式长度超限 ({len(full_text)+len(safe_text)} > 400)，abort")
                             aborted = True
                             break
                         
-                        full_text += content
-                        await mgr.feed_tts_chunk(content)
+                        full_text += safe_text
+                        await mgr.feed_tts_chunk(safe_text)
         
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning(f"[{lanlan_name}] Phase 2 流式调用异常: {type(e).__name__}: {e}")
             aborted = True
+        
+        # --- 流结束后：flush pass_probe 残留 ---
+        if pass_probe and not aborted:
+            if '[PASS]' in pass_probe.upper():
+                aborted = True
+            else:
+                full_text += pass_probe
+                await mgr.feed_tts_chunk(pass_probe)
+        pass_probe = ""
         
         # --- 流结束后 buffer 未 flush 的兜底处理 ---
         if not tag_parsed and buffer and not aborted:
