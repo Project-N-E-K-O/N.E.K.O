@@ -453,7 +453,7 @@ uv run python agent_server.py
 
 ```
 N.E.K.O/
-├── 📁 .agent/                   # 🤖 AIコーディングアシスタントのルールとスキル（Claude Code が自動読み込み、他のツールは手動インポート可）
+├── 📁 .agent/                   # 🤖 AIコーディングアシスタントのルールとスキル（Google Antigravity 規約）
 ├── 📁 brain/                    # 🧠 エージェントモジュール
 │   ├── computer_use.py          # PC操作
 │   ├── browser_use_adapter.py   # ブラウザ自動化
@@ -490,7 +490,7 @@ N.E.K.O/
 └── memory_server.py             # 🧠 記憶サーバー
 ```
 
-> **AI支援開発**：`.agent/` ディレクトリには、AIコーディングアシスタント（Claude Code、Cursor など）向けの開発ルールとスキルセットが含まれています。これらのツールをサポートするAIエージェントは、自動的にルールを読み込んで従います。詳細は[開発者ドキュメント](https://project-neko.online/contributing/ai-assisted-dev)をご覧ください。
+> **AI支援開発**：`.agent/` ディレクトリは Google Antigravity オープン規約に従い、プロジェクトの開発ルールとスキルセットを格納しています。Antigravity のみ自動読み込み、他のAIツール（Claude Code 含む）は手動インポートが必要です。[適応ガイド](https://project-neko.online/contributing/ai-assisted-dev)を参照してください。
 
 **データフロー**
 

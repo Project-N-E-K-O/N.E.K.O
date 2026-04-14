@@ -461,7 +461,7 @@ Visit `http://localhost:48911/api_key` to configure directly through the Web int
 
 ```
 N.E.K.O/
-├── 📁 .agent/                   # 🤖 AI coding assistant rules & skills (auto-loaded by Claude Code; other tools can import manually)
+├── 📁 .agent/                   # 🤖 AI coding assistant rules & skills (Google Antigravity convention)
 ├── 📁 brain/                    # 🧠 Agent modules
 │   ├── computer_use.py          # Computer control
 │   ├── browser_use_adapter.py   # Browser automation
@@ -498,7 +498,7 @@ N.E.K.O/
 └── memory_server.py             # 🧠 Memory server
 ```
 
-> **AI-Assisted Development**: The `.agent/` directory contains development rules and skill sets for AI coding assistants (Claude Code, Cursor, etc.). AI agents that support these tools will automatically load and follow the rules within. See the [developer docs](https://project-neko.online/contributing/ai-assisted-dev) for details.
+> **AI-Assisted Development**: The `.agent/` directory follows the Google Antigravity open convention and contains the project's development rules and skill sets. Only Antigravity auto-reads it; all other AI tools (including Claude Code) need to import manually. See the [adaptation guide](https://project-neko.online/contributing/ai-assisted-dev).
 
 **Data Flow**
 

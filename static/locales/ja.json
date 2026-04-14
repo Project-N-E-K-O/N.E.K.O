@@ -1274,6 +1274,8 @@
         "prefixShouldBeEnglishLetterAndNumber": "接頭辞は英文字と数字である必要があります",
         "invalidApiKeyProvided": "無効なAPIキーが提供されました",
         "requestError": "リクエストエラー：{{error}}",
+        "serverNonJsonError": "サーバーが非JSONレスポンスを返しました (HTTP {{status}})：{{snippet}}",
+        "serverRouteNotFound": "APIエンドポイントが見つかりません (HTTP {{status}})。サーバーが正しくデプロイされ再起動されていることを確認してください。",
         "voiceIdSaveFailed": "voice_idの自動保存に失敗しました: {{error}}",
         "voiceIdSaved": "voice_idをキャラクターに自動保存しました",
         "pageWillRefresh": "新しいボイスを適用するためにページが自動更新されます",
@@ -1703,7 +1705,8 @@
     "subtitle": {
         "title": "リアルタイム字幕",
         "enable": "字幕翻訳",
-        "enableAriaLabel": "字幕翻訳の切り替え"
+        "enableAriaLabel": "字幕翻訳の切り替え",
+        "markdownPlaceholder": "[整形済みコンテンツ]"
     },
     "viewer": {
         "title": "ビューアー - Project N.E.K.O."
@@ -2827,7 +2830,7 @@
         "idleRestoreFailed": "待機アニメーションの復元に失敗しました",
         "btnNotFoundGiveUp": "ジュークボックスボタンが見つかりません、バインドを中止",
         "minimizeBtnNotFoundGiveUp": "最小化ボタンが見つかりません、監視を中止",
-        "noticeDance": "💃 ダンス機能は現在 MMD アバター読み込み時のみ利用可能です。今後さらに多くのインタラクションが追加される予定です",
+        "noticeDance": "💃 ダンス機能は現在 3D モデル（MMD / VRM）読み込み時のみ利用可能です。今後さらに多くのインタラクションが追加される予定です",
         "noticeMusic": "⚠️ 現在の楽曲はテスト用です。今後のバージョンで著作権楽曲は削除されますので、ご自身でインポートしてください",
         "manager": "マネージャー",
         "managerTitle": "マネージャー",
