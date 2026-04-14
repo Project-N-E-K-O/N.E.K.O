@@ -648,13 +648,15 @@ cancel()
 }
 ```
 
+其中 `signature` 仅表示“由后端 / 主进程使用仅服务端持有的 HMAC key 对 payload 生成的签名”。前端绝不能生成签名，也绝不能持有或推导出签名 key。
+
 补充要求：
 
-- token 必须具备单次消费语义。推荐在记录中增加 `consumed_at` / `used`，或等价的一次性 nonce 状态，并在恢复成功时原子标记为“已消费”
+- token 必须具备单次消费语义，但浏览器侧 Web Storage 不能提供可靠的“原子单次消费”保证。推荐在记录中增加 `consumed_at` / `used`，或等价的一次性 nonce 状态，并由后端 / 主进程 / 中央 authority 通过 compare-and-set 或事务更新来完成“检查并标记已消费”；前端只负责发起请求和展示结果
 - 恢复时必须校验来源绑定字段（至少 `source_page`，更推荐额外校验 `source_origin` / `source_id`）；若当前请求来源与 token 记录不一致，应拒绝恢复
-- 推荐加入 `token_version` 与 `signature`（例如 HMAC）校验，避免旧格式 token 或被篡改 payload 被重放
-- 消费流程建议固定为：读取 token → 原子检查 `expires_at` / `consumed_at` / `signature` / 来源绑定 → 校验通过后立即写入 `consumed_at` → 再恢复 `resume_scene`
-- 错误处理上，`expired / used / signature_invalid / source_mismatch` 都应直接拒绝恢复并清理本地 token；只有在“尚未写入 consumed 状态就发生存储或通信失败”时才允许重试，已消费 token 不应再次复用
+- 推荐加入 `token_version` 与 `signature`（例如 HMAC）校验，避免旧格式 token 或被篡改 payload 被重放；签名生成与校验只能由后端 / 主进程负责，HMAC key 只能保存在服务端边界内，前端不得持有 key material，也不得尝试客户端签名
+- 消费流程建议固定为：前端提交 token 给后端 / 主进程 → 后端 / 主进程在同一次 compare-and-set / 事务里检查 `expires_at` / `consumed_at` / `signature` / 来源绑定 / `token_version` → 校验通过后立即写入 `consumed_at` → 再返回允许恢复的结果，由前端继续恢复 `resume_scene`
+- 错误处理上，`expired / used / signature_invalid / source_mismatch` 都应直接拒绝恢复并清理本地 token；只有在“后端成功写入 `consumed_at` 之前就发生存储或通信失败”时才允许重试。前端本地存储只能用于暂存展示态或待提交数据，不能依赖它提供单次消费保证
 
 ---
 

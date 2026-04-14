@@ -164,6 +164,16 @@ type AvatarBoundsCacheEntry = {
   bounds: HostAvatarBounds;
 };
 
+type AvatarToolCacheState = {
+  loadedCursorImageCache: Map<string, Promise<HTMLImageElement>>;
+  compactCursorValueCache: Map<string, Promise<string>>;
+  avatarBoundsCacheTtlMs: number;
+  avatarBoundsCache: {
+    expiresAt: number;
+    entries: AvatarBoundsCacheEntry[];
+  };
+};
+
 type AvatarRangeHit = {
   bounds: HostAvatarBounds;
   touchZone: AvatarTouchZone;
@@ -188,17 +198,6 @@ type FloatingFistDrop = {
   rotation: number;
   scale: number;
   delayMs: number;
-};
-
-const loadedCursorImageCache = new Map<string, Promise<HTMLImageElement>>();
-const compactCursorValueCache = new Map<string, Promise<string>>();
-const avatarBoundsCacheTtlMs = 80;
-let avatarBoundsCache: {
-  expiresAt: number;
-  entries: AvatarBoundsCacheEntry[];
-} = {
-  expiresAt: 0,
-  entries: [],
 };
 
 function resolveToolImagePaths(item: ToolIconItem, variant: CursorVariant) {
@@ -242,8 +241,8 @@ function resolveMenuIconVisual(item: ToolIconItem, variant: CursorVariant) {
   };
 }
 
-function loadCursorImage(imagePath: string): Promise<HTMLImageElement> {
-  const cached = loadedCursorImageCache.get(imagePath);
+function loadCursorImage(imagePath: string, cacheState: AvatarToolCacheState): Promise<HTMLImageElement> {
+  const cached = cacheState.loadedCursorImageCache.get(imagePath);
   if (cached) return cached;
 
   const pending = new Promise<HTMLImageElement>((resolve, reject) => {
@@ -254,7 +253,7 @@ function loadCursorImage(imagePath: string): Promise<HTMLImageElement> {
     image.src = imagePath;
   });
 
-  loadedCursorImageCache.set(imagePath, pending);
+  cacheState.loadedCursorImageCache.set(imagePath, pending);
   return pending;
 }
 
@@ -262,7 +261,11 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-async function resolveCompactCursorValue(item: ToolIconItem, variant: CursorVariant): Promise<string> {
+async function resolveCompactCursorValue(
+  item: ToolIconItem,
+  variant: CursorVariant,
+  cacheState: AvatarToolCacheState,
+): Promise<string> {
   const { iconImagePath, cursorImagePath } = resolveToolImagePaths(item, variant);
   const cursorScale = item.menuIconScale ?? 1;
   const cacheKey = [
@@ -273,12 +276,12 @@ async function resolveCompactCursorValue(item: ToolIconItem, variant: CursorVari
     item.cursorHotspotY ?? 18,
   ].join('|');
 
-  const cached = compactCursorValueCache.get(cacheKey);
+  const cached = cacheState.compactCursorValueCache.get(cacheKey);
   if (cached) return cached;
 
   const pending = Promise.all([
-    loadCursorImage(iconImagePath),
-    loadCursorImage(cursorImagePath),
+    loadCursorImage(iconImagePath, cacheState),
+    loadCursorImage(cursorImagePath, cacheState),
   ]).then(([iconImage, cursorImage]) => {
     const boxSize = Math.max(32, Math.round(40 * cursorScale));
     const scale = Math.min(boxSize / iconImage.naturalWidth, boxSize / iconImage.naturalHeight);
@@ -306,7 +309,7 @@ async function resolveCompactCursorValue(item: ToolIconItem, variant: CursorVari
     return `url("${canvas.toDataURL('image/png')}") ${hotspotX} ${hotspotY}, auto`;
   }).catch(() => resolveCursorValue(item, variant));
 
-  compactCursorValueCache.set(cacheKey, pending);
+  cacheState.compactCursorValueCache.set(cacheKey, pending);
   return pending;
 }
 
@@ -364,9 +367,9 @@ function isPointInsideAvatarBounds(bounds: HostAvatarBounds, clientX: number, cl
   return normalizedX * normalizedX + normalizedY * normalizedY <= 1;
 }
 
-function getAvatarBoundsEntries(): AvatarBoundsCacheEntry[] {
+function getAvatarBoundsEntries(cacheState: AvatarToolCacheState): AvatarBoundsCacheEntry[] {
   const now = performance.now();
-  if (avatarBoundsCache.expiresAt <= now) {
+  if (cacheState.avatarBoundsCache.expiresAt <= now) {
     const hostWindow = window as Window & {
       mmdManager?: HostAvatarManager;
       vrmManager?: HostAvatarManager;
@@ -379,8 +382,8 @@ function getAvatarBoundsEntries(): AvatarBoundsCacheEntry[] {
       { containerId: 'live2d-container', manager: hostWindow.live2dManager },
     ];
 
-    avatarBoundsCache = {
-      expiresAt: now + avatarBoundsCacheTtlMs,
+    cacheState.avatarBoundsCache = {
+      expiresAt: now + cacheState.avatarBoundsCacheTtlMs,
       entries: candidates.flatMap(({ containerId, manager }) => {
         if (!manager?.currentModel || typeof manager.getModelScreenBounds !== 'function') {
           return [];
@@ -397,7 +400,7 @@ function getAvatarBoundsEntries(): AvatarBoundsCacheEntry[] {
     };
   }
 
-  return avatarBoundsCache.entries;
+  return cacheState.avatarBoundsCache.entries;
 }
 
 function classifyAvatarTouchZone(bounds: HostAvatarBounds, clientX: number, clientY: number): AvatarTouchZone {
@@ -420,8 +423,12 @@ function classifyAvatarTouchZone(bounds: HostAvatarBounds, clientX: number, clie
   return 'body';
 }
 
-function getAvatarRangeHit(clientX: number, clientY: number): AvatarRangeHit | null {
-  const matchedEntry = getAvatarBoundsEntries().find(({ bounds }) => (
+function getAvatarRangeHit(
+  clientX: number,
+  clientY: number,
+  cacheState: AvatarToolCacheState,
+): AvatarRangeHit | null {
+  const matchedEntry = getAvatarBoundsEntries(cacheState).find(({ bounds }) => (
     isPointInsideAvatarBounds(bounds, clientX, clientY)
   ));
   if (!matchedEntry) {
@@ -433,12 +440,16 @@ function getAvatarRangeHit(clientX: number, clientY: number): AvatarRangeHit | n
   };
 }
 
-function isPointerWithinAvatarRange(clientX: number, clientY: number): boolean {
-  return getAvatarRangeHit(clientX, clientY) !== null;
+function isPointerWithinAvatarRange(
+  clientX: number,
+  clientY: number,
+  cacheState: AvatarToolCacheState,
+): boolean {
+  return getAvatarRangeHit(clientX, clientY, cacheState) !== null;
 }
 
-function clearAvatarBoundsCache() {
-  avatarBoundsCache = {
+function clearAvatarBoundsCache(cacheState: AvatarToolCacheState) {
+  cacheState.avatarBoundsCache = {
     expiresAt: 0,
     entries: [],
   };
@@ -553,6 +564,15 @@ export default function App({
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
   const draftRef = useRef(draft);
   const avatarInteractionCallbackRef = useRef(onAvatarInteraction);
+  const avatarToolCacheState = useMemo<AvatarToolCacheState>(() => ({
+    loadedCursorImageCache: new Map<string, Promise<HTMLImageElement>>(),
+    compactCursorValueCache: new Map<string, Promise<string>>(),
+    avatarBoundsCacheTtlMs: 80,
+    avatarBoundsCache: {
+      expiresAt: 0,
+      entries: [],
+    },
+  }), []);
   const [floatingHearts, setFloatingHearts] = useState<FloatingHeart[]>([]);
   const [floatingFistDrops, setFloatingFistDrops] = useState<FloatingFistDrop[]>([]);
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
@@ -827,7 +847,7 @@ export default function App({
       if (isOverCompactCursorZoneAtPointer) {
         return;
       }
-      const avatarRangeHit = getAvatarRangeHit(event.clientX, event.clientY);
+      const avatarRangeHit = getAvatarRangeHit(event.clientX, event.clientY, avatarToolCacheState);
       const isOverAvatarAtPointer = avatarRangeHit !== null;
       setIsCursorOverAvatarRange(previousValue => (
         previousValue === isOverAvatarAtPointer ? previousValue : isOverAvatarAtPointer
@@ -972,7 +992,7 @@ export default function App({
     if (activeCursorToolId === 'hammer') return;
     clearHammerSwingAnimation();
     clearOutsideHammerResetTimer();
-  }, [activeCursorToolId]);
+  }, [activeCursorToolId, avatarToolCacheState]);
 
   useEffect(() => () => {
     clearHammerSwingAnimation();
@@ -993,7 +1013,7 @@ export default function App({
     let frameId = 0;
 
     const updateCursorRangeState = (clientX: number, clientY: number) => {
-      const nextValue = isPointerWithinAvatarRange(clientX, clientY);
+      const nextValue = isPointerWithinAvatarRange(clientX, clientY, avatarToolCacheState);
       setIsCursorOverAvatarRange(previousValue => (
         previousValue === nextValue ? previousValue : nextValue
       ));
@@ -1021,7 +1041,7 @@ export default function App({
     };
 
     const clearCursorRangeState = () => {
-      clearAvatarBoundsCache();
+      clearAvatarBoundsCache(avatarToolCacheState);
       latestPointerTargetRef.current = null;
       setIsCursorOverAvatarRange(false);
       setIsCursorOverCompactCursorZone(false);
@@ -1034,7 +1054,7 @@ export default function App({
       if (frameId) {
         window.cancelAnimationFrame(frameId);
       }
-      clearAvatarBoundsCache();
+      clearAvatarBoundsCache(avatarToolCacheState);
       window.removeEventListener('pointermove', handlePointerMove, true);
       window.removeEventListener('blur', clearCursorRangeState);
     };
@@ -1063,12 +1083,10 @@ export default function App({
       let cursorValue: string;
       if (shouldUseDesktopCursorOverlay) {
         cursorValue = 'none';
-      } else if ((selected.id === 'hammer' && hammerCursorOverlayActive) || avatarCursorOverlayActive) {
-        cursorValue = 'none';
       } else if (isCursorOverAvatarRange && !isCursorOverCompactCursorZone) {
         cursorValue = resolveCursorValue(selected, effectiveCursorVariant);
       } else {
-        cursorValue = await resolveCompactCursorValue(selected, effectiveCursorVariant);
+        cursorValue = await resolveCompactCursorValue(selected, effectiveCursorVariant, avatarToolCacheState);
       }
       if (cancelled) return;
       root.style.setProperty('--neko-chat-tool-cursor', cursorValue);
@@ -1079,12 +1097,12 @@ export default function App({
     return () => {
       cancelled = true;
     };
-  }, [activeCursorToolId, avatarCursorOverlayActive, effectiveCursorVariant, hammerCursorOverlayActive, isCursorOverAvatarRange, isCursorOverCompactCursorZone, shouldUseDesktopCursorOverlay]);
+  }, [activeCursorToolId, avatarToolCacheState, effectiveCursorVariant, isCursorOverAvatarRange, isCursorOverCompactCursorZone, shouldUseDesktopCursorOverlay]);
 
   useEffect(() => {
     if (!activeToolItem) return;
-    void resolveCompactCursorValue(activeToolItem, effectiveCursorVariant);
-  }, [activeToolItem, effectiveCursorVariant]);
+    void resolveCompactCursorValue(activeToolItem, effectiveCursorVariant, avatarToolCacheState);
+  }, [activeToolItem, avatarToolCacheState, effectiveCursorVariant]);
 
   useEffect(() => {
     if (!avatarCursorOverlayActive) return;
@@ -1382,7 +1400,7 @@ export default function App({
                               };
                               latestPointerTargetRef.current = event.currentTarget;
                               setIsCursorOverCompactCursorZone(true);
-                              setIsCursorOverAvatarRange(isPointerWithinAvatarRange(event.clientX, event.clientY));
+                              setIsCursorOverAvatarRange(isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState));
                               if (activeCursorToolId === item.id) {
                                 setActiveCursorToolId(null);
                                 setToolMenuOpen(false);

@@ -36,6 +36,34 @@ class _FakeLLM:
             yield chunk
 
 
+@pytest.fixture
+def mock_manager_and_session():
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Neko"
+    manager.master_name = "Master"
+    manager.user_language = "zh-CN"
+    manager.is_active = True
+    manager.websocket = None
+    manager.sync_message_queue = _DummyQueue()
+    manager.lock = asyncio.Lock()
+    manager._proactive_write_lock = asyncio.Lock()
+    manager.current_speech_id = None
+    manager._tts_done_queued_for_turn = False
+    manager._recent_avatar_interaction_ids = deque(maxlen=32)
+    manager._recent_avatar_interaction_id_set = set()
+    manager._last_avatar_interaction_at = 0
+    manager._last_avatar_interaction_speak_at = 0
+    manager.avatar_interaction_cooldown_ms = 0
+    manager.avatar_interaction_speak_cooldown_ms = 0
+    manager._get_text_guard_max_length = lambda: 350
+
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+    session._is_responding = False
+    session.update_max_response_length = lambda _max_length: None
+
+    return manager, session
+
+
 @pytest.mark.unit
 def test_normalize_avatar_interaction_payload_parses_boolean_variants():
     fist_false = _normalize_avatar_interaction_payload({
@@ -159,29 +187,8 @@ def test_build_avatar_interaction_instruction_omits_touch_zone_for_lollipop():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_handle_avatar_interaction_ack_reports_error_when_prompt_ephemeral_raises():
-    manager = LLMSessionManager.__new__(LLMSessionManager)
-    manager.lanlan_name = "Neko"
-    manager.master_name = "Master"
-    manager.user_language = "zh-CN"
-    manager.is_active = True
-    manager.websocket = None
-    manager.sync_message_queue = _DummyQueue()
-    manager.lock = asyncio.Lock()
-    manager._proactive_write_lock = asyncio.Lock()
-    manager.current_speech_id = None
-    manager._tts_done_queued_for_turn = False
-    manager._recent_avatar_interaction_ids = deque(maxlen=32)
-    manager._recent_avatar_interaction_id_set = set()
-    manager._last_avatar_interaction_at = 0
-    manager._last_avatar_interaction_speak_at = 0
-    manager.avatar_interaction_cooldown_ms = 0
-    manager.avatar_interaction_speak_cooldown_ms = 0
-    manager._get_text_guard_max_length = lambda: 350
-
-    session = OmniOfflineClient.__new__(OmniOfflineClient)
-    session._is_responding = False
-    session.update_max_response_length = lambda _max_length: None
+async def test_handle_avatar_interaction_ack_reports_error_when_prompt_ephemeral_raises(mock_manager_and_session):
+    manager, session = mock_manager_and_session
     event_log = []
 
     async def prompt_ephemeral(
@@ -259,29 +266,12 @@ async def test_prompt_ephemeral_forwards_content_committed_to_proactive_callback
         (True, "delivered"),
     ],
 )
-async def test_handle_avatar_interaction_ack_follows_prompt_result(delivered, expected_reason):
-    manager = LLMSessionManager.__new__(LLMSessionManager)
-    manager.lanlan_name = "Neko"
-    manager.master_name = "Master"
-    manager.user_language = "zh-CN"
-    manager.is_active = True
-    manager.websocket = None
-    manager.sync_message_queue = _DummyQueue()
-    manager.lock = asyncio.Lock()
-    manager._proactive_write_lock = asyncio.Lock()
-    manager.current_speech_id = None
-    manager._tts_done_queued_for_turn = False
-    manager._recent_avatar_interaction_ids = deque(maxlen=32)
-    manager._recent_avatar_interaction_id_set = set()
-    manager._last_avatar_interaction_at = 0
-    manager._last_avatar_interaction_speak_at = 0
-    manager.avatar_interaction_cooldown_ms = 0
-    manager.avatar_interaction_speak_cooldown_ms = 0
-    manager._get_text_guard_max_length = lambda: 350
-
-    session = OmniOfflineClient.__new__(OmniOfflineClient)
-    session._is_responding = False
-    session.update_max_response_length = lambda _max_length: None
+async def test_handle_avatar_interaction_ack_follows_prompt_result(
+    delivered,
+    expected_reason,
+    mock_manager_and_session,
+):
+    manager, session = mock_manager_and_session
     event_log = []
 
     async def prompt_ephemeral(
