@@ -480,7 +480,7 @@ if lessons:
 
 ```python
 @app.post("/api/agent/tasks/{task_id}/correction")
-async def submit_task_correction(task_id: str, body: CorrectionPayload):
+async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
     ...
 ```
 

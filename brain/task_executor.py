@@ -208,6 +208,7 @@ class DirectTaskExecutor:
         # plugin_id -> (full_description, generated_short_description)
         self._short_desc_cache: dict[str, tuple[str, str]] = {}
         self._correction_memory_filename = "correction_memory.json"
+        self._search_term_allowlist = {"id", "os", "db", "ui", "ux", "qa"}
     
     
     def set_plugin_list_provider(self, provider: Callable[[bool], Awaitable[List[Dict[str, Any]]]]):
@@ -502,6 +503,7 @@ class DirectTaskExecutor:
         patterns = [
             (r"(?i)(password|passwd|pwd)\s*[:=]\s*\S+", r"\1=[REDACTED_PASSWORD]"),
             (r"(?i)(password|passwd|pwd|密码|口令)\s*(?:is|是|=|:)\s*\S+", r"\1=[REDACTED_PASSWORD]"),
+            (r"(?i)authorization\s*:\s*bearer\s+\S+", "Authorization: Bearer [REDACTED_TOKEN]"),
             (r"(?i)(token|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+", r"\1=[REDACTED_TOKEN]"),
             (
                 r"(?i)(token|api(?:[\s_-]?key)|access(?:[\s_-]?token)|refresh(?:[\s_-]?token)|令牌|密钥|秘钥)\s*(?:is|是|=|:)\s*\S+",
@@ -510,6 +512,7 @@ class DirectTaskExecutor:
             (r"(?i)\bsk-[a-z0-9_-]{10,}\b", "[REDACTED_TOKEN]"),
             (r"(?i)(cookie)\s*[:=]\s*\S+", r"\1=[REDACTED_COOKIE]"),
             (r"(?i)(cookie)\s*(?:[:=]|is|是)\s*\S+", r"\1=[REDACTED_COOKIE]"),
+            (r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b", "[REDACTED_EMAIL]"),
             (
                 r"(?i)(\b(?:otp|pin|verification(?:\s+code)?|sms\s*code|one[-\s]?time(?:\s+password|\s+code)?|验证码|校验码|短信码|动态码)\b(?:\s*(?:is|为|是))?[\s:：=#-]{0,6})\d{4,8}\b",
                 r"\1[REDACTED_OTP]",
@@ -582,14 +585,20 @@ class DirectTaskExecutor:
         except OSError:
             pass
 
-    @staticmethod
-    def _extract_search_terms(text: str) -> List[str]:
+    def _is_allowed_search_term(self, term: str) -> bool:
+        if not term or term.isdigit():
+            return False
+        if len(term) == 2 and term.isascii() and term.isalpha() and term not in self._search_term_allowlist:
+            return False
+        return True
+
+    def _extract_search_terms(self, text: str) -> List[str]:
         lowered = str(text or "").lower()
         terms = re.findall(r"\w{2,}", lowered, flags=re.UNICODE)
         seen: set[str] = set()
         result: List[str] = []
         for term in terms:
-            if term.isdigit():
+            if not self._is_allowed_search_term(term):
                 continue
             if term in seen:
                 continue
@@ -636,6 +645,8 @@ class DirectTaskExecutor:
             ).lower()
             score = 0
             for term in query_terms:
+                if not self._is_allowed_search_term(term):
+                    continue
                 if term and term in event_context:
                     score += max(1, min(len(term), 8))
             if score <= 0:
