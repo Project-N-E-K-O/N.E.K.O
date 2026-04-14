@@ -93,6 +93,17 @@
                 } else if (data.type === 'goodbye') {
                     _proactivePeers.delete(data.id);
                     _onProactiveLeadershipMaybeChanged();
+                } else if (data.type === 'user_input_reset') {
+                    // 分发环境（Electron）下 chat.html 承担文本输入，但 proactive 计时器
+                    // 只在 index.html (leader) 运行。chat.html 本地调 resetProactiveChatBackoff
+                    // 对 leader 的 S.proactiveChatBackoffLevel 不可见，因此转成 IPC 转发到
+                    // 所有窗口，由 leader 真正重置退避级别 + 重排 timer。
+                    // { _fromIpc: true } 阻止二次广播，靠 data.id !== SELF_ID 已避免回环。
+                    try {
+                        resetProactiveChatBackoff({ _fromIpc: true });
+                    } catch (e) {
+                        console.warn('[Proactive] 处理 user_input_reset IPC 失败:', e);
+                    }
                 }
             };
         }
@@ -241,6 +252,20 @@
     /**
      * 检查主动搭话前置条件是否满足
      */
+    // AI 是否正在播放语音：proactive timer 到点时如果还在播，就跳过本次 nudge
+    // 并继续按固定间隔 poll（见下面 scheduleProactiveChat 的两处 speaking 分支）。
+    // S.isPlaying：audio chunks 入队到 drain 完这段期间为 true；
+    // S.assistantSpeechActiveTurnId：active turn 有音频在跑时非空。
+    // 两者任一为真都视为在播，避免打断自己。
+    function _isAssistantSpeaking() {
+        try {
+            return !!(S && (S.isPlaying || S.assistantSpeechActiveTurnId));
+        } catch (_) {
+            return false;
+        }
+    }
+    mod._isAssistantSpeaking = _isAssistantSpeaking;
+
     function canTriggerProactively() {
         // 「请她离开」状态下禁止一切主动搭话
         if (isGoodbyeActive()) {
@@ -327,6 +352,17 @@
 
             S.proactiveChatTimer = setTimeout(async function () {
                 if (S.isProactiveChatRunning) return;
+                // 设计说明（by 用户意图）：
+                // 这里不"rearm-after-playback"——那样每句话说完都要严格等满一个固定间隔
+                // 才能接下一句，节奏太死板。改为"继续按固定间隔轮询"：
+                // 轮询到时 AI 还在说 → 跳过本次 nudge，不累加 _voiceProactiveNoResponseCount
+                // （没真发请求就不算无回复），但仍然 scheduleProactiveChat() 推进下一 tick。
+                // 结果：播放完成到下一次 nudge 的等待 ∈ [0, interval)，带随机感，更自然。
+                if (_isAssistantSpeaking()) {
+                    console.log('[ProactiveChat] 语音模式：AI 正在播放语音，本次 nudge 跳过（不计数），继续下一 tick');
+                    scheduleProactiveChat();
+                    return;
+                }
                 S.isProactiveChatRunning = true;
                 try {
                     await triggerProactiveChat();
@@ -346,22 +382,47 @@
             return;
         }
 
-        // 文本模式：指数退避
+        // 文本模式：指数退避（带小幅随机指数浮动，避免节奏过于机械）
         var baseInterval = S.proactiveChatInterval;
 
-        // 计算延迟时间（指数退避，倍率2.5）
-        var delay = (baseInterval * 1000) * Math.pow(2.5, S.proactiveChatBackoffLevel);
+        // 在指数上叠加 ±0.125 的随机漂移 → 实际倍率波动约 [0.89x, 1.12x]，幅度很小但有变化
+        var expJitter = (Math.random() - 0.5) * 0.25;
+        var effectiveExp = S.proactiveChatBackoffLevel + expJitter;
+        var delay = (baseInterval * 1000) * Math.pow(2.5, effectiveExp);
 
-        // 首次启动时额外等待5秒，避免程序刚启动就触发音乐推荐
-        var startupDelay = S.proactiveChatBackoffLevel === 0 ? 6000 : 0;
+        // 首次启动时额外等待 6 秒，避免程序刚启动就触发音乐推荐。
+        // 用一次性 flag 而非 backoffLevel === 0 —— 后者在 user_input reset 或
+        // speaking-skip 重排时也会命中，导致每次都重新叠 6s，把 skip 路径期望的
+        // "等待 ∈ [0, interval)" 变成 "interval + 6s"。
+        var startupDelay = 0;
+        if (!S._proactiveStartupDelayApplied) {
+            startupDelay = 6000;
+            S._proactiveStartupDelayApplied = true;
+        }
         delay += startupDelay;
 
-        console.log('主动搭话：' + (delay / 1000) + '秒后触发（基础间隔：' + S.proactiveChatInterval + '秒，退避级别：' + S.proactiveChatBackoffLevel + '，启动延迟：' + (startupDelay / 1000) + '秒）');
+        // Clamp：level 长期上爬后 (level ≥ ~13 @ base=30s) `2.5^level` 会把 delay
+        // 顶到超过 setTimeout 的 int32 上限 0x7fffffff ≈ 24.8 天，实际被截断成
+        // "1ms 后立刻 fire"。加个硬上限保险，实际封顶在 ~24 天，已足够长。
+        delay = Math.min(delay, 0x7fffffff);
+
+        console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + S.proactiveChatInterval + '秒，退避级别：' + S.proactiveChatBackoffLevel + '，指数漂移：' + expJitter.toFixed(2) + '，启动延迟：' + (startupDelay / 1000) + '秒）');
 
         S.proactiveChatTimer = setTimeout(async function () {
             // 双重检查锁：定时器触发时再次检查是否正在执行
             if (S.isProactiveChatRunning) {
                 console.log('主动搭话定时器触发时发现正在执行中，跳过本次');
+                return;
+            }
+
+            // 设计说明（by 用户意图）：
+            // 不 rearm-after-playback —— 那样每句话说完都要等满一个固定间隔，节奏太死。
+            // 改为"继续按间隔轮询"：轮询到时 AI 还在说 → 跳过本次，不累加 backoffLevel
+            // （没真发请求就不算一次尝试），但仍然 scheduleProactiveChat() 推进下一 tick。
+            // 结果：播放完成到下一次 nudge 的等待 ∈ [0, interval)，带随机感，更自然。
+            if (_isAssistantSpeaking()) {
+                console.log('[ProactiveChat] 文本模式：AI 正在播放语音，本次跳过（不累加退避），继续下一 tick');
+                scheduleProactiveChat();
                 return;
             }
 
@@ -374,9 +435,17 @@
                 S.isProactiveChatRunning = false; // 解锁
             }
 
-            // 增加退避级别（最多到约7分钟，即level 3：30s * 2.5^3 = 7.5min）
-            if (S.proactiveChatBackoffLevel < 3) {
+            // 增加退避级别：
+            //   level < 2 时每次必升（30s → 75s → 187s ≈ 3min），快速拉开间隔；
+            //   level ≥ 2 后改为 30% 概率升级，让"长期无人搭理"的情况间隔能继续慢慢变长，
+            //     但大多数轮次仍停在当前档位，避免一次跳太远。
+            //   注：硬上限从原设计的 level 3 降到 2，因为同批改动里去掉了 turn_end reset，
+            //   整体退避会更猛 —— 先降一级做软着陆，让用户不至于突然觉得搭话显著变少。
+            if (S.proactiveChatBackoffLevel < 2) {
                 S.proactiveChatBackoffLevel++;
+            } else if (Math.random() < 0.3) {
+                S.proactiveChatBackoffLevel++;
+                console.log('[ProactiveChat] 高档位概率升级命中，退避级别升至 ' + S.proactiveChatBackoffLevel);
             }
 
             // 安排下一次
@@ -898,6 +967,11 @@
         // 优先通过 React 聊天窗口 API 显示表情包
         var host = window.reactChatWindowHost;
         if (host && typeof host.appendMessage === 'function') {
+            // PR #780 之后 proactive 只在 leader 触发，meme 只会暂存在 leader 的
+            // _proactiveAttachmentBuffer 里，flush 到 host.appendMessage 也只写
+            // 进 leader 的 React chat。用 music_ui 暴露的镜像 helper 同步到
+            // 所有窗口，保证 chat.html（follower）也能看到表情包气泡。
+            var mirrorAppend = window.__nekoMirrorChatAppend;
             for (var i = 0; i < memeLinks.length; i++) {
                 (function (meme) {
                     if (!meme || !meme.safeUrl) return;
@@ -914,7 +988,7 @@
                     if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
                         avatarUrl = window.appChatAvatar.getCurrentAvatarDataUrl() || '';
                     }
-                    host.appendMessage({
+                    var msg = {
                         id: 'meme-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
                         role: 'assistant',
                         author: assistantName,
@@ -924,7 +998,14 @@
                         avatarUrl: avatarUrl || undefined,
                         blocks: [{ type: 'image', url: proxyUrl, alt: meme.title || 'Meme' }],
                         status: 'sent'
-                    });
+                    };
+                    if (typeof mirrorAppend === 'function') {
+                        // 本地 append + 广播镜像（music_ui.js 已装好监听器）
+                        mirrorAppend(host, msg);
+                    } else {
+                        // 兜底：music_ui.js 未就绪时退化为只在本窗口显示
+                        host.appendMessage(msg);
+                    }
                     console.log('[Meme] 已展示图片气泡 (React):', meme.title);
                 })(memeLinks[i]);
             }
@@ -1035,13 +1116,26 @@
 
     // ======================== backoff reset ========================
 
-    function resetProactiveChatBackoff() {
+    /**
+     * 重置主动搭话退避级别 + 语音无回复计数，并 reschedule timer；
+     * 同时通过 BroadcastChannel 广播，让所有窗口（包括 leader）同步 reset。
+     * @param {Object} [opts]
+     * @param {boolean} [opts._fromIpc] 标记本次调用源自 IPC 消息，避免回环广播。
+     */
+    function resetProactiveChatBackoff(opts) {
         // 重置退避级别
         S.proactiveChatBackoffLevel = 0;
         // 语音模式：用户说话了，重置无回复计数
         S._voiceProactiveNoResponseCount = 0;
         // 重新安排定时器
         scheduleProactiveChat();
+        // 跨窗口同步：分发环境下 chat.html 输入只会 reset 它自己这份无用的 state，
+        // proactive 真正的计时器在 index.html (leader)。广播 user_input_reset，
+        // 让所有窗口（包括 leader）本地再跑一次 reset。_fromIpc 表示本次调用源自
+        // IPC 消息，不再回广播，避免回环。
+        if (!opts || !opts._fromIpc) {
+            _proactiveBroadcast('user_input_reset');
+        }
     }
     mod.resetProactiveChatBackoff = resetProactiveChatBackoff;
 

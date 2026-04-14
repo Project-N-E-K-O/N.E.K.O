@@ -1179,13 +1179,14 @@
                         })();
                     })();
 
-                    // Reset proactive chat backoff after AI turn completes
+                    // AI turn_end 后只 reschedule，不 reset backoff。
+                    // 理由：turn_end 无法区分"用户发话引发的 turn"和"proactive 自己引发的 turn"，
+                    // 如果一律 reset 会让 proactive 自己的 turn 把退避清零 → 指数退避形同虚设。
+                    // 用户真的说话时会由 sendTextPayload / 录音开关等路径单独 reset，
+                    // 不依赖 turn_end。语音模式本来就不退避，只是"从 turn end 开始算下一个间隔"。
                     var hasChatMode = (typeof window.hasAnyChatModeEnabled === 'function') ? window.hasAnyChatModeEnabled() : false;
                     if (S.proactiveChatEnabled && hasChatMode) {
-                        if (!S.isRecording) {
-                            if (typeof window.resetProactiveChatBackoff === 'function') window.resetProactiveChatBackoff();
-                        } else if (typeof window.scheduleProactiveChat === 'function') {
-                            // Voice mode also needs a turn-end fallback rearm in case TTS/playback completion never fires.
+                        if (typeof window.scheduleProactiveChat === 'function') {
                             window.scheduleProactiveChat();
                         }
                     }
