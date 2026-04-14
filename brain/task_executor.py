@@ -4,6 +4,7 @@ DirectTaskExecutor: 合并 Analyzer + Planner 的功能
 并行评估 ComputerUse / BrowserUse / UserPlugin 可行性
 """
 import json
+import os
 import re
 import asyncio
 from pathlib import Path
@@ -548,10 +549,22 @@ class DirectTaskExecutor:
     def _save_correction_memory(self, data: Dict[str, Any]) -> None:
         path = self._get_correction_memory_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
         tmp_path = path.with_suffix(path.suffix + ".tmp")
         with tmp_path.open("w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=2)
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
         tmp_path.replace(path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
     @staticmethod
     def _extract_search_terms(text: str) -> List[str]:
@@ -588,7 +601,7 @@ class DirectTaskExecutor:
         if not query_terms:
             return []
 
-        scored: List[tuple[int, str, Dict[str, Any]]] = []
+        scored: List[tuple[int, datetime, Dict[str, Any]]] = []
         for event in events:
             if not isinstance(event, dict):
                 continue
@@ -611,7 +624,14 @@ class DirectTaskExecutor:
                     score += max(1, min(len(term), 8))
             if score <= 0:
                 continue
-            scored.append((score, str(event.get("timestamp", "")), event))
+            timestamp_raw = str(event.get("timestamp", "")).strip()
+            try:
+                parsed_timestamp = datetime.fromisoformat(timestamp_raw)
+                if parsed_timestamp.tzinfo is None:
+                    parsed_timestamp = parsed_timestamp.replace(tzinfo=timezone.utc)
+            except ValueError:
+                parsed_timestamp = datetime.min.replace(tzinfo=timezone.utc)
+            scored.append((score, parsed_timestamp, event))
 
         scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [item[2] for item in scored[:limit]]
@@ -670,7 +690,12 @@ class DirectTaskExecutor:
         correct_instruction: str,
         user_note: str = "",
     ) -> Dict[str, Any]:
-        chosen_tool = str(task_info.get("type") or "").strip()
+        chosen_tool = str(
+            task_info.get("type")
+            or task_info.get("execution_method")
+            or task_info.get("method")
+            or ""
+        ).strip()
         task_id = str(task_info.get("task_id") or task_info.get("id") or "").strip()
         task_type = chosen_tool  # Backward-compatible alias for existing readers of correction events.
         event = {
