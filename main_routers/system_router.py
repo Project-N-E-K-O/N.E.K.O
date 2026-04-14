@@ -3226,6 +3226,17 @@ async def proactive_chat(request: Request):
                                 await mgr.feed_tts_chunk(cleaned)
                             continue
                         
+                        # --- 在线拦截: [PASS] ---
+                        if '[PASS]' in content.upper():
+                            # 部分模型会把 [PASS] 嵌在文本中输出
+                            content = re.sub(r'\[PASS\]', '', content, flags=re.IGNORECASE).strip()
+                            if content:
+                                full_text += content
+                                await mgr.feed_tts_chunk(content)
+                            print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
+                            aborted = True
+                            break
+                        
                         # --- 在线拦截: fence ---
                         fence_hit = False
                         for ch in content:
