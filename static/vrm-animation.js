@@ -31,6 +31,10 @@ class VRMAnimation {
         this._loaderPromise = null;
         this._fadeTimer = null;
         this._springBoneRestoreTimer = null;
+        // crossfade 时给每个 outgoing action schedule 的 stop 定时器。Set 允许
+        // 多个 in-flight fadeOut 同时等待 stop，reset() 时统一清干净，防止
+        // 重建 VRMAnimation 实例后残留回调打到旧 action。
+        this._outgoingStopTimers = new Set();
         this.playbackSpeed = 1.0;
         this.skeletonHelper = null;
         this.debug = false;
@@ -227,13 +231,46 @@ class VRMAnimation {
 
     async _createLookAtProxy(vrm) {
         if (!vrm.lookAt) return;
-        const existingProxy = vrm.scene.getObjectByName('lookAtQuaternionProxy');
-        if (!existingProxy) {
+        let proxy = vrm.scene.getObjectByName('lookAtQuaternionProxy');
+        if (!proxy) {
             const animationModule = await VRMAnimation._getAnimationModule();
             const { VRMLookAtQuaternionProxy } = animationModule;
-            const lookAtQuatProxy = new VRMLookAtQuaternionProxy(vrm.lookAt);
-            lookAtQuatProxy.name = 'lookAtQuaternionProxy';
-            vrm.scene.add(lookAtQuatProxy);
+            proxy = new VRMLookAtQuaternionProxy(vrm.lookAt);
+            proxy.name = 'lookAtQuaternionProxy';
+            vrm.scene.add(proxy);
+        }
+        // 用基于前向向量的稳定提取替换 proxy 的 Euler 拆分（shadow 原型方法）。
+        //
+        // 原实现：setFromQuaternion(q, 'YXZ') → Euler → yaw = y, pitch = x。
+        //   pitch ≈ ±π/2 附近 YXZ 拆分退化（Euler 矩阵奇异），yaw 由退化矩阵任意
+        //   输出 → 眼球奇点甩动。
+        //
+        // 新实现：把 proxy.quaternion 作用于本地 -Z（VRM 头部前方），从结果向量
+        //   提取 pitch=asin(fy), yaw=atan2(-fx, -fz)。
+        //   对无 roll 的 LookAt quaternion（authored gaze 的标准形态）与 Euler YXZ
+        //   数学上完全等价——Y 旋转给 yaw，X 旋转给 pitch，Z 旋转(roll)在 YXZ
+        //   里被塞进 euler.z 被 proxy 忽略，forward-vector 提取同样忽略 roll
+        //   （绕前向轴的旋转不改变前向）。
+        //   关键区别：pitch=±π/2 时 asin 域边界稳定返回 π/2，atan2(0,0)=0 给
+        //   出明确的 yaw=0 回退，而不是退化 YXZ 的任意值。
+        //
+        // 不再用 no-op：no-op 会静默丢弃 VRMA 文件里 authored 的 LookAt quaternion
+        // 轨道（createVRMAnimationClip 把它们映射到 proxy.quaternion），影响
+        // 手动播放的带 gaze 动画的正常表现（Project-N-E-K-O/N.E.K.O#772 Codex P1）。
+        if (!Object.prototype.hasOwnProperty.call(proxy, '_applyToLookAt')) {
+            const RAD2DEG = 180 / Math.PI;
+            proxy._applyToLookAt = function () {
+                const q = this.quaternion;
+                const x = q.x, y = q.y, z = q.z, w = q.w;
+                // forward = q * (0,0,-1) * q⁻¹，展开后的分量
+                const fx = -2 * (x * z + w * y);
+                const fy =  2 * (w * x - y * z);
+                const fz =  2 * (x * x + y * y) - 1;
+                // asin 定义域 [-1, 1]，浮点积累可能越界，clamp 防 NaN
+                const cy = fy > 1 ? 1 : (fy < -1 ? -1 : fy);
+                this.vrmLookAt.pitch = Math.asin(cy) * RAD2DEG;
+                this.vrmLookAt.yaw = Math.atan2(-fx, -fz) * RAD2DEG;
+            };
         }
     }
 
@@ -275,6 +312,81 @@ class VRMAnimation {
                     track.name = originalName;
                 }
             });
+        }
+    }
+
+    /**
+     * 把新 clip 每条 QuaternionKeyframeTrack 的关键帧整体翻到当前骨骼姿态的同半球。
+     * crossfade 期间 mixer 在"旧 clip 当前采样"和"新 clip 第 0 帧"之间做加权 slerp；
+     * 若两者 dot < 0，slerp 会取反向长路径——即使两个旋转在 3D 空间里完全相同，
+     * 视觉上就是骨骼绕反向轴甩一大圈再归位（偶发脖子折 90° 甩几圈的根因）。
+     * _normalizeQuaternionTrackSigns 只解决单 clip 内部相邻帧的符号一致性，解决不了跨 clip。
+     * 这里用 "新 clip 首帧 vs 骨骼当前 quaternion" 的 dot 决定是否整条轨道翻号；
+     * 翻号不改变旋转本身（q 与 -q 等价），只改变插值路径。
+     * 必须在 _normalizeQuaternionTrackSigns 之后调用——那一步保证 clip 内部自洽，
+     * 所以整条翻号不会破坏内部相邻帧的同半球关系。
+     */
+    _alignClipToCurrentPose(clip) {
+        const THREE = window.THREE;
+        if (!clip?.tracks || !THREE?.QuaternionKeyframeTrack) return;
+        // 优先用正在运行的 vrmaMixer 的 root（_findBestMixerRoot 通常返回
+        // normalizedRoot——VRM 标准化骨架树），确保查到的 bone.quaternion
+        // 反映当前动画姿态。
+        // 但 `lookAtQuaternionProxy` 是挂在 vrm.scene 直下的 sibling，不在
+        // normalizedRoot 树里——此时回退到 vrm.scene.getObjectByName 才能
+        // 拿到 proxy.quaternion 做同半球对齐，否则 authored LookAt 轨道
+        // 在 crossfade 时仍可能走长路径（CodeRabbit on PR #772）。
+        const root = this.vrmaMixer?.getRoot?.() || this.manager?.currentModel?.vrm?.scene;
+        if (!root || typeof root.getObjectByName !== 'function') return;
+        const scene = this.manager?.currentModel?.vrm?.scene;
+        const stride = 4;
+        for (const track of clip.tracks) {
+            if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
+            const boneName = track.name.split('.')[0];
+            let bone = root.getObjectByName(boneName);
+            if (!bone && scene && scene !== root) {
+                bone = scene.getObjectByName(boneName);
+            }
+            const bq = bone?.quaternion;
+            if (!bq) continue;
+            const v = track.values;
+            if (!v || v.length < stride) continue;
+            const dot = bq.x * v[0] + bq.y * v[1] + bq.z * v[2] + bq.w * v[3];
+            if (dot < 0) {
+                for (let i = 0; i < v.length; i++) {
+                    v[i] = -v[i];
+                }
+            }
+        }
+    }
+
+    /**
+     * 把 clip 里每条 QuaternionKeyframeTrack 的相邻关键帧翻到同一半球（dot >= 0）。
+     * slerpFlat 成对处理能自洽，但链式经过 3+ 关键帧或配合 LookAt 的 Euler 拆分时，
+     * 偶尔会被反向四元数骗出长路径 / 奇点甩动（表现为脖子折 90 度甩几圈后自愈）。
+     * 同一旋转的 q 和 -q 在表现上等价，翻符号是无副作用的防御。
+     */
+    _normalizeQuaternionTrackSigns(clip) {
+        const THREE = window.THREE;
+        if (!clip?.tracks || !THREE?.QuaternionKeyframeTrack) return;
+        const stride = 4;
+        for (const track of clip.tracks) {
+            if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
+            const v = track.values;
+            if (!v || v.length < stride * 2) continue;
+            for (let i = stride; i < v.length; i += stride) {
+                const dot =
+                    v[i - 4] * v[i] +
+                    v[i - 3] * v[i + 1] +
+                    v[i - 2] * v[i + 2] +
+                    v[i - 1] * v[i + 3];
+                if (dot < 0) {
+                    v[i]     = -v[i];
+                    v[i + 1] = -v[i + 1];
+                    v[i + 2] = -v[i + 2];
+                    v[i + 3] = -v[i + 3];
+                }
+            }
         }
     }
 
@@ -387,7 +499,32 @@ class VRMAnimation {
             if (this.currentAction && this.currentAction !== newAction) {
                 this.vrmaMixer.update(0);
                 if (vrm.scene) vrm.scene.updateMatrixWorld(true);
-                this.currentAction.fadeOut(fadeDuration);
+                // fadeOut 只把 weight 归零，action 本身仍在 mixer 的 _actions 列表里
+                // 以 weight=0 的状态持续 update。如果不 stop，后续每次 _playAction 都
+                // 会让残留 action 越堆越多（idle ↔ manual VRMA 反复切换尤其明显）。
+                // 这里按本次 fadeDuration schedule 一个与 action 绑定的 stop，
+                // 跟调用方（idle/manual）解耦——任何 VRMA 播放路径都能正确收尾
+                // （Project-N-E-K-O/N.E.K.O#772 Codex P2）。
+                const outgoing = this.currentAction;
+                outgoing.fadeOut(fadeDuration);
+                const stopDelayMs = Math.ceil(fadeDuration * 1000) + 50;
+                // 定时器登记到 _outgoingStopTimers，reset() 统一清——防止
+                // 实例 dispose 后回调仍打到已释放的 action（CodeRabbit on PR #772）。
+                let timerId;
+                timerId = setTimeout(() => {
+                    this._outgoingStopTimers.delete(timerId);
+                    if (this._disposed) return;
+                    try {
+                        // 只有当 outgoing 已经不是当前 action 时才 stop，避免把同一
+                        // action 反复切入/切出时误杀正在 fadeIn 的自己。
+                        if (this.currentAction !== outgoing) {
+                            outgoing.stop();
+                        }
+                    } catch (e) {
+                        // action 可能已被 mixer 清理；stop 幂等，忽略异常
+                    }
+                }, stopDelayMs);
+                this._outgoingStopTimers.add(timerId);
                 newAction.enabled = true;
                 if (options.noReset) {
                     newAction.fadeIn(fadeDuration).play();
@@ -489,6 +626,11 @@ class VRMAnimation {
             await this._createLookAtProxy(vrm);
             const clip = await this._createAndValidateAnimationClip(vrmAnimation, vrm);
             this._processTracksForVersion(clip, vrmVersion);
+            this._normalizeQuaternionTrackSigns(clip);
+            // 跨 clip 同半球对齐：必须在 _normalizeQuaternionTrackSigns 之后、
+            // _createAndConfigureAction 之前。此刻 vrmaMixer 上仍是上一条 action 在跑，
+            // 骨骼 quaternion 反映当前姿态；后续 _playAction 的 crossfade slerp 才能走最短路径。
+            this._alignClipToCurrentPose(clip);
 
             // 判断是否为待机动画（仅在显式传入 isIdle: true 时才视为待机）
             this.isIdleAnimation = !!options.isIdle;
@@ -515,33 +657,45 @@ class VRMAnimation {
         }
 
         if (this.currentAction) {
-            // 捕获要停止的 action，防止竞态条件（新 action 可能在定时器回调执行前启动）
-            const actionAtStop = this.currentAction;
-            this.currentAction.fadeOut(0.5);
-
-            this._fadeTimer = setTimeout(() => {
-                if (this._disposed) return;
-                // 只有当 currentAction 仍然是 actionAtStop 时才执行清理（防止取消新启动的 action）
-                if (this.currentAction === actionAtStop) {
-                    if (this.vrmaMixer) {
-                        this.vrmaMixer.stopAllAction();
-                    }
-                    this.currentAction = null;
-                    this.vrmaIsPlaying = false;
-                    this.isIdleAnimation = false;
-                    this._fadeTimer = null;
-
-                    // 动画停止后恢复物理
-                    this._springBoneRestoreTimer = setTimeout(() => {
-                        if (this.currentAction === null) {
-                            this._restorePhysics();
-                        }
-                        this._springBoneRestoreTimer = null;
-                    }, 100);
-                } else {
-                    this._fadeTimer = null;
+            // paused action 上 fadeOut 无效（mixer 不 update paused action 的权重），
+            // 直接立即清理，避免 500ms 后骨骼硬跳到 rest pose
+            if (this.currentAction.paused) {
+                if (this.vrmaMixer) {
+                    this.vrmaMixer.stopAllAction();
                 }
-            }, 500);
+                this.currentAction = null;
+                this.vrmaIsPlaying = false;
+                this.isIdleAnimation = false;
+                this._restorePhysics();
+            } else {
+                // 捕获要停止的 action，防止竞态条件（新 action 可能在定时器回调执行前启动）
+                const actionAtStop = this.currentAction;
+                this.currentAction.fadeOut(0.5);
+
+                this._fadeTimer = setTimeout(() => {
+                    if (this._disposed) return;
+                    // 只有当 currentAction 仍然是 actionAtStop 时才执行清理（防止取消新启动的 action）
+                    if (this.currentAction === actionAtStop) {
+                        if (this.vrmaMixer) {
+                            this.vrmaMixer.stopAllAction();
+                        }
+                        this.currentAction = null;
+                        this.vrmaIsPlaying = false;
+                        this.isIdleAnimation = false;
+                        this._fadeTimer = null;
+
+                        // 动画停止后恢复物理
+                        this._springBoneRestoreTimer = setTimeout(() => {
+                            if (this.currentAction === null) {
+                                this._restorePhysics();
+                            }
+                            this._springBoneRestoreTimer = null;
+                        }, 100);
+                    } else {
+                        this._fadeTimer = null;
+                    }
+                }, 500);
+            }
         } else {
             if (this.vrmaMixer) {
                 this.vrmaMixer.stopAllAction();
@@ -686,6 +840,10 @@ class VRMAnimation {
         if (this._springBoneRestoreTimer) {
             clearTimeout(this._springBoneRestoreTimer);
             this._springBoneRestoreTimer = null;
+        }
+        if (this._outgoingStopTimers && this._outgoingStopTimers.size > 0) {
+            for (const id of this._outgoingStopTimers) clearTimeout(id);
+            this._outgoingStopTimers.clear();
         }
 
         this._skinnedMeshes = [];

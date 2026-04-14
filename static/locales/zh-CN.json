@@ -1274,6 +1274,8 @@
         "prefixShouldBeEnglishLetterAndNumber": "前缀应为英文字母和数字",
         "invalidApiKeyProvided": "提供的API密钥无效",
         "requestError": "请求出错：{{error}}",
+        "serverNonJsonError": "服务端返回了非JSON响应 (HTTP {{status}})：{{snippet}}",
+        "serverRouteNotFound": "接口未找到 (HTTP {{status}})，请确认服务端已正确部署并重启",
         "voiceIdSaveFailed": "voice_id自动保存失败: {{error}}",
         "voiceIdSaved": "voice_id已自动保存到角色",
         "pageWillRefresh": "当前页面即将自动刷新以应用新语音",
@@ -1703,7 +1705,8 @@
     "subtitle": {
         "title": "实时字幕",
         "enable": "字幕翻译",
-        "enableAriaLabel": "字幕翻译开关"
+        "enableAriaLabel": "字幕翻译开关",
+        "markdownPlaceholder": "[格式化内容]"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -2827,7 +2830,7 @@
         "idleRestoreFailed": "恢复待机动画失败",
         "btnNotFoundGiveUp": "点歌台按钮在重试后仍未找到，放弃绑定",
         "minimizeBtnNotFoundGiveUp": "最小化按钮在重试后仍未找到，放弃监听",
-        "noticeDance": "💃 伴舞服务目前仅在载入 MMD 形象时可用，后续会增加更多互动",
+        "noticeDance": "💃 伴舞服务目前仅在载入 3D 模型（MMD / VRM）时可用，后续会增加更多互动",
         "noticeMusic": "⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入",
         "manager": "管理器",
         "managerTitle": "管理器",

@@ -593,7 +593,8 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                         ? popupUi.hasVisibleOverlay('vrm')
                         : Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
                             .some(popup => popup.style.display === 'flex' && popup.style.opacity !== '0');
-                    const shouldShowButtons = !isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenOverlay);
+                    const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
+                    const shouldShowButtons = inTutorial || (!isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenOverlay));
                     buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;

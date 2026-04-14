@@ -300,12 +300,6 @@ html #chat-container {
   border-color: #777;
 }
 
-[data-theme="dark"] .subtitle-prompt-message {
-  background: linear-gradient(135deg, rgba(42, 123, 196, 0.12) 0%, rgba(42, 123, 196, 0.18) 100%);
-  border-color: rgba(74, 163, 223, 0.25);
-  box-shadow: 0 2px 8px rgba(42, 123, 196, 0.15);
-}
-
 /* ===== 暗色模式：字幕显示区域 ===== */
 [data-theme="dark"] #subtitle-display {
   background: linear-gradient(135deg, rgba(42, 123, 196, 0.92) 0%, rgba(42, 123, 196, 0.88) 50%, rgba(60, 145, 220, 0.92) 100%);

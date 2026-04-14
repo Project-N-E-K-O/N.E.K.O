@@ -179,7 +179,7 @@ class VRMInteraction {
 
                 // 开始拖动时，临时禁用按钮的 pointer-events
                 this._disableButtonPointerEvents();
-            } else if (e.button === 2) { // 右键 - 相机视角旋转
+            } else if (e.button === 2) { // 右键 - 模型旋转
                 this.isDragging = true;
                 this.dragMode = 'orbit';
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
@@ -187,13 +187,21 @@ class VRMInteraction {
                 e.preventDefault();
                 e.stopPropagation();
 
-                // 记录模型中心和它在屏幕上的 NDC 坐标，旋转过程中用于保持模型屏幕位置不变
-                if (this.manager.camera && this.manager.currentModel?.scene) {
-                    const box = new THREE.Box3().setFromObject(this.manager.currentModel.scene);
-                    this._orbitCenter = box.getCenter(new THREE.Vector3());
-                    // 将模型中心投影到 NDC 坐标（-1~1），记录模型在屏幕上的位置
-                    const projected = this._orbitCenter.clone().project(this.manager.camera);
-                    this._orbitNDC = { x: projected.x, y: projected.y };
+                // 缓存拖拽起始状态，用于幂等计算总旋转量（对齐 MMD 行为）
+                // 之前实现是 "相机绕模型公转 + NDC lookAt 补偿"：
+                //   1) 逐帧累加 phi/theta，phi 一旦被 clamp 到极区就不可逆；
+                //   2) NDC 补偿是一阶近似，拖多了会微漂；
+                //   3) 滚轮改走 scene.scale 后（见 commit e234db8），camera.y 不再
+                //      随缩放联动，Box3 中心的 y 却会跟着 scale 漂移，导致 offset.y/radius
+                //      偏离 π/2，上下转瞬间"不对称"。
+                // 改为直接绕包围盒中心旋转 scene 本身、相机完全不动，彻底摆脱上述耦合。
+                const scene = this.manager.currentModel?.scene;
+                if (scene) {
+                    const box = new THREE.Box3().setFromObject(scene);
+                    this._orbitPivot = box.getCenter(new THREE.Vector3());
+                    this._orbitStartQuat = scene.quaternion.clone();
+                    this._orbitStartPos = scene.position.clone();
+                    this._orbitStartMouse = { x: e.clientX, y: e.clientY };
                 }
 
                 this._disableButtonPointerEvents();
@@ -258,56 +266,31 @@ class VRMInteraction {
 
                 // 应用位置（按钮和锁图标位置由 _startUIUpdateLoop 自动更新）
                 this.manager.currentModel.scene.position.copy(finalPosition);
-            } else if (this.dragMode === 'orbit' && this.manager.camera && this._orbitCenter) {
-                // 右键拖拽：相机绕模型中心旋转，同时补偿 lookAt 使模型保持在屏幕原位
-                const camera = this.manager.camera;
-                const orbitCenter = this._orbitCenter;
+            } else if (this.dragMode === 'orbit' && this._orbitStartQuat && this._orbitPivot) {
+                // 右键拖拽：模型绕包围盒中心旋转（Y轴左右 + X轴上下），相机保持不动
+                // 对齐 MMD 的 orbit 实现（见 mmd-interaction.js:256-279）。
+                const scene = this.manager.currentModel?.scene;
+                if (!scene) return;
 
-                // 旋转灵敏度（弧度/像素）
-                const orbitSpeed = 0.005;
+                const rotateSpeed = 0.005;
+                const totalDx = e.clientX - this._orbitStartMouse.x;
+                const totalDy = e.clientY - this._orbitStartMouse.y;
 
-                // 计算从旋转中心到相机的偏移量
-                const offset = camera.position.clone().sub(orbitCenter);
-                const radius = offset.length();
+                // 世界轴 Y（左右）+ 世界轴 X（上下）
+                const yQuat = new THREE.Quaternion().setFromAxisAngle(
+                    new THREE.Vector3(0, 1, 0), totalDx * rotateSpeed);
+                const xQuat = new THREE.Quaternion().setFromAxisAngle(
+                    new THREE.Vector3(1, 0, 0), totalDy * rotateSpeed);
+                const totalQuat = new THREE.Quaternion().multiplyQuaternions(yQuat, xQuat);
 
-                // 球坐标：theta 为水平角（绕Y轴），phi 为俯仰角
-                let theta = Math.atan2(offset.x, offset.z);
-                let phi = Math.acos(Math.max(-1, Math.min(1, offset.y / radius)));
+                // 绕 _orbitPivot 旋转：先把 scene.position 相对 pivot 的偏移旋转后放回，
+                // 使包围盒中心保持不动，模型只在屏幕上"原地转身"。
+                const offset = new THREE.Vector3().subVectors(this._orbitStartPos, this._orbitPivot);
+                const rotatedOffset = offset.clone().applyQuaternion(totalQuat);
+                scene.position.copy(this._orbitPivot).add(rotatedOffset);
 
-                // 根据鼠标移动调整角度
-                theta -= deltaX * orbitSpeed;
-                phi -= deltaY * orbitSpeed;
-
-                // 限制俯仰角避免翻转（5° ~ 175°）
-                phi = Math.max(0.087, Math.min(Math.PI - 0.087, phi));
-
-                // 转回笛卡尔坐标
-                offset.x = radius * Math.sin(phi) * Math.sin(theta);
-                offset.y = radius * Math.cos(phi);
-                offset.z = radius * Math.sin(phi) * Math.cos(theta);
-
-                // 更新相机位置
-                camera.position.copy(orbitCenter).add(offset);
-
-                // 先临时看向旋转中心，建立新的相机坐标系
-                camera.lookAt(orbitCenter);
-
-                // 用 NDC 坐标补偿，使模型中心保持在原来的屏幕位置
-                const nx = this._orbitNDC.x;
-                const ny = this._orbitNDC.y;
-                const halfHeight = radius * Math.tan(camera.fov * Math.PI / 360);
-                const halfWidth = halfHeight * camera.aspect;
-
-                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-
-                // target = 模型中心 - NDC偏移量（使模型投影回原屏幕位置）
-                const newTarget = orbitCenter.clone()
-                    .sub(right.clone().multiplyScalar(nx * halfWidth))
-                    .sub(up.clone().multiplyScalar(ny * halfHeight));
-
-                camera.lookAt(newTarget);
-                this.manager._cameraTarget = newTarget;
+                // 每帧从起始姿态重新乘出（幂等），避免增量累加的漂移
+                scene.quaternion.copy(this._orbitStartQuat).premultiply(totalQuat);
             }
 
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
@@ -320,7 +303,7 @@ class VRMInteraction {
                 e.preventDefault();
                 e.stopPropagation();
                 // 保留本次拖拽类型再清状态，跨屏切换只对 pan 生效
-                // （orbit 只旋转相机，不应触发多屏切换）
+                // （orbit 绕包围盒中心原地转身，屏幕投影不位移，无需多屏切换）
                 const wasPanDrag = this.dragMode === 'pan';
                 this.isDragging = false;
                 this.dragMode = null;
@@ -451,6 +434,9 @@ class VRMInteraction {
      */
     _updateModelFacing(delta) {
         if (!this.enableFaceCamera) return;
+        // 手动 orbit 期间不自动朝向相机，避免和用户拖拽对抗
+        // （当前 vrm-core.js:887 加载完会把 enableFaceCamera=false，这里是防御性守卫）
+        if (this.dragMode === 'orbit') return;
         if (!this.manager.currentModel || !this.manager.currentModel.scene || !this.manager.camera) return;
 
         const model = this.manager.currentModel.scene;
