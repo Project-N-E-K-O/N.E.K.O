@@ -649,7 +649,7 @@ class OmniOfflineClient:
         if instructions and instructions.strip():
             self._conversation_history.append(HumanMessage(content=instructions))
     
-    async def prompt_ephemeral(self, instruction: str) -> bool:
+    async def prompt_ephemeral(self, instruction: str, *, completion_mode: str = "proactive") -> bool:
         """Send a fire-and-forget instruction to the LLM and stream the response.
 
         The *instruction* (typically wrapped in ``======...======`` delimiters)
@@ -666,11 +666,15 @@ class OmniOfflineClient:
         here is truly ephemeral — it exists only for the duration of this
         single LLM inference call.
 
-        Calls ``on_proactive_done()`` when finished — a lightweight
-        callback that only flushes TTS and sends ``turn_end`` to the
-        frontend, WITHOUT triggering hot-swap or ``analyze_request``
-        logic.  Falls back to ``on_response_done()`` if
-        ``on_proactive_done`` is not set.
+        Completion behaviour is caller-selectable:
+
+        - ``completion_mode="proactive"``:
+          Uses ``on_proactive_done()`` when available. This keeps the
+          existing lightweight proactive / agent-callback completion path.
+        - ``completion_mode="response"``:
+          Uses ``on_response_done()`` so the reply goes through the
+          regular user-visible completion path while still keeping the
+          injected instruction itself ephemeral.
 
         Returns True if any text was generated, False if aborted or empty.
         """
@@ -763,9 +767,11 @@ class OmniOfflineClient:
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             if assistant_message:
                 self._conversation_history.append(AIMessage(content=assistant_message))
-            # Use lightweight proactive-done callback (TTS flush + turn_end only),
-            # falling back to full on_response_done for backward compatibility.
-            done_cb = getattr(self, "on_proactive_done", None) or self.on_response_done
+            if completion_mode == "response":
+                done_cb = self.on_response_done
+            else:
+                # Preserve existing behavior for proactive / agent callback callers.
+                done_cb = getattr(self, "on_proactive_done", None) or self.on_response_done
             if done_cb:
                 await done_cb()
 

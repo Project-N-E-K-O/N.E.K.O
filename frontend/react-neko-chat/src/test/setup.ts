@@ -4,6 +4,9 @@ if (!HTMLElement.prototype.scrollTo) {
   HTMLElement.prototype.scrollTo = function scrollTo(options?: ScrollToOptions | number, _y?: number) {
     if (typeof options === 'number') {
       this.scrollLeft = options;
+      if (typeof _y === 'number') {
+        this.scrollTop = _y;
+      }
       return;
     }
     if (options && typeof options === 'object' && typeof options.top === 'number') {

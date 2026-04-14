@@ -54,6 +54,12 @@
         }));
     }
 
+    function getRenderableAssistantChunkText(text) {
+        return String(text || '')
+            .replace(/\[play_music:[^\]]*(\]|$)/g, '')
+            .trim();
+    }
+
     function websocketTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
     }
@@ -377,6 +383,11 @@
                         S.assistantTurnId = null;
                         S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
                         S.assistantTurnAwaitingBubble = true;
+                    }
+                    if (!S.assistantTurnId
+                            && S.assistantTurnAwaitingBubble
+                            && getRenderableAssistantChunkText(response.text)) {
+                        ensureAssistantTurnStarted('gemini_response_first_chunk', response.turn_id);
                     }
                     var createdVisibleBubble = false;
                     if (typeof window.appendMessage === 'function') {
@@ -866,6 +877,15 @@
                             window.AgentHUD.hideAgentTaskHUD();
                         }
                     } catch (_e) { /* ignore */ }
+
+                // -------- avatar_interaction_ack --------
+                } else if (response.type === 'avatar_interaction_ack') {
+                    emitAssistantLifecycleEvent('neko-avatar-interaction-ack', {
+                        interactionId: response.interaction_id || '',
+                        accepted: response.accepted === true,
+                        reason: response.reason || '',
+                        turnId: response.turn_id || ''
+                    });
 
                 // -------- agent_notification --------
                 } else if (response.type === 'agent_notification') {

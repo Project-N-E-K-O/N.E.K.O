@@ -48,21 +48,35 @@ const composerAttachmentSchema = z.object({
   alt: z.string().optional(),
 });
 
-export const avatarInteractionPayloadSchema = z.object({
+const avatarInteractionPayloadBaseSchema = z.object({
   interactionId: z.string().min(1),
-  toolId: z.enum(['lollipop', 'fist', 'hammer']),
-  actionId: z.string().min(1),
   target: z.literal('avatar'),
   pointer: z.object({
     clientX: z.number().finite(),
     clientY: z.number().finite(),
   }),
+  touchZone: z.enum(['ear', 'head', 'face', 'body']).optional(),
   textContext: z.string().optional(),
   timestamp: z.number().finite(),
   intensity: z.enum(['normal', 'rapid', 'burst', 'easter_egg']).optional(),
-  rewardDrop: z.boolean().optional(),
-  easterEgg: z.boolean().optional(),
 });
+
+export const avatarInteractionPayloadSchema = z.discriminatedUnion('toolId', [
+  avatarInteractionPayloadBaseSchema.extend({
+    toolId: z.literal('lollipop'),
+    actionId: z.enum(['offer', 'tease', 'tap_soft']),
+  }).strict(),
+  avatarInteractionPayloadBaseSchema.extend({
+    toolId: z.literal('fist'),
+    actionId: z.enum(['poke']),
+    rewardDrop: z.boolean().optional(),
+  }).strict(),
+  avatarInteractionPayloadBaseSchema.extend({
+    toolId: z.literal('hammer'),
+    actionId: z.enum(['bonk']),
+    easterEgg: z.boolean().optional(),
+  }).strict(),
+]);
 
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,

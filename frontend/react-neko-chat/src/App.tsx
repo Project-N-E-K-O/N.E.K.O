@@ -129,6 +129,11 @@ const compactCursorZoneSelector = [
 type CursorVariant = 'primary' | 'secondary' | 'tertiary';
 type ToolCursorVariantState = Record<string, CursorVariant>;
 type InteractionIntensity = NonNullable<AvatarInteractionPayload['intensity']>;
+type AvatarInteractionToolId = AvatarInteractionPayload['toolId'];
+type AvatarTouchZone = NonNullable<AvatarInteractionPayload['touchZone']>;
+type AvatarInteractionPayloadByTool = {
+  [K in AvatarInteractionToolId]: Extract<AvatarInteractionPayload, { toolId: K }>;
+};
 
 type HostAvatarBounds = {
   left: number;
@@ -148,6 +153,11 @@ type HostAvatarManager = {
 
 type AvatarBoundsCacheEntry = {
   bounds: HostAvatarBounds;
+};
+
+type AvatarRangeHit = {
+  bounds: HostAvatarBounds;
+  touchZone: AvatarTouchZone;
 };
 
 type FloatingHeart = {
@@ -333,7 +343,7 @@ function isPointInsideAvatarBounds(bounds: HostAvatarBounds, clientX: number, cl
   return normalizedX * normalizedX + normalizedY * normalizedY <= 1;
 }
 
-function isPointerWithinAvatarRange(clientX: number, clientY: number): boolean {
+function getAvatarBoundsEntries(): AvatarBoundsCacheEntry[] {
   const now = performance.now();
   if (avatarBoundsCache.expiresAt <= now) {
     const hostWindow = window as Window & {
@@ -366,9 +376,44 @@ function isPointerWithinAvatarRange(clientX: number, clientY: number): boolean {
     };
   }
 
-  return avatarBoundsCache.entries.some(({ bounds }) => (
+  return avatarBoundsCache.entries;
+}
+
+function classifyAvatarTouchZone(bounds: HostAvatarBounds, clientX: number, clientY: number): AvatarTouchZone {
+  if (bounds.width <= 0 || bounds.height <= 0) {
+    return 'body';
+  }
+
+  const relativeX = clamp((clientX - bounds.left) / bounds.width, 0, 1);
+  const relativeY = clamp((clientY - bounds.top) / bounds.height, 0, 1);
+
+  if (relativeY <= 0.24 && (relativeX <= 0.24 || relativeX >= 0.76)) {
+    return 'ear';
+  }
+  if (relativeY <= 0.34) {
+    return 'head';
+  }
+  if (relativeY <= 0.62) {
+    return 'face';
+  }
+  return 'body';
+}
+
+function getAvatarRangeHit(clientX: number, clientY: number): AvatarRangeHit | null {
+  const matchedEntry = getAvatarBoundsEntries().find(({ bounds }) => (
     isPointInsideAvatarBounds(bounds, clientX, clientY)
   ));
+  if (!matchedEntry) {
+    return null;
+  }
+  return {
+    bounds: matchedEntry.bounds,
+    touchZone: classifyAvatarTouchZone(matchedEntry.bounds, clientX, clientY),
+  };
+}
+
+function isPointerWithinAvatarRange(clientX: number, clientY: number): boolean {
+  return getAvatarRangeHit(clientX, clientY) !== null;
 }
 
 function clearAvatarBoundsCache() {
@@ -468,6 +513,7 @@ export default function App({
   const floatingHeartTimeoutIdsRef = useRef<number[]>([]);
   const floatingFistDropIdRef = useRef(0);
   const floatingFistDropTimeoutIdsRef = useRef<number[]>([]);
+  const interactionBurstHistoryRef = useRef<Record<string, number[]>>({});
   const latestPointerPositionRef = useRef({ x: 0, y: 0 });
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
   const draftRef = useRef(draft);
@@ -579,6 +625,15 @@ export default function App({
     });
   }
 
+  function recordInteractionBurst(key: string, windowMs: number) {
+    const now = Date.now();
+    const recentTimestamps = (interactionBurstHistoryRef.current[key] ?? [])
+      .filter(timestamp => now - timestamp <= windowMs);
+    recentTimestamps.push(now);
+    interactionBurstHistoryRef.current[key] = recentTimestamps;
+    return recentTimestamps.length;
+  }
+
   function updateHammerCursorOverlayPosition(clientX: number, clientY: number) {
     latestPointerPositionRef.current = { x: clientX, y: clientY };
     const overlayNode = hammerCursorOverlayRef.current;
@@ -597,9 +652,9 @@ export default function App({
     overlayNode.style.transform = `translate3d(${clientX - hotspotX}px, ${clientY - hotspotY}px, 0)`;
   }
 
-  function emitAvatarInteraction(
-    toolId: AvatarInteractionPayload['toolId'],
-    actionId: string,
+  function emitAvatarInteraction<T extends AvatarInteractionToolId>(
+    toolId: T,
+    actionId: AvatarInteractionPayloadByTool[T]['actionId'],
     target: AvatarInteractionPayload['target'],
     clientX: number,
     clientY: number,
@@ -607,12 +662,13 @@ export default function App({
       intensity?: InteractionIntensity;
       rewardDrop?: boolean;
       easterEgg?: boolean;
+      touchZone?: AvatarTouchZone;
     },
   ) {
     const callback = avatarInteractionCallbackRef.current;
     if (!callback) return;
 
-    const payload: AvatarInteractionPayload = {
+    const payload = {
       interactionId: createAvatarInteractionId(),
       toolId,
       actionId,
@@ -622,7 +678,7 @@ export default function App({
         clientY,
       },
       timestamp: Date.now(),
-    };
+    } as AvatarInteractionPayloadByTool[T];
 
     const textContext = sanitizeInteractionTextContext(draftRef.current);
     if (textContext) {
@@ -631,11 +687,14 @@ export default function App({
     if (options?.intensity) {
       payload.intensity = options.intensity;
     }
-    if (options?.rewardDrop) {
-      payload.rewardDrop = true;
+    if (options?.touchZone) {
+      payload.touchZone = options.touchZone;
     }
-    if (options?.easterEgg) {
-      payload.easterEgg = true;
+    if (options?.rewardDrop && toolId === 'fist') {
+      (payload as Extract<AvatarInteractionPayload, { toolId: 'fist' }>).rewardDrop = true;
+    }
+    if (options?.easterEgg && toolId === 'hammer') {
+      (payload as Extract<AvatarInteractionPayload, { toolId: 'hammer' }>).easterEgg = true;
     }
 
     callback(payload);
@@ -708,7 +767,8 @@ export default function App({
 
     const toggleCursorVariantOnPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
-      const isOverAvatarAtPointer = isPointerWithinAvatarRange(event.clientX, event.clientY);
+      const avatarRangeHit = getAvatarRangeHit(event.clientX, event.clientY);
+      const isOverAvatarAtPointer = avatarRangeHit !== null;
       setIsCursorOverAvatarRange(previousValue => (
         previousValue === isOverAvatarAtPointer ? previousValue : isOverAvatarAtPointer
       ));
@@ -721,27 +781,34 @@ export default function App({
             : currentVariant === 'secondary'
               ? 'tease'
               : 'tap_soft';
-          const intensity: InteractionIntensity = currentVariant === 'tertiary' ? 'rapid' : 'normal';
-          emitAvatarInteraction('lollipop', actionId, 'avatar', event.clientX, event.clientY, { intensity });
-
-          setAvatarRangeCursorVariants(prev => {
-            if (prev.lollipop === 'tertiary') {
-              spawnLollipopHearts(event.clientX, event.clientY);
-              return prev;
-            }
-            const nextVariant = prev.lollipop === 'primary'
-              ? 'secondary'
-              : prev.lollipop === 'secondary'
-                ? 'tertiary'
-                : 'primary';
-            return { ...prev, lollipop: nextVariant };
+          const lollipopTapCount = currentVariant === 'tertiary'
+            ? recordInteractionBurst('lollipop:tap_soft', 1800)
+            : 0;
+          const intensity: InteractionIntensity = currentVariant === 'tertiary'
+            ? (lollipopTapCount >= 4 ? 'burst' : 'rapid')
+            : 'normal';
+          emitAvatarInteraction('lollipop', actionId, 'avatar', event.clientX, event.clientY, {
+            intensity,
+            touchZone: avatarRangeHit?.touchZone,
           });
+
+          if (currentVariant === 'tertiary') {
+            spawnLollipopHearts(event.clientX, event.clientY);
+            return;
+          }
+          const nextVariant: CursorVariant = currentVariant === 'primary' ? 'secondary' : 'tertiary';
+          setAvatarRangeCursorVariants(prev => (
+            prev.lollipop === nextVariant ? prev : { ...prev, lollipop: nextVariant }
+          ));
           return;
         }
         return;
       }
       if (activeCursorToolId === 'fist') {
         const shouldSpawnRewardDrop = isOverAvatarAtPointer && Math.random() < 0.25;
+        const fistTapCount = isOverAvatarAtPointer
+          ? recordInteractionBurst('fist:poke', 1400)
+          : 0;
         setAvatarRangeCursorVariants(prev => ({ ...prev, fist: 'secondary' }));
         setOutsideRangeCursorVariants(prev => ({ ...prev, fist: 'secondary' }));
         if (isOverAvatarAtPointer) {
@@ -752,8 +819,9 @@ export default function App({
             event.clientX,
             event.clientY,
             {
-              intensity: 'normal',
+              intensity: fistTapCount >= 4 ? 'rapid' : 'normal',
               rewardDrop: shouldSpawnRewardDrop,
+              touchZone: avatarRangeHit?.touchZone,
             },
           );
         }
@@ -776,9 +844,18 @@ export default function App({
           return;
         }
         const shouldTriggerInnerHammerEasterEgg = Math.random() < 0.05;
+        const hammerBonkCount = recordInteractionBurst('hammer:bonk', 3200);
+        const hammerIntensity: InteractionIntensity = shouldTriggerInnerHammerEasterEgg
+          ? 'easter_egg'
+          : hammerBonkCount >= 3
+            ? 'burst'
+            : hammerBonkCount >= 2
+              ? 'rapid'
+              : 'normal';
         emitAvatarInteraction('hammer', 'bonk', 'avatar', event.clientX, event.clientY, {
-          intensity: shouldTriggerInnerHammerEasterEgg ? 'easter_egg' : 'normal',
+          intensity: hammerIntensity,
           easterEgg: shouldTriggerInnerHammerEasterEgg,
+          touchZone: avatarRangeHit?.touchZone,
         });
         setIsInnerHammerEasterEggActive(shouldTriggerInnerHammerEasterEgg);
         setHammerSwingPhase('windup');
@@ -1192,8 +1269,8 @@ export default function App({
                       type="button"
                       aria-label={selectedEmojiButtonAriaLabel}
                       title={selectedEmojiButtonAriaLabel}
+                      aria-controls={toolMenuOpen ? 'composer-tool-popover' : undefined}
                       aria-expanded={toolMenuOpen}
-                      aria-haspopup="menu"
                       onClick={() => setToolMenuOpen(open => !open)}
                     >
                       <img
@@ -1206,7 +1283,12 @@ export default function App({
                       />
                     </button>
                     {toolMenuOpen ? (
-                      <div className="composer-icon-popover" role="menu" aria-label={toolIconsAriaLabel}>
+                      <div
+                        id="composer-tool-popover"
+                        className="composer-icon-popover"
+                        role="group"
+                        aria-label={toolIconsAriaLabel}
+                      >
                         {toolIconItems.map(item => {
                           const menuVariant = activeCursorToolId === item.id
                             ? effectiveCursorVariant
@@ -1217,7 +1299,7 @@ export default function App({
                             key={item.id}
                             className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
                             type="button"
-                            role="menuitem"
+                            aria-pressed={activeCursorToolId === item.id}
                             aria-label={item.label}
                             title={item.label}
                             onClick={() => {

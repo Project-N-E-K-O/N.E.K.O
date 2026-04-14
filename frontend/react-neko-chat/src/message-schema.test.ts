@@ -45,6 +45,7 @@ describe('message-schema', () => {
         clientX: 10,
         clientY: 20,
       },
+      touchZone: 'head',
       timestamp: Date.now(),
     });
     expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
@@ -62,6 +63,81 @@ describe('message-schema', () => {
         clientX: 10,
         clientY: 20,
       },
+      timestamp: Date.now(),
+    } as unknown;
+
+    expect(() => props.onAvatarInteraction?.(invalidPayload as never)).toThrow(ZodError);
+  });
+
+  it('rejects avatar interaction payloads with an invalid tool/action pairing', () => {
+    const onAvatarInteraction = vi.fn();
+    const props = parseChatWindowProps({ onAvatarInteraction });
+    const invalidPayload = {
+      interactionId: 'avatar-int-3',
+      toolId: 'lollipop',
+      actionId: 'bonk',
+      target: 'avatar',
+      pointer: {
+        clientX: 10,
+        clientY: 20,
+      },
+      timestamp: Date.now(),
+    } as unknown;
+
+    expect(() => props.onAvatarInteraction?.(invalidPayload as never)).toThrow(ZodError);
+  });
+
+  it('rejects avatar interaction payloads with an invalid touch zone', () => {
+    const onAvatarInteraction = vi.fn();
+    const props = parseChatWindowProps({ onAvatarInteraction });
+    const invalidPayload = {
+      interactionId: 'avatar-int-4',
+      toolId: 'fist',
+      actionId: 'poke',
+      target: 'avatar',
+      pointer: {
+        clientX: 10,
+        clientY: 20,
+      },
+      touchZone: 'tail',
+      timestamp: Date.now(),
+    } as unknown;
+
+    expect(() => props.onAvatarInteraction?.(invalidPayload as never)).toThrow(ZodError);
+  });
+
+  it('rejects lollipop payloads with fist-only rewardDrop', () => {
+    const onAvatarInteraction = vi.fn();
+    const props = parseChatWindowProps({ onAvatarInteraction });
+    const invalidPayload = {
+      interactionId: 'avatar-int-5',
+      toolId: 'lollipop',
+      actionId: 'offer',
+      target: 'avatar',
+      pointer: {
+        clientX: 10,
+        clientY: 20,
+      },
+      rewardDrop: true,
+      timestamp: Date.now(),
+    } as unknown;
+
+    expect(() => props.onAvatarInteraction?.(invalidPayload as never)).toThrow(ZodError);
+  });
+
+  it('rejects fist payloads with hammer-only easterEgg', () => {
+    const onAvatarInteraction = vi.fn();
+    const props = parseChatWindowProps({ onAvatarInteraction });
+    const invalidPayload = {
+      interactionId: 'avatar-int-6',
+      toolId: 'fist',
+      actionId: 'poke',
+      target: 'avatar',
+      pointer: {
+        clientX: 10,
+        clientY: 20,
+      },
+      easterEgg: true,
       timestamp: Date.now(),
     } as unknown;
 

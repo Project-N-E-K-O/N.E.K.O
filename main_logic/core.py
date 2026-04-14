@@ -128,6 +128,7 @@ _AVATAR_INTERACTION_ALLOWED_ACTIONS = {
     "hammer": {"bonk"},
 }
 _AVATAR_INTERACTION_ALLOWED_INTENSITIES = {"normal", "rapid", "burst", "easter_egg"}
+_AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES = {"ear", "head", "face", "body"}
 _AVATAR_INTERACTION_TOOL_LABELS = {
     "zh": {
         "lollipop": "棒棒糖",
@@ -143,28 +144,28 @@ _AVATAR_INTERACTION_TOOL_LABELS = {
 _AVATAR_INTERACTION_ACTION_LABELS = {
     "zh": {
         "lollipop": {
-            "offer": "递到嘴边",
-            "tease": "晃着逗你",
-            "tap_soft": "轻轻碰一下",
+            "offer": "第一口",
+            "tease": "第二口",
+            "tap_soft": "连续点触",
         },
         "fist": {
-            "poke": "拍一下",
+            "poke": "轻触",
         },
         "hammer": {
-            "bonk": "敲一下",
+            "bonk": "锤击",
         },
     },
     "en": {
         "lollipop": {
-            "offer": "offers it close",
-            "tease": "teases with it",
-            "tap_soft": "taps you softly",
+            "offer": "first bite",
+            "tease": "second bite",
+            "tap_soft": "repeated tap",
         },
         "fist": {
-            "poke": "pokes you",
+            "poke": "light touch",
         },
         "hammer": {
-            "bonk": "bonks you",
+            "bonk": "hammer hit",
         },
     },
 }
@@ -182,6 +183,190 @@ _AVATAR_INTERACTION_INTENSITY_LABELS = {
         "easter_egg": "easter egg",
     },
 }
+_AVATAR_INTERACTION_TOUCH_ZONE_LABELS = {
+    "zh": {
+        "ear": "耳侧",
+        "head": "头顶",
+        "face": "脸侧/嘴边",
+        "body": "身前/肩侧",
+    },
+    "en": {
+        "ear": "ear side",
+        "head": "top of the head",
+        "face": "cheek / mouth side",
+        "body": "front body / shoulder side",
+    },
+}
+_AVATAR_INTERACTION_SYSTEM_WRAPPER = {
+    "zh": {
+        "prefix": "======[系统通知：以下是一次刚刚发生的道具互动，请将其视为即时互动引导，不要直接复述字段名或系统描述]======",
+        "suffix": "======[系统通知结束：请直接以当前角色口吻输出即时反应]======",
+    },
+    "en": {
+        "prefix": "======[System notice: the following tool interaction just happened. Treat it as an immediate interaction cue and do not repeat field names or system wording]======",
+        "suffix": "======[System notice end: respond directly in character with the immediate reaction only]======",
+    },
+}
+_AVATAR_INTERACTION_REACTION_PROFILES = {
+    "zh": {
+        "lollipop": {
+            "offer": {
+                "normal": {
+                    "reaction_focus": "棒棒糖第一次完成入口接触。",
+                    "style_hint": "可以带一点初次入口后的停顿感、尝味感，语气自然偏轻。",
+                },
+            },
+            "tease": {
+                "normal": {
+                    "reaction_focus": "棒棒糖已完成第一口，本次是紧接着的第二口接触。",
+                    "style_hint": "比第一口更顺一点、更接得上上一拍，语气保持自然。",
+                },
+            },
+            "tap_soft": {
+                "rapid": {
+                    "reaction_focus": "第三阶段后继续点触，前端已表现为爱心上飘；本次属于连续喂食中的一次。",
+                    "style_hint": "节奏可以更快、分句可以更短，像连续被打断中的即时反应。",
+                },
+                "burst": {
+                    "reaction_focus": "短时间内连续多次点触，属于更高频的连续喂食。",
+                    "style_hint": "允许更碎一点、更急一点，保持当场反应感。",
+                },
+            },
+        },
+        "fist": {
+            "poke": {
+                "normal": {
+                    "reaction_focus": "猫爪产生一次短促轻触。",
+                    "style_hint": "短、轻、柔，根据部位差异自然带出细微区别。",
+                },
+                "rapid": {
+                    "reaction_focus": "短时间内连续多次轻触。",
+                    "style_hint": "可以更连贯一点、更快一点，保持轻触感。",
+                },
+                "reward_drop": {
+                    "reaction_focus": "本次轻触同时触发奖励掉落。",
+                    "style_hint": "先接住轻触，再顺手带一句掉落物。",
+                },
+            },
+        },
+        "hammer": {
+            "bonk": {
+                "normal": {
+                    "reaction_focus": "完成一次完整锤击流程并进入命中结果。",
+                    "style_hint": "短促、带一点冲击停顿感，像被打断后的第一反应。",
+                },
+                "rapid": {
+                    "reaction_focus": "短时间内再次完成锤击，已形成连续敲击。",
+                    "style_hint": "可以更直接一点，体现连续敲击后的累积感。",
+                },
+                "burst": {
+                    "reaction_focus": "连续锤击次数进一步增加，本次属于更高强度结果。",
+                    "style_hint": "反应幅度可以更大一些，但仍保持即时、短促。",
+                },
+                "easter_egg": {
+                    "reaction_focus": "本次锤击触发放大彩蛋，命中结果明显强于普通锤击。",
+                    "style_hint": "可以更夸张、更有戏剧停顿，但仍保持角色口吻。",
+                },
+            },
+        },
+    },
+    "en": {
+        "lollipop": {
+            "offer": {
+                "normal": {
+                    "reaction_focus": "The lollipop completes its first mouth contact.",
+                    "style_hint": "A slight first-taste pause or flavor-noticing beat is fine; keep it naturally light.",
+                },
+            },
+            "tease": {
+                "normal": {
+                    "reaction_focus": "The first bite has already happened, and this interaction is the immediate second bite.",
+                    "style_hint": "Let it feel a little smoother and more continuous than the first bite, while staying natural.",
+                },
+            },
+            "tap_soft": {
+                "rapid": {
+                    "reaction_focus": "After the third-stage state, another tap occurs while hearts are already floating; this is one instance within repeated feeding.",
+                    "style_hint": "The rhythm can be quicker and the phrasing shorter, like an immediate response inside repeated feeding.",
+                },
+                "burst": {
+                    "reaction_focus": "Multiple taps happen in a short window, forming a higher-frequency repeated feeding event.",
+                    "style_hint": "A more rushed or more fragmented rhythm is fine; keep it in-the-moment.",
+                },
+            },
+        },
+        "fist": {
+            "poke": {
+                "normal": {
+                    "reaction_focus": "The cat paw produces one short light touch.",
+                    "style_hint": "Short, light, and soft, with small differences depending on the touched area.",
+                },
+                "rapid": {
+                    "reaction_focus": "Several light touches happen within a short window.",
+                    "style_hint": "It can feel a little quicker and more continuous while still staying light.",
+                },
+                "reward_drop": {
+                    "reaction_focus": "This light touch also triggers a reward drop.",
+                    "style_hint": "Catch the touch first, then mention the drop in passing.",
+                },
+            },
+        },
+        "hammer": {
+            "bonk": {
+                "normal": {
+                    "reaction_focus": "One full hammer-hit sequence completes and reaches the impact result.",
+                    "style_hint": "Short and impact-forward, with a slight post-hit pause or interruption beat.",
+                },
+                "rapid": {
+                    "reaction_focus": "Another hammer hit completes within a short window, forming repeated strikes.",
+                    "style_hint": "It can be a little more direct and show accumulated impact from the repeated hits.",
+                },
+                "burst": {
+                    "reaction_focus": "The number of repeated hammer hits increases further, making this a higher-intensity result.",
+                    "style_hint": "A bigger reaction is fine as long as it still feels immediate and short.",
+                },
+                "easter_egg": {
+                    "reaction_focus": "This hammer hit triggers the enlarged easter-egg effect, making the impact result stronger than normal.",
+                    "style_hint": "It can be more dramatic, with a stronger pause or exclamation, while keeping the character voice.",
+                },
+            },
+        },
+    },
+}
+_AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
+    "zh": {
+        "lollipop": {
+            "offer": "[主人喂了你一口棒棒糖]",
+            "tease": "[主人又喂了你一口棒棒糖]",
+            "tap_soft": "[主人连续拿棒棒糖喂你]",
+        },
+        "fist": {
+            "poke": "[主人摸了摸你的头]",
+            "rapid": "[主人连续摸了摸你的头]",
+        },
+        "hammer": {
+            "bonk": "[主人用锤子敲了敲你的头]",
+            "rapid": "[主人连续敲了你好几下]",
+            "easter_egg": "[主人用锤子重重敲了你的头]",
+        },
+    },
+    "en": {
+        "lollipop": {
+            "offer": "[Your master fed you a bite of lollipop]",
+            "tease": "[Your master fed you another bite of lollipop]",
+            "tap_soft": "[Your master kept feeding you the lollipop]",
+        },
+        "fist": {
+            "poke": "[Your master gave your head a gentle pat]",
+            "rapid": "[Your master repeatedly patted your head]",
+        },
+        "hammer": {
+            "bonk": "[Your master bonked your head with a hammer]",
+            "rapid": "[Your master bonked you several times]",
+            "easter_egg": "[Your master hit your head hard with a hammer]",
+        },
+    },
+}
 
 
 def _avatar_interaction_locale(language: str | None) -> str:
@@ -190,10 +375,36 @@ def _avatar_interaction_locale(language: str | None) -> str:
 
 
 def _sanitize_avatar_interaction_text_context(text: str, max_length: int = 80) -> str:
-    cleaned = str(text or '').strip()
+    raw_text = str(text or '')
+    if not raw_text:
+        return ''
+
+    normalized = raw_text.replace('\r\n', '\n').replace('\r', '\n')
+    normalized = ''.join(
+        char if char.isprintable() or char in {'\n', '\t', ' '} else ' '
+        for char in normalized
+    )
+
+    sanitized_lines: list[str] = []
+    for line in normalized.split('\n'):
+        without_prefix = re.sub(r'^\s*(?:[-*•]+|\d+[.)]|[A-Za-z][.)]|#+)\s*', '', line)
+        collapsed = re.sub(r'\s+', ' ', without_prefix).strip()
+        if collapsed:
+            sanitized_lines.append(collapsed)
+
+    if not sanitized_lines:
+        return ''
+
+    cleaned = ' / '.join(sanitized_lines)
+    safe_max_length = max(1, int(max_length))
+    if len(cleaned) > safe_max_length:
+        cleaned = cleaned[:safe_max_length].rstrip()
     if not cleaned:
         return ''
-    return cleaned[:max_length].rstrip()
+
+    # JSON-style quoting keeps the user draft clearly bounded when interpolated
+    # into a system instruction and safely escapes embedded quotes or separators.
+    return json.dumps(cleaned, ensure_ascii=False)
 
 
 def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
@@ -222,6 +433,23 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
     if easter_egg:
         intensity = "easter_egg"
 
+    raw_touch_zone = str(payload.get("touch_zone") or payload.get("touchZone") or "").strip().lower()
+    touch_zone = raw_touch_zone if raw_touch_zone in _AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES else ""
+
+    pointer_payload = payload.get("pointer")
+    pointer: Optional[dict[str, float]] = None
+    if isinstance(pointer_payload, dict):
+        try:
+            client_x = float(pointer_payload.get("client_x", pointer_payload.get("clientX")))
+            client_y = float(pointer_payload.get("client_y", pointer_payload.get("clientY")))
+            if np.isfinite(client_x) and np.isfinite(client_y):
+                pointer = {
+                    "client_x": client_x,
+                    "client_y": client_y,
+                }
+        except (TypeError, ValueError):
+            pointer = None
+
     timestamp = payload.get("timestamp")
     try:
         timestamp_value = int(float(timestamp))
@@ -238,6 +466,8 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
         "intensity": intensity,
         "reward_drop": reward_drop,
         "easter_egg": easter_egg,
+        "touch_zone": touch_zone,
+        "pointer": pointer,
     }
 
 
@@ -247,51 +477,131 @@ def _build_avatar_interaction_instruction(manager: "LLMSessionManager", payload:
     action_label = _AVATAR_INTERACTION_ACTION_LABELS[locale].get(payload["tool_id"], {}).get(payload["action_id"], payload["action_id"])
     intensity_label = _AVATAR_INTERACTION_INTENSITY_LABELS[locale].get(payload["intensity"], payload["intensity"])
     text_context = payload.get("text_context", "")
+    touch_zone = str(payload.get("touch_zone") or "").strip().lower()
+    touch_zone_label = _AVATAR_INTERACTION_TOUCH_ZONE_LABELS[locale].get(touch_zone, "")
+    wrapper = _AVATAR_INTERACTION_SYSTEM_WRAPPER[locale]
+    action_profiles = _AVATAR_INTERACTION_REACTION_PROFILES[locale].get(payload["tool_id"], {}).get(payload["action_id"], {})
+    if payload.get("reward_drop") and action_profiles.get("reward_drop"):
+        reaction_profile = action_profiles["reward_drop"]
+    else:
+        reaction_profile = action_profiles.get(payload["intensity"]) or action_profiles.get("normal") or {
+            "reaction_focus": "保持即时、贴合角色的反应。",
+            "style_hint": "短促、自然、贴合当场反应。",
+        }
 
     if locale == "zh":
         lines = [
+            wrapper["prefix"],
             f"你是{manager.lanlan_name}，正在和{manager.master_name}互动。",
-            "主人刚刚用道具碰到了你，请立刻给出自然、贴合角色的简短回应。",
+            "前端刚刚记录到一次已经发生的道具点触。下面只给出这次互动确认发生的事实，请据此做出即时回应。",
             f"- 道具：{tool_label}",
             f"- 动作：{action_label}",
             f"- 强度：{intensity_label}",
+            f"- 事件事实：{reaction_profile['reaction_focus']}",
+            f"- 表达倾向：{reaction_profile['style_hint']}",
         ]
+        if touch_zone_label:
+            lines.append(f"- 接触位置：{touch_zone_label}")
         if payload.get("reward_drop"):
-            lines.append("- 这次互动里额外触发了掉落奖励，可以顺口提醒主人留意。")
+            lines.append("- 附加结果：本次互动同时触发了掉落奖励。")
         if payload.get("easter_egg"):
-            lines.append("- 这次是夸张彩蛋级重击，可以更戏剧化、更崩溃一点。")
+            lines.append("- 附加结果：本次互动触发了放大彩蛋。")
         if text_context:
-            lines.append(f"- 输入框里还有一句草稿，只能当语境参考：{text_context}")
+            lines.append(f"- 输入框草稿：{text_context}（仅作语境参考，不是正式用户消息）")
         lines.extend([
             "要求：",
             "1. 只输出猫娘当下会说的话，不要解释系统或复述字段名。",
-            "2. 保持 1 到 2 句，短促、有即时反应感。",
-            "3. text_context 不是正式用户消息，只有在非常自然时才能轻微借用，不能逐字复述。",
-            "4. 不要提范围外点击、坐标、概率、payload 或后台逻辑。",
+            "2. 根据上面已经发生的事实作答，不补写未发生的动作、距离变化、关系升级或额外剧情。",
+            "3. 以即时短回应为主，句数自然即可，不必机械统一。",
+            "4. text_context 不是正式用户消息，只有在非常自然时才能轻微借用，不能逐字复述。",
+            "5. 不要提范围外点击、坐标、概率、payload 或后台逻辑。",
+            wrapper["suffix"],
         ])
         return "\n".join(lines)
 
     lines = [
+        wrapper["prefix"],
         f"You are {manager.lanlan_name}, reacting to an interaction from {manager.master_name}.",
-        "The user just touched you with a tool. Reply in-character with a short, immediate reaction.",
+        "The frontend just recorded a tool tap that has already happened. The lines below describe only the confirmed facts of this interaction; reply from those facts.",
         f"- Tool: {tool_label}",
         f"- Action: {action_label}",
         f"- Intensity: {intensity_label}",
+        f"- Event fact: {reaction_profile['reaction_focus']}",
+        f"- Expression tendency: {reaction_profile['style_hint']}",
     ]
+    if touch_zone_label:
+        lines.append(f"- Touch area: {touch_zone_label}")
     if payload.get("reward_drop"):
-        lines.append("- A reward drop also happened, so you may briefly point it out.")
+        lines.append("- Additional result: this interaction also triggered a reward drop.")
     if payload.get("easter_egg"):
-        lines.append("- This is an exaggerated easter-egg bonk, so a more dramatic reaction is allowed.")
+        lines.append("- Additional result: this interaction triggered the enlarged easter-egg effect.")
     if text_context:
-        lines.append(f"- Draft text in the input box, for context only: {text_context}")
+        lines.append(f"- Draft text in the input box: {text_context} (context only, not a formal user message)")
     lines.extend([
         "Requirements:",
         "1. Output only what the catgirl would say right now.",
-        "2. Keep it to 1 or 2 short sentences.",
-        "3. The draft text is not a formal user message; use it only as light context if it fits naturally.",
-        "4. Do not mention coordinates, probabilities, payloads, or backend rules.",
+        "2. Reply from the facts above only; do not invent actions, distance changes, relationship escalation, or extra plot that did not happen.",
+        "3. Keep it as an immediate short reaction; the exact sentence count can stay natural.",
+        "4. The draft text is not a formal user message; use it only as light context if it fits naturally and never quote it verbatim.",
+        "5. Do not mention coordinates, probabilities, payloads, or backend rules.",
+        wrapper["suffix"],
     ])
     return "\n".join(lines)
+
+
+def _build_avatar_interaction_memory_note(language: str | None, payload: dict) -> str:
+    return _build_avatar_interaction_memory_meta(language, payload)["memory_note"]
+
+
+def _build_avatar_interaction_memory_meta(language: str | None, payload: dict) -> dict:
+    locale = _avatar_interaction_locale(language)
+    templates = _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES.get(locale, {})
+    tool_id = str(payload.get("tool_id") or "").strip().lower()
+    action_id = str(payload.get("action_id") or "").strip().lower()
+    intensity = str(payload.get("intensity") or "normal").strip().lower() or "normal"
+
+    memory_note = ""
+    dedupe_key = tool_id or "avatar_interaction"
+    dedupe_rank = 1
+
+    if tool_id == "lollipop":
+        dedupe_key = "lollipop_feed"
+        if action_id == "tap_soft" or intensity in {"rapid", "burst"}:
+            memory_note = templates.get("lollipop", {}).get("tap_soft", "")
+            dedupe_rank = 4 if intensity == "burst" else 3
+        elif action_id == "tease":
+            memory_note = templates.get("lollipop", {}).get("tease", "")
+            dedupe_rank = 2
+        else:
+            memory_note = templates.get("lollipop", {}).get("offer", "")
+            dedupe_rank = 1
+    elif tool_id == "fist":
+        dedupe_key = "fist_touch"
+        if intensity in {"rapid", "burst"}:
+            memory_note = templates.get("fist", {}).get("rapid", templates.get("fist", {}).get("poke", ""))
+            dedupe_rank = 3 if intensity == "burst" else 2
+        else:
+            memory_note = templates.get("fist", {}).get("poke", "")
+            dedupe_rank = 1
+    elif tool_id == "hammer":
+        dedupe_key = "hammer_bonk"
+        if intensity == "easter_egg":
+            memory_note = templates.get("hammer", {}).get("easter_egg", templates.get("hammer", {}).get("bonk", ""))
+            dedupe_rank = 4
+        elif intensity in {"rapid", "burst"}:
+            memory_note = templates.get("hammer", {}).get("rapid", templates.get("hammer", {}).get("bonk", ""))
+            dedupe_rank = 3 if intensity == "burst" else 2
+        else:
+            memory_note = templates.get("hammer", {}).get("bonk", "")
+            dedupe_rank = 1
+    else:
+        memory_note = templates.get(tool_id, {}).get(action_id, "")
+
+    return {
+        "memory_note": str(memory_note or "").strip(),
+        "memory_dedupe_key": dedupe_key,
+        "memory_dedupe_rank": dedupe_rank,
+    }
 
 
 def enqueue_voice_migration_notice(legacy_names: list) -> None:
@@ -2289,9 +2599,11 @@ class LLMSessionManager:
         logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
 
     async def handle_avatar_interaction(self, payload: dict) -> dict:
+        raw_interaction_id = str(payload.get("interaction_id") or payload.get("interactionId") or "").strip() if isinstance(payload, dict) else ""
         raw = _normalize_avatar_interaction_payload(payload)
         if not raw:
             logger.debug("[%s] handle_avatar_interaction: ignored invalid payload", self.lanlan_name)
+            await self.send_avatar_interaction_ack(raw_interaction_id, False, "invalid_payload")
             return {"accepted": False, "reason": "invalid_payload"}
 
         interaction_id = raw["interaction_id"]
@@ -2299,11 +2611,13 @@ class LLMSessionManager:
 
         if interaction_id in self._recent_avatar_interaction_id_set:
             logger.debug("[%s] handle_avatar_interaction: duplicate interaction_id=%s", self.lanlan_name, interaction_id)
+            await self.send_avatar_interaction_ack(interaction_id, False, "duplicate")
             return {"accepted": False, "reason": "duplicate", "interaction_id": interaction_id}
 
         if now_ms - self._last_avatar_interaction_at < self.avatar_interaction_cooldown_ms:
             logger.debug("[%s] handle_avatar_interaction: cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
             self._remember_avatar_interaction_id(interaction_id)
+            await self.send_avatar_interaction_ack(interaction_id, False, "cooldown")
             return {"accepted": False, "reason": "cooldown", "interaction_id": interaction_id}
 
         self._remember_avatar_interaction_id(interaction_id)
@@ -2311,34 +2625,43 @@ class LLMSessionManager:
 
         if self.is_active and isinstance(self.session, OmniRealtimeClient):
             logger.debug("[%s] handle_avatar_interaction: voice session active, skipping", self.lanlan_name)
+            await self.send_avatar_interaction_ack(interaction_id, False, "voice_session_active")
             return {"accepted": False, "reason": "voice_session_active", "interaction_id": interaction_id}
 
         if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
             if not self._has_connected_websocket():
                 logger.warning("[%s] handle_avatar_interaction: no connected websocket, skipping", self.lanlan_name)
+                await self.send_avatar_interaction_ack(interaction_id, False, "no_websocket")
                 return {"accepted": False, "reason": "no_websocket", "interaction_id": interaction_id}
             try:
                 logger.info("[%s] handle_avatar_interaction: auto-starting text session", self.lanlan_name)
                 await self.start_session(self.websocket, new=False, input_mode='text')
             except Exception as e:
                 logger.warning("[%s] handle_avatar_interaction: auto start_session failed: %s", self.lanlan_name, e)
+                await self.send_avatar_interaction_ack(interaction_id, False, "session_start_failed")
                 return {"accepted": False, "reason": "session_start_failed", "interaction_id": interaction_id}
 
         if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
             logger.warning("[%s] handle_avatar_interaction: session is not text mode after start, skipping", self.lanlan_name)
+            await self.send_avatar_interaction_ack(interaction_id, False, "not_text_session")
             return {"accepted": False, "reason": "not_text_session", "interaction_id": interaction_id}
 
         if now_ms - self._last_avatar_interaction_speak_at < self.avatar_interaction_speak_cooldown_ms:
             logger.debug("[%s] handle_avatar_interaction: speak cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
+            await self.send_avatar_interaction_ack(interaction_id, False, "speak_cooldown")
             return {"accepted": False, "reason": "speak_cooldown", "interaction_id": interaction_id}
 
         instruction = _build_avatar_interaction_instruction(self, raw)
+        memory_meta = _build_avatar_interaction_memory_meta(getattr(self, "user_language", None), raw)
+        memory_note = memory_meta["memory_note"]
 
         async with self._proactive_write_lock:
             if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
+                await self.send_avatar_interaction_ack(interaction_id, False, "session_changed")
                 return {"accepted": False, "reason": "session_changed", "interaction_id": interaction_id}
             if getattr(self.session, "_is_responding", False):
                 logger.debug("[%s] handle_avatar_interaction: text session busy, skipping", self.lanlan_name)
+                await self.send_avatar_interaction_ack(interaction_id, False, "busy")
                 return {"accepted": False, "reason": "busy", "interaction_id": interaction_id}
 
             async with self.lock:
@@ -2348,7 +2671,24 @@ class LLMSessionManager:
             if hasattr(self.session, 'update_max_response_length'):
                 self.session.update_max_response_length(self._get_text_guard_max_length())
 
-            delivered = await self.session.prompt_ephemeral(instruction)
+            if self.sync_message_queue:
+                # Let cross_server persist a simplified memory note for this
+                # proactive turn without ever syncing the raw payload/instruction.
+                self.sync_message_queue.put({
+                    "type": "avatar_interaction_memory",
+                    "data": {
+                        "interaction_id": interaction_id,
+                        "memory_note": memory_note,
+                        "memory_dedupe_key": memory_meta["memory_dedupe_key"],
+                        "memory_dedupe_rank": memory_meta["memory_dedupe_rank"],
+                    },
+                })
+
+            await self.send_avatar_interaction_ack(interaction_id, True, turn_id=self.current_speech_id)
+            delivered = await self.session.prompt_ephemeral(
+                instruction,
+                completion_mode="response",
+            )
 
         if delivered:
             self._last_avatar_interaction_speak_at = int(time.time() * 1000)
@@ -3308,6 +3648,24 @@ class LLMSessionManager:
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Failed Error: {e}")
+
+    async def send_avatar_interaction_ack(self, interaction_id: str, accepted: bool, reason: str = '', turn_id: str = ''):
+        """尽早向前端确认点触互动是否进入说话链路，便于前端做发送排队仲裁。"""
+        if not interaction_id:
+            return
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                await self.websocket.send_json({
+                    "type": "avatar_interaction_ack",
+                    "interaction_id": interaction_id,
+                    "accepted": bool(accepted),
+                    "reason": str(reason or ''),
+                    "turn_id": str(turn_id or ''),
+                })
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.error(f"💥 WS Send Avatar Interaction Ack Error: {e}")
 
     async def send_session_ended_by_server(self): # 通知前端session已被服务器终止
         """通知前端 session 已被服务器端终止（如API断连），让前端重置会话状态"""

@@ -129,27 +129,212 @@ describe('App', () => {
       },
     });
 
-    render(<App onAvatarInteraction={onAvatarInteraction} />);
+    try {
+      render(<App onAvatarInteraction={onAvatarInteraction} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+
+      fireEvent.pointerDown(window, { button: 0, clientX: 20, clientY: 20 });
+      expect(onAvatarInteraction).not.toHaveBeenCalled();
+
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
+      expect(onAvatarInteraction).toHaveBeenCalledWith(expect.objectContaining({
+        toolId: 'lollipop',
+        actionId: 'offer',
+        target: 'avatar',
+        pointer: {
+          clientX: 150,
+          clientY: 150,
+        },
+        touchZone: 'face',
+      }));
+    } finally {
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
+  it('derives different touch zones for different avatar hit areas', () => {
+    const onAvatarInteraction = vi.fn();
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9);
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      render(<App onAvatarInteraction={onAvatarInteraction} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 110 });
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 185 });
+
+      expect(onAvatarInteraction.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'fist',
+        actionId: 'poke',
+        touchZone: 'head',
+      }));
+      expect(onAvatarInteraction.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'fist',
+        actionId: 'poke',
+        touchZone: 'face',
+      }));
+      expect(onAvatarInteraction.mock.calls[2]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'fist',
+        actionId: 'poke',
+        touchZone: 'body',
+      }));
+    } finally {
+      randomSpy.mockRestore();
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
+  it('escalates lollipop interactions from normal to burst on repeated in-range taps', () => {
+    const onAvatarInteraction = vi.fn();
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      render(<App onAvatarInteraction={onAvatarInteraction} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+
+      for (let index = 0; index < 6; index += 1) {
+        fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      }
+
+      expect(onAvatarInteraction).toHaveBeenCalledTimes(6);
+      expect(onAvatarInteraction.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'lollipop',
+        actionId: 'offer',
+        intensity: 'normal',
+      }));
+      expect(onAvatarInteraction.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'lollipop',
+        actionId: 'tease',
+        intensity: 'normal',
+      }));
+      expect(onAvatarInteraction.mock.calls[2]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'lollipop',
+        actionId: 'tap_soft',
+        intensity: 'rapid',
+      }));
+      expect(onAvatarInteraction.mock.calls[5]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'lollipop',
+        actionId: 'tap_soft',
+        intensity: 'burst',
+      }));
+    } finally {
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
+  it('escalates fist interactions to rapid on repeated in-range taps', () => {
+    const onAvatarInteraction = vi.fn();
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9);
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      render(<App onAvatarInteraction={onAvatarInteraction} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+      for (let index = 0; index < 4; index += 1) {
+        fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      }
+
+      expect(onAvatarInteraction).toHaveBeenCalledTimes(4);
+      expect(onAvatarInteraction.mock.calls[3]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'fist',
+        actionId: 'poke',
+        intensity: 'rapid',
+      }));
+    } finally {
+      randomSpy.mockRestore();
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
+  it('exposes avatar tools as a toggle group with pressed state', () => {
+    render(<App />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
-    fireEvent.click(screen.getAllByRole('menuitem')[0]!);
 
-    fireEvent.pointerDown(window, { button: 0, clientX: 20, clientY: 20 });
-    expect(onAvatarInteraction).not.toHaveBeenCalled();
+    expect(screen.getByRole('group', { name: 'Tool icons' })).toBeInTheDocument();
 
-    fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
-    expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
-    expect(onAvatarInteraction).toHaveBeenCalledWith(expect.objectContaining({
-      toolId: 'lollipop',
-      actionId: 'offer',
-      target: 'avatar',
-      pointer: {
-        clientX: 150,
-        clientY: 150,
-      },
-    }));
+    const lollipopButton = screen.getByRole('button', { name: '棒棒糖' });
+    expect(lollipopButton).toHaveAttribute('aria-pressed', 'false');
 
-    delete (window as Window & { live2dManager?: unknown }).live2dManager;
-    live2dContainer.remove();
+    fireEvent.click(lollipopButton);
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji: 棒棒糖' }));
+
+    expect(screen.getByRole('button', { name: '棒棒糖' })).toHaveAttribute('aria-pressed', 'true');
   });
 });
