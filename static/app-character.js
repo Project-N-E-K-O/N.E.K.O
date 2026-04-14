@@ -914,6 +914,10 @@
                     mmdCanvasShow.style.visibility = 'visible';
                     mmdCanvasShow.style.pointerEvents = 'auto';
                 }
+                const loadingSessionId = window._createMMDLoadingSessionId
+                    ? window._createMMDLoadingSessionId('mmd-character')
+                    : `mmd-character-${Date.now()}`;
+                window.MMDLoadingOverlay?.begin(loadingSessionId, { stage: 'engine' });
 
                 // 初始化 MMD 管理器
                 // 【优化】如果 MMD 管理器已存在且场景有效，复用现有 renderer/scene，
@@ -949,6 +953,7 @@
                     // 提前获取设置并预置物理开关
                     let savedSettings = null;
                     try {
+                        window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'settings' });
                         const settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(newCatgirl) + '/mmd_settings');
                         const settingsData = await settingsRes.json();
                         if (settingsData.success && settingsData.settings) {
@@ -958,7 +963,8 @@
                             }
                         }
                     } catch (e) { /* ignore - will use current enablePhysics */ }
-                    await window.mmdManager.loadModel(mmdModelUrl);
+                    window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'model' });
+                    await window.mmdManager.loadModel(mmdModelUrl, { loadingSessionId });
                     console.log('[猫娘切换] MMD 模型加载完成');
 
                     // 应用完整设置（光照、渲染、物理、鼠标跟踪）
@@ -970,6 +976,7 @@
                     const mmdIdleAnimation = catgirlConfig?.mmd_idle_animation;
                     if (mmdIdleAnimation) {
                         try {
+                            window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'idle' });
                             await window.mmdManager.loadAnimation(mmdIdleAnimation);
                             window.mmdManager.playAnimation();
                             console.log('[猫娘切换] 已播放待机动作:', mmdIdleAnimation);
@@ -977,6 +984,11 @@
                             console.warn('[猫娘切换] 播放待机动作失败:', idleErr);
                         }
                     }
+                    window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'done' });
+                    if (window._waitForMMDRenderFrame) {
+                        await window._waitForMMDRenderFrame(window.mmdManager);
+                    }
+                    window.MMDLoadingOverlay?.end(loadingSessionId);
                 } else {
                     console.error('[猫娘切换] MMD 管理器初始化失败');
                 }
@@ -1229,6 +1241,10 @@
 
         } catch (error) {
             console.error('[猫娘切换] 失败:', error);
+            const activeSessionId = document.getElementById('mmd-container')?.dataset?.mmdLoadingSessionId;
+            if (activeSessionId) {
+                window.MMDLoadingOverlay?.fail(activeSessionId, { detail: error?.message || String(error) });
+            }
             showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
         } finally {
             S.isSwitchingCatgirl = false;

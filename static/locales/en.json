@@ -1860,7 +1860,16 @@
         },
         "managerInitFailed": "MMD manager initialization failed",
         "modelLoading": "Loading MMD model...",
-        "modelLoaded": "MMD model loaded successfully"
+        "modelLoaded": "MMD model loaded successfully",
+        "loadingOverlay": {
+            "engine": "Preparing MMD engine...",
+            "settings": "Loading MMD settings...",
+            "model": "Loading model resources...",
+            "physics": "Initializing physics...",
+            "idle": "Loading idle animation...",
+            "done": "MMD ready",
+            "failed": "Failed to load MMD"
+        }
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] Starting to load dependency modules",

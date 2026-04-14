@@ -438,6 +438,10 @@
                         mmdCanvasShow.style.visibility = 'visible';
                         mmdCanvasShow.style.pointerEvents = 'auto';
                     }
+                    const loadingSessionId = window._createMMDLoadingSessionId
+                        ? window._createMMDLoadingSessionId('mmd-interpage')
+                        : `mmd-interpage-${Date.now()}`;
+                    window.MMDLoadingOverlay?.begin(loadingSessionId, { stage: 'engine' });
 
                     // Ensure MMD manager is initialised
                     if (!window.mmdManager) {
@@ -452,6 +456,7 @@
                         // 提前获取设置并预置物理开关
                         let savedSettings = null;
                         try {
+                            window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'settings' });
                             var settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(nameForConfig) + '/mmd_settings');
                             var settingsData = await settingsRes.json();
                             if (settingsData.success && settingsData.settings) {
@@ -467,7 +472,8 @@
                         if (typeof window._stopVrmIdleRotation === 'function') window._stopVrmIdleRotation();
                         if (typeof window._stopMmdIdleRotation === 'function') window._stopMmdIdleRotation();
 
-                        await window.mmdManager.loadModel(newModelPath);
+                        window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'model' });
+                        await window.mmdManager.loadModel(newModelPath, { loadingSessionId });
 
                         // 应用完整设置（光照、渲染、物理、鼠标跟踪）
                         if (savedSettings) {
@@ -488,6 +494,7 @@
                                     }
                                     if (idleList.length > 0) {
                                         try {
+                                            window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'idle' });
                                             await window.mmdManager.loadAnimation(idleList[0]);
                                             window.mmdManager.playAnimation();
                                             console.log('[Model] 已播放待机动作:', idleList[0]);
@@ -503,6 +510,11 @@
                                 console.warn('[Model] 获取角色待机动作失败:', idleErr);
                             }
                         }
+                        window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'done' });
+                        if (window._waitForMMDRenderFrame) {
+                            await window._waitForMMDRenderFrame(window.mmdManager);
+                        }
+                        window.MMDLoadingOverlay?.end(loadingSessionId);
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
                         throw new Error('MMD 管理器初始化失败');
@@ -642,6 +654,10 @@
             }
         } catch (error) {
             console.error('[Model] 模型热切换失败:', error);
+            const activeSessionId = document.getElementById('mmd-container')?.dataset?.mmdLoadingSessionId;
+            if (activeSessionId) {
+                window.MMDLoadingOverlay?.fail(activeSessionId, { detail: error?.message || String(error) });
+            }
             // 回滚提前写入的 config，防止残留错误的模型类型
             if (typeChanged && window.lanlan_config) {
                 window.lanlan_config.model_type = oldModelType;

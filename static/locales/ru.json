@@ -1860,7 +1860,16 @@
         },
         "managerInitFailed": "Не удалось инициализировать менеджер MMD",
         "modelLoading": "Загрузка модели MMD...",
-        "modelLoaded": "Модель MMD успешно загружена"
+        "modelLoaded": "Модель MMD успешно загружена",
+        "loadingOverlay": {
+            "engine": "Подготовка движка MMD...",
+            "settings": "Загрузка настроек MMD...",
+            "model": "Загрузка ресурсов модели...",
+            "physics": "Инициализация физики...",
+            "idle": "Загрузка idle-анимации...",
+            "done": "MMD готова",
+            "failed": "Не удалось загрузить MMD"
+        }
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] Начало загрузки зависимых модулей",

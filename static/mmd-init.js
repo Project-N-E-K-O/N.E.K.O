@@ -3,6 +3,338 @@
  * 参考 vrm-init.js 结构
  */
 
+(function initMMDLoadingHelpers() {
+    if (window.MMDLoadingOverlay) return;
+
+    const STAGE_KEYS = {
+        engine: 'mmd.loadingOverlay.engine',
+        settings: 'mmd.loadingOverlay.settings',
+        model: 'mmd.loadingOverlay.model',
+        physics: 'mmd.loadingOverlay.physics',
+        idle: 'mmd.loadingOverlay.idle',
+        done: 'mmd.loadingOverlay.done',
+        failed: 'mmd.loadingOverlay.failed'
+    };
+
+    const STAGE_FALLBACKS = {
+        engine: 'Preparing MMD engine...',
+        settings: 'Loading MMD settings...',
+        model: 'Loading model resources...',
+        physics: 'Initializing physics...',
+        idle: 'Loading idle animation...',
+        done: 'MMD ready',
+        failed: 'Failed to load MMD'
+    };
+
+    const OVERLAY_STYLE_ID = 'neko-mmd-loading-overlay-style';
+    const OVERLAY_ID = 'neko-mmd-loading-overlay';
+
+    function translateStage(stage) {
+        const key = STAGE_KEYS[stage] || STAGE_KEYS.engine;
+        const fallback = STAGE_FALLBACKS[stage] || STAGE_FALLBACKS.engine;
+        if (typeof window.t === 'function') {
+            return window.t(key, fallback);
+        }
+        return fallback;
+    }
+
+    function ensureStyle() {
+        if (document.getElementById(OVERLAY_STYLE_ID)) return;
+        const style = document.createElement('style');
+        style.id = OVERLAY_STYLE_ID;
+        style.textContent = `
+            #${OVERLAY_ID} {
+                position: absolute;
+                inset: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-sizing: border-box;
+                padding: 24px;
+                background: rgba(10, 14, 18, 0.08);
+                backdrop-filter: blur(1px);
+                -webkit-backdrop-filter: blur(1px);
+                opacity: 0;
+                visibility: hidden;
+                transition: opacity 180ms ease, visibility 180ms ease;
+                z-index: 30;
+            }
+
+            #${OVERLAY_ID}.is-visible {
+                opacity: 1;
+                visibility: visible;
+            }
+
+            #${OVERLAY_ID} .neko-mmd-loading-card {
+                min-width: 240px;
+                max-width: min(70vw, 420px);
+                padding: 20px 22px;
+                border-radius: 18px;
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                background: rgba(10, 15, 20, 0.46);
+                box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
+                color: #f4f7fb;
+                text-align: center;
+                font-family: inherit;
+            }
+
+            #${OVERLAY_ID} .neko-mmd-loading-spinner {
+                width: 38px;
+                height: 38px;
+                margin: 0 auto 14px;
+                border-radius: 999px;
+                border: 3px solid rgba(255, 255, 255, 0.16);
+                border-top-color: rgba(255, 255, 255, 0.88);
+                animation: neko-mmd-loading-spin 0.9s linear infinite;
+            }
+
+            #${OVERLAY_ID} .neko-mmd-loading-stage {
+                font-size: 15px;
+                line-height: 1.45;
+                font-weight: 700;
+                letter-spacing: 0.01em;
+            }
+
+            #${OVERLAY_ID} .neko-mmd-loading-detail {
+                min-height: 18px;
+                margin-top: 7px;
+                font-size: 12px;
+                line-height: 1.5;
+                color: rgba(244, 247, 251, 0.74);
+                word-break: break-word;
+            }
+
+            @media (max-width: 960px) {
+                #${OVERLAY_ID} {
+                    padding: 16px;
+                }
+
+                #${OVERLAY_ID} .neko-mmd-loading-card {
+                    max-width: min(84vw, 360px);
+                }
+            }
+
+            @keyframes neko-mmd-loading-spin {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
+            }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    function ensureContainerVisible(container) {
+        if (!container) return null;
+        const computed = window.getComputedStyle(container);
+        if (computed.position === 'static') {
+            container.style.position = 'fixed';
+            container.style.top = '0';
+            container.style.left = '0';
+            container.style.width = '100%';
+            container.style.height = '100%';
+        }
+        if (!container.style.zIndex) {
+            container.style.zIndex = '10';
+        }
+        container.style.display = 'block';
+        container.style.visibility = 'visible';
+        container.classList.remove('hidden');
+        return container;
+    }
+
+    function getSidebarSafeOffset() {
+        const sidebar = document.getElementById('sidebar');
+        if (!sidebar) return 0;
+
+        const computed = window.getComputedStyle(sidebar);
+        if (computed.display === 'none' || computed.visibility === 'hidden') {
+            return 0;
+        }
+
+        const rect = sidebar.getBoundingClientRect();
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+        if (rect.width < 1 || rect.height < 1 || viewportWidth <= 960) {
+            return 0;
+        }
+
+        // 模型管理页的预览区在 sidebar 右侧，overlay 卡片应按预览区居中，
+        // 而不是按整个窗口居中，避免卡片贴近左侧控制面板。
+        const safeOffset = Math.max(0, Math.ceil(rect.right + 28));
+        const remainingWidth = viewportWidth - safeOffset;
+        if (remainingWidth < 320) {
+            return 0;
+        }
+
+        return Math.min(safeOffset, Math.round(viewportWidth * 0.42));
+    }
+
+    function syncOverlayLayout(overlay) {
+        if (!overlay) return;
+
+        const sidebarSafeOffset = getSidebarSafeOffset();
+        overlay.style.paddingTop = '';
+        overlay.style.paddingRight = '';
+        overlay.style.paddingBottom = '';
+        overlay.style.paddingLeft = '';
+
+        if (sidebarSafeOffset > 0) {
+            overlay.style.paddingTop = '24px';
+            overlay.style.paddingRight = '24px';
+            overlay.style.paddingBottom = '24px';
+            overlay.style.paddingLeft = `${sidebarSafeOffset}px`;
+            overlay.dataset.layout = 'sidebar-safe';
+        } else {
+            overlay.dataset.layout = 'centered';
+        }
+    }
+
+    function ensureOverlay(container) {
+        let overlay = container.querySelector(`#${OVERLAY_ID}`);
+        if (overlay) {
+            syncOverlayLayout(overlay);
+            return overlay;
+        }
+
+        overlay = document.createElement('div');
+        overlay.id = OVERLAY_ID;
+        overlay.setAttribute('aria-live', 'polite');
+        overlay.setAttribute('aria-hidden', 'true');
+        overlay.hidden = true;
+        overlay.innerHTML = `
+            <div class="neko-mmd-loading-card">
+                <div class="neko-mmd-loading-spinner"></div>
+                <div class="neko-mmd-loading-stage"></div>
+                <div class="neko-mmd-loading-detail"></div>
+            </div>
+        `;
+        container.appendChild(overlay);
+        syncOverlayLayout(overlay);
+        return overlay;
+    }
+
+    function getOverlayState({ ensureVisible = false } = {}) {
+        const container = document.getElementById('mmd-container');
+        if (!container) return { container: null, overlay: null };
+        if (ensureVisible) {
+            ensureContainerVisible(container);
+        }
+        ensureStyle();
+        return {
+            container,
+            overlay: ensureVisible ? ensureOverlay(container) : container.querySelector(`#${OVERLAY_ID}`)
+        };
+    }
+
+    function isActiveSession(container, sessionId) {
+        return !!container && container.dataset.mmdLoadingSessionId === String(sessionId);
+    }
+
+    function renderOverlay(overlay, stage, detail) {
+        const safeStage = STAGE_KEYS[stage] ? stage : 'engine';
+        overlay.dataset.stage = safeStage;
+        overlay.querySelector('.neko-mmd-loading-stage').textContent = translateStage(safeStage);
+        overlay.querySelector('.neko-mmd-loading-detail').textContent = detail ? String(detail) : '';
+    }
+
+    window._createMMDLoadingSessionId = function createMMDLoadingSessionId(prefix = 'mmd') {
+        const rand = Math.random().toString(36).slice(2, 8);
+        return `${prefix}-${Date.now()}-${rand}`;
+    };
+
+    window._waitForMMDModules = function waitForMMDModules(timeoutMs = 10000) {
+        if (window.mmdModuleLoaded || window.MMDManager) {
+            return Promise.resolve();
+        }
+        if (window._mmdModulesFailed) {
+            return Promise.reject(new Error(`MMD modules failed: ${window._mmdModulesFailed.join(', ')}`));
+        }
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const cleanup = () => {
+                window.removeEventListener('mmd-modules-ready', onReady);
+                window.removeEventListener('mmd-modules-failed', onFailed);
+                clearTimeout(timer);
+            };
+            const onReady = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve();
+            };
+            const onFailed = (event) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                const failedModules = event?.detail?.failedModules || window._mmdModulesFailed || [];
+                reject(new Error(`MMD modules failed: ${failedModules.join(', ')}`));
+            };
+            const timer = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(new Error('MMD Module Load Timeout'));
+            }, timeoutMs);
+
+            window.addEventListener('mmd-modules-ready', onReady, { once: true });
+            window.addEventListener('mmd-modules-failed', onFailed, { once: true });
+        });
+    };
+
+    window._waitForMMDRenderFrame = async function waitForMMDRenderFrame(manager, timeoutMs = 2000) {
+        if (!manager) return;
+        if (typeof manager.waitForRenderFrame === 'function') {
+            await manager.waitForRenderFrame(timeoutMs);
+            return;
+        }
+        if (manager.core && typeof manager.core.waitForRenderFrame === 'function') {
+            await manager.core.waitForRenderFrame(timeoutMs);
+            return;
+        }
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    };
+
+    window.MMDLoadingOverlay = {
+        begin(sessionId, { stage = 'engine', detail = '' } = {}) {
+            const { container, overlay } = getOverlayState({ ensureVisible: true });
+            if (!container || !overlay) return false;
+            container.dataset.mmdLoadingSessionId = String(sessionId);
+            renderOverlay(overlay, stage, detail);
+            overlay.hidden = false;
+            overlay.setAttribute('aria-hidden', 'false');
+            overlay.classList.add('is-visible');
+            return true;
+        },
+
+        update(sessionId, { stage = 'engine', detail = '' } = {}) {
+            const { container, overlay } = getOverlayState();
+            if (!container || !overlay || !isActiveSession(container, sessionId)) return false;
+            renderOverlay(overlay, stage, detail);
+            return true;
+        },
+
+        end(sessionId) {
+            const { container, overlay } = getOverlayState();
+            if (!container || !overlay || !isActiveSession(container, sessionId)) return false;
+            delete container.dataset.mmdLoadingSessionId;
+            overlay.classList.remove('is-visible');
+            overlay.setAttribute('aria-hidden', 'true');
+            overlay.hidden = true;
+            overlay.dataset.stage = '';
+            overlay.querySelector('.neko-mmd-loading-detail').textContent = '';
+            return true;
+        },
+
+        fail(sessionId, { detail = '', autoHideMs = 2200 } = {}) {
+            if (!this.update(sessionId, { stage: 'failed', detail })) {
+                return false;
+            }
+            window.setTimeout(() => {
+                this.end(sessionId);
+            }, autoHideMs);
+            return true;
+        }
+    };
+})();
+
 // --- MMD 模块加载逻辑 ---
 (async function initMMDModules() {
     if (window.mmdModuleLoaded || window._mmdModulesLoading) return;
@@ -10,6 +342,8 @@
     const MMD_VERSION = '1.0.0';
 
     const loadModules = async () => {
+        window._mmdModulesLoading = true;
+        window._mmdModulesFailed = null;
         console.log('[MMD] 开始加载依赖模块');
 
         // 核心模块（无相互依赖，可并行）
@@ -75,10 +409,13 @@
 
         if (failedModules.length === 0) {
             window.mmdModuleLoaded = true;
+            window._mmdModulesLoading = false;
             window.dispatchEvent(new CustomEvent('mmd-modules-ready'));
             console.log('[MMD] 所有模块加载完成');
         } else {
             window.mmdModuleLoaded = false;
+            window._mmdModulesLoading = false;
+            window._mmdModulesFailed = failedModules.slice();
             window.dispatchEvent(new CustomEvent('mmd-modules-failed', {
                 detail: { failedModules }
             }));
@@ -95,7 +432,7 @@
 })();
 
 // 模块加载完成后，若当前是 MMD 模式则自动初始化并加载模型
-window.addEventListener('mmd-modules-ready', async () => {
+(async function autoInitMMDOnMainPage() {
     // 模型管理页面不自动加载
     if (window.location.pathname.includes('model_manager') || document.querySelector('#vrm-model-select') !== null) return;
 
@@ -107,6 +444,9 @@ window.addEventListener('mmd-modules-ready', async () => {
     const modelType = (window.lanlan_config?.model_type || '').toLowerCase();
     const subType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
     if (modelType !== 'live3d' || subType !== 'mmd') return;
+
+    const loadingSessionId = window._createMMDLoadingSessionId('mmd-main');
+    window.MMDLoadingOverlay.begin(loadingSessionId, { stage: 'engine' });
 
     let mmdPath = window.mmdModel;
     if (!mmdPath || mmdPath === 'undefined' || mmdPath === 'null' || mmdPath.trim() === '') {
@@ -127,6 +467,7 @@ window.addEventListener('mmd-modules-ready', async () => {
     if (mmdCanvas) { mmdCanvas.style.visibility = 'visible'; mmdCanvas.style.pointerEvents = 'auto'; }
 
     try {
+        await window._waitForMMDModules(10000);
         await initMMDModel();
         if (window.mmdManager) {
             // 先获取保存的设置，预置影响加载路径的字段（如物理开关）
@@ -134,6 +475,7 @@ window.addEventListener('mmd-modules-ready', async () => {
             let savedSettings = null;
             if (catgirlName) {
                 try {
+                    window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'settings' });
                     const settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName) + '/mmd_settings');
                     if (settingsRes.ok) {
                         const settingsData = await settingsRes.json();
@@ -155,7 +497,8 @@ window.addEventListener('mmd-modules-ready', async () => {
             }
 
             const resolvedPath = window._mmdConvertPath ? window._mmdConvertPath(mmdPath) : mmdPath;
-            await window.mmdManager.loadModel(resolvedPath);
+            window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'model' });
+            await window.mmdManager.loadModel(resolvedPath, { loadingSessionId });
 
             // 加载完成后应用外观设置（光照/渲染/鼠标跟踪）
             // physics 已在 loadModel 前预置，不在此重复应用
@@ -180,6 +523,7 @@ window.addEventListener('mmd-modules-ready', async () => {
                         }
                         if (idleList.length > 0 && window.mmdManager) {
                             try {
+                                window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'idle' });
                                 await window.mmdManager.loadAnimation(idleList[0]);
                                 window.mmdManager.playAnimation();
                                 console.log('[MMD Init] 已播放待机动作:', idleList[0]);
@@ -195,12 +539,16 @@ window.addEventListener('mmd-modules-ready', async () => {
                 }
             }
 
+            window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'done' });
+            await window._waitForMMDRenderFrame(window.mmdManager);
+            window.MMDLoadingOverlay.end(loadingSessionId);
             console.log('[MMD Init] MMD 模型自动加载完成');
         }
     } catch (e) {
         console.error('[MMD Init] MMD 自动加载失败:', e);
+        window.MMDLoadingOverlay.fail(loadingSessionId, { detail: e?.message || String(e) });
     }
-});
+})();
 
 // ── 主页面 MMD 待机动作轮换 ──────────────────────────────
 // 策略：优先在动画一轮播完（loop 事件）时切换，避免动作中途跳变；
@@ -362,11 +710,7 @@ window._mmdConvertPath = function (modelPath, options = {}) {
 async function initMMDModel() {
     // 如果模块还没加载完，等待
     if (!window.mmdModuleLoaded) {
-        await new Promise((resolve) => {
-            window.addEventListener('mmd-modules-ready', resolve, { once: true });
-            // 超时保护
-            setTimeout(resolve, 10000);
-        });
+        await window._waitForMMDModules(10000);
     }
 
     if (typeof MMDManager === 'undefined') {
