@@ -1862,8 +1862,10 @@
             "changeFailed": "Failed to change idle animation"
         },
         "managerInitFailed": "MMD manager initialization failed",
+        "moduleLoading": "Loading MMD modules...",
         "modelLoading": "Loading MMD model...",
         "modelLoaded": "MMD model loaded successfully",
+        "modelLoadFailed": "Failed to load MMD model: {{error}}",
         "loadingOverlay": {
             "engine": "Preparing MMD engine...",
             "settings": "Loading MMD settings...",

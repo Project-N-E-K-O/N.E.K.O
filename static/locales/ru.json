@@ -1862,8 +1862,10 @@
             "changeFailed": "Не удалось изменить анимацию ожидания"
         },
         "managerInitFailed": "Не удалось инициализировать менеджер MMD",
+        "moduleLoading": "Загрузка модулей MMD...",
         "modelLoading": "Загрузка модели MMD...",
         "modelLoaded": "Модель MMD успешно загружена",
+        "modelLoadFailed": "Не удалось загрузить модель MMD: {{error}}",
         "loadingOverlay": {
             "engine": "Подготовка движка MMD...",
             "settings": "Загрузка настроек MMD...",

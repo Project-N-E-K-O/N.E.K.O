@@ -1072,7 +1072,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!isMMDLoadingSessionActive(canvas, loadingSessionId)) {
             return false;
         }
-        showStatus(message, timeout);
+        showStatus(message, 0);
+        if (timeout > 0) {
+            setTimeout(() => {
+                if (!isMMDLoadingSessionActive(canvas, loadingSessionId)) {
+                    return;
+                }
+                if (currentModelInfo) {
+                    const modelMsg = t('live2d.currentModel', `当前模型: ${currentModelInfo.name}`, { model: currentModelInfo.name });
+                    updateStatusText(modelMsg);
+                }
+            }, timeout);
+        }
         return true;
     }
 
@@ -4115,7 +4126,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 // 等待 MMD 模块加载
                 if (!window.mmdModuleLoaded && !window.MMDManager) {
-                    showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, '正在加载MMD模块...', 0);
+                    showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.moduleLoading', '正在加载MMD模块...'), 0);
                     if (window._waitForMMDModules) {
                         await window._waitForMMDModules(8000);
                     } else {
@@ -4245,7 +4256,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                         detail: error?.message || String(error)
                     });
                 }
-                showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, `MMD模型加载失败: ${error.message}`, 3000);
+                showStatusForMMDLoadingSession(
+                    mmdCanvas,
+                    loadingSessionId,
+                    t('mmd.modelLoadFailed', 'MMD模型加载失败: {{error}}', { error: error.message }),
+                    3000
+                );
             }
         });
     }
