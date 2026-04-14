@@ -999,8 +999,8 @@
                     }
                 };
                 img.onerror = function (e) {
-                    console.warn('[截图] 图片加载失败:', e);
-                    resolve(null);
+                    console.warn('[截图] 图片加载失败，使用原图:', e);
+                    resolve(srcDataUrl);
                 };
                 img.src = srcDataUrl;
             });

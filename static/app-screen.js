@@ -77,7 +77,11 @@
         if (S.selectedScreenSourceId === newId) return;
         var oldId = S.selectedScreenSourceId;
         S.selectedScreenSourceId = newId;
-        try { updateScreenSourceListSelection && updateScreenSourceListSelection(); } catch (_) { }
+        try {
+            if (typeof updateScreenSourceListSelection === 'function') {
+                updateScreenSourceListSelection();
+            }
+        } catch (_) { }
         // 源切换时释放本窗口缓存的旧流（若有），强制下次用新源
         if (S.screenCaptureStream && oldId !== newId) {
             try {
