@@ -178,16 +178,11 @@
         return S && S.mergeMessagesEnabled;
     }
 
-    // ======================== 结构化文本检测（从 app-chat.js 复刻） ========================
+    // ======================== 结构化文本检测（委托给共享 util） ========================
 
     function looksLikeStructuredRichText(text) {
-        var s = normalizeGeminiText(text || '');
-        return /```[\s\S]*```/.test(s)
-            || /(?:^|\n)```/.test(s)
-            || /\$\$[\s\S]*\$\$/.test(s)
-            || /(?<!\$)\$(?!\$)[^$\n]+(?<!\$)\$(?!\$)/.test(s)
-            || /(?:^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s)/.test(s)
-            || /(?:^|\n)\|.+\|.+(?:\n|\r\n)\|(?:[-: ]+\|){1,}/.test(s);
+        // 统一复用 app-chat-text-utils.js 里的唯一实现，避免与 DOM 路径分叉。
+        return window.appChatTextUtils.looksLikeStructuredRichText(text);
     }
 
     // ======================== 音乐指令清洗（从 app-chat.js 复刻） ========================
@@ -283,11 +278,6 @@
 
         if (typeof window.ensureAssistantTurnStarted === 'function') {
             window.ensureAssistantTurnStarted('create_gemini_bubble');
-        }
-
-        // 字幕检测
-        if (typeof window.checkAndShowSubtitlePrompt === 'function') {
-            window.checkAndShowSubtitlePrompt(cleanSentence);
         }
 
         return ref;
@@ -427,11 +417,34 @@
                 window._geminiTurnFullText = '';
                 window._pendingMusicCommand = '';
                 window._structuredGeminiStreaming = false;
+                window._turnIsStructured = false;
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
+                // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件要等
+                // 首个可见气泡创建后才发，而 updateSubtitleStreamingText 在
+                // 首个 chunk 就会被调用，必须在此解锁 isCurrentTurnFinalized
+                // 闸门，否则上一轮结束留下的 true 会把本轮首个 chunk 吞掉。
+                if (typeof window.beginSubtitleTurn === 'function') {
+                    window.beginSubtitleTurn();
+                }
             }
             var prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
             window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
+
+            // 常驻字幕流式写入（adapter 是生产常驻路径；PR #777 漏了这段，导致 React
+            // 聊天窗口下字幕只能等 turn_end 才首次出现，视觉上像"一口气显示"）。
+            // 结构化命中时改走 [markdown] 占位，turn_end 跳过翻译。
+            var streamingText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            if (!window._turnIsStructured && looksLikeStructuredRichText(streamingText)) {
+                window._turnIsStructured = true;
+            }
+            if (window._turnIsStructured) {
+                if (typeof window.markSubtitleStructured === 'function') {
+                    window.markSubtitleStructured();
+                }
+            } else if (typeof window.updateSubtitleStreamingText === 'function') {
+                window.updateSubtitleStreamingText(streamingText);
+            }
         }
 
         // ---------- gemini + realistic 模式 ----------

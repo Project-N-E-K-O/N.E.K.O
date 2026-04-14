@@ -42,6 +42,10 @@ function injectPopupStyles(prefix) {
             opacity: 0;
             transform: translateX(-10px);
             transition: opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1);
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
         }
         .${prefix}-popup.is-positioning {
             pointer-events: none !important;
@@ -82,6 +86,10 @@ function injectPopupStyles(prefix) {
             transition: background 0.2s ease;
             font-size: 13px;
             white-space: nowrap;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
         }
         .${prefix}-popup-item:hover {
             background: rgba(68, 183, 254, 0.08);
@@ -99,6 +107,10 @@ function injectPopupStyles(prefix) {
             transition: background 0.2s ease, opacity 0.2s ease;
             font-size: 13px;
             white-space: nowrap;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
         }
         .${prefix}-toggle-item:focus-within {
             outline: 2px solid var(--neko-popup-accent, #44b7fe);
@@ -170,6 +182,10 @@ function injectPopupStyles(prefix) {
             pointer-events: auto !important;
             position: relative;
             z-index: 100002;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
         }
         .${prefix}-settings-menu-item:hover {
             background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));

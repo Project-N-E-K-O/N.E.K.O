@@ -521,10 +521,19 @@ class VRMManager {
             shadowZ = 0;
         }
 
-        // 9. 设置阴影位置
+        // 9. 缓存脚骨引用，供 animate loop 每帧更新阴影 Y
+        this._shadowFootBones = [];
+        if (result.vrm.humanoid) {
+            for (const name of ['leftToes', 'rightToes', 'leftFoot', 'rightFoot']) {
+                const bone = result.vrm.humanoid.getNormalizedBoneNode(name);
+                if (bone) this._shadowFootBones.push(bone);
+            }
+        }
+
+        // 10. 设置阴影位置
         this._shadowMesh.position.set(shadowX, shadowY, shadowZ);
 
-        // 10. 添加到模型场景中
+        // 11. 添加到模型场景中
         result.vrm.scene.add(this._shadowMesh);
     }
 
@@ -736,8 +745,28 @@ class VRMManager {
                 }
 
                 // 6. CursorFollow：头/颈加成旋转（在 vrm.update 之后，确保不被覆盖）
-                if (this._cursorFollow) {
+                // VRMA 动画播放中（包括 idle）跳过 applyHead：动画自身的 lookAtProxy track
+                // 已包含视线方向，由 vrm.lookAt.update() 处理。applyHead 额外叠加头颈旋转
+                // 会和动画打架导致脖子抽动（特别是跨 clip crossfade 期间）。
+                if (this._cursorFollow && !(this.animation && this.animation.vrmaIsPlaying)) {
                     this._cursorFollow.applyHead(delta);
+                }
+            }
+
+            // 6.5 阴影 Y 跟随脚骨（每帧更新，修复跳舞时阴影不动 + 初始高度不对）
+            if (this._shadowMesh && this._shadowFootBones && this._shadowFootBones.length > 0
+                && this.currentModel && this.currentModel.vrm && this.currentModel.vrm.scene) {
+                if (!this._shadowTmpMat4) this._shadowTmpMat4 = new window.THREE.Matrix4();
+                if (!this._shadowTmpVec3) this._shadowTmpVec3 = new window.THREE.Vector3();
+                this._shadowTmpMat4.copy(this.currentModel.vrm.scene.matrixWorld).invert();
+                let minY = Infinity;
+                for (const bone of this._shadowFootBones) {
+                    bone.getWorldPosition(this._shadowTmpVec3);
+                    this._shadowTmpVec3.applyMatrix4(this._shadowTmpMat4);
+                    if (this._shadowTmpVec3.y < minY) minY = this._shadowTmpVec3.y;
+                }
+                if (minY !== Infinity) {
+                    this._shadowMesh.position.y = minY + 0.001;
                 }
             }
 
