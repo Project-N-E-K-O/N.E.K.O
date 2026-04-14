@@ -1116,6 +1116,12 @@
 
     // ======================== backoff reset ========================
 
+    /**
+     * 重置主动搭话退避级别 + 语音无回复计数，并 reschedule timer；
+     * 同时通过 BroadcastChannel 广播，让所有窗口（包括 leader）同步 reset。
+     * @param {Object} [opts]
+     * @param {boolean} [opts._fromIpc] 标记本次调用源自 IPC 消息，避免回环广播。
+     */
     function resetProactiveChatBackoff(opts) {
         // 重置退避级别
         S.proactiveChatBackoffLevel = 0;
