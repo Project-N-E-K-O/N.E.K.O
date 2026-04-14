@@ -1879,7 +1879,16 @@
         },
         "managerInitFailed": "MMD マネージャーの初期化に失敗しました",
         "modelLoading": "MMD モデルを読み込み中...",
-        "modelLoaded": "MMD モデルの読み込みに成功しました"
+        "modelLoaded": "MMD モデルの読み込みに成功しました",
+        "loadingOverlay": {
+            "engine": "MMD エンジンを準備中...",
+            "settings": "MMD 設定を読み込み中...",
+            "model": "モデルリソースを読み込み中...",
+            "physics": "物理演算を初期化中...",
+            "idle": "待機アニメーションを読み込み中...",
+            "done": "MMD の準備ができました",
+            "failed": "MMD の読み込みに失敗しました"
+        }
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] 依存モジュールの読み込みを開始しています",

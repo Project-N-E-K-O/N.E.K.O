@@ -1879,7 +1879,16 @@
         },
         "managerInitFailed": "MMD 관리자 초기화에 실패했습니다",
         "modelLoading": "MMD 모델을 로드하는 중...",
-        "modelLoaded": "MMD 모델이 성공적으로 로드되었습니다"
+        "modelLoaded": "MMD 모델이 성공적으로 로드되었습니다",
+        "loadingOverlay": {
+            "engine": "MMD 엔진 준비 중...",
+            "settings": "MMD 설정 불러오는 중...",
+            "model": "모델 리소스 불러오는 중...",
+            "physics": "물리 초기화 중...",
+            "idle": "대기 애니메이션 불러오는 중...",
+            "done": "MMD 준비 완료",
+            "failed": "MMD 로드 실패"
+        }
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] 종속성 모듈 로드 시작 중",

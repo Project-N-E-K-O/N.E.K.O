@@ -1879,7 +1879,16 @@
         },
         "managerInitFailed": "MMD 管理器初始化失敗",
         "modelLoading": "正在載入 MMD 模型...",
-        "modelLoaded": "MMD 模型載入成功"
+        "modelLoaded": "MMD 模型載入成功",
+        "loadingOverlay": {
+            "engine": "正在準備 MMD 引擎...",
+            "settings": "正在讀取 MMD 設定...",
+            "model": "正在載入模型資源...",
+            "physics": "正在初始化物理...",
+            "idle": "正在載入待機動作...",
+            "done": "MMD 已就緒",
+            "failed": "MMD 載入失敗"
+        }
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] 開始加載依賴模塊",

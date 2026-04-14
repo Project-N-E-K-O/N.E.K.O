@@ -63,14 +63,14 @@
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const mmdModules = [
+            '/static/mmd-init.js',
             '/static/mmd-core.js',
             '/static/mmd-animation.js',
             '/static/mmd-expression.js',
             '/static/mmd-interaction.js',
             '/static/mmd-cursor-follow.js',
             '/static/mmd-manager.js',
-            '/static/mmd-ui-buttons.js',
-            '/static/mmd-init.js'
+            '/static/mmd-ui-buttons.js'
         ];
 
         const failedModules = [];
@@ -91,9 +91,16 @@
 
         if (failedModules.length > 0) {
             window.mmdModuleLoaded = false;
+            window._mmdModulesLoading = false;
+            window._mmdModulesFailed = failedModules.slice();
             console.error('[MMD] 以下模块加载失败:', failedModules);
+            window.dispatchEvent(new CustomEvent('mmd-modules-failed', {
+                detail: { failedModules }
+            }));
         } else {
             window.mmdModuleLoaded = true;
+            window._mmdModulesLoading = false;
+            window._mmdModulesFailed = null;
             window.dispatchEvent(new CustomEvent('mmd-modules-ready'));
         }
     };
@@ -4026,6 +4033,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             const modelPath = e.target.value;
             updateMMDModelSelectButtonText();
             if (!modelPath) return;
+            const loadingSessionId = window._createMMDLoadingSessionId
+                ? window._createMMDLoadingSessionId('mmd-manager')
+                : `mmd-manager-${Date.now()}`;
+            if (window.MMDLoadingOverlay) {
+                window.MMDLoadingOverlay.begin(loadingSessionId, { stage: 'engine' });
+            }
 
             // 加载 MMD 前，隐藏 VRM 容器（VRM/MMD 使用独立画布，仅需 CSS 切换）
             if (vrmContainer) {
@@ -4046,11 +4059,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 等待 MMD 模块加载
                 if (!window.mmdModuleLoaded && !window.MMDManager) {
                     showStatus('正在加载MMD模块...', 0);
-                    await new Promise((resolve, reject) => {
-                        if (window.MMDManager || window.mmdModuleLoaded) return resolve();
-                        window.addEventListener('mmd-modules-ready', resolve, { once: true });
-                        setTimeout(() => reject(new Error('MMD Module Load Timeout')), 8000);
-                    });
+                    if (window._waitForMMDModules) {
+                        await window._waitForMMDModules(8000);
+                    } else {
+                        await new Promise((resolve, reject) => {
+                            if (window.MMDManager || window.mmdModuleLoaded) return resolve();
+                            window.addEventListener('mmd-modules-ready', resolve, { once: true });
+                            setTimeout(() => reject(new Error('MMD Module Load Timeout')), 8000);
+                        });
+                    }
                 }
 
                 // 初始化 mmdManager（如果尚未存在）
@@ -4061,6 +4078,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 if (!window.mmdManager) {
+                    if (window.MMDLoadingOverlay) {
+                        window.MMDLoadingOverlay.fail(loadingSessionId, {
+                            detail: t('mmd.managerInitFailed', 'MMD管理器初始化失败')
+                        });
+                    }
                     showStatus(t('mmd.managerInitFailed', 'MMD管理器初始化失败'), 3000);
                     return;
                 }
@@ -4087,6 +4109,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     await _mmdSettingsLoadPromise;
                 }
                 try {
+                    if (window.MMDLoadingOverlay) {
+                        window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'settings' });
+                    }
                     const savedMmdSettings = localStorage.getItem('mmdSettings');
                     if (savedMmdSettings) {
                         const s = JSON.parse(savedMmdSettings);
@@ -4095,12 +4120,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
                     }
                 } catch (e) { /* ignore */ }
-                await window.mmdManager.loadModel(modelPath);
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'model' });
+                }
+                await window.mmdManager.loadModel(modelPath, { loadingSessionId });
                 showStatus(t('mmd.modelLoaded', 'MMD模型加载成功'), 2000);
 
                 // 加载后立即播内置 wait03 防 T-pose; 用户保存的 idle 选择
                 // 由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖
                 try {
+                    if (window.MMDLoadingOverlay) {
+                        window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'idle' });
+                    }
                     await window.mmdManager.loadAnimation('/static/mmd/animation/wait03.vmd');
                     window.mmdManager.playAnimation();
                     isMmdIdlePlaying = true;
@@ -4110,8 +4141,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 await loadCharacterLighting();
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'done' });
+                }
+                if (window._waitForMMDRenderFrame) {
+                    await window._waitForMMDRenderFrame(window.mmdManager);
+                }
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.end(loadingSessionId);
+                }
             } catch (error) {
                 console.error('加载MMD模型失败:', error);
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.fail(loadingSessionId, {
+                        detail: error?.message || String(error)
+                    });
+                }
                 showStatus(`MMD模型加载失败: ${error.message}`, 3000);
             }
         });
