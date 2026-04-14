@@ -1300,9 +1300,48 @@
     // ======================== captureProactiveChatScreenshot ========================
 
     /**
-     * 主动搭话截图函数（优先缓存流/Electron源 → getDisplayMedia → pyautogui 兜底）
+     * 主动搭话截图函数
+     * 优先级：
+     *   0a. 复用有效缓存流（屏幕共享活跃时零成本）
+     *   0b. 主进程 desktopCapturer 直接对选中源做快照（Electron 桌面 + 用户已选源；最可靠）
+     *   1.  acquireOrReuseCachedStream（创建新流：Electron chromeMediaSourceId / getDisplayMedia）
+     *   2.  后端 pyautogui 兜底
+     *
+     * 0b 解决聊天框截图按钮在 Electron 41/Win11 + useSystemPicker 下对窗口源总是
+     * 返回整屏的问题；同时也改善此函数走 WS_HOOK / CHAT_CHANNELS.REQUEST_SCREENSHOT
+     * 路径时的准确性。
      */
     async function captureProactiveChatScreenshot() {
+        // 策略 0a: 复用有效缓存流（避免打扰正在进行的屏幕共享）
+        if (S.screenCaptureStream && S.screenCaptureStream.active) {
+            try {
+                var tracks = S.screenCaptureStream.getVideoTracks();
+                if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
+                    var cachedFrame = await captureFrameFromStream(S.screenCaptureStream, 0.85);
+                    if (cachedFrame && cachedFrame.dataUrl) {
+                        S.screenCaptureStreamLastUsed = Date.now();
+                        if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
+                        console.log('[主动搭话截图] 缓存流截图成功');
+                        return cachedFrame.dataUrl;
+                    }
+                }
+            } catch (e) { console.warn('[主动搭话截图] 缓存流截图失败，继续:', e); }
+        }
+
+        // 策略 0b: 主进程直接捕获选中源（Electron 桌面环境）
+        if (S.selectedScreenSourceId && window.electronDesktopCapturer
+            && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
+            try {
+                var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(S.selectedScreenSourceId);
+                if (direct && direct.success && direct.dataUrl) {
+                    console.log('[主动搭话截图] 主进程直接捕获成功:', S.selectedScreenSourceId);
+                    return direct.dataUrl;
+                } else if (direct && direct.error) {
+                    console.warn('[主动搭话截图] 主进程直接捕获失败，将回退到流路径:', direct.error);
+                }
+            } catch (e) { console.warn('[主动搭话截图] 主进程直接捕获抛错，将回退到流路径:', e); }
+        }
+
         // 策略1: 缓存流 / Electron窗口ID / getDisplayMedia（非user gesture不弹窗）
         var stream = await acquireOrReuseCachedStream({ allowPrompt: false });
         if (stream) {
