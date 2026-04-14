@@ -39,6 +39,11 @@ class UniversalTutorialManager {
         this._modelManagerTutorialDebounceTimer = null;
         this._modelManagerBootstrapFallbackTimer = null;
         this._modelManagerReceivedModeEvent = false;
+        this.yuiGuideDirector = null;
+        this._yuiGuideLastSceneId = null;
+        this._yuiGuideLifecycleActive = false;
+        this._tutorialEndReason = null;
+        this._tutorialEndHandled = false;
 
         // 刷新延迟常量
         this.LAYOUT_REFRESH_DELAY = 100;
@@ -69,6 +74,300 @@ class UniversalTutorialManager {
             return window.t(key, fallback);
         }
         return fallback;
+    }
+
+    getYuiGuideRegistry() {
+        try {
+            if (typeof window.getYuiGuideStepsRegistry === 'function') {
+                return window.getYuiGuideStepsRegistry() || null;
+            }
+        } catch (error) {
+            console.error('[Tutorial] 获取 Yui Guide 注册表失败:', error);
+        }
+
+        return window.YuiGuideStepsRegistry || null;
+    }
+
+    isYuiGuideAvailable() {
+        return !!this.getYuiGuideRegistry();
+    }
+
+    isYuiGuideEnabledForPage(page = this.currentPage) {
+        const registry = this.getYuiGuideRegistry();
+        if (!registry || !registry.sceneOrder) {
+            return false;
+        }
+
+        const pageOrder = Array.isArray(registry.sceneOrder[page]) ? registry.sceneOrder[page] : [];
+        return pageOrder.length > 0;
+    }
+
+    getYuiGuideMappedSceneIds(validSteps = this.cachedValidSteps) {
+        if (!Array.isArray(validSteps) || validSteps.length === 0) {
+            return [];
+        }
+
+        const mappedSceneIds = new Set();
+        validSteps.forEach(stepConfig => {
+            const sceneId = this.getYuiGuideSceneIdForStep(stepConfig);
+            if (sceneId) {
+                mappedSceneIds.add(sceneId);
+            }
+        });
+
+        return Array.from(mappedSceneIds);
+    }
+
+    getYuiGuideStepDefinition(stepId) {
+        if (!stepId) {
+            return null;
+        }
+
+        const registry = this.getYuiGuideRegistry();
+        if (!registry || typeof registry.getStep !== 'function') {
+            return null;
+        }
+
+        return registry.getStep(stepId) || null;
+    }
+
+    getYuiGuidePreludeSceneIds(page = this.currentPage, validSteps = this.cachedValidSteps) {
+        const registry = this.getYuiGuideRegistry();
+        if (!registry || !registry.sceneOrder) {
+            return [];
+        }
+
+        const pageOrder = Array.isArray(registry.sceneOrder[page]) ? registry.sceneOrder[page] : [];
+        const mappedSceneIds = new Set(this.getYuiGuideMappedSceneIds(validSteps));
+
+        return pageOrder.filter(stepId => (
+            typeof stepId === 'string' &&
+            stepId.startsWith('intro_') &&
+            !mappedSceneIds.has(stepId)
+        ));
+    }
+
+    getYuiGuideSceneIdForStep(stepConfig) {
+        if (!stepConfig || typeof stepConfig !== 'object') {
+            return null;
+        }
+
+        const sceneId = typeof stepConfig.yuiGuideSceneId === 'string'
+            ? stepConfig.yuiGuideSceneId.trim()
+            : '';
+
+        if (!sceneId) {
+            return null;
+        }
+
+        const registry = this.getYuiGuideRegistry();
+        if (!registry) {
+            return sceneId;
+        }
+
+        if (typeof registry.hasStep === 'function' && !registry.hasStep(sceneId)) {
+            console.warn(`[Tutorial] Yui Guide 场景未注册: ${sceneId}`);
+            return null;
+        }
+
+        const guideStep = typeof registry.getStep === 'function' ? registry.getStep(sceneId) : null;
+        if (guideStep && guideStep.page && guideStep.page !== this.currentPage) {
+            console.warn(`[Tutorial] Yui Guide 场景页面不匹配: ${sceneId} -> ${guideStep.page}`);
+        }
+
+        return sceneId;
+    }
+
+    ensureYuiGuideDirector() {
+        if (this.yuiGuideDirector) {
+            return this.yuiGuideDirector;
+        }
+
+        if (!this.isYuiGuideEnabledForPage()) {
+            return null;
+        }
+
+        if (typeof window.createYuiGuideDirector !== 'function') {
+            return null;
+        }
+
+        try {
+            const director = window.createYuiGuideDirector({
+                tutorialManager: this,
+                page: this.currentPage,
+                registry: this.getYuiGuideRegistry()
+            });
+
+            if (director && typeof director === 'object') {
+                this.yuiGuideDirector = director;
+                return director;
+            }
+
+            console.warn('[Tutorial] createYuiGuideDirector 返回了无效对象');
+        } catch (error) {
+            console.error('[Tutorial] 创建 Yui Guide Director 失败:', error);
+        }
+
+        return null;
+    }
+
+    dispatchYuiGuideEvent(name, detail = {}) {
+        if (!this.isYuiGuideEnabledForPage()) {
+            return;
+        }
+
+        if (typeof window.dispatchEvent !== 'function' || typeof CustomEvent === 'undefined') {
+            return;
+        }
+
+        const payload = Object.assign({
+            currentPage: this.currentPage,
+            tutorialManager: this,
+            timestamp: Date.now()
+        }, detail);
+
+        window.dispatchEvent(new CustomEvent(`neko:yui-guide:${name}`, {
+            detail: payload
+        }));
+    }
+
+    buildYuiGuideStepContext(stepConfig, stepIndex, source = 'tutorial') {
+        const sceneId = this.getYuiGuideSceneIdForStep(stepConfig);
+
+        return {
+            page: this.currentPage,
+            source: source,
+            sceneId: sceneId,
+            stepIndex: stepIndex,
+            totalSteps: Array.isArray(this.cachedValidSteps) ? this.cachedValidSteps.length : 0,
+            driverStep: stepConfig || null,
+            guideStep: sceneId ? this.getYuiGuideStepDefinition(sceneId) : null
+        };
+    }
+
+    callYuiGuideDirector(methodName, ...args) {
+        const director = this.ensureYuiGuideDirector();
+        if (!director || typeof director[methodName] !== 'function') {
+            return;
+        }
+
+        try {
+            const result = director[methodName](...args);
+            if (result && typeof result.then === 'function') {
+                Promise.resolve(result).catch(error => {
+                    console.error(`[Tutorial] Yui Guide Director.${methodName} 执行失败:`, error);
+                });
+            }
+        } catch (error) {
+            console.error(`[Tutorial] Yui Guide Director.${methodName} 调用失败:`, error);
+        }
+    }
+
+    notifyYuiGuidePreludeStart(validSteps) {
+        if (!this.isYuiGuideEnabledForPage()) {
+            return;
+        }
+
+        this._yuiGuideLifecycleActive = true;
+        this._yuiGuideLastSceneId = null;
+
+        const detail = {
+            page: this.currentPage,
+            validSteps: Array.isArray(validSteps) ? validSteps : [],
+            preludeSceneIds: this.getYuiGuidePreludeSceneIds(this.currentPage, validSteps)
+        };
+
+        this.dispatchYuiGuideEvent('prelude-start', detail);
+        this.callYuiGuideDirector('startPrelude');
+    }
+
+    notifyYuiGuideStepEnter(stepConfig, stepIndex, source = 'step-change') {
+        if (!this.isYuiGuideEnabledForPage()) {
+            return;
+        }
+
+        const sceneId = this.getYuiGuideSceneIdForStep(stepConfig);
+        if (!sceneId || this._yuiGuideLastSceneId === sceneId) {
+            return;
+        }
+
+        const context = this.buildYuiGuideStepContext(stepConfig, stepIndex, source);
+        this.dispatchYuiGuideEvent('step-enter', context);
+        this.callYuiGuideDirector('enterStep', sceneId, context);
+        this._yuiGuideLastSceneId = sceneId;
+    }
+
+    notifyYuiGuideStepLeave(stepConfig, stepIndex, source = 'step-change') {
+        if (!this.isYuiGuideEnabledForPage()) {
+            return;
+        }
+
+        const sceneId = this.getYuiGuideSceneIdForStep(stepConfig) || this._yuiGuideLastSceneId;
+        if (!sceneId || this._yuiGuideLastSceneId !== sceneId) {
+            return;
+        }
+
+        const detail = {
+            page: this.currentPage,
+            source: source,
+            sceneId: sceneId,
+            stepIndex: stepIndex,
+            driverStep: stepConfig || null,
+            guideStep: this.getYuiGuideStepDefinition(sceneId)
+        };
+
+        this.dispatchYuiGuideEvent('step-leave', detail);
+        this.callYuiGuideDirector('leaveStep', sceneId);
+        this._yuiGuideLastSceneId = null;
+    }
+
+    notifyYuiGuideTutorialEnd(reason = 'destroy') {
+        if (!this.isYuiGuideEnabledForPage()) {
+            this.yuiGuideDirector = null;
+            this._yuiGuideLastSceneId = null;
+            this._yuiGuideLifecycleActive = false;
+            return;
+        }
+
+        if (!this._yuiGuideLifecycleActive && !this._yuiGuideLastSceneId && !this.yuiGuideDirector) {
+            return;
+        }
+
+        this.dispatchYuiGuideEvent('tutorial-end', {
+            page: this.currentPage,
+            reason: reason
+        });
+        this.callYuiGuideDirector('destroy');
+        this.yuiGuideDirector = null;
+        this._yuiGuideLastSceneId = null;
+        this._yuiGuideLifecycleActive = false;
+    }
+
+    setTutorialEndReason(reason) {
+        this._tutorialEndReason = reason || 'destroy';
+    }
+
+    resolveTutorialEndReason(finalSteps = this.cachedValidSteps || []) {
+        if (this._tutorialEndReason) {
+            return this._tutorialEndReason;
+        }
+
+        if (Array.isArray(finalSteps) && finalSteps.length > 0 && this.currentStep >= finalSteps.length - 1) {
+            return 'complete';
+        }
+
+        return 'destroy';
+    }
+
+    requestTutorialDestroy(reason = 'destroy') {
+        this.setTutorialEndReason(reason);
+
+        if (this.driver) {
+            this.driver.destroy();
+            return;
+        }
+
+        this.onTutorialEnd();
     }
 
     /**
@@ -822,6 +1121,7 @@ class UniversalTutorialManager {
                     title: window.t ? window.t('tutorial.step8.title', '🔨 OpenClaw') : '🔨 OpenClaw',
                     description: window.t ? window.t('tutorial.step8.desc', '打开猫爪面板，使用 computer use、browser use 和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~') : '打开猫爪面板，使用 computer use、browser use 和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~',
                 },
+                yuiGuideSceneId: 'intro_cat_paw',
                 disableActiveInteraction: true
             },
             {
@@ -839,6 +1139,7 @@ class UniversalTutorialManager {
                     description: window.t ? window.t('tutorial.step10.desc', '打开设置面板，下面会依次介绍设置里的各个项目~') : '打开设置面板，下面会依次介绍设置里的各个项目~',
                 },
                 action: 'click',
+                yuiGuideSceneId: 'takeover_settings_peek',
                 disableActiveInteraction: true
             },
             {
@@ -847,6 +1148,7 @@ class UniversalTutorialManager {
                     title: window.t ? window.t('tutorial.step13.title', '💬 主动搭话') : '💬 主动搭话',
                     description: window.t ? window.t('tutorial.step13.desc', '开启后猫娘会主动发起对话，频率可在此调整~') : '开启后猫娘会主动发起对话，频率可在此调整~',
                 },
+                yuiGuideSceneId: 'intro_proactive',
                 disableActiveInteraction: true
             },
             {
@@ -871,6 +1173,7 @@ class UniversalTutorialManager {
                     title: window.t ? window.t('tutorial.step16.title', '🔑 API 密钥') : '🔑 API 密钥',
                     description: window.t ? window.t('tutorial.step16.desc', '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~') : '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~',
                 },
+                yuiGuideSceneId: 'handoff_api_key',
                 disableActiveInteraction: true
             },
             {
@@ -879,6 +1182,7 @@ class UniversalTutorialManager {
                     title: window.t ? window.t('tutorial.step17.title', '🧠 记忆浏览') : '🧠 记忆浏览',
                     description: window.t ? window.t('tutorial.step17.desc', '查看与管理猫娘的记忆内容~') : '查看与管理猫娘的记忆内容~',
                 },
+                yuiGuideSceneId: 'handoff_memory_browser',
                 disableActiveInteraction: true
             },
             {
@@ -887,6 +1191,7 @@ class UniversalTutorialManager {
                     title: window.t ? window.t('tutorial.step18.title', '🛠️ 创意工坊') : '🛠️ 创意工坊',
                     description: window.t ? window.t('tutorial.step18.desc', '进入 Steam 创意工坊页面，管理订阅内容~') : '进入 Steam 创意工坊页面，管理订阅内容~',
                 },
+                yuiGuideSceneId: 'handoff_steam_workshop',
                 disableActiveInteraction: true
             },
             {
@@ -1926,6 +2231,8 @@ class UniversalTutorialManager {
     startTutorialSteps(validSteps) {
         // 重置步骤 onHighlighted 触发标记（避免重复/跨次引导）
         this._lastOnHighlightedStepIndex = null;
+        this._tutorialEndHandled = false;
+        this._tutorialEndReason = null;
 
         // 缓存已验证的步骤，供 onStepChange 使用
         this.cachedValidSteps = validSteps;
@@ -2047,8 +2354,14 @@ class UniversalTutorialManager {
             console.error('[Tutorial] 步骤切换失败:', err);
         }));
 
+        this.notifyYuiGuidePreludeStart(validSteps);
+
         // 启动引导
         this.driver.start();
+
+        if (validSteps.length > 0) {
+            this.notifyYuiGuideStepEnter(validSteps[0], 0, 'tutorial-start');
+        }
 
         // 监听窗口大小变化，刷新 SVG 遮罩和高亮框位置（注册前先清理旧的，防止重复注册）
         if (this._resizeHandler) {
@@ -2102,9 +2415,7 @@ class UniversalTutorialManager {
 
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
-            if (this.driver) {
-                this.driver.destroy();
-            }
+            this.requestTutorialDestroy('skip');
         });
         document.body.appendChild(btn);
         console.log('[Tutorial] 跳过按钮已显示');
@@ -2575,14 +2886,27 @@ class UniversalTutorialManager {
                 this.currentStep = 0;
                 return;
             }
+            const steps = this.cachedValidSteps || this.getStepsForPage();
+            const previousStepIndex = this.currentStep;
+            const previousStepConfig = (previousStepIndex >= 0 && previousStepIndex < steps.length)
+                ? steps[previousStepIndex]
+                : null;
+
             this.currentStep = this.driver.currentStep || 0;
             console.log(`[Tutorial] 当前步骤: ${this.currentStep + 1}`);
 
-            // 使用缓存的已验证步骤，而不是重新调用 getStepsForPage()
-            // 这样可以保持与 startTutorialSteps 中使用的步骤列表一致
-            const steps = this.cachedValidSteps || this.getStepsForPage();
+            const previousSceneId = this.getYuiGuideSceneIdForStep(previousStepConfig);
             if (this.currentStep < steps.length) {
                 const currentStepConfig = steps[this.currentStep];
+                const currentSceneId = this.getYuiGuideSceneIdForStep(currentStepConfig);
+
+                if (previousSceneId && previousSceneId !== currentSceneId) {
+                    this.notifyYuiGuideStepLeave(previousStepConfig, previousStepIndex, 'step-change');
+                }
+
+                if (currentSceneId && currentSceneId !== previousSceneId) {
+                    this.notifyYuiGuideStepEnter(currentStepConfig, this.currentStep, 'step-change');
+                }
 
                 // 进入新步骤前，先清理上一阶段的"下一步"前置校验
                 this.clearNextButtonGuard();
@@ -2794,6 +3118,21 @@ class UniversalTutorialManager {
      * 引导结束时的回调
      */
     onTutorialEnd() {
+        if (this._tutorialEndHandled) {
+            return;
+        }
+
+        this._tutorialEndHandled = true;
+        const finalSteps = this.cachedValidSteps || [];
+        const finalStepIndex = this.currentStep;
+        const finalStepConfig = (finalStepIndex >= 0 && finalStepIndex < finalSteps.length)
+            ? finalSteps[finalStepIndex]
+            : null;
+        const endReason = this.resolveTutorialEndReason(finalSteps);
+
+        this.notifyYuiGuideStepLeave(finalStepConfig, finalStepIndex, 'tutorial-end');
+        this.notifyYuiGuideTutorialEnd(endReason);
+
         // 重置运行标志
         this.isTutorialRunning = false;
         this.clearNextButtonGuard();
@@ -2802,6 +3141,7 @@ class UniversalTutorialManager {
         this._pendingStepChange = false;
         this._applyingInteractionState = false;
         this.cachedValidSteps = null;
+        this._tutorialEndReason = null;
 
         // 移除跳过按钮
         this.hideSkipButton();
