@@ -1028,7 +1028,9 @@
                         acquiredStream = await window.getMobileCameraStream();
                     } catch (mobileErr) {
                         console.warn('[截图] 移动端摄像头获取失败:', mobileErr);
-                        if (mobileErr && mobileErr.name === 'NotAllowedError') throw mobileErr;
+                        // 无条件抛出：保留原始错误 name（NotAllowedError / NotFoundError /
+                        // NotReadableError 等），让外层 catch 的分支能给出对应的本地化提示。
+                        throw mobileErr;
                     }
                     if (acquiredStream) {
                         var mframe = await window.captureFrameFromStream(acquiredStream, 0.8);
@@ -1095,7 +1097,9 @@
                         try {
                             var backendResult = await window.fetchBackendScreenshot();
                             if (backendResult && backendResult.dataUrl) {
-                                dataUrl = backendResult.dataUrl;
+                                // 后端 pyautogui 返回原生分辨率（2K/4K 显示器会超过 720p 上限），
+                                // 与主进程直接捕获路径保持一致，统一降采样到 MAX_SCREENSHOT_WIDTH/HEIGHT。
+                                dataUrl = await downscaleDataUrlTo720p(backendResult.dataUrl);
                             }
                         } catch (beErr) {
                             console.warn('[截图] 后端兜底失败:', beErr);

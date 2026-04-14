@@ -84,6 +84,10 @@
         } catch (_) { }
         // 源切换时释放本窗口缓存的旧流（若有），强制下次用新源
         if (S.screenCaptureStream && oldId !== newId) {
+            // 先停掉可能仍在跑的发送循环，否则 startScreenVideoStreaming 创建的临时
+            // <video> 会保留在旧流上，interval 继续向 WebSocket 推送冻结帧；tracks 停止
+            // 后 UI 和后端都会收到"还在分享但画面不动"的矛盾状态。
+            stopScreening();
             try {
                 if (typeof S.screenCaptureStream.getTracks === 'function') {
                     S.screenCaptureStream.getTracks().forEach(function (track) {
@@ -97,6 +101,15 @@
                 clearTimeout(S.screenCaptureStreamIdleTimer);
                 S.screenCaptureStreamIdleTimer = null;
             }
+            // 若本窗口正显示"分享中"状态，按钮/悬浮按钮需要同步回未分享态，
+            // 否则用户看到的是激活样式但实际已经停止推流。
+            try {
+                var sbtn = screenButton();
+                if (sbtn && sbtn.classList.contains('active')) {
+                    sbtn.classList.remove('active');
+                    syncFloatingScreenButtonState(false);
+                }
+            } catch (_) { }
         }
         console.log('[屏幕源] 从其它窗口同步了新选择:', newId);
         // 不要再写 localStorage 或 pushSelectedSourceToMain —— 源窗口已经做过了，
