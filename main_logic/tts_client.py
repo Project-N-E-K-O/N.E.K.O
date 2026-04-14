@@ -2061,7 +2061,6 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         agg_flush_bytes = 1024 if is_minimax else 4096
         chunk_gap_notice_ms = 120.0
         chunk_gap_warn_ms = 250.0
-        max_chunk_gap_warning_logs = 3
         connect_timeout = 10.0
         task_start_timeout = 10.0
         task_finish_timeout = 10.0
@@ -2187,20 +2186,6 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                 f"avg_chunk={avg_chunk_ms:.0f}ms "
                 f"peak_burst={peak_burst_ratio:.1f}x "
                 f"interpretation={interpretation}"
-            )
-
-        def _log_chunk_gap_summary() -> None:
-            if current_turn_slow_gaps <= 0:
-                return
-            throughput_ratio = _current_turn_throughput_ratio()
-            logger.info(
-                "MiniMax TTS chunk cadence summary: slow_gaps=%d warn_gaps=%d max_gap=%.0fms ratio=%.2f %s intl=%s",
-                current_turn_slow_gaps,
-                current_turn_warn_gaps,
-                current_turn_max_gap_ms,
-                throughput_ratio,
-                _cadence_diagnostics(throughput_ratio),
-                bool(is_minimax_intl),
             )
 
         def _degrade_reason_label(reason_kind: str) -> str:
@@ -2554,19 +2539,6 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                                         current_turn_max_gap_chunk_audio_ms = chunk_duration_ms
                                     if gap_ms >= chunk_gap_warn_ms:
                                         current_turn_warn_gaps += 1
-                                        if current_turn_warn_gaps <= max_chunk_gap_warning_logs:
-                                            logger.warning(
-                                                "MiniMax TTS chunk 间隔较大: %.0fms (chunk=%.0fms intl=%s pcm=%dB)",
-                                                gap_ms,
-                                                chunk_duration_ms,
-                                                bool(is_minimax_intl),
-                                                len(pcm_bytes),
-                                            )
-                                        elif current_turn_warn_gaps == max_chunk_gap_warning_logs + 1:
-                                            logger.warning(
-                                                "MiniMax TTS chunk 间隔告警过多，后续将仅在 task_finished 时汇总 (intl=%s)",
-                                                bool(is_minimax_intl),
-                                            )
                             current_turn_last_audio_monotonic = now_mono
                             try:
                                 _enqueue_pcm_audio(pcm_bytes, force_flush=bool(message.get("is_final")))
@@ -2577,7 +2549,6 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                         continue
 
                     if event_type == "task_finished":
-                        _log_chunk_gap_summary()
                         _flush_audio(force=True)
                         task_finished_event.set()
                         continue
