@@ -152,21 +152,78 @@ def replace_blank(text: str):
     return "".join(out_str)
 
 
+# "Glue-to-adjacent" 字符范围：这些脚本里出现的 ASCII 空格几乎一定是 tokenizer
+# artifact（Gemini Live 把中文 token 切开的那种），不是语义分词。
+# 刻意不包含：Hangul（韩语用空格分词）、Cyrillic / Arabic / Thai / Devanagari 等。
+_CJK_GLUE_RANGES = (
+    (0x3040, 0x30FF),  # Hiragana + Katakana
+    (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+)
+
+
+def _is_cjk_glue_char(c: str) -> bool:
+    if not c:
+        return False
+    cp = ord(c)
+    for lo, hi in _CJK_GLUE_RANGES:
+        if lo <= cp <= hi:
+            return True
+    return False
+
+
+def drop_cjk_boundary_spaces(text: str) -> str:
+    """去掉至少一侧是 CJK 汉字 / 日文假名的 ASCII 空格（含连续空格串）。
+
+    专治 Gemini Live 这类 realtime 后端在输出转录里把中文 token 切开
+    （"你 好 世 界"）的 artifact。相比 :func:`replace_blank`：
+
+    - 前者只在两侧均为 ASCII 非空格字符时保留空格，会误伤 Korean /
+      Cyrillic / Arabic / Thai 等"非 ASCII 但靠空格分词"的脚本
+      （"안녕하세요 여러분" → "안녕하세요여러분"）。
+    - 本函数只在 CJK 汉字/假名邻接的情况下删空格，其余场景一律保留。
+
+    判邻居时会**跳过连续空格**找到最近的非空格字符，这样
+    ``"你好   世界"`` 整段 3 个空格都会被删掉，而不是只删掉最外侧两个。
+    """
+    n = len(text)
+    out = []
+    for i, c in enumerate(text):
+        if c == " ":
+            # 向左跳过连续空格找最近非空格
+            j = i - 1
+            while j >= 0 and text[j] == " ":
+                j -= 1
+            left = text[j] if j >= 0 else ""
+            # 向右跳过连续空格找最近非空格
+            j = i + 1
+            while j < n and text[j] == " ":
+                j += 1
+            right = text[j] if j < n else ""
+            if _is_cjk_glue_char(left) or _is_cjk_glue_char(right):
+                continue
+        out.append(c)
+    return "".join(out)
+
+
 class TtsStreamNormalizer:
     """跨 chunk 安全的 TTS 文本规范化器。
 
     Gemini Live 等 realtime 后端的 output transcript 会在中文 token 之间
     插入 ASCII 空格（"你 好 世 界"），MiniMax / CosyVoice 等 streaming
-    TTS 会把这些断开的中文读成顿挫的短片段。该 normalizer 复用
-    :func:`replace_blank` 的语义（只保留两侧均为非空格 ASCII 的空格），
-    但针对 streaming 场景做了两项关键处理：
+    TTS 会把这些断开的中文读成顿挫的短片段。该 normalizer 用
+    :func:`drop_cjk_boundary_spaces` 去除 CJK 邻接的 ASCII 空格，同时
+    针对 streaming 场景做了两项关键处理：
 
     1. 尾部空格**延后决策**：chunk 末尾的 ASCII 空格暂存到下一个 chunk
        出现时，再结合后一个字符判断是否保留。
     2. 左侧上下文**跨 chunk 继承**：用上一次 emit 出的最后一个非空格字符
        作为下个 chunk 首位空格的"左邻居"，避免在 chunk 边界误判。
 
-    每个新的 TTS 轮次（speech_id 切换）必须调用 :meth:`reset`。
+    刻意**不碰**非 CJK 脚本（Korean / Cyrillic / Arabic / Thai 等）的空格，
+    它们靠 ASCII 空格做分词，删掉会让 TTS 彻底读不对。每个新的 TTS 轮次
+    （speech_id 切换）必须调用 :meth:`reset`。
     """
 
     __slots__ = ("_last_nonspace", "_pending_spaces")
@@ -193,10 +250,10 @@ class TtsStreamNormalizer:
         if not stripped:
             return ""
 
-        # 用上次 emit 的末位非空格字符当左邻居；非空格保证 replace_blank
-        # 不会丢掉 prefix 本身，可以用长度精确剥离。
+        # 用上次 emit 的末位非空格字符当左邻居；非空格保证
+        # drop_cjk_boundary_spaces 不会丢掉 prefix 本身，可以用长度精确剥离。
         prefix = self._last_nonspace
-        filtered = replace_blank(prefix + stripped)
+        filtered = drop_cjk_boundary_spaces(prefix + stripped)
         if prefix and filtered.startswith(prefix):
             filtered = filtered[len(prefix):]
 

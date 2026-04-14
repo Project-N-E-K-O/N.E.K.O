@@ -11,7 +11,11 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from utils.frontend_utils import TtsStreamNormalizer, replace_blank
+from utils.frontend_utils import (
+    TtsStreamNormalizer,
+    drop_cjk_boundary_spaces,
+    replace_blank,
+)
 
 
 # --- replace_blank 基本语义与边界安全性 --------------------------------------
@@ -38,13 +42,55 @@ def test_replace_blank(text, expected):
     assert replace_blank(text) == expected
 
 
-# --- 单次 feed：不跨 chunk 时行为应与 replace_blank 完全一致 ------------------
+# --- drop_cjk_boundary_spaces：只删 CJK 邻接空格，不误伤其他脚本 ------------
 
-def test_feed_single_chunk_matches_replace_blank():
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # CJK 邻接空格应删
+        ("你 好 世 界", "你好世界"),
+        ("hello 你好", "hello你好"),
+        ("你好 world", "你好world"),
+        # Hiragana / Katakana 也按 CJK 处理
+        ("こんにちは 世界", "こんにちは世界"),
+        # Korean (Hangul) 不属于 CJK glue 范围,空格应保留
+        ("안녕하세요 여러분", "안녕하세요 여러분"),
+        # Cyrillic / Arabic / Thai 空格应保留
+        ("Привет мир", "Привет мир"),
+        ("مرحبا بالعالم", "مرحبا بالعالم"),
+        ("สวัสดี ชาวโลก", "สวัสดี ชาวโลก"),
+        # 纯 ASCII 词间空格保留
+        ("hello world", "hello world"),
+        # 边界空格 (没邻居 → 不 CJK → 保留)
+        (" hello", " hello"),
+        ("hello ", "hello "),
+        # 中韩交界:左 CJK → 删(偏保守,Gemini artifact 场景更可能)
+        ("你好 안녕", "你好안녕"),
+        # 空字符串
+        ("", ""),
+    ],
+)
+def test_drop_cjk_boundary_spaces(text, expected):
+    assert drop_cjk_boundary_spaces(text) == expected
+
+
+# --- 单次 feed：不跨 chunk 时 ----------------------------------------------
+
+def test_feed_single_chunk_cjk():
     n = TtsStreamNormalizer()
     assert n.feed("你 好 世 界") == "你好世界"
     n.reset()
     assert n.feed("hello world") == "hello world"
+
+
+def test_feed_single_chunk_preserves_non_cjk_spaces():
+    """Korean / Cyrillic / Arabic 等靠空格分词的脚本不能被动手。"""
+    n = TtsStreamNormalizer()
+    assert n.feed("안녕하세요 여러분") == "안녕하세요 여러분"
+    n.reset()
+    assert n.feed("Привет мир") == "Привет мир"
+    n.reset()
+    assert n.feed("مرحبا بالعالم") == "مرحبا بالعالم"
 
 
 # --- chunk 边界：尾部空格延后决策 ------------------------------------------
@@ -124,12 +170,33 @@ def test_flush_drops_trailing_spaces():
     assert n.flush() == ""
 
 
-def test_reset_clears_state():
+def test_reset_clears_both_pending_and_last_char():
+    """reset 必须同时清空 pending_spaces 和 last_nonspace。"""
     n = TtsStreamNormalizer()
-    n.feed("hello ")
+    n.feed("你好")  # last_nonspace = '好'
     n.reset()
-    # reset 之后，首个 chunk 以空格开头应被视为无左邻居 → 删除
-    assert n.feed(" world") == "world"
+    # last_nonspace 清空后,右邻居 'w' 非 CJK → 保留前导空格
+    assert n.feed(" world") == " world"
+
+    n2 = TtsStreamNormalizer()
+    n2.feed("hello ")  # pending_spaces = " "
+    n2.reset()
+    # pending_spaces 清空后,不应把上轮尾空格带到新轮次
+    assert n2.feed("world") == "world"
+
+
+def test_cross_chunk_korean_keeps_space():
+    """跨 chunk 韩语空格 regression 保护(codex review P1)。"""
+    n = TtsStreamNormalizer()
+    assert n.feed("안녕하세요 ") == "안녕하세요"
+    # 左 '요' 右 '여' 均非 CJK → 保留空格
+    assert n.feed("여러분") == " 여러분"
+
+
+def test_cross_chunk_cyrillic_keeps_space():
+    n = TtsStreamNormalizer()
+    assert n.feed("Привет ") == "Привет"
+    assert n.feed("мир") == " мир"
 
 
 def test_empty_chunk_is_noop():
@@ -174,13 +241,20 @@ def test_speech_id_boundary_via_reset_does_not_leak_across_turns():
         "尾部空格和中文 ",
         "你好     world",
         "a b c 一 二 三",
+        # 多语言 regression 覆盖
+        "안녕하세요 여러분",
+        "Привет мир",
+        "hello 안녕 world",
+        "こんにちは 世界",
     ],
 )
 def test_stream_matches_whole_text_except_trailing(full_text):
     """任意切分方式下，拼接所有 emit 加上 flush 应等于对完整文本调用
-    replace_blank 的结果去掉尾部空格（flush 丢尾空格是 normalizer 的约定）。
+    drop_cjk_boundary_spaces 的结果，再去掉首尾空格（flush 丢尾空格是
+    normalizer 的约定；首位空格若 drop_cjk_boundary_spaces 保留则继续
+    保留，但若整段只剩空格则为空）。
     """
-    expected = replace_blank(full_text).rstrip(" ")
+    expected = drop_cjk_boundary_spaces(full_text).rstrip(" ")
 
     # 在多种切分点下都成立
     for split in range(len(full_text) + 1):
