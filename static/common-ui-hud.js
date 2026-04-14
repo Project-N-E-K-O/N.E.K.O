@@ -200,7 +200,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 }
                 : {
                     labelKey: 'settings.toggles.openclawGuide',
-                    labelFallback: 'openclaw接入教程',
+                    labelFallback: 'OpenClaw 接入教程',
                     icon: '📘',
                     url: '/api/agent/openclaw/guide',
                     windowName: 'neko_openclaw_guide',
