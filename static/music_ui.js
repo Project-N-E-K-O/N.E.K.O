@@ -54,7 +54,10 @@
     // --- 竞态保护：dispatch 入口的"加载中"标记 ---
     // sendMusicMessage 的 URL 校验/库加载阶段对外暴露，避免并发 dispatch 在
     // 真正的 audio 还未启动时绕过 isMusicPlaying() 拦截。
-    let musicDispatchPending = false;
+    //
+    // 用计数器而非 boolean：并发的 sendMusicMessage 调用各自 +1 / -1，
+    // 谁先走早退分支都不会把尚在库加载中的兄弟调用误清为 idle。
+    let musicDispatchPendingCount = 0;
 
     // --- 竞态保护：executePlay 串行化 ---
     // 两个并发 executePlay 在 await initializeAPlayer 期间会同时把
@@ -1165,9 +1168,16 @@
     window.sendMusicMessage = async function (trackInfo, shouldAutoPlay = true) {
         if (!trackInfo) return false;
 
-        // 进入 dispatch 流水线就立即标记 pending —— 让并发的 dispatchMusicPlay
+        // 进入 dispatch 流水线就立即 +1 —— 让并发的 dispatchMusicPlay
         // 能在 isMusicPlaying() 还未变成 true 的"加载中"窗口里也识别到占用。
-        musicDispatchPending = true;
+        // 用本地 pendingReleased 防止重复释放。
+        musicDispatchPendingCount += 1;
+        let pendingReleased = false;
+        const releasePending = () => {
+            if (pendingReleased) return;
+            pendingReleased = true;
+            musicDispatchPendingCount = Math.max(0, musicDispatchPendingCount - 1);
+        };
 
         // --- 核心修复：更鲁棒的 URL 预清理 ---
         if (trackInfo.url && typeof trackInfo.url === 'string') {
@@ -1198,7 +1208,7 @@
         // 5秒去重逻辑
         if (lastPlayedMusicUrl === trackInfo.url && (now - lastMusicPlayTime) < 5000 && isPlayerInDOM()) {
             console.log('[Music UI] 5秒内相同音乐且已在播放中，跳过播发请求:', trackInfo.name);
-            musicDispatchPending = false;
+            releasePending();
             return true;
         }
 
@@ -1238,7 +1248,7 @@
                 var msg = window.t ? window.t('music.unsafeSource', { domain: domain }) : ('已拦截不安全音源: ' + domain);
                 window.showStatusToast(msg, 5000);
             }
-            musicDispatchPending = false;
+            releasePending();
             return false;
         }
 
@@ -1255,7 +1265,7 @@
                 player.play();
                 showNowPlayingToast(trackInfo.name);
             }
-            musicDispatchPending = false;
+            releasePending();
             return true;
         }
 
@@ -1272,11 +1282,8 @@
                 console.log('[Music UI] 库加载失败，但请求已取消，忽略报错');
             }
         }).finally(function () {
-            // 仅当本次 dispatch 仍是最新的、且后续未被新的 sendMusicMessage 覆盖时
-            // 才解除 pending；否则交给后来者管理。
-            if (currentToken === latestMusicRequestToken) {
-                musicDispatchPending = false;
-            }
+            // 每次调用独立释放：不用 token 判断，本次引用计数 -1 就好。
+            releasePending();
         });
 
         return true;
@@ -1372,7 +1379,7 @@
     window.MusicPluginAPI = MusicPluginAPI;
 
     // 竞态拦截辅助：dispatch 流水线中（URL 校验/库加载/init）的占位标记
-    window.isMusicPending = () => musicDispatchPending;
+    window.isMusicPending = () => musicDispatchPendingCount > 0;
     // 跨窗口协调：其他窗口正在播歌（基于 BroadcastChannel 通报）
     window.isRemoteMusicActive = isRemoteMusicActive;
     // 推荐频率限流：最近是否刚派发过 proactive 推荐
