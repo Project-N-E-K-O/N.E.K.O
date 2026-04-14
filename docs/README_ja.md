@@ -393,9 +393,12 @@ cd N.E.K.O
 uv sync
 
 # 3. フロントエンドプロジェクトをビルド（Node.js >= 20.19 が必要。初回実行時またはフロントエンドコード変更後に必要）
-#    一括ビルドスクリプトも利用可能：build_frontend.bat（Windows）/ ./build_frontend.sh（Linux/macOS）
-cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build && cd ../..
+#    推奨：一括ビルドスクリプトを使用（公式にサポートされているビルド手順です）
+#      Windows：      build_frontend.bat
+#      Linux/macOS：  ./build_frontend.sh
+#    手動でビルドする場合（スクリプトと同じコマンドを使用してください）：
+# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 # 4. サービスを起動（最低限 main_server と memory_server が必要）
 uv run python memory_server.py

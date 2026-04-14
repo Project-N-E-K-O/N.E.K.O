@@ -1679,6 +1679,7 @@
             "openfang": "Её рабочий стол",
             "userPluginAdapting": "Пользовательский плагин (В разработке)",
             "openclawConnect": "OpenClaw",
+            "openclawGuide": "Руководство по OpenClaw",
             "animationSettings": "Настройки анимации",
             "chatSettings": "Настройки чата",
             "frameRate": "Частота кадров",
@@ -1701,6 +1702,15 @@
             "textGuardHighWarning": "Слишком большое значение может вызвать путаницу в памяти и речи кошечки, рекомендуется в пределах 500 символов",
             "textGuardNote": "Применяется только к текстовым ответам; не влияет на голосовые сессии"
         }
+    },
+    "openclawGuide": {
+        "windowTitle": "Руководство по OpenClaw - N.E.K.O.",
+        "pageTitle": "Руководство по OpenClaw",
+        "pageSubtitle": "Соединяет установку CoPaw, размещение канала, health-check и настройки N.E.K.O в один понятный путь.",
+        "sourceLabel": "Источник руководства",
+        "contentLanguageNotice": "Основной текст сейчас взят из китайского документа. Переключение языка влияет только на элементы управления страницы.",
+        "languageLabel": "Язык",
+        "guideUnavailable": "Содержимое руководства пусто."
     },
     "subtitle": {
         "title": "Субтитры в реальном времени",

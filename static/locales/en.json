@@ -1679,6 +1679,7 @@
             "openfang": "Her Desktop",
             "userPluginAdapting": "User Plugin (Developing)",
             "openclawConnect": "OpenClaw",
+            "openclawGuide": "OpenClaw Setup Guide",
             "chatSettings": "Chat Settings",
             "animationSettings": "Animation Settings",
             "renderQuality": "Quality",
@@ -1701,6 +1702,15 @@
             "textGuardHighWarning": "Setting too high may cause memory and language confusion, recommended within 500 chars",
             "textGuardNote": "Applies to text replies only; does not affect voice sessions"
         }
+    },
+    "openclawGuide": {
+        "windowTitle": "OpenClaw Setup Guide - N.E.K.O.",
+        "pageTitle": "OpenClaw Setup Guide",
+        "pageSubtitle": "Connect CoPaw installation, channel placement, health checks, and N.E.K.O configuration in one clear path.",
+        "sourceLabel": "Guide Source",
+        "contentLanguageNotice": "The guide body switches with the selected language.",
+        "languageLabel": "Language",
+        "guideUnavailable": "Guide content is empty."
     },
     "subtitle": {
         "title": "Real-time Subtitles",

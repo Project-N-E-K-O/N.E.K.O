@@ -68,9 +68,11 @@ You should see the character interface with a Live2D model. Try sending a text m
 
 The project has two modern frontend projects under `frontend/`. Both must be built before running the full application.
 
-### Quick build (all at once)
+### Recommended: one-shot script
 
 > **Prerequisite**: Building the frontend requires [Node.js](https://nodejs.org/) (>= 20.19). Make sure it is installed before running these commands.
+
+This is the officially supported build path — always prefer the script over running npm manually:
 
 ```bash
 # Windows
@@ -79,6 +81,8 @@ build_frontend.bat
 # Linux / macOS
 ./build_frontend.sh
 ```
+
+The sections below document per-project commands for development (dev server, incremental builds). For production builds, the script above is the source of truth.
 
 ### Chat Window (React)
 

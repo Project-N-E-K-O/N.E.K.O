@@ -3187,6 +3187,29 @@ async def proactive_chat(request: Request):
         full_text = ""
         pipe_count = 0
         aborted = False
+        # 滚动尾部缓冲区：保留最近 5 个字符以检测跨 chunk 的 "[PASS]"（长度 6）
+        pass_probe = ""
+        _PASS_PROBE_LEN = 5  # len("[PASS]") - 1
+
+        async def _emit_safe(text: str) -> bool:
+            """通过 fence/长度检查后送入 TTS。返回 True 表示应 abort。"""
+            nonlocal pipe_count, full_text, aborted
+            if not text:
+                return False
+            for ch in text:
+                if ch in ('|', '｜'):
+                    pipe_count += 1
+                    if pipe_count >= 2:
+                        print(f"[{lanlan_name}] Phase 2 fence 触发 (pipe_count={pipe_count})，abort")
+                        aborted = True
+                        return True
+            if len(full_text) + len(text) > 400:
+                print(f"[{lanlan_name}] Phase 2 长度超限 ({len(full_text)+len(text)} > 400)，abort")
+                aborted = True
+                return True
+            full_text += text
+            await mgr.feed_tts_chunk(text)
+            return False
         
         try:
             async with asyncio.timeout(25.0):
@@ -3220,37 +3243,43 @@ async def proactive_chat(request: Request):
                                 aborted = True
                                 break
                             
-                            # 缓冲中剩余的文本作为首批内容
+                            # 缓冲中剩余的文本经由 pass_probe 逻辑输出
                             if cleaned.strip():
-                                full_text += cleaned
-                                await mgr.feed_tts_chunk(cleaned)
+                                combined = pass_probe + cleaned
+                                if '[PASS]' in combined.upper():
+                                    print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
+                                    aborted = True
+                                    break
+                                safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
+                                pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
+                                if await _emit_safe(safe_text):
+                                    break
                             continue
                         
-                        # --- 在线拦截: fence ---
-                        fence_hit = False
-                        for ch in content:
-                            if ch in ('|', '｜'):
-                                pipe_count += 1
-                                if pipe_count >= 2:
-                                    fence_hit = True
-                                    break
-                        if fence_hit:
-                            print(f"[{lanlan_name}] Phase 2 流式 fence 触发 (pipe_count={pipe_count})，abort")
+                        # --- 在线拦截: [PASS]（含跨 chunk 检测）---
+                        combined = pass_probe + content
+                        if '[PASS]' in combined.upper():
+                            print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
                             aborted = True
                             break
+                        # 将本次 chunk 的尾部保留到 pass_probe，可安全输出的部分为去掉尾部的前段
+                        safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
+                        pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
                         
-                        # --- 在线拦截: 长度 ---
-                        if len(full_text) + len(content) > 400:
-                            print(f"[{lanlan_name}] Phase 2 流式长度超限 ({len(full_text)+len(content)} > 400)，abort")
-                            aborted = True
+                        if safe_text and await _emit_safe(safe_text):
                             break
-                        
-                        full_text += content
-                        await mgr.feed_tts_chunk(content)
         
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning(f"[{lanlan_name}] Phase 2 流式调用异常: {type(e).__name__}: {e}")
             aborted = True
+        
+        # --- 流结束后：flush pass_probe 残留 ---
+        if pass_probe and not aborted:
+            if '[PASS]' in pass_probe.upper():
+                aborted = True
+            else:
+                await _emit_safe(pass_probe)
+        pass_probe = ""
         
         # --- 流结束后 buffer 未 flush 的兜底处理 ---
         if not tag_parsed and buffer and not aborted:
@@ -3265,8 +3294,7 @@ async def proactive_chat(request: Request):
             if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
                 aborted = True
             elif cleaned.strip():
-                full_text += cleaned
-                await mgr.feed_tts_chunk(cleaned)
+                await _emit_safe(cleaned)
         
         # --- 结果处理 ---
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")

@@ -110,6 +110,7 @@
         _voiceSessionInitialTimer: null,
         isProactiveChatRunning: false,
         _proactiveSchedulerInitialized: false,
+        _proactiveStartupDelayApplied: false,
         proactiveChatInterval: 15,
         proactiveVisionFrameTimer: null,
         proactiveVisionInterval: 10,
