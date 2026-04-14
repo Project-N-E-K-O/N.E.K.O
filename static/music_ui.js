@@ -45,6 +45,25 @@
         ]
     };
 
+    // --- CSS 注入（独立于 APlayer 库加载，follower 镜像 bar 也需要） ---
+    const injectCSS = (path) => new Promise((res) => {
+        if (!path) return res();
+        if (document.querySelector(`link[href*="${path}"]`)) return res();
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = path;
+        link.onload = () => { console.log('[Music UI] 样式加载成功:', path); res(); };
+        link.onerror = () => { console.error('[Music UI] 样式加载失败，请检查路径:', path); res(); };
+        document.head.appendChild(link);
+    });
+
+    let musicUiCssInjected = false;
+    const ensureMusicUiCSS = () => {
+        if (musicUiCssInjected) return;
+        musicUiCssInjected = true;
+        injectCSS(MUSIC_CONFIG.assets.uiCssPath);
+    };
+
     let currentPlayingTrack = null;
     let localPlayer = null;
     let musicCardMessageId = null;
@@ -501,6 +520,7 @@
         if (musicBar && musicBar.dataset.mirror !== 'true') return;
 
         if (firstRender) {
+            ensureMusicUiCSS();
             let mountTarget = document.getElementById('music-player-mount');
             let insertBeforeEl = null;
             if (!mountTarget) {
@@ -1136,25 +1156,7 @@
         if (aplayerLoadPromise) return aplayerLoadPromise;
 
         aplayerLoadPromise = new Promise((resolve, reject) => {
-            // 核心修复：定义一个真正的函数来加载 CSS
-            const injectCSS = (path) => new Promise((res) => {
-                if (!path) return res();
-                if (document.querySelector(`link[href*="${path}"]`)) return res();
-
-                const link = document.createElement('link');
-                link.rel = 'stylesheet';
-                link.href = path;
-                link.onload = () => {
-                    console.log('[Music UI] 样式加载成功:', path);
-                    res();
-                };
-                link.onerror = () => {
-                    console.error('[Music UI] 样式加载失败，请检查路径:', path);
-                    res(); // 失败也要继续，不能卡死
-                };
-                document.head.appendChild(link);
-            });
-
+            musicUiCssInjected = true;
             const cssPromises = [
                 injectCSS(MUSIC_CONFIG.assets.cssPath),
                 injectCSS(MUSIC_CONFIG.assets.uiCssPath)
