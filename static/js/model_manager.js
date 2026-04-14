@@ -1064,6 +1064,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         return true;
     }
 
+    function isMMDLoadingSessionActive(canvas, loadingSessionId) {
+        return !!canvas && canvas.dataset.mmdLoadingSessionId === String(loadingSessionId);
+    }
+
+    function showStatusForMMDLoadingSession(canvas, loadingSessionId, message, timeout) {
+        if (!isMMDLoadingSessionActive(canvas, loadingSessionId)) {
+            return false;
+        }
+        showStatus(message, timeout);
+        return true;
+    }
+
     // 更新模型类型按钮文字的函数（使用统一管理器）
     function updateModelTypeButtonText() {
         if (modelTypeManager) {
@@ -4103,7 +4115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 // 等待 MMD 模块加载
                 if (!window.mmdModuleLoaded && !window.MMDManager) {
-                    showStatus('正在加载MMD模块...', 0);
+                    showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, '正在加载MMD模块...', 0);
                     if (window._waitForMMDModules) {
                         await window._waitForMMDModules(8000);
                     } else {
@@ -4158,11 +4170,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                             detail: t('mmd.managerInitFailed', 'MMD管理器初始化失败')
                         });
                     }
-                    showStatus(t('mmd.managerInitFailed', 'MMD管理器初始化失败'), 3000);
+                    showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.managerInitFailed', 'MMD管理器初始化失败'), 3000);
                     return;
                 }
 
-                showStatus(t('mmd.modelLoading', '正在加载MMD模型...'), 0);
+                showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.modelLoading', '正在加载MMD模型...'), 0);
                 if (mmdContainer) mmdContainer.classList.remove('hidden');
 
                 // 在加载新模型前，重置动画播放状态
@@ -4199,7 +4211,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'model' });
                 }
                 await window.mmdManager.loadModel(modelPath, { loadingSessionId });
-                showStatus(t('mmd.modelLoaded', 'MMD模型加载成功'), 2000);
+                showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.modelLoaded', 'MMD模型加载成功'), 2000);
 
                 // 加载后立即播内置 wait03 防 T-pose; 用户保存的 idle 选择
                 // 由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖
@@ -4233,7 +4245,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         detail: error?.message || String(error)
                     });
                 }
-                showStatus(`MMD模型加载失败: ${error.message}`, 3000);
+                showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, `MMD模型加载失败: ${error.message}`, 3000);
             }
         });
     }

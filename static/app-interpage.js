@@ -112,6 +112,35 @@
             .forEach(function (el) { el.remove(); });
     }
 
+    function markMMDCanvasLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return;
+        canvas.dataset.mmdLoadingSessionId = String(loadingSessionId);
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
+    function restoreMMDCanvasForLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return false;
+        if (canvas.dataset.mmdLoadingSessionId !== String(loadingSessionId)) {
+            return false;
+        }
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.visibility = 'visible';
+        canvas.style.pointerEvents = 'auto';
+        return true;
+    }
+
+    function isMMDLoadingSessionActive(canvas, loadingSessionId) {
+        return !!canvas && canvas.dataset.mmdLoadingSessionId === String(loadingSessionId);
+    }
+
+    function clearMMDCanvasLoadingSession(canvas) {
+        if (!canvas) return;
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
     // =====================================================================
     // Shared: memory-edited session reset logic
     // =====================================================================
@@ -221,6 +250,7 @@
 
         console.log('[Model] 开始热切换模型');
         let mmdRequestSessionId = '';
+        let activeMmdLoadingSessionId = '';
 
         try {
             // 1. Re-fetch page config
@@ -435,15 +465,15 @@
                         mmdContainerShow.style.removeProperty('pointer-events');
                     }
                     var mmdCanvasShow = document.getElementById('mmd-canvas');
-                    if (mmdCanvasShow) {
-                        // 先隐藏 canvas，避免旧帧或加载中的模型透过半透明 overlay 露出。
-                        mmdCanvasShow.style.visibility = 'hidden';
-                        mmdCanvasShow.style.pointerEvents = 'none';
-                    }
                     const loadingSessionId = window._createMMDLoadingSessionId
                         ? window._createMMDLoadingSessionId('mmd-interpage')
                         : `mmd-interpage-${Date.now()}`;
+                    if (mmdCanvasShow) {
+                        // 先隐藏 canvas，避免旧帧或加载中的模型透过半透明 overlay 露出。
+                        markMMDCanvasLoadingSession(mmdCanvasShow, loadingSessionId);
+                    }
                     mmdRequestSessionId = loadingSessionId;
+                    activeMmdLoadingSessionId = loadingSessionId;
                     window.MMDLoadingOverlay?.begin(loadingSessionId, { stage: 'engine' });
 
                     // Ensure MMD manager is initialised
@@ -520,13 +550,13 @@
                         if (window._waitForMMDRenderFrame) {
                             await window._waitForMMDRenderFrame(window.mmdManager);
                         }
-                        window.MMDLoadingOverlay?.end(loadingSessionId);
                         var mmdCanvasReady = document.getElementById('mmd-canvas');
-                        if (mmdCanvasReady) {
-                            mmdCanvasReady.style.visibility = 'visible';
-                            mmdCanvasReady.style.pointerEvents = 'auto';
+                        if (mmdRequestSessionId === loadingSessionId && isMMDLoadingSessionActive(mmdCanvasReady, loadingSessionId)) {
+                            window.MMDLoadingOverlay?.end(loadingSessionId);
+                            restoreMMDCanvasForLoadingSession(mmdCanvasReady, loadingSessionId);
+                            mmdRequestSessionId = '';
+                            activeMmdLoadingSessionId = '';
                         }
-                        mmdRequestSessionId = '';
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
                         throw new Error('MMD 管理器初始化失败');
@@ -557,8 +587,7 @@
                     }
                     var mmdCanvas2 = document.getElementById('mmd-canvas');
                     if (mmdCanvas2) {
-                        mmdCanvas2.style.visibility = 'hidden';
-                        mmdCanvas2.style.pointerEvents = 'none';
+                        clearMMDCanvasLoadingSession(mmdCanvas2);
                     }
                     if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
                         window.vrmManager.pauseRendering();
@@ -666,8 +695,12 @@
             }
         } catch (error) {
             console.error('[Model] 模型热切换失败:', error);
-            if (mmdRequestSessionId) {
-                window.MMDLoadingOverlay?.fail(mmdRequestSessionId, { detail: error?.message || String(error) });
+            if (activeMmdLoadingSessionId) {
+                window.MMDLoadingOverlay?.fail(activeMmdLoadingSessionId, { detail: error?.message || String(error) });
+                if (mmdRequestSessionId === activeMmdLoadingSessionId) {
+                    mmdRequestSessionId = '';
+                }
+                activeMmdLoadingSessionId = '';
             }
             // 回滚提前写入的 config，防止残留错误的模型类型
             if (typeChanged && window.lanlan_config) {
@@ -739,8 +772,7 @@
 
             var mmdCanvas = document.getElementById('mmd-canvas');
             if (mmdCanvas) {
-                mmdCanvas.style.visibility = 'hidden';
-                mmdCanvas.style.pointerEvents = 'none';
+                clearMMDCanvasLoadingSession(mmdCanvas);
             }
 
             // Pause render loops to save resources
@@ -815,7 +847,7 @@
                         mmdContainerR.classList.remove('hidden');
                     }
                     var mmdCanvasR = document.getElementById('mmd-canvas');
-                    if (mmdCanvasR) {
+                    if (mmdCanvasR && !mmdRequestSessionId) {
                         mmdCanvasR.style.visibility = 'visible';
                         mmdCanvasR.style.pointerEvents = 'auto';
                     }
