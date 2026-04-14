@@ -287,8 +287,29 @@ button * {
     opacity: 1;
     overflow: hidden;
     visibility: visible;
-    transition: all 1s ease-in-out;
+    /* 【修复】仅过渡 opacity 和 transform，排除 visibility 的过渡影响，
+     * 避免 MMD 模式下隐藏 VRM 容器时因 transition: all 导致约 1s 的视觉
+     * 残留窗口，使 VRM canvas 中缓存的旧模型（如 sister1.0）短暂可见。 */
+    transition: opacity 1s ease-in-out, transform 1s ease-in-out;
     /* GPU 合成层隔离：减少窗口级重绘对 canvas 的影响 */
+    will-change: transform;
+    transform: translateZ(0);
+}
+
+/* 看板娘MMD模型判定框-容器 */
+#mmd-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    /* 【修复】z-index 与 vrm-container 一致，防止 VRM 容器层级始终高于 MMD，
+     * 导致 MMD 画布透明窗口期（模型清理/重建期间）穿透显示 VRM 缓存内容。 */
+    z-index: 10;
+    pointer-events: none;
+    background: none;
+    overflow: hidden;
+    /* GPU 合成层隔离 */
     will-change: transform;
     transform: translateZ(0);
 }
@@ -1246,91 +1267,9 @@ body.react-chat-window-dragging {
     cursor: progress;
 }
 
-/* 字幕提示框样式（放在输入框区域中，与输入框对齐） */
-.subtitle-prompt-message {
-    width: 100%;
-    background: linear-gradient(135deg, rgba(68, 183, 254, 0.08) 0%, rgba(68, 183, 254, 0.12) 100%);
-    border: 1px solid rgba(68, 183, 254, 0.2);
-    border-radius: 8px;
-    padding: 0;
-    margin-top: 8px;
-    box-shadow: 0 2px 8px rgba(68, 183, 254, 0.1);
-    box-sizing: border-box;
-    pointer-events: auto;
-    touch-action: manipulation;
-}
-
-.subtitle-prompt-content {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    padding: 8px 16px;
-}
-
-.subtitle-toggle-wrapper {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-shrink: 0;
-    cursor: pointer;
-}
-
-.subtitle-toggle-indicator {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    border: 2px solid #ccc;
-    background-color: transparent;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: all 0.2s ease;
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.subtitle-toggle-indicator::after {
-    content: '✓';
-    color: #fff;
-    font-size: 12px;
-    font-weight: bold;
-    line-height: 1;
-    opacity: 0;
-    transition: opacity 0.2s ease;
-    pointer-events: none;
-    user-select: none;
-}
-
-.subtitle-toggle-indicator.active {
-    border-color: #44b7fe;
-    background-color: #44b7fe;
-}
-
-.subtitle-toggle-indicator.active::after {
-    opacity: 1;
-}
-
-.subtitle-toggle-label {
-    font-size: 15px;
-    color: #333;
-    user-select: none;
-    cursor: pointer;
-    font-weight: 500;
-}
-
-/* 语音模式下的字幕提示框样式（放在 chat-container 底部） */
-.subtitle-prompt-message.voice-mode {
-    width: auto;
-    margin: 8px 12px;
-    pointer-events: auto;
-}
-
-/* 最小化时隐藏字幕提示框 */
-#chat-container.minimized .subtitle-prompt-message {
-    display: none !important;
-}
+/* 旧的 .subtitle-prompt-message 注入式提示已下线：
+ * 字幕翻译开关现在常驻在 React 聊天窗口的 composer 工具栏，
+ * 由 frontend/react-neko-chat 渲染。 */
 
 
 /* 字幕显示区域样式（参考Xiao8项目优化，性能优化版本） */
@@ -2110,7 +2049,10 @@ body.react-chat-window-dragging {
         background: transparent;
     }
 
-    #react-chat-window-shell {
+    /* React chat window 移动端规则仅作用于 index.html 等真正的浏览器手机端。
+       chat.html 是 Electron 独立窗口（无论拖得多窄都应走 PC 逻辑），
+       在 <body> 加 .electron-chat-window 从此媒体查询中排除。 */
+    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
         width: calc(100vw - 12px);
         height: auto;
         max-height: 50vh;
@@ -2124,14 +2066,14 @@ body.react-chat-window-dragging {
         overflow: hidden;
     }
 
-    #react-chat-window-shell #react-chat-window-root {
+    body:not(.electron-chat-window) #react-chat-window-shell #react-chat-window-root {
         height: 100%;
         flex: 1 1 auto;
         overflow: hidden;
         min-height: 0;
     }
 
-    #react-chat-window-shell .app-shell {
+    body:not(.electron-chat-window) #react-chat-window-shell .app-shell {
         height: 100%;
         display: flex;
         flex-direction: column;
@@ -2141,7 +2083,7 @@ body.react-chat-window-dragging {
     /* 窄屏与桌面统一用 grid 布局：auto(顶栏) 1fr(消息) auto(输入) +
        overflow:hidden 保证输入区不会被消息挤出。shell 尺寸仍由
        syncMobileContentLayout() 写成显式像素（根据内容 50vh 上限）。 */
-    #react-chat-window-shell .chat-window {
+    body:not(.electron-chat-window) #react-chat-window-shell .chat-window {
         height: 100%;
         display: grid;
         grid-template-rows: auto 1fr auto;
@@ -2149,12 +2091,12 @@ body.react-chat-window-dragging {
         overflow: hidden;
     }
 
-    #react-chat-window-shell .chat-body {
+    body:not(.electron-chat-window) #react-chat-window-shell .chat-body {
         min-height: 0;
         overflow: hidden;
     }
 
-    #react-chat-window-shell .message-list {
+    body:not(.electron-chat-window) #react-chat-window-shell .message-list {
         height: 100%;
         min-height: 0;
         overflow-y: auto;
@@ -2163,20 +2105,42 @@ body.react-chat-window-dragging {
 
     /* .is-mobile-content-capped 现在不再影响布局（message-list 始终可滚），
        保留空规则以免其他位置若有依赖时出现样式回退。 */
-    #react-chat-window-shell.is-mobile-content-capped .message-list {
+    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-content-capped .message-list {
         overflow-y: auto;
     }
 
     /* Mobile: hide the divider between translate and jukebox plus the last tool button (jukebox)
        to reduce clutter on small screens. If the tool order changes, replace these positional
        selectors with a dedicated class or data attribute on the affected controls. */
-    #react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2),
-    #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
+    body:not(.electron-chat-window) #react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2),
+    body:not(.electron-chat-window) #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
         display: none;
     }
 
-    #react-chat-window-drag-handle {
+    body:not(.electron-chat-window) #react-chat-window-drag-handle {
         cursor: default;
+    }
+
+    /* ---- 手机端最小化：全宽底部胶囊（替代 50px 圆球）----
+       胶囊横跨屏幕底部，点击即展开；比左下角小圆球更符合手机底栏交互习惯。
+       具体最小化尺寸由 JS 通过 transform scale 动画过渡到此 CSS 终态。 */
+    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized {
+        width: calc(100vw - 12px) !important;
+        height: 48px !important;
+        border-radius: 24px;
+    }
+
+    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized .react-chat-minimized-icon {
+        width: 28px;
+        height: 28px;
+        /* 居中显示而非填满整条胶囊 */
+        object-fit: contain;
     }
 
     #chat-container.minimized::before {

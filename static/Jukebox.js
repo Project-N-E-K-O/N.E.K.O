@@ -251,6 +251,9 @@ window.Jukebox = {
         bg: 'rgba(76,175,80,0.2)',
         border: '3px solid #4CAF50'
       },
+      // 允许的文件扩展名（与后端 ALLOWED_AUDIO/ACTION_EXTENSIONS 保持一致）
+      allowedAudioExts: ['mp3', 'wav', 'ogg', 'flac'],
+      allowedActionExts: ['vmd', 'bvh', 'fbx', 'vrma'],
       // 拖放区域
       dropzone: {
         overBg: 'rgba(100, 150, 255, 0.2)',
@@ -983,6 +986,10 @@ window.Jukebox = {
 
         // 刷新所有面板
         this.refreshAllPanels();
+        // 通知点歌台播放器窗口同步刷新
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          window.Jukebox.loadSongs();
+        }
       } catch (err) {
         console.error('删除歌曲失败:', err);
         alert(window.t('Jukebox.deleteFailed', '删除失败'));
@@ -1006,6 +1013,10 @@ window.Jukebox = {
 
         // 刷新所有面板
         this.refreshAllPanels();
+        // 通知点歌台播放器窗口同步刷新
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          window.Jukebox.loadSongs();
+        }
       } catch (err) {
         console.error('删除动画失败:', err);
         alert(window.t('Jukebox.deleteFailed', '删除失败'));
@@ -1663,19 +1674,25 @@ window.Jukebox = {
         const files = Array.from(e.dataTransfer.files);
 
         if (fileType === 'audio') {
-          const audioFiles = files.filter(f => f.name.toLowerCase().endsWith('.mp3'));
+          const audioFiles = files.filter(f => {
+            const ext = f.name.split('.').pop().toLowerCase();
+            return this.Config.allowedAudioExts.includes(ext);
+          });
           if (audioFiles.length === 0) {
-            console.log('[SongActionManager] 没有检测到 MP3 文件');
+            console.log('[SongActionManager] 没有检测到音频文件');
             return;
           }
           await this.uploadSongs(audioFiles);
         } else if (fileType === 'action') {
-          const vmdFiles = files.filter(f => f.name.toLowerCase().endsWith('.vmd'));
-          if (vmdFiles.length === 0) {
-            console.log('[SongActionManager] 没有检测到 VMD 文件');
+          const actionFiles = files.filter(f => {
+            const ext = f.name.split('.').pop().toLowerCase();
+            return this.Config.allowedActionExts.includes(ext);
+          });
+          if (actionFiles.length === 0) {
+            console.log('[SongActionManager] 没有检测到动画文件');
             return;
           }
-          await this.uploadActions(vmdFiles);
+          await this.uploadActions(actionFiles);
         }
       });
     },
@@ -1683,7 +1700,7 @@ window.Jukebox = {
     async uploadSongs(files) {
       try {
         const metadata = files.map(f => ({
-          name: f.name.replace(/\.mp3$/i, ''),
+          name: f.name.replace(/\.[^/.]+$/, ''),
           artist: '未知'
         }));
         const result = await this.api.uploadSongs(files, metadata);
@@ -1697,7 +1714,7 @@ window.Jukebox = {
     async uploadActions(files) {
       try {
         const metadata = files.map(f => ({
-          name: f.name.replace(/\.vmd$/i, '')
+          name: f.name.replace(/\.[^/.]+$/, '')
         }));
         const result = await this.api.uploadActions(files, metadata);
         console.log('[SongActionManager] 上传动画成功:', result);
@@ -1849,7 +1866,7 @@ window.Jukebox = {
       const input = document.createElement('input');
       input.type = 'file';
       input.multiple = true;
-      input.accept = '.mp3,.vmd,.zip,audio/*,video/*';
+      input.accept = '.mp3,.wav,.ogg,.flac,.vmd,.bvh,.fbx,.vrma,.zip,audio/*';
       input.onchange = async (e) => {
         if (e.target.files && e.target.files.length > 0) {
           await this.processFiles(Array.from(e.target.files));
@@ -1866,9 +1883,9 @@ window.Jukebox = {
 
       for (const file of files) {
         const ext = file.name.split('.').pop().toLowerCase();
-        if (ext === 'mp3' || file.type.startsWith('audio/')) {
+        if (this.Config.allowedAudioExts.includes(ext) || file.type.startsWith('audio/')) {
           songs.push(file);
-        } else if (ext === 'vmd') {
+        } else if (this.Config.allowedActionExts.includes(ext)) {
           actions.push(file);
         } else if (ext === 'zip') {
           zips.push(file);
@@ -1891,35 +1908,10 @@ window.Jukebox = {
       }
     },
 
-    // 导入歌曲文件
+    // 导入歌曲文件（委托给 uploadSongs，使用正确的批量上传 API）
     importSongs: async function(files) {
       try {
-        for (const file of files) {
-          const formData = new FormData();
-          formData.append('file', file);
-          formData.append('name', file.name.replace(/\.[^/.]+$/, ''));
-
-          const response = await fetch('/api/jukebox/upload', {
-            method: 'POST',
-            body: formData
-          });
-
-          if (!response.ok) {
-            throw new Error(`上传失败: ${response.status}`);
-          }
-
-          const result = await response.json();
-          if (result.success) {
-            // 添加到数据
-            this.data.songs[result.song_id] = {
-              id: result.song_id,
-              name: result.name,
-              artist: result.artist || '',
-              visible: true
-            };
-          }
-        }
-        this.render();
+        await this.uploadSongs(files);
         // 通知主UI刷新
         if (window.Jukebox && window.Jukebox.loadSongs) {
           window.Jukebox.loadSongs();
@@ -1931,35 +1923,14 @@ window.Jukebox = {
       }
     },
 
-    // 导入动作文件
+    // 导入动作文件（委托给 uploadActions，使用正确的批量上传 API）
     importActions: async function(files) {
       try {
-        for (const file of files) {
-          const formData = new FormData();
-          formData.append('file', file);
-          formData.append('name', file.name.replace(/\.[^/.]+$/, ''));
-          formData.append('format', 'vmd');
-
-          const response = await fetch('/api/jukebox/upload_action', {
-            method: 'POST',
-            body: formData
-          });
-
-          if (!response.ok) {
-            throw new Error(`上传失败: ${response.status}`);
-          }
-
-          const result = await response.json();
-          if (result.success) {
-            // 添加到数据
-            this.data.actions[result.action_id] = {
-              id: result.action_id,
-              name: result.name,
-              format: result.format || 'vmd'
-            };
-          }
+        await this.uploadActions(files);
+        // 通知主UI刷新
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          window.Jukebox.loadSongs();
         }
-        this.render();
         console.log(`[SongActionManager] 成功导入 ${files.length} 个动作`);
       } catch (error) {
         console.error('[SongActionManager] 导入动作失败:', error);
@@ -4591,13 +4562,15 @@ window.Jukebox = {
       // 根据模型类型播放对应格式的动画
       const action = Jukebox.getActionForModel(song);
       if (action) {
-        // 处理动画路径：自带资源使用 /static/jukebox/ 前缀
+        // 处理动画路径：自带资源直接用 /static/ 路径，用户上传的走 API
         let actionFilePath = action.file || '';
+        let actionUrl;
         if (action.isBuiltin && actionFilePath && !actionFilePath.startsWith('/static/')) {
           // 将 actions/xxx.vmd 转换为 /static/jukebox/xxx.vmd
-          actionFilePath = '/static/jukebox/' + actionFilePath.replace(/^actions\//, '');
+          actionUrl = '/static/jukebox/' + actionFilePath.replace(/^actions\//, '');
+        } else {
+          actionUrl = `/api/jukebox/file/${actionFilePath}`;
         }
-        const actionUrl = `/api/jukebox/file/${actionFilePath}`;
         console.log('[Jukebox] 播放动画:', action.name, '格式:', action.format || 'vmd', '路径:', actionUrl);
 
         const modelType = Jukebox.getModelType();
@@ -4718,6 +4691,7 @@ window.Jukebox = {
     // 独立窗口模式：复用 VMD 桥接通道发送到 Pet（Pet 侧根据模型类型分发）
     if (window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge) {
       window.nekoJukeboxBridge.playVMD(vrmaPath);
+      Jukebox.State.isVMDPlaying = true;
       console.log('[Jukebox] VRMA 动画已发送 (IPC):', vrmaPath);
       return;
     }
@@ -4729,17 +4703,16 @@ window.Jukebox = {
     try {
       console.log('[Jukebox] 播放 VRMA 动画:', vrmaPath);
 
-      // 使用 VRMManager 的动画模块播放 VRMA
-      if (window.vrmManager.animationModule) {
-        await window.vrmManager.animationModule.playVRMAAnimation(vrmaPath, {
-          loop: false,
-          fadeInDuration: 0.5,
-          fadeOutDuration: 0.5
-        });
-        console.log('[Jukebox] VRMA 动画已播放:', vrmaPath);
-      } else {
-        console.warn('[Jukebox] VRM AnimationModule 未初始化');
-      }
+      Jukebox.stopVMD(true); // 停止之前的舞蹈动画
+
+      // 使用 VRMManager 播放 VRMA（manager 内部会确保 animation 模块已初始化）
+      await window.vrmManager.playVRMAAnimation(vrmaPath, {
+        loop: false,
+        fadeInDuration: 0.5,
+        fadeOutDuration: 0.5
+      });
+      Jukebox.State.isVMDPlaying = true;
+      console.log('[Jukebox] VRMA 动画已播放:', vrmaPath);
     } catch (error) {
       console.error('[Jukebox] VRMA 播放失败:', error);
     }
@@ -4976,14 +4949,21 @@ window.Jukebox = {
       return;
     }
 
-    if (!window.mmdManager?.animationModule) return;
-
-    // 没有在播放舞蹈 VMD 时，不要停止当前动画（可能是 idle 待机）
+    // 没有在播放舞蹈动画时，不要停止当前动画（可能是 idle 待机）
     if (!Jukebox.State.isVMDPlaying) return;
 
-    // 直接停止动画模块，不通过 stopAnimation()
-    // 避免在 idle 加载完成前改变 cursor follow 状态
-    window.mmdManager.animationModule.stop();
+    // 根据模型类型停止对应的动画模块
+    var modelType = Jukebox.getModelType();
+    if (modelType === 'vrm') {
+      if (window.vrmManager) window.vrmManager.stopVRMAAnimation();
+    } else {
+      if (window.mmdManager?.animationModule) {
+        // 直接停止动画模块，不通过 stopAnimation()
+        // 避免在 idle 加载完成前改变 cursor follow 状态
+        window.mmdManager.animationModule.stop();
+      }
+    }
+
     Jukebox.State.isVMDPlaying = false;
     Jukebox.State.isPaused = false;
 
@@ -5006,6 +4986,27 @@ window.Jukebox = {
   restoreIdleAnimation: async function() {
     // 独立窗口模式：Pet 侧在 stopVMD 时自动恢复，此处无需操作
     if (window.__NEKO_JUKEBOX_STANDALONE__) return;
+
+    // VRM 模式：恢复 VRM 待机动画
+    var modelType = Jukebox.getModelType();
+    if (modelType === 'vrm' && window.vrmManager) {
+      try {
+        var vrmIdleList = window.lanlan_config?.vrmIdleAnimations;
+        var vrmIdleUrl = (Array.isArray(vrmIdleList) && vrmIdleList.length > 0) ? vrmIdleList[0] : null;
+        if (!vrmIdleUrl) {
+          vrmIdleUrl = window.lanlan_config?.vrmIdleAnimation || '/static/vrm/animation/wait03.vrma';
+        }
+        await window.vrmManager.playVRMAAnimation(vrmIdleUrl, {
+          loop: true,
+          isIdle: true
+        });
+        console.log('[Jukebox] VRM 待机动画已恢复');
+      } catch (error) {
+        console.warn('[Jukebox] VRM 待机动画恢复失败:', error);
+      }
+      return;
+    }
+
     if (!window.mmdManager) return;
 
     const restoreRequestId = Jukebox.State.playRequestId;
@@ -5051,16 +5052,21 @@ window.Jukebox = {
   },
 
   togglePause: function() {
-    if (!Jukebox.State.currentSong) return;
+    // Pet 窗口通过 IPC 调用时 currentSong 为 null，用 isVMDPlaying 兜底
+    if (!Jukebox.State.currentSong && !Jukebox.State.isVMDPlaying) return;
 
     const player = Jukebox.getPlayer();
     var isStandalone = window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge;
+    var modelType = Jukebox.getModelType();
 
     if (Jukebox.State.isPaused) {
       // 恢复播放
       if (player) player.play();
       if (isStandalone) {
         window.nekoJukeboxBridge.resumeVMD();
+      } else if (modelType === 'vrm') {
+        var vrmAnim = window.vrmManager?.animationModule || window.vrmManager?.animation;
+        if (vrmAnim?.currentAction) vrmAnim.currentAction.paused = false;
       } else if (window.mmdManager?.animationModule) {
         // 直接恢复动画模块（不通过 playAnimation 避免重置动画进度）
         window.mmdManager.animationModule.play();
@@ -5070,13 +5076,16 @@ window.Jukebox = {
       }
       Jukebox.State.isPaused = false;
       Jukebox.State.isPlaying = true;
-      Jukebox.updatePlayingStatus(Jukebox.State.currentSong);
+      if (Jukebox.State.currentSong) Jukebox.updatePlayingStatus(Jukebox.State.currentSong);
       console.log('[Jukebox]', window.t('Jukebox.resumed', '已恢复播放'));
-    } else if (Jukebox.State.isPlaying) {
+    } else if (Jukebox.State.isPlaying || Jukebox.State.isVMDPlaying) {
       // 暂停
       if (player) player.pause();
       if (isStandalone) {
         window.nekoJukeboxBridge.pauseVMD();
+      } else if (modelType === 'vrm') {
+        var vrmAnim = window.vrmManager?.animationModule || window.vrmManager?.animation;
+        if (vrmAnim?.currentAction) vrmAnim.currentAction.paused = true;
       } else if (window.mmdManager?.animationModule) {
         window.mmdManager.animationModule.pause();
         // 暂停时提升跟踪权重，让视线追踪更明显
@@ -5086,7 +5095,7 @@ window.Jukebox = {
       }
       Jukebox.State.isPaused = true;
       Jukebox.State.isPlaying = false;
-      Jukebox.updatePausedStatus(Jukebox.State.currentSong);
+      if (Jukebox.State.currentSong) Jukebox.updatePausedStatus(Jukebox.State.currentSong);
       console.log('[Jukebox]', window.t('Jukebox.paused', '已暂停'));
     }
   },
@@ -5269,9 +5278,15 @@ window.Jukebox = {
     console.log('[Jukebox] APlayer已创建，音量:', Jukebox.State.player.audio.volume);
   },
   
-  // 获取当前模型类型
+  // 获取当前模型类型（拆分 live3d 子类型，返回 'mmd' / 'vrm' / 'live2d'）
   getModelType: function() {
-    return window.lanlan_config?.model_type || 'live2d';
+    var mt = window.lanlan_config?.model_type || 'live2d';
+    if (mt === 'live3d') {
+      var sub = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
+      if (sub === 'vrm') return 'vrm';
+      return 'mmd'; // live3d 默认走 MMD
+    }
+    return mt;
   },
 
   // 检查当前模型是否支持动画
@@ -5454,14 +5469,18 @@ window.Jukebox = {
     }
 
     // 如果用户设置了默认动画，优先使用它
-    // 但如果默认动画已被删除（不在boundActions中），则不播放动画
     if (song.defaultAction) {
       const defaultAction = formatActions.find(a => a.id === song.defaultAction);
       if (defaultAction) {
         return defaultAction;
       }
-      // 默认动画已删除，不播放动画
-      console.log('[Jukebox] 默认动画已被删除，不播放动画');
+      // defaultAction 是其他格式（如 VMD），当前格式（如 VRMA）有可用动画则 fallback
+      if (formatActions.length > 0) {
+        console.log('[Jukebox] 默认动画格式不匹配，使用该格式的第一个动画:', formatActions[0].name);
+        return formatActions[0];
+      }
+      // 该格式无可用动画
+      console.log('[Jukebox] 默认动画格式不匹配且无可用动画');
       return null;
     }
 

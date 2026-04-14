@@ -70,6 +70,8 @@ The project has two modern frontend projects under `frontend/`. Both must be bui
 
 ### Quick build (all at once)
 
+> **Prerequisite**: Building the frontend requires [Node.js](https://nodejs.org/) (>= 20.19). Make sure it is installed before running these commands.
+
 ```bash
 # Windows
 build_frontend.bat

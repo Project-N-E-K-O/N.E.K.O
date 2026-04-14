@@ -1,8 +1,18 @@
-// 字幕提示框功能
-// 从 app.js 中抽离的字幕子系统模块
+// 字幕（常驻字幕 + 按需翻译）
+//
+// 工作流程
+// ──────────
+//   1. 一个 AI 回合（turn）= 一段连续讲话，可能被切成多个聊天气泡。
+//   2. 字幕跨气泡持久显示，不会被新气泡清空。
+//   3. turn 进行中：流式原文实时写入字幕（updateSubtitleStreamingText）。
+//   4. turn 结束：调用 /api/translate；如果需要翻译则用译文替换原文，
+//      否则保留原文。
+//   5. 下一个 turn-start 才清空字幕，开始下一段。
+//
+// 翻译开关由 React 聊天窗口的 composer 按钮控制，状态走 window.subtitleBridge。
+// 旧的字幕提示气泡（subtitle-prompt-message）已下线，相关 prompt/detect 代码全部移除。
 
-// 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja', 'ko'）
-// 与 detectLanguage() 返回的格式保持一致，避免误判
+// 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja', 'ko', 'ru'）
 function normalizeLanguageCode(lang) {
     if (!lang) return 'zh'; // 默认中文
     const langLower = lang.toLowerCase();
@@ -31,636 +41,357 @@ let subtitleEnabled = (typeof window.appState !== 'undefined' && typeof window.a
 function setUserLanguage(lang) {
     userLanguage = lang;
     localStorage.setItem('userLanguage', userLanguage);
-    // 同步到 appState
     if (typeof window.appState !== 'undefined') {
         window.appState.userLanguage = userLanguage;
     }
-    // 触发统一保存（会同步到服务器）
     if (typeof window.appSettings !== 'undefined' && window.appSettings.saveSettings) {
         window.appSettings.saveSettings();
     }
 }
-// 用户语言（延迟初始化，避免使用 localStorage 旧值）
-// 初始化为 null，确保在使用前从 API 获取最新值
+// 用户语言（懒加载，避免使用 localStorage 旧值）
 let userLanguage = null;
-// Google 翻译失败标记（会话级，页面刷新后重置）
-let googleTranslateFailed = false;
 // 用户语言初始化 Promise（用于确保只初始化一次）
 let userLanguageInitPromise = null;
 
-// 获取用户语言（支持语言代码归一化，延迟初始化）
+// 获取用户语言（支持语言代码归一化，懒加载）
 async function getUserLanguage() {
-    // 如果已经初始化过，直接返回
     if (userLanguage !== null) {
         return userLanguage;
     }
-    
-    // 如果正在初始化，等待初始化完成
     if (userLanguageInitPromise) {
         return await userLanguageInitPromise;
     }
-    
-    // 开始初始化
     userLanguageInitPromise = (async () => {
         try {
-            // 优先从API获取最新值
             const response = await fetch('/api/config/user_language');
             const data = await response.json();
             if (data.success && data.language) {
-                // 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja', 'ko'）
-                // 与 detectLanguage() 返回的格式保持一致，避免误判
                 setUserLanguage(normalizeLanguageCode(data.language));
                 return userLanguage;
             }
         } catch (error) {
             console.warn('从API获取用户语言失败，尝试使用缓存或浏览器语言:', error);
         }
-        
-        // API失败时，尝试从localStorage获取（作为回退）
         const cachedLang = localStorage.getItem('userLanguage');
         if (cachedLang) {
             setUserLanguage(normalizeLanguageCode(cachedLang));
             return userLanguage;
         }
-        
-        // 最后回退到浏览器语言
         const browserLang = navigator.language || navigator.userLanguage;
         setUserLanguage(normalizeLanguageCode(browserLang));
         return userLanguage;
     })();
-    
     return await userLanguageInitPromise;
 }
 
-// 简单的语言检测函数（客户端）
-function detectLanguage(text) {
-    if (!text || !text.trim()) {
-        return 'unknown';
-    }
-    
-    // 中文检测
-    const chinesePattern = /[\u4e00-\u9fff]/g;
-    // 日文检测（平假名、片假名）
-    const japanesePattern = /[\u3040-\u309f\u30a0-\u30ff]/g;
-    // 韩文检测（谚文）
-    const koreanPattern = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/g;
-    // 俄文检测（西里尔字母）
-    const russianPattern = /[\u0400-\u04ff]/g;
-    // 英文检测
-    const englishPattern = /[a-zA-Z]/g;
-
-    const chineseCount = (text.match(chinesePattern) || []).length;
-    const japaneseCount = (text.match(japanesePattern) || []).length;
-    const koreanCount = (text.match(koreanPattern) || []).length;
-    const russianCount = (text.match(russianPattern) || []).length;
-    const englishCount = (text.match(englishPattern) || []).length;
-
-    // 如果包含日文假名，优先判断为日语
-    if (japaneseCount > 0) {
-        return 'ja';
-    }
-
-    // 如果包含韩文，优先判断为韩语
-    if (koreanCount > 0) {
-        return 'ko';
-    }
-
-    // 如果包含俄文西里尔字母，判断为俄语
-    if (russianCount >= englishCount && russianCount >= chineseCount && russianCount > 0) {
-        return 'ru';
-    }
-
-    // 判断主要语言
-    if (chineseCount > englishCount && chineseCount > 0) {
-        return 'zh';
-    } else if (englishCount > 0) {
-        return 'en';
-    } else {
-        return 'unknown';
-    }
-}
-
-// 字幕显示相关变量
-let subtitleTimeout = null;
+// 当前 turn 的原始（未翻译）累积文本，写在主线程上随时可读
+let currentTurnOriginalText = '';
+// 终态翻译请求的取消器
 let currentTranslateAbortController = null;
-let pendingTranslation = null;
-// 流式输出时字幕语言检测的防抖计时器
-let subtitleCheckDebounceTimer = null;
+// 单调递增的 turn id / request id，用于丢弃来自旧 turn 或旧请求的响应。
+// 不要用原文做去重键：同一字幕在相邻 turn 有可能字面量相同。
+let currentTurnId = 0;
+let currentTranslationRequestId = 0;
+// 当前 turn 是否已收到 turn-end（即 translateAndShowSubtitle 被调用过）。
+// 用途：
+//   1. toggle 开启时判断要不要对当前缓存发起翻译；流式途中不会标记 true。
+//   2. 防止"早停的 turn_end 已 finalize → 延迟渲染的拟真 bubble / 迟到 chunk
+//      又回来调 updateSubtitleStreamingText 把字幕刷回原文"的竞态（PR #778 修复）。
+let isCurrentTurnFinalized = false;
+// 当前 turn 是否判定为结构化富文本（markdown/code/table/latex 等）。
+// 结构化 turn 的字幕显示 [markdown] 占位符，不做翻译也不回落原文。
+let currentTurnIsStructured = false;
+// 闸门：标记"本轮 turn 边界已在 isNewMessage 路径被提前复位过"。
+// 背景：neko-assistant-turn-start 事件只在首个可见 bubble 创建后才派发，
+// 但 appendMessage 处理首个 chunk 时就已经调了 updateSubtitleStreamingText。
+// 没有这个闸门就会：
+//   a) isNewMessage 路径先调 updateSubtitleStreamingText → 被上一轮残留的
+//      isCurrentTurnFinalized=true 闸门吞掉，首个 chunk / 单 chunk 回复
+//      完全不上屏，直到 turn_end。（Codex P2 / CodeRabbit Major）
+//   b) 若仅在事件里复位，事件到达时已经过了首个 chunk，onAssistantTurnStart
+//      会把刚写好的字幕再 writeSubtitleText('') 抹掉，产生闪烁。
+// 解法：isNewMessage 入口立即 beginSubtitleTurn() 复位状态并拉高此闸门；
+// 稍后到来的 neko-assistant-turn-start 事件看到闸门已拉高，仅同步显示可见性，
+// 不再二次擦除 currentTurnOriginalText / 字幕文本。
+let turnBoundaryLatched = false;
 
-// 翻译消息气泡（如果用户语言不是中文）
-async function translateMessageBubble(text, messageElement) {
-    if (!text || !text.trim() || !messageElement) {
-        return;
-    }
-    
-    if (userLanguage === null) {
-        await getUserLanguage();
-    }
-    
-    if (!userLanguage || userLanguage === 'zh') {
-        return;
-    }
-    
+// 结构化/不可朗读内容的字幕占位符
+function getStructuredPlaceholder() {
     try {
-        const response = await fetch('/api/translate', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                text: text,
-                target_lang: (userLanguage !== null ? userLanguage : 'zh'),
-                source_lang: 'zh',
-                skip_google: googleTranslateFailed
-            })
-        });
-        
-        if (!response.ok) {
-            console.warn('翻译消息气泡失败:', response.status);
-            return;
+        if (typeof window.t === 'function') {
+            const translated = window.t('subtitle.markdownPlaceholder');
+            if (translated && translated !== 'subtitle.markdownPlaceholder') return translated;
         }
-        
-        const result = await response.json();
-        
-        if (result.google_failed === true) {
-            googleTranslateFailed = true;
-            console.log('Google 翻译失败，本次会话中将跳过 Google 翻译');
-        }
-        
-        if (result.success && result.translated_text && result.translated_text !== text) {
-            const timestampMatch = messageElement.textContent.match(/^\[(\d{2}:\d{2}:\d{2})\] 🎀 /);
-            if (timestampMatch) {
-                messageElement.textContent = `[${timestampMatch[1]}] 🎀 ${result.translated_text}`;
-                console.log('消息气泡已翻译:', result.translated_text.substring(0, 50) + '...');
-            }
-        }
-    } catch (error) {
-        console.error('翻译消息气泡异常:', error);
+    } catch (e) { /* i18n 未就绪时静默回落 */ }
+    return '[markdown]';
+}
+
+/**
+ * 内部：把字幕显示元素切换到“可见”状态（如果开关开启）
+ */
+function ensureSubtitleVisibleIfEnabled() {
+    const display = document.getElementById('subtitle-display');
+    if (!display) return;
+    if (subtitleEnabled) {
+        display.classList.remove('hidden');
+        display.classList.add('show');
+        display.style.opacity = '1';
     }
 }
 
-// 检查并显示字幕提示框
-async function checkAndShowSubtitlePrompt(text) {
-    if (userLanguage === null) {
-        await getUserLanguage();
-    }
-    
-    const allGeminiMessages = document.querySelectorAll('.message.gemini');
-    let hasNonUserLanguage = false;
-    let latestNonUserLanguageText = '';
-    
-    if (allGeminiMessages.length > 0) {
-        for (const msg of allGeminiMessages) {
-            const msgText = msg.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
-            if (msgText && msgText.trim()) {
-                const detectedLang = detectLanguage(msgText);
-                if (detectedLang !== 'unknown' && detectedLang !== userLanguage) {
-                    hasNonUserLanguage = true;
-                    latestNonUserLanguageText = msgText;
-                }
-            }
-        }
-    }
-    
-    if (hasNonUserLanguage) {
-        showSubtitlePrompt();
-    } else {
-        hideSubtitlePrompt();
-        hideSubtitle();
-    }
+/**
+ * 把字幕显示元素隐藏并清空文字（开关关闭或手动 hideSubtitle 时使用）
+ */
+function hideSubtitle() {
+    const display = document.getElementById('subtitle-display');
+    if (!display) return;
+    const subtitleText = document.getElementById('subtitle-text');
+    if (subtitleText) subtitleText.textContent = '';
+    display.classList.remove('show');
+    display.classList.add('hidden');
+    display.style.opacity = '0';
 }
 
-// 翻译并显示字幕
-async function translateAndShowSubtitle(text) {
-    if (!text || !text.trim()) {
-        return;
-    }
-    
-    // 即使开关关闭，也需要检测语言来决定是否隐藏提示
-    if (userLanguage === null) {
-        await getUserLanguage();
-    }
-    
-    const currentTranslationText = text;
-    pendingTranslation = currentTranslationText;
-    
+/**
+ * 写入字幕文本（不影响显示/隐藏状态）
+ */
+function writeSubtitleText(text) {
+    const subtitleText = document.getElementById('subtitle-text');
+    if (subtitleText) subtitleText.textContent = text || '';
+}
+
+/**
+ * 流式更新：本回合 AI 文本累积时调用。
+ * 立即把原文显示到字幕里，跨多个气泡持续写入。
+ * 仅在字幕开关开启时才上屏，但内部状态始终维护，方便用户中途打开开关时直接补显。
+ *
+ * 竞态保护（PR #778）：
+ *   - 已 finalize（收到 turn_end，翻译已起）后，丢弃后续流式写入，避免
+ *     拟真模式 2s/气泡延迟导致的"迟到 bubble 把已翻译字幕刷回原文"。
+ *   - 已判定为结构化的 turn 不接受原文写入，继续维持 [markdown] 占位。
+ */
+function updateSubtitleStreamingText(text) {
+    if (isCurrentTurnFinalized) return;
+    if (currentTurnIsStructured) return;
+
+    const cleaned = (text || '').toString();
+    currentTurnOriginalText = cleaned;
+
+    if (!subtitleEnabled) return;
+    if (!cleaned.trim()) return;
+
+    ensureSubtitleVisibleIfEnabled();
+    writeSubtitleText(cleaned);
+}
+
+/**
+ * 把当前 turn 切换成"结构化富文本"显示模式：字幕显示 [markdown] 占位符，
+ * 后续的 updateSubtitleStreamingText 不再覆盖它，turn_end 也会跳过翻译。
+ *
+ * 场景：本回合文本里检测到 markdown/table/code block/latex 等不适合朗读的结构。
+ * 由 app-chat.js / app-chat-adapter.js 在 looksLikeStructuredRichText 命中时调用。
+ */
+function markSubtitleStructured() {
+    if (isCurrentTurnFinalized) return;
+    if (currentTurnIsStructured) return; // 已是结构化，幂等
+    currentTurnIsStructured = true;
+    const placeholder = getStructuredPlaceholder();
+    currentTurnOriginalText = placeholder;
+    if (!subtitleEnabled) return;
+    ensureSubtitleVisibleIfEnabled();
+    writeSubtitleText(placeholder);
+}
+
+/**
+ * turn_end 终态收尾（结构化版）：标记 finalize，只显示 [markdown] 占位，
+ * 不发翻译请求。等价于 translateAndShowSubtitle 的结构化分支。
+ */
+function finalizeSubtitleAsStructured() {
+    isCurrentTurnFinalized = true;
+    currentTurnIsStructured = true;
     if (currentTranslateAbortController) {
         currentTranslateAbortController.abort();
+        currentTranslateAbortController = null;
     }
-    
-    currentTranslateAbortController = new AbortController();
-    
-    try {
-        const subtitleDisplay = document.getElementById('subtitle-display');
-        if (!subtitleDisplay) {
-            console.warn('字幕显示元素不存在');
-            return;
-        }
+    const placeholder = getStructuredPlaceholder();
+    currentTurnOriginalText = placeholder;
+    if (!subtitleEnabled) return;
+    ensureSubtitleVisibleIfEnabled();
+    writeSubtitleText(placeholder);
+}
 
-        // 调用翻译API
-        const response = await fetch('/api/translate', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                text: text,
-                target_lang: (userLanguage !== null ? userLanguage : 'zh'), // 确保已初始化
-                source_lang: null, // 自动检测
-                skip_google: googleTranslateFailed // 如果 Google 翻译失败过，跳过它
-            }),
-            signal: currentTranslateAbortController.signal
-        });
-
-        if (!response.ok) {
-            console.warn('翻译请求失败:', response.status);
-            if (pendingTranslation === currentTranslationText) {
-                pendingTranslation = null;
-            }
-            console.error('字幕翻译API请求失败:', {
-                status: response.status,
-                statusText: response.statusText,
-                text: text.substring(0, 50) + '...',
-                userLanguage: userLanguage
-            });
-            return;
-        }
-
-        const result = await response.json();
-
-        if (pendingTranslation !== currentTranslationText) {
-            console.log('检测到更新的翻译请求，忽略旧的翻译结果');
-            return;
-        }
-        pendingTranslation = null;
-
-        if (result.google_failed === true) {
-            googleTranslateFailed = true;
-            console.log('Google 翻译失败，本次会话中将跳过 Google 翻译');
-        }
-
-        const frontendDetectedLang = detectLanguage(text);
-        const isNonUserLanguage = frontendDetectedLang !== 'unknown' && frontendDetectedLang !== userLanguage;
-
-        // 异步等待后再次确认元素仍然存在
-        if (!subtitleDisplay.isConnected) {
-            console.warn('字幕显示元素在异步操作后已从DOM移除');
-            return;
-        }
-
-        const subtitleDisplayAfter = subtitleDisplay;
-        
-        if (result.success && result.translated_text && 
-            result.source_lang && result.target_lang && 
-            result.source_lang !== result.target_lang && 
-            result.source_lang !== 'unknown') {
-            showSubtitlePrompt();
-            
-            if (subtitleEnabled) {
-                const subtitleText = document.getElementById('subtitle-text');
-                if (subtitleText) subtitleText.textContent = result.translated_text;
-                subtitleDisplayAfter.classList.add('show');
-                subtitleDisplayAfter.classList.remove('hidden');
-                subtitleDisplayAfter.style.opacity = '1';
-                console.log('字幕已更新（已翻译）:', result.translated_text.substring(0, 50) + '...');
-
-                // 不自动隐藏，由用户手动关闭
-            } else {
-                const subtitleText = document.getElementById('subtitle-text');
-                if (subtitleText) subtitleText.textContent = '';
-                subtitleDisplayAfter.classList.remove('show');
-                subtitleDisplayAfter.classList.add('hidden');
-                subtitleDisplayAfter.style.opacity = '0';
-                console.log('开关已关闭，不显示字幕');
-            }
-        } else {
-            if (isNonUserLanguage) {
-                showSubtitlePrompt();
-                const subtitleText = document.getElementById('subtitle-text');
-                if (subtitleText) subtitleText.textContent = '';
-                subtitleDisplayAfter.classList.remove('show');
-                subtitleDisplayAfter.classList.add('hidden');
-                subtitleDisplayAfter.style.opacity = '0';
-                console.log('前端检测到非用户语言，显示提示框');
-            } else {
-                hideSubtitlePrompt();
-                const subtitleText = document.getElementById('subtitle-text');
-                if (subtitleText) subtitleText.textContent = '';
-                subtitleDisplayAfter.classList.remove('show');
-                subtitleDisplayAfter.classList.add('hidden');
-                subtitleDisplayAfter.style.opacity = '0';
-                console.log('对话已是用户语言，自动隐藏字幕提示');
-            }
-            if (subtitleTimeout) {
-                clearTimeout(subtitleTimeout);
-                subtitleTimeout = null;
-            }
-        }
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            if (pendingTranslation === currentTranslationText) {
-                pendingTranslation = null;
-            }
-            return;
-        }
-        
-        console.error('字幕翻译异常:', {
-            error: error.message,
-            stack: error.stack,
-            name: error.name,
-            text: text.substring(0, 50) + '...',
-            userLanguage: userLanguage
-        });
-        
-        if (pendingTranslation === currentTranslationText) {
-            pendingTranslation = null;
-        }
-        
-        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-            console.warn('提示：字幕翻译功能暂时不可用，但对话可以正常进行');
-        }
-    } finally {
+/**
+ * 纯状态复位：bump turnId、清空累积文本与闸门、取消在途翻译。
+ * 不动显示文本（调用方自行决定是否 writeSubtitleText('')）。
+ */
+function resetSubtitleTurnState() {
+    currentTurnId += 1;
+    currentTurnOriginalText = '';
+    isCurrentTurnFinalized = false;
+    currentTurnIsStructured = false;
+    if (currentTranslateAbortController) {
+        currentTranslateAbortController.abort();
         currentTranslateAbortController = null;
     }
 }
 
-// 隐藏字幕
-function hideSubtitle() {
-    const subtitleDisplay = document.getElementById('subtitle-display');
-    if (!subtitleDisplay) return;
-    
-    // 清除定时器
-    if (subtitleTimeout) {
-        clearTimeout(subtitleTimeout);
-        subtitleTimeout = null;
-    }
-    
-    subtitleDisplay.classList.remove('show');
-    subtitleDisplay.style.opacity = '0';
-    
-    // 延迟隐藏，让淡出动画完成
-    setTimeout(() => {
-        const subtitleDisplayForTimeout = document.getElementById('subtitle-display');
-        if (subtitleDisplayForTimeout && subtitleDisplayForTimeout.style.opacity === '0') {
-            subtitleDisplayForTimeout.classList.add('hidden');
-        }
-    }, 300);
+/**
+ * 供 app-chat.js / app-chat-adapter.js 在 isNewMessage 分支、首个
+ * updateSubtitleStreamingText 调用之前先行触发的复位入口。
+ *
+ * 为什么不能只靠事件：
+ *   neko-assistant-turn-start 事件要等 ensureAssistantTurnStarted 确认
+ *   首个可见气泡创建后才会派发（app-websocket.js:385），比首个 chunk
+ *   进入 appendMessage 晚一拍。如果只在事件里解锁，上一轮残留的
+ *   isCurrentTurnFinalized=true 会把本轮首个 chunk / 单 chunk 回复的
+ *   流式写入全部吞掉。
+ */
+function beginSubtitleTurn() {
+    resetSubtitleTurnState();
+    turnBoundaryLatched = true;
 }
 
-// 显示字幕提示框（参考Xiao8项目，改为系统消息形式）
-function showSubtitlePrompt() {
-    // 检查是否已经显示过提示（避免重复显示）
-    const existingPrompt = document.getElementById('subtitle-prompt-message');
-    if (existingPrompt) {
-        return;
-    }
-    
-    const textInputArea = document.getElementById('text-input-area');
-    const chatContainer = document.getElementById('chat-container');
-    
-    // 检测是否处于语音模式（text-input-area 被隐藏）
-    const isVoiceMode = textInputArea && textInputArea.classList.contains('hidden');
-    
-    // 确定父容器：语音模式下使用 chat-container，否则使用 text-input-area
-    let parentContainer;
-    if (isVoiceMode) {
-        parentContainer = chatContainer;
-    } else {
-        parentContainer = textInputArea;
-    }
-    
-    if (!parentContainer) {
-        return;
-    }
-    
-    // 创建提示消息（放在输入框区域中）
-    const promptDiv = document.createElement('div');
-    promptDiv.id = 'subtitle-prompt-message';
-    promptDiv.classList.add('subtitle-prompt-message');
-    
-    // 如果是语音模式，添加特殊样式类
-    if (isVoiceMode) {
-        promptDiv.classList.add('voice-mode');
-    }
-    
-    // 创建提示内容
-    const promptContent = document.createElement('div');
-    promptContent.classList.add('subtitle-prompt-content');
-    
-    // 创建开关容器
-    const toggleWrapper = document.createElement('div');
-    toggleWrapper.classList.add('subtitle-toggle-wrapper');
-    
-    // 创建圆形指示器
-    const indicator = document.createElement('div');
-    indicator.classList.add('subtitle-toggle-indicator');
-    if (subtitleEnabled) {
-        indicator.classList.add('active');
-    }
-    
-    // 创建标签文本
-    const labelText = document.createElement('span');
-    labelText.classList.add('subtitle-toggle-label');
-    labelText.setAttribute('data-i18n', 'subtitle.enable');
-    // 使用i18n翻译，如果i18n未加载或翻译不存在则根据浏览器语言提供fallback
-    const browserLang = normalizeLanguageCode(navigator.language);
-    const fallbacks = {
-        'zh': '字幕翻译',
-        'en': 'Subtitle Translation',
-        'ja': '字幕翻訳',
-        'ko': '자막 번역',
-        'ru': 'Перевод субтитров'
-    };
-    if (window.t) {
-        const translated = window.t('subtitle.enable');
-        // 如果翻译返回的是key本身（说明翻译不存在），使用浏览器语言的fallback
-        labelText.textContent = (translated && translated !== 'subtitle.enable') ? translated : (fallbacks[browserLang] || fallbacks['en']);
-    } else {
-        // i18n未加载时，使用浏览器语言的fallback
-        labelText.textContent = fallbacks[browserLang] || fallbacks['en'];
-    }
-    
-    toggleWrapper.appendChild(indicator);
-    toggleWrapper.appendChild(labelText);
-    
-    promptContent.appendChild(toggleWrapper);
-    promptDiv.appendChild(promptContent);
-    
-    // 根据模式插入到不同位置
-    if (isVoiceMode) {
-        // 语音模式：插入到 chat-container 底部（在 text-input-area 之前）
-        if (textInputArea) {
-            chatContainer.insertBefore(promptDiv, textInputArea);
-        } else {
-            chatContainer.appendChild(promptDiv);
-        }
-    } else {
-        // 文本模式：插入到输入框区域的最后（在text-input-row之后）
-        const textInputRow = textInputArea.querySelector('#text-input-row');
-        if (textInputRow && textInputRow.nextSibling) {
-            textInputArea.insertBefore(promptDiv, textInputRow.nextSibling);
-        } else {
-            textInputArea.appendChild(promptDiv);
-        }
-    }
-
-    
-    // 如果i18next已加载，监听语言变化事件
-    if (window.i18next) {
-        window.i18next.on('languageChanged', () => {
-            if (labelText && window.t) {
-                const translated = window.t('subtitle.enable');
-                // 如果翻译返回的是key本身（说明翻译不存在），使用当前语言的fallback
-                if (translated && translated !== 'subtitle.enable') {
-                    labelText.textContent = translated;
-                } else {
-                    // 使用与初始渲染相同的fallback逻辑
-                    const currentLang = normalizeLanguageCode(window.i18next.language || navigator.language);
-                    labelText.textContent = fallbacks[currentLang] || fallbacks['en'];
-                }
-            }
-        });
-    }
-    
-    // 更新指示器状态
-    const updateIndicator = () => {
+/**
+ * 'neko-assistant-turn-start' 事件处理：
+ *   - 如果 isNewMessage 路径已经 beginSubtitleTurn 过（闸门为真），只同步
+ *     显示可见性，不再二次抹字幕 —— 否则会把首个 chunk 已经写好的文本擦掉。
+ *   - 反之（事件在没有前置 isNewMessage 的通道上独立到达）走完整复位路径。
+ */
+function onAssistantTurnStart() {
+    if (turnBoundaryLatched) {
+        turnBoundaryLatched = false;
         if (subtitleEnabled) {
-            indicator.classList.add('active');
+            ensureSubtitleVisibleIfEnabled();
         } else {
-            indicator.classList.remove('active');
+            hideSubtitle();
         }
-    };
-    
-    // 切换开关的函数
-    const handleToggle = (e) => {
-        if (e) {
-            e.preventDefault();
-            e.stopPropagation();
+        return;
+    }
+    resetSubtitleTurnState();
+    // 开关开启时保留显示框（保持空白等待新文本），关闭时连框一起隐藏
+    if (subtitleEnabled) {
+        writeSubtitleText('');
+        ensureSubtitleVisibleIfEnabled();
+    } else {
+        hideSubtitle();
+    }
+}
+
+/**
+ * Turn 结束时调用：尝试翻译并替换字幕文本。
+ * 如果不需要翻译（同语言 / 检测失败 / 用户禁用），保留原文。
+ */
+async function translateAndShowSubtitle(text) {
+    if (!text || !text.trim()) {
+        return;
+    }
+
+    // 结构化 turn 走占位符分支：不翻译，不写原文，避免把大段 markdown/code 送去 LLM
+    if (currentTurnIsStructured) {
+        finalizeSubtitleAsStructured();
+        return;
+    }
+
+    // 快照本次请求归属的 turn 与 request 序号。响应回来时必须跟当前值匹配，
+    // 否则说明已被新 turn / 新请求抢占（哪怕原文字面量相同也要丢弃）。
+    const requestTurnId = currentTurnId;
+    const requestId = ++currentTranslationRequestId;
+    // 收到 turn-end 才算当前 turn 已结算；此后 updateSubtitleStreamingText 的
+    // 迟到调用会被丢弃，避免被延迟渲染的拟真 bubble 刷回原文（PR #778 修复）。
+    isCurrentTurnFinalized = true;
+
+    if (userLanguage === null) {
+        await getUserLanguage();
+    }
+
+    // 请求之前再校验一次 — getUserLanguage 本身是 await，可能已经跨 turn
+    if (requestTurnId !== currentTurnId || requestId !== currentTranslationRequestId) {
+        return;
+    }
+
+    // 始终把原文当作字幕基准
+    currentTurnOriginalText = text;
+    if (subtitleEnabled) {
+        ensureSubtitleVisibleIfEnabled();
+        writeSubtitleText(text);
+    }
+
+    if (!subtitleEnabled) {
+        return; // 开关关闭，不发翻译请求
+    }
+
+    if (currentTranslateAbortController) {
+        currentTranslateAbortController.abort();
+    }
+    currentTranslateAbortController = new AbortController();
+    const abortController = currentTranslateAbortController;
+
+    try {
+        const response = await fetch('/api/translate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text: text,
+                target_lang: (userLanguage !== null ? userLanguage : 'zh'),
+                source_lang: null
+            }),
+            signal: abortController.signal
+        });
+
+        if (!response.ok) {
+            console.warn('字幕翻译请求失败:', response.status);
+            return;
         }
-        subtitleEnabled = !subtitleEnabled;
-        // 同步到 appState 和 localStorage
-        if (typeof window.appState !== 'undefined') {
-            window.appState.subtitleEnabled = subtitleEnabled;
+
+        const result = await response.json();
+
+        // 已经被新 turn / 新请求抢占，丢弃过期结果（用单调序号判断，不用原文）
+        if (requestTurnId !== currentTurnId || requestId !== currentTranslationRequestId) {
+            return;
         }
-        localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
-        // 触发统一保存（会同步到服务器）
-        if (typeof window.appSettings !== 'undefined' && window.appSettings.saveSettings) {
-            window.appSettings.saveSettings();
-        }
-        updateIndicator();
-        console.log('字幕开关:', subtitleEnabled ? '开启' : '关闭');
-        
+
         if (!subtitleEnabled) {
-            const subtitleDisplay = document.getElementById('subtitle-display');
-            if (subtitleDisplay) {
-                const subtitleText = document.getElementById('subtitle-text');
-                if (subtitleText) subtitleText.textContent = '';
-                subtitleDisplay.classList.remove('show');
-                subtitleDisplay.classList.add('hidden');
-                subtitleDisplay.style.opacity = '0';
-            }
-            if (subtitleTimeout) {
-                clearTimeout(subtitleTimeout);
-                subtitleTimeout = null;
-            }
-        } else {
-            // 如果开启，重新翻译并显示字幕
-            if (currentTranslateAbortController) {
-                currentTranslateAbortController.abort();
-                currentTranslateAbortController = null;
-            }
-            pendingTranslation = null;
-            
-            if (window.currentGeminiMessage && 
-                window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-                window.currentGeminiMessage.isConnected &&
-                typeof window.currentGeminiMessage.textContent === 'string') {
-                const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
-                if (fullText && fullText.trim()) {
-                    const subtitleDisplay = document.getElementById('subtitle-display');
-                    if (!subtitleDisplay) {
-                        console.error('字幕显示元素不存在，无法显示字幕');
-                        return;
-                    }
-                    subtitleDisplay.classList.remove('hidden');
-                    translateAndShowSubtitle(fullText);
-                }
-            } else {
-                if (window.currentGeminiMessage) {
-                    console.warn('currentGeminiMessage存在但不是有效的DOM元素，无法翻译字幕');
-                }
-            }
+            return; // 翻译期间用户关掉了开关
         }
-    };
-    
-    let touchHandled = false;
-    
-    const handleTouchToggle = (e) => {
-        e.preventDefault();
-        touchHandled = true;
-        handleToggle(e);
-    };
-    
-    // 绑定点击事件（桌面端）
-    toggleWrapper.addEventListener('click', (e) => {
-        if (touchHandled) {
-            touchHandled = false;
-            return;
-        }
-        handleToggle(e);
-    });
-    indicator.addEventListener('click', (e) => {
-        if (touchHandled) {
-            touchHandled = false;
-            return;
-        }
-        handleToggle(e);
-    });
-    labelText.addEventListener('click', (e) => {
-        if (touchHandled) {
-            touchHandled = false;
-            return;
-        }
-        handleToggle(e);
-    });
-    
-    // 绑定触摸事件（移动端）
-    toggleWrapper.addEventListener('touchstart', handleTouchToggle, { passive: false });
-    indicator.addEventListener('touchstart', handleTouchToggle, { passive: false });
-    labelText.addEventListener('touchstart', handleTouchToggle, { passive: false });
-}
 
-// 隐藏字幕提示框
-function hideSubtitlePrompt() {
-    const existingPrompt = document.getElementById('subtitle-prompt-message');
-    if (existingPrompt) {
-        existingPrompt.remove();
-        console.log('已隐藏字幕提示消息');
+        // 真正发生了翻译才替换；同语言/未知语言/失败保留原文
+        if (result.success && result.translated_text &&
+            result.source_lang && result.target_lang &&
+            result.source_lang !== result.target_lang &&
+            result.source_lang !== 'unknown' &&
+            result.translated_text !== text) {
+            ensureSubtitleVisibleIfEnabled();
+            writeSubtitleText(result.translated_text);
+            console.log('字幕已翻译:', result.translated_text.substring(0, 50));
+        }
+        // else: 不需要翻译，保留刚才写入的原文，什么也不做
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            return;
+        }
+        console.error('字幕翻译异常:', {
+            error: error.message,
+            text: text.substring(0, 50) + '...',
+            userLanguage: userLanguage
+        });
+    } finally {
+        if (currentTranslateAbortController === abortController) {
+            currentTranslateAbortController = null;
+        }
     }
 }
 
-// 初始化字幕开关（DOM加载完成后）
+// 初始化字幕模块（DOM 就绪后绑定拖拽 & turn 事件）
 document.addEventListener('DOMContentLoaded', async function() {
-    // 拖拽初始化只绑定 DOM 事件，不依赖语言数据，立即执行
     initSubtitleDrag();
-
-    // 初始化用户语言（等待完成，确保使用最新值）
     await getUserLanguage();
+    window.addEventListener('neko-assistant-turn-start', onAssistantTurnStart);
 
-    // 检查当前消息中是否有非用户语言
-    // 增强null安全检查：确保currentGeminiMessage是有效的DOM元素
-    if (window.currentGeminiMessage &&
-        window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-        window.currentGeminiMessage.isConnected &&
-        typeof window.currentGeminiMessage.textContent === 'string') {
-        const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
-        if (fullText && fullText.trim()) {
-            checkAndShowSubtitlePrompt(fullText);
-        }
-    }
-
-    // 初始化通用引导管理器（幂等性保护）
-    if (!window.__universalTutorialManagerInitialized && typeof initUniversalTutorialManager === 'function') {
+    // 通用引导管理器：index.html / chat.html 都加载 subtitle.js，
+    // 但自身模板没有 init 调用，历史上靠这里兜底（其他子页面模板各自 init）。
+    // 幂等保护防止跨页面重复 init。
+    if (!window.__universalTutorialManagerInitialized &&
+        typeof initUniversalTutorialManager === 'function') {
         try {
             initUniversalTutorialManager();
             window.__universalTutorialManagerInitialized = true;
@@ -676,29 +407,23 @@ function initSubtitleDrag() {
     const subtitleDisplay = document.getElementById('subtitle-display');
     const dragHandle = document.getElementById('subtitle-drag-handle');
 
-    console.log('[Subtitle] 调试 - 找到字幕元素:', !!subtitleDisplay);
-    console.log('[Subtitle] 调试 - 找到拖拽句柄:', !!dragHandle);
-
     if (!subtitleDisplay || !dragHandle) {
         console.warn('[Subtitle] 无法找到字幕元素或拖拽句柄');
         return;
     }
 
     let isDragging = false;
-    let pendingDrag = false; // mousedown 后等待真实拖动
+    let pendingDrag = false;
     let isManualPosition = false;
     let startX, startY;
     let initialX, initialY;
 
-    // 鼠标按下事件
     function handleMouseDown(e) {
-        // 只响应左键拖拽
         if (e.button !== 0) return;
 
         pendingDrag = true;
         document.body.style.userSelect = 'none';
 
-        // 获取并记录当前元素位置（含 transform），在 mousedown 时快照
         const rect = subtitleDisplay.getBoundingClientRect();
         startX = e.clientX;
         startY = e.clientY;
@@ -709,7 +434,6 @@ function initSubtitleDrag() {
         document.addEventListener('mouseup', handleMouseUp);
     }
 
-    // 触摸开始事件
     function handleTouchStart(e) {
         const touch = e.touches[0];
         handleMouseDown({
@@ -734,7 +458,6 @@ function initSubtitleDrag() {
         subtitleDisplay.style.bottom = 'auto';
     }
 
-    // 鼠标移动事件
     function handleMouseMove(e) {
         if (!pendingDrag && !isDragging) return;
 
@@ -752,7 +475,6 @@ function initSubtitleDrag() {
         let newX = initialX + dx;
         let newY = initialY + dy;
 
-        // 限制在窗口范围内
         const maxX = window.innerWidth - subtitleDisplay.offsetWidth;
         const maxY = window.innerHeight - subtitleDisplay.offsetHeight;
 
@@ -763,7 +485,6 @@ function initSubtitleDrag() {
         subtitleDisplay.style.top = newY + 'px';
     }
 
-    // 触摸移动事件
     function handleTouchMove(e) {
         const touch = e.touches[0];
         handleMouseMove({
@@ -773,7 +494,6 @@ function initSubtitleDrag() {
         });
     }
 
-    // 鼠标释放事件
     function handleMouseUp() {
         if (!pendingDrag && !isDragging) return;
 
@@ -784,25 +504,19 @@ function initSubtitleDrag() {
 
         document.removeEventListener('mousemove', handleMouseMove);
         document.removeEventListener('mouseup', handleMouseUp);
-        // 注意：touchmove/touchend 是初始化时全局绑定的，不在这里移除
     }
 
-    // 触摸结束事件
     function handleTouchUp() {
         handleMouseUp();
     }
 
-    // 绑定事件到拖拽句柄
     dragHandle.addEventListener('mousedown', handleMouseDown);
     dragHandle.addEventListener('touchstart', handleTouchStart, { passive: false });
 
-    // 全局绑定移动和结束事件
     document.addEventListener('touchmove', handleTouchMove, { passive: false });
     document.addEventListener('touchend', handleTouchUp);
     document.addEventListener('touchcancel', handleTouchUp);
 
-    // 窗口大小改变时，确保手动定位的字幕不超出边界
-    // CSS 居中定位（left:50% + transform）由浏览器自动处理，无需干预
     window.addEventListener('resize', () => {
         if (!isManualPosition) return;
 
@@ -817,37 +531,33 @@ function initSubtitleDrag() {
             subtitleDisplay.style.top = maxY + 'px';
         }
     });
-
-    console.log('[Subtitle] 字幕拖拽功能已初始化');
 }
 
 // ======================== 外部桥接接口 ========================
-// 供 app-settings.js 等其他模块在合并服务器设置后调用，保持内部状态同步
+// 供 app-settings.js / React 聊天窗口在合并服务器设置或用户点击开关时调用
 window.subtitleBridge = {
+    /** 仅同步状态，不做副作用（用于服务器设置回灌） */
     setSubtitleEnabled: function(enabled) {
-        subtitleEnabled = enabled;
+        subtitleEnabled = !!enabled;
         if (typeof window.appState !== 'undefined') {
             window.appState.subtitleEnabled = subtitleEnabled;
         }
         localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
 
-        // 立即显示/隐藏字幕框
-        var display = document.getElementById('subtitle-display');
-        if (display) {
-            if (subtitleEnabled) {
-                display.classList.remove('hidden');
-                display.classList.add('show');
-                display.style.opacity = '1';
+        if (subtitleEnabled) {
+            // 重新启用：把当前 turn 已有原文补显到字幕
+            if (currentTurnOriginalText && currentTurnOriginalText.trim()) {
+                ensureSubtitleVisibleIfEnabled();
+                writeSubtitleText(currentTurnOriginalText);
             } else {
-                var text = document.getElementById('subtitle-text');
-                if (text) text.textContent = '';
-                display.classList.remove('show');
-                display.classList.add('hidden');
-                display.style.opacity = '0';
+                ensureSubtitleVisibleIfEnabled();
+                writeSubtitleText('');
             }
+        } else {
+            hideSubtitle();
         }
     },
-    /** 完整切换：翻转开关 + 执行运行时副作用（隐藏/重新翻译字幕） */
+    /** 完整切换：翻转开关 + 执行运行时副作用（隐藏/补显字幕，并在开启时翻译当前文本） */
     toggle: function() {
         subtitleEnabled = !subtitleEnabled;
         if (typeof window.appState !== 'undefined') {
@@ -858,63 +568,33 @@ window.subtitleBridge = {
             window.appSettings.saveSettings();
         }
 
-        // 更新旧版提示框的指示器（如果存在）
-        var indicator = document.querySelector('.subtitle-toggle-indicator');
-        if (indicator) {
-            if (subtitleEnabled) {
-                indicator.classList.add('active');
-            } else {
-                indicator.classList.remove('active');
-            }
-        }
-
         console.log('字幕开关:', subtitleEnabled ? '开启' : '关闭');
 
         if (!subtitleEnabled) {
-            // 关闭：隐藏字幕、清除定时器
-            var display = document.getElementById('subtitle-display');
-            if (display) {
-                var text = document.getElementById('subtitle-text');
-                if (text) text.textContent = '';
-                display.classList.remove('show');
-                display.classList.add('hidden');
-                display.style.opacity = '0';
-            }
-            if (subtitleTimeout) {
-                clearTimeout(subtitleTimeout);
-                subtitleTimeout = null;
-            }
-        } else {
-            // 开启：立即显示字幕框
-            var subtitleDisplay = document.getElementById('subtitle-display');
-            if (subtitleDisplay) {
-                subtitleDisplay.classList.remove('hidden');
-                subtitleDisplay.classList.add('show');
-                subtitleDisplay.style.opacity = '1';
-            }
-
-            // 如果有当前消息，重新翻译
             if (currentTranslateAbortController) {
                 currentTranslateAbortController.abort();
                 currentTranslateAbortController = null;
             }
-            pendingTranslation = null;
-
-            if (window.currentGeminiMessage &&
-                window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-                window.currentGeminiMessage.isConnected &&
-                typeof window.currentGeminiMessage.textContent === 'string') {
-                var fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
-                if (fullText && fullText.trim()) {
-                    translateAndShowSubtitle(fullText);
+            hideSubtitle();
+        } else {
+            // 立即把当前 turn 已有原文补显
+            if (currentTurnOriginalText && currentTurnOriginalText.trim()) {
+                ensureSubtitleVisibleIfEnabled();
+                writeSubtitleText(currentTurnOriginalText);
+                // 仅当本 turn 已经收到 turn-end 时，才对缓存原文补发一次翻译；
+                // 流式途中打开开关时，让字幕跟随流式文本更新，避免"半句翻译 → 被后续 chunk 覆盖"的闪烁。
+                if (isCurrentTurnFinalized) {
+                    translateAndShowSubtitle(currentTurnOriginalText);
                 }
+            } else {
+                ensureSubtitleVisibleIfEnabled();
+                writeSubtitleText('');
             }
         }
 
         return subtitleEnabled;
     },
     setUserLanguage: function(lang) {
-        // 空值时回退到默认值
         if (!lang || typeof lang !== 'string') {
             lang = 'zh';
         }
@@ -923,5 +603,23 @@ window.subtitleBridge = {
             window.appState.userLanguage = userLanguage;
         }
         localStorage.setItem('userLanguage', userLanguage);
-    }
+    },
+    /** 供 app-chat.js / app-chat-adapter.js 在 isNewMessage 分支首个 chunk 前调用 */
+    beginTurn: beginSubtitleTurn,
+    /** 供 app-chat.js 在 _geminiTurnFullText 累积时调用 */
+    updateStreamingText: updateSubtitleStreamingText,
+    /** 供 app-chat.js / app-chat-adapter.js 命中结构化富文本检测时调用 */
+    markStructured: markSubtitleStructured,
+    /** 供 app-websocket.js 在结构化 turn 的 turn end 时调用（跳过翻译） */
+    finalizeAsStructured: finalizeSubtitleAsStructured,
+    /** 供 app-websocket.js 在 turn end 时调用 */
+    finalizeTurnWithTranslation: translateAndShowSubtitle
 };
+
+// 向后兼容：保留全局函数名，但函数体已经精简
+window.translateAndShowSubtitle = translateAndShowSubtitle;
+window.updateSubtitleStreamingText = updateSubtitleStreamingText;
+window.beginSubtitleTurn = beginSubtitleTurn;
+window.markSubtitleStructured = markSubtitleStructured;
+window.finalizeSubtitleAsStructured = finalizeSubtitleAsStructured;
+window.getUserLanguage = getUserLanguage;

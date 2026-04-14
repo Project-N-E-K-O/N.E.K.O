@@ -701,7 +701,8 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                         ? popupUi.hasVisibleOverlay('mmd')
                         : Array.from(document.querySelectorAll('[id^="mmd-popup-"], [data-neko-sidepanel-owner^="mmd-popup-"]'))
                             .some(isFallbackOverlayVisible);
-                    const shouldShowButtons = !isLocked && (this._mmdUiNearModel || hoveringButtons || hasOpenOverlay);
+                    const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
+                    const shouldShowButtons = inTutorial || (!isLocked && (this._mmdUiNearModel || hoveringButtons || hasOpenOverlay));
                     buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;

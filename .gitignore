@@ -155,3 +155,13 @@ plugin/plugins/qq_auto_reply/NapCat.Shell/*
 # Ignore local temporary Steam/launcher environment dumps
 .tmp_env_*
 .test_neko_write
+
+# Jukebox 二进制资源（音乐、动画），只保留 songs.json 索引
+static/jukebox/*.mp3
+static/jukebox/*.wav
+static/jukebox/*.ogg
+static/jukebox/*.flac
+static/jukebox/*.vmd
+static/jukebox/*.vrma
+static/jukebox/*.bvh
+static/jukebox/*.fbx
