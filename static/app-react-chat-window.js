@@ -86,7 +86,7 @@
         if (!shell) return;
 
         shell.classList.remove('is-mobile-content-capped');
-        if (shell.dataset.mobileAutoHeight === 'true') {
+        if (shell.dataset.mobileAutoHeight !== undefined) {
             shell.style.removeProperty('height');
             delete shell.dataset.mobileAutoHeight;
         }
@@ -1106,7 +1106,7 @@
                 } else if (isFinite(savedHeightPx) && savedHeightPx > 0) {
                     restoreHeight = Math.min(savedHeightPx, mobileMaxH);
                 } else {
-                    restoreHeight = Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO);
+                    restoreHeight = Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * 0.85));
                 }
                 if (restoreHeight > 0) shell.style.height = restoreHeight + 'px';
             } else if (savedShellSize) {
@@ -1194,7 +1194,7 @@
                     var r = shell.getBoundingClientRect();
                     var clamped = clampPosition(r.left, r.top);
                     applyPosition(clamped.left, clamped.top);
-                    if (!window._chatAdapterActive) {
+                    if (!window._chatAdapterActive && !isMobileWidth()) {
                         persistPosition(clamped.left, clamped.top);
                     }
                 });
@@ -1360,7 +1360,8 @@
             var rect = shell.getBoundingClientRect();
             // 最小化态下不持久化悬浮球坐标到展开态存储，
             // 否则 restorePosition 会把完整窗口放到悬浮球位置
-            if (!minimized) {
+            // 移动端坐标也不持久化，避免污染桌面端保存的位置
+            if (!minimized && !isMobileWidth()) {
                 persistPosition(rect.left, rect.top);
             }
         }
