@@ -2815,6 +2815,12 @@ async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
             status_code=400,
             detail="Task correction context is unavailable for this task",
         )
+    task_status = str(info.get("status") or info.get("state") or "").strip().lower()
+    if task_status not in {"completed", "failed", "cancelled"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Task correction is only allowed after the task reaches a terminal state",
+        )
 
     try:
         event = Modules.task_executor.record_tool_correction(
