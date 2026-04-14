@@ -1679,6 +1679,7 @@
             "openfang": "専用PC",
             "userPluginAdapting": "ユーザープラグイン（開発中）",
             "openclawConnect": "OpenClaw",
+            "openclawGuide": "OpenClaw 接続ガイド",
             "chatSettings": "チャット設定",
             "animationSettings": "アニメーション設定",
             "renderQuality": "画質",
@@ -1701,6 +1702,15 @@
             "textGuardHighWarning": "設定が大きすぎると猫娘の記憶と言語が混乱する可能性があります。500文字以内を推奨します",
             "textGuardNote": "テキスト返信にのみ適用され、音声セッションには影響しません"
         }
+    },
+    "openclawGuide": {
+        "windowTitle": "OpenClaw 接続ガイド - N.E.K.O.",
+        "pageTitle": "OpenClaw 接続ガイド",
+        "pageSubtitle": "CoPaw の導入、チャンネル配置、ヘルスチェック、N.E.K.O 設定をひとつの流れでつなぎます。",
+        "sourceLabel": "ガイドソース",
+        "contentLanguageNotice": "本文は現在中国語ドキュメントを表示しています。言語切り替えはページ操作文言のみに反映されます。",
+        "languageLabel": "言語",
+        "guideUnavailable": "ガイド内容が空です。"
     },
     "subtitle": {
         "title": "リアルタイム字幕",
