@@ -390,9 +390,21 @@
         var effectiveExp = S.proactiveChatBackoffLevel + expJitter;
         var delay = (baseInterval * 1000) * Math.pow(2.5, effectiveExp);
 
-        // 首次启动时额外等待5秒，避免程序刚启动就触发音乐推荐
-        var startupDelay = S.proactiveChatBackoffLevel === 0 ? 6000 : 0;
+        // 首次启动时额外等待 6 秒，避免程序刚启动就触发音乐推荐。
+        // 用一次性 flag 而非 backoffLevel === 0 —— 后者在 user_input reset 或
+        // speaking-skip 重排时也会命中，导致每次都重新叠 6s，把 skip 路径期望的
+        // "等待 ∈ [0, interval)" 变成 "interval + 6s"。
+        var startupDelay = 0;
+        if (!S._proactiveStartupDelayApplied) {
+            startupDelay = 6000;
+            S._proactiveStartupDelayApplied = true;
+        }
         delay += startupDelay;
+
+        // Clamp：level 长期上爬后 (level ≥ ~13 @ base=30s) `2.5^level` 会把 delay
+        // 顶到超过 setTimeout 的 int32 上限 0x7fffffff ≈ 24.8 天，实际被截断成
+        // "1ms 后立刻 fire"。加个硬上限保险，实际封顶在 ~24 天，已足够长。
+        delay = Math.min(delay, 0x7fffffff);
 
         console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + S.proactiveChatInterval + '秒，退避级别：' + S.proactiveChatBackoffLevel + '，指数漂移：' + expJitter.toFixed(2) + '，启动延迟：' + (startupDelay / 1000) + '秒）');
 
