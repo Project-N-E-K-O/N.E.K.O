@@ -1728,11 +1728,15 @@
                 this.cursor.click();
                 await this.closeAgentPanel();
                 const settingsMenuId = this.normalizeSettingsMenuId(performance.settingsMenuId || 'character');
+                const settingsButtonTarget = this.resolveElement(performance.cursorTarget || this.currentStep && this.currentStep.anchor || '');
                 const menuVisible = await this.ensureSettingsMenuVisible(settingsMenuId);
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
 
+                if (settingsButtonTarget) {
+                    this.overlay.activateSpotlight(settingsButtonTarget);
+                }
                 this.highlightChatWindow();
                 if (performance.emotion) {
                     this.emotionBridge.apply(performance.emotion);
@@ -1768,7 +1772,7 @@
                         }
 
                         settingsMenuHighlighted = true;
-                        this.overlay.activateSpotlight(spotlightTarget);
+                        this.overlay.activateSecondarySpotlight(spotlightTarget);
                     }
                 });
                 if (runId !== this.sceneRunId || this.destroyed) {
