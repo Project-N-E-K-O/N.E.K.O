@@ -2118,45 +2118,49 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         logger.info("MiniMax TTS (HTTP SSE) 已就绪，发送就绪信号 (voice_id=%s)", voice_id)
         response_queue.put(("__ready__", True))
 
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(request_timeout, connect=10),
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
-        ) as client:
-            loop = asyncio.get_running_loop()
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(request_timeout, connect=10),
+                limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+            ) as client:
+                loop = asyncio.get_running_loop()
 
-            while True:
-                try:
-                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                except Exception:
-                    break
+                while True:
+                    try:
+                        sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                    except Exception:
+                        break
 
-                if sid == "__interrupt__":
-                    text_buffer = []
-                    current_speech_id = None
-                    continue
+                    if sid == "__interrupt__":
+                        text_buffer = []
+                        current_speech_id = None
+                        continue
 
-                # speech_id 切换 → 丢弃旧缓冲
-                if current_speech_id != sid and sid is not None:
-                    current_speech_id = sid
-                    text_buffer = []
+                    # speech_id 切换 → 丢弃旧缓冲
+                    if current_speech_id != sid and sid is not None:
+                        current_speech_id = sid
+                        text_buffer = []
 
-                if sid is None:
-                    # flush: 合成累积的文本
-                    if text_buffer and current_speech_id is not None:
-                        full_text = "".join(text_buffer)
-                        if full_text.strip():
-                            await _minimax_sse_synthesize(
-                                client, api_url, headers, model_name,
-                                full_text, voice_id, current_speech_id,
-                                response_queue, agg_flush_bytes,
-                            )
-                    text_buffer = []
-                    current_speech_id = None
-                    continue
+                    if sid is None:
+                        # flush: 合成累积的文本
+                        if text_buffer and current_speech_id is not None:
+                            full_text = "".join(text_buffer)
+                            if full_text.strip():
+                                await _minimax_sse_synthesize(
+                                    client, api_url, headers, model_name,
+                                    full_text, voice_id, current_speech_id,
+                                    response_queue, agg_flush_bytes,
+                                )
+                        text_buffer = []
+                        current_speech_id = None
+                        continue
 
-                # 累积文本
-                if tts_text and tts_text.strip():
-                    text_buffer.append(tts_text)
+                    # 累积文本
+                    if tts_text and tts_text.strip():
+                        text_buffer.append(tts_text)
+        except Exception as exc:
+            _enqueue_error(response_queue, f"MiniMax TTS Worker 运行错误: {exc}")
+            response_queue.put(("__ready__", False))
 
     try:
         asyncio.run(async_worker())
