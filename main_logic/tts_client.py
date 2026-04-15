@@ -2049,7 +2049,7 @@ async def _minimax_sse_synthesize(
             _record_tts_telemetry("minimax", text)
 
             content_type = resp.headers.get("content-type", "").lower()
-            
+
             # SSE 格式: text/event-stream
             if "text/event-stream" in content_type:
                 buffer = ""
@@ -2073,7 +2073,19 @@ async def _minimax_sse_synthesize(
                             except json.JSONDecodeError:
                                 logger.warning("MiniMax TTS SSE JSON 解析失败: %s", json_str[:200])
                                 continue
-            
+
+                # 处理流结束后 buffer 中可能残留的最后一行（服务端未发尾部换行）
+                residual = buffer.strip()
+                if residual:
+                    if residual.startswith("data:"):
+                        json_str = residual[5:].strip()
+                        if json_str and json_str != "[DONE]":
+                            try:
+                                event = json.loads(json_str)
+                                process_event(event)
+                            except json.JSONDecodeError:
+                                logger.warning("MiniMax TTS SSE JSON 解析失败 (残留): %s", json_str[:200])
+
             # JSON 流格式: application/json (逐行 JSON 对象)
             else:
                 buffer = ""
@@ -2085,17 +2097,17 @@ async def _minimax_sse_synthesize(
                         line = line.strip()
                         if not line:
                             continue
-                        
+
                         # 移除可能的逗号分隔符
                         if line.startswith(","):
                             line = line[1:].strip()
                         if line.endswith(","):
                             line = line[:-1].strip()
-                        
+
                         # 跳过数组开始/结束标记
                         if line in ("[", "]"):
                             continue
-                        
+
                         try:
                             event = json.loads(line)
                             if not process_event(event):
@@ -2105,6 +2117,20 @@ async def _minimax_sse_synthesize(
                             # 不完整的 JSON 或格式错误，记录警告后跳过
                             logger.warning("MiniMax TTS JSON 解析失败: %s", line[:200])
                             continue
+
+                # 处理流结束后 buffer 中可能残留的最后一行
+                residual = buffer.strip()
+                if residual:
+                    if residual.startswith(","):
+                        residual = residual[1:].strip()
+                    if residual.endswith(","):
+                        residual = residual[:-1].strip()
+                    if residual and residual not in ("[", "]"):
+                        try:
+                            event = json.loads(residual)
+                            process_event(event)
+                        except json.JSONDecodeError:
+                            logger.warning("MiniMax TTS JSON 解析失败 (残留): %s", residual[:200])
 
             flush_audio(force=True)
 
@@ -2126,7 +2152,6 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         base_url: MiniMax API base URL（国服 / 国际服），为 None 时使用国服默认值
     """
     import asyncio
-    import binascii
     import httpx
 
     async def async_worker():
@@ -2151,10 +2176,14 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                           "voice_setting": {"voice_id": voice_id}},
                     timeout=10,
                 )
-                # 空文本可能返回 400，但只要不是 401/403 就说明连通性和鉴权正常
-                if probe_resp.status_code in (401, 403):
+                # 空文本可能返回 400（参数校验），200 和 400 均视为连通+鉴权正常
+                # 其余状态码（401/403/404/429/5xx 等）均视为探测失败
+                if probe_resp.status_code not in (200, 400):
                     error_text = probe_resp.text[:200]
-                    _enqueue_error(response_queue, f"MiniMax TTS 鉴权失败 ({probe_resp.status_code}): {error_text}")
+                    _enqueue_error(
+                        response_queue,
+                        f"MiniMax TTS 探测失败 ({probe_resp.status_code}): {error_text}",
+                    )
                     response_queue.put(("__ready__", False))
                     return
         except Exception as exc:
@@ -2171,32 +2200,56 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                 limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
             ) as client:
                 loop = asyncio.get_running_loop()
+                synth_task: asyncio.Task | None = None
+
+                async def _cancel_synth() -> None:
+                    nonlocal synth_task
+                    if synth_task is not None and not synth_task.done():
+                        synth_task.cancel()
+                        try:
+                            await synth_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                    synth_task = None
 
                 while True:
                     try:
-                        sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                        sid, tts_text = await loop.run_in_executor(
+                            None, request_queue.get,
+                        )
                     except Exception:
                         break
 
                     if sid == "__interrupt__":
+                        await _cancel_synth()
                         text_buffer = []
                         current_speech_id = None
                         continue
 
-                    # speech_id 切换 → 丢弃旧缓冲
+                    # speech_id 切换 → 取消进行中的合成，丢弃旧缓冲
                     if current_speech_id != sid and sid is not None:
+                        await _cancel_synth()
                         current_speech_id = sid
                         text_buffer = []
 
                     if sid is None:
                         # flush: 合成累积的文本
+                        # 等待上一次合成完成（如果有的话）
+                        if synth_task is not None:
+                            try:
+                                await synth_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                            synth_task = None
                         if text_buffer and current_speech_id is not None:
                             full_text = "".join(text_buffer)
                             if full_text.strip():
-                                await _minimax_sse_synthesize(
-                                    client, api_url, headers, model_name,
-                                    full_text, voice_id, current_speech_id,
-                                    response_queue, agg_flush_bytes,
+                                synth_task = asyncio.create_task(
+                                    _minimax_sse_synthesize(
+                                        client, api_url, headers, model_name,
+                                        full_text, voice_id, current_speech_id,
+                                        response_queue, agg_flush_bytes,
+                                    )
                                 )
                         text_buffer = []
                         current_speech_id = None
@@ -2205,6 +2258,8 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                     # 累积文本
                     if tts_text and tts_text.strip():
                         text_buffer.append(tts_text)
+
+                await _cancel_synth()
         except Exception as exc:
             _enqueue_error(response_queue, f"MiniMax TTS Worker 运行错误: {exc}")
             response_queue.put(("__ready__", False))

@@ -64,11 +64,13 @@ def _wait_for_queue_item(q, predicate, timeout=5.0):
 class FakeSSETransport(httpx.AsyncBaseTransport):
     """Fake httpx transport that returns SSE or JSON responses for MiniMax TTS."""
 
-    def __init__(self, sse_events=None, status_code=200, probe_status=400, use_sse=True):
+    def __init__(self, sse_events=None, status_code=200, probe_status=400,
+                 use_sse=True, trailing_newline=True):
         self._sse_events = sse_events or []
         self._status_code = status_code
         self._probe_status = probe_status
         self._use_sse = use_sse
+        self._trailing_newline = trailing_newline
         self.requests = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -83,8 +85,10 @@ class FakeSSETransport(httpx.AsyncBaseTransport):
         if self._use_sse:
             # SSE format: data: {json}\n\n
             sse_body = ""
-            for event in self._sse_events:
-                sse_body += f"data: {json.dumps(event)}\n\n"
+            for i, event in enumerate(self._sse_events):
+                sse_body += f"data: {json.dumps(event)}"
+                if i < len(self._sse_events) - 1 or self._trailing_newline:
+                    sse_body += "\n\n"
             return httpx.Response(
                 self._status_code,
                 content=sse_body.encode("utf-8"),
@@ -93,8 +97,10 @@ class FakeSSETransport(httpx.AsyncBaseTransport):
         else:
             # JSON stream format: line-delimited JSON objects
             json_body = ""
-            for event in self._sse_events:
-                json_body += json.dumps(event) + "\n"
+            for i, event in enumerate(self._sse_events):
+                json_body += json.dumps(event)
+                if i < len(self._sse_events) - 1 or self._trailing_newline:
+                    json_body += "\n"
             return httpx.Response(
                 self._status_code,
                 content=json_body.encode("utf-8"),
@@ -367,6 +373,101 @@ def test_minimax_worker_server_error_in_sse(monkeypatch):
         lambda item: isinstance(item, tuple) and len(item) == 2 and item[0] == "__error__",
     )
     assert "internal error" in error_item[1]
+
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_residual_buffer_without_trailing_newline(monkeypatch):
+    """服务端关闭流时未发尾部换行，残留在 buffer 中的最后一个事件仍应被解析。"""
+    pcm_bytes = (np.arange(2000, dtype=np.int16)).tobytes()
+    # 只有一个事件，且不带尾部换行
+    sse_events = _make_audio_sse_events(pcm_bytes, num_chunks=1)
+    transport = FakeSSETransport(sse_events=sse_events, trailing_newline=False)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue)
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    request_queue.put(("speech-1", "hello"))
+    request_queue.put((None, None))
+
+    # 即使没有尾部换行，音频仍应被解析并输出
+    audio_item, _ = _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
+    )
+    assert audio_item[1] == "speech-1"
+    assert len(audio_item[2]) > 0
+
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_probe_rejects_5xx(monkeypatch):
+    """探测阶段收到 500 等非 200/400 状态码时应报告 not ready。"""
+    transport = FakeSSETransport(probe_status=500)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue)
+
+    not_ready_item, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+    )
+    assert not_ready_item == ("__ready__", False)
+    assert any(isinstance(item, tuple) and item[0] == "__error__" for item in seen)
+
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_probe_rejects_404(monkeypatch):
+    """探测阶段收到 404 时应报告 not ready。"""
+    transport = FakeSSETransport(probe_status=404)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue)
+
+    not_ready_item, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+    )
+    assert not_ready_item == ("__ready__", False)
 
     request_queue.close()
     thread.join(timeout=3.0)
