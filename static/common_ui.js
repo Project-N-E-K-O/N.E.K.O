@@ -1031,8 +1031,13 @@ if (toggleBtn) {
     document.addEventListener('touchend', endDrag);
 
     // 屏幕切换后，确保对话框回弹到新屏幕内侧
+    // 延迟一帧：主进程 setBounds 到 renderer 的 innerWidth/innerHeight 刷新有几毫秒~一帧延迟，
+    // 立即 snap 会让 getDisplayWorkAreaSize 读到旧尺寸，把聊天框永久 clamp 到旧屏内侧
+    // （对照 live2d-core.js 中 _displayChangeHandler 的 rAF 包裹方式）
     window.addEventListener('electron-display-changed', () => {
-        snapChatContainerIntoScreen({ animate: true });
+        requestAnimationFrame(() => {
+            snapChatContainerIntoScreen({ animate: true });
+        });
     });
 
     // 窗口大小改变后，确保对话框回弹到屏幕内侧（包括折叠状态）

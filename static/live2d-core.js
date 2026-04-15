@@ -263,6 +263,15 @@ class Live2DManager {
 
                     this.pixi_app.renderer.resize(newW, newH);
 
+                    // 跨屏切换路径（Live2DManager._checkAndSwitchDisplay）已在 moveWindowToDisplay 之后
+                    // 主动把 model.x/y 设置为新屏窗口坐标。若这里再按 (newW/prevW, newH/prevH) 缩放，
+                    // 会对同一个值双重作用，导致模型偏移。通过 _pendingDisplaySwitch 跳过缩放，
+                    // 仅 resize renderer（renderer 尺寸必须更新，否则 canvas 仍是旧尺寸裁切模型）。
+                    if (this._pendingDisplaySwitch) {
+                        console.log('[Live2D Core] renderer 已 resize（跨屏切换中，跳过模型缩放）:', { reason, prevW, prevH, newW, newH });
+                        return;
+                    }
+
                     if (this.currentModel && prevW > 0 && prevH > 0) {
                         const wRatio = newW / prevW;
                         const hRatio = newH / prevH;
