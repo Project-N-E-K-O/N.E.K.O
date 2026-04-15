@@ -466,3 +466,49 @@ def test_minimax_worker_probe_rejects_404(monkeypatch):
     request_queue.close()
     thread.join(timeout=3.0)
     assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_incremental_synthesis_on_punctuation(monkeypatch):
+    """句末标点到达时应立即发起合成，不等待 flush 信号。"""
+    pcm_bytes = (np.arange(2000, dtype=np.int16)).tobytes()
+    sse_events = _make_audio_sse_events(pcm_bytes, num_chunks=1)
+    transport = FakeSSETransport(sse_events=sse_events)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue)
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    # 第一句带句号，第二句不带（会在 flush 时合成）
+    request_queue.put(("speech-1", "你好世界。"))
+    request_queue.put(("speech-1", "今天天气"))
+    request_queue.put((None, None))
+
+    # 应该收到音频
+    audio_item, _ = _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
+    )
+    assert audio_item[1] == "speech-1"
+
+    # 应该有两个合成请求：一个是句号切分的，一个是 flush 的
+    # 等待 flush 合成也完成（第二个音频块）
+    time.sleep(0.5)
+    synth_requests = [r for r in transport.requests if r.get("stream")]
+    assert len(synth_requests) == 2
+    assert synth_requests[0]["text"] == "你好世界。"
+    assert synth_requests[1]["text"] == "今天天气"
+
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()

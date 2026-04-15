@@ -2126,7 +2126,10 @@ async def _minimax_sse_synthesize(
 def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
     """
     MiniMax TTS worker（国服 / 国际服，用于 MiniMax 克隆音色）
-    使用 MiniMax 的 T2A v2 HTTP SSE API，累积文本后一次性发送并流式接收 PCM 音频
+    使用 MiniMax 的 T2A v2 HTTP SSE API，按句切分流式发送并接收 PCM 音频
+
+    文本到达后立即按句切分合成，不等待 LLM 回复结束，降低首 token 延迟。
+    flush 信号 (None, None) 仅用于合成尾部残留文本。
 
     Args:
         request_queue: 多进程请求队列，接收(speech_id, text)元组
@@ -2136,7 +2139,12 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         base_url: MiniMax API base URL（国服 / 国际服），为 None 时使用国服默认值
     """
     import asyncio
+    import re
     import httpx
+
+    # 句末标点：遇到这些字符时立即切分并发起合成
+    _SENTENCE_END_RE = re.compile(r'[。！？；…\.\!\?\;]+')
+    _MIN_FLUSH_CHARS = 2  # 避免过短的片段（如单个标点）单独合成
 
     async def async_worker():
         api_url = _get_minimax_tts_http_url(base_url)
@@ -2149,9 +2157,69 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         request_timeout = 60.0
 
         current_speech_id = None
-        text_buffer = []
+        text_buffer = ""
+        # 有序合成任务队列：保证音频按文本顺序输出
+        synth_tasks: list[asyncio.Task] = []
 
-        # 连通性探测：HEAD 请求验证 API 可达 + 鉴权
+        def _launch_synth(client, text_to_synth: str, speech_id: str) -> None:
+            """启动一个合成任务并加入有序队列。"""
+            task = asyncio.create_task(
+                _minimax_sse_synthesize(
+                    client, api_url, headers, model_name,
+                    text_to_synth, voice_id, speech_id,
+                    response_queue, agg_flush_bytes,
+                )
+            )
+            synth_tasks.append(task)
+
+        async def _drain_synth_tasks() -> None:
+            """按顺序等待所有合成任务完成。"""
+            for task in synth_tasks:
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            synth_tasks.clear()
+
+        async def _cancel_all_synth() -> None:
+            """取消所有进行中的合成任务。"""
+            for task in synth_tasks:
+                if not task.done():
+                    task.cancel()
+            for task in synth_tasks:
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            synth_tasks.clear()
+
+        def _try_split_and_synth(client, speech_id: str, force: bool = False) -> None:
+            """尝试按句切分 text_buffer 并发起合成。
+
+            force=True 时将 buffer 中所有剩余文本全部合成（用于 flush）。
+            """
+            nonlocal text_buffer
+            if not text_buffer.strip():
+                text_buffer = ""
+                return
+
+            if force:
+                _launch_synth(client, text_buffer, speech_id)
+                text_buffer = ""
+                return
+
+            # 按句末标点切分
+            last_end = 0
+            for m in _SENTENCE_END_RE.finditer(text_buffer):
+                candidate = text_buffer[last_end:m.end()]
+                if len(candidate.strip()) >= _MIN_FLUSH_CHARS:
+                    _launch_synth(client, candidate, speech_id)
+                    last_end = m.end()
+
+            if last_end > 0:
+                text_buffer = text_buffer[last_end:]
+
+        # 连通性探测
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=10)) as probe:
                 probe_resp = await probe.post(
@@ -2160,8 +2228,6 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                           "voice_setting": {"voice_id": voice_id}},
                     timeout=10,
                 )
-                # 空文本可能返回 400（参数校验），200 和 400 均视为连通+鉴权正常
-                # 其余状态码（401/403/404/429/5xx 等）均视为探测失败
                 if probe_resp.status_code not in (200, 400):
                     error_text = probe_resp.text[:200]
                     _enqueue_error(
@@ -2184,17 +2250,6 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                 limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
             ) as client:
                 loop = asyncio.get_running_loop()
-                synth_task: asyncio.Task | None = None
-
-                async def _cancel_synth() -> None:
-                    nonlocal synth_task
-                    if synth_task is not None and not synth_task.done():
-                        synth_task.cancel()
-                        try:
-                            await synth_task
-                        except (asyncio.CancelledError, Exception):
-                            pass
-                    synth_task = None
 
                 while True:
                     try:
@@ -2205,45 +2260,35 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                         break
 
                     if sid == "__interrupt__":
-                        await _cancel_synth()
-                        text_buffer = []
+                        await _cancel_all_synth()
+                        text_buffer = ""
                         current_speech_id = None
                         continue
 
                     # speech_id 切换 → 取消进行中的合成，丢弃旧缓冲
                     if current_speech_id != sid and sid is not None:
-                        await _cancel_synth()
+                        await _cancel_all_synth()
                         current_speech_id = sid
-                        text_buffer = []
+                        text_buffer = ""
 
                     if sid is None:
-                        # flush: 合成累积的文本
-                        # 等待上一次合成完成（如果有的话）
-                        if synth_task is not None:
-                            try:
-                                await synth_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
-                            synth_task = None
-                        if text_buffer and current_speech_id is not None:
-                            full_text = "".join(text_buffer)
-                            if full_text.strip():
-                                synth_task = asyncio.create_task(
-                                    _minimax_sse_synthesize(
-                                        client, api_url, headers, model_name,
-                                        full_text, voice_id, current_speech_id,
-                                        response_queue, agg_flush_bytes,
-                                    )
-                                )
-                        text_buffer = []
+                        # flush: 合成 buffer 中剩余文本
+                        if text_buffer.strip() and current_speech_id is not None:
+                            _try_split_and_synth(client, current_speech_id, force=True)
+                        await _drain_synth_tasks()
+                        text_buffer = ""
                         current_speech_id = None
                         continue
 
-                    # 累积文本
+                    # 累积文本并尝试按句切分合成
                     if tts_text and tts_text.strip():
-                        text_buffer.append(tts_text)
+                        text_buffer += tts_text
+                        _try_split_and_synth(client, current_speech_id)
 
-                await _cancel_synth()
+                await _cancel_all_synth()
+        except Exception as exc:
+            _enqueue_error(response_queue, f"MiniMax TTS Worker 运行错误: {exc}")
+            response_queue.put(("__ready__", False))
         except Exception as exc:
             _enqueue_error(response_queue, f"MiniMax TTS Worker 运行错误: {exc}")
             response_queue.put(("__ready__", False))
