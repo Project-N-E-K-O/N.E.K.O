@@ -586,7 +586,7 @@
         "avatarPreviewFailed": "アバターの生成に失敗しました",
         "avatarCropperTitle": "アバターの切り抜き範囲を調整",
         "avatarPreviewCropping": "切り抜き範囲を調整してください",
-        "avatarPreviewCropCancelled": "手動切り抜きをキャンセルしました。自動切り抜き結果を使用します。",
+        "avatarPreviewCropCancelled": "手動切り抜きをキャンセルしました。元のアバターを維持します。",
         "avatarCropMoveUp": "上へ移動",
         "avatarCropMoveDown": "下へ移動",
         "avatarCropMoveLeft": "左へ移動",

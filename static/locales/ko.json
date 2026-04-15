@@ -586,7 +586,7 @@
         "avatarPreviewFailed": "아바타 생성 실패",
         "avatarCropperTitle": "아바타 자르기 영역 조정",
         "avatarPreviewCropping": "자르기 영역을 조정하세요",
-        "avatarPreviewCropCancelled": "수동 자르기가 취소되었습니다. 자동 자르기 결과를 사용합니다.",
+        "avatarPreviewCropCancelled": "수동 자르기가 취소되었습니다. 기존 아바타를 유지합니다.",
         "avatarCropMoveUp": "위로 이동",
         "avatarCropMoveDown": "아래로 이동",
         "avatarCropMoveLeft": "왼쪽으로 이동",

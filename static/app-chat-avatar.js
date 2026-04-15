@@ -805,6 +805,7 @@
         isCapturing = true;
         const token = ++activeCaptureToken;
         const cacheKey = getCurrentModelCacheKey();
+        const prevCachedPreview = cachedPreview ? Object.assign({}, cachedPreview) : null;
         if (showCard) {
             setPreviewVisible(true, trigger);
         }
@@ -837,8 +838,17 @@
                     var croppedDataUrl = await cropSourceToAvatar(result.sourceDataUrl, userCrop);
                     applyPreviewResult({ dataUrl: croppedDataUrl, modelType: result.modelType }, cacheKey);
                 } else {
-                    applyPreviewResult(result, cacheKey);
-                    setPreviewNote(translateLabel('chat.avatarPreviewCropCancelled', '已取消手动裁剪，使用自动裁剪结果。'));
+                    if (prevCachedPreview) {
+                        cachedPreview = prevCachedPreview;
+                        setPreviewImage(prevCachedPreview.dataUrl);
+                        setPreviewStatus(
+                            translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(prevCachedPreview.modelType)
+                        );
+                    } else {
+                        setPreviewImage('');
+                        setPreviewStatus(translateLabel('chat.avatarPreviewCardStatus', '点击上方按钮生成当前模型头像'));
+                    }
+                    setPreviewNote(translateLabel('chat.avatarPreviewCropCancelled', '已取消手动裁剪，保持原头像不变。'));
                 }
             } else {
                 applyPreviewResult(result, cacheKey);

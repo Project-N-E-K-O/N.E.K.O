@@ -586,7 +586,7 @@
         "avatarPreviewFailed": "生成頭像失敗",
         "avatarCropperTitle": "調整頭像裁剪區域",
         "avatarPreviewCropping": "請調整裁剪區域",
-        "avatarPreviewCropCancelled": "已取消手動裁剪，使用自動裁剪結果。",
+        "avatarPreviewCropCancelled": "已取消手動裁剪，保持原頭像不變。",
         "avatarCropMoveUp": "上移",
         "avatarCropMoveDown": "下移",
         "avatarCropMoveLeft": "左移",
