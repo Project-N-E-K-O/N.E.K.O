@@ -131,12 +131,6 @@ def _make_audio_sse_events(pcm_bytes: bytes, num_chunks: int = 1):
 
 
 @pytest.mark.unit
-def test_get_minimax_tts_ws_url():
-    assert tts_client._get_minimax_tts_ws_url("https://api.minimaxi.com/v1") == "wss://api.minimaxi.com/ws/v1/t2a_v2"
-    assert tts_client._get_minimax_tts_ws_url("https://api.minimax.io") == "wss://api.minimax.io/ws/v1/t2a_v2"
-
-
-@pytest.mark.unit
 def test_get_minimax_tts_http_url():
     assert tts_client._get_minimax_tts_http_url("https://api.minimaxi.com/v1") == "https://api.minimaxi.com/v1/t2a_v2"
     assert tts_client._get_minimax_tts_http_url("https://api.minimax.io") == "https://api.minimax.io/v1/t2a_v2"

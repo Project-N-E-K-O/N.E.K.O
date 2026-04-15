@@ -147,39 +147,6 @@ def _adjust_free_tts_url(url: str) -> str:
         return url
 
 
-def _get_minimax_tts_ws_url(base_url: str | None = None) -> str:
-    """将 MiniMax API base URL 规范化为 TTS WebSocket 地址。"""
-    raw_url = (base_url or "https://api.minimaxi.com").strip().rstrip("/")
-    if raw_url.startswith("http://"):
-        raw_url = "ws://" + raw_url[7:]
-    elif raw_url.startswith("https://"):
-        raw_url = "wss://" + raw_url[8:]
-    elif not raw_url.startswith(("ws://", "wss://")):
-        raw_url = "wss://" + raw_url
-
-    parsed = urlparse(raw_url)
-    if not parsed.netloc:
-        raise ValueError(f"无效的 MiniMax base_url: {base_url!r}")
-    return urlunparse((parsed.scheme, parsed.netloc, "/ws/v1/t2a_v2", "", "", ""))
-
-
-def _get_minimax_tts_http_url(base_url: str | None = None) -> str:
-    """将 MiniMax API base URL 规范化为 TTS HTTP SSE 地址。"""
-    raw_url = (base_url or "https://api.minimaxi.com").strip().rstrip("/")
-    # 将 ws/wss 协议转为 http/https
-    if raw_url.startswith("ws://"):
-        raw_url = "http://" + raw_url[5:]
-    elif raw_url.startswith("wss://"):
-        raw_url = "https://" + raw_url[6:]
-    elif not raw_url.startswith(("http://", "https://")):
-        raw_url = "https://" + raw_url
-
-    parsed = urlparse(raw_url)
-    if not parsed.netloc:
-        raise ValueError(f"无效的 MiniMax base_url: {base_url!r}")
-    return urlunparse((parsed.scheme, parsed.netloc, "/v1/t2a_v2", "", "", ""))
-
-
 try:
     from websockets.connection import State as _WsState
 except (ImportError, AttributeError):
@@ -1961,6 +1928,23 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
     except Exception as e:
         logger.error(f"[GPT-SoVITS v3] Worker 启动失败: {e}")
         response_queue.put(("__ready__", False))
+
+
+def _get_minimax_tts_http_url(base_url: str | None = None) -> str:
+    """将 MiniMax API base URL 规范化为 TTS HTTP SSE 地址。"""
+    raw_url = (base_url or "https://api.minimaxi.com").strip().rstrip("/")
+    # 将 ws/wss 协议转为 http/https
+    if raw_url.startswith("ws://"):
+        raw_url = "http://" + raw_url[5:]
+    elif raw_url.startswith("wss://"):
+        raw_url = "https://" + raw_url[6:]
+    elif not raw_url.startswith(("http://", "https://")):
+        raw_url = "https://" + raw_url
+
+    parsed = urlparse(raw_url)
+    if not parsed.netloc:
+        raise ValueError(f"无效的 MiniMax base_url: {base_url!r}")
+    return urlunparse((parsed.scheme, parsed.netloc, "/v1/t2a_v2", "", "", ""))
 
 
 async def _minimax_sse_synthesize(
