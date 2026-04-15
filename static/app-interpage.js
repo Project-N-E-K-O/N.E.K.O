@@ -362,7 +362,11 @@
                         // 【修复】在 loadModel 之前获取角色待机动作列表，
                         // 更新 lanlan_config 使 loadModel 内部读取到正确的待机动作 URL，
                         // 避免使用初始页面加载时的过时值导致动画加载失败进入 T-pose。
+                        // 先清空旧值，确保 fetch 失败时 loadModel 回退到安全的硬编码默认值
+                        // 而非残留的上一个角色的待机动作 URL。
                         var vrmIdleList = [];
+                        window.lanlan_config.vrmIdleAnimation = '';
+                        window.lanlan_config.vrmIdleAnimations = [];
                         if (nameForConfig) {
                             try {
                                 var charResVrm = await fetch('/api/characters/');
