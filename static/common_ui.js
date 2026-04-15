@@ -642,6 +642,9 @@ if (toggleBtn) {
     };
 
     // 获取当前显示区域的尺寸（考虑多屏幕）
+    // 多屏下 workArea/display 可能大于实际窗口像素（窗口还未跟上屏幕切换），
+    // 直接用会导致聊天框被吸附到窗口外、被窗口边界裁切。
+    // 因此 clamp 边界始终以 window.innerWidth/innerHeight 为上限，workArea 仅用来取更保守值。
     async function getDisplayWorkAreaSize() {
         let width = window.innerWidth;
         let height = window.innerHeight;
@@ -650,11 +653,13 @@ if (toggleBtn) {
             try {
                 const currentDisplay = await window.electronScreen.getCurrentDisplay();
                 if (currentDisplay && currentDisplay.workArea) {
-                    width = currentDisplay.workArea.width || width;
-                    height = currentDisplay.workArea.height || height;
+                    const waW = currentDisplay.workArea.width;
+                    const waH = currentDisplay.workArea.height;
+                    if (Number.isFinite(waW) && waW > 0) width = Math.min(width, waW);
+                    if (Number.isFinite(waH) && waH > 0) height = Math.min(height, waH);
                 } else if (currentDisplay && currentDisplay.width && currentDisplay.height) {
-                    width = currentDisplay.width;
-                    height = currentDisplay.height;
+                    width = Math.min(width, currentDisplay.width);
+                    height = Math.min(height, currentDisplay.height);
                 }
             } catch (e) {
                 console.debug('[Chat Snap] 获取屏幕工作区域失败，使用窗口尺寸');
