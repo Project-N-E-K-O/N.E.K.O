@@ -547,12 +547,34 @@
 
             function onPointerUp() { drag = null; }
 
+            function onWheel(e) {
+                if (!cropBox.contains(e.target) && e.target !== cropBox) return;
+                e.preventDefault();
+                var step = Math.round(crop.size * 0.08);
+                if (step < 4) step = 4;
+                var delta = e.deltaY > 0 ? -step : step;
+                var oldSize = crop.size;
+                var newSize = Math.max(MIN_SIZE, Math.min(oldSize + delta, displayW, displayH));
+                if (newSize === oldSize) return;
+                var centerX = crop.x + oldSize / 2;
+                var centerY = crop.y + oldSize / 2;
+                crop.size = newSize;
+                crop.x = Math.round(centerX - newSize / 2);
+                crop.y = Math.round(centerY - newSize / 2);
+                clampCrop();
+                renderCrop();
+            }
+
             function cleanup() {
                 document.removeEventListener('pointermove', onPointerMove);
                 document.removeEventListener('pointerup', onPointerUp);
                 wrap.removeEventListener('pointerdown', onPointerDown);
+                wrap.removeEventListener('wheel', onWheel);
                 if (cancelBtn) cancelBtn.removeEventListener('click', onCancel);
                 if (saveBtn) saveBtn.removeEventListener('click', onSave);
+                if (cropperState && cropperState.controlsEl) {
+                    cropperState.controlsEl.removeEventListener('click', cropperState.onCtrlAction);
+                }
                 popup.classList.remove('is-cropping');
                 cropperState = null;
             }
@@ -575,17 +597,63 @@
             function onCancel() { finish(false); }
             function onSave() { finish(true); }
 
+            var MOVE_STEP = 10;
+            var SIZE_STEP_RATIO = 0.1;
+
+            function onCtrlAction(e) {
+                var btn = e.target.closest('[data-crop-action]');
+                if (!btn) return;
+                var action = btn.dataset.cropAction;
+                var sizeStep = Math.max(6, Math.round(crop.size * SIZE_STEP_RATIO));
+                switch (action) {
+                    case 'up':    crop.y -= MOVE_STEP; break;
+                    case 'down':  crop.y += MOVE_STEP; break;
+                    case 'left':  crop.x -= MOVE_STEP; break;
+                    case 'right': crop.x += MOVE_STEP; break;
+                    case 'center':
+                        crop.x = Math.round((displayW - crop.size) / 2);
+                        crop.y = Math.round((displayH - crop.size) / 2);
+                        break;
+                    case 'bigger': {
+                        var oldS = crop.size;
+                        var newS = Math.max(MIN_SIZE, Math.min(oldS + sizeStep, displayW, displayH));
+                        if (newS !== oldS) {
+                            crop.x -= Math.round((newS - oldS) / 2);
+                            crop.y -= Math.round((newS - oldS) / 2);
+                            crop.size = newS;
+                        }
+                        break;
+                    }
+                    case 'smaller': {
+                        var oldS2 = crop.size;
+                        var newS2 = Math.max(MIN_SIZE, Math.min(oldS2 - sizeStep, displayW, displayH));
+                        if (newS2 !== oldS2) {
+                            crop.x += Math.round((oldS2 - newS2) / 2);
+                            crop.y += Math.round((oldS2 - newS2) / 2);
+                            crop.size = newS2;
+                        }
+                        break;
+                    }
+                }
+                clampCrop();
+                renderCrop();
+            }
+
+            var controlsEl = popup.querySelector('.avatar-cropper-controls');
+
             img.src = sourceDataUrl;
             wrap.addEventListener('pointerdown', onPointerDown);
+            wrap.addEventListener('wheel', onWheel, { passive: false });
             document.addEventListener('pointermove', onPointerMove);
             document.addEventListener('pointerup', onPointerUp);
             cancelBtn.addEventListener('click', onCancel);
             saveBtn.addEventListener('click', onSave);
+            if (controlsEl) controlsEl.addEventListener('click', onCtrlAction);
 
             popup.classList.add('is-cropping');
             setPreviewStatus(translateLabel('chat.avatarCropperTitle', '调整头像裁剪区域'));
 
-            cropperState = { finish: finish };
+            cropperState = { finish: finish, controlsEl: controlsEl, onCtrlAction: onCtrlAction };
 
             requestAnimationFrame(function () { initLayout(); });
         });

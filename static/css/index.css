@@ -1305,13 +1305,14 @@ body.react-chat-window-dragging {
     box-sizing: border-box;
     border: 2px solid rgba(255, 255, 255, 0.85);
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
-    overflow: hidden;
+    overflow: visible;
 }
 
 .avatar-cropper-viewfinder {
     position: absolute;
     inset: 0;
     pointer-events: none;
+    overflow: hidden;
 }
 
 .avatar-cropper-grid-line {
@@ -1331,32 +1332,86 @@ body.react-chat-window-dragging {
     pointer-events: none;
 }
 
+/* 手柄：完全定位在 crop-box 外侧角落 */
 .avatar-cropper-handle {
     position: absolute;
-    width: 20px;
-    height: 20px;
+    width: 24px;
+    height: 24px;
     z-index: 2;
 }
-.avatar-cropper-handle::before {
+.avatar-cropper-handle::before,
+.avatar-cropper-handle::after {
     content: '';
     position: absolute;
     background: #fff;
-    box-shadow: 0 0 3px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.7);
     border-radius: 1px;
 }
-.avatar-cropper-handle.tl { top: -3px; left: -3px; cursor: nwse-resize; }
-.avatar-cropper-handle.tr { top: -3px; right: -3px; cursor: nesw-resize; }
-.avatar-cropper-handle.bl { bottom: -3px; left: -3px; cursor: nesw-resize; }
-.avatar-cropper-handle.br { bottom: -3px; right: -3px; cursor: nwse-resize; }
+.avatar-cropper-handle.tl { top: -26px; left: -26px; cursor: nwse-resize; }
+.avatar-cropper-handle.tr { top: -26px; right: -26px; cursor: nesw-resize; }
+.avatar-cropper-handle.bl { bottom: -26px; left: -26px; cursor: nesw-resize; }
+.avatar-cropper-handle.br { bottom: -26px; right: -26px; cursor: nwse-resize; }
 
-.avatar-cropper-handle.tl::before { top: 0; left: 0; width: 14px; height: 3px; }
-.avatar-cropper-handle.tl::after  { content: ''; position: absolute; top: 0; left: 0; width: 3px; height: 14px; background: #fff; box-shadow: 0 0 3px rgba(0,0,0,0.5); border-radius: 1px; }
-.avatar-cropper-handle.tr::before { top: 0; right: 0; left: auto; width: 14px; height: 3px; }
-.avatar-cropper-handle.tr::after  { content: ''; position: absolute; top: 0; right: 0; width: 3px; height: 14px; background: #fff; box-shadow: 0 0 3px rgba(0,0,0,0.5); border-radius: 1px; }
-.avatar-cropper-handle.bl::before { bottom: 0; top: auto; left: 0; width: 14px; height: 3px; }
-.avatar-cropper-handle.bl::after  { content: ''; position: absolute; bottom: 0; left: 0; width: 3px; height: 14px; background: #fff; box-shadow: 0 0 3px rgba(0,0,0,0.5); border-radius: 1px; }
-.avatar-cropper-handle.br::before { bottom: 0; top: auto; right: 0; left: auto; width: 14px; height: 3px; }
-.avatar-cropper-handle.br::after  { content: ''; position: absolute; bottom: 0; right: 0; width: 3px; height: 14px; background: #fff; box-shadow: 0 0 3px rgba(0,0,0,0.5); border-radius: 1px; }
+.avatar-cropper-handle.tl::before { bottom: 0; right: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.tl::after  { bottom: 0; right: 0; width: 5px; height: 20px; }
+.avatar-cropper-handle.tr::before { bottom: 0; left: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.tr::after  { bottom: 0; left: 0; width: 5px; height: 20px; }
+.avatar-cropper-handle.bl::before { top: 0; right: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.bl::after  { top: 0; right: 0; width: 5px; height: 20px; }
+.avatar-cropper-handle.br::before { top: 0; left: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.br::after  { top: 0; left: 0; width: 5px; height: 20px; }
+
+/* 右侧控制面板 */
+.avatar-cropper-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    align-self: center;
+    flex-shrink: 0;
+}
+.avatar-cropper-controls-row {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+.avatar-cropper-ctrl-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.35);
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    padding: 0;
+}
+.avatar-cropper-ctrl-btn:hover {
+    background: rgba(68, 183, 254, 0.25);
+    border-color: rgba(68, 183, 254, 0.4);
+}
+.avatar-cropper-ctrl-btn:active {
+    background: rgba(68, 183, 254, 0.4);
+}
+.avatar-cropper-ctrl-btn svg {
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+}
+.avatar-cropper-ctrl-divider {
+    height: 6px;
+}
+
+.avatar-cropper-area {
+    display: flex;
+    gap: 10px;
+    align-items: stretch;
+}
 
 .avatar-cropper-buttons {
     display: flex;

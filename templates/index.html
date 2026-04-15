@@ -181,21 +181,35 @@
             </div>
         </div>
         <div class="chat-avatar-preview-crop-body">
-            <div id="avatar-cropper-wrap" class="avatar-cropper-canvas-wrap">
-                <img id="avatar-cropper-img" class="avatar-cropper-source-img" alt="">
-                <svg id="avatar-cropper-mask" class="avatar-cropper-mask"></svg>
-                <div id="avatar-cropper-box" class="avatar-cropper-crop-box">
-                    <div class="avatar-cropper-viewfinder">
-                        <div class="avatar-cropper-grid-line h1"></div>
-                        <div class="avatar-cropper-grid-line h2"></div>
-                        <div class="avatar-cropper-grid-line v1"></div>
-                        <div class="avatar-cropper-grid-line v2"></div>
-                        <div class="avatar-cropper-circle-guide"></div>
+            <div class="avatar-cropper-area">
+                <div id="avatar-cropper-wrap" class="avatar-cropper-canvas-wrap">
+                    <img id="avatar-cropper-img" class="avatar-cropper-source-img" alt="">
+                    <svg id="avatar-cropper-mask" class="avatar-cropper-mask"></svg>
+                    <div id="avatar-cropper-box" class="avatar-cropper-crop-box">
+                        <div class="avatar-cropper-viewfinder">
+                            <div class="avatar-cropper-grid-line h1"></div>
+                            <div class="avatar-cropper-grid-line h2"></div>
+                            <div class="avatar-cropper-grid-line v1"></div>
+                            <div class="avatar-cropper-grid-line v2"></div>
+                            <div class="avatar-cropper-circle-guide"></div>
+                        </div>
+                        <div class="avatar-cropper-handle tl" data-handle="tl"></div>
+                        <div class="avatar-cropper-handle tr" data-handle="tr"></div>
+                        <div class="avatar-cropper-handle bl" data-handle="bl"></div>
+                        <div class="avatar-cropper-handle br" data-handle="br"></div>
                     </div>
-                    <div class="avatar-cropper-handle tl" data-handle="tl"></div>
-                    <div class="avatar-cropper-handle tr" data-handle="tr"></div>
-                    <div class="avatar-cropper-handle bl" data-handle="bl"></div>
-                    <div class="avatar-cropper-handle br" data-handle="br"></div>
+                </div>
+                <div class="avatar-cropper-controls">
+                    <button class="avatar-cropper-ctrl-btn" data-crop-action="up" title="上移"><svg viewBox="0 0 16 16"><path d="M8 3L2 10h12z"/></svg></button>
+                    <div class="avatar-cropper-controls-row">
+                        <button class="avatar-cropper-ctrl-btn" data-crop-action="left" title="左移"><svg viewBox="0 0 16 16"><path d="M3 8l7-6v12z"/></svg></button>
+                        <button class="avatar-cropper-ctrl-btn" data-crop-action="center" title="居中"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3"/><path d="M8 1v3M8 12v3M1 8h3M12 8h3" stroke="currentColor" stroke-width="1.5" fill="none"/></svg></button>
+                        <button class="avatar-cropper-ctrl-btn" data-crop-action="right" title="右移"><svg viewBox="0 0 16 16"><path d="M13 8L6 2v12z"/></svg></button>
+                    </div>
+                    <button class="avatar-cropper-ctrl-btn" data-crop-action="down" title="下移"><svg viewBox="0 0 16 16"><path d="M8 13l6-7H2z"/></svg></button>
+                    <div class="avatar-cropper-ctrl-divider"></div>
+                    <button class="avatar-cropper-ctrl-btn" data-crop-action="bigger" title="放大"><svg viewBox="0 0 16 16"><path d="M3 8h10M8 3v10" stroke="currentColor" stroke-width="2" fill="none"/></svg></button>
+                    <button class="avatar-cropper-ctrl-btn" data-crop-action="smaller" title="缩小"><svg viewBox="0 0 16 16"><path d="M3 8h10" stroke="currentColor" stroke-width="2" fill="none"/></svg></button>
                 </div>
             </div>
             <div class="avatar-cropper-buttons">
